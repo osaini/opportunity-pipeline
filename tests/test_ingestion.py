@@ -23,6 +23,11 @@ class PipelineStageTests(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         root = Path(self.tempdir.name)
         self.legacy_path, self.platform_path = build_and_migrate(root)
+        # The stages run pipeline.py as a subprocess; point it at the fixture
+        # profile so a fresh clone, which has no config/profile.json, passes too.
+        environment = mock.patch.dict(os.environ, {"PIPELINE_PROFILE": str(root / "profile.json")})
+        environment.start()
+        self.addCleanup(environment.stop)
 
     def tearDown(self):
         self.tempdir.cleanup()

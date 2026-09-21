@@ -38,7 +38,9 @@ DB_PATH = Path(os.environ.get("PIPELINE_DB", str(ROOT / "data" / "pipeline.db"))
 # profile.json and sources.local.json are personal and gitignored; setup copies
 # config/profile.example.json into place. sources.json is the shared, tracked
 # catalog, and sources.local.json layers one student's searches on top of it.
-PROFILE_PATH = ROOT / "config" / "profile.json"
+# PIPELINE_PROFILE, like PIPELINE_DB, lets tests and the web worker point a
+# subprocess at a hermetic profile instead of the student's own.
+PROFILE_PATH = Path(os.environ.get("PIPELINE_PROFILE") or ROOT / "config" / "profile.json")
 PROFILE_EXAMPLE_PATH = ROOT / "config" / "profile.example.json"
 SOURCES_PATH = ROOT / "config" / "sources.json"
 SOURCES_LOCAL_PATH = ROOT / "config" / "sources.local.json"
