@@ -1,0 +1,30 @@
+{
+  "name": "",
+  "school": "",
+  "degree": "",
+  "graduation_year": null,
+  "degree_keywords": [],
+  "preferred_role_types": [
+    "internship",
+    "externship",
+    "co-op",
+    "research",
+    "part_time",
+    "early_career"
+  ],
+  "preferred_locations": [],
+  "regions": [],
+  "out_of_region_penalty": 40,
+  "remote_ok": true,
+  "willing_to_relocate": null,
+  "skills": [],
+  "interest_keywords": [],
+  "deprioritize_title_keywords": [],
+  "max_years_experience": 1,
+  "work_authorized_us": null,
+  "us_citizen": null,
+  "requires_sponsorship": null,
+  "hours_per_week": null,
+  "available_terms": [],
+  "compensation_preferences": null
+}

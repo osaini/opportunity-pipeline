@@ -1,0 +1,11 @@
+{
+  "ats": "lever",
+  "hostname": "jobs.lever.co",
+  "url": "https://jobs.lever.co/orbit/abc-123",
+  "controls": [
+    { "tag": "input", "type": "text", "id": "name", "label": "Name" },
+    { "tag": "input", "type": "email", "id": "email", "label": "Email" },
+    { "tag": "input", "type": "url", "id": "github", "label": "GitHub Profile" },
+    { "tag": "input", "type": "text", "id": "salary", "label": "Desired Compensation" }
+  ]
+}

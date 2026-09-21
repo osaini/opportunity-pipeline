@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Opportunity Pipeline Apply Mode",
+  "version": "0.2.0",
+  "minimum_chrome_version": "114",
+  "description": "Review and fill application fields from confirmed local data. Never submits forms.",
+  "permissions": ["activeTab", "scripting", "storage", "sidePanel"],
+  "optional_host_permissions": ["http://127.0.0.1/*"],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "Open Apply Mode"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  }
+}

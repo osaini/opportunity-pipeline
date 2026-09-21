@@ -1,0 +1,52 @@
+__pycache__/
+*.pyc
+.env
+.venv*/
+data/pipeline.db
+data/platform.db
+data/platform.db-shm
+data/platform.db-wal
+data/platform.db.*-backup
+data/backups/
+data/resumes/
+data/captures/
+data/linkedin_emails.json
+data/discovered_jobs*.json
+data/enrichment.json
+output/shortlist.md
+output/shortlist.csv
+output/dashboard.html
+output/applications/
+data/run.log
+data/daily-run.json
+data/daily-run.json.tmp
+data/daily-run.lock
+data/web.log
+# Personal: contact details, coursework, project history. config/resume.example.json
+# is the tracked template.
+config/resume.json
+# Personal: one student's scoring profile and source overlay. The tracked
+# templates are config/profile.example.json and config/sources.local.example.json.
+config/profile.json
+config/sources.local.json
+config/sources.local.json.tmp
+# Personal notes and plans that should never ship to other students.
+private/
+data/web.pid
+.DS_Store
+.claude/settings.local.json
+
+# Browser and contract testing
+.venv-ui/
+.venv-fuzz/
+node_modules/
+data/ui-artifacts/
+data/playwright-mcp/
+data/api-fuzz-report.xml
+.schemathesis/
+# Personal outreach research: real contacts and drafts.
+data/outreach-*.json
+data/outreach-discovery*.log
+data/outreach-discovery.lock
+# The resume attached to outreach Gmail drafts.
+data/outreach-attachments/

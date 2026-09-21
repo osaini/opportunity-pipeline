@@ -1,0 +1,13 @@
+# The pipeline itself has NO dependencies. Everything below is optional and is
+# used by one command only.
+#
+# Playwright renders `resume --pdf` and `cover-letter --pdf`. Without it those
+# commands still write HTML, which you can print to PDF from a browser for the
+# same result -- discovery, scoring, and reporting never touch this.
+#
+# The outreach location check also uses it, when installed, to read company
+# sites that are empty without JavaScript (opportunity_app/outreach_render.py).
+#
+#   pip install -r requirements-optional.txt
+#   python3 -m playwright install chromium
+playwright>=1.40

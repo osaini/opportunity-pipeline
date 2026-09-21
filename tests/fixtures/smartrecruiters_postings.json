@@ -1,0 +1,14 @@
+{
+  "offset": 0,
+  "limit": 100,
+  "totalFound": 1,
+  "content": [
+    {
+      "id": "987",
+      "name": "Mechanical Engineering Intern",
+      "location": {"city": "Plano", "region": "TX", "country": "us"},
+      "postingUrl": "https://jobs.smartrecruiters.com/Acme/987",
+      "releasedDate": "2026-06-01T00:00:00Z"
+    }
+  ]
+}

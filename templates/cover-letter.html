@@ -1,0 +1,50 @@
+<meta charset="utf-8">
+<title>TITLE_PLACEHOLDER</title>
+<style>
+  :root { --ink: #111; --muted: #444; --page-margin: 0.9in; }
+  @page { size: Letter; margin: var(--page-margin); }
+
+  body {
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 11pt;
+    line-height: 1.45;
+    color: var(--ink);
+    max-width: 6.5in;
+    margin: 0 auto;
+    padding: var(--page-margin);
+  }
+  @media print { body { padding: 0; max-width: none; } }
+
+  .sender { margin-bottom: 18pt; }
+  .sender .name { font-size: 15pt; font-weight: 700; }
+  .sender .line { font-size: 9.5pt; color: var(--muted); }
+  .date { margin-bottom: 14pt; }
+  .recipient { margin-bottom: 14pt; }
+  p { margin: 0 0 10pt; }
+  ul { margin: 0 0 10pt; padding-left: 18pt; }
+  li { margin-bottom: 4pt; }
+  .sign-off { margin-top: 16pt; }
+
+  /* Everything you still have to write yourself. Deliberately loud on screen
+     and in print -- an unedited placeholder must never reach an employer. */
+  .todo {
+    background: #fff3c4;
+    border-bottom: 1px solid #d9a300;
+    font-style: italic;
+  }
+</style>
+
+<div class="sender">
+  <div class="name">NAME_PLACEHOLDER</div>
+  <div class="line">CONTACT_PLACEHOLDER</div>
+</div>
+
+<div class="date">DATE_PLACEHOLDER</div>
+
+<div class="recipient">RECIPIENT_PLACEHOLDER</div>
+
+BODY_PLACEHOLDER
+
+<div class="sign-off">
+  <p>Sincerely,<br>NAME_PLACEHOLDER</p>
+</div>

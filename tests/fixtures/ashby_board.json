@@ -1,0 +1,21 @@
+{
+  "jobs": [
+    {
+      "id": "abc123",
+      "title": "Mechanical Engineering Intern",
+      "location": "San Francisco, CA",
+      "publishedAt": "2026-06-01T00:00:00.000Z",
+      "jobUrl": "https://jobs.ashbyhq.com/acme/abc123",
+      "applyUrl": "https://jobs.ashbyhq.com/acme/abc123/application",
+      "descriptionHtml": "<p>Build and test hardware prototypes.</p>"
+    },
+    {
+      "id": "xyz999",
+      "title": "Senior Backend Engineer",
+      "location": "Remote",
+      "publishedAt": "2026-05-01T00:00:00.000Z",
+      "jobUrl": "https://jobs.ashbyhq.com/acme/xyz999",
+      "descriptionHtml": "<p>Own our backend services.</p>"
+    }
+  ]
+}

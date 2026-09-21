@@ -1,0 +1,36 @@
+{
+  "count": 3,
+  "mean": 24.5,
+  "results": [
+    {
+      "id": "4411",
+      "title": "Mechanical Engineering <strong>Intern</strong>",
+      "description": "Support <b>fixture design</b> and prototype builds for a small manufacturer&hellip;",
+      "created": "2026-07-20T09:14:00Z",
+      "redirect_url": "https://www.adzuna.com/land/ad/4411",
+      "location": {
+        "display_name": "Austin, Travis County",
+        "area": ["US", "Texas", "Travis County", "Austin"]
+      },
+      "company": { "display_name": "Lone Star Machine Works" }
+    },
+    {
+      "id": "4412",
+      "title": "Senior Facilities Manager",
+      "description": "Own the plant maintenance schedule.",
+      "created": "2026-07-19T09:14:00Z",
+      "redirect_url": "https://www.adzuna.com/land/ad/4412",
+      "location": { "display_name": "Round Rock, Williamson County" },
+      "company": { "display_name": "Hill Country Fabrication" }
+    },
+    {
+      "id": "4413",
+      "title": "Manufacturing Engineering Co-op",
+      "description": "Rotate through CNC and assembly cells.",
+      "created": "2026-07-18T09:14:00Z",
+      "redirect_url": "https://www.adzuna.com/land/ad/4413",
+      "location": { "display_name": "Cedar Park, Williamson County" },
+      "company": {}
+    }
+  ]
+}

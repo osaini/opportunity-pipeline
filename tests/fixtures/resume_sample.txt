@@ -1,0 +1,31 @@
+Jordan Rivera
+Austin, TX | (512) 555-0142 | jordan.rivera@example.edu | Linkedin | Github | Engineering Portfolio
+Education
+University of Texas at Austin May 2029
+Bachelor of Science, Mechanical Engineering Austin, TX
+• Coursework: Statics, Thermodynamics, Materials
+Experience
+Rotorworks Robotics Nov 2025 – Present
+Engineering Intern
+• Designed a 7-inch quadcopter frame in SolidWorks, cutting airframe weight from 1.2 kg to 700 g across a pilot
+build of 12 units
+• Wrote bench test procedures that shortened motor qualification from 3 days to 1 day
+Longhorn Data Lab Jun 2024 - Aug 2025
+Software Intern
+� Automated cleanup of 80,000 sensor records in Python with zero data loss, improving report turnaround by 25%
+� Built a dashboard for 4 lab teams
+Engineering Projects
+Desktop CNC Plotter Jan 2025 - Mar 2025
+• Built a two-axis pen plotter from 3D-printed parts and an Arduino Uno, drawing at 0.2 mm repeatability over a
+300 mm bed
+• Documented the build for 15 club members
+Skills
+Design Tools: SolidWorks, Fusion 360, AutoCAD
+Manufacturing: CNC, Laser Cutting, FDM 3D Printing
+Programming: Python for data processing, C++ for embedded firmware, JavaScript for front-end
+dashboards
+Extracurricular Activities
+Longhorn Salsa Club Aug 2023 - Present
+Captain
+• Led a 30-member dance team through 150+ rehearsal hours and 6 campus performances
+• Managed choreography, costumes, and social media for the team

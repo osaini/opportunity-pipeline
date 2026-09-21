@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Opportunity Pipeline Operations</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <main class="shell" id="main-content">
+    <header class="topbar">
+      <div><p class="eyebrow">Role-scoped workspace</p><h1 id="workspace-title">Operations</h1></div>
+      <a class="secondary-button" href="/">Student workspace</a>
+    </header>
+    <section class="panel" aria-labelledby="access-title">
+      <h2 id="access-title">Access</h2>
+      <form id="access-form">
+        <label>Role token<input id="role-token" type="password" autocomplete="off" required></label>
+        <button class="primary-button" type="submit">Open workspace</button>
+      </form>
+      <p id="access-status" role="status" aria-live="polite"></p>
+    </section>
+    <section class="panel" id="employer-tools" hidden aria-labelledby="employer-title">
+      <h2 id="employer-title">Employer intake</h2>
+      <form id="organization-form">
+        <label>Organization name<input id="organization-name" required maxlength="300"></label>
+        <button class="primary-button" type="submit">Request organization verification</button>
+      </form>
+      <form id="requisition-form">
+        <label>Verified organization ID<input id="organization-id" required></label>
+        <label>Role title<input id="requisition-title" required></label>
+        <label>Evidence criterion<input id="rubric-criterion" required></label>
+        <button class="primary-button" type="submit">Create requisition</button>
+      </form>
+      <form id="candidate-form">
+        <label>Requisition ID<input id="candidate-requisition" required></label>
+        <label>Student-approved dossier token<input id="candidate-share" required></label>
+        <button class="primary-button" type="submit">Add consented candidate</button>
+      </form>
+      <form id="decision-form">
+        <label>Candidate ID<input id="decision-candidate" required></label>
+        <label>Status<select id="decision-status"><option>shortlisted</option><option>interview</option><option>offer</option><option>rejected</option></select></label>
+        <label>Human disposition reason<input id="decision-reason" required></label>
+        <button class="primary-button" type="submit">Record human decision</button>
+      </form>
+      <pre id="employer-output" tabindex="0"></pre>
+    </section>
+    <section class="panel" id="admin-tools" hidden aria-labelledby="admin-title">
+      <h2 id="admin-title">Administration</h2>
+      <button class="primary-button" id="refresh-admin" type="button">Refresh health, moderation, queue, and audit</button>
+      <form id="verify-form"><label>Organization ID<input id="verify-organization" required></label><button class="secondary-button" type="submit">Verify organization</button></form>
+      <form id="source-form"><label>Source key<input id="source-key" required></label><label>Status<select id="source-status"><option>approved</option><option>review</option><option>blocked</option></select></label><label><input id="source-enabled" type="checkbox" checked> Enabled</label><label>Note<input id="source-note"></label><button class="secondary-button" type="submit">Save source control</button></form>
+      <form id="moderation-form"><label>Target type<input id="moderation-type" required></label><label>Target ID<input id="moderation-target" required></label><label>Reason<input id="moderation-reason" required></label><button class="secondary-button" type="submit">Open moderation item</button></form>
+      <pre id="admin-output" tabindex="0"></pre>
+    </section>
+  </main>
+  <script src="/assets/ops.js" defer></script>
+</body>
+</html>

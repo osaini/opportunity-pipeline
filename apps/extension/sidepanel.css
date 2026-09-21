@@ -1,0 +1,31 @@
+:root { color-scheme: light dark; font: 14px/1.45 system-ui, sans-serif; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 16px; background: Canvas; color: CanvasText; }
+header { border-bottom: 1px solid color-mix(in srgb, CanvasText 18%, transparent); margin-bottom: 18px; }
+h1 { font-size: 1.45rem; margin: 0 0 6px; }
+h2 { font-size: 1.05rem; }
+h3 { font-size: .95rem; margin-bottom: 8px; }
+.eyebrow { color: #476fdb; font-size: .75rem; font-weight: 700; letter-spacing: .08em; margin: 0; text-transform: uppercase; }
+.guardrail { color: color-mix(in srgb, CanvasText 70%, transparent); margin-top: 4px; }
+label:not(.check) { display: grid; gap: 5px; margin: 12px 0; }
+input, select, button { font: inherit; min-height: 36px; }
+input, select { border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); border-radius: 6px; padding: 7px 9px; width: 100%; }
+button { border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); border-radius: 6px; cursor: pointer; padding: 7px 11px; }
+button.primary { background: #315fd4; border-color: #315fd4; color: white; font-weight: 650; }
+button.quiet { background: transparent; min-height: 30px; }
+button:disabled { cursor: not-allowed; opacity: .55; }
+button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 3px solid #ef9f27; outline-offset: 2px; }
+.toolbar, .actions { align-items: center; display: flex; gap: 8px; justify-content: space-between; }
+.stack { display: grid; gap: 8px; margin: 10px 0; }
+.card, .field, .candidate { border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); border-radius: 8px; padding: 10px; }
+.candidate { align-items: start; background: transparent; display: grid; text-align: left; width: 100%; }
+.candidate small, .field small { color: color-mix(in srgb, CanvasText 66%, transparent); }
+.field { display: grid; gap: 8px; grid-template-columns: auto 1fr; }
+.field input[type=checkbox] { margin-top: 3px; min-height: auto; width: auto; }
+.field output { display: block; font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+.field.sensitive { border-left: 4px solid #b86b00; }
+.submit-confirm { border-top: 1px solid color-mix(in srgb, CanvasText 18%, transparent); margin-top: 18px; padding-top: 8px; }
+.check { align-items: start; display: flex; gap: 8px; margin-bottom: 10px; }
+.check input { min-height: auto; width: auto; }
+#status { min-height: 2.5em; }
+#download-fallback { display: inline-block; margin-top: 8px; }

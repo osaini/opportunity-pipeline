@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Apply Mode</title>
+  <link rel="stylesheet" href="sidepanel.css">
+  <script src="sidepanel.js" defer></script>
+</head>
+<body>
+  <header>
+    <p class="eyebrow">Opportunity Pipeline</p>
+    <h1>Assisted Apply</h1>
+    <p class="guardrail">You review every change and submit applications yourself.</p>
+  </header>
+
+  <main>
+    <section id="pairing" aria-labelledby="pairing-title">
+      <h2 id="pairing-title">Pair this browser</h2>
+      <p>Create a one-time code from Settings → Extensions in the local tracker.</p>
+      <label>Local server
+        <input id="server-origin" type="url" value="http://127.0.0.1:8765" spellcheck="false">
+      </label>
+      <label>Pairing code
+        <input id="pairing-code" type="password" autocomplete="one-time-code">
+      </label>
+      <button id="pair" class="primary" type="button">Pair extension</button>
+    </section>
+
+    <section id="workspace" hidden aria-labelledby="context-title">
+      <div class="toolbar">
+        <h2 id="context-title">Application context</h2>
+        <button id="disconnect" class="quiet" type="button">Forget device</button>
+      </div>
+      <button id="find-context" class="primary" type="button">Find this application</button>
+      <div id="candidates" class="stack" aria-live="polite"></div>
+      <div id="context" hidden>
+        <article id="match-card" class="card"></article>
+        <div class="actions">
+          <button id="scan" class="primary" type="button">Scan this step</button>
+          <button id="refresh" type="button">Refresh context</button>
+        </div>
+        <form id="review-form" hidden>
+          <h3>Review proposed fields</h3>
+          <div id="fields" class="stack"></div>
+          <button id="fill" class="primary" type="submit">Fill checked fields</button>
+        </form>
+        <section id="documents" hidden aria-labelledby="documents-title">
+          <h3 id="documents-title">Attach an approved document</h3>
+          <label>Document<select id="document-select"></select></label>
+          <label>File field<select id="file-field-select"></select></label>
+          <button id="attach" type="button">Attach selected document</button>
+          <a id="download-fallback" hidden download>Download for manual attachment</a>
+        </section>
+        <section id="progress" hidden aria-labelledby="progress-title">
+          <h3 id="progress-title">Current step</h3>
+          <p id="progress-copy"></p>
+        </section>
+        <section class="submit-confirm" aria-labelledby="submitted-title">
+          <h3 id="submitted-title">Finished submitting?</h3>
+          <label class="check"><input id="submitted-confirm" type="checkbox"> I personally reviewed and submitted this application.</label>
+          <button id="mark-submitted" type="button" disabled>Mark as submitted</button>
+        </section>
+      </div>
+    </section>
+    <p id="status" role="status" aria-live="polite"></p>
+  </main>
+</body>
+</html>

@@ -1,0 +1,54 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: opportunity
+      POSTGRES_USER: opportunity
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opportunity"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  api:
+    build: ..
+    environment: &app_environment
+      DATABASE_URL: postgresql://opportunity:${POSTGRES_PASSWORD}@postgres:5432/opportunity
+      PIPELINE_WEB_TOKEN: ${PIPELINE_WEB_TOKEN:?set PIPELINE_WEB_TOKEN}
+      PIPELINE_EMPLOYER_TOKEN: ${PIPELINE_EMPLOYER_TOKEN:?set PIPELINE_EMPLOYER_TOKEN}
+      PIPELINE_ADMIN_TOKEN: ${PIPELINE_ADMIN_TOKEN:?set PIPELINE_ADMIN_TOKEN}
+      PIPELINE_ENV: production
+    ports: ["127.0.0.1:8765:8765"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    volumes:
+      - private-files:/app/data
+    restart: unless-stopped
+
+  worker:
+    build: ..
+    command: ["python", "-m", "opportunity_app.worker", "--db", "postgresql://opportunity:${POSTGRES_PASSWORD}@postgres:5432/opportunity"]
+    environment: *app_environment
+    depends_on:
+      postgres: {condition: service_healthy}
+      migrate: {condition: service_completed_successfully}
+    restart: unless-stopped
+
+  migrate:
+    build: ..
+    command: ["python", "-m", "opportunity_app.migrate", "--source", "/legacy/pipeline.db", "--profile", "/legacy/profile.json", "--target", "postgresql://opportunity:${POSTGRES_PASSWORD}@postgres:5432/opportunity"]
+    environment: *app_environment
+    volumes:
+      - ${LEGACY_DB_PATH:-../data/pipeline.db}:/legacy/pipeline.db:ro
+      - ${PROFILE_PATH:-../config/profile.json}:/legacy/profile.json:ro
+    depends_on:
+      postgres: {condition: service_healthy}
+    restart: "no"
+
+volumes:
+  postgres-data:
+  private-files:

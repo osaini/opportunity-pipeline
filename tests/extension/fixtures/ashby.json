@@ -1,0 +1,13 @@
+{
+  "ats": "ashby",
+  "hostname": "jobs.ashbyhq.com",
+  "url": "https://jobs.ashbyhq.com/orbit/role-1/application",
+  "controls": [
+    { "tag": "input", "type": "text", "id": "candidate-name", "label": "Candidate Name" },
+    { "tag": "input", "type": "email", "id": "candidate-email", "label": "Email" },
+    { "tag": "input", "type": "text", "id": "company-name", "label": "Company Name" },
+    { "tag": "div", "role": "combobox", "id": "custom-location", "label": "Preferred location" },
+    { "tag": "input", "type": "checkbox", "id": "consent", "label": "Consent to data processing" },
+    { "tag": "button", "type": "button", "id": "next", "label": "Next" }
+  ]
+}

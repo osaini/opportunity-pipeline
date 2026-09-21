@@ -1,0 +1,5 @@
+# API contract fuzzing. Kept in its own environment (.venv-fuzz) on purpose:
+# schemathesis pins starlette, and this project pins starlette==1.3.1, so the two
+# cannot share a resolver. Schemathesis only needs the served OpenAPI document and
+# an HTTP URL, so it never imports the application.
+schemathesis==4.27.1

@@ -1,0 +1,10 @@
+# Browser + accessibility testing for the UI/UX and bug-hunting pipeline.
+# Installed into an isolated .venv-ui alongside requirements-web.lock. The legacy
+# pipeline, the CLI, and the existing unittest suite never import any of these.
+pytest>=9.0.3,<10
+pytest-playwright>=0.7,<1
+playwright>=1.50,<2
+
+# Accessibility: bundles axe-core and injects it into the live page, so scans do
+# not depend on a CDN at test time.
+axe-core-python>=0.1,<1

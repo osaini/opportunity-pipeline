@@ -1,0 +1,14 @@
+{
+  "ats": "workday",
+  "hostname": "acme.wd1.myworkdayjobs.com",
+  "url": "https://acme.wd1.myworkdayjobs.com/en-US/External/job/Intern",
+  "controls": [
+    { "tag": "input", "type": "text", "id": "givenName", "label": "Given Name" },
+    { "tag": "input", "type": "text", "id": "familyName", "label": "Family Name" },
+    { "tag": "input", "type": "email", "id": "emailAddress", "ariaLabel": "Electronic Mail Address" },
+    { "tag": "textarea", "type": "textarea", "id": "coverLetterText", "label": "Why do you want this role?" },
+    { "tag": "select", "type": "select", "id": "countryOfCitizenship", "label": "Country of Citizenship" },
+    { "tag": "input", "type": "submit", "id": "submitButton", "label": "Submit Application" },
+    { "tag": "input", "type": "text", "id": "disabledField", "label": "Recruiter Comments", "disabled": true }
+  ]
+}

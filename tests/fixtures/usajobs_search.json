@@ -1,0 +1,49 @@
+{
+  "SearchResult": {
+    "SearchResultCount": 2,
+    "SearchResultCountAll": 3,
+    "SearchResultItems": [
+      {
+        "MatchedObjectId": "111",
+        "MatchedObjectDescriptor": {
+          "PositionID": "ABC-2026-001",
+          "PositionTitle": "Mechanical Engineering Intern",
+          "OrganizationName": "NASA Johnson Space Center",
+          "DepartmentName": "National Aeronautics and Space Administration",
+          "PositionLocation": [
+            {"LocationName": "Houston, Texas"},
+            {"LocationName": "Cleveland, Ohio"},
+            {"LocationName": "Houston, Texas"}
+          ],
+          "PositionLocationDisplay": "Multiple Locations",
+          "PositionURI": "https://www.usajobs.gov/job/111",
+          "PublicationStartDate": "2026-06-01T00:00:00Z",
+          "QualificationSummary": "Undergraduate student in mechanical engineering.",
+          "UserArea": {
+            "Details": {
+              "JobSummary": "<p>Support thermal and structural design of crewed spacecraft hardware.</p>",
+              "MajorDuties": ["Run CAD models and test fixtures.", "Document results."],
+              "Education": "Enrolled at least half time in an accredited program."
+            }
+          }
+        }
+      },
+      {
+        "MatchedObjectId": "222",
+        "MatchedObjectDescriptor": {
+          "PositionID": "ABC-2026-002",
+          "PositionTitle": "Supervisory Budget Analyst",
+          "OrganizationName": "Department of the Treasury",
+          "PositionLocation": [{"LocationName": "Washington, District of Columbia"}],
+          "PositionURI": "https://www.usajobs.gov/job/222",
+          "PublicationStartDate": "2026-06-02T00:00:00Z",
+          "QualificationSummary": "Budget formulation experience required."
+        }
+      }
+    ],
+    "UserArea": {
+      "NumberOfPages": "2",
+      "IsRadialSearch": false
+    }
+  }
+}

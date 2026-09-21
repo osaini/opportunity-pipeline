@@ -1,0 +1,10 @@
+.git
+.env
+data
+output
+config/profile.json
+config/resume.json
+**/__pycache__
+*.pyc
+*.db*
+*.enc

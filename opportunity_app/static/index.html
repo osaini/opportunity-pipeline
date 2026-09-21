@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A private, source-linked opportunity workspace.">
+  <title>Opportunity Pipeline</title>
+  <meta name="color-scheme" content="light dark">
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script src="/assets/theme.js"></script>
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#results">Skip to opportunities</a>
+
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Primary navigation">
+      <a class="brand" href="/" aria-label="Opportunity Pipeline home">
+        <span class="brand-mark" aria-hidden="true">OP</span>
+        <span>Opportunity<br>Pipeline</span>
+      </a>
+
+      <nav class="nav-list" aria-label="Primary">
+        <button id="discover-nav" class="nav-item is-active" type="button" aria-current="page">
+          <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.5"/><path d="m15.2 8.8-1.9 4.5-4.5 1.9 1.9-4.5z"/></svg><span>Discover</span>
+        </button>
+        <button id="urgent-nav" class="nav-item" type="button">
+          <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="13" r="7.5"/><path d="M12 9.5V13l2.4 2.1M4.8 4.6 2.8 6.6M19.2 4.6l2 2"/></svg><span>Urgent</span><span id="urgent-badge" class="nav-badge" aria-hidden="true" hidden></span>
+        </button>
+        <button id="saved-nav" class="nav-item" type="button">
+          <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m12 3.8 2.5 5.1 5.6.8-4 3.9.9 5.6-5-2.6-5 2.6.9-5.6-4-3.9 5.6-.8z"/></svg><span>Saved</span>
+        </button>
+        <button id="applications-nav" class="nav-item" type="button">
+          <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="5" y="4" width="14" height="16.5" rx="2"/><path d="M9 3.5h6v2H9zM8.5 10h7M8.5 13.5h7M8.5 17h4"/></svg><span>Applications</span>
+        </button>
+        <button id="outreach-nav" class="nav-item" type="button">
+          <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3.5" y="5.5" width="17" height="13" rx="2"/><path d="m4.5 7.2 7.5 5.6 7.5-5.6"/></svg><span>Outreach</span>
+        </button>
+        <button id="prepare-nav" class="nav-item" type="button">
+          <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 19.5h3.6L19 9.1a2.3 2.3 0 0 0-3.2-3.2L5.4 16.3z"/><path d="m14.3 7.4 3.2 3.2"/></svg><span>Prepare</span>
+        </button>
+        <button id="agent-nav" class="nav-item" type="button">
+          <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4.5 5.5h15v10.2H10l-4.2 3.6v-3.6H4.5z"/><path d="M9 10.6h.01M12 10.6h.01M15 10.6h.01"/></svg><span>Agent</span>
+        </button>
+        <button id="profile-nav" class="nav-item" type="button">
+          <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="8.6" r="3.6"/><path d="M5.2 19.8c.9-3.5 3.6-5.3 6.8-5.3s5.9 1.8 6.8 5.3"/></svg><span>Profile</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <button id="refresh-open" class="text-button" type="button" aria-haspopup="dialog" hidden>Refresh &amp; purge</button>
+        <button id="theme-toggle" class="text-button theme-toggle" type="button" aria-label="Color theme: system">
+          <svg class="theme-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7"/></svg>
+          <span id="theme-label">Theme: System</span>
+        </button>
+        <div class="privacy-note"><span aria-hidden="true">●</span> Local and private</div>
+        <button id="logout-button" class="text-button" type="button">Sign out</button>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <nav id="subnav" class="subnav" aria-label="Page sections">
+        <p id="subnav-title" class="subnav-title">Discover</p>
+        <div id="subnav-list" class="subnav-list"></div>
+      </nav>
+
+      <div class="page-body">
+      <header class="page-header">
+        <div>
+          <p id="page-eyebrow" class="eyebrow">Your live opportunity workspace</p>
+          <h1 id="page-title" tabindex="-1">Find the roles worth your time.</h1>
+          <p id="page-lede" class="lede">Every result keeps its source, freshness, and an honest explanation of why it ranked here.</p>
+        </div>
+        <div id="user-chip" class="user-chip" hidden>
+          <span class="user-avatar" aria-hidden="true">OS</span>
+          <span id="user-name">Local user</span>
+        </div>
+      </header>
+
+      <section id="stats-grid" class="stats-grid" aria-label="Pipeline summary">
+        <article class="stat-card">
+          <strong id="stat-active">—</strong>
+          <span>active unique</span>
+        </article>
+        <article class="stat-card">
+          <strong id="stat-total">—</strong>
+          <span>historical records</span>
+        </article>
+        <article class="stat-card">
+          <strong id="stat-tracked">—</strong>
+          <span>tracked applications</span>
+        </article>
+        <article class="stat-card is-accent">
+          <strong id="stat-score">—</strong>
+          <span>top fit score</span>
+        </article>
+      </section>
+
+      <section class="workspace" aria-label="Opportunity explorer">
+        <div id="filter-panel" class="filter-panel">
+          <label class="search-field">
+            <span class="sr-only">Search opportunities</span>
+            <span aria-hidden="true">⌕</span>
+            <input id="search-input" type="search" placeholder="Search role, company, location, or skill" autocomplete="off">
+          </label>
+
+          <div class="select-row">
+            <label>
+              <span>Role</span>
+              <select id="role-filter"><option value="">All roles</option></select>
+            </label>
+            <label>
+              <span>Region</span>
+              <select id="region-filter"><option value="">All regions</option></select>
+            </label>
+            <label>
+              <span>Source</span>
+              <select id="source-filter"><option value="">All sources</option></select>
+            </label>
+            <label>
+              <span>Sort</span>
+              <select id="sort-filter">
+                <option value="score">Best fit</option>
+                <option value="newest">Newest posting</option>
+                <option value="discovered">Recently discovered</option>
+                <option value="company">Company</option>
+                <option value="deadline">Deadline</option>
+              </select>
+            </label>
+          </div>
+          <details class="advanced-filters">
+            <summary>More filters</summary>
+            <div class="advanced-filter-grid">
+              <label>
+                <span>Term</span>
+                <select id="term-filter"><option value="">Any term</option></select>
+              </label>
+              <label>
+                <span>Work mode</span>
+                <select id="remote-filter">
+                  <option value="">Any mode</option>
+                  <option value="remote">Remote</option>
+                  <option value="hybrid">Hybrid</option>
+                  <option value="onsite">On-site</option>
+                  <option value="unknown">Unknown</option>
+                </select>
+              </label>
+              <label>
+                <span>Graduation year</span>
+                <input id="year-filter" type="number" min="2024" max="2100" placeholder="Any year">
+              </label>
+              <label>
+                <span>Minimum hourly pay</span>
+                <input id="pay-filter" type="number" min="0" max="1000" step="1" placeholder="Any pay">
+              </label>
+              <label>
+                <span>Posted since</span>
+                <input id="posted-filter" type="date">
+              </label>
+              <label>
+                <span>Deadline by</span>
+                <input id="deadline-filter" type="date">
+              </label>
+            </div>
+          </details>
+        </div>
+
+        <div class="results-heading">
+          <div>
+            <p id="results-eyebrow" class="eyebrow">Opportunity deck</p>
+            <h2 id="result-count">Loading opportunities…</h2>
+            <p id="keyboard-hint" class="keyboard-hint" hidden>Keys on a focused card: <kbd>j</kbd> <kbd>k</kbd> move · <kbd>s</kbd> save · <kbd>p</kbd> pass · <kbd>o</kbd> open</p>
+          </div>
+          <p id="page-status" class="page-status" aria-live="polite"></p>
+          <div id="display-toggle" class="display-toggle" role="group" aria-label="Result display">
+            <button id="card-view-button" class="is-active" type="button" aria-pressed="true">Cards</button>
+            <button id="list-view-button" type="button" aria-pressed="false">List</button>
+          </div>
+        </div>
+
+        <div id="error-banner" class="error-banner" role="alert" hidden></div>
+        <p id="action-status" class="page-status" role="status" aria-live="polite" hidden></p>
+        <div id="personalize-prompt" class="personalize-prompt" role="status" hidden>
+          <p><strong>Matches aren't personalized yet.</strong> Every role has the same base score until you add skills, interests, role types, or locations.</p>
+          <button id="personalize-button" class="secondary-button" type="button">Complete your profile</button>
+        </div>
+        <nav id="pagination-top" class="pagination is-top" aria-label="Opportunity pages, top">
+          <button type="button" data-page-previous>← Previous</button>
+          <span data-page-label>Page 1</span>
+          <button type="button" data-page-next>Next →</button>
+          <form class="page-jump" data-page-jump novalidate>
+            <label for="page-jump-input-top">Go to page</label>
+            <input id="page-jump-input-top" type="number" inputmode="numeric" min="1" step="1">
+            <button type="submit">Go</button>
+          </form>
+        </nav>
+
+        <div id="results" class="opportunity-grid" aria-live="polite" aria-busy="true"></div>
+
+        <nav id="pagination" class="pagination" aria-label="Opportunity pages">
+          <button id="previous-button" type="button" data-page-previous>← Previous</button>
+          <span id="pagination-label" data-page-label>Page 1</span>
+          <button id="next-button" type="button" data-page-next>Next →</button>
+          <form id="page-jump" class="page-jump" data-page-jump novalidate>
+            <label for="page-jump-input">Go to page</label>
+            <input id="page-jump-input" type="number" inputmode="numeric" min="1" step="1">
+            <button type="submit">Go</button>
+          </form>
+        </nav>
+      </section>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="refresh-dialog" class="capture-dialog refresh-dialog" aria-labelledby="refresh-title">
+    <button id="refresh-close" class="icon-button capture-close" type="button" aria-label="Close refresh">×</button>
+    <p class="eyebrow">Pipeline maintenance</p>
+    <h2 id="refresh-title">Refresh and purge</h2>
+    <p class="refresh-lede">Pulls every enabled source, checks links, removes expired postings, and syncs the results into this app. The same steps run automatically each morning.</p>
+    <div class="refresh-overall">
+      <div class="refresh-row">
+        <span id="refresh-overall-label">Overall</span>
+        <span id="refresh-overall-percent">0%</span>
+      </div>
+      <progress id="refresh-overall" max="100" value="0" aria-labelledby="refresh-overall-label"></progress>
+    </div>
+    <ol id="refresh-steps" class="refresh-steps"></ol>
+    <p id="refresh-status" class="form-status" role="status" aria-live="polite"></p>
+    <button id="refresh-start" class="primary-button" type="button">Start refresh</button>
+    <section id="system-status" class="system-status" aria-labelledby="system-status-title" hidden>
+      <h3 id="system-status-title">Automatic runs and job boards</h3>
+      <div id="system-status-body"></div>
+    </section>
+  </dialog>
+
+  <aside id="detail-panel" class="detail-panel" role="dialog" aria-modal="true" aria-labelledby="detail-title" aria-hidden="true" inert hidden>
+    <div class="detail-toolbar">
+      <p class="eyebrow">Opportunity detail</p>
+      <button id="detail-close" class="icon-button" type="button" aria-label="Close opportunity detail">×</button>
+    </div>
+    <div id="detail-content"></div>
+  </aside>
+  <div id="detail-scrim" class="detail-scrim" hidden></div>
+
+  <section id="auth-gate" class="auth-gate" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+    <form id="auth-form" class="auth-card">
+      <span class="brand-mark is-large" aria-hidden="true">OP</span>
+      <p class="eyebrow">Private workspace</p>
+      <h2 id="auth-title">Open your pipeline</h2>
+      <p>The launcher signs you in for you: open <strong>Open Pipeline</strong>, or run <code>python -m opportunity_app.launch open</code>. Otherwise use your registered email, or the owner token (<code>PIPELINE_WEB_TOKEN</code> in <code>.env</code>).</p>
+      <label>
+        <span>Email</span>
+        <input id="auth-email" type="email" autocomplete="username">
+      </label>
+      <label>
+        <span>Password</span>
+        <input id="auth-password" type="password" autocomplete="current-password">
+      </label>
+      <label>
+        <span>Owner token (alternative)</span>
+        <input id="token-input" type="password" autocomplete="off">
+      </label>
+      <button id="auth-submit" class="primary-button" type="submit">Continue</button>
+      <p id="auth-error" class="form-error" role="alert"></p>
+      <details>
+        <summary>Register this local owner</summary>
+        <label><span>Invitation</span><input id="register-invite" type="password" autocomplete="off"></label>
+        <label><span>Name</span><input id="register-name" autocomplete="name"></label>
+        <label><span>Email</span><input id="register-email" type="email" autocomplete="username"></label>
+        <label><span>Password (12+ characters, mixed case and number)</span><input id="register-password" type="password" autocomplete="new-password"></label>
+        <button id="register-submit" class="secondary-button" type="button">Register</button>
+      </details>
+      <details>
+        <summary>Recover access</summary>
+        <label><span>Email</span><input id="recovery-email" type="email"></label>
+        <button id="recovery-request" class="secondary-button" type="button">Create recovery challenge</button>
+        <label><span>Challenge ID</span><input id="recovery-id"></label>
+        <label><span>Six-digit code</span><input id="recovery-code" inputmode="numeric" pattern="[0-9]{6}"></label>
+        <label><span>New password</span><input id="recovery-password" type="password" autocomplete="new-password"></label>
+        <button id="recovery-complete" class="secondary-button" type="button">Set new password</button>
+      </details>
+    </form>
+  </section>
+</body>
+</html>

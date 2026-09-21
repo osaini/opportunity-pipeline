@@ -1,0 +1,49 @@
+[
+  {
+    "channel": "linkedin",
+    "title": "Mechanical Design Intern with verification",
+    "company": "Apptronik",
+    "location": "Austin, TX",
+    "url": "/jobs/view/4432396869/",
+    "posted_hint": "Posted on 7/21/2026"
+  },
+  {
+    "channel": "exa",
+    "title": "Thermal Systems Intern",
+    "company": "Redwood Materials",
+    "location": "Fremont, California",
+    "url": "https://example.invalid/careers/thermal-intern",
+    "posted_at": "2026-07-18T00:00:00+00:00",
+    "description": "Support thermal modeling for battery pack design using ANSYS."
+  },
+  {
+    "channel": "github",
+    "title": "Manufacturing Engineering Co-op",
+    "company": "Firefly Aerospace",
+    "location": "Cedar Park, TX",
+    "url": "https://example.invalid/firefly/mfg-coop"
+  },
+  {
+    "channel": "handshake",
+    "title": "Should Be Skipped (channel not allowed)",
+    "company": "Nowhere Inc",
+    "url": "https://example.invalid/nope"
+  },
+  {
+    "channel": "linkedin",
+    "title": "with verification",
+    "company": "Badge Only Inc",
+    "url": "/jobs/view/999/"
+  },
+  {
+    "channel": "exa",
+    "title": "Relative URL Not Allowed Off LinkedIn",
+    "company": "Bad URL Inc",
+    "url": "/careers/nope"
+  },
+  {
+    "channel": "rss",
+    "company": "Missing Title Inc",
+    "url": "https://example.invalid/rss/item"
+  }
+]

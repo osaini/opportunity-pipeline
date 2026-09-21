@@ -1,0 +1,30 @@
+name: Dependency audit
+# Advisories are published against pinned versions after they are locked, so a
+# clean PR audit says nothing about next week. Run the same checks on a schedule
+# so new advisories surface here instead of blocking an unrelated PR.
+on:
+  schedule:
+    - cron: "17 13 * * 1" # Mondays 13:17 UTC
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install pip-audit
+      - run: pip-audit -r requirements-web.lock
+      - run: pip-audit -r requirements-ui.txt
+      - run: pip-audit -r requirements-fuzz.txt
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - run: npm audit --audit-level=high

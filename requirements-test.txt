@@ -1,0 +1,19 @@
+# Optional accelerator for the stdlib unittest suite.
+#
+# `py -3 -m unittest discover -s tests` remains the primary, always-supported
+# way to run those tests and needs none of this. These packages only add the
+# option of running the same tests in parallel, which on a multi-core machine
+# takes the suite from minutes to seconds during development.
+#
+#   py -3 -m pip install -r requirements-test.txt
+#   py -3 -m pytest -c pytest-unit.ini -n auto
+#
+# Installed into the same environment as requirements-web.lock. The legacy
+# pipeline and pipeline_core never import any of this, and
+# tests/test_dependency_boundary.py enforces that.
+#
+# Pinned exactly, like requirements-web.lock: a parallel runner that silently
+# changes version is a parallel runner whose failures cannot be reproduced.
+pytest==9.0.3
+pytest-xdist==3.8.0
+execnet==2.1.2

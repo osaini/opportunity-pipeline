@@ -1,0 +1,24 @@
+{
+  "SearchResult": {
+    "SearchResultCount": 1,
+    "SearchResultCountAll": 3,
+    "SearchResultItems": [
+      {
+        "MatchedObjectId": "333",
+        "MatchedObjectDescriptor": {
+          "PositionID": "ABC-2026-003",
+          "PositionTitle": "Student Trainee (Mechanical Engineering)",
+          "OrganizationName": "Naval Sea Systems Command",
+          "PositionLocation": [{"LocationName": "Alameda, California"}],
+          "PositionURI": "https://www.usajobs.gov/job/333",
+          "PublicationStartDate": "2026-06-03T00:00:00Z",
+          "QualificationSummary": "Pathways student trainee appointment."
+        }
+      }
+    ],
+    "UserArea": {
+      "NumberOfPages": "2",
+      "IsRadialSearch": false
+    }
+  }
+}

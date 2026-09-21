@@ -1,0 +1,1051 @@
+{
+  "stale_after_days": 7,
+  "_source_verification_note": "Every ats_sources entry below was reached live and its company identity confirmed on 2026-07-27, either from the Greenhouse board metadata `name` field or from the locations/departments on its own postings. Token guessing produces convincing impostors -- `greenhouse/archer` is Archer Veterinary Clinic, `greenhouse/apex` is Apex Eye, `greenhouse/axiom` is a consultancy in Atlanta and Belfast, `ashby/sierra` is Sierra AI, and `ashby/icon` is an unrelated startup -- so confirm identity, not just that the endpoint returns JSON, before adding an employer here. The 43 entries appended on 2026-09-20 were found by resolving the apply links on earlycareerradar.com back to their underlying ATS boards, then confirming each one independently: every endpoint was called live at the same URL pipeline.py builds, and company identity was read out of the posting text rather than trusted from the token. That mattered -- `workday/aksteel` is Cleveland-Cliffs, `workday/flir` is Teledyne, and `workday/cat` reaches Caterpillar filtered to its Solar Turbines site. The aggregator itself was not added as a source: it carried deadlines on 2 of 4,911 roles and left work authorization unstated on 74% of them.",
+  "discovery_title_terms": [
+    "intern",
+    "co-op",
+    "coop",
+    "extern",
+    "student",
+    "undergraduate",
+    "new grad",
+    "early career"
+  ],
+  "ats_sources": [
+    {
+      "kind": "greenhouse",
+      "company": "SpaceX",
+      "token": "spacex",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Anduril Industries",
+      "token": "andurilindustries",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Formlabs",
+      "token": "formLabs",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Figure",
+      "token": "figureai",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Apptronik",
+      "token": "apptronik",
+      "note": "Austin humanoid robotics",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Neuralink",
+      "token": "neuralink",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Ambiq Micro",
+      "token": "ambiqmicroinc",
+      "note": "Austin, TX",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Diligent Robotics",
+      "token": "diligentrobotics",
+      "note": "Austin, TX",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Hyliion",
+      "token": "hyliion",
+      "note": "Cedar Park, TX -- inside the Austin region list",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Kodiak",
+      "token": "kodiak",
+      "note": "autonomous trucking; Dallas and West Texas sites",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Colossal Biosciences",
+      "token": "colossalbiosciences",
+      "note": "Dallas, TX",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Astranis",
+      "token": "astranis",
+      "note": "San Francisco; carried the largest intern count of any board probed",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "PsiQuantum",
+      "token": "psiquantum",
+      "note": "Palo Alto, CA",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Nuro",
+      "token": "nuro",
+      "note": "Mountain View, CA",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Lucid Motors",
+      "token": "lucidmotors",
+      "note": "Newark, CA",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Waymo",
+      "token": "waymo",
+      "note": "Mountain View, CA",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Redwood Materials",
+      "token": "redwoodmaterials",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Sila",
+      "token": "silananotechnologies",
+      "note": "Alameda, CA",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Carbon",
+      "token": "carbon",
+      "note": "Santa Clara / Sunnyvale, CA -- additive manufacturing",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Atomic Machines",
+      "token": "atomicmachines",
+      "note": "Emeryville, CA",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Muon Space",
+      "token": "muonspace",
+      "note": "Mountain View, CA",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Antora Energy",
+      "token": "antora",
+      "note": "San Jose, CA",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Xos",
+      "token": "xosinc",
+      "note": "Bay Area and Los Angeles",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Rocket Lab",
+      "token": "rocketlab",
+      "note": "Long Beach CA and Albuquerque NM; out of region but a large intern program",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Vast",
+      "token": "vast",
+      "note": "Long Beach, CA",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Relativity Space",
+      "token": "relativity",
+      "note": "Long Beach, CA",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Varda Space Industries",
+      "token": "vardaspace",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Divergent",
+      "token": "divergent",
+      "note": "Torrance, CA -- additive manufacturing for vehicle structures",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Inversion",
+      "token": "inversionspace",
+      "note": "Playa Vista, CA",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Ursa Major",
+      "token": "ursamajor",
+      "note": "Berthoud, CO -- rocket propulsion",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Agility Robotics",
+      "token": "agilityrobotics",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Path Robotics",
+      "token": "pathrobotics",
+      "note": "Columbus, OH -- robotic welding",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Markforged",
+      "token": "markforged",
+      "note": "Waltham, MA -- additive manufacturing",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Harbinger Motors",
+      "token": "harbingermotors",
+      "note": "Garden Grove, CA",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "BETA Technologies",
+      "token": "betatechnologiesinc",
+      "note": "Vermont and Montreal -- verified reachable, disabled as far out of region. Flip to true if you widen the search.",
+      "enabled": false
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Epirus",
+      "token": "epirus",
+      "note": "Torrance, CA -- verified reachable, disabled to keep run time down",
+      "enabled": false
+    },
+    {
+      "kind": "greenhouse",
+      "company": "True Anomaly",
+      "token": "trueanomalyinc",
+      "note": "Denver, CO -- verified reachable, disabled as out of region",
+      "enabled": false
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Valar Atomics",
+      "token": "valaratomics",
+      "note": "Hawthorne, CA and Utah -- verified reachable, disabled as out of region",
+      "enabled": false
+    },
+    {
+      "kind": "greenhouse",
+      "company": "JetZero",
+      "token": "jetzero",
+      "note": "Long Beach, CA -- verified reachable, disabled as out of region",
+      "enabled": false
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Albedo",
+      "token": "albedo",
+      "note": "Broomfield, CO -- verified reachable, disabled as out of region",
+      "enabled": false
+    },
+    {
+      "kind": "lever",
+      "company": "Shield AI",
+      "site": "shieldai",
+      "enabled": true
+    },
+    {
+      "kind": "lever",
+      "company": "CesiumAstro",
+      "site": "CesiumAstro",
+      "note": "Austin, TX -- phased-array comms for aircraft and spacecraft. 274 postings, 17 past the title filter. Best Austin catch in this batch. Austin, TX -- space hardware. Found through a LinkedIn sweep on 2026-09-21; identity verified from the Lever board page title. 17 internships at the time, including Summer 2027 Mechanical Engineering (Austin) and Manufacturing.",
+      "enabled": true
+    },
+    {
+      "kind": "lever",
+      "company": "Zoox",
+      "site": "zoox",
+      "note": "Foster City, CA",
+      "enabled": true
+    },
+    {
+      "kind": "lever",
+      "company": "Velo3D",
+      "site": "velo3d",
+      "note": "Campbell, CA -- metal additive manufacturing",
+      "enabled": true
+    },
+    {
+      "kind": "lever",
+      "company": "Bright Machines",
+      "site": "brightmachines",
+      "note": "San Francisco, CA",
+      "enabled": true
+    },
+    {
+      "kind": "lever",
+      "company": "Merlin Labs",
+      "site": "merlinlabs",
+      "note": "Boston, MA -- verified reachable, disabled as out of region",
+      "enabled": false
+    },
+    {
+      "kind": "ashby",
+      "company": "Saronic",
+      "board": "saronic",
+      "note": "Austin, TX -- autonomous maritime defense",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Base Power",
+      "board": "base-power",
+      "note": "Austin, TX -- residential energy storage; large hardware/deployment org",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Applied Intuition",
+      "board": "applied",
+      "note": "Mountain View, CA",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Skydio",
+      "board": "skydio",
+      "note": "San Mateo, CA -- drones, closest match to the FPV/UAV background",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Form Energy",
+      "board": "formenergy",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Physical Intelligence",
+      "board": "physicalintelligence",
+      "note": "San Francisco, CA",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Serve Robotics",
+      "board": "serverobotics",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Reliable Robotics",
+      "board": "reliable-robotics",
+      "note": "Mountain View, CA",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Collaborative Robotics",
+      "board": "cobot",
+      "note": "Santa Clara, CA",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Crusoe",
+      "board": "crusoe",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "1X",
+      "board": "1x",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Helion Energy",
+      "board": "helion",
+      "note": "Everett, WA -- board carries a dedicated Mechanical Engineering department",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Mach Industries",
+      "token": "machindustries",
+      "note": "Moved from ashby:mach, which returned 404 on every daily run. Greenhouse board verified 2026-09-21: name 'Mach Industries', 115 jobs, updated 2026-09-19.",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Allen Control Systems",
+      "board": "allen-control-systems",
+      "note": "Austin and Pflugerville, TX -- precision robotic gun turrets for counter-UAS. 55 postings, includes \"Manufacturing Engineering Co-op / Intern\". Austin, TX. Use this Ashby board, not greenhouse:allencontrolsystems -- that one is abandoned (last update 2026-03) while this one is current and lists the 2027 internships. Verified 2026-09-21 from the board page title and an Exa hit on its Mechanical Engineering Intern, 2027 posting.",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Fab2",
+      "board": "fab2",
+      "note": "Austin, TX -- hardware manufacturing. Identity verified 2026-09-21 from the board page title; Ashby's API exposes no company name.",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Etched",
+      "board": "etched",
+      "note": "San Jose, CA -- AI chips; posts mechanical/thermal internships. Identity verified 2026-09-21 from the board page title.",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Zipline",
+      "token": "flyzipline",
+      "note": "Bay Area -- drone delivery. The token is flyzipline, not zipline, which is why name-based discovery missed it. Verified 2026-09-21: board name 'Zipline'.",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Impulse Space",
+      "board": "impulse",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Gecko Robotics",
+      "board": "gecko-robotics",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Turion Space",
+      "board": "turion-space",
+      "note": "Irvine, CA -- verified reachable, disabled as out of region",
+      "enabled": false
+    },
+    {
+      "kind": "ashby",
+      "company": "Slingshot Aerospace",
+      "board": "slingshot-aerospace",
+      "note": "El Segundo, CA -- verified reachable, disabled as out of region",
+      "enabled": false
+    },
+    {
+      "kind": "workday",
+      "company": "NVIDIA",
+      "tenant": "nvidia",
+      "datacenter": "wd5",
+      "site": "NVIDIAExternalCareerSite",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "GDIT",
+      "tenant": "gdit",
+      "datacenter": "wd5",
+      "site": "External_Career_Site",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "NXP Semiconductors",
+      "tenant": "nxp",
+      "datacenter": "wd3",
+      "site": "careers",
+      "note": "Austin, TX",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Applied Materials",
+      "tenant": "amat",
+      "datacenter": "wd1",
+      "site": "External",
+      "note": "Austin TX and Santa Clara CA",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "KLA",
+      "tenant": "kla",
+      "datacenter": "wd1",
+      "site": "Search",
+      "note": "Milpitas, CA",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Abbott",
+      "tenant": "abbott",
+      "datacenter": "wd5",
+      "site": "abbottcareers",
+      "note": "medical devices; large intern program",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Medtronic",
+      "tenant": "medtronic",
+      "datacenter": "wd1",
+      "site": "MedtronicCareers",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Stryker",
+      "tenant": "stryker",
+      "datacenter": "wd1",
+      "site": "StrykerCareers",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Boeing",
+      "tenant": "boeing",
+      "datacenter": "wd1",
+      "site": "EXTERNAL_CAREERS",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Northrop Grumman",
+      "tenant": "ngc",
+      "datacenter": "wd1",
+      "site": "Northrop_Grumman_External_Site",
+      "enabled": true
+    },
+    {
+      "kind": "smartrecruiters",
+      "company": "Bosch",
+      "company_id": "boschgroup",
+      "note": "Verified reachable with ~4,800 postings, but overwhelmingly German-language and German-sited. Disabled because the volume-to-yield ratio is poor; enable if you want European roles.",
+      "enabled": false
+    },
+    {
+      "kind": "usajobs",
+      "id": "federal-engineering",
+      "company": "USAJOBS (Federal)",
+      "note": "Needs USAJOBS_API_KEY and USAJOBS_CONTACT_EMAIL in .env; switch it on with \"enabled_sources\": [\"usajobs:federal-engineering\"] in config/sources.local.json. Every federal agency that posts to USAJOBS, in one source. company is only a fallback label -- each posting keeps its own hiring agency. Query shapes were measured against the live API on 2026-07-26, see README; do not merge these two queries into one, because HiringPath AND Keyword together returns almost nothing. NASA internships are NOT here -- NASA had 0 student-path postings on USAJOBS and runs them through intern.nasa.gov instead (see manual_check_sources).",
+      "fields": "Full",
+      "queries": [
+        {
+          "note": "Every student and recent-grad posting, no keyword. Federal titles rarely say 'intern' -- Pathways roles are titled 'Student Trainee (...)' or just the occupation -- so this sweep is what reaches them. 187 raw / 25 past the title filter on 2026-07-26.",
+          "hiring_paths": [
+            "student",
+            "graduates"
+          ]
+        },
+        {
+          "note": "Keyword sweep with no hiring-path filter, which catches agency internships posted outside the student hiring paths. 'internship' and 'student trainee' carry the yield; narrower phrases like 'mechanical engineering intern' returned zero past the title filter.",
+          "keywords": [
+            "internship",
+            "intern",
+            "student trainee",
+            "pathways"
+          ]
+        }
+      ],
+      "enabled": false
+    },
+    {
+      "kind": "ashby",
+      "company": "Gritt",
+      "board": "gritt",
+      "note": "robotics and AI for large-scale solar; from outreach. Board identity verified 2026-09-20 from the board's own posting text (postings cite gritt.ai).",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Traysar",
+      "board": "traysar",
+      "note": "defense hardware, founded 2025; from outreach. Board identity verified 2026-09-20 from the board's own posting text (postings cite traysar.com).",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Westmag",
+      "board": "westmag",
+      "note": "Western Magnetics -- American drone motor manufacturer; from outreach. Board identity verified 2026-09-20 from the board's own posting text (postings cite westmag.com).",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Aurelius Systems",
+      "board": "aureliussystems",
+      "note": "robotics and optics; from outreach. Board identity verified 2026-09-20 from the board's own posting text (postings name Aurelius Systems).",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Contoro Robotics",
+      "board": "contoro",
+      "note": "Austin, TX -- autonomous truck unloading; from outreach. Board identity verified 2026-09-20 from the board's own posting text (postings name Contoro Robotics and cite hr@contoro.com).",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Sorcerer",
+      "board": "sorcerer",
+      "note": "persistent airborne sensor network; from outreach. Board identity verified 2026-09-20 from the board's own posting text (postings name Sorcerer).",
+      "enabled": true
+    },
+    {
+      "kind": "lever",
+      "company": "Skyways",
+      "site": "skyways",
+      "note": "autonomous long-range cargo aircraft; from outreach. Board identity verified 2026-09-20 from the board's own posting text (postings name Skyways).",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "K2 Space",
+      "token": "k2spacecorporation",
+      "note": "Torrance, CA -- large satellite buses. 242 postings, 9 past the title filter.",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "General Matter",
+      "token": "generalmatter",
+      "note": "Uranium enrichment. 131 postings, 22 past the title filter.",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Freeform",
+      "token": "freeformfuturecorp",
+      "note": "Los Angeles -- autonomous metal additive manufacturing. 76 postings, 23 past the title filter, including \"Additive Engineering Intern (Summer 2027)\".",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Lexington Medical",
+      "token": "lexingtonmedical",
+      "note": "Bedford, MA -- surgical staplers. Small board (19 postings), confirmed as \"Lexington Medical, Inc.\".",
+      "enabled": true
+    },
+    {
+      "kind": "greenhouse",
+      "company": "Awetomaton",
+      "token": "awetomaton",
+      "note": "Small robotics board (13 postings, 2 past the title filter). Cheap to poll; drop it if it stays quiet.",
+      "enabled": true
+    },
+    {
+      "kind": "lever",
+      "company": "Hermeus",
+      "site": "hermeus",
+      "note": "Atlanta, GA -- hypersonic aircraft. 88 postings, 23 past the title filter.",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Bedrock Robotics",
+      "board": "bedrock-robotics",
+      "note": "Lockhart, TX and SF -- autonomy retrofits for construction equipment; founded by ex-Waymo staff. 38 postings.",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Persona AI",
+      "board": "persona.ai",
+      "note": "Houston, TX -- humanoid robots for shipyard welding. 28 postings.",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Antares",
+      "board": "antares",
+      "note": "Los Angeles and Idaho Falls -- advanced nuclear fission power. 84 postings. Confirmed from board copy (\"clean energy abundant from Earth to the Asteroid Belt\") -- the name is generic, so re-check identity if the board is ever re-pointed.",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Northwood Space",
+      "board": "northwoodspace",
+      "note": "Torrance, CA -- mass-produced ground-station phased arrays. 80 postings.",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Heron Power",
+      "board": "heron-power",
+      "note": "Scotts Valley, CA -- grid power electronics; founded by a former Tesla powertrain lead. 43 postings.",
+      "enabled": true
+    },
+    {
+      "kind": "ashby",
+      "company": "Swarm Aero",
+      "board": "swarmaero",
+      "note": "Oxnard, CA -- swarming UAVs. 28 postings, includes \"Aircraft Engineering Intern (Summer 2027)\".",
+      "enabled": true
+    },
+    {
+      "kind": "smartrecruiters",
+      "company": "Solidigm",
+      "company_id": "Solidigm",
+      "note": "NAND storage, spun out of Intel. 57 postings, 13 past the title filter.",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "The Toro Company",
+      "tenant": "ttc",
+      "datacenter": "wd1",
+      "site": "Toro_External_Careers",
+      "note": "Bloomington, MN -- turf and outdoor equipment, incl. the Exmark division. 190 postings, 78 past the title filter. Strong classic-mechanical yield.",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Oshkosh",
+      "tenant": "oshkoshcorporation",
+      "datacenter": "wd5",
+      "site": "Oshkosh",
+      "note": "Oshkosh, WI -- specialty heavy vehicles (access, defense, refuse). 593 postings.",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Moog",
+      "tenant": "moog",
+      "datacenter": "wd5",
+      "site": "MOOG_External_Career_Site",
+      "note": "East Aurora, NY -- precision motion control for aerospace and industrial. 488 postings.",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "AeroVironment",
+      "tenant": "avav",
+      "datacenter": "wd1",
+      "site": "AVAV",
+      "note": "Arlington, VA and Moorpark, CA -- UAS and loitering munitions. 359 postings. Note: searchText \"intern\" matches the whole board here, so intern reach leans on the other discovery terms.",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Vermeer",
+      "tenant": "vermeer",
+      "datacenter": "wd5",
+      "site": "externalcareersite",
+      "note": "Pella, IA -- agricultural and industrial equipment. Small board (60 postings) with a high 37-posting intern hit rate.",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "GE Vernova",
+      "tenant": "gevernova",
+      "datacenter": "wd5",
+      "site": "Vernova_ExternalSite",
+      "note": "Energy spin-out of GE -- wind, grid, gas power. Large board (2,152 postings).",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Solar Turbines (Caterpillar)",
+      "tenant": "cat",
+      "datacenter": "wd5",
+      "site": "SolarTurbines",
+      "note": "San Diego, CA -- industrial gas turbines. This is Caterpillar's tenant filtered to the Solar Turbines site; posting text confirms Caterpillar Inc.",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Allegion",
+      "tenant": "allegion",
+      "datacenter": "wd5",
+      "site": "careers",
+      "note": "Carmel, IN -- mechanical and electronic security hardware. 338 postings.",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Stanley Black & Decker",
+      "tenant": "sbdinc",
+      "datacenter": "wd1",
+      "site": "Stanley_Black_Decker_Career_Site",
+      "note": "New Britain, CT -- tools and outdoor. 657 postings but heavily international; expect low US-intern yield.",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Brunswick",
+      "tenant": "brunswick",
+      "datacenter": "wd1",
+      "site": "search",
+      "note": "Mettawa, IL -- marine propulsion (Mercury Marine). 496 postings, 162 past the title filter.",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Cleveland-Cliffs",
+      "tenant": "aksteel",
+      "datacenter": "wd1",
+      "site": "careers",
+      "note": "Cleveland, OH -- steel. Tenant is still the legacy \"aksteel\"; posting text confirms Cleveland-Cliffs. 272 postings.",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Michelin",
+      "tenant": "michelinhr",
+      "datacenter": "wd3",
+      "site": "Michelin",
+      "note": "Greenville, SC -- tires. 719 postings; US intern postings list industrial and mechanical engineering explicitly.",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "ABB",
+      "tenant": "abb",
+      "datacenter": "wd3",
+      "site": "External_Career_Page",
+      "note": "Electrification and robotics. Very large board (2,000+ postings) and mostly non-US; enable-and-watch.",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Plexus",
+      "tenant": "plexus",
+      "datacenter": "wd504",
+      "site": "Plexus_Careers",
+      "note": "Neenah, WI -- electronics contract manufacturing. 419 postings. Note the unusual wd504 datacenter.",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Sierra Nevada Corporation",
+      "tenant": "snc",
+      "datacenter": "wd1",
+      "site": "SNC_External_Career_Site",
+      "note": "Sparks, NV -- aircraft integration and space systems. 380 postings, 276 past the title filter.",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "The Aerospace Corporation",
+      "tenant": "aero",
+      "datacenter": "wd5",
+      "site": "External",
+      "note": "El Segundo, CA -- FFRDC for national security space. 434 postings; runs a named returning-intern program.",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Ensign-Bickford Aerospace & Defense",
+      "tenant": "ebi",
+      "datacenter": "wd5",
+      "site": "ebadcareers",
+      "note": "Simsbury, CT -- energetic systems. Small board (71 postings), 53 past the title filter.",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Leidos",
+      "tenant": "leidos",
+      "datacenter": "wd5",
+      "site": "External",
+      "note": "Reston, VA -- defense and government engineering. Very large board (2,000+ postings).",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Teledyne",
+      "tenant": "flir",
+      "datacenter": "wd1",
+      "site": "flircareers",
+      "note": "Thousand Oaks, CA -- imaging and instrumentation. Tenant is the legacy \"flir\"; posting text confirms Teledyne Technologies. 743 postings, includes \"Mechanical Engineering Intern\".",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Analog Devices",
+      "tenant": "analogdevices",
+      "datacenter": "wd1",
+      "site": "External",
+      "note": "Wilmington, MA -- analog and mixed-signal semiconductors. 785 postings.",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Intel",
+      "tenant": "intel",
+      "datacenter": "wd1",
+      "site": "External",
+      "note": "Fab facilities, equipment, and process-integration internships are open to mechanical students even though the board reads EE. 612 postings.",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Micron",
+      "tenant": "micron",
+      "datacenter": "wd1",
+      "site": "External",
+      "note": "Boise, ID and Richardson, TX -- memory fabs, with process and equipment engineering internships open to mechanical students. 3,042 postings. Note: searchText \"intern\" substring-matches \"internal\"/\"international\" and returns the whole board, so the 200-posting page cap makes that one term near-useless here; \"student\", \"undergraduate\", and \"new grad\" do filter properly and carry the yield.",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Marvell",
+      "tenant": "marvell",
+      "datacenter": "wd1",
+      "site": "MarvellCareers2",
+      "note": "Santa Clara, CA and Austin, TX -- data-infrastructure silicon. Small board (37 postings) with a 31-posting intern hit rate.",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Danaher",
+      "tenant": "danaher",
+      "datacenter": "wd1",
+      "site": "DanaherJobs",
+      "note": "Life-sciences and diagnostics conglomerate. 1,341 postings; mostly commercial roles, low intern yield.",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Smith+Nephew",
+      "tenant": "smithnephew",
+      "datacenter": "wd5",
+      "site": "External",
+      "note": "Medical devices -- orthopaedics and sports medicine. 329 postings.",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Philips",
+      "tenant": "philips",
+      "datacenter": "wd3",
+      "site": "jobs-and-careers",
+      "note": "Health technology. 826 postings, heavily international.",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "Baker Hughes",
+      "tenant": "bakerhughes",
+      "datacenter": "wd5",
+      "site": "BakerHughes",
+      "note": "Houston, TX -- energy technology. 609 postings. Note: searchText \"intern\" barely narrows this board, so intern reach leans on the other discovery terms.",
+      "enabled": true
+    },
+    {
+      "kind": "workday",
+      "company": "AES",
+      "tenant": "aes",
+      "datacenter": "wd1",
+      "site": "AES_US",
+      "note": "Arlington, VA -- power generation and utilities. 166 postings, low intern yield.",
+      "enabled": true
+    }
+  ],
+  "agent_discovery": {
+    "note": "Channels an agent session reaches through Agent Reach, then imports with `import-discovered`. pipeline.py never calls these itself -- it stays stdlib-only and offline-testable. Verified reachable 2026-07-26.",
+    "linkedin": {
+      "tool": "mcporter call 'linkedin-scraper.search_jobs(...)'",
+      "keywords": [],
+      "locations": [],
+      "note": "Returns mixed kinds and badge-suffixed titles; import-discovered normalizes both. Relevance is loose -- keep discovery_title_terms filtering on. Keywords and locations are per student: set them in config/sources.local.json.",
+      "enabled": true
+    },
+    "exa": {
+      "tool": "mcporter call 'exa.web_search_exa(...)'",
+      "queries": [],
+      "note": "Best for surfacing employers not yet in ats_sources. Promote a recurring hit into ats_sources with its real ATS kind instead of re-searching for it every run -- but confirm company identity first, see _source_verification_note. Queries are per student: set them in config/sources.local.json.",
+      "enabled": true
+    },
+    "github": {
+      "tool": "gh api repos/<repo>/contents/README.md",
+      "repos": [
+        {
+          "repo": "vanshb03/Summer2027-Internships",
+          "note": "active 2027 cycle, updated daily; tech-skewed but includes hardware"
+        },
+        {
+          "repo": "zapplyjobs/Research-Internships-for-Undergraduates",
+          "note": "undergraduate research programs (NASA, CERN, Max Planck) -- closest fit to the research half of this pipeline"
+        },
+        {
+          "repo": "speedyapply/2027-SWE-College-Jobs",
+          "note": "SWE/AI focused; low mechanical yield, check only when widening scope"
+        }
+      ],
+      "note": "SimplifyJobs has no Summer2027 repo yet (404 as of 2026-07-26); its Summer2026 list is the prior cycle. These lists skew software -- filter hard if you are not in software.",
+      "enabled": true
+    },
+    "jina": {
+      "tool": "curl -s https://r.jina.ai/<url>",
+      "note": "Reads any public posting page as text. Two uses: (1) enrich postings that arrived without a description, via `enrich`; (2) read a career page for an employer whose ATS this pipeline does not support. Sends the target URL to a third-party reader service.",
+      "enabled": true
+    },
+    "rss": {
+      "tool": "python3 -c \"import feedparser; ...\"",
+      "feeds": [],
+      "note": "No verified job feeds configured yet. Add university lab and society feeds in config/sources.local.json as you find them rather than leaving guesses in config.",
+      "enabled": false
+    }
+  },
+  "rejected_sources": {
+    "note": "Probed on 2026-07-27 and deliberately not adopted. Recorded so the same ground is not re-covered every few months.",
+    "themuse": "Keyless public API at https://www.themuse.com/api/public/jobs. Its whole 'Science and Engineering' category holds only 117 internships nationally, dominated by one retailer's Arkansas postings and by roles in China, Italy, and Singapore, and it still serves stale 2025 listings. Its `location` filter also leaks -- a query for Austin returned New York and Quebec roles. Not worth the request budget for this profile.",
+    "workable_recruitee_rippling_bamboohr": "All four have clean public JSON endpoints and adapters would be easy, but a sweep across ~70 mechanical/hardware employers found essentially no real boards on them -- the few hits were generic-token false positives. Adding the adapters would be dead code until a specific employer is found using one.",
+    "careerjet": "Public API endpoint refused the connection on probe.",
+    "nsf_etap": "etap.nsf.gov reset the connection on probe. NSF REU stays a manual_check_sources entry.",
+    "remotive_arbeitnow_himalayas": "Remote-work aggregators, keyless, but software-skewed and Europe-heavy. Near-zero mechanical intern yield.",
+    "jooble_jsearch": "Both live and both need keys. Not adopted only because Adzuna already covers the US aggregator slot with a better location filter -- revisit if Adzuna's free tier proves too thin.",
+    "nasa_on_usajobs": "NASA internships are not on USAJOBS -- 0 student-path NASA postings there against 14 NASA postings total, verified 2026-07-26. intern.nasa.gov is the real channel and stays a manual_check_sources entry.",
+    "enterprise_ats_icims_teamtailor_jobvite": "Probed on 2026-08-05 across 59 mechanical/aerospace/manufacturing/energy employers absent from this file (Lockheed, RTX, Blue Origin, Tesla, Caterpillar, John Deere, Emerson, Boston Scientific, Halliburton, and similar). Only 5 of 59 resolved to any board -- icims:generaldynamics, icims:parker, icims:commonwealth, icims:boston, teamtailor:firefly -- and every one returned 0 postings matching discovery_title_terms. The boards that did resolve carried 1-20 postings, far too few to be a real corporate board for those employers, so most are the generic-token false positives this file already warns about (`icims:boston` is not Boston Scientific). The root cause is structural: unlike Greenhouse and Ashby, these vendors' tenants are not derivable from a company name -- iCIMS uses careers-<tenant>, and Phenom/SuccessFactors/Radancy/OracleCloud/Avature/Cornerstone sit behind branded hosts with no guessable pattern at all. Adapters would be dead code until specific employer tenants are identified by hand. Revisit only with a concrete employer and its real careers URL, not with a vendor.",
+    "outreach_slug_impostors_2026_09_20": "Slug guesses from outreach company names that resolved to a live board belonging to someone else. Recorded so a later discover-ats run is not adopted on trust. greenhouse/impact is impact.com, an affiliate-marketing platform, not IMPACT Drones. greenhouse/paradigm is Paradigm, a workplace-culture consultancy, not Paradigm Robotics. greenhouse/bravo is BRAVO - A Cooperative Company, an MEP and fire-protection firm, not Bravo Ordnance. ashby/orbital is a real-estate legal-AI company with no mention of Orbital Arc anywhere on the board. All four came from the bare-first-word slug candidate, which is exactly the case slug_candidates warns about."
+  },
+  "manual_check_sources": [
+    {
+      "name": "NASA Internships (OSSI)",
+      "url": "https://intern.nasa.gov/",
+      "cadence": "weekly in Sep-Feb",
+      "note": "NASA does not post internships to USAJOBS -- verified 2026-07-26, 0 student-path NASA postings there against 14 NASA postings total. This portal is the actual channel, and the Summer application window closes early (typically Feb). Citizenship required."
+    },
+    {
+      "name": "NSF REU Directory",
+      "url": "https://www.nsf.gov/crssprgm/reu/reu_search.cfm",
+      "cadence": "weekly in Sep–Mar",
+      "note": "off-campus undergraduate research; citizenship eligibility applies"
+    }
+  ]
+}

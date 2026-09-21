@@ -1,0 +1,10 @@
+{
+  "ats": "generic",
+  "hostname": "jobs.example.com",
+  "url": "https://jobs.example.com/apply/%E6%9D%B1%E4%BA%AC-role",
+  "controls": [
+    { "tag": "input", "type": "text", "id": "fullName", "label": "Full Legal Name" },
+    { "tag": "input", "type": "email", "id": "contactEmail", "label": "Email" },
+    { "tag": "select", "type": "select", "id": "gradYear", "label": "Graduation Year" }
+  ]
+}

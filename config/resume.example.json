@@ -1,0 +1,50 @@
+{
+  "_note": "Copy to config/resume.json and fill in. This is the only source of factual claims about you -- the resume and cover-letter commands reformulate what is here, they never invent. An empty section is omitted from the output rather than padded.",
+  "name": "Your Name",
+  "contact": {
+    "email": "you@example.com",
+    "phone": "",
+    "location": "",
+    "linkedin": "",
+    "github": "",
+    "portfolio": ""
+  },
+  "summary": "",
+  "education": [
+    {
+      "school": "Your University",
+      "degree": "B.S. Your Major",
+      "location": "City, ST",
+      "graduation": "May 2030",
+      "gpa": "",
+      "coursework": []
+    }
+  ],
+  "experience": [
+    {
+      "organization": "",
+      "role": "",
+      "location": "",
+      "start": "",
+      "end": "",
+      "bullets": []
+    }
+  ],
+  "projects": [
+    {
+      "name": "",
+      "context": "",
+      "start": "",
+      "end": "",
+      "link": "",
+      "bullets": []
+    }
+  ],
+  "skills": {
+    "Technical": [
+      "A tool you can honestly claim"
+    ]
+  },
+  "awards": [],
+  "activities": []
+}

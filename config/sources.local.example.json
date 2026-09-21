@@ -1,0 +1,53 @@
+{
+  "_note": "Copy to config/sources.local.json (gitignored) and edit. It layers on top of the shared catalog in config/sources.json; see merge_sources in pipeline.py for the rules. Only add a board after `pipeline.py discover-ats` has confirmed it -- never guess tokens.",
+  "include_base_catalog": true,
+  "enabled_sources": [],
+  "disabled_sources": [],
+  "ats_sources": [
+    {
+      "kind": "adzuna",
+      "company": "Adzuna",
+      "id": "my-area",
+      "label": "Adzuna",
+      "note": "Needs ADZUNA_APP_ID and ADZUNA_APP_KEY in .env (free at https://developer.adzuna.com/). The only source with a true radius filter, so it reaches small local employers with no modern ATS. Set enabled to true once the keys are in.",
+      "country": "us",
+      "queries": [
+        {
+          "what": "<your field> intern",
+          "where": "<City, State>",
+          "distance_km": 60,
+          "posted_within_days": 45
+        }
+      ],
+      "enabled": false
+    }
+  ],
+  "agent_discovery": {
+    "linkedin": {
+      "keywords": [
+        "<your field> intern"
+      ],
+      "locations": [
+        "<City, State>"
+      ]
+    },
+    "exa": {
+      "queries": [
+        "<your field> summer internship <City> apply"
+      ]
+    }
+  },
+  "manual_check_sources": [
+    {
+      "name": "<Your school's career portal>",
+      "url": "https://example.edu/careers",
+      "cadence": "weekly",
+      "note": "login required"
+    }
+  ],
+  "outreach_scopes": {
+    "local-accelerators": {
+      "brief": "Early-stage companies in the portfolios of <your city> incubators and accelerators: <program names>, and similar programs."
+    }
+  }
+}
