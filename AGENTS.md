@@ -40,6 +40,9 @@ weight it above crashes.
 2. **`.env`, `config/resume.json`, `config/profile.json`, and
    `config/sources.local.json` are personal.** All are gitignored. Do not read
    `.env` or the resume into output, and do not commit any of them.
+   `.githooks/` (enabled by `setup init`) refuses commits and pushes that repeat
+   any of their values; do not bypass it with `--no-verify`. Everything under
+   `data/` and `output/` is ignored by default.
 3. **Loopback only.** Nothing in this repo should bind beyond `127.0.0.1`. The
    sandbox server refuses to.
 4. **The legacy pipeline stays dependency-free.** `pipeline.py` and

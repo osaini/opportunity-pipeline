@@ -1,6 +1,7 @@
 """First-run setup, written to be driven by a student's coding agent (SETUP.md).
 
-    python -m opportunity_app.setup init          create .env, profile, overlay, databases
+    python -m opportunity_app.setup init          create .env, profile, overlay, databases; turn on
+                                                  the hooks that refuse to commit personal data
     python -m opportunity_app.setup status        what is configured, what is missing, what each key unlocks
     python -m opportunity_app.setup validate      check config/profile.json before scoring with it
     python -m opportunity_app.setup set-key NAME  store one secret in .env without echoing it
@@ -20,6 +21,7 @@ import os
 import re
 import secrets
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -245,7 +247,34 @@ def init(paths: Paths, *, migrate: bool = True) -> dict[str, Any]:
         created_db = not paths.platform_db.exists()
         _ensure_databases(paths)
         (report["created"] if created_db else report["kept"]).append("data/platform.db")
+    hooks = enable_personal_data_hooks(paths.root)
+    if hooks:
+        report["personal_data_hooks"] = hooks
+        if hooks.startswith("not enabled"):
+            report["warnings"].append(f"Personal data hooks {hooks}")
     return report
+
+
+def enable_personal_data_hooks(root: Path) -> str:
+    """Point git at .githooks/, whose hooks refuse to commit or push personal data.
+
+    Returns "" when this is not a git checkout that ships the hooks.
+    """
+    if not (root / ".githooks").is_dir() or not (root / ".git").exists():
+        return ""
+
+    def git(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True)
+
+    try:
+        current = git("config", "--get", "core.hooksPath").stdout.strip()
+        if current == ".githooks":
+            return "enabled"
+        if current:
+            return f"not enabled: core.hooksPath is already {current!r}; run scripts/check_personal_data.py from it"
+        return "enabled" if git("config", "core.hooksPath", ".githooks").returncode == 0 else "not enabled: git config failed"
+    except OSError:
+        return "not enabled: git is not installed"
 
 
 def _ensure_databases(paths: Paths) -> None:

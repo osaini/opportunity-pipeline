@@ -85,6 +85,8 @@ This creates:
 - `config/profile.json`, from the empty template;
 - `config/sources.local.json`, an empty overlay;
 - the two SQLite databases in `data/`.
+- a git setting that turns on `.githooks/`, which refuses any commit or push
+  that repeats your name, contact details, or keys (see below).
 
 It detects Claude Code or Codex CLI, and records whichever it finds for the
 outreach deep search. It is safe to run again, and never overwrites anything
@@ -237,6 +239,12 @@ python -m opportunity_app.launch restart
 ```
 
 Personal files are gitignored, so a pull never touches them.
+
+If you commit changes of your own, the hooks from step 2 check each commit and
+push against your resume, profile, and `.env`, and refuse if any of it would be
+published. Add employers, contacts, or anything else to keep private, one per
+line, in `private/blocked-terms.txt`. Audit the whole history at any time with
+`python scripts/check_personal_data.py --all`.
 
 ## Troubleshooting
 

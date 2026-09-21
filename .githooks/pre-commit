@@ -1,0 +1,3 @@
+#!/bin/sh
+# Block commits that would record personal data. See scripts/check_personal_data.py.
+exec "$(dirname "$0")/_run-check" --staged

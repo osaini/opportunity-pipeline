@@ -1,0 +1,3 @@
+#!/bin/sh
+# Block pushes carrying personal data, including commits made with --no-verify.
+exec "$(dirname "$0")/_run-check" --push

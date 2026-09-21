@@ -1,0 +1,11 @@
+#!/bin/sh
+# Shared by the pre-commit and pre-push hooks: find a Python and run the
+# personal-data check. Refuses rather than skipping when no Python is found.
+root=$(git rev-parse --show-toplevel) || exit 1
+for candidate in "$root/.venv/Scripts/python.exe" "$root/.venv/bin/python" python3 python "py -3"; do
+    if $candidate -c "import sys; sys.exit(sys.version_info < (3, 9))" >/dev/null 2>&1; then
+        exec $candidate "$root/scripts/check_personal_data.py" "$@"
+    fi
+done
+echo "Personal data check: no Python 3.9+ found, so this was not checked. Install Python, or bypass once with --no-verify." >&2
+exit 1
