@@ -35,7 +35,7 @@ RESUME = {
 }
 ENV = "\n".join([
     "# comment",
-    "PIPELINE_WEB_TOKEN=tok-1234567890abcdef",
+    "PIPELINE_WEB_TOKEN=tok-1234567890abcdef",  # gitleaks:allow (invented)
     "USAJOBS_CONTACT_EMAIL=robin.personal@mail.example",
     "PIPELINE_SEC_USER_AGENT=Robin Quill robin.agent@mail.example",
     "PIPELINE_OUTREACH_COMPOSE=true",
@@ -73,7 +73,7 @@ class NeedleTests(unittest.TestCase):
             "call +1 512 555 0199": "resume phone",
             "see linkedin.com/in/robin-quill-example": "resume linkedin",
             "http://github.com/robinquill-example/repo": "resume github",
-            "token = tok-1234567890abcdef": ".env value (PIPELINE_WEB_TOKEN)",
+            "token = tok-1234567890abcdef": ".env value (PIPELINE_WEB_TOKEN)",  # gitleaks:allow
             "robin.agent@mail.example": ".env email (PIPELINE_SEC_USER_AGENT)",
             "worked at quillworks labs": "blocked term",
             'path "C:\\\\Users\\\\rquill\\\\Desktop"': "home directory",

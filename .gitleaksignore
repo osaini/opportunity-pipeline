@@ -1,0 +1,4 @@
+# Invented test token in the personal-data guard tests, flagged before the
+# lines carried gitleaks:allow. Not a real secret.
+a93c9d5fb7411be78dffe5c9ab05eec0f44ce389:tests/test_personal_data_guard.py:generic-api-key:38
+a93c9d5fb7411be78dffe5c9ab05eec0f44ce389:tests/test_personal_data_guard.py:generic-api-key:76
