@@ -161,3 +161,7 @@ jobs:
       - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # A contributor who never ran setup init has no local hooks. The runner
+      # holds nobody's personal files, so this catches personal files by path
+      # (a .env, a resume, anything under data/), in every commit of the PR.
+      - run: python3 scripts/check_personal_data.py --all
