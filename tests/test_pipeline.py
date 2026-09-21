@@ -2270,6 +2270,9 @@ class PipelineTests(unittest.TestCase):
 
     def test_backup_sqlite_keeps_only_the_newest_snapshots(self):
         with TemporaryDirectory() as tmp:
+            # SQLite reports the resolved path; on macOS the temp dir under
+            # /var is a symlink to /private/var, so compare resolved paths.
+            tmp = Path(tmp).resolve()
             conn = sqlite3.connect(Path(tmp) / "pipeline.db")
             try:
                 conn.execute("CREATE TABLE t(x)")
