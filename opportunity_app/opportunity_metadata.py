@@ -14,29 +14,57 @@ HOURLY_PAY_RE = re.compile(
     r"(?:\$\s*)?(\d{1,3}(?:\.\d{1,2})?)?\s*(?:/|per\s+)(?:hour|hr)\b",
     re.IGNORECASE,
 )
+# The period suffix is required: a bare dollar figure ("$15,000 housing
+# stipend", "$120,000,000 in funding") says nothing about a yearly salary, and
+# reading it as one would present an inferred value as confirmed.
 YEARLY_PAY_RE = re.compile(
     r"\$\s*(\d{2,3}(?:,\d{3})+)\s*(?:-|–|—|to)?\s*"
-    r"(?:\$\s*)?(\d{2,3}(?:,\d{3})+)?\s*(?:/|per\s+)?(?:year|yr|annually|annual)?",
+    r"(?:\$\s*)?(\d{2,3}(?:,\d{3})+)?\s*"
+    r"(?:(?:/\s*|per\s+|an?\s+)(?:year|yr|annum)\b|annual(?:ly)?\b)",
     re.IGNORECASE,
 )
+
+
+_MONTHS = (
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+)
+
+
+def _month_number(token: str) -> int | None:
+    """Month for a full name, a three-letter abbreviation, or "Sept"; else None."""
+    word = token.rstrip(".").lower()
+    for index, name in enumerate(_MONTHS, start=1):
+        if word == name or word == name[:3] or (name == "september" and word == "sept"):
+            return index
+    return None
 
 
 def extract_deadline(text: str) -> str | None:
     match = re.search(
         r"\b(?:apply\s+by|deadline|applications?\s+(?:close|due))\s*[:\-]?\s*"
-        r"([A-Z][a-z]+\s+\d{1,2},?\s+20\d{2}|20\d{2}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/20\d{2})",
+        r"([A-Z][a-z]+\.?\s+\d{1,2},?\s+20\d{2}|20\d{2}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/20\d{2})",
         text,
         re.IGNORECASE,
     )
     if not match:
         return None
     value = match.group(1).replace(",", "")
-    for pattern in ("%B %d %Y", "%Y-%m-%d", "%m/%d/%Y"):
+    for pattern in ("%Y-%m-%d", "%m/%d/%Y"):
         try:
             parsed = datetime.strptime(value, pattern).replace(tzinfo=timezone.utc)
             return parsed.isoformat()
         except ValueError:
             continue
+    parts = value.split()
+    if len(parts) == 3:
+        month = _month_number(parts[0])
+        if month is not None:
+            try:
+                parsed = datetime(int(parts[2]), month, int(parts[1]), tzinfo=timezone.utc)
+                return parsed.isoformat()
+            except ValueError:
+                return None
     return None
 
 

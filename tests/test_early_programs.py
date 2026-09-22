@@ -199,7 +199,7 @@ class UrgentProgramTests(unittest.TestCase):
         self.assertEqual([item["program_id"] for item in programs], ["today", "opens-soon", "in-13-days"])
         first = programs[0]
         self.assertEqual((first["date"], first["days_until"], first["overdue"]), ("2026-09-21", 0, False))
-        self.assertEqual(first["date_source"], "Published by the program")
+        self.assertEqual(first["date_source"], "From your program research")
         self.assertEqual((first["title"], first["company"]), ("today internship", "Example Aerospace"))
         self.assertEqual(programs[2]["source_name"], "Official posting")
         # Due today counts toward the nav badge, like any deadline within two days.
@@ -264,7 +264,7 @@ class EarlyProgramApiTests(unittest.TestCase):
         self.assertEqual(self.put("not-in-file", "applied").status_code, 404)
         self.assertEqual(self.put("nreip", "maybe").status_code, 422)
 
-    def test_each_student_keeps_their_own_status(self):
+    def test_another_account_gets_the_empty_state_not_the_owners_list(self):
         self.client.put(
             "/api/v1/admin/feature-flags/allow_public_signup",
             headers={"Authorization": "Bearer admin-token"},
@@ -278,8 +278,14 @@ class EarlyProgramApiTests(unittest.TestCase):
         other = {"Authorization": f"Bearer {registered.json()['api_token']}"}
         self.assertEqual(self.put("nreip", "applied").status_code, 200)
         mine = self.client.get("/api/v1/early-programs", headers=self.headers).json()["items"][0]
-        theirs = self.client.get("/api/v1/early-programs", headers=other).json()["items"][0]
-        self.assertEqual((mine["status"], theirs["status"]), ("applied", "todo"))
+        self.assertEqual(mine["status"], "applied")
+        # The private list file is researched for the local owner; another
+        # account on the same install sees the honest unconfigured state.
+        theirs = self.client.get("/api/v1/early-programs", headers=other).json()
+        self.assertEqual((theirs["configured"], theirs["items"]), (False, []))
+        self.assertEqual(self.put("nreip", "applied", headers=other).status_code, 404)
+        urgent = self.client.get("/api/v1/urgent", headers=other).json()["items"]
+        self.assertEqual([item for item in urgent if item["kind"] == "program_deadline"], [])
 
     def test_the_page_route_serves_the_app(self):
         page = self.client.get("/programs")

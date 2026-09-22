@@ -575,7 +575,7 @@ class DeadlineApiTests(unittest.TestCase):
             conn.execute("UPDATE opportunities SET deadline_at='2026-09-20T00:00:00+00:00' WHERE id='job-b'")
             conn.commit()
         self.assertEqual(self.put("job-a", "2026-09-18").status_code, 200)
-        with mock.patch.object(student_agent, "_today_utc", return_value="2026-09-17"):
+        with mock.patch.object(student_agent, "_today_local", return_value="2026-09-17"):
             thread = self.client.post("/api/v1/agent/threads", headers=self.headers, json={"provider": "legacy"}).json()["id"]
             reply = self.client.post(
                 f"/api/v1/agent/threads/{thread}/messages", headers=self.headers, json={"content": "What closes soon?"}

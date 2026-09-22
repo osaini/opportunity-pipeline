@@ -138,6 +138,11 @@ markers. That keeps "Dublin, Ireland" out of a Bay Area region.
 "out_of_region_penalty": 40
 ```
 
+A region may also carry an optional `"phrase"`: how an outreach email should
+name it when the name alone reads oddly, e.g. `"name": "NorCal", "phrase":
+"Northern California"`. Without one, the email uses the name ("the Bay Area"
+style for names ending in "Area").
+
 Build the `places` list from your own knowledge of the metro and confirm it
 with the student. Use a bigger bonus for their first choice. If they are open
 to anywhere, leave `regions` empty: nothing is then penalised for location.

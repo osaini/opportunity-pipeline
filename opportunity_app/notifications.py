@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .connections import ensure_preferences
 from .schema import utc_now
+from .user_time import UserTimezone, user_timezone
 
 DIGEST_FREQUENCIES = {"immediate", "daily", "weekly", "off"}
 OUTBOX_PENDING_STATES = ("sandbox_suppressed", "queued")
@@ -94,12 +95,27 @@ def _parse_hhmm(value: str) -> int:
     return int(hours) * 60 + int(minutes)
 
 
-def in_quiet_hours(preferences: dict[str, Any], now: datetime | None = None) -> bool:
+def in_quiet_hours(
+    preferences: dict[str, Any],
+    now: datetime | None = None,
+    *,
+    zone: UserTimezone | None = None,
+) -> bool:
+    """Whether ``now`` falls inside the user's local quiet-hours window.
+
+    Callers that know the user pass ``zone`` from ``user_time.user_timezone``,
+    the same resolver the Urgent queue uses, so an unset preference falls back
+    to ``PIPELINE_TIMEZONE`` or machine-local time rather than the column's
+    ``'UTC'`` default. Without ``zone`` the preference's own name is used.
+    """
     now = now or datetime.now(timezone.utc)
-    try:
-        local_now = now.astimezone(ZoneInfo(str(preferences.get("timezone", "UTC"))))
-    except ZoneInfoNotFoundError:
-        local_now = now
+    if zone is not None:
+        local_now = zone.to_local(now)
+    else:
+        try:
+            local_now = now.astimezone(ZoneInfo(str(preferences.get("timezone", "UTC"))))
+        except ZoneInfoNotFoundError:
+            local_now = now
     current = local_now.hour * 60 + local_now.minute
     start = _parse_hhmm(preferences["quiet_start"])
     end = _parse_hhmm(preferences["quiet_end"])
@@ -177,7 +193,7 @@ def run_notification_digest(
                 )
             stats["cancelled_off"] += len(pending)
             continue
-        if in_quiet_hours(preferences, now):
+        if in_quiet_hours(preferences, now, zone=user_timezone(conn, user_id)):
             stats["held_quiet_hours"] += len(pending)
             continue
         by_channel: dict[str, list] = {}
@@ -223,19 +239,46 @@ def run_notification_digest(
     return stats
 
 
+def _due_instant(value: Any) -> datetime | None:
+    """Parse a stored ``due_at`` into an aware UTC instant.
+
+    A naive value is treated as UTC (the legacy storage convention before
+    reminders carried an offset); a bare date means midnight UTC that day.
+    Unparseable values return ``None`` and are never fired.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def send_due_reminders(conn: sqlite3.Connection, *, provider: NotificationProvider | None = None, now: datetime | None = None) -> dict[str, Any]:
     """Record due reminders in the outbox and attempt immediate delivery."""
     provider = provider or build_provider()
     now = now or datetime.now(timezone.utc)
-    due = conn.execute(
+    # Stored due_at values carry the student's own offset (e.g. -05:00), so a
+    # string comparison against UTC "now" is wrong by the offset. Fetch every
+    # scheduled candidate and compare parsed instants instead.
+    candidates = conn.execute(
         """
         SELECT r.id, r.application_id, r.user_id, r.reminder_type, r.due_at, a.opportunity_id
         FROM reminders r JOIN applications a ON a.id=r.application_id
-        WHERE r.status='scheduled' AND r.due_at<=?
-        ORDER BY r.due_at
-        """,
-        (now.isoformat(),),
+        WHERE r.status='scheduled'
+        """
     ).fetchall()
+    due_pairs = []
+    for candidate in candidates:
+        instant = _due_instant(candidate["due_at"])
+        if instant is not None and instant <= now:
+            due_pairs.append((instant, candidate))
+    due_pairs.sort(key=lambda pair: pair[0])
+    due = [candidate for _, candidate in due_pairs]
     stats = {"reminders_fired": 0, "messages_delivered": 0, "held_quiet_hours": 0}
     for reminder in due:
         user_id = str(reminder["user_id"])
@@ -257,15 +300,15 @@ def send_due_reminders(conn: sqlite3.Connection, *, provider: NotificationProvid
                     "due_at": reminder["due_at"],
                 }), timestamp),
             )
-        if not in_quiet_hours(preferences, now):
+        if not in_quiet_hours(preferences, now, zone=user_timezone(conn, user_id)):
             with conn:
                 conn.execute(
                     "UPDATE notification_outbox SET status='sent', delivered_at=? WHERE user_id=? AND event_key=? AND status='queued'",
                     (now.isoformat(), user_id, event_key),
                 )
             stats["messages_delivered"] += 1
-            if preferences["email_enabled"] and provider.live:
-                recipient = _user_email(conn, user_id)
+            recipient = _user_email(conn, user_id) if preferences["email_enabled"] and provider.live else ""
+            if recipient:
                 provider.deliver(
                     "email",
                     recipient,

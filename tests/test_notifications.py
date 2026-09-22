@@ -4,6 +4,7 @@ import sys
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -74,6 +75,11 @@ class DigestTests(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         _, self.platform_path = build_and_migrate(Path(self.tempdir.name))
         self.provider = FakeProvider()
+        # Quiet hours resolve through user_time.user_timezone; pin the
+        # fallback so RUN_AT (12:00 UTC) is daytime on every machine.
+        env = mock.patch.dict("os.environ", {"PIPELINE_TIMEZONE": "UTC"})
+        env.start()
+        self.addCleanup(env.stop)
 
     def tearDown(self):
         self.tempdir.cleanup()
@@ -229,6 +235,11 @@ class ReminderDispatchTests(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         _, self.platform_path = build_and_migrate(Path(self.tempdir.name))
         self.provider = FakeProvider()
+        # Quiet hours resolve through user_time.user_timezone; pin the
+        # fallback so RUN_AT (12:00 UTC) is daytime on every machine.
+        env = mock.patch.dict("os.environ", {"PIPELINE_TIMEZONE": "UTC"})
+        env.start()
+        self.addCleanup(env.stop)
 
     def tearDown(self):
         self.tempdir.cleanup()

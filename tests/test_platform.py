@@ -520,7 +520,7 @@ class PlatformTests(unittest.TestCase):
             conn.execute("UPDATE opportunities SET deadline_at='2026-09-10' WHERE id='job-b'")
             conn.commit()
         app = create_app(db_path=self.platform_path, access_token="deadline-secret", static_dir=STATIC_DIR)
-        with mock.patch.object(student_agent, "_today_utc", return_value="2026-09-10"), TestClient(app) as client:
+        with mock.patch.object(student_agent, "_today_local", return_value="2026-09-10"), TestClient(app) as client:
             client.post("/api/v1/session", json={"token": "deadline-secret"})
             thread_id = client.post("/api/v1/agent/threads", json={"provider": "legacy"}).json()["id"]
             reply = client.post(

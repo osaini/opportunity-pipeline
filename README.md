@@ -249,10 +249,10 @@ the shortlist:
 2. Which terms are you available: fall, spring, summer, and what year?
 3. Which locations are acceptable, and will you relocate?
 4. How many hours per week can you work during classes?
-5. What tools can you honestly claim (for example SolidWorks, Creo, CATIA,
-   Fusion 360, MATLAB, Python, ANSYS, machining, GD&T)?
-6. Which fields interest you most (design, thermal/fluids, manufacturing,
-   robotics, aerospace, energy, controls, biomechanics, automotive, testing)?
+5. What tools and methods can you honestly claim (for example Python, MATLAB,
+   CAD, lab techniques, statistics, a framework you have shipped with)?
+6. Which fields interest you most, in your discipline's own terms (for example
+   robotics, data, energy, biotech, finance, controls, product design)?
 7. Are you authorized to work in the U.S., and will you require sponsorship?
 8. Are unpaid or for-credit research/externships acceptable, or only paid work?
 
@@ -303,17 +303,20 @@ Delete `regions` entirely to fall back to the older, gentler
   `import-discovered` → `enrich` → `score` → `report`. Public ATS feeds in
   `ats_sources` are already covered by `run`, so this pass is for what those
   feeds miss.
-- Twice weekly: check the login-only 12twenty link in the generated report.
-  Copy good results into `data/manual_jobs.csv`. (UT's student Workday portal
-  is fetched automatically now — see [Sources](#sources-and-boundaries).)
+- Twice weekly: check the login-only portals listed in your
+  `manual_check_sources` (your school's career portal, Handshake, and so on).
+  Copy good results into `data/manual_jobs.csv`. A school portal on public
+  Workday can often be fetched automatically instead — see
+  [Sources](#sources-and-boundaries).
 - When a company keeps surfacing through `exa` or `linkedin`, promote it into
   `ats_sources` with its real ATS `kind`. A direct feed is cheaper and more
   complete than rediscovering it every sweep.
 - Weekly: run `python3 pipeline.py liveness` so imported postings that have
   since closed stop occupying shortlist slots. ATS rows retire themselves; these
   don't. See [Checking whether a posting is still open](#checking-whether-a-posting-is-still-open).
-- Weekly: check Eureka/NSF REU and contact one relevant UT lab. Many research
-  roles are relationship-driven rather than posted.
+- Weekly: check your school's undergraduate research listings and NSF REU,
+  and contact one relevant lab at your school. Many research roles are
+  relationship-driven rather than posted.
 - Track movement with:
 
 ```bash
@@ -459,10 +462,9 @@ job-alert emails do, and are the best candidates for
 **Handshake and 12twenty are not automated.** Check them by hand on the cadence
 in `manual_check_sources` and copy good results into `data/manual_jobs.csv`.
 
-**University student-job portals on Workday can often be automated.** UT
-Austin's, for example, answers on its public Workday CXS endpoint without any
-login (verified 2026-07-27 at 210 postings), so it runs as an ordinary `workday`
-source in that student's `config/sources.local.json`. *Applying* still requires
+**University student-job portals on Workday can often be automated.** Many
+answer on a public Workday CXS endpoint without any login, so they run as an
+ordinary `workday` source in that student's `config/sources.local.json`. *Applying* still requires
 signing in. Expect a low hit rate: most listings are graders, work-study, and
 administrative student roles, and the scorer sinks them accordingly.
 
@@ -642,9 +644,9 @@ Scores are deliberately simple: preferred role type (+18), degree match (up to
 +15), interests (+20), demonstrated skills (+15), preferred location (+10),
 term availability (+8), recency (+10), and penalties for seniority, experience,
 relocation, discipline, or explicit availability mismatches. Matches in a title
-count more than incidental words in a long description. Edit
-`deprioritize_title_keywords` if software, firmware, or electrical roles should
-rank as highly as mechanical roles. Citizenship and sponsorship language is
+count more than incidental words in a long description. List
+disciplines you don't want in `deprioritize_title_keywords` if their titles are
+ranking too high, and remove entries there if they are ranking too low. Citizenship and sponsorship language is
 flagged for human verification; a sponsorship penalty is applied only when the
 profile explicitly says sponsorship is required.
 

@@ -25,6 +25,7 @@ from uuid import uuid4
 from .agent_providers import AgentProvider, CliAgentProvider, complete_text, default_provider, provider_catalog
 from .outreach import (
     AWAITING_REPLY, DRAFT_KINDS, _log, draft_checks, get_target, location_region, location_usable, region_phrase,
+    user_regions,
 )
 from .preparation import confirmed_facts
 from .schema import utc_now
@@ -81,23 +82,23 @@ INSTRUCTIONS = """You write cold emails for one university student to a small co
 The student's own results carry the email. A founder or a shared jobs inbox should see in the first two lines that this student has already built real things, with numbers.
 
 Follow this formula, in this order:
-1. Subject: the student's most relevant proof plus the company, under 12 words. For example: "Drone engineer at Georgia Tech, interested in interning at Acme".
+1. Subject: the student's most relevant proof plus the company, under 12 words, in the shape "[proof] at [school], interested in interning at [company]".
 2. Greeting: the contact's first name when contact_name is given, otherwise "Hi" and the company team, using the name people call the company without Inc, Corp, Corporation, or LLC.
-3. Opening: who the student is, written the way a person says it ("a mechanical engineering student at Georgia Tech", not the degree's formal title), their current role if any, and the primary_experience entry with its two or three strongest numbers. The whole email is built on this one experience. Never bring in another project, employer, or product of the student's by name anywhere in the email, because the reader has not met it and it would only confuse them. Say what the student did ("I cut its weight"), not what a platform or project did. Copy every number exactly as the input writes it. If location_line is not empty, close the opening with it, keeping its place name, and cite it with basis "profile:break_location"; it tells a company near the student's home, before anything else, that they can be there in person. If location_line is empty, say nothing anywhere in the email about where the student lives or could work.
+3. Opening: who the student is, written the way a person says it (their major and school as they would say them aloud, not the degree's formal title), their current role if any, and the primary_experience entry with its two or three strongest numbers. The whole email is built on this one experience. Never bring in another project, employer, or product of the student's by name anywhere in the email, because the reader has not met it and it would only confuse them. Say what the student did ("I cut its weight"), not what a platform or project did. Copy every number exactly as the input writes it. If location_line is not empty, close the opening with it, keeping its place name, and cite it with basis "profile:break_location"; it tells a company near the student's home, before anything else, that they can be there in person. If location_line is empty, say nothing anywhere in the email about where the student lives or could work.
 4. The bridge, about 50 words in two sentences, written the way a strong "why us" application essay reads: the student should clearly want this company, and the company should clearly want the student. The shape is fixed; the wording is not.
-   a. Them, the first sentence: name the company's specific product or effort from the research the way you would name a program at a school (its interceptor by name, its exoskeleton's field tests, its autonomous CNC cells), never the company in general and never praise. Set it against what the student has built so far in the primary experience, so the reader sees this company as the next step past it: higher stakes, harder conditions, or a product that goes where the student's could not. Let the contrast between the two show that; never say it outright. Either side can come first, and the verbs are free; do not default to opening with "I've built". The student wants this company because it takes their own work somewhere new.
-   b. Me = success, the second sentence: what the student would bring from the primary experience, the company's specific work it goes to, the hands-on contribution, and how they would work there. In shape only: [the primary experience's work] to [their product or work], [a hands-on action], [with their team].
-      - What they bring: only work the primary experience's entry describes, such as designing and building the platform, wiring it, integrating its sensors, or flight testing it, named in the entry's own terms. Pick the part this company's product needs most. A tool from the student's skills (CAD, Fusion 360, soldering) may be named only as part of that same work, when the entry describes the work it was used for. Never pitch the student as a documentation writer; offer docs or build guides only when documentation is itself what this company needs.
+   a. Them, the first sentence: name the company's specific product or effort from the research the way you would name a program at a school (a product by name, a named study or pilot, a specific platform or service), never the company in general and never praise. Set it against what the student has built so far in the primary experience, so the reader sees this company as the next step past it: higher stakes, harder conditions, or a product that goes where the student's could not. Let the contrast between the two show that; never say it outright. Either side can come first, and the verbs are free; do not default to opening with "I've built". The student wants this company because it takes their own work somewhere new.
+   b. Me = success, the second sentence: what the student would bring from the primary experience, the company's specific work it goes to, the concrete contribution, and how they would work there. In shape only: [the primary experience's work] to [their product or work], [a concrete action], [with their team].
+      - What they bring: only work the primary experience's entry describes, named in the entry's own terms. Pick the part this company's product needs most. A tool or method from the student's skills may be named only as part of that same work, when the entry describes the work it was used for. Never pitch the student as a documentation writer; offer docs or guides only when documentation is itself what this company needs.
       - Their work: a product or effort the research names.
-      - Contribution: hands-on engineering in physical verbs, such as machine, print, wire, calibrate, tune, mount, fly, bench test, or integrate. Avoid "design and test" as a stock pair, and never a manner like "in a meaningful way" or "efficiently". This is the email's one inference; cite it with basis "inference". Keep it modest, never a promise or a claim to solve their problem.
-      - With their team: end on one short clause about working with the people there, named in terms of this company's own team or work, such as the people running its field tests or the two founders building its cells, and never the generic "alongside your engineers". One clause, never "team player" language.
+      - Contribution: a concrete action, in the kind of verbs the primary experience's entry and the student's skills already use for their own work, so a software student offers software work, a lab student offers lab work, and a builder offers building. When the entry gives no clear verbs, use plain, specific verbs for doing the work itself rather than supporting it. Avoid stock pairs like "design and test", and never a manner like "in a meaningful way" or "efficiently". This is the email's one inference; cite it with basis "inference". Keep it modest, never a promise or a claim to solve their problem.
+      - With their team: end on one short clause about working with the people there, named in terms of this company's own team or work, such as the people running its pilot or the two founders building its product, and never the generic "alongside your engineers". One clause, never "team player" language.
    End the bridge on a statement, never a question. The ask is the email's only question.
    Keep it plain and grounded. No numbers in the bridge, and do not repeat the opening's results. No stock connectors that could drop into any email, like "that's the work I want to do", "is where I learned", or "I'd get to". Do not compare scale ("a smaller version of", "a harder version of", "the same work"), and never write "is relevant to" or "aligns with". No mission statements about helping communities or the world; this is an internship, not a cause. If the research names nothing concrete, work from the kind of product it describes rather than invent specifics.
 5. Nothing else. The email stays on the primary experience, with no second proof and no list of skills.
 6. The ask: would they consider the student as an intern for the earliest term in available_terms. The opening already said where the student is based, so do not repeat it here. If preferred_role_types includes part_time, add that the student is open to part-time work too, without listing every arrangement. Then close with the 15 minute call, and give it a purpose: "If you have 15 minutes, I'd like to hear how you..." followed by one short, specific thing only this company could tell the student about the work the bridge names. Write it as a statement, not a second question. When the research is too thin to name something sharp, just say the student is happy to talk for 15 minutes. Never offer to send or share documents, data, designs, or code from the student's work; they may belong to an employer.
 7. Sign-off: the student's name on one line, then the sender address and every entry in links, joined with " | ".
 
-An example of the shape, for a different student and company. Match its length and directness, not its content or its phrasing:
+An example of the shape, for a different, invented student and company whose field is unrelated to this student's. Match its length and directness, not its content, its field, its verbs, or its phrasing:
 Subject: Battery pack builder at Georgia Tech, interested in interning at Voltworks
 Hi Dana,
 I'm an electrical engineering student at Georgia Tech and lead the battery pack team for our Formula SAE car. I cut pack mass from 42 kg to 31 kg and kept the cells under 45 C through a full endurance run. I'm based in the Seattle area during breaks and summers.
@@ -187,22 +188,27 @@ def outreach_proof(facts: dict[str, Any]) -> tuple[dict[str, list[Any]], list[st
     return proof, lead
 
 
-def location_line(facts: dict[str, Any], target: dict[str, Any]) -> str:
+def location_line(
+    facts: dict[str, Any],
+    target: dict[str, Any],
+    regions: list[dict[str, Any]] | None = None,
+) -> str:
     """The sentence saying the student can be near the company, or "" when none belongs.
 
     Only a company in the region the student calls home during breaks gets one.
     A company near school needs none, and an unrecognized location gets none
     rather than a guess. Neither does a location only the deep search reported,
     until the company's site or a filing states it or the research is confirmed.
+    ``regions`` defaults to the local owner's; pass ``user_regions`` for others.
     """
     if not location_usable(target):
         return ""
-    region = location_region(target.get("location", ""))
-    if not region or region != location_region(str(facts.get("break_location") or "")):
+    region = location_region(target.get("location", ""), regions)
+    if not region or region != location_region(str(facts.get("break_location") or ""), regions):
         return ""
-    if region == location_region(str(facts.get("school") or "")):
+    if region == location_region(str(facts.get("school") or ""), regions):
         return ""
-    return f"I'm based in {region_phrase(region)} during breaks and summers."
+    return f"I'm based in {region_phrase(region, regions)} during breaks and summers."
 
 
 def _inputs(conn: sqlite3.Connection, target: dict[str, Any], user_id: str, kind: str) -> dict[str, Any]:
@@ -234,7 +240,7 @@ def _inputs(conn: sqlite3.Connection, target: dict[str, Any], user_id: str, kind
         "suggested_ask": "whether they would consider an intern, or a 15 minute call",
     }
     if kind == "initial":
-        payload["location_line"] = location_line(facts, target)
+        payload["location_line"] = location_line(facts, target, user_regions(conn, user_id))
         if payload["location_line"]:
             student["break_location"] = facts["break_location"]
     if kind == "follow_up":
@@ -335,7 +341,12 @@ def _field_basis(basis: str) -> str:
     return match.group(1) if match else basis
 
 
-def validate_draft(raw: str, inputs: dict[str, Any], kind: str) -> tuple[dict[str, Any], list[str]]:
+def validate_draft(
+    raw: str,
+    inputs: dict[str, Any],
+    kind: str,
+    regions: list[dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], list[str]]:
     """Parse a model reply and list every reason it cannot be stored as-is."""
     try:
         parsed = CliAgentProvider.extract_json(raw)
@@ -370,12 +381,15 @@ def validate_draft(raw: str, inputs: dict[str, Any], kind: str) -> tuple[dict[st
             problems.append(
                 "it names " + ", ".join(others) + ", which the reader has not met; keep the email on " + inputs["primary_experience"]
             )
-        region = location_region(str(inputs["student"].get("break_location") or ""))
+        region = location_region(str(inputs["student"].get("break_location") or ""), regions)
         if inputs.get("location_line"):
-            where = region_phrase(region)
-            if region.casefold() not in body.casefold():
+            where = region_phrase(region, regions)
+            # location_line writes the region's phrase ("Northern California"),
+            # which need not contain its name ("NorCal"); either one counts.
+            names = {term.casefold() for term in (region, where) if term}
+            if not any(term in body.casefold() for term in names):
                 problems.append(f"it leaves out location_line; the opening should say you're based in {where} during breaks and summers")
-            elif region.casefold() not in _opening(body).casefold():
+            elif not any(term in _opening(body).casefold() for term in names):
                 problems.append(f"it mentions {where} later on; location_line belongs in the opening, not further down")
         inferences = sum(claim["basis"] == INFERENCE_BASIS for claim in clean_claims)
         if inferences > 1:
@@ -602,6 +616,7 @@ def generate_draft(
         if not target["email_body"]:
             raise ValueError("A follow-up needs the original email text")
     inputs = _inputs(conn, target, user_id, kind)
+    regions = user_regions(conn, user_id)
     provider_id, model = resolve_provider(provider)
 
     if provider_id == "legacy":
@@ -616,14 +631,14 @@ def generate_draft(
         if comments:
             content += revision_request(target, kind, comments)
         raw = complete_text(agent, instructions, content)
-        draft, problems = validate_draft(raw, inputs, kind)
+        draft, problems = validate_draft(raw, inputs, kind, regions)
         if problems:
             retry = (
                 f"{content}\n\nYour previous draft was rejected because " + "; ".join(problems)
                 + ". Write it again following every rule."
             )
             raw = complete_text(agent, instructions, retry)
-            draft, problems = validate_draft(raw, inputs, kind)
+            draft, problems = validate_draft(raw, inputs, kind, regions)
         if problems:
             raise DraftRejected("The generated draft was not grounded in your profile and research: " + "; ".join(problems))
         generated_by = f"{provider_id}:{model}"

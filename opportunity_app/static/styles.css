@@ -393,6 +393,9 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 .tracker-toolbar { grid-column: 1 / -1; display: flex; justify-content: space-between; gap: 14px; align-items: center; }
 .tracker-exports { display: flex; gap: 7px; }
 .tracker-summary { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
+.import-report { grid-column: 1 / -1; padding: var(--space-2); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--glass); font-size: 12px; overflow-wrap: anywhere; }
+.import-report ul { margin: 6px 0 0; padding-left: 18px; color: var(--ink-soft); }
+.import-report p { margin: 6px 0 0; color: var(--ink-muted); }
 .application-board { grid-column: 1 / -1; display: grid; align-items: start; grid-template-columns: repeat(7, minmax(248px, 1fr)); gap: var(--space-2); overflow-x: auto; scrollbar-gutter: stable; padding-bottom: var(--space-2); scroll-snap-type: x proximity; overscroll-behavior-x: contain; }
 .board-column { min-width: 248px; padding: var(--space-2); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--glass); scroll-snap-align: start; }
 .board-column-heading { display: flex; justify-content: space-between; align-items: center; padding: var(--space-1) var(--space-1) var(--space-2); }

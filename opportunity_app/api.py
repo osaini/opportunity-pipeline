@@ -2241,6 +2241,8 @@ def create_app(
             return update_profile(
                 conn, payload.updates, payload.confirmed_fields, user_id=user_id, profile_file=profile_file
             )
+        except LookupError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found") from exc
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 

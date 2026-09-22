@@ -2,7 +2,7 @@
 
 Postings almost never state a deadline, so Urgent is built from every dated
 record that really exists: deadlines stated in posting text, deadlines the
-student entered, deadlines their researched programs publish, outreach
+student entered, deadlines from their own program research, outreach
 deadlines, open application tasks, and follow-up dates. Each row keeps a label saying where its date came from. Nothing is
 estimated; a posting's age is never turned into a closing date.
 
@@ -20,6 +20,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from pipeline_core.visibility import CAPTURE_SOURCE_KEY, capture_visible_sql  # noqa: F401  (re-exported)
+
 from .early_programs import early_programs
 from .outreach import CLOSED_STATUSES as OUTREACH_CLOSED, REVISIT_STATUSES as OUTREACH_REVISIT
 from .schema import utc_now
@@ -36,12 +38,14 @@ OVERDUE_LOOKBACK_DAYS = 60
 ATTENTION_DAYS = 2
 MAX_SKIPPED = 20
 NOTE_LIMIT = 200
-CAPTURE_SOURCE_KEY = "manual:capture"
 
 DATE_SOURCE_LABELS = {
     "posting_deadline": "Stated in posting text",
     "your_deadline": "You entered",
-    "program_deadline": "Published by the program",
+    # A program's `evidence` field is about eligibility, not where its date
+    # came from, and dates are often the student's own estimates. One neutral
+    # label; the entry's deadline_note travels with the row as `date_note`.
+    "program_deadline": "From your program research",
     "outreach_deadline": "Outreach record deadline",
     "task": "Task due",
     "application_follow_up": "Follow-up date",
@@ -67,34 +71,6 @@ _warned: set[tuple[str, str]] = set()
 
 class DeadlineNotFoundError(LookupError):
     pass
-
-
-def capture_visible_sql(alias: str = "o") -> str:
-    """SQL that is true when ``alias`` is visible to the user bound as ``?``.
-
-    Ordinary postings are shared inventory. A manual capture is visible only
-    to the student who captured it, proven by provenance: the capture's own id
-    is the source ``external_id`` and its application points at this
-    opportunity. Having *an* application is not enough, since another student
-    could open one on a capture they should never have seen. A capture with no
-    owning row is visible to no one.
-    """
-    return f"""(
-        NOT EXISTS (
-            SELECT 1 FROM opportunity_sources cap_source
-            WHERE cap_source.opportunity_id = {alias}.id
-              AND cap_source.source_key = '{CAPTURE_SOURCE_KEY}'
-        )
-        OR EXISTS (
-            SELECT 1 FROM opportunity_sources cap_source
-            JOIN opportunity_captures cap ON cap.id = cap_source.external_id
-            JOIN applications cap_app ON cap_app.id = cap.application_id
-            WHERE cap_source.opportunity_id = {alias}.id
-              AND cap_source.source_key = '{CAPTURE_SOURCE_KEY}'
-              AND cap_app.opportunity_id = {alias}.id
-              AND cap.user_id = ?
-        )
-    )"""
 
 
 def visible_opportunity(conn: sqlite3.Connection, user_id: str, opportunity_id: str) -> bool:
@@ -322,6 +298,7 @@ def _program_rows(
             "title": item["name"],
             "company": item["host"],
             "source_name": item["source_note"] or None,
+            "date_note": item.get("deadline_note") or None,
             "program_id": item["id"],
         }
         for item in listed["items"]
@@ -492,6 +469,7 @@ def urgent_queue(
             "subtitle": row.get("subtitle"),
             "company": row.get("company") or "",
             "source_name": row.get("source_name"),
+            "date_note": row.get("date_note"),
             "opportunity_id": row.get("opportunity_id"),
             "application_id": row.get("application_id"),
             "outreach_target_id": row.get("outreach_target_id"),

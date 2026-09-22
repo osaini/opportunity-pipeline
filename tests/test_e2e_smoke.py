@@ -193,7 +193,10 @@ class EndToEndSmokeTests(unittest.TestCase):
 def _digest(conn, payload):
     from opportunity_app.notifications import run_notification_digest
 
-    return run_notification_digest(conn, payload, now=RUN_AT)
+    # Quiet hours resolve through user_time.user_timezone; pin its fallback so
+    # RUN_AT (12:00 UTC) is daytime on every machine.
+    with mock.patch.dict("os.environ", {"PIPELINE_TIMEZONE": "UTC"}):
+        return run_notification_digest(conn, payload, now=RUN_AT)
 
 
 def registered_user_id(platform_path: Path, email: str) -> str:

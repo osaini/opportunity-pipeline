@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterable
 
+from .visibility import capture_visible_sql
+
 
 # Date sorts order by `posted_at_utc`, the derived fixed-width UTC column, not
 # by the raw `posted_at` the source sent. Sources disagree on spelling -- `Z`,
@@ -281,7 +283,13 @@ def _where(
         clauses.append(f"COALESCE({alias}.posted_at, {alias}.first_seen_at) >= ?")
         params.append(filters.posted_since)
     if filters.deadline_before:
-        clauses.append(f"{alias}.deadline_at IS NOT NULL AND {alias}.deadline_at <= ?")
+        # A deadline is a calendar date stored as midnight UTC
+        # ("2026-06-01T00:00:00+00:00"), and the filter is a date the student
+        # picked. Comparing whole strings would drop the chosen day itself, so
+        # both sides compare their date part. substr works on both backends.
+        clauses.append(
+            f"{alias}.deadline_at IS NOT NULL AND substr({alias}.deadline_at, 1, 10) <= substr(?, 1, 10)"
+        )
         params.append(filters.deadline_before)
     return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
 
@@ -398,6 +406,11 @@ class OpportunityRepository:
             joiner = " AND " if where_sql else " WHERE "
             where_sql += f"{joiner}tenant.id = ?"
             where_params = [*where_params, opportunity_id]
+        # A manual capture belongs to the student who captured it; every other
+        # tenant sees shared inventory only. Same rule as the Urgent queue.
+        joiner = " AND " if where_sql else " WHERE "
+        where_sql += f"{joiner}{capture_visible_sql('tenant')}"
+        where_params = [*where_params, self.user_id]
         return (
             f"{cte}SELECT {projection} FROM tenant{where_sql}{suffix}",
             [*params, *where_params],

@@ -127,6 +127,43 @@
     themeLabel: document.getElementById("theme-label"),
   };
 
+  // FastAPI reports a failed request body as a list of {loc, msg, type}
+  // objects. Turn any detail shape into a sentence a person can read; never
+  // "[object Object]".
+  function errorDetailText(detail) {
+    if (detail == null || detail === "") return "";
+    if (typeof detail === "string") return detail;
+    if (typeof detail === "number" || typeof detail === "boolean") return String(detail);
+    if (Array.isArray(detail)) {
+      const parts = detail.map((entry) => errorDetailText(entry)).filter(Boolean);
+      return [...new Set(parts)].join(" ");
+    }
+    if (typeof detail === "object") {
+      if (typeof detail.msg === "string") {
+        const text = detail.msg.replace(/^Value error,\s*/i, "").trim();
+        if (!text) return "";
+        const sentence = /[.!?]$/.test(text) ? text : `${text}.`;
+        // Name the field when the message alone would not say which one.
+        const field = Array.isArray(detail.loc)
+          ? [...detail.loc].reverse().find((part) => typeof part === "string" && !["body", "query", "path", "header"].includes(part))
+          : "";
+        if (!field || detail.type === "value_error") return sentence;
+        const label = field.replace(/_/g, " ");
+        return `${label.charAt(0).toUpperCase()}${label.slice(1)}: ${sentence.charAt(0).toLowerCase()}${sentence.slice(1)}`;
+      }
+      for (const key of ["detail", "message", "error"]) {
+        const text = errorDetailText(detail[key]);
+        if (text) return text;
+      }
+      try {
+        return JSON.stringify(detail);
+      } catch (_) {
+        return "";
+      }
+    }
+    return "";
+  }
+
   async function api(path, options = {}) {
     const isFormData = options.body instanceof FormData;
     const csrf = document.cookie.split("; ").find((entry) => entry.startsWith("pipeline_csrf="))?.split("=")[1];
@@ -158,7 +195,7 @@
       let detail = `Request failed (${response.status})`;
       try {
         const body = await response.json();
-        detail = body.detail || detail;
+        detail = errorDetailText(body.detail) || detail;
       } catch (_) {
         // The HTTP status remains a useful fallback.
       }
@@ -337,6 +374,67 @@
 
   function plural(count, one, many) {
     return `${Number(count).toLocaleString()} ${count === 1 ? one : many}`;
+  }
+
+  // Selects that save the moment they change. Chromium fires `change` on every
+  // ArrowUp/ArrowDown (and type-ahead letter) on a focused, closed select, so
+  // saving on `change` alone would record each value a keyboard user passes
+  // through. Keyboard browsing only marks the select dirty; Enter or leaving
+  // the select commits it, Escape puts the saved value back. A pointer choice
+  // from the open list still saves at once. `commit(value, trigger)` runs at
+  // most once at a time; trigger is "pointer", "enter", or "blur".
+  const SELECT_BROWSE_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"]);
+
+  function autoSaveSelect(select, { saved, commit }) {
+    let browsing = false;
+    let dirty = false;
+    let busy = false;
+    const run = async (trigger) => {
+      browsing = false;
+      dirty = false;
+      if (busy || select.value === saved()) return;
+      busy = true;
+      try {
+        await commit(select.value, trigger);
+      } finally {
+        busy = false;
+      }
+    };
+    select.addEventListener("pointerdown", () => { browsing = false; });
+    select.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        if (dirty || select.value !== saved()) {
+          event.preventDefault();
+          run("enter");
+        }
+        return;
+      }
+      if (event.key === "Escape") {
+        if (!busy && select.value !== saved()) select.value = saved();
+        browsing = false;
+        dirty = false;
+        return;
+      }
+      // Alt+Arrow and F4 open the list; a choice made there is a deliberate pick.
+      if (event.altKey || event.ctrlKey || event.metaKey) return;
+      if (SELECT_BROWSE_KEYS.has(event.key) || (event.key.length === 1 && event.key !== " ")) browsing = true;
+    });
+    select.addEventListener("change", () => {
+      if (browsing) {
+        dirty = true;
+        return;
+      }
+      run("pointer");
+    });
+    select.addEventListener("blur", () => {
+      // A list rebuild removes the focused select, which fires blur; that is
+      // not the user leaving it, so do not save a choice they are still making.
+      queueMicrotask(() => {
+        if (!select.isConnected) return;
+        if (dirty || select.value !== saved()) run("blur");
+        else browsing = false;
+      });
+    });
   }
 
   function announce(message) {
@@ -1211,6 +1309,7 @@
     const label = element("label", "");
     label.appendChild(element("span", "", "Stage"));
     const select = document.createElement("select");
+    select.dataset.savedStage = item.stage;
     ["applying", "applied", "interview", "offer", "rejected", "withdrawn", "archived"].forEach((stage) => {
       const option = document.createElement("option");
       option.value = stage;
@@ -1218,22 +1317,36 @@
       option.selected = item.stage === stage;
       select.appendChild(option);
     });
-    select.addEventListener("change", async () => {
-      select.disabled = true;
-      try {
-        await api(`/api/v1/applications/${encodeURIComponent(item.id)}`, {
-          method: "PATCH",
-          body: JSON.stringify({ stage: select.value }),
-        });
-        await Promise.all([loadApplications(), loadStats()]);
-        // The board re-renders into a new column; keep keyboard users on this card.
-        els.results.querySelector(`[data-application-id="${CSS.escape(item.id)}"] select`)?.focus();
-        announce(`Moved ${item.title} to ${select.value}.`);
-      } catch (error) {
-        showError(error.message);
-      } finally {
-        select.disabled = false;
-      }
+    // Every stage change is audited (and "applied" stamps a date), so keyboard
+    // browsing through the list must not save each stage it passes.
+    autoSaveSelect(select, {
+      saved: () => item.stage,
+      commit: async (stage, trigger) => {
+        select.disabled = true;
+        let moved = false;
+        try {
+          await api(`/api/v1/applications/${encodeURIComponent(item.id)}`, {
+            method: "PATCH",
+            body: JSON.stringify({ stage }),
+          });
+          moved = true;
+        } catch (error) {
+          select.value = item.stage;
+          showError(error.message);
+        } finally {
+          select.disabled = false;
+        }
+        if (!moved) return;
+        try {
+          await Promise.all([loadApplications(), loadStats()]);
+        } catch (error) {
+          showError(error.message);
+        }
+        // The board re-renders into a new column; keep keyboard users on this
+        // card, unless they already left the select for somewhere else.
+        if (trigger !== "blur") els.results.querySelector(`[data-application-id="${CSS.escape(item.id)}"] select`)?.focus();
+        announce(`Moved ${item.title} to ${stage}.`);
+      },
     });
     label.appendChild(select);
     const source = element("a", "application-link", "Open posting ↗");
@@ -1559,8 +1672,31 @@
     })),
   ];
 
+  // Stage choices browsed with the keyboard but not saved yet, so a reload
+  // triggered by another card's save does not throw them away.
+  function unsavedStageChoices() {
+    return [...els.results.querySelectorAll("[data-application-id] select[data-saved-stage]")]
+      .filter((select) => select.value !== select.dataset.savedStage)
+      .map((select) => ({
+        id: select.closest("[data-application-id]").dataset.applicationId,
+        value: select.value,
+        focused: select === document.activeElement,
+      }));
+  }
+
+  function restoreStageChoices(choices) {
+    choices.forEach(({ id, value, focused }) => {
+      const select = els.results.querySelector(`[data-application-id="${CSS.escape(id)}"] select[data-saved-stage]`);
+      if (!select || select.dataset.savedStage === value) return;
+      if (![...select.options].some((option) => option.value === value)) return;
+      select.value = value;
+      if (focused) select.focus();
+    });
+  }
+
   async function loadApplications() {
     const sequence = ++state.loadSequence;
+    const carried = unsavedStageChoices();
     state.loading = true;
     clearError();
     els.results.setAttribute("aria-busy", "true");
@@ -1612,8 +1748,30 @@
         body.append("upload", importInput.files[0]);
         try {
           const result = await api("/api/v1/applications/import", { method: "POST", body });
-          els.pageStatus.textContent = `Imported ${result.imported}; skipped ${result.skipped}`;
+          // The reload rewrites the page status, so report the import after it.
           await loadApplications();
+          if (state.view !== "applications") return;
+          const summary = `Imported ${result.imported}; skipped ${result.skipped}`;
+          els.pageStatus.textContent = summary;
+          announce(`${summary}.`);
+          const errors = Array.isArray(result.errors) ? result.errors : [];
+          if (errors.length) {
+            const report = element("div", "import-report");
+            report.setAttribute("role", "status");
+            report.appendChild(element("strong", "", `${plural(result.skipped || errors.length, "row was", "rows were")} not imported`));
+            const list = element("ul", "");
+            errors.forEach((entry) => {
+              const detail = errorDetailText(entry && typeof entry === "object" ? entry.detail : entry) || "Not imported.";
+              list.appendChild(element("li", "", entry && entry.row ? `Row ${entry.row}: ${detail}` : detail));
+            });
+            report.appendChild(list);
+            if (result.skipped > errors.length) {
+              report.appendChild(element("p", "", `Only the first ${errors.length} are listed.`));
+            }
+            const anchor = els.results.querySelector(".tracker-summary");
+            if (anchor) anchor.after(report);
+            else els.results.prepend(report);
+          }
         } catch (error) {
           showError(error.message);
         } finally {
@@ -1686,6 +1844,7 @@
       els.pageStatus.textContent = "Every stage change is kept in the audit history";
       els.results.setAttribute("aria-busy", "false");
       focusRequestedApplication();
+      restoreStageChoices(carried);
     } catch (error) {
       showLoadError(error, sequence);
     } finally {
@@ -3220,25 +3379,28 @@
       option.selected = item.status === value;
       select.appendChild(option);
     });
-    select.addEventListener("change", async () => {
-      const previous = item.status;
-      select.disabled = true;
-      try {
-        await api(`/api/v1/outreach/${encodeURIComponent(item.id)}`, {
-          method: "PATCH",
-          body: JSON.stringify({ status: select.value }),
-        });
-        state.outreachKeep.add(item.id);
-        state.outreachSelected = item.id;
-        await loadOutreach();
-        els.results.querySelector(`[data-outreach-id="${CSS.escape(item.id)}"] .application-controls select`)?.focus();
-        announce(`${item.company} marked ${OUTREACH_STATUS_LABELS[select.value]}.`);
-      } catch (error) {
-        select.value = previous;
-        showError(error.message);
-      } finally {
-        select.disabled = false;
-      }
+    autoSaveSelect(select, {
+      saved: () => item.status,
+      commit: async (status, trigger) => {
+        const previous = item.status;
+        select.disabled = true;
+        try {
+          await api(`/api/v1/outreach/${encodeURIComponent(item.id)}`, {
+            method: "PATCH",
+            body: JSON.stringify({ status }),
+          });
+          state.outreachKeep.add(item.id);
+          state.outreachSelected = item.id;
+          await loadOutreach();
+          if (trigger !== "blur") els.results.querySelector(`[data-outreach-id="${CSS.escape(item.id)}"] .application-controls select`)?.focus();
+          announce(`${item.company} marked ${OUTREACH_STATUS_LABELS[status]}.`);
+        } catch (error) {
+          select.value = previous;
+          showError(error.message);
+        } finally {
+          select.disabled = false;
+        }
+      },
     });
     label.appendChild(select);
     const actions = element("div", "tracker-exports");
@@ -5360,6 +5522,9 @@
     body.appendChild(element("h4", "", headline));
     if (context) body.appendChild(element("p", "urgent-context", context));
     body.appendChild(element("p", "urgent-source", item.source_name ? `${item.date_source} · ${item.source_name}` : item.date_source));
+    // A researched date can carry its own caveat ("estimated", "rolling");
+    // show it so an estimate never reads as a confirmed deadline.
+    if (item.date_note) body.appendChild(element("p", "urgent-source urgent-date-note", item.date_note));
     if (item.kind === "posting_deadline" || item.kind === "your_deadline") {
       const twin = items.find((other) => other !== item
         && other.opportunity_id === item.opportunity_id
@@ -5519,8 +5684,77 @@
     }
   }
 
+  // Re-render after a status save without the loading placeholder, so focus
+  // survives: the rebuilt list gets focus back on the matching control.
+  async function reloadPrograms({ trigger, programId, control }) {
+    const sequence = ++state.loadSequence;
+    try {
+      const payload = await api("/api/v1/early-programs");
+      if (sequence !== state.loadSequence || state.view !== "programs") return;
+      // Read focus now, not when the save started: a keyboard user may have
+      // moved on while the save was in flight.
+      const active = document.activeElement;
+      const order = [...els.results.querySelectorAll(".program-row")].map((row) => row.dataset.programId);
+      const activeRow = active && els.results.contains(active) ? active.closest(".program-row") : null;
+      const inList = activeRow && active.dataset.programControl && active !== control
+        ? { id: activeRow.dataset.programId, role: active.dataset.programControl }
+        : null;
+      const subtab = active && els.subnavList.contains(active) ? active.dataset.subtab : null;
+      const idle = !active || active === document.body || active === control || !active.isConnected;
+      // Another row may hold a keyboard choice that is not saved yet; carry it
+      // into the rebuilt list so Enter or leaving the select still saves it.
+      const unsaved = [...els.results.querySelectorAll('select[data-program-control="status"]')]
+        .filter((select) => select !== control && select.value !== select.dataset.savedStatus)
+        .map((select) => ({ id: select.closest(".program-row")?.dataset.programId, value: select.value }));
+      clearError();
+      applyProgramsMeta(payload);
+      renderPrograms(payload);
+      unsaved.forEach(({ id, value }) => {
+        const select = id && els.results.querySelector(
+          `.program-row[data-program-id="${CSS.escape(id)}"] select[data-program-control="status"]`
+        );
+        if (select && [...select.options].some((option) => option.value === value)) select.value = value;
+      });
+      if (inList) {
+        focusProgramControl(inList.id, inList.role, order);
+      } else if (subtab) {
+        els.subnavList.querySelector(`.subnav-item[data-subtab="${CSS.escape(subtab)}"]`)?.focus();
+      } else if (trigger !== "blur" && idle) {
+        focusProgramControl(programId, "status", order);
+      }
+    } catch (error) {
+      showLoadError(error, sequence);
+    }
+  }
+
+  // Focus a program's control in the rebuilt list. When the row left the
+  // current sub-tab, take the next row that was below it (else the one above),
+  // and with no rows left, the active sub-tab.
+  function focusProgramControl(programId, role, order) {
+    const find = (id) => els.results.querySelector(
+      `.program-row[data-program-id="${CSS.escape(id)}"] [data-program-control="${CSS.escape(role)}"]`
+    );
+    const index = order.indexOf(programId);
+    const candidates = [programId, ...order.slice(index + 1), ...order.slice(0, Math.max(index, 0)).reverse()];
+    for (const id of candidates) {
+      const target = id && find(id);
+      if (target) {
+        target.focus();
+        return;
+      }
+    }
+    els.subnavList.querySelector(".subnav-item.is-active")?.focus();
+  }
+
   function programWhen(item) {
     if (item.bucket === "upcoming" && item.opens_on) return [formatCalendarDate(item.opens_on), "Opens"];
+    // A closed entry is closed whatever its date says: a closed note can end a
+    // program before (or without) its listed deadline.
+    if (item.bucket === "closed") {
+      const past = item.deadline_on && item.days_left !== null && item.days_left < 0;
+      const relative = past ? `Closed ${plural(-item.days_left, "day", "days")} ago` : "Closed";
+      return [item.deadline_on ? formatCalendarDate(item.deadline_on) : "No date", relative];
+    }
     if (!item.deadline_on) return ["No date", item.deadline_note || "None published"];
     const days = item.days_left;
     const relative = days < 0 ? `Closed ${plural(-days, "day", "days")} ago`
@@ -5560,7 +5794,10 @@
     link.target = "_blank";
     link.rel = "noopener noreferrer";
     link.setAttribute("aria-label", `Official page for ${item.name} at ${item.host} (opens in a new tab)`);
+    link.dataset.programControl = "official";
     const select = element("select", "program-status");
+    select.dataset.programControl = "status";
+    select.dataset.savedStatus = item.status;
     select.setAttribute("aria-label", `Your status for ${item.name} at ${item.host}`);
     Object.entries(PROGRAM_STATUS_LABELS).forEach(([value, label]) => {
       const option = element("option", "", label);
@@ -5568,20 +5805,24 @@
       option.selected = value === item.status;
       select.appendChild(option);
     });
-    select.addEventListener("change", async () => {
-      select.disabled = true;
-      try {
-        await api(`/api/v1/early-programs/${encodeURIComponent(item.id)}/status`, {
-          method: "PUT",
-          body: JSON.stringify({ status: select.value }),
-        });
-        announce(`${item.name}: ${PROGRAM_STATUS_LABELS[select.value]}`);
-        await loadPrograms();
-      } catch (error) {
-        select.value = item.status;
-        select.disabled = false;
-        showError(error.message);
-      }
+    autoSaveSelect(select, {
+      saved: () => item.status,
+      commit: async (status, trigger) => {
+        select.disabled = true;
+        try {
+          await api(`/api/v1/early-programs/${encodeURIComponent(item.id)}/status`, {
+            method: "PUT",
+            body: JSON.stringify({ status }),
+          });
+        } catch (error) {
+          select.value = item.status;
+          select.disabled = false;
+          showError(error.message);
+          return;
+        }
+        announce(`${item.name}: ${PROGRAM_STATUS_LABELS[status]}`);
+        await reloadPrograms({ trigger, programId: item.id, control: select });
+      },
     });
     actions.append(link, select);
     row.append(when, body, actions);
@@ -6006,7 +6247,7 @@
     els.pageEyebrow.textContent = view === "programs" ? programsEyebrow() : view === "urgent" ? "Every date has a source" : view === "outreach" ? "Companies without a posting" : view === "agent" ? "Tools, evidence, approval" : view === "prepare" ? "Draft, review, approve" : view === "profile" ? "Private and confirmed by you" : view === "applications" ? "Your applications" : view === "saved" ? "Your chosen opportunities" : "Your live opportunity workspace";
     els.pageTitle.textContent = view === "programs" ? "Programs that fit where you are." : view === "urgent" ? "What needs doing next." : view === "outreach" ? "Reach the startups before they post." : view === "agent" ? "Ask your pipeline, then decide." : view === "prepare" ? "Prepare without inventing a thing." : view === "profile" ? "Build the profile behind every match." : view === "applications" ? "Keep every application moving." : view === "saved" ? "Return to the roles you chose." : "Find the roles worth your time.";
     els.pageLede.textContent = view === "programs"
-      ? "Internships, research, scholarships, and externships researched for you, each labeled with how strongly its host says a student at your stage may apply. Dates are the ones the host published."
+      ? "Internships, research, scholarships, and externships researched for you, each labeled with how strongly its host says a student at your stage may apply. Dates come from your own research of each program page, so check them on the official page before you rely on one."
       : view === "urgent"
       ? "Deadlines, tasks, and follow-ups that carry a real date, with overdue items first. Each one says where its date came from; nothing is estimated from a posting's age."
       : view === "outreach"
@@ -6348,7 +6589,8 @@
     els.authError.textContent = "";
     try {
       const result = await api("/api/v1/auth/register", {method: "POST", body: JSON.stringify({
-        invite_token: document.getElementById("register-invite").value,
+        // A blank invitation is no invitation; "" fails the server's length rule.
+        invite_token: document.getElementById("register-invite").value.trim() ? document.getElementById("register-invite").value : null,
         display_name: document.getElementById("register-name").value,
         email: document.getElementById("register-email").value,
         password: document.getElementById("register-password").value,

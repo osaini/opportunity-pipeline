@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Any, Callable
 from uuid import uuid4
 
-from pipeline_core import OpportunityFilters, OpportunityRepository
+from pipeline_core import OpportunityFilters, OpportunityRepository, capture_visible_sql
 
 from .actions import (
     APPLICATION_STAGES,
@@ -26,6 +26,7 @@ from .agent_providers import AgentProvider, ToolCall, ToolDefinition, build_prov
 from .preparation import PreparationNotFoundError, create_document
 from .profile import get_profile
 from .schema import utc_now
+from .user_time import user_timezone
 
 
 class AgentNotFoundError(LookupError):
@@ -98,36 +99,56 @@ def _upcoming_deadlines(conn: sqlite3.Connection, *, user_id: str, limit: int) -
     Each row keeps ``source`` so an answer never passes the student's own note
     off as the employer's statement.
     """
-    today = _today_utc()
+    today = _today_local(conn, user_id)
+    # Another student's manual capture is never listed, even by its deadline.
     listed = [
         {**dict(row), "source": "posting_text"}
         for row in conn.execute(
-            "SELECT id, company, title, deadline_at FROM opportunities "
-            "WHERE active=1 AND deadline_at IS NOT NULL AND substr(deadline_at, 1, 10) >= ? "
-            "ORDER BY deadline_at LIMIT ?",
-            (today, limit),
+            "SELECT o.id, o.company, o.title, o.deadline_at FROM opportunities o "
+            "WHERE o.active=1 AND o.deadline_at IS NOT NULL AND substr(o.deadline_at, 1, 10) >= ? "
+            f"AND {capture_visible_sql('o')} "
+            "ORDER BY o.deadline_at LIMIT ?",
+            (today, user_id, limit),
         ).fetchall()
     ]
     entered = [
         {**dict(row), "source": "you_entered"}
         for row in conn.execute(
-            """
+            f"""
             SELECT o.id, o.company, o.title, d.deadline_on AS deadline_at
             FROM opportunity_deadlines d JOIN opportunities o ON o.id = d.opportunity_id
             WHERE d.user_id=? AND o.active=1 AND d.deadline_on >= ?
+              AND {capture_visible_sql("o")}
             ORDER BY d.deadline_on LIMIT ?
             """,
-            (user_id, today, limit),
+            (user_id, today, user_id, limit),
         ).fetchall()
     ]
     rows = sorted(listed + entered, key=lambda row: (str(row["deadline_at"])[:10], row["source"], str(row["id"])))
     return rows[:limit]
 
 
-def _today_utc() -> str:
-    # Compared against the date prefix so date-only and timestamp deadlines agree,
-    # and a deadline falling today is still open.
-    return utc_now()[:10]
+def _today_local(conn: sqlite3.Connection, user_id: str) -> str:
+    """Today's calendar date in the student's own timezone, as YYYY-MM-DD.
+
+    Compared against the date prefix so date-only and timestamp deadlines agree,
+    and a deadline falling today is still open. The same resolver Urgent uses,
+    so an evening in Texas is not already "tomorrow" by UTC.
+    """
+    now = datetime.fromisoformat(utc_now().replace("Z", "+00:00"))
+    return user_timezone(conn, user_id).today(now).isoformat()
+
+
+def _visible_opportunity_row(conn: sqlite3.Connection, opportunity_id: str, *, user_id: str) -> Any:
+    """Company and title of an opportunity this student may see, else None.
+
+    Guards every proposal: a guessed id of another student's private capture
+    is refused exactly as an unknown id is.
+    """
+    return conn.execute(
+        f"SELECT o.company, o.title FROM opportunities o WHERE o.id=? AND {capture_visible_sql('o')}",
+        (opportunity_id, user_id),
+    ).fetchone()
 
 
 def _calendar_label(value: Any) -> str:
@@ -237,7 +258,7 @@ def _post_legacy_message(conn: sqlite3.Connection, thread_id: str, content: str,
     if re.search(r"\b(save|shortlist)\s+([\w.-]+)", content, re.IGNORECASE):
         match = re.search(r"\b(?:save|shortlist)\s+([\w.-]+)", content, re.IGNORECASE)
         opportunity_id = match.group(1) if match else ""
-        exists = conn.execute("SELECT company, title FROM opportunities WHERE id=?", (opportunity_id,)).fetchone()
+        exists = _visible_opportunity_row(conn, opportunity_id, user_id=user_id)
         if exists:
             proposal = _propose(
                 conn, thread_id, "save_opportunity", f"opportunity:{opportunity_id}",
@@ -249,7 +270,7 @@ def _post_legacy_message(conn: sqlite3.Connection, thread_id: str, content: str,
             response = f"I could not find an opportunity with ID {opportunity_id}, so I did not propose an action."
     elif "what should i apply" in lowered or "recommend" in lowered or "best roles" in lowered:
         def recommendations():
-            items, _ = OpportunityRepository(conn).list(OpportunityFilters(limit=5))
+            items, _ = OpportunityRepository(conn, user_id=user_id).list(OpportunityFilters(limit=5))
             return [{"id": item["id"], "company": item["company"], "title": item["title"], "score": item["score"], "reasons": item["reasons"][:2]} for item in items]
         rows = _tool_run(conn, thread_id, "ranked_opportunities", {"limit": 5}, recommendations, user_id=user_id)
         citations = [{"type": "opportunity", "id": row["id"], "score": row["score"]} for row in rows]
@@ -429,7 +450,7 @@ def _execute_agent_tool(
     def execute() -> dict[str, Any]:
         nonlocal citations, proposal
         if call.name == "search_opportunities":
-            rows, total = OpportunityRepository(conn).list(OpportunityFilters(
+            rows, total = OpportunityRepository(conn, user_id=user_id).list(OpportunityFilters(
                 query=str(args.get("query") or ""),
                 role_type=str(args.get("role_type") or ""),
                 region=str(args.get("region") or ""),
@@ -438,7 +459,7 @@ def _execute_agent_tool(
             citations = [{"type": "opportunity", "id": row["id"], "score": row["score"]} for row in rows]
             return {"total": total, "items": [_bounded_opportunity(row) for row in rows]}
         if call.name == "get_opportunity":
-            item = OpportunityRepository(conn).get(str(args.get("opportunity_id") or ""))
+            item = OpportunityRepository(conn, user_id=user_id).get(str(args.get("opportunity_id") or ""))
             if item is None:
                 raise OpportunityNotFoundError(str(args.get("opportunity_id") or ""))
             citations = [{"type": "opportunity", "id": item["id"], "score": item["score"]}]
@@ -489,7 +510,7 @@ def _execute_agent_tool(
         if call.name == "propose_opportunity_intent":
             opportunity_id = str(args.get("opportunity_id") or "")
             action = str(args.get("action") or "")
-            item = conn.execute("SELECT company, title FROM opportunities WHERE id=?", (opportunity_id,)).fetchone()
+            item = _visible_opportunity_row(conn, opportunity_id, user_id=user_id)
             if not item or action not in {"saved", "passed", "undo"}:
                 raise ValueError("Opportunity or intent action is invalid")
             proposal = _propose(
@@ -525,7 +546,7 @@ def _execute_agent_tool(
         if call.name == "propose_preparation_document":
             opportunity_id = str(args.get("opportunity_id") or "")
             document_type = str(args.get("document_type") or "")
-            item = conn.execute("SELECT company, title FROM opportunities WHERE id=?", (opportunity_id,)).fetchone()
+            item = _visible_opportunity_row(conn, opportunity_id, user_id=user_id)
             if not item or document_type not in {"resume", "cover_letter"}:
                 raise ValueError("Opportunity or document type is invalid")
             proposal = _propose(

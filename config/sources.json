@@ -67,7 +67,7 @@
       "kind": "greenhouse",
       "company": "Hyliion",
       "token": "hyliion",
-      "note": "Cedar Park, TX -- inside the Austin region list",
+      "note": "Cedar Park, TX (Austin area)",
       "enabled": true
     },
     {
@@ -294,7 +294,7 @@
       "kind": "lever",
       "company": "CesiumAstro",
       "site": "CesiumAstro",
-      "note": "Austin, TX -- phased-array comms for aircraft and spacecraft. 274 postings, 17 past the title filter. Best Austin catch in this batch. Austin, TX -- space hardware. Found through a LinkedIn sweep on 2026-09-21; identity verified from the Lever board page title. 17 internships at the time, including Summer 2027 Mechanical Engineering (Austin) and Manufacturing.",
+      "note": "Austin, TX -- phased-array comms for aircraft and spacecraft. 274 postings, 17 past the title filter. Found through a LinkedIn sweep on 2026-09-21; identity verified from the Lever board page title. 17 internships at the time, including Summer 2027 Mechanical Engineering (Austin) and Manufacturing.",
       "enabled": true
     },
     {
@@ -729,7 +729,7 @@
       "tenant": "ttc",
       "datacenter": "wd1",
       "site": "Toro_External_Careers",
-      "note": "Bloomington, MN -- turf and outdoor equipment, incl. the Exmark division. 190 postings, 78 past the title filter. Strong classic-mechanical yield.",
+      "note": "Bloomington, MN -- turf and outdoor equipment, incl. the Exmark division. 190 postings, 78 past the title filter. Strong yield of classic mechanical roles.",
       "enabled": true
     },
     {
@@ -1004,7 +1004,7 @@
         },
         {
           "repo": "speedyapply/2027-SWE-College-Jobs",
-          "note": "SWE/AI focused; low mechanical yield, check only when widening scope"
+          "note": "SWE/AI focused; low yield for hardware disciplines"
         }
       ],
       "note": "SimplifyJobs has no Summer2027 repo yet (404 as of 2026-07-26); its Summer2026 list is the prior cycle. These lists skew software -- filter hard if you are not in software.",
@@ -1024,7 +1024,7 @@
   },
   "rejected_sources": {
     "note": "Probed on 2026-07-27 and deliberately not adopted. Recorded so the same ground is not re-covered every few months.",
-    "themuse": "Keyless public API at https://www.themuse.com/api/public/jobs. Its whole 'Science and Engineering' category holds only 117 internships nationally, dominated by one retailer's Arkansas postings and by roles in China, Italy, and Singapore, and it still serves stale 2025 listings. Its `location` filter also leaks -- a query for Austin returned New York and Quebec roles. Not worth the request budget for this profile.",
+    "themuse": "Keyless public API at https://www.themuse.com/api/public/jobs. Its whole 'Science and Engineering' category holds only 117 internships nationally, dominated by one retailer's Arkansas postings and by roles in China, Italy, and Singapore, and it still serves stale 2025 listings. Its `location` filter also leaks -- a query for Austin returned New York and Quebec roles. Not worth the request budget as a default source.",
     "workable_recruitee_rippling_bamboohr": "All four have clean public JSON endpoints and adapters would be easy, but a sweep across ~70 mechanical/hardware employers found essentially no real boards on them -- the few hits were generic-token false positives. Adding the adapters would be dead code until a specific employer is found using one.",
     "careerjet": "Public API endpoint refused the connection on probe.",
     "nsf_etap": "etap.nsf.gov reset the connection on probe. NSF REU stays a manual_check_sources entry.",

@@ -26,7 +26,7 @@ from uuid import uuid4
 
 from pipeline import PROFILE_PATH
 
-from .schema import utc_now
+from .schema import LOCAL_USER_ID, utc_now
 from .user_time import user_timezone
 
 
@@ -241,7 +241,7 @@ def _mentions(lowered: str, term: Any) -> bool:
     return bool(needle) and re.search(rf"\b{re.escape(needle)}\b", lowered) is not None
 
 
-def location_region(text: str) -> str:
+def location_region(text: str, regions: list[dict[str, Any]] | None = None) -> str:
     """The student's own region a place name falls in, or "" when it names none.
 
     Regions come only from the student's config/profile.json, so every student
@@ -251,6 +251,9 @@ def location_region(text: str) -> str:
     region's places, aliases, and name all count. With none named, only an
     alias or the region's own name does, because a bare town name is common
     elsewhere and "Dublin, Ireland" must not become a California region.
+
+    ``regions`` defaults to the local owner's profile file; pass
+    ``user_regions(conn, user_id)`` for anyone else.
     """
     raw = str(text or "")
     lowered = " ".join(raw.casefold().split())
@@ -258,7 +261,7 @@ def location_region(text: str) -> str:
         return ""
     states = {code for code in re.findall(r",\s*([A-Z]{2})\b", raw) if code in US_STATES}
     states |= {code for code, name in US_STATES.items() if re.search(rf"\b{name}\b", lowered)}
-    for region in _profile_regions():
+    for region in _profile_regions() if regions is None else regions:
         name = str(region.get("name") or "")
         if not name:
             continue
@@ -273,9 +276,9 @@ def location_region(text: str) -> str:
     return ""
 
 
-def region_phrase(name: str) -> str:
+def region_phrase(name: str, regions: list[dict[str, Any]] | None = None) -> str:
     """How an email names the region: its profile "phrase", or "the Bay Area" style for "... Area"."""
-    for region in _profile_regions():
+    for region in _profile_regions() if regions is None else regions:
         if region.get("name") == name and str(region.get("phrase") or "").strip():
             return str(region["phrase"]).strip()
     return f"the {name}" if name.endswith(" Area") else name
@@ -299,6 +302,21 @@ def _profile_regions() -> list[dict[str, Any]]:
             key=key, regions=[region for region in regions if isinstance(region, dict)]
         )
     return _PROFILE_REGIONS_CACHE["regions"]
+
+
+def user_regions(conn: sqlite3.Connection | None, user_id: str = LOCAL_USER_ID) -> list[dict[str, Any]]:
+    """The outreach regions for one user.
+
+    config/profile.json belongs to the local owner, so only that user reads it.
+    Anyone else on the same install gets the regions in their own confirmed
+    profile facts, or none, never the owner's metros.
+    """
+    if conn is None or user_id == LOCAL_USER_ID:
+        return _profile_regions()
+    from .preparation import confirmed_facts
+
+    regions = confirmed_facts(conn, user_id).get("regions") or []
+    return [region for region in regions if isinstance(region, dict)] if isinstance(regions, list) else []
 
 
 def company_key(name: str) -> str:
@@ -417,7 +435,11 @@ def _confirmed_claims(claims: Any) -> Any:
     return rewritten
 
 
-def _record(row: sqlite3.Row | dict[str, Any], today: date | None = None) -> dict[str, Any]:
+def _record(
+    row: sqlite3.Row | dict[str, Any],
+    today: date | None = None,
+    regions: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     item = dict(row)
     item["source_urls"] = json.loads(item.pop("source_urls_json") or "[]")
     draft_claims_json = item.pop("draft_claims_json", None) or "[]"
@@ -435,7 +457,7 @@ def _record(row: sqlite3.Row | dict[str, Any], today: date | None = None) -> dic
         "follow_up", item.get("follow_up_subject", ""), item.get("follow_up_body", ""), item.get("contact_email", ""),
         follow_up_claims_json, item.get("follow_up_generated_by", ""), item.get("contact_cc", ""),
     )
-    item["location_region"] = location_region(item.get("location", ""))
+    item["location_region"] = location_region(item.get("location", ""), regions)
     item["location_inferred"] = bool(item.get("location_inferred"))
     item["location_verified"] = location_usable(item)
     form_d = item.pop("sec_form_d_json", None) or ""
@@ -551,7 +573,8 @@ def list_targets(
         """,
         params,
     ).fetchall()
-    return [_record(row, today) for row in rows]
+    regions = user_regions(conn, user_id)
+    return [_record(row, today, regions) for row in rows]
 
 
 def is_new_from_search(item: dict[str, Any]) -> bool:
@@ -601,7 +624,7 @@ def get_target(
     row = conn.execute(f"{SELECT_TARGETS} WHERE id=? AND user_id=?", (target_id, user_id)).fetchone()
     if not row:
         raise OutreachNotFoundError(target_id)
-    item = _record(row, today or local_today(conn, user_id))
+    item = _record(row, today or local_today(conn, user_id), user_regions(conn, user_id))
     if include_events:
         item["events"] = [
             dict(event)

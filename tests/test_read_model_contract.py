@@ -358,7 +358,7 @@ class ReadModelContractTests(unittest.TestCase):
 
         self.add("exact-pay", pay_min=20.0, pay_max=25.0, pay_period="hour")
         self.add("exact-posted", posted_at="2026-05-01T00:00:00+00:00")
-        self.add("exact-deadline", deadline_at="2026-06-01")
+        self.add("exact-deadline", deadline_at="2026-06-01T00:00:00+00:00")
         for label, filters, expected in (
             ("min_hourly_pay", {"min_hourly_pay": 25.0}, "exact-pay"),
             ("posted_since", {"posted_since": "2026-05-01T00:00:00+00:00"}, "exact-posted"),

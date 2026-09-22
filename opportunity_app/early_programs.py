@@ -54,7 +54,7 @@ from pathlib import Path
 from typing import Any
 
 from . import ROOT
-from .schema import utc_now
+from .schema import LOCAL_USER_ID, utc_now
 from .user_time import user_timezone
 
 DEFAULT_EARLY_PROGRAMS = ROOT / "config" / "early_programs.local.json"
@@ -212,6 +212,16 @@ def _sort_key(program: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
+def programs_path_for(path: Path | None, user_id: str) -> Path | None:
+    """The list file this user may see: the owner's private file is the owner's alone.
+
+    ``early_programs.local.json`` is researched for the local owner's stage, so
+    any other account on the same install gets the honest unconfigured state
+    rather than someone else's list.
+    """
+    return path if user_id == LOCAL_USER_ID else None
+
+
 def early_programs(
     conn: sqlite3.Connection,
     *,
@@ -219,6 +229,7 @@ def early_programs(
     path: Path | None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
+    path = programs_path_for(path, user_id)
     loaded = load_programs(path)
     today = user_timezone(conn, user_id).today(now)
     statuses = _statuses(conn, user_id)
@@ -262,6 +273,7 @@ def set_program_status(
 ) -> dict[str, Any]:
     if status not in STATUSES:
         raise ValueError(f"status must be one of {', '.join(STATUSES)}")
+    path = programs_path_for(path, user_id)
     if not any(program["id"] == program_id for program in load_programs(path)["programs"]):
         raise EarlyProgramNotFoundError(program_id)
     timestamp = utc_now()

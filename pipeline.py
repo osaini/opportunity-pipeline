@@ -2931,14 +2931,16 @@ def match_region(location: str, regions: Iterable[dict[str, Any]]) -> dict[str, 
     lower = normalized(location)
     if not lower:
         return None
-    for region in regions:
-        for alias in region.get("aliases", []):
+    for region in regions or []:
+        if not isinstance(region, dict):
+            continue
+        for alias in region.get("aliases") or []:
             if normalized(alias) in lower:
                 return {"region": region, "matched": alias}
-        markers = [normalized(marker) for marker in region.get("state_markers", [])]
+        markers = [normalized(marker) for marker in region.get("state_markers") or []]
         if not any(re.search(rf"\b{re.escape(marker)}\b", lower) for marker in markers if marker):
             continue
-        for place in region.get("places", []):
+        for place in region.get("places") or []:
             needle = normalized(place)
             if needle and re.search(rf"\b{re.escape(needle)}\b", lower):
                 return {"region": region, "matched": place}
@@ -2947,7 +2949,7 @@ def match_region(location: str, regions: Iterable[dict[str, Any]]) -> dict[str, 
 
 def region_label(location: str, profile: dict[str, Any]) -> str:
     """Bucket a location into a target region, "Remote", or "Other" for display."""
-    hit = match_region(location, profile.get("regions", []))
+    hit = match_region(location, profile.get("regions") or [])
     if hit:
         return str(hit["region"].get("name", "Target region"))
     if "remote" in location.lower():
@@ -2957,22 +2959,78 @@ def region_label(location: str, profile: dict[str, Any]) -> str:
     return "Other"
 
 
+# Whole words only: "Leadership Development Intern" must not read as "lead".
+# The period in "Sr." defeats a trailing \b, so it is matched separately.
+_SENIORITY_RE = re.compile(
+    r"(?:\b(?:senior|staff|principal|manager|director|lead)\b|\bsr\.(?=\W|$))",
+    re.IGNORECASE,
+)
+# A title that is itself an internship ("Technical Program Manager Intern") is
+# an entry-level role whatever else it names.
+_ENTRY_TITLE_RE = re.compile(
+    r"\b(?:intern|interns|internship|internships|co-?op|co-?ops|apprentice|apprenticeship)\b",
+    re.IGNORECASE,
+)
+# "N years" only counts as an experience requirement when it is tied to the
+# word experience: "at least 18 years of age" and "a 4 year degree" are not,
+# even when "experience" follows later ("18 years of age and have experience").
+_EXPERIENCE_YEARS_RE = re.compile(
+    r"(\d{1,2})\+?\s+years?'?\s+(?:of\s+)?"
+    r"(?:(?!(?:age|old|degree|degrees|diploma)\b)[\w/+-]+\s+){0,3}?experience",
+    re.IGNORECASE,
+)
+
+
+def _profile_list(profile: dict[str, Any], key: str) -> list[Any]:
+    """A list-valued profile field, with an explicit null read as empty."""
+    value = profile.get(key)
+    return list(value) if isinstance(value, (list, tuple)) else []
+
+
+def _profile_int(profile: dict[str, Any], key: str, default: int) -> int:
+    """A numeric profile field; the default applies only when it is unanswered.
+
+    An explicit 0 is a real answer and is preserved.
+    """
+    value = profile.get(key)
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _profile_terms(profile: dict[str, Any], key: str) -> list[str]:
+    """A keyword-list profile field: null reads as empty, non-strings are skipped."""
+    return [term for term in _profile_list(profile, key) if isinstance(term, str)]
+
+
+def _scoring_regions(profile: dict[str, Any]) -> list[dict[str, Any]]:
+    """Configured regions that can be named in a score reason; others are skipped."""
+    return [
+        region
+        for region in _profile_list(profile, "regions")
+        if isinstance(region, dict) and isinstance(region.get("name"), str) and region["name"].strip()
+    ]
+
+
 def score_job(job: sqlite3.Row, profile: dict[str, Any]) -> tuple[int, list[str]]:
-    title = job["title"]
-    description = job["description"]
+    title = job["title"] or ""
+    description = job["description"] or ""
     text = f"{title} {description}"
     score = 35
     reasons = ["35 base"]
 
-    preferred_types = profile.get("preferred_role_types", [])
+    preferred_types = _profile_list(profile, "preferred_role_types")
     if job["role_type"] in preferred_types:
         score += 18
         reasons.append(f"+18 preferred role type ({job['role_type']})")
 
-    degree_title_hits = term_hits(title, profile.get("degree_keywords", []))
+    degree_title_hits = term_hits(title, _profile_terms(profile, "degree_keywords"))
     degree_description_hits = [
         term
-        for term in term_hits(description, profile.get("degree_keywords", []))
+        for term in term_hits(description, _profile_terms(profile, "degree_keywords"))
         if term not in degree_title_hits
     ]
     if degree_title_hits or degree_description_hits:
@@ -2981,10 +3039,10 @@ def score_job(job: sqlite3.Row, profile: dict[str, Any]) -> tuple[int, list[str]
         hits = (degree_title_hits + degree_description_hits)[:3]
         reasons.append(f"+{points} degree match: {', '.join(hits)}")
 
-    interest_title_hits = term_hits(title, profile.get("interest_keywords", []))
+    interest_title_hits = term_hits(title, _profile_terms(profile, "interest_keywords"))
     interest_description_hits = [
         term
-        for term in term_hits(description, profile.get("interest_keywords", []))
+        for term in term_hits(description, _profile_terms(profile, "interest_keywords"))
         if term not in interest_title_hits
     ]
     if interest_title_hits or interest_description_hits:
@@ -2993,21 +3051,21 @@ def score_job(job: sqlite3.Row, profile: dict[str, Any]) -> tuple[int, list[str]
         hits = (interest_title_hits + interest_description_hits)[:5]
         reasons.append(f"+{points} interests: {', '.join(hits)}")
 
-    deprioritized = term_hits(title, profile.get("deprioritize_title_keywords", []))
+    deprioritized = term_hits(title, _profile_terms(profile, "deprioritize_title_keywords"))
     if deprioritized:
         points = min(24, 12 * len(deprioritized))
         score -= points
         reasons.append(f"-{points} lower-priority discipline: {', '.join(deprioritized[:2])}")
 
-    skill_hits = term_hits(text, profile.get("skills", []))
+    skill_hits = term_hits(text, _profile_terms(profile, "skills"))
     if skill_hits:
         points = min(15, 5 * len(skill_hits))
         score += points
         reasons.append(f"+{points} skills: {', '.join(skill_hits[:3])}")
 
-    location_text = job["location"]
+    location_text = job["location"] or ""
     is_remote = bool(profile.get("remote_ok")) and "remote" in location_text.lower()
-    regions = profile.get("regions", [])
+    regions = _scoring_regions(profile)
     if regions:
         # Target regions configured: in-region wins, remote still qualifies, and
         # anything else takes a heavy penalty so it sinks below every real match.
@@ -3017,7 +3075,12 @@ def score_job(job: sqlite3.Row, profile: dict[str, Any]) -> tuple[int, list[str]
         region_hit = match_region(location_text, regions)
         if region_hit:
             region = region_hit["region"]
-            bonus = int(region.get("bonus", 10))
+            # A missing bonus takes the default; an explicit null is read as
+            # no bonus rather than invented.
+            if "bonus" in region and region["bonus"] is None:
+                bonus = 0
+            else:
+                bonus = _profile_int(region, "bonus", 10)
             score += bonus
             radius = region.get("radius", "target")
             reasons.append(f"+{bonus} location: {region['name']} ({radius} radius)")
@@ -3025,11 +3088,11 @@ def score_job(job: sqlite3.Row, profile: dict[str, Any]) -> tuple[int, list[str]
             score += 8
             reasons.append("+8 remote")
         elif not is_uninformative_location(location_text):
-            penalty = int(profile.get("out_of_region_penalty", 40))
+            penalty = _profile_int(profile, "out_of_region_penalty", 40)
             score -= penalty
             reasons.append(f"-{penalty} outside target regions: {location_text.strip()[:40]}")
     else:
-        location_hits = term_hits(location_text, profile.get("preferred_locations", []))
+        location_hits = term_hits(location_text, _profile_terms(profile, "preferred_locations"))
         if location_hits:
             score += 10
             reasons.append(f"+10 location: {', '.join(location_hits[:2])}")
@@ -3040,7 +3103,7 @@ def score_job(job: sqlite3.Row, profile: dict[str, Any]) -> tuple[int, list[str]
             score -= 10
             reasons.append("-10 outside preferred locations; relocation disabled")
 
-    available_terms = [term.lower() for term in profile.get("available_terms", [])]
+    available_terms = [term.lower() for term in _profile_terms(profile, "available_terms")]
     explicit_terms = re.findall(r"\b(?:spring|summer|fall|winter)\s+20\d{2}\b", title.lower())
     if explicit_terms and available_terms:
         if any(term in available_terms for term in explicit_terms):
@@ -3050,15 +3113,13 @@ def score_job(job: sqlite3.Row, profile: dict[str, Any]) -> tuple[int, list[str]
             score -= 20
             reasons.append(f"-20 unavailable term: {explicit_terms[0]}")
 
-    title_lower = title.lower()
-    senior_terms = ["senior", "staff", "principal", "manager", "director", "lead ", "sr."]
-    senior_hits = [term for term in senior_terms if term in title_lower]
-    if senior_hits:
+    senior_hit = _SENIORITY_RE.search(title)
+    if senior_hit and not _ENTRY_TITLE_RE.search(title):
         score -= 35
-        reasons.append(f"-35 seniority mismatch: {senior_hits[0].strip()}")
+        reasons.append(f"-35 seniority mismatch: {senior_hit.group(0).lower()}")
 
-    year_matches = [int(value) for value in re.findall(r"(\d{1,2})\+?\s+years?", description.lower())]
-    max_experience = int(profile.get("max_years_experience", 1))
+    year_matches = [int(value) for value in _EXPERIENCE_YEARS_RE.findall(description)]
+    max_experience = _profile_int(profile, "max_years_experience", 1)
     if year_matches and min(year_matches) > max_experience:
         score -= 18
         reasons.append(f"-18 asks for {min(year_matches)}+ years")
@@ -4083,7 +4144,20 @@ def job_requirement_lines(description: str, limit: int = 6) -> list[str]:
     return picked
 
 
-def build_cover_letter_html(resume: dict[str, Any], job: sqlite3.Row) -> str:
+# A leading degree abbreviation ("B.S.", "BSE", "B.Eng.", "M.S.") before the
+# field of study. "B.S. Chemistry" reads as "Chemistry"; "B.S. in Biology"
+# as "Biology".
+_DEGREE_ABBREVIATION_RE = re.compile(
+    r"^\s*(?:B\.?\s?S\.?\s?E\.?|B\.?\s?S\.?|B\.?\s?A\.?|B\.?\s?Eng\.?|B\.?\s?Sc\.?|"
+    r"M\.?\s?S\.?|M\.?\s?A\.?|M\.?\s?Eng\.?|M\.?\s?Sc\.?|Ph\.?\s?D\.?)"
+    r"(?=[\s,]|$)[\s,]*(?:in\s+|of\s+)?",
+    re.IGNORECASE,
+)
+
+
+def build_cover_letter_html(
+    resume: dict[str, Any], job: sqlite3.Row, profile: dict[str, Any] | None = None
+) -> str:
     job_words = _job_keywords(job["description"], job["title"])
     matched: list[str] = []
     for group_items in (resume.get("skills") or {}).values():
@@ -4095,17 +4169,36 @@ def build_cover_letter_html(resume: dict[str, Any], job: sqlite3.Row) -> str:
         if name and term_matches_job(name, job_words) and name not in matched:
             matched.append(name)
 
-    education = (resume.get("education") or [{}])[0]
+    profile = profile or {}
+    education = next(
+        (item for item in resume.get("education") or [] if isinstance(item, dict)), {}
+    )
     # Described from the degree already on file rather than asserting a year of
-    # study, which nothing here reliably knows.
-    standing = str(education.get("degree") or "engineering").replace("B.S.", "").strip()
+    # study, which nothing here reliably knows. Nothing is defaulted: a missing
+    # degree or school becomes a visible TODO, never invented text.
+    degree = str(education.get("degree") or profile.get("degree") or "").strip()
+    school = str(education.get("school") or profile.get("school") or "").strip()
+    standing = _DEGREE_ABBREVIATION_RE.sub("", degree).strip(" ,-")
     todo = '<span class="todo">{}</span>'
+    article = "an" if standing[:1].lower() in "aeiou" and standing else "a"
+    if standing and school:
+        identity = f"I am {article} {_esc(standing)} student at {_esc(school)}, and "
+    elif standing:
+        identity = f"I am {article} {_esc(standing)} student, and "
+    elif school:
+        identity = f"I am a student at {_esc(school)}, and "
+    else:
+        identity = (
+            "I am a "
+            + todo.format("[your degree and school -- add education to config/resume.json]")
+            + " student, and "
+        )
     paragraphs = [
         f"<p>Dear {todo.format('[hiring manager name, or &ldquo;Hiring Team&rdquo;]')},</p>",
         (
             f"<p>I am applying for the <strong>{_esc(job['title'])}</strong> position at "
-            f"{_esc(job['company'])}. I am a {_esc(standing)} student at "
-            f"{_esc(education.get('school', ''))}, and "
+            f"{_esc(job['company'])}. "
+            + identity
             + todo.format("[one sentence on why this company specifically -- name something real "
                           "you know about their work]")
             + "</p>"
@@ -4200,6 +4293,15 @@ def _resolve_job(conn: sqlite3.Connection, job_id: str) -> sqlite3.Row:
     return row
 
 
+def _optional_profile() -> dict[str, Any]:
+    """The profile when one is readable; a letter can still be drafted without it."""
+    try:
+        profile = load_profile()
+    except SystemExit:
+        return {}
+    return profile if isinstance(profile, dict) else {}
+
+
 def write_artifact(
     conn: sqlite3.Connection,
     kind: str,
@@ -4211,7 +4313,7 @@ def write_artifact(
     if kind == "cover-letter":
         if job is None:
             raise SystemExit("A cover letter needs a posting: pass --job <ID>.")
-        markup = build_cover_letter_html(resume, job)
+        markup = build_cover_letter_html(resume, job, _optional_profile())
         stem = f"cover-letter-{_slugify(job['company'])}-{_slugify(job['title'])}"
     else:
         markup = build_resume_html(resume, job)
