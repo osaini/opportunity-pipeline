@@ -2,8 +2,8 @@
 
 Postings almost never state a deadline, so Urgent is built from every dated
 record that really exists: deadlines stated in posting text, deadlines the
-student entered, outreach deadlines, open application tasks, and follow-up
-dates. Each row keeps a label saying where its date came from. Nothing is
+student entered, deadlines their researched programs publish, outreach
+deadlines, open application tasks, and follow-up dates. Each row keeps a label saying where its date came from. Nothing is
 estimated; a posting's age is never turned into a closing date.
 
 "Overdue" and "today" are calendar dates in the student's timezone
@@ -17,8 +17,10 @@ import logging
 import re
 import sqlite3
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
+from .early_programs import early_programs
 from .outreach import CLOSED_STATUSES as OUTREACH_CLOSED, REVISIT_STATUSES as OUTREACH_REVISIT
 from .schema import utc_now
 from .user_time import UserTimezone, user_timezone
@@ -39,6 +41,7 @@ CAPTURE_SOURCE_KEY = "manual:capture"
 DATE_SOURCE_LABELS = {
     "posting_deadline": "Stated in posting text",
     "your_deadline": "You entered",
+    "program_deadline": "Published by the program",
     "outreach_deadline": "Outreach record deadline",
     "task": "Task due",
     "application_follow_up": "Follow-up date",
@@ -48,6 +51,7 @@ DATE_SOURCE_LABELS = {
 KIND_PRIORITY = {
     "posting_deadline": 0,
     "your_deadline": 0,
+    "program_deadline": 0,
     "outreach_deadline": 0,
     "task": 1,
     "application_follow_up": 2,
@@ -296,6 +300,35 @@ def _posting_rows(conn: sqlite3.Connection, user_id: str) -> list[dict[str, Any]
     return rows
 
 
+def _program_rows(
+    conn: sqlite3.Connection, user_id: str, path: Path | None, now: datetime | None,
+) -> list[dict[str, Any]]:
+    """Deadlines from the student's researched program list that are still ahead.
+
+    Only a program the student has not marked applied or skipped counts, and a
+    deadline already past is left out: a missed program deadline is closed,
+    not a task to catch up on. A list that cannot be read adds nothing here;
+    the Programs tab reports why.
+    """
+    if path is None:
+        return []
+    listed = early_programs(conn, user_id=user_id, path=path, now=now)
+    return [
+        {
+            "kind": "program_deadline",
+            "record_id": item["id"],
+            "raw_date": item["deadline_on"],
+            "date_only": True,
+            "title": item["name"],
+            "company": item["host"],
+            "source_name": item["source_note"] or None,
+            "program_id": item["id"],
+        }
+        for item in listed["items"]
+        if item["bucket"] in ("open", "upcoming") and item["deadline_on"] and item["days_left"] >= 0
+    ]
+
+
 def _application_rows(conn: sqlite3.Connection, user_id: str) -> list[dict[str, Any]]:
     closed = _in_clause(CLOSED_APPLICATION_STAGES)
     rows = []
@@ -411,6 +444,7 @@ def urgent_queue(
     user_id: str,
     days: int = 14,
     now: datetime | None = None,
+    programs_path: Path | None = None,
 ) -> dict[str, Any]:
     if not 1 <= days <= 60:
         raise ValueError("days must be between 1 and 60")
@@ -419,7 +453,10 @@ def urgent_queue(
     last_upcoming = today + timedelta(days=days - 1)
     oldest_overdue = today - timedelta(days=OVERDUE_LOOKBACK_DAYS)
 
-    candidates = [*_posting_rows(conn, user_id), *_application_rows(conn, user_id), *_outreach_rows(conn, user_id)]
+    candidates = [
+        *_posting_rows(conn, user_id), *_program_rows(conn, user_id, programs_path, now),
+        *_application_rows(conn, user_id), *_outreach_rows(conn, user_id),
+    ]
     items: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     skipped_count = 0
@@ -458,6 +495,7 @@ def urgent_queue(
             "opportunity_id": row.get("opportunity_id"),
             "application_id": row.get("application_id"),
             "outreach_target_id": row.get("outreach_target_id"),
+            "program_id": row.get("program_id"),
             "task_id": row.get("task_id"),
             "saved": bool(row.get("saved")),
             "stage": row.get("stage"),

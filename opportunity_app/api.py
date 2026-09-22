@@ -1560,7 +1560,9 @@ def create_app(
         repo: OpportunityRepository = Depends(repository),
     ) -> dict[str, Any]:
         """Dated things due in the next ``days`` days, plus the last 60 days overdue."""
-        return urgent_queue(repo.connection, user_id=repo.user_id or LOCAL_USER_ID, days=days)
+        return urgent_queue(
+            repo.connection, user_id=repo.user_id or LOCAL_USER_ID, days=days, programs_path=early_programs_file,
+        )
 
     @app.get("/api/v1/early-programs")
     def get_early_programs(repo: OpportunityRepository = Depends(repository)) -> dict[str, Any]:

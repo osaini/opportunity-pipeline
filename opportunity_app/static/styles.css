@@ -953,7 +953,7 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
   .program-actions { grid-auto-flow: column; justify-content: start; }
   .user-deadline-form { grid-template-columns: 1fr; }
 }
-.application-card.is-requested { box-shadow: 0 0 0 3px var(--accent-soft), 0 0 0 5px var(--accent); }
+.program-row.is-requested, .application-card.is-requested { box-shadow: 0 0 0 3px var(--accent-soft), 0 0 0 5px var(--accent); }
 .user-deadline-current:focus { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: var(--radius-xs); }
 
 /* Dossier rows: a readable fact with its own actions, never raw JSON. */

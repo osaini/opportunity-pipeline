@@ -43,6 +43,7 @@
     outreachPendingEdits: null,
     outreachDiscardEdits: false,
     applicationFocus: null,
+    programsFocus: null,
     outreachFocus: null,
     profileStatus: null,
   };
@@ -5279,6 +5280,7 @@
   const URGENT_KIND_LABELS = {
     posting_deadline: "Deadline",
     your_deadline: "Your deadline",
+    program_deadline: "Program deadline",
     outreach_deadline: "Outreach deadline",
     task: "Task",
     application_follow_up: "Follow-up",
@@ -5326,6 +5328,13 @@
     if (item.kind === "posting_deadline" || item.kind === "your_deadline") {
       return ["Open role", `Open ${headline} at ${context}`, () => openDetail(item.opportunity_id)];
     }
+    if (item.kind === "program_deadline") {
+      return ["Open program", `Open ${headline} in ${programsMeta.label}`, () => {
+        state.subtabs.programs = "all";
+        state.programsFocus = item.program_id;
+        setView("programs");
+      }];
+    }
     if (item.kind === "task" || item.kind === "application_follow_up") {
       return ["Open application", `Open the application for ${item.company}`, () => {
         state.applicationFocus = item.application_id;
@@ -5370,7 +5379,7 @@
   const URGENT_TABS = [
     { id: "all", label: "Everything dated", test: () => true },
     ...URGENT_GROUPS.map(([key, label, test]) => ({ id: key, label, group: "When", tone: key === "overdue" ? "is-alert" : key === "today" ? "is-soon" : "", test })),
-    { id: "deadlines", label: "Deadlines", group: "Kind", test: (item) => ["posting_deadline", "your_deadline", "outreach_deadline"].includes(item.kind) },
+    { id: "deadlines", label: "Deadlines", group: "Kind", test: (item) => ["posting_deadline", "your_deadline", "program_deadline", "outreach_deadline"].includes(item.kind) },
     { id: "follow-ups", label: "Follow-ups", group: "Kind", test: (item) => ["application_follow_up", "outreach_follow_up", "outreach_revisit"].includes(item.kind) },
     { id: "tasks", label: "Tasks", group: "Kind", test: (item) => item.kind === "task" },
   ];
@@ -5525,6 +5534,7 @@
     const soon = item.bucket === "open" && item.days_left !== null && item.days_left <= SOON_DAYS;
     const muted = item.bucket === "closed" || item.bucket === "done";
     const row = element("li", `urgent-row program-row${soon ? " is-soon" : ""}${muted ? " is-muted" : ""}`);
+    row.dataset.programId = item.id;
     const when = element("div", "urgent-when");
     const [date, relative] = programWhen(item);
     when.appendChild(element("strong", "", date));
@@ -5628,6 +5638,20 @@
         `${plural(payload.skipped, "entry was", "entries were")} skipped because a required field was missing or invalid.`));
     }
     els.results.setAttribute("aria-busy", "false");
+    focusRequestedProgram();
+  }
+
+  // Arriving from Urgent: bring the program the row was about into view.
+  function focusRequestedProgram() {
+    const id = state.programsFocus;
+    state.programsFocus = null;
+    if (!id) return;
+    const row = els.results.querySelector(`.program-row[data-program-id="${CSS.escape(id)}"]`);
+    if (!row) return;
+    row.setAttribute("tabindex", "-1");
+    row.classList.add("is-requested");
+    row.scrollIntoView({ block: "center" });
+    row.focus({ preventScroll: true });
   }
 
   // RFC 5545 text: escape, CRLF line ends, and fold at 75 octets without ever

@@ -17,6 +17,7 @@ from opportunity_app.early_programs import early_programs, load_programs, set_pr
 from opportunity_app.operations import export_account
 from opportunity_app.schema import LOCAL_USER_ID, connect_product
 from opportunity_app.setup import Paths, programs_report
+from opportunity_app.urgent import urgent_queue
 from tests.helpers_platform import build_and_migrate
 
 
@@ -164,6 +165,53 @@ class EarlyProgramQueueTests(unittest.TestCase):
             self.assertEqual(rows, 0)
 
 
+class UrgentProgramTests(unittest.TestCase):
+    """Program deadlines within Urgent's window join the queue; nothing else does."""
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        root = Path(self.tempdir.name)
+        _, self.platform_path = build_and_migrate(root)
+        self.path = root / "programs.json"
+        self.now = datetime(2026, 9, 21, 17, 0, tzinfo=timezone.utc)
+        write_programs(self.path, [
+            program("today", deadline_on="2026-09-21"),
+            program("in-13-days", deadline_on="2026-10-04", source_note="Official posting"),
+            program("in-14-days", deadline_on="2026-10-05"),
+            program("passed", deadline_on="2026-09-20"),
+            program("rolling"),
+            program("filled", deadline_on="2026-09-25", closed_note="Already filled"),
+            program("applied", deadline_on="2026-09-24"),
+            program("opens-soon", opens_on="2026-09-23", deadline_on="2026-09-30"),
+        ])
+
+    def tearDown(self):
+        self.tempdir.cleanup()
+
+    def queue(self, **kwargs):
+        with closing(connect_product(self.platform_path)) as conn:
+            set_program_status(conn, "applied", user_id=LOCAL_USER_ID, status="applied", path=self.path)
+            return urgent_queue(conn, user_id=LOCAL_USER_ID, now=self.now, **kwargs)
+
+    def test_only_open_deadlines_in_the_next_two_weeks_are_urgent(self):
+        payload = self.queue(programs_path=self.path)
+        programs = [item for item in payload["items"] if item["kind"] == "program_deadline"]
+        self.assertEqual([item["program_id"] for item in programs], ["today", "opens-soon", "in-13-days"])
+        first = programs[0]
+        self.assertEqual((first["date"], first["days_until"], first["overdue"]), ("2026-09-21", 0, False))
+        self.assertEqual(first["date_source"], "Published by the program")
+        self.assertEqual((first["title"], first["company"]), ("today internship", "Example Aerospace"))
+        self.assertEqual(programs[2]["source_name"], "Official posting")
+        # Due today counts toward the nav badge, like any deadline within two days.
+        self.assertGreaterEqual(payload["counts"]["attention"], 1)
+
+    def test_without_a_program_list_urgent_is_unchanged(self):
+        kinds = {item["kind"] for item in self.queue()["items"]}
+        self.assertNotIn("program_deadline", kinds)
+        missing = self.queue(programs_path=self.path.with_name("absent.json"))
+        self.assertNotIn("program_deadline", {item["kind"] for item in missing["items"]})
+
+
 class EarlyProgramApiTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
@@ -204,6 +252,13 @@ class EarlyProgramApiTests(unittest.TestCase):
         self.assertEqual(self.put("nreip", "skipped").status_code, 200)
         item = self.client.get("/api/v1/early-programs", headers=self.headers).json()["items"][0]
         self.assertEqual((item["status"], item["bucket"]), ("skipped", "done"))
+
+    def test_the_urgent_route_includes_a_program_due_soon(self):
+        items = self.client.get("/api/v1/urgent", headers=self.headers).json()["items"]
+        self.assertEqual([item["program_id"] for item in items if item["kind"] == "program_deadline"], ["nreip"])
+        self.put("nreip", "applied")
+        items = self.client.get("/api/v1/urgent", headers=self.headers).json()["items"]
+        self.assertEqual([item for item in items if item["kind"] == "program_deadline"], [])
 
     def test_unknown_program_and_bad_status_are_rejected(self):
         self.assertEqual(self.put("not-in-file", "applied").status_code, 404)
