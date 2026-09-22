@@ -12,6 +12,7 @@ import re
 from typing import NamedTuple
 
 import pytest
+from playwright.sync_api import expect
 
 from conftest import AUTHENTICATED_VIEWS, record_quarantined, sign_in_as_owner, wait_for_results
 
@@ -82,11 +83,13 @@ def test_primary_navigation_keeps_accessible_names(sized: SizedPage):
         name = re.compile(rf"^{label}(, \d+ needs? attention)?$") if label == "Urgent" else label
         button = sized.page.get_by_role("navigation").get_by_role("button", name=name, exact=True)
         assert button.count() == 1, f"no nav button named {label!r} at {sized.label}"
+    # Programs is named from the student's own list (tests/fixtures/early_programs.json).
+    expect(sized.page.locator("#programs-nav")).to_have_accessible_name("Sandbox")
 
 
 def test_primary_navigation_stays_reachable(sized: SizedPage):
     """At <=960px the labels are hidden by design, but the buttons must stay hittable."""
-    for view in ("discover", "urgent", "saved", "applications", "outreach", "prepare", "agent", "profile"):
+    for view in ("discover", "urgent", "saved", "applications", "programs", "outreach", "prepare", "agent", "profile"):
         nav = sized.page.locator(f"#{view}-nav")
         assert nav.is_visible(), f"#{view}-nav is not visible at {sized.label}"
         box = nav.bounding_box()
@@ -160,12 +163,14 @@ def test_sign_out_is_reachable_at_every_viewport(sized: SizedPage):
 
 
 def test_phone_bottom_bar_fits_every_destination(sized: SizedPage):
-    """Eight nav buttons share the phone bar: each fully on screen, none overlapping."""
+    """Every nav button shares the phone bar: each fully on screen, none overlapping."""
     if VIEWPORTS[sized.label]["width"] > 720:
         pytest.skip("the bottom bar exists only at phone widths")
     boxes = []
     viewport = sized.page.viewport_size
-    for view in ("discover", "urgent", "saved", "applications", "outreach", "prepare", "agent", "profile"):
+    rendered = sized.page.locator(".nav-list .nav-item").evaluate_all("(nodes) => nodes.map((node) => node.id)")
+    assert rendered == [f"{view}-nav" for view in ("discover", "urgent", "saved", "applications", "programs", "outreach", "prepare", "agent", "profile")], "the bar's destinations changed; update this list"
+    for view in ("discover", "urgent", "saved", "applications", "programs", "outreach", "prepare", "agent", "profile"):
         box = sized.page.locator(f"#{view}-nav").bounding_box()
         assert box, f"#{view}-nav has no layout box"
         assert box["x"] >= 0 and box["x"] + box["width"] <= viewport["width"], f"#{view}-nav is clipped: {box}"

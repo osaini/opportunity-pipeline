@@ -23,6 +23,7 @@ VIEW_TITLES = {
     "urgent": "What needs doing next.",
     "saved": "Return to the roles you chose.",
     "applications": "Keep every application moving.",
+    "programs": "Programs that fit where you are.",
     "outreach": "Reach the startups before they post.",
     "prepare": "Prepare without inventing a thing.",
     "agent": "Ask your pipeline, then decide.",

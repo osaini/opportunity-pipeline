@@ -51,8 +51,8 @@ def test_sign_in_form_submits_from_the_keyboard_alone(page):
 
 
 def test_every_navigation_item_is_reachable_by_tab(owner_page):
-    """Walk the tab order and confirm all eight primary destinations appear in it."""
-    expected = {f"#{view}-nav" for view in ("discover", "urgent", "saved", "applications", "outreach", "prepare", "agent", "profile")}
+    """Walk the tab order and confirm every primary destination appears in it."""
+    expected = {f"#{view}-nav" for view in ("discover", "urgent", "saved", "applications", "programs", "outreach", "prepare", "agent", "profile")}
     seen: set[str] = set()
     for _ in range(40):
         owner_page.keyboard.press("Tab")

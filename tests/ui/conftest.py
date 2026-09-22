@@ -46,7 +46,7 @@ ADMIN_TOKEN = "ui-suite-admin-token"
 # Routes the application serves as HTML. The smoke, accessibility, and responsive
 # suites all read these, so a new page only has to be registered in one place.
 PUBLIC_ROUTES = ("/market",)
-AUTHENTICATED_VIEWS = ("discover", "urgent", "saved", "applications", "outreach", "prepare", "agent", "profile")
+AUTHENTICATED_VIEWS = ("discover", "urgent", "saved", "applications", "programs", "outreach", "prepare", "agent", "profile")
 
 # A 401 on the unauthenticated bootstrap is the auth gate working as designed:
 # app.js probes /api/v1/session on load and renders the sign-in card on rejection.
@@ -153,6 +153,8 @@ def live_server(tmp_path_factory: pytest.TempPathFactory):
         resume_storage=root / "resumes",
         capture_storage=root / "captures",
         interview_storage=root / "mock-interviews",
+        # The Programs tab reads a student's own list; this one is invented.
+        early_programs_file=REPO_ROOT / "tests" / "fixtures" / "early_programs.json",
         # Every test shares 127.0.0.1, so the per-IP sliding window sees the whole
         # suite as one client and starts returning 429 partway through. The limiter
         # is covered by the API-level unittest suite; here it only adds flakiness.
