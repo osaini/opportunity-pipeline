@@ -1,0 +1,44 @@
+{
+  "checked_on": "2026-09-21",
+  "label": "Sandbox",
+  "audience": "sandbox students",
+  "programs": [
+    {
+      "id": "sandbox-rolling-internship",
+      "name": "Sandbox Rolling Engineering Internship",
+      "host": "Example Aerospace",
+      "url": "https://careers.example.com/rolling",
+      "kind": "Paid internship",
+      "sector": "Aerospace and defense",
+      "eligibility": "Invented sandbox entry; names first-years.",
+      "pay": "$28/hr",
+      "deadline_note": "Rolling; apply early",
+      "source_note": "Sandbox fixture",
+      "evidence": "explicit"
+    },
+    {
+      "id": "sandbox-future-research",
+      "name": "Sandbox Summer Research",
+      "host": "Example University",
+      "url": "https://research.example.edu/summer",
+      "kind": "Summer research",
+      "sector": "Research",
+      "eligibility": "Invented sandbox entry; no class-year limit stated.",
+      "opens_on": "2099-01-01",
+      "deadline_on": "2099-03-01",
+      "source_note": "Sandbox fixture",
+      "evidence": "not_named"
+    },
+    {
+      "id": "sandbox-closed-program",
+      "name": "Sandbox Closed Program",
+      "host": "Example Labs",
+      "url": "https://labs.example.org/closed",
+      "kind": "Paid internship",
+      "sector": "Government and labs",
+      "deadline_on": "2020-01-15",
+      "source_note": "Sandbox fixture",
+      "evidence": "unverified"
+    }
+  ]
+}

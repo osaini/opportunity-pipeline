@@ -71,6 +71,12 @@ weight it above crashes.
 - Make uncertainty visible instead of making consequential assumptions on the
   user's behalf.
 - Keep the system inexpensive and maintainable for a single student.
+- Personalize every feature. Several students run their own copies, so nothing
+  about one student's situation, such as class year, school, programs, or tab
+  names, is hardcoded in shipped code or copy. It lives in that student's
+  gitignored config (`config/profile.json` or a `config/*.local.json`), the UI
+  wording is driven by it, a missing file gets an honest empty state, and
+  `SETUP.md` gains a step that produces it with the student.
 
 ## 3. Running the test suites
 

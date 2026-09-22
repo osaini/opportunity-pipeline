@@ -51,6 +51,12 @@ from .actions import (
     update_application,
     update_application_task,
 )
+from .early_programs import (
+    DEFAULT_EARLY_PROGRAMS,
+    EarlyProgramNotFoundError,
+    early_programs,
+    set_program_status,
+)
 from .urgent import (
     DeadlineNotFoundError,
     clear_user_deadline,
@@ -470,6 +476,10 @@ class DeadlineRequest(BaseModel):
     note: str = Field(default="", max_length=200)
 
 
+class EarlyProgramStatusRequest(BaseModel):
+    status: Literal["todo", "applied", "skipped"]
+
+
 class TaskUpdateRequest(BaseModel):
     status: Literal["open", "done"]
 
@@ -790,6 +800,7 @@ def create_app(
     outreach_gmail_client_factory: Callable[[], httpx.Client] | None = None,
     typesafe_client_factory: Callable[[], DecisionClient] | None = None,
     profile_file: Path | None = None,
+    early_programs_file: Path | None = None,
     allowed_hosts: list[str] | None = None,
     recovery_sandbox: bool = False,
 ) -> FastAPI:
@@ -847,6 +858,10 @@ def create_app(
     # pipeline.py scores from, but only for the real product database.
     if profile_file is None and not is_postgres_target(database_target) and database_target == DEFAULT_PLATFORM_DB.resolve():
         profile_file = DEFAULT_PROFILE
+    # The early-program list is a private file beside the profile, read
+    # for the real product database only; tests and sandboxes pass their own.
+    if early_programs_file is None and not is_postgres_target(database_target) and database_target == DEFAULT_PLATFORM_DB.resolve():
+        early_programs_file = DEFAULT_EARLY_PROGRAMS
     if outreach_discovery_manager is None and not is_postgres_target(database_target) and database_target == DEFAULT_PLATFORM_DB.resolve():
         outreach_discovery_manager = DiscoveryManager(
             database_target, provider_factory=resolved_outreach_provider_factory,
@@ -1546,6 +1561,25 @@ def create_app(
     ) -> dict[str, Any]:
         """Dated things due in the next ``days`` days, plus the last 60 days overdue."""
         return urgent_queue(repo.connection, user_id=repo.user_id or LOCAL_USER_ID, days=days)
+
+    @app.get("/api/v1/early-programs")
+    def get_early_programs(repo: OpportunityRepository = Depends(repository)) -> dict[str, Any]:
+        """The student's researched early-program list, with the caller's progress."""
+        return early_programs(repo.connection, user_id=repo.user_id or LOCAL_USER_ID, path=early_programs_file)
+
+    @app.put("/api/v1/early-programs/{program_id}/status")
+    def put_early_program_status(
+        program_id: str,
+        payload: EarlyProgramStatusRequest,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        try:
+            return set_program_status(
+                conn, program_id, user_id=user_id, status=payload.status, path=early_programs_file
+            )
+        except EarlyProgramNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Program not found") from exc
 
     @app.get("/api/v1/typesafe")
     def typesafe_status(_authenticated_user: str = Depends(require_auth)) -> dict[str, Any]:
@@ -3731,6 +3765,7 @@ def create_app(
 
     @app.get("/", include_in_schema=False)
     @app.get("/urgent", include_in_schema=False)
+    @app.get("/programs", include_in_schema=False)
     @app.get("/saved", include_in_schema=False)
     @app.get("/applications", include_in_schema=False)
     @app.get("/outreach", include_in_schema=False)

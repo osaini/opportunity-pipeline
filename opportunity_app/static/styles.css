@@ -932,6 +932,12 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 .urgent-source { color: var(--ink-muted); font-size: 11px; }
 .urgent-also { font-style: italic; }
 .urgent-footnote { color: var(--ink-muted); font-size: 11px; }
+.program-row.is-soon { border-left-color: var(--gold); }
+.program-row.is-muted { opacity: .72; }
+.program-chips { margin: 6px 0 2px; padding-top: 0; }
+.program-actions { display: grid; gap: 8px; justify-items: stretch; }
+.program-actions .secondary-button { text-align: center; text-decoration: none; }
+.program-status { min-height: var(--control-sm); padding: 0 32px 0 var(--field-pad-x); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--field); color: var(--ink); font-size: 11px; }
 .user-deadline-current { margin: 0 0 12px; color: var(--ink-soft); font-size: 13px; }
 .user-deadline-form { display: grid; grid-template-columns: minmax(0, 160px) minmax(0, 1fr) auto; align-items: end; gap: 10px; margin-bottom: 10px; }
 .user-deadline .form-status { min-height: 1.3em; margin: 6px 0 0; font-size: 12px; }
@@ -942,6 +948,7 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
   .urgent-row { grid-template-columns: 1fr; gap: 8px; }
   .urgent-when { display: flex; gap: 10px; align-items: baseline; }
   .urgent-action { justify-self: start; }
+  .program-actions { grid-auto-flow: column; justify-content: start; }
   .user-deadline-form { grid-template-columns: 1fr; }
 }
 .application-card.is-requested { box-shadow: 0 0 0 3px var(--accent-soft), 0 0 0 5px var(--accent); }

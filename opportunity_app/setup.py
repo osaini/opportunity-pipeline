@@ -137,6 +137,10 @@ class Paths:
         return self.root / "config" / "sources.local.json"
 
     @property
+    def programs(self) -> Path:
+        return self.root / "config" / "early_programs.local.json"
+
+    @property
     def legacy_db(self) -> Path:
         return self.root / "data" / "pipeline.db"
 
@@ -395,6 +399,7 @@ def status(paths: Paths) -> dict[str, Any]:
 
     return {
         "python": ".".join(map(str, sys.version_info[:3])),
+        "programs": programs_report(paths),
         "python_ok": sys.version_info >= MIN_PYTHON,
         "env_exists": paths.env.exists(),
         "sign_in_token": bool(env.get("PIPELINE_WEB_TOKEN")),
@@ -417,9 +422,28 @@ def _next_steps(paths: Paths, env: dict[str, str], profile: dict[str, Any]) -> l
         steps.append("Fix config/profile.json: " + "; ".join(profile["errors"]))
     elif profile.get("missing"):
         steps.append("Interview the student for: " + ", ".join(profile["missing"]))
+    if not steps and not paths.programs.exists():
+        steps.append("Research programs for the student's stage: SETUP.md, \"Programs for your stage\"")
     if not steps:
         steps.append("python pipeline.py run, then python -m opportunity_app.launch open")
     return steps
+
+
+def programs_report(paths: Paths) -> dict[str, Any]:
+    """Check config/early_programs.local.json, the list behind the Programs tab."""
+    from .early_programs import load_programs
+
+    loaded = load_programs(paths.programs)
+    return {
+        "exists": loaded["configured"],
+        "ok": loaded["configured"] and not loaded["error"] and not loaded["problems"],
+        "label": loaded["label"],
+        "audience": loaded["audience"],
+        "checked_on": loaded["checked_on"],
+        "count": len(loaded["programs"]),
+        "error": loaded["error"],
+        "problems": loaded["problems"],
+    }
 
 
 def set_key(paths: Paths, name: str, value: str | None = None) -> str:
@@ -457,6 +481,7 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--no-migrate", action="store_true", help="Skip creating the databases")
     sub.add_parser("status", help="Report configuration and optional integrations")
     sub.add_parser("validate", help="Check config/profile.json")
+    sub.add_parser("programs", help="Check config/early_programs.local.json")
     key_parser = sub.add_parser("set-key", help="Store one secret in .env (reads it hidden, or from stdin)")
     key_parser.add_argument("name")
     return parser
@@ -478,6 +503,10 @@ def main(argv: list[str] | None = None) -> int:
             report = validate_profile(json.loads(paths.profile.read_text(encoding="utf-8")))
         except ValueError as exc:
             report = {"ok": False, "errors": [f"invalid JSON: {exc}"], "warnings": [], "missing": []}
+        _print(report, args.json)
+        return 0 if report["ok"] else 1
+    if args.command == "programs":
+        report = programs_report(paths)
         _print(report, args.json)
         return 0 if report["ok"] else 1
     _print(set_key(paths, args.name), args.json)

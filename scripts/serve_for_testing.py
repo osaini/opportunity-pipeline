@@ -80,6 +80,7 @@ def main() -> int:
         resume_storage=root / "resumes",
         capture_storage=root / "captures",
         interview_storage=root / "mock-interviews",
+        early_programs_file=REPO_ROOT / "tests" / "fixtures" / "early_programs.json",
         # A fuzzer or an exploring agent will exceed the production window
         # immediately, and 429s would mask the failures worth finding.
         rate_limit_per_minute=1_000_000,

@@ -27,6 +27,7 @@
     subtabs: {
       discover: "all", saved: "all", urgent: "all", applications: "all",
       outreach: "to-contact", prepare: "all", agent: "all", profile: "all",
+      programs: "open",
     },
     // Outreach cards acted on in this tab stay visible after they move out of it.
     outreachKeep: new Set(),
@@ -71,6 +72,8 @@
     savedNav: document.getElementById("saved-nav"),
     applicationsNav: document.getElementById("applications-nav"),
     outreachNav: document.getElementById("outreach-nav"),
+    programsNav: document.getElementById("programs-nav"),
+    programsNavLabel: document.getElementById("programs-nav-label"),
     prepareNav: document.getElementById("prepare-nav"),
     agentNav: document.getElementById("agent-nav"),
     profileNav: document.getElementById("profile-nav"),
@@ -347,6 +350,7 @@
     state.selectedId = null;
     state.loadSequence += 1;
     clearUrgentBadge();
+    els.programsNavLabel.textContent = "Programs";
     els.results.replaceChildren();
     els.resultCount.textContent = "Loading opportunities…";
     els.pageStatus.textContent = "";
@@ -404,6 +408,7 @@
       loadSystemStatus();
     }
     invalidateUrgentBadge();
+    refreshProgramsLabel();
   }
 
   // Manual refresh and purge. Polling continues while a run is in progress even
@@ -5436,6 +5441,195 @@
     els.results.setAttribute("aria-busy", "false");
   }
 
+  // Early programs: the student's own researched list, from a private config
+  // file. Its name, audience, and evidence wording come from that file, so the
+  // view carries nothing about any one student. The server buckets each entry
+  // against today in the student's time zone; this view filters, labels, and
+  // records the student's own status.
+  const PROGRAM_BUCKETS = [
+    ["open", "Open now"],
+    ["upcoming", "Opens later"],
+    ["done", "Applied or skipped"],
+    ["closed", "Closed"],
+  ];
+  const PROGRAM_STATUS_LABELS = { todo: "Not started", applied: "Applied", skipped: "Skipped" };
+  const PROGRAM_EVIDENCE_TONES = { explicit: "is-region", not_named: "", unverified: "is-soon" };
+  const programsMeta = { label: "Programs", audience: "", evidence: { explicit: "Names your class year" } };
+
+  function programsTabs(items = null) {
+    const count = (test) => (items ? items.filter(test).length : undefined);
+    return [
+      { id: "all", label: "All programs", count: count(() => true), test: () => true },
+      ...PROGRAM_BUCKETS.map(([key, label]) => {
+        const test = (item) => item.bucket === key;
+        return { id: key, label, group: "Status", tone: key === "open" ? "is-soon" : "", count: count(test), test };
+      }),
+      {
+        id: "explicit", label: programsMeta.evidence.explicit, group: "Evidence",
+        count: count((item) => item.evidence === "explicit"), test: (item) => item.evidence === "explicit",
+      },
+    ];
+  }
+
+  function programsEyebrow() {
+    return programsMeta.audience ? `Programs that take ${programsMeta.audience}` : "Programs for your stage";
+  }
+
+  function applyProgramsMeta(payload) {
+    programsMeta.label = payload.label || "Programs";
+    programsMeta.audience = payload.audience || "";
+    programsMeta.evidence = payload.evidence_labels || programsMeta.evidence;
+    els.programsNavLabel.textContent = programsMeta.label;
+    SUBNAV_TITLES.programs = programsMeta.label;
+    if (state.view === "programs") els.pageEyebrow.textContent = programsEyebrow();
+  }
+
+  // The nav shows the student's own name for the tab from the moment they sign in.
+  async function refreshProgramsLabel() {
+    const userId = state.userId;
+    try {
+      const payload = await api("/api/v1/early-programs");
+      if (userId === state.userId) applyProgramsMeta(payload);
+    } catch (error) {
+      // The generic "Programs" label stays; the tab reports errors when opened.
+    }
+  }
+
+  async function loadPrograms() {
+    const sequence = ++state.loadSequence;
+    clearError();
+    els.results.setAttribute("aria-busy", "true");
+    els.results.replaceChildren(element("p", "detail-loading", "Loading programs…"));
+    try {
+      const payload = await api("/api/v1/early-programs");
+      if (sequence !== state.loadSequence || state.view !== "programs") return;
+      applyProgramsMeta(payload);
+      renderPrograms(payload);
+    } catch (error) {
+      showLoadError(error, sequence);
+    }
+  }
+
+  function programWhen(item) {
+    if (item.bucket === "upcoming" && item.opens_on) return [formatCalendarDate(item.opens_on), "Opens"];
+    if (!item.deadline_on) return ["No date", item.deadline_note || "None published"];
+    const days = item.days_left;
+    const relative = days < 0 ? `Closed ${plural(-days, "day", "days")} ago`
+      : days === 0 ? "Closes today"
+      : days === 1 ? "Closes tomorrow"
+      : `${days} days left`;
+    return [formatCalendarDate(item.deadline_on), relative];
+  }
+
+  function programRow(item) {
+    const soon = item.bucket === "open" && item.days_left !== null && item.days_left <= SOON_DAYS;
+    const muted = item.bucket === "closed" || item.bucket === "done";
+    const row = element("li", `urgent-row program-row${soon ? " is-soon" : ""}${muted ? " is-muted" : ""}`);
+    const when = element("div", "urgent-when");
+    const [date, relative] = programWhen(item);
+    when.appendChild(element("strong", "", date));
+    when.appendChild(element("span", "", relative));
+
+    const body = element("div", "urgent-body");
+    body.appendChild(element("p", "urgent-kind", [item.kind, item.sector].filter(Boolean).join(" · ") || "Program"));
+    body.appendChild(element("h4", "", item.name));
+    body.appendChild(element("p", "urgent-context", item.host));
+    const chips = element("div", "chip-row program-chips");
+    chips.appendChild(element("span", `chip ${PROGRAM_EVIDENCE_TONES[item.evidence] || ""}`.trim(), item.evidence_label));
+    if (item.pay) chips.appendChild(element("span", "chip", item.pay));
+    if (item.deadline_on && item.deadline_note) chips.appendChild(element("span", "chip", item.deadline_note));
+    body.appendChild(chips);
+    if (item.eligibility) body.appendChild(element("p", "urgent-context", item.eligibility));
+    if (item.closed_note) body.appendChild(element("p", "urgent-also", item.closed_note));
+    if (item.notes) body.appendChild(element("p", "urgent-context", item.notes));
+    if (item.source_note) body.appendChild(element("p", "urgent-source", `Source: ${item.source_note}`));
+
+    const actions = element("div", "program-actions");
+    const link = element("a", "secondary-button", "Official page");
+    link.href = item.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.setAttribute("aria-label", `Official page for ${item.name} at ${item.host} (opens in a new tab)`);
+    const select = element("select", "program-status");
+    select.setAttribute("aria-label", `Your status for ${item.name} at ${item.host}`);
+    Object.entries(PROGRAM_STATUS_LABELS).forEach(([value, label]) => {
+      const option = element("option", "", label);
+      option.value = value;
+      option.selected = value === item.status;
+      select.appendChild(option);
+    });
+    select.addEventListener("change", async () => {
+      select.disabled = true;
+      try {
+        await api(`/api/v1/early-programs/${encodeURIComponent(item.id)}/status`, {
+          method: "PUT",
+          body: JSON.stringify({ status: select.value }),
+        });
+        announce(`${item.name}: ${PROGRAM_STATUS_LABELS[select.value]}`);
+        await loadPrograms();
+      } catch (error) {
+        select.value = item.status;
+        select.disabled = false;
+        showError(error.message);
+      }
+    });
+    actions.append(link, select);
+    row.append(when, body, actions);
+    return row;
+  }
+
+  function renderPrograms(payload) {
+    els.results.replaceChildren();
+    els.results.removeAttribute("role");
+    const tabs = programsTabs(payload.items);
+    const tab = tabs.find((entry) => entry.id === state.subtabs.programs) || tabs[0];
+    renderSubnav(tabs);
+    const shown = payload.items.filter(tab.test);
+    els.resultCount.textContent = payload.total ? plural(payload.total, "program", "programs") : "No programs";
+    els.pageStatus.textContent = `${payload.counts.open} open now · ${payload.counts.upcoming} opening later`;
+
+    const toolbar = element("div", "urgent-toolbar");
+    const checked = payload.checked_on
+      ? ` Researched ${formatCalendarDate(payload.checked_on)}; confirm on the official page before you apply.`
+      : "";
+    toolbar.appendChild(element("p", "urgent-note", `Today is ${formatCalendarDate(payload.today)}.${checked}`));
+    els.results.appendChild(toolbar);
+
+    if (payload.error || !payload.total) {
+      const empty = element("div", "empty-state urgent-empty");
+      empty.appendChild(element("h3", "", payload.error ? "Your program list could not be read" : "No programs researched yet"));
+      empty.appendChild(element("p", "", payload.error
+        || "Ask your coding agent to research programs for you by following SETUP.md, “Programs for your stage”. It asks about your year and field, checks each program on its official page, and writes a private list only you can see."));
+      els.results.appendChild(empty);
+    } else if (!shown.length) {
+      const empty = element("div", "empty-state urgent-empty");
+      empty.appendChild(element("h3", "", `Nothing under ${tab.label}`));
+      empty.appendChild(element("p", "", "Everything else is under All programs."));
+      els.results.appendChild(empty);
+    }
+
+    PROGRAM_BUCKETS.forEach(([key, label]) => {
+      const items = shown.filter((item) => item.bucket === key);
+      if (!items.length) return;
+      const section = element("section", `urgent-group is-programs-${key}`);
+      const heading = element("h3", "urgent-group-title", label);
+      heading.id = `programs-group-${key}`;
+      const count = element("span", "urgent-count", String(items.length));
+      count.setAttribute("aria-label", plural(items.length, "program", "programs"));
+      heading.appendChild(count);
+      section.setAttribute("aria-labelledby", heading.id);
+      const list = element("ul", "urgent-list");
+      items.forEach((item) => list.appendChild(programRow(item)));
+      section.append(heading, list);
+      els.results.appendChild(section);
+    });
+    if (payload.skipped) {
+      els.results.appendChild(element("p", "urgent-footnote",
+        `${plural(payload.skipped, "entry was", "entries were")} skipped because a required field was missing or invalid.`));
+    }
+    els.results.setAttribute("aria-busy", "false");
+  }
+
   // RFC 5545 text: escape, CRLF line ends, and fold at 75 octets without ever
   // splitting a UTF-8 sequence (iteration is by code point).
   function icsText(value) {
@@ -5616,6 +5810,7 @@
   const SUBNAV_TITLES = {
     discover: "Discover", urgent: "Urgent", saved: "Saved", applications: "Applications",
     outreach: "Outreach", prepare: "Prepare", agent: "Agent", profile: "Profile",
+    programs: "Programs",
   };
 
   // Each page lists its subtabs in the rail: { id, label, count, tone, group }.
@@ -5726,6 +5921,7 @@
     if (view === "urgent") return URGENT_TABS;
     if (view === "applications") return APPLICATION_TABS;
     if (view === "outreach") return OUTREACH_TABS;
+    if (view === "programs") return programsTabs();
     return [{ id: "all", label: "All sections" }];
   }
 
@@ -5736,6 +5932,7 @@
     if (state.view === "profile") return loadProfile();
     if (state.view === "applications") return loadApplications();
     if (state.view === "outreach") return loadOutreach();
+    if (state.view === "programs") return loadPrograms();
     return loadOpportunities();
   }
 
@@ -5744,6 +5941,7 @@
     if (pathname === "/saved") return "saved";
     if (pathname === "/applications") return "applications";
     if (pathname === "/outreach") return "outreach";
+    if (pathname === "/programs") return "programs";
     if (pathname === "/profile") return "profile";
     if (pathname === "/prepare") return "prepare";
     if (pathname === "/agent") return "agent";
@@ -5761,6 +5959,7 @@
     els.savedNav.classList.toggle("is-active", view === "saved");
     els.applicationsNav.classList.toggle("is-active", view === "applications");
     els.outreachNav.classList.toggle("is-active", view === "outreach");
+    els.programsNav.classList.toggle("is-active", view === "programs");
     els.prepareNav.classList.toggle("is-active", view === "prepare");
     els.agentNav.classList.toggle("is-active", view === "agent");
     els.profileNav.classList.toggle("is-active", view === "profile");
@@ -5775,14 +5974,16 @@
     if (!isCollection) els.results.removeAttribute("role");
     els.filterPanel.hidden = !isCollection;
     els.personalizePrompt.hidden = view !== "discover" || state.personalized;
-    els.statsGrid.hidden = view === "urgent" || view === "applications" || view === "outreach" || view === "profile" || view === "prepare" || view === "agent";
+    els.statsGrid.hidden = view === "urgent" || view === "applications" || view === "outreach" || view === "programs" || view === "profile" || view === "prepare" || view === "agent";
     els.paginations.forEach((nav) => { nav.hidden = !isCollection; });
     els.displayToggle.hidden = !isCollection;
     els.results.classList.toggle("is-profile", view === "profile" || view === "prepare" || view === "agent");
-    els.resultsEyebrow.textContent = view === "urgent" ? "Overdue first, then the next 14 days" : view === "outreach" ? "Startup cold outreach" : view === "agent" ? "Auditable career copilot" : view === "prepare" ? "Evidence-grounded practice" : view === "profile" ? "Onboarding and evidence" : view === "applications" ? "Application tracker" : view === "saved" ? "Saved shortlist" : "Ready for review";
-    els.pageEyebrow.textContent = view === "urgent" ? "Every date has a source" : view === "outreach" ? "Companies without a posting" : view === "agent" ? "Tools, evidence, approval" : view === "prepare" ? "Draft, review, approve" : view === "profile" ? "Private and confirmed by you" : view === "applications" ? "Your applications" : view === "saved" ? "Your chosen opportunities" : "Your live opportunity workspace";
-    els.pageTitle.textContent = view === "urgent" ? "What needs doing next." : view === "outreach" ? "Reach the startups before they post." : view === "agent" ? "Ask your pipeline, then decide." : view === "prepare" ? "Prepare without inventing a thing." : view === "profile" ? "Build the profile behind every match." : view === "applications" ? "Keep every application moving." : view === "saved" ? "Return to the roles you chose." : "Find the roles worth your time.";
-    els.pageLede.textContent = view === "urgent"
+    els.resultsEyebrow.textContent = view === "programs" ? "Soonest deadline first" : view === "urgent" ? "Overdue first, then the next 14 days" : view === "outreach" ? "Startup cold outreach" : view === "agent" ? "Auditable career copilot" : view === "prepare" ? "Evidence-grounded practice" : view === "profile" ? "Onboarding and evidence" : view === "applications" ? "Application tracker" : view === "saved" ? "Saved shortlist" : "Ready for review";
+    els.pageEyebrow.textContent = view === "programs" ? programsEyebrow() : view === "urgent" ? "Every date has a source" : view === "outreach" ? "Companies without a posting" : view === "agent" ? "Tools, evidence, approval" : view === "prepare" ? "Draft, review, approve" : view === "profile" ? "Private and confirmed by you" : view === "applications" ? "Your applications" : view === "saved" ? "Your chosen opportunities" : "Your live opportunity workspace";
+    els.pageTitle.textContent = view === "programs" ? "Programs that fit where you are." : view === "urgent" ? "What needs doing next." : view === "outreach" ? "Reach the startups before they post." : view === "agent" ? "Ask your pipeline, then decide." : view === "prepare" ? "Prepare without inventing a thing." : view === "profile" ? "Build the profile behind every match." : view === "applications" ? "Keep every application moving." : view === "saved" ? "Return to the roles you chose." : "Find the roles worth your time.";
+    els.pageLede.textContent = view === "programs"
+      ? "Internships, research, scholarships, and externships researched for you, each labeled with how strongly its host says a student at your stage may apply. Dates are the ones the host published."
+      : view === "urgent"
       ? "Deadlines, tasks, and follow-ups that carry a real date, with overdue items first. Each one says where its date came from; nothing is estimated from a posting's age."
       : view === "outreach"
       ? "Research, contacts, cold email drafts, and follow-ups for startups you pitch directly. Unverified contacts stay labeled until you confirm them."
@@ -6208,6 +6409,7 @@
   els.savedNav.addEventListener("click", () => setView("saved"));
   els.applicationsNav.addEventListener("click", () => setView("applications"));
   els.outreachNav.addEventListener("click", () => setView("outreach"));
+  els.programsNav.addEventListener("click", () => setView("programs"));
   els.prepareNav.addEventListener("click", () => setView("prepare"));
   els.agentNav.addEventListener("click", () => setView("agent"));
   els.profileNav.addEventListener("click", () => setView("profile"));

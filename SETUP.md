@@ -34,8 +34,12 @@ Everything below that says "the agent" is an instruction to the agent.
    waitlisted**. Skipping it loses only an optional second-opinion panel.
 5. **Stay on this machine.** Never bind the server beyond `127.0.0.1`, and never
    commit `.env`, `config/profile.json`, `config/sources.local.json`,
-   `config/resume.json`, or anything in `data/`. All of these are gitignored
-   already.
+   `config/early_programs.local.json`, `config/resume.json`, or anything in
+   `data/`. All of these are gitignored already.
+6. **Personalize every feature.** Anything that depends on who the student is,
+   such as their class year, field, school, programs, or the labels they see,
+   comes from their own answers and research. Never copy another student's
+   list or wording into this copy.
 
 Use `python` below. On macOS or Linux, if `python` is missing, use `python3`.
 On Windows, `py -3` also works.
@@ -174,7 +178,86 @@ The student's own additions go in `config/sources.local.json`.
    `outreach_scopes`. For example, name the incubators in their city under
    `local-accelerators`. Only name programs you have confirmed exist.
 
-## 5. Optional keys
+## 5. Programs for your stage
+
+The **Programs** tab lists internships, research programs, scholarships, and
+externships that take a student at *this* student's stage. Most postings
+quietly assume a later class year, so these are worth finding by hand. Nothing
+ships in the repo: the agent researches the list with the student and writes
+it to `config/early_programs.local.json`, which is gitignored. Until that file
+exists, the tab shows an empty state pointing here.
+
+1. **Ask; don't infer.** Their current class year and the first term they
+   could start. Their field, from `degree_keywords`. Which kinds they want:
+   paid internships, research (such as NSF REUs), scholarships with
+   internships, job shadowing or externships, and programs for particular
+   groups. Include identity-restricted programs only if the student asks for
+   them. Take citizenship and work authorization from the profile only. If
+   they are `null`, keep a program that requires them and say so in
+   `eligibility`.
+2. **Research on the web.** Cover companies in their field, government and
+   national labs, research programs, their own school's offerings (career
+   center externships, undergraduate research, co-op rules), and cross-company
+   programs. Include a program only if it names their class year or states no
+   class-year limit. Confirm that on the host's own page. If that page won't
+   open, include the program only as `unverified`.
+3. **Write each entry honestly.** Record `evidence`:
+   - `explicit` if the host names their class year;
+   - `not_named` if no class-year limit is stated;
+   - `unverified` if the official page could not be checked, with the actual
+     source in `source_note`.
+
+   Use only dates the host published (`YYYY-MM-DD`). Otherwise leave
+   `deadline_on` as `null` and explain in `deadline_note`, for example
+   "Rolling" or "2027 dates not posted". Never estimate a date, a pay figure,
+   or eligibility. If a program is already filled for this cycle, say so in
+   `closed_note`.
+4. **Name the tab for them.** `label` is the short tab name, such as
+   `"First-year"` or `"Sophomore"`. `audience` is the plural the labels use,
+   such as `"first-years"`, so a badge reads "Names first-years".
+
+   ```json
+   {
+     "checked_on": "2026-09-21",
+     "label": "First-year",
+     "audience": "first-years",
+     "programs": [
+       {
+         "id": "short-unique-slug",
+         "name": "Program name as the host writes it",
+         "host": "Company, lab, or university",
+         "url": "https://official page",
+         "evidence": "explicit",
+         "kind": "Paid internship",
+         "sector": "Aerospace and defense",
+         "eligibility": "Class year, majors, GPA, citizenship, as published",
+         "pay": "As published, or leave empty",
+         "opens_on": null,
+         "deadline_on": "2026-12-13",
+         "deadline_note": "",
+         "source_note": "Official posting",
+         "closed_note": "",
+         "notes": ""
+       }
+     ]
+   }
+   ```
+
+   Only `id`, `name`, `host`, `url`, and `evidence` are required. The full
+   format is in `opportunity_app/early_programs.py`.
+5. **Check it:**
+
+   ```bash
+   python -m opportunity_app.setup programs
+   ```
+
+   Fix every problem it lists; an invalid entry is left out of the tab.
+6. Walk the student through the list, soonest deadline first. The tab re-reads
+   the file each time it opens, so edits need no restart. Offer to redo the
+   research each application cycle and when their class year changes, and
+   update `checked_on`.
+
+## 6. Optional keys
 
 Show the student what's configured and what each integration unlocks:
 
@@ -198,13 +281,13 @@ themselves (rule 3). The details:
   `PIPELINE_OUTREACH_ACCOUNT` to their address and `PIPELINE_OUTREACH_COMPOSE=gmail`.
   `PIPELINE_CONNECTION_KEY` was already generated in step 2.
 
-## 6. Resume (optional, recommended)
+## 7. Resume (optional, recommended)
 
 Copy `config/resume.example.json` to `config/resume.json` and fill it in from
 the student's resume, if they share one. Copy facts exactly; never embellish.
 The resume and cover-letter commands only reformulate what is in that file.
 
-## 7. First run and daily use
+## 8. First run and daily use
 
 ```bash
 python pipeline.py doctor                   # confirms the profile and keys
@@ -229,7 +312,7 @@ After that, the student opens the app with **`Open Pipeline.vbs`** (Windows) or
 both sign in automatically, with no token to copy. The first time on macOS,
 right-click the `.command` file and choose **Open**.
 
-## 8. Updating later
+## 9. Updating later
 
 ```bash
 git pull
@@ -238,7 +321,9 @@ python -m opportunity_app.setup init        # adds any new settings; keeps every
 python -m opportunity_app.launch restart
 ```
 
-Personal files are gitignored, so a pull never touches them.
+Personal files are gitignored, so a pull never touches them. If an update
+brings a feature that needs the student's own data, its step above says so;
+`python -m opportunity_app.setup status` lists what is still missing.
 
 If you commit changes of your own, the hooks from step 2 check each commit and
 push against your resume, profile, and `.env`, and refuse if any of it would be
