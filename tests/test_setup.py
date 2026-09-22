@@ -124,6 +124,12 @@ class ProfileValidationTests(unittest.TestCase):
         self.assertIn("Summer 27", joined)
         self.assertTrue(any("gig" in warning for warning in report["warnings"]))
 
+    def test_a_home_outreach_cannot_place_is_flagged(self):
+        atlanta = [{"name": "Atlanta", "state_markers": ["ga"], "places": ["atlanta", "marietta"]}]
+        for home, flagged in (("Portland", True), ("Seattle, WA", False), ("Marietta, GA", False), ("Atlanta", False)):
+            warnings = setup.validate_profile({"break_location": home, "regions": atlanta})["warnings"]
+            self.assertEqual(any("break_location" in warning for warning in warnings), flagged, home)
+
 
 if __name__ == "__main__":
     unittest.main()

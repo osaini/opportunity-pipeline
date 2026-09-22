@@ -24,7 +24,7 @@ from uuid import uuid4
 
 from .agent_providers import AgentProvider, CliAgentProvider, complete_text, default_provider, provider_catalog
 from .outreach import (
-    AWAITING_REPLY, DRAFT_KINDS, _log, draft_checks, get_target, location_region, location_usable, region_phrase,
+    AWAITING_REPLY, DRAFT_KINDS, _log, draft_checks, get_target, home_terms, location_usable, mentions_home, near_home, student_home,
     user_regions,
 )
 from .preparation import confirmed_facts
@@ -193,22 +193,22 @@ def location_line(
     target: dict[str, Any],
     regions: list[dict[str, Any]] | None = None,
 ) -> str:
-    """The sentence saying the student can be near the company, or "" when none belongs.
+    """The sentence saying the student lives near the company, or "" when none belongs.
 
-    Only a company in the region the student calls home during breaks gets one.
-    A company near school needs none, and an unrecognized location gets none
-    rather than a guess. Neither does a location only the deep search reported,
-    until the company's site or a filing states it or the research is confirmed.
-    ``regions`` defaults to the local owner's; pass ``user_regions`` for others.
+    Every company where the student lives gets one: in their home region, or in
+    their home city when that is not one of their regions (outreach.student_home).
+    When the school is in the same region, the line says year-round. An
+    unrecognized location gets none rather than a guess. Neither does a location
+    only the deep search reported, until the company's site or a filing states
+    it or the research is confirmed. ``regions`` defaults to the local owner's;
+    pass ``user_regions`` for others.
     """
     if not location_usable(target):
         return ""
-    region = location_region(target.get("location", ""), regions)
-    if not region or region != location_region(str(facts.get("break_location") or ""), regions):
+    home = student_home(facts, regions)
+    if not near_home(str(target.get("location") or ""), home, regions):
         return ""
-    if region == location_region(str(facts.get("school") or ""), regions):
-        return ""
-    return f"I'm based in {region_phrase(region, regions)} during breaks and summers."
+    return f"I'm based in {home['phrase']} {'year-round' if home['year_round'] else 'during breaks and summers'}."
 
 
 def _inputs(conn: sqlite3.Connection, target: dict[str, Any], user_id: str, kind: str) -> dict[str, Any]:
@@ -381,15 +381,15 @@ def validate_draft(
             problems.append(
                 "it names " + ", ".join(others) + ", which the reader has not met; keep the email on " + inputs["primary_experience"]
             )
-        region = location_region(str(inputs["student"].get("break_location") or ""), regions)
         if inputs.get("location_line"):
-            where = region_phrase(region, regions)
+            home = student_home(inputs["student"], regions)
+            where = home.get("phrase", "")
             # location_line writes the region's phrase ("Northern California"),
             # which need not contain its name ("NorCal"); either one counts.
-            names = {term.casefold() for term in (region, where) if term}
-            if not any(term in body.casefold() for term in names):
-                problems.append(f"it leaves out location_line; the opening should say you're based in {where} during breaks and summers")
-            elif not any(term in _opening(body).casefold() for term in names):
+            names = home_terms(home)
+            if not mentions_home(body, names):
+                problems.append(f"it leaves out location_line; the opening should say {inputs['location_line']!r}")
+            elif not mentions_home(_opening(body), names):
                 problems.append(f"it mentions {where} later on; location_line belongs in the opening, not further down")
         inferences = sum(claim["basis"] == INFERENCE_BASIS for claim in clean_claims)
         if inferences > 1:

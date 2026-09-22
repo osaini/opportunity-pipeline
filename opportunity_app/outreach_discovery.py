@@ -632,7 +632,7 @@ def _run(
         for target_id in imported["created_ids"]:
             follow_through.append(_follow_through(
                 conn, target_id, user_id=user_id, ai_contact=contacts.get(get_target(conn, target_id, user_id=user_id)["company"].casefold()),
-                fetcher=fetcher, provider_factory=provider_factory, draft_provider=draft_provider, contact_delay=contact_delay,
+                fetcher=fetcher, contact_delay=contact_delay,
                 form_d_fetcher=form_d_fetcher, renderer=renderer, today=today, verifier=verifier,
                 finish=email_runner is None,
             ))
@@ -642,7 +642,7 @@ def _run(
                 runner=email_runner, fetcher=fetcher, verifier=verifier,
             )
             for item in follow_through:
-                _finish_contact(conn, item, user_id=user_id, provider_factory=provider_factory, draft_provider=draft_provider)
+                _finish_contact(conn, item, user_id=user_id)
     located: dict[str, Any] = {}
     unplaced = [] if locate_runner is None else [
         item["target_id"] for item in follow_through
@@ -658,6 +658,10 @@ def _run(
             located = locate_targets(conn, user_id=user_id, runner=locate_runner, fetcher=fetcher, target_ids=unplaced)
         except (ValueError, httpx.HTTPError, RuntimeError, subprocess.SubprocessError) as exc:
             located = {"error": str(exc)[:500]}
+    # Drafts come last: a draft written before the web search placed the
+    # company near the student's home would leave out that they live there.
+    for item in follow_through:
+        _write_draft(conn, item, user_id=user_id, provider_factory=provider_factory, draft_provider=draft_provider)
     report["imported"] = imported["imported"]
     report["follow_through"] = follow_through
     report["located"] = located
@@ -716,8 +720,6 @@ def _follow_through(
     user_id: str,
     ai_contact: dict[str, str] | None,
     fetcher: SafeFetcher,
-    provider_factory: Callable[[str, str], Any] | None,
-    draft_provider: str | None,
     contact_delay: float,
     form_d_fetcher: SafeFetcher | None,
     today: date,
@@ -725,10 +727,11 @@ def _follow_through(
     verifier: Any = None,
     finish: bool = True,
 ) -> dict[str, Any]:
-    """Contacts, location, Form D, and a draft for one new target. Failures are recorded, never fatal.
+    """Contacts, location, and Form D for one new target. Failures are recorded, never fatal.
 
-    With finish=False the contact is not chosen and no draft is written yet, so
-    a search of other sites can add candidates first; _finish_contact does both.
+    With finish=False the contact is not chosen yet, so a search of other sites
+    can add candidates first; _finish_contact chooses it. The draft waits for
+    _write_draft, after every location search has run.
     """
     outcome: dict[str, Any] = {
         "target_id": target_id, "contact": None, "cc": None, "contact_basis": None,
@@ -768,19 +771,12 @@ def _follow_through(
         except (SecUnavailableError, httpx.HTTPError) as exc:
             outcome["errors"].append(f"sec: {exc}")
     if finish:
-        _finish_contact(conn, outcome, user_id=user_id, provider_factory=provider_factory, draft_provider=draft_provider)
+        _finish_contact(conn, outcome, user_id=user_id)
     return outcome
 
 
-def _finish_contact(
-    conn: Any,
-    outcome: dict[str, Any],
-    *,
-    user_id: str,
-    provider_factory: Callable[[str, str], Any] | None,
-    draft_provider: str | None,
-) -> None:
-    """Apply the contact an unattended run may use (choose_contact), then draft to it."""
+def _finish_contact(conn: Any, outcome: dict[str, Any], *, user_id: str) -> None:
+    """Apply the contact an unattended run may use (choose_contact)."""
     target_id = outcome["target_id"]
     try:
         choice = choose_contact(list_candidates(conn, target_id, user_id=user_id))
@@ -791,6 +787,18 @@ def _finish_contact(
             outcome["contact_basis"] = choice["basis"]
     except (ValueError, LookupError) as exc:
         outcome["errors"].append(f"contacts: {exc}")
+
+
+def _write_draft(
+    conn: Any,
+    outcome: dict[str, Any],
+    *,
+    user_id: str,
+    provider_factory: Callable[[str, str], Any] | None,
+    draft_provider: str | None,
+) -> None:
+    """Draft to the chosen contact, then record every failure the target met on the way."""
+    target_id = outcome["target_id"]
     if outcome["contact"] and provider_factory is not None:
         from .outreach_drafting import generate_draft
 

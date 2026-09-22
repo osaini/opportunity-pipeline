@@ -331,6 +331,57 @@ class DraftingTests(unittest.TestCase):
         self.assertIn("location_line belongs in the opening", provider.prompts[1])
         self.assertIn("I'm based in the Bay Area during breaks and summers.", target["email_body"].split("\n\n")[1])
 
+    def test_a_draft_written_before_the_company_was_placed_cannot_be_approved_without_the_line(self):
+        # Seen 2026-09-21: discovery drafted Bay Area companies minutes before its
+        # web search placed them, so their drafts never said the student lives there.
+        confirm_facts(self.conn, break_location="Bay Area")
+        target = self.generate(ScriptedProvider([GOOD]))
+        self.assertEqual(target["draft_location"], {"phrase": "", "terms": [], "missing": False})
+
+        update_target(self.conn, self.target["id"], {"location": "San Carlos, CA"}, user_id=USER)
+        target = get_target(self.conn, self.target["id"], user_id=USER)
+        self.assertEqual(target["draft_location"], {"phrase": "the Bay Area", "terms": ["the Bay Area", "Bay Area"], "missing": True})
+        self.assertTrue(
+            next(item for item in list_targets(self.conn, user_id=USER) if item["id"] == target["id"])["draft_location"]["missing"],
+            "the list view flags it too",
+        )
+        with self.assertRaisesRegex(ValueError, "never says you're based in the Bay Area, though Bovi is in San Carlos, CA"):
+            approve_draft(self.conn, target["id"], user_id=USER, fingerprint=target["draft_fingerprint"], acknowledge_warnings=True)
+
+        target = self.generate(ScriptedProvider([bay_area_draft(GOOD_BODY)]))
+        self.assertFalse(target["draft_location"]["missing"])
+        approved = approve_draft(self.conn, target["id"], user_id=USER, fingerprint=target["draft_fingerprint"], acknowledge_warnings=True)
+        self.assertEqual(approved["draft_status"], "approved")
+
+    def test_an_approved_draft_that_lacks_the_line_is_not_put_in_gmail(self):
+        from opportunity_app.outreach_gmail import create_gmail_draft
+
+        confirm_facts(self.conn, break_location="Bay Area")
+        target = self.generate(ScriptedProvider([GOOD]))
+        approve_draft(self.conn, target["id"], user_id=USER, fingerprint=target["draft_fingerprint"], acknowledge_warnings=True)
+        update_target(self.conn, self.target["id"], {"location": "Oakland, CA"}, user_id=USER)
+        self.assertEqual(get_target(self.conn, self.target["id"], user_id=USER)["draft_status"], "approved")
+
+        def no_client():
+            raise AssertionError("Gmail must not be called")
+
+        with self.assertRaisesRegex(ValueError, "never says you're based in the Bay Area"):
+            create_gmail_draft(self.conn, self.target["id"], user_id=USER, client_factory=no_client)
+
+    def test_a_company_away_from_home_or_an_unchecked_location_never_flags_a_draft(self):
+        target = self.generate(ScriptedProvider([GOOD]))
+        for home, location in (("Bay Area", "Austin, TX"), ("", "Oakland, CA"), ("Seattle", "Seattle, WA")):
+            confirm_facts(self.conn, break_location=home)
+            update_target(self.conn, self.target["id"], {"location": location}, user_id=USER)
+            self.assertFalse(get_target(self.conn, target["id"], user_id=USER)["draft_location"]["missing"], (home, location))
+        confirm_facts(self.conn, break_location="Bay Area")
+        self.conn.execute("UPDATE outreach_targets SET location_basis='research', research_confidence='unverified' WHERE id=?", (target["id"],))
+        self.conn.commit()
+        self.assertFalse(
+            get_target(self.conn, target["id"], user_id=USER)["draft_location"]["missing"],
+            "an unconfirmed deep-search location is not grounds for the line",
+        )
+
     def test_an_austin_or_unknown_company_gets_no_location_line(self):
         confirm_facts(self.conn, break_location="Bay Area")
         for location in ("Austin, TX", "Denver, CO", ""):
@@ -341,12 +392,38 @@ class DraftingTests(unittest.TestCase):
             self.assertEqual(prompt["location_line"], "", location)
             self.assertNotIn("break_location", prompt["student"], "a home the email should not mention stays out")
 
-    def test_a_break_home_near_school_adds_nothing(self):
-        confirm_facts(self.conn, break_location="Austin")
+    def test_a_home_in_the_schools_region_is_mentioned_as_year_round(self):
+        confirm_facts(self.conn, school="University of Texas at Austin", break_location="Austin")
         update_target(self.conn, self.target["id"], {"location": "Round Rock, TX"}, user_id=USER)
-        provider = ScriptedProvider([GOOD])
-        self.generate(provider)
-        self.assertEqual(json.loads(provider.prompts[0])["location_line"], "")
+        provider = ScriptedProvider([GOOD, GOOD])
+        with self.assertRaises(DraftRejected):
+            self.generate(provider)
+        self.assertEqual(json.loads(provider.prompts[0])["location_line"], "I'm based in Austin year-round.")
+        self.assertIn("leaves out location_line", provider.prompts[1])
+
+    def test_a_home_city_outside_every_region_still_gets_the_line(self):
+        # A student who never set up a region for home still lives somewhere.
+        confirm_facts(self.conn, break_location="Seattle, WA")
+        update_target(self.conn, self.target["id"], {"location": "Seattle, Washington"}, user_id=USER)
+        seattle = draft_json(
+            "Hello Bovi",
+            GOOD_BODY.replace("at UT Austin.", "at UT Austin. I'm based in Seattle during breaks and summers."),
+            [*GOOD_CLAIMS, {"text": "based in Seattle during breaks and summers", "basis": "profile:break_location"}],
+        )
+        provider = ScriptedProvider([seattle])
+        target = self.generate(provider)
+        self.assertEqual(json.loads(provider.prompts[0])["location_line"], "I'm based in Seattle during breaks and summers.")
+        self.assertEqual(target["draft_location"], {"phrase": "Seattle", "terms": ["Seattle"], "missing": False})
+
+        for location in ("Seattle, OR", "Tacoma, WA", "Seattle"):
+            update_target(self.conn, self.target["id"], {"location": location}, user_id=USER)
+            self.assertEqual(get_target(self.conn, self.target["id"], user_id=USER)["draft_location"]["phrase"], "", location)
+        confirm_facts(self.conn, break_location="Portland")
+        update_target(self.conn, self.target["id"], {"location": "Portland, ME"}, user_id=USER)
+        self.assertEqual(
+            get_target(self.conn, self.target["id"], user_id=USER)["draft_location"]["phrase"], "",
+            "a home town with no state could be anywhere, so nothing is assumed",
+        )
 
     def test_template_says_the_student_is_nearby_for_a_bay_area_company(self):
         confirm_facts(self.conn, break_location="Bay Area")

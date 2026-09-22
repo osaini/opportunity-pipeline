@@ -219,6 +219,15 @@ class PerUserRegionTests(_DbCase):
         )
         self.assertEqual(location_region("Oakland, CA", regions), "")
 
+    def test_the_other_account_gets_the_line_for_its_own_home_city(self):
+        regions = user_regions(self.conn, self.OTHER)
+        facts = {"break_location": "Houston, TX", "school": "Somewhere U"}
+        self.assertEqual(
+            location_line(facts, {"location": "Houston, TX", "location_basis": "company_site"}, regions),
+            "I'm based in Houston during breaks and summers.",
+        )
+        self.assertEqual(location_line(facts, {"location": "Oakland, CA", "location_basis": "company_site"}, regions), "")
+
 
 if __name__ == "__main__":
     unittest.main()

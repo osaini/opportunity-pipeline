@@ -28,7 +28,7 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from . import ROOT
 from .connections import OAUTH_PROVIDERS
-from .outreach import DRAFT_KINDS, _log, get_target
+from .outreach import DRAFT_KINDS, _log, get_target, missing_location_message
 from .outreach_drafting import sender_account
 from .schema import utc_now
 
@@ -243,6 +243,9 @@ def create_gmail_draft(
     target = get_target(conn, target_id, user_id=user_id)
     if target[status_field] != "approved":
         raise ValueError("Approve this draft before creating it in Gmail")
+    # Approval can predate the check that placed the company near the student.
+    if kind == "initial" and target["draft_location"]["missing"]:
+        raise ValueError(missing_location_message(target))
     if not target["contact_email"]:
         raise ValueError("Add a contact email before creating the Gmail draft")
     path = attachment_path()

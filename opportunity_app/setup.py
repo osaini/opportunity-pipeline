@@ -352,6 +352,16 @@ def validate_profile(profile: Any) -> dict[str, Any]:
     for term in profile.get("available_terms") or []:
         if not isinstance(term, str) or not TERM.match(term.lower()):
             errors.append(f"available_terms entry {term!r} should look like 'summer 2027'")
+    home = str(profile.get("break_location") or "").strip()
+    if home:
+        from .outreach import student_home
+
+        regions = [region for region in profile.get("regions") or [] if isinstance(region, dict)]
+        if not student_home({"break_location": home}, regions):
+            warnings.append(
+                f"break_location {home!r} is neither one of the regions nor a \"City, ST\"; "
+                "outreach emails cannot say the student lives near a company"
+            )
     if profile.get("requires_sponsorship") is True and profile.get("work_authorized_us") is True:
         warnings.append("requires_sponsorship and work_authorized_us are both true; confirm with the student")
     from .profile import COMPLETENESS_FIELDS, is_answered
