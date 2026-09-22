@@ -2116,8 +2116,9 @@
     if (!copied) throw new Error("Copy is blocked in this browser; select the draft text instead.");
   }
 
-  function renderDraftChecks(host, subject, body) {
-    // Mirrors outreach.draft_checks on the server so feedback is live while typing.
+  function renderDraftChecks(host, subject, body, place = null) {
+    // Mirrors outreach.draft_checks, and for a cold email outreach.location_line_gap,
+    // on the server so feedback is live while typing.
     const text = `${subject}\n${body}`;
     const dashes = (text.match(/[–—]/g) || []).length;
     const placeholders = [...new Set(text.match(/\[[^\]\n]{1,60}\]/g) || [])];
@@ -2126,6 +2127,12 @@
     if (dashes) host.appendChild(chip(`${dashes} em/en dash${dashes === 1 ? "" : "es"}`, "is-warning"));
     if (placeholders.length) host.appendChild(chip(`Fill in ${placeholders.join(", ")}`, "is-soon"));
     if (body && !subject) host.appendChild(chip("No subject", "is-soon"));
+    // "in Portland", not a bare "Portland": a school's name can carry the place (outreach.mentions_home).
+    const flat = body.replace(/\s+/g, " ");
+    const saysHome = (term) => new RegExp(`\\bin ${term.replace(/\s+/g, " ").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(flat);
+    if (place && place.terms && place.terms.length && body.trim() && !place.terms.some(saysHome)) {
+      host.appendChild(chip(`Doesn't say you're based in ${place.phrase}; regenerate`, "is-warning"));
+    }
   }
 
   async function loadOutreachTimeline(targetId, host) {
@@ -3589,7 +3596,7 @@
     body.rows = 12;
     const checks = element("div", "outreach-checks");
     checks.setAttribute("aria-live", "polite");
-    const refreshChecks = () => renderDraftChecks(checks, subject.value, body.value);
+    const refreshChecks = () => renderDraftChecks(checks, subject.value, body.value, item.sent_at ? null : item.draft_location);
     subject.addEventListener("input", refreshChecks);
     body.addEventListener("input", refreshChecks);
     refreshChecks();
@@ -4123,7 +4130,7 @@
       (profile.regions || []).map((region) => typeof region === "string" ? region : region.name).filter(Boolean).join(", "),
       { placeholder: "Atlanta, Bay Area" }
     );
-    const breakLocation = profileField(form, "Home during breaks and summers", "break_location", profile.break_location, { placeholder: "Bay Area" });
+    const breakLocation = profileField(form, "Home during breaks and summers", "break_location", profile.break_location, { placeholder: "City, ST or a target region" });
     const hours = profileField(form, "Hours per week", "hours_per_week", profile.hours_per_week, { type: "number", min: 1, max: 80 });
     const workAuthorized = profileSelect(form, "Authorized to work in the U.S.", "work_authorized_us", profile.work_authorized_us);
     const citizen = profileSelect(form, "U.S. citizen", "us_citizen", profile.us_citizen);

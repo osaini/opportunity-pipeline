@@ -284,6 +284,95 @@ def region_phrase(name: str, regions: list[dict[str, Any]] | None = None) -> str
     return f"the {name}" if name.endswith(" Area") else name
 
 
+def _city_state(text: str) -> tuple[str, str]:
+    """("seattle", "WA") from "Seattle, WA" or "Seattle, Washington"; the state is "" when none is named."""
+    parts = [part.strip() for part in str(text or "").split(",")]
+    city = " ".join(parts[0].casefold().split()) if parts else ""
+    for part in parts[1:]:
+        if part.upper() in US_STATES:
+            return city, part.upper()
+        code = next((code for code, name in US_STATES.items() if name == part.casefold()), "")
+        if code:
+            return city, code
+    return city, ""
+
+
+def student_home(facts: dict[str, Any], regions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Where the student lives during breaks and summers, as an email names it, or {} when unknown.
+
+    Every student's break_location counts, not only one who has set up regions.
+    When it falls in one of their regions, the home is that whole metro. Otherwise
+    it is the one city it names, and only with a state ("Seattle, WA"), because a
+    bare town name is common elsewhere. "year_round" is true when the school is in
+    the same region, so the student is there during the school year as well.
+    """
+    raw = str(facts.get("break_location") or "").strip()
+    region = location_region(raw, regions)
+    if region:
+        return {
+            "region": region, "city": "", "state": "", "phrase": region_phrase(region, regions),
+            "year_round": region == location_region(str(facts.get("school") or ""), regions),
+        }
+    city, state = _city_state(raw)
+    if not city or not state:
+        return {}
+    return {"region": "", "city": city, "state": state, "phrase": raw.split(",")[0].strip(), "year_round": False}
+
+
+def near_home(location: str, home: dict[str, Any], regions: list[dict[str, Any]] | None = None) -> bool:
+    """Whether a company's location is where the student lives: their home region, or their home city and state."""
+    if not home or not str(location or "").strip():
+        return False
+    if home["region"]:
+        return location_region(location, regions) == home["region"]
+    return _city_state(location) == (home["city"], home["state"])
+
+
+def home_terms(home: dict[str, Any]) -> list[str]:
+    """The words a draft may name the student's home by; any one of them counts as saying it."""
+    return [term for term in dict.fromkeys((home.get("phrase", ""), home.get("region", ""))) if term]
+
+
+def mentions_home(body: str, terms: list[str]) -> bool:
+    """Whether the text says the student is in their home place: "in Seattle", "in the Twin Cities".
+
+    A bare name is not enough, because a school's name can carry it ("Portland State")
+    without saying anything about where the student lives.
+    """
+    text = " ".join(str(body or "").split())
+    return any(
+        re.search(rf"\bin {re.escape(' '.join(term.split()))}\b", text, re.IGNORECASE) for term in terms if term.strip()
+    )
+
+
+def user_home(conn: sqlite3.Connection, user_id: str, regions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    from .preparation import confirmed_facts
+
+    return student_home(confirmed_facts(conn, user_id), user_regions(conn, user_id) if regions is None else regions)
+
+
+def location_line_gap(item: dict[str, Any], home: dict[str, Any], regions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Whether a target's cold email must say the student lives nearby, and whether its draft does.
+
+    The line belongs in any draft to a company with a checked location where the
+    student lives (outreach_drafting.location_line). A draft written before that
+    location was checked, or hand-edited, can lack it; "missing" marks that, so
+    the draft is regenerated rather than approved as it stands.
+    """
+    if not item.get("location_verified") or not near_home(str(item.get("location") or ""), home, regions):
+        return {"phrase": "", "terms": [], "missing": False}
+    terms = home_terms(home)
+    body = str(item.get("email_body") or "")
+    return {"phrase": home["phrase"], "terms": terms, "missing": bool(body.strip()) and not mentions_home(body, terms)}
+
+
+def missing_location_message(target: dict[str, Any]) -> str:
+    return (
+        f"This draft never says you're based in {target['draft_location']['phrase']}, though "
+        f"{target['company']} is in {target['location']}. Regenerate it, or add that line to the opening."
+    )
+
+
 _PROFILE_REGIONS_CACHE: dict[str, Any] = {"key": None, "regions": []}
 
 
@@ -439,6 +528,7 @@ def _record(
     row: sqlite3.Row | dict[str, Any],
     today: date | None = None,
     regions: list[dict[str, Any]] | None = None,
+    home: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     item = dict(row)
     item["source_urls"] = json.loads(item.pop("source_urls_json") or "[]")
@@ -460,7 +550,8 @@ def _record(
     item["location_region"] = location_region(item.get("location", ""), regions)
     item["location_inferred"] = bool(item.get("location_inferred"))
     item["location_verified"] = location_usable(item)
-    form_d = item.pop("sec_form_d_json", None) or ""
+    item["draft_location"] = location_line_gap(item, home or {}, regions)
+    form_d =item.pop("sec_form_d_json", None) or ""
     item["sec_form_d"] = json.loads(form_d) if form_d else None
     if item.get("mail_domain_ok") is not None:
         item["mail_domain_ok"] = bool(item["mail_domain_ok"])
@@ -574,7 +665,8 @@ def list_targets(
         params,
     ).fetchall()
     regions = user_regions(conn, user_id)
-    return [_record(row, today, regions) for row in rows]
+    home = user_home(conn, user_id, regions)
+    return [_record(row, today, regions, home) for row in rows]
 
 
 def is_new_from_search(item: dict[str, Any]) -> bool:
@@ -624,7 +716,8 @@ def get_target(
     row = conn.execute(f"{SELECT_TARGETS} WHERE id=? AND user_id=?", (target_id, user_id)).fetchone()
     if not row:
         raise OutreachNotFoundError(target_id)
-    item = _record(row, today or local_today(conn, user_id), user_regions(conn, user_id))
+    regions = user_regions(conn, user_id)
+    item = _record(row, today or local_today(conn, user_id), regions, user_home(conn, user_id, regions))
     if include_events:
         item["events"] = [
             dict(event)
@@ -970,7 +1063,9 @@ def approve_draft(
     checks = target["draft_checks"] if kind == "initial" else target["follow_up_checks"]
     if checks["placeholders"]:
         raise ValueError("Fill these placeholders before approving: " + ", ".join(checks["placeholders"]))
-    claims = target["draft_claims"] if kind == "initial" else target["follow_up_claims"]
+    if kind == "initial" and target["draft_location"]["missing"]:
+        raise ValueError(missing_location_message(target))
+    claims =target["draft_claims"] if kind == "initial" else target["follow_up_claims"]
     research_warning = (
         target.get("research_confidence") == "unverified"
         or any(str(claim.get("basis", "")).startswith("unverified:") for claim in claims)

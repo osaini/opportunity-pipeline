@@ -474,6 +474,40 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual((target["location"], target["location_basis"]), ("Cedar Park, TX", "web_search"))
         self.assertEqual(result["located"]["recorded"], 1)
 
+    def test_a_new_company_is_drafted_only_after_the_search_that_places_it(self):
+        # Seen 2026-09-21: drafts were written before the web search placed their
+        # companies in the Bay Area, so none said the student lives there.
+        for field, value in (("name", "Test Student"), ("break_location", "Bay Area")):
+            self.conn.execute(
+                "INSERT INTO profile_facts(user_id, field_path, value_json, source, confirmed, created_at, updated_at) "
+                "VALUES(?, ?, ?, 'user', 1, '2026-09-17', '2026-09-17') "
+                "ON CONFLICT(user_id, field_path) DO UPDATE SET value_json=excluded.value_json, confirmed=1",
+                (USER, field, json.dumps(value)),
+            )
+        self.conn.commit()
+        self.sites["ycombinator.example"] = {"/companies/acme": "<p>Acme is based in San Carlos, CA</p>", "/robots.txt": ""}
+        locations = json.dumps({"companies": [{
+            "company": "Acme", "location": "San Carlos, CA",
+            "source_url": "https://ycombinator.example/companies/acme", "note": "",
+        }]})
+        drafted = []
+
+        class Recorder:
+            name, model = "anthropic", "test-model"
+
+            def create(self, *, instructions, messages, tools, max_output_tokens):
+                from opportunity_app.agent_providers import ProviderReply
+
+                drafted.append(json.loads(messages[-1]["content"].split("\n\nYour previous draft")[0]))
+                return ProviderReply(text="no draft")
+
+        runner = only_for(proposals(company("Acme", "https://acme.com")), locations=locations)
+        result = self.run_with(None, runner=runner, locate_runner=runner,
+                               provider_factory=lambda *_: Recorder(), draft_provider="anthropic")
+        self.assertEqual(result["located"]["recorded"], 1)
+        self.assertTrue(drafted, "the draft model was asked")
+        self.assertEqual(drafted[0]["location_line"], "I'm based in the Bay Area during breaks and summers.")
+
     def test_a_dry_run_changes_no_rows(self):
         before = len(list_targets(self.conn, user_id=USER))
         result = self.run_with(proposals(company("Acme", "https://acme.com")), dry_run=True)
