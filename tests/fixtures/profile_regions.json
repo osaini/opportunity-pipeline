@@ -1,0 +1,47 @@
+{
+  "regions": [
+    {
+      "name": "Bay Area",
+      "phrase": "the Bay Area",
+      "state_markers": [
+        "ca",
+        "california"
+      ],
+      "aliases": [
+        "bay area",
+        "silicon valley",
+        "east bay",
+        "south bay"
+      ],
+      "places": [
+        "san francisco",
+        "sf",
+        "south sf",
+        "oakland",
+        "palo alto",
+        "san carlos",
+        "san jose",
+        "mountain view",
+        "sunnyvale",
+        "berkeley",
+        "fremont"
+      ]
+    },
+    {
+      "name": "Austin",
+      "state_markers": [
+        "tx",
+        "texas"
+      ],
+      "aliases": [
+        "greater austin"
+      ],
+      "places": [
+        "austin",
+        "round rock",
+        "cedar park",
+        "pflugerville"
+      ]
+    }
+  ]
+}

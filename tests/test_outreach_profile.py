@@ -33,7 +33,7 @@ from opportunity_app.outreach_profile import (
 )
 from opportunity_app.schema import connect_product, ensure_product_schema
 
-from helpers_platform import build_and_migrate
+from helpers_platform import build_and_migrate, use_profile_regions
 from test_outreach_discovery import company, only_for, proposals, safe_fetcher, site_transport
 
 USER = "local-user"
@@ -109,6 +109,7 @@ BOVI_HITS = [
 class ProfileTestCase(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
+        use_profile_regions(self)
         self.root = Path(self.tempdir.name)
         _, self.platform_path = build_and_migrate(self.root)
         self.conn = connect_product(self.platform_path)

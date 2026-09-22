@@ -76,7 +76,10 @@ weight it above crashes.
   names, is hardcoded in shipped code or copy. It lives in that student's
   gitignored config (`config/profile.json` or a `config/*.local.json`), the UI
   wording is driven by it, a missing file gets an honest empty state, and
-  `SETUP.md` gains a step that produces it with the student.
+  `SETUP.md` gains a step that produces it with the student. The commit and
+  push hooks refuse the student's own school, degree, and
+  `private/situation-terms.txt` terms in shipped code. That catches a leak, not
+  a hardcoded assumption, so the rule still needs judgment.
 
 ## 3. Running the test suites
 

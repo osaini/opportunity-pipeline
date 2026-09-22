@@ -24,7 +24,7 @@ from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from pipeline import PROFILE_PATH, match_region
+from pipeline import PROFILE_PATH
 
 from .schema import utc_now
 from .user_time import user_timezone
@@ -100,27 +100,6 @@ MULTILINE_FIELDS = {"email_body", "follow_up_body"}
 TEXT_LIMITS = {
     "email_body": 20_000, "follow_up_body": 20_000, "notes": 10_000, "summary": 5_000,
     "fit_rationale": 5_000, "activity_signal": 5_000, "location": 200,
-}
-# A built-in gazetteer of metro areas a cold email can say something about,
-# with the state a city in them must be in. Place names that are common
-# elsewhere (Dublin, Richmond, Newark, Concord) are left out, so "Dublin,
-# Ireland" is never the Bay Area. Other metros come from the regions in the
-# student's own config/profile.json (see location_region).
-REGIONS = {
-    "Bay Area": ("CA", (
-        "bay area", "silicon valley", "east bay", "south bay", "san francisco", "sf", "south sf",
-        "oakland", "berkeley", "emeryville", "alameda",
-        "san leandro", "hayward", "fremont", "union city", "milpitas", "san jose", "santa clara",
-        "sunnyvale", "mountain view", "palo alto", "menlo park", "redwood city", "redwood shores",
-        "san carlos", "san mateo", "foster city", "burlingame", "south san francisco", "millbrae",
-        "cupertino", "los altos", "los gatos", "saratoga", "morgan hill", "gilroy", "pleasanton",
-        "livermore", "san ramon", "walnut creek", "santa cruz", "scotts valley", "san rafael",
-        "novato", "petaluma", "santa rosa", "napa", "vallejo", "benicia", "half moon bay",
-    )),
-    "Austin": ("TX", (
-        "austin", "round rock", "cedar park", "pflugerville", "georgetown", "leander", "hutto",
-        "manor", "kyle", "buda", "lakeway", "bee cave", "dripping springs", "bastrop", "san marcos",
-    )),
 }
 US_STATES = {
     "AL": "alabama", "AK": "alaska", "AZ": "arizona", "AR": "arkansas", "CA": "california", "CO": "colorado",
@@ -246,11 +225,32 @@ def draft_checks(subject: str, body: str) -> dict[str, Any]:
     return {"word_count": words, "dash_count": dashes, "placeholders": placeholders, "warnings": warnings}
 
 
-def location_region(text: str) -> str:
-    """The metro area in REGIONS a place name falls in, or "" when it names none.
+def _region_states(region: dict[str, Any]) -> set[str]:
+    """The US state codes a profile region's state markers name ("tx", "texas")."""
+    codes = set()
+    for marker in region.get("state_markers") or []:
+        text = str(marker).strip()
+        if text.upper() in US_STATES:
+            codes.add(text.upper())
+        codes |= {code for code, name in US_STATES.items() if name == text.casefold()}
+    return codes
 
-    A named state has to agree, so "Austin, MN" is not Austin. Only a state
-    code after a comma counts, which keeps "UT Austin" from reading as Utah.
+
+def _mentions(lowered: str, term: Any) -> bool:
+    needle = " ".join(str(term or "").casefold().split())
+    return bool(needle) and re.search(rf"\b{re.escape(needle)}\b", lowered) is not None
+
+
+def location_region(text: str) -> str:
+    """The student's own region a place name falls in, or "" when it names none.
+
+    Regions come only from the student's config/profile.json, so every student
+    gets their own metros and none is built in. A named state has to agree, so
+    "Austin, MN" is not a Texas region; only a state code after a comma counts,
+    which keeps a school name that starts "UT" from reading as Utah. With a state named, the
+    region's places, aliases, and name all count. With none named, only an
+    alias or the region's own name does, because a bare town name is common
+    elsewhere and "Dublin, Ireland" must not become a California region.
     """
     raw = str(text or "")
     lowered = " ".join(raw.casefold().split())
@@ -258,31 +258,45 @@ def location_region(text: str) -> str:
         return ""
     states = {code for code in re.findall(r",\s*([A-Z]{2})\b", raw) if code in US_STATES}
     states |= {code for code, name in US_STATES.items() if re.search(rf"\b{name}\b", lowered)}
-    for region, (state, places) in REGIONS.items():
-        if states and state not in states:
+    for region in _profile_regions():
+        name = str(region.get("name") or "")
+        if not name:
             continue
-        if any(re.search(rf"\b{re.escape(place)}\b", lowered) for place in places):
-            return region
-    hit = match_region(raw, _profile_regions())
-    return str(hit["region"].get("name", "")) if hit else ""
+        own = _region_states(region)
+        if states and own and not own & states:
+            continue
+        terms = [name, *(region.get("aliases") or [])]
+        if states:
+            terms += list(region.get("places") or [])
+        if any(_mentions(lowered, term) for term in terms):
+            return name
+    return ""
 
 
-_PROFILE_REGIONS_CACHE: dict[str, Any] = {"mtime": None, "regions": []}
+def region_phrase(name: str) -> str:
+    """How an email names the region: its profile "phrase", or "the Bay Area" style for "... Area"."""
+    for region in _profile_regions():
+        if region.get("name") == name and str(region.get("phrase") or "").strip():
+            return str(region["phrase"]).strip()
+    return f"the {name}" if name.endswith(" Area") else name
+
+
+_PROFILE_REGIONS_CACHE: dict[str, Any] = {"key": None, "regions": []}
 
 
 def _profile_regions() -> list[dict[str, Any]]:
     """The target regions in config/profile.json, re-read when the file changes."""
     try:
-        mtime = PROFILE_PATH.stat().st_mtime
+        key = (str(PROFILE_PATH), PROFILE_PATH.stat().st_mtime_ns)
     except OSError:
         return []
-    if _PROFILE_REGIONS_CACHE["mtime"] != mtime:
+    if _PROFILE_REGIONS_CACHE["key"] != key:
         try:
             regions = json.loads(PROFILE_PATH.read_text(encoding="utf-8")).get("regions") or []
         except (OSError, ValueError, AttributeError):
             regions = []
         _PROFILE_REGIONS_CACHE.update(
-            mtime=mtime, regions=[region for region in regions if isinstance(region, dict)]
+            key=key, regions=[region for region in regions if isinstance(region, dict)]
         )
     return _PROFILE_REGIONS_CACHE["regions"]
 

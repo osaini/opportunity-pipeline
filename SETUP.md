@@ -328,7 +328,14 @@ brings a feature that needs the student's own data, its step above says so;
 If you commit changes of your own, the hooks from step 2 check each commit and
 push against your resume, profile, and `.env`, and refuse if any of it would be
 published. Add employers, contacts, or anything else to keep private, one per
-line, in `private/blocked-terms.txt`. Audit the whole history at any time with
+line, in `private/blocked-terms.txt`.
+
+The hooks also refuse commits that write your school or degree from
+`config/profile.json` into the code and setup docs every student runs, because
+each copy personalizes those from the student's own config. List short forms,
+such as your school's abbreviation or a campus program, one per line in
+`private/situation-terms.txt`. Tests, fixtures, and the shared source catalog
+may still use them. Audit the whole history at any time with
 `python scripts/check_personal_data.py --all`.
 
 ## Troubleshooting

@@ -15,6 +15,14 @@ Sources of the blocklist, all optional and all gitignored:
                        anything else); lines starting with # are ignored
 - the home directory path, such as C:\\Users\\<you>
 
+It also keeps this student's *situation* out of the code every student runs.
+Every feature is personalized from each student's own config, so shipped code
+and setup docs (see SHIPPED_PATHS) may not name one student's school or
+degree. Those needles come from config/profile.json (``school``, ``degree``)
+and private/situation-terms.txt (one term per line, such as a school's short
+name or a campus program). Tests, fixtures, and the shared source catalog may
+still use them.
+
 In a linked worktree, the main checkout's personal files count too. It also refuses to add personal files by path even when forced past
 .gitignore (git add -f), and databases or documents outside tests/.
 
@@ -58,6 +66,16 @@ PERSONAL_PATHS = re.compile(
     re.VERBOSE,
 )
 DOCUMENT_SUFFIXES = (".db", ".sqlite", ".sqlite3", ".pdf", ".docx", ".doc")
+# The code and setup docs every student runs, where one student's situation
+# must come from config rather than be written in.
+SHIPPED_PATHS = re.compile(
+    r"""^(
+        opportunity_app/ | pipeline_core/ | pipeline\.py$ | apps/ | templates/ | scripts/
+      | \.claude/ | SETUP\.md$ | README\.md$ | AGENTS\.md$ | CONTRIBUTING\.md$
+      | config/[^/]*\.example\.json$
+    )""",
+    re.VERBOSE,
+)
 ADDED_LINE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
@@ -65,6 +83,10 @@ ADDED_LINE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 class Needle:
     kind: str
     pattern: re.Pattern[str]
+    shipped_only: bool = False
+
+    def applies_to(self, path: str | None) -> bool:
+        return not self.shipped_only or bool(path and SHIPPED_PATHS.match(path.replace("\\", "/")))
 
 
 @dataclass(frozen=True)
@@ -127,10 +149,10 @@ def build_needles(root: Path = ROOT, home: Path | None = None) -> list[Needle]:
     needles: list[Needle] = []
     seen: set[str] = set()
 
-    def add(kind: str, pattern: re.Pattern[str] | None) -> None:
+    def add(kind: str, pattern: re.Pattern[str] | None, *, shipped_only: bool = False) -> None:
         if pattern is not None and pattern.pattern not in seen:
             seen.add(pattern.pattern)
-            needles.append(Needle(kind, pattern))
+            needles.append(Needle(kind, pattern, shipped_only))
 
     resume = _read_json(root / "config" / "resume.json")
     profile = _read_json(root / "config" / "profile.json")
@@ -167,6 +189,20 @@ def build_needles(root: Path = ROOT, home: Path | None = None) -> list[Needle]:
         if len(term) >= 3 and not term.startswith("#"):
             add("blocked term", _literal(term, words=True))
 
+    # The student's situation: allowed in tests and the catalog, not in shipped code.
+    for field in ("school", "degree"):
+        value = str(profile.get(field) or "").strip()
+        if len(value) >= 3:
+            add(f"your {field} in shipped code", _literal(value, words=True), shipped_only=True)
+    try:
+        situation = (root / "private" / "situation-terms.txt").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        situation = []
+    for term in situation:
+        term = term.strip()
+        if len(term) >= 3 and not term.startswith("#"):
+            add("your situation in shipped code", _literal(term, words=True), shipped_only=True)
+
     home = home if home is not None else Path.home()
     if home.name and len(home.name) >= 3:
         # C:\Users\name, /Users/name, /home/name, and the JSON-escaped C:\\Users\\name.
@@ -180,8 +216,13 @@ def _mask(text: str) -> str:
     return text[:2] + "*" * max(len(text) - 4, 3) + text[-2:] if len(text) > 4 else "***"
 
 
-def scan_text(text: str, where: str, needles: list[Needle]) -> list[Hit]:
-    return [Hit(where, needle.kind, _mask(match.group(0))) for needle in needles for match in [needle.pattern.search(text)] if match]
+def scan_text(text: str, where: str, needles: list[Needle], path: str | None = None) -> list[Hit]:
+    """Hits in ``text``. ``path`` is the file it came from; without one, shipped-only needles are skipped."""
+    return [
+        Hit(where, needle.kind, _mask(match.group(0)))
+        for needle in needles if needle.applies_to(path)
+        for match in [needle.pattern.search(text)] if match
+    ]
 
 
 def check_path(path: str) -> list[Hit]:
@@ -205,7 +246,7 @@ def scan_diff(diff: str, needles: list[Needle], label: str = "") -> list[Hit]:
         elif header := ADDED_LINE.match(line):
             number = int(header.group(1))
         elif line.startswith("+"):
-            hits += scan_text(line[1:], f"{label}{path}:{number}", needles)
+            hits += scan_text(line[1:], f"{label}{path}:{number}", needles, path)
             number += 1
         elif not line.startswith("-"):
             number += 1
@@ -262,7 +303,7 @@ def check_tree(needles: list[Needle]) -> list[Hit]:
         except (OSError, UnicodeDecodeError):
             continue
         for number, line in enumerate(lines, start=1):
-            hits += scan_text(line, f"{path}:{number}", needles)
+            hits += scan_text(line, f"{path}:{number}", needles, path)
     return hits
 
 
@@ -297,7 +338,9 @@ def main(argv: list[str] | None = None) -> int:
     elif args.push:
         hits = check_commits(commits_to_push(sys.stdin.read()), needles)
     else:
-        hits = check_tree(needles) + check_commits(_git("rev-list", "--all").split(), needles)
+        # Situation terms guard what ships from now on; old history is not a leak.
+        personal = [needle for needle in needles if not needle.shipped_only]
+        hits = check_tree(needles) + check_commits(_git("rev-list", "--all").split(), personal)
 
     if not hits:
         if args.all:
@@ -311,6 +354,13 @@ def main(argv: list[str] | None = None) -> int:
         "or reword it. Bypass once, only for a false positive, with --no-verify.",
         file=sys.stderr,
     )
+    if any("shipped code" in hit.kind for hit in hits):
+        print(
+            "Shipped code must not name one student's situation: read it from the student's own "
+            "config (config/profile.json or a config/*.local.json) and add a SETUP.md step, "
+            "or use an invented example.",
+            file=sys.stderr,
+        )
     return 1
 
 

@@ -20,7 +20,7 @@ from opportunity_app.outreach_contacts import SafeFetcher, apply_candidate, craw
 from opportunity_app.outreach_discovery import DiscoveryBusy, DiscoveryManager, _RunLock, _scope_brief, run_discovery, scope_definitions, validate_proposals
 from opportunity_app.schema import connect_product, ensure_product_schema
 
-from helpers_platform import build_and_migrate
+from helpers_platform import build_and_migrate, use_profile_regions
 
 USER = "local-user"
 
@@ -328,6 +328,7 @@ def company(name, website, **overrides):
 class DiscoveryTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
+        use_profile_regions(self)
         self.root = Path(self.tempdir.name)
         _, platform_path = build_and_migrate(self.root)
         self.conn = connect_product(platform_path)

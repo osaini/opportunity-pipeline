@@ -25,6 +25,7 @@ from opportunity_app.outreach import (
     list_targets,
     local_today,
     location_region,
+    region_phrase,
     log_reply,
     queue_follow_up_reminders,
     suggest_reply_status,
@@ -39,7 +40,7 @@ from opportunity_app.outreach_drafting import (
 )
 from opportunity_app.schema import connect_product, ensure_product_schema, utc_now
 
-from helpers_platform import build_and_migrate
+from helpers_platform import build_and_migrate, use_profile_regions
 
 AUTH = {"Authorization": "Bearer drafting-owner"}
 USER = "local-user"
@@ -103,6 +104,7 @@ def bay_area_draft(body: str) -> str:
 class DraftingTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
+        use_profile_regions(self)
         _, self.platform_path = build_and_migrate(Path(self.tempdir.name))
         self.conn = connect_product(self.platform_path)
         ensure_product_schema(self.conn)
@@ -267,6 +269,7 @@ class DraftingTests(unittest.TestCase):
         self.assertIn("student@example.edu | https://student.example", target["email_body"])
 
     def test_the_region_of_a_location_needs_its_state_to_agree(self):
+        # Regions from tests/fixtures/profile_regions.json, set up in setUp.
         self.assertEqual(location_region("San Francisco, CA"), "Bay Area")
         self.assertEqual(location_region("Palo Alto, California"), "Bay Area")
         self.assertEqual(location_region("Bay Area"), "Bay Area")
@@ -280,10 +283,11 @@ class DraftingTests(unittest.TestCase):
         self.assertEqual(location_region("Austin, MN"), "")
         self.assertEqual(location_region("Oakland, MI"), "")
         self.assertEqual(location_region("Dublin, Ireland"), "")
+        self.assertEqual(location_region("Oakland"), "", "a bare town name is common elsewhere")
         self.assertEqual(location_region("Boston, MA"), "")
         self.assertEqual(location_region(""), "")
 
-    def test_a_region_outside_the_gazetteer_comes_from_the_students_profile(self):
+    def test_regions_come_only_from_the_students_profile(self):
         with tempfile.TemporaryDirectory() as tmp:
             profile = Path(tmp) / "profile.json"
             profile.write_text(json.dumps({"regions": [{
@@ -292,9 +296,12 @@ class DraftingTests(unittest.TestCase):
             with mock.patch("opportunity_app.outreach.PROFILE_PATH", profile):
                 self.assertEqual(location_region("Marietta, GA"), "Atlanta")
                 self.assertEqual(location_region("Atlanta, Texas"), "")
-                self.assertEqual(location_region("Austin, TX"), "Austin")
+                self.assertEqual(location_region("Austin, TX"), "", "no metro is built in")
+                self.assertEqual(region_phrase("Atlanta"), "Atlanta")
             with mock.patch("opportunity_app.outreach.PROFILE_PATH", Path(tmp) / "missing.json"):
                 self.assertEqual(location_region("Marietta, GA"), "")
+                self.assertEqual(location_region("San Francisco, CA"), "")
+                self.assertEqual(region_phrase("Research Triangle Area"), "the Research Triangle Area")
 
     def test_a_bay_area_company_hears_in_the_opening_that_the_student_is_based_there(self):
         confirm_facts(self.conn, break_location="Bay Area")

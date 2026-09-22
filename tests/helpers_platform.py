@@ -3,6 +3,9 @@
 import json
 import sqlite3
 from pathlib import Path
+from unittest import mock
+
+PROFILE_REGIONS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "profile_regions.json"
 
 from opportunity_app.schema import migrate_legacy_database
 
@@ -128,3 +131,14 @@ def build_and_migrate(root: Path) -> tuple[Path, Path]:
         conn.close()
     migrate_legacy_database(legacy_path, platform_path, build_profile(root))
     return legacy_path, platform_path
+
+
+def use_profile_regions(case, path: Path = PROFILE_REGIONS_FIXTURE) -> None:
+    """Point outreach's region lookup at a test profile for the rest of ``case``.
+
+    Outreach reads regions only from the student's config/profile.json, so an
+    unpatched test would read whatever profile the machine running it has.
+    """
+    patcher = mock.patch("opportunity_app.outreach.PROFILE_PATH", path)
+    patcher.start()
+    case.addCleanup(patcher.stop)

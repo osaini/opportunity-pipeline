@@ -47,9 +47,12 @@ def write_personal_files(root: Path) -> None:
     (root / "config").mkdir(exist_ok=True)
     (root / "private").mkdir(exist_ok=True)
     (root / "config" / "resume.json").write_text(json.dumps(RESUME), encoding="utf-8")
-    (root / "config" / "profile.json").write_text(json.dumps({"name": "Robin Quill"}), encoding="utf-8")
+    (root / "config" / "profile.json").write_text(json.dumps({
+        "name": "Robin Quill", "school": "Quillhaven Institute of Technology", "degree": "B.S. Kite Engineering",
+    }), encoding="utf-8")
     (root / ".env").write_text(ENV, encoding="utf-8")
     (root / "private" / "blocked-terms.txt").write_text("# employers\nQuillworks Labs\n\nab\n", encoding="utf-8")
+    (root / "private" / "situation-terms.txt").write_text("# short forms\nQIT Kitelab\n", encoding="utf-8")
 
 
 class NeedleTests(unittest.TestCase):
@@ -96,6 +99,34 @@ class NeedleTests(unittest.TestCase):
         ):
             with self.subTest(text=text):
                 self.assertEqual(self.kinds(text), set())
+
+    def test_the_students_situation_is_refused_only_in_shipped_code(self):
+        cases = {
+            "studying at Quillhaven Institute of Technology": "your school in shipped code",
+            "a B.S. Kite Engineering student": "your degree in shipped code",
+            "the QIT Kitelab externship": "your situation in shipped code",
+        }
+        for text, kind in cases.items():
+            for path in ("opportunity_app/static/app.js", "SETUP.md", "pipeline.py", "config/profile.example.json"):
+                with self.subTest(text=text, path=path):
+                    kinds = {hit.kind for hit in guard.scan_text(text, path, self.needles, path)}
+                    self.assertIn(kind, kinds)
+            for path in ("tests/test_outreach.py", "tests/fixtures/profile_student.json", "config/sources.json", None):
+                with self.subTest(text=text, path=path):
+                    self.assertEqual({hit.kind for hit in guard.scan_text(text, "x", self.needles, path)}, set())
+
+    def test_a_diff_reports_situation_terms_by_the_file_they_land_in(self):
+        diff = "\n".join([
+            "+++ b/opportunity_app/early_programs.py",
+            "@@ -0,0 +4,1 @@",
+            "+LABEL = 'QIT Kitelab'",
+            "+++ b/tests/test_early_programs.py",
+            "@@ -0,0 +9,1 @@",
+            "+LABEL = 'QIT Kitelab'",
+        ])
+        hits = guard.scan_diff(diff, self.needles)
+        self.assertEqual([(hit.where, hit.kind) for hit in hits],
+                         [("opportunity_app/early_programs.py:4", "your situation in shipped code")])
 
     def test_reports_mask_the_value(self):
         hit = guard.scan_text("robin.quill@student.example.edu", "f:1", self.needles)[0]

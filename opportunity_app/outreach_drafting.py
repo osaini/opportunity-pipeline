@@ -23,7 +23,9 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from .agent_providers import AgentProvider, CliAgentProvider, complete_text, default_provider, provider_catalog
-from .outreach import AWAITING_REPLY, DRAFT_KINDS, _log, draft_checks, get_target, location_region, location_usable
+from .outreach import (
+    AWAITING_REPLY, DRAFT_KINDS, _log, draft_checks, get_target, location_region, location_usable, region_phrase,
+)
 from .preparation import confirmed_facts
 from .schema import utc_now
 
@@ -49,8 +51,6 @@ DRAFT_META = {
     "initial": ("draft_claims_json", "draft_generated_by"),
     "follow_up": ("follow_up_claims_json", "follow_up_generated_by"),
 }
-# How a region reads in a sentence ("I'm based in the Bay Area").
-REGION_PHRASES = {"Bay Area": "the Bay Area"}
 # The bridge's one claim about what the student would contribute may rest on inference.
 INFERENCE_BASIS = "inference"
 FILLER_PHRASES = (
@@ -202,7 +202,7 @@ def location_line(facts: dict[str, Any], target: dict[str, Any]) -> str:
         return ""
     if region == location_region(str(facts.get("school") or "")):
         return ""
-    return f"I'm based in {REGION_PHRASES.get(region, region)} during breaks and summers."
+    return f"I'm based in {region_phrase(region)} during breaks and summers."
 
 
 def _inputs(conn: sqlite3.Connection, target: dict[str, Any], user_id: str, kind: str) -> dict[str, Any]:
@@ -372,7 +372,7 @@ def validate_draft(raw: str, inputs: dict[str, Any], kind: str) -> tuple[dict[st
             )
         region = location_region(str(inputs["student"].get("break_location") or ""))
         if inputs.get("location_line"):
-            where = REGION_PHRASES.get(region, region)
+            where = region_phrase(region)
             if region.casefold() not in body.casefold():
                 problems.append(f"it leaves out location_line; the opening should say you're based in {where} during breaks and summers")
             elif region.casefold() not in _opening(body).casefold():
