@@ -268,12 +268,16 @@ class CallPrepJobTests(unittest.TestCase):
         log_reply(self.conn, self.target["id"], REPLY, user_id=USER)
         worker = self.worker()
         worker.start()
-        self.addCleanup(worker.stop)
-        queue_call_prep(self.conn, self.target["id"], user_id=USER, replace=True, reason="t")
-        worker.wake()
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline and not self.target_now()["call_prep"]:
-            time.sleep(0.05)
+        # Stopped here, not in a cleanup: cleanups run after tearDown, and
+        # Windows cannot delete the database while the thread holds it open.
+        try:
+            queue_call_prep(self.conn, self.target["id"], user_id=USER, replace=True, reason="t")
+            worker.wake()
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and not self.target_now()["call_prep"]:
+                time.sleep(0.05)
+        finally:
+            worker.stop()
         self.assertIn("TALKING POINTS", self.target_now()["call_prep"])
 
     def test_the_two_workers_never_take_each_others_jobs(self):
