@@ -1936,6 +1936,8 @@
     // an import file claimed and the tracker refused, not what it accepted.
     location_import_claim: "Import file's unverified location claim",
     location_entered: "Location entered",
+    call_prep_generated: "Call prep written",
+    call_prep_replaced: "Call prep replaced",
   };
   const DRAFT_PROVIDER_LABELS = {
     openai: "OpenAI",
@@ -2147,7 +2149,13 @@
         const row = element("li");
         row.appendChild(element("span", "", text));
         row.appendChild(element("small", "", formatDate(event.created_at)));
-        if (event.detail && !["draft_generated", "gmail_draft_created"].includes(event.event_type)) {
+        if (event.event_type === "call_prep_replaced" && event.detail) {
+          // Whole notes: folded away, but there to copy back.
+          const earlier = element("details", "outreach-claims");
+          earlier.appendChild(element("summary", "", "The notes it replaced"));
+          earlier.appendChild(element("pre", "outreach-event-detail outreach-prep-earlier", event.detail));
+          row.appendChild(earlier);
+        } else if (event.detail && !["draft_generated", "gmail_draft_created", "call_prep_generated"].includes(event.event_type)) {
           row.appendChild(element("p", "outreach-event-detail", event.detail));
         }
         list.appendChild(row);
@@ -3051,6 +3059,7 @@
 
   async function patchOutreach(item, changes, message, ...focusSelectors) {
     await api(`/api/v1/outreach/${encodeURIComponent(item.id)}`, { method: "PATCH", body: JSON.stringify(changes) });
+    if (changes.status) openCallPrepOnReply(item, changes.status);
     state.outreachOpen = item.id;
     announce(message);
     await loadOutreach();
@@ -3060,6 +3069,8 @@
   const OUTREACH_STEPS = ["Research", "Contact", "Draft", "Approve", "Send", "Reply"];
   // Statuses whose follow-up date means "get back in touch then", not "send the follow-up email".
   const OUTREACH_REVISIT = ["replied", "paused"];
+  // Statuses after a company writes back, when there may be a call to prepare for.
+  const OUTREACH_CALL_PREP = ["replied", "call_scheduled", "offer"];
 
   // How far a company has come: each step counts only once everything before it holds.
   function outreachProgress(item) {
@@ -3082,7 +3093,10 @@
         : { label: "Paused", hint: "Set a date to get back in touch, or pick a status to pick this company back up.", tab: null };
     }
     if (["declined", "no_response"].includes(item.status)) return { label: "Closed", hint: "Nothing left to do unless they write back.", tab: "history" };
-    if (["replied", "call_scheduled", "offer"].includes(item.status)) {
+    if (OUTREACH_CALL_PREP.includes(item.status) && !item.call_prep) {
+      return { label: "Prep for the call", hint: "Write call prep: what they do, talking points, what you can bring, and questions to ask.", tab: "prep", tone: "is-region" };
+    }
+    if (OUTREACH_CALL_PREP.includes(item.status)) {
       const revisit = item.status === "replied" && item.follow_up_at ? ` Revisit on ${formatCalendarDate(item.follow_up_at)}.` : "";
       return { label: "Keep the conversation going", hint: `Log each reply so the history stays complete.${revisit}`, tab: "history" };
     }
@@ -3109,9 +3123,25 @@
     ["history", "Replies and history"],
   ];
 
+  // Call prep appears once a company writes back, and stays while it holds notes.
+  function outreachPaneTabs(item) {
+    return OUTREACH_CALL_PREP.includes(item.status) || item.call_prep
+      ? [["prep", "Call prep"], ...OUTREACH_PANE_TABS]
+      : OUTREACH_PANE_TABS;
+  }
+
   // The tab a company opens on: the one you last used for it, else where its next step lives.
   function outreachPaneTab(item) {
-    return state.outreachTabs[item.id] || (item.contact_email ? "draft" : "contact");
+    const tabs = outreachPaneTabs(item).map(([id]) => id);
+    const remembered = state.outreachTabs[item.id];
+    if (remembered && tabs.includes(remembered)) return remembered;
+    if (tabs.includes("prep")) return "prep";
+    return item.contact_email ? "draft" : "contact";
+  }
+
+  // Moving a company to a reply status opens its call prep, the next thing to do.
+  function openCallPrepOnReply(item, status) {
+    if (OUTREACH_CALL_PREP.includes(status) && !OUTREACH_CALL_PREP.includes(item.status)) state.outreachTabs[item.id] = "prep";
   }
 
   function selectOutreachPaneTab(pane, id, { focus = false, remember = true } = {}) {
@@ -3293,6 +3323,105 @@
     return line;
   }
 
+  // Notes for the call once a company writes back. The text is part of the
+  // pane's form, so Save keeps hand edits; writing new prep replaces it, and the
+  // server keeps the replaced notes in the history.
+  function outreachCallPrep(item) {
+    const group = element("fieldset", "outreach-group is-prep");
+    group.appendChild(element("legend", "", "Call prep"));
+    group.appendChild(element("p", "outreach-note is-wide", item.call_prep
+      ? "Edit freely and fill in the blanks on the call. Save changes keeps your edits."
+      : "Log their reply under Replies and history first, so the notes can use it. Then write the prep: what they do, talking points, what you can bring, and questions to ask."));
+    const notes = outreachField(group, "Notes", "call_prep", item.call_prep || "", { multiline: true, wide: true });
+    notes.rows = 24;
+    notes.placeholder = "Call prep notes appear here. You can also write your own.";
+    const assistant = element("div", "outreach-draft-assistant is-wide");
+    const buttons = element("div", "outreach-draft-buttons");
+    const generate = element("button", "primary-button", item.call_prep ? "Rewrite call prep" : "Write call prep");
+    generate.type = "button";
+    generate.dataset.callPrepGenerate = "";
+    const copy = element("button", "secondary-button", "Copy notes");
+    copy.type = "button";
+    const message = element("p", "form-status");
+    message.setAttribute("aria-live", "polite");
+    generate.addEventListener("click", async () => {
+      const unsaved = notes.value !== notes.dataset.initial;
+      if (unsaved && !window.confirm("Replace your unsaved notes with new call prep? Save changes first to keep them in the history.")) return;
+      generate.disabled = true;
+      message.textContent = "Writing call prep from your confirmed profile, this research, and their reply. This can take a minute…";
+      try {
+        await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/call-prep`, { method: "POST" });
+        state.outreachOpen = item.id;
+        state.outreachDiscardEdits = true;
+        announce(`Wrote call prep for ${item.company}.${item.call_prep ? " The earlier notes are in the history." : ""}`);
+        await loadOutreach();
+        refocusOutreach(item.id, '[name="call_prep"]');
+      } catch (error) {
+        message.textContent = error.message;
+        generate.disabled = false;
+      }
+    });
+    copy.addEventListener("click", async () => {
+      if (!notes.value.trim()) {
+        message.textContent = "Nothing to copy yet.";
+        return;
+      }
+      try {
+        await copyText(notes.value);
+        announce(`Copied the ${item.company} call prep.`);
+      } catch (error) {
+        showError(error.message);
+      }
+    });
+    buttons.append(generate, copy);
+    assistant.append(buttons, message);
+    const claims = item.call_prep_claims || [];
+    if (claims.length) {
+      const details = element("details", "outreach-claims");
+      details.appendChild(element("summary", "", `What these notes are based on (${claims.length})`));
+      if (item.call_prep_generated_by && item.call_prep_generated_by !== "template") {
+        details.appendChild(element("p", "outreach-note", "The model's own citations. Lines marked (my guess) are its inference about the fit, not facts."));
+      }
+      const list = element("ul");
+      claims.forEach((claim) => {
+        const row = element("li");
+        row.appendChild(element("span", "", claim.text));
+        const sourceHref = safeExternalUrl(claim.basis);
+        if (sourceHref) {
+          const source = element("a", "", "source ↗");
+          source.href = sourceHref;
+          source.target = "_blank";
+          source.rel = "noopener noreferrer";
+          row.appendChild(source);
+        } else {
+          const [where, field] = claim.basis.split(":");
+          const label = {
+            profile: "your profile",
+            research: "research",
+            unverified: "unverified deep-search research",
+            reply: "their reply",
+            sent_email: "the email you sent",
+            inference: "inference, not from your profile or research",
+          }[where] || claim.basis;
+          row.appendChild(element("small", "", `${label}${field ? `: ${field.replace(/_/g, " ")}` : ""}`));
+        }
+        list.appendChild(row);
+      });
+      details.appendChild(list);
+      assistant.appendChild(details);
+    }
+    if (item.call_prep_generated_by) {
+      const provider = item.call_prep_generated_by.split(":")[0];
+      const who = item.call_prep_generated_by === "template"
+        ? "Built from your saved profile and this research, with no model."
+        : `Written by ${DRAFT_PROVIDER_LABELS[provider] || provider}.`;
+      const when = item.call_prep_generated_at ? ` ${formatDate(item.call_prep_generated_at)}.` : "";
+      assistant.appendChild(element("p", "outreach-note", `${who}${when} Check it against their reply before the call.`));
+    }
+    group.appendChild(assistant);
+    return group;
+  }
+
   function createOutreachCard(item, context = {}) {
     const card = element("article", "application-card outreach-card outreach-pane");
     card.dataset.outreachId = item.id;
@@ -3396,6 +3525,7 @@
             method: "PATCH",
             body: JSON.stringify({ status }),
           });
+          openCallPrepOnReply(item, status);
           state.outreachKeep.add(item.id);
           state.outreachSelected = item.id;
           await loadOutreach();
@@ -3411,7 +3541,8 @@
     });
     label.appendChild(select);
     const actions = element("div", "tracker-exports");
-    const tabNames = Object.fromEntries(OUTREACH_PANE_TABS);
+    const paneTabs = outreachPaneTabs(item);
+    const tabNames = Object.fromEntries(paneTabs);
     if (next.tab) {
       const go = element("button", "secondary-button", `Go to ${tabNames[next.tab].toLowerCase()}`);
       go.type = "button";
@@ -3515,7 +3646,7 @@
     const tablist = element("div", "outreach-tabs");
     tablist.setAttribute("role", "tablist");
     tablist.setAttribute("aria-label", `${item.company} details`);
-    OUTREACH_PANE_TABS.forEach(([id, text]) => {
+    paneTabs.forEach(([id, text]) => {
       const tab = element("button", "outreach-tab", text);
       tab.type = "button";
       tab.id = `outreach-tab-${item.id}-${id}`;
@@ -3527,7 +3658,7 @@
     });
     // Arrow keys move between tabs, as a tab list should.
     tablist.addEventListener("keydown", (event) => {
-      const order = OUTREACH_PANE_TABS.map(([id]) => id);
+      const order = paneTabs.map(([id]) => id);
       const current = order.indexOf(tablist.querySelector('[aria-selected="true"]')?.dataset.paneTab);
       const moves = { ArrowRight: 1, ArrowLeft: -1, Home: -current, End: order.length - 1 - current };
       if (!(event.key in moves)) return;
@@ -3674,7 +3805,13 @@
     const formStatus = element("p", "form-status");
     formStatus.setAttribute("aria-live", "polite");
     footer.append(save, remove, formStatus);
-    form.append(draftPanel, researchPanel, contactPanel, timingPanel, historyPanel, footer);
+    const prepPanels = [];
+    if (tabNames.prep) {
+      const prepPanel = panel("prep");
+      prepPanel.appendChild(outreachCallPrep(item));
+      prepPanels.push(prepPanel);
+    }
+    form.append(...prepPanels, draftPanel, researchPanel, contactPanel, timingPanel, historyPanel, footer);
     loadOutreachTimeline(item.id, timelineBody);
     contactsSection.load();
 
