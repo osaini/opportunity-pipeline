@@ -574,13 +574,27 @@ def _record(
     return item
 
 
+def _event_time(conn: sqlite3.Connection, target_id: str) -> str:
+    """Now, but always after the target's latest event.
+
+    Events are listed by created_at alone, and one action often logs two in a
+    row. Where the clock is coarse (about 15ms on Windows before Python 3.13)
+    both get the same stamp and the history can show them out of order.
+    """
+    now = utc_now()
+    latest = conn.execute("SELECT MAX(created_at) FROM outreach_events WHERE target_id=?", (target_id,)).fetchone()[0]
+    if latest and datetime.fromisoformat(latest) >= datetime.fromisoformat(now):
+        return (datetime.fromisoformat(latest) + timedelta(microseconds=1)).isoformat(timespec="microseconds")
+    return now
+
+
 def _log(conn: sqlite3.Connection, target_id: str, user_id: str, event_type: str, *, from_status: str | None = None, to_status: str | None = None, detail: str = "") -> None:
     conn.execute(
         """
         INSERT INTO outreach_events(id, target_id, user_id, event_type, from_status, to_status, detail, created_at)
         VALUES(?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (f"outreach-event-{uuid4().hex}", target_id, user_id, event_type, from_status, to_status, detail, utc_now()),
+        (f"outreach-event-{uuid4().hex}", target_id, user_id, event_type, from_status, to_status, detail, _event_time(conn, target_id)),
     )
 
 
