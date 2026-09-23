@@ -1,5 +1,10 @@
 name: CI
-on: [push, pull_request]
+# Branch pushes are covered by their pull request; triggering on both ran every
+# PR commit twice. A branch with no PR open gets no CI until one is opened.
+on:
+  push:
+    branches: [main]
+  pull_request:
 permissions:
   contents: read
   pull-requests: read
@@ -40,9 +45,18 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
-          cache-dependency-path: requirements-web.lock
-      - run: python -m pip install -r requirements-web.lock
-      - run: python -m unittest discover -s tests
+          cache-dependency-path: |
+            requirements-web.lock
+            requirements-test.txt
+      - run: python -m pip install -r requirements-web.lock -r requirements-test.txt
+      # In parallel: the Windows runner took ~15 minutes serially, five times
+      # Linux, and held up every run. The `test` job above keeps the primary
+      # `unittest discover` command covered. pytest-unit.ini leaves out
+      # test_postgres (skipped here anyway, with no database) and
+      # test_scheduled_tasks, which flakes under parallel load and holds the
+      # live Windows launcher check, so it runs on its own afterwards.
+      - run: python -m pytest -c pytest-unit.ini -n auto -q
+      - run: python -m unittest tests.test_scheduled_tasks
       - name: First-run setup on a clean checkout
         run: |
           python -m opportunity_app.setup init
