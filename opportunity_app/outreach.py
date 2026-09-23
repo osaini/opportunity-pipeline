@@ -89,7 +89,12 @@ SELECT_TARGETS = """
         (SELECT COUNT(*) FROM outreach_draft_versions v WHERE v.target_id=t.id AND v.kind='initial'
             AND NOT (v.subject=t.email_subject AND v.body=t.email_body)) AS draft_history_count,
         (SELECT COUNT(*) FROM outreach_draft_versions v WHERE v.target_id=t.id AND v.kind='follow_up'
-            AND NOT (v.subject=t.follow_up_subject AND v.body=t.follow_up_body)) AS follow_up_history_count
+            AND NOT (v.subject=t.follow_up_subject AND v.body=t.follow_up_body)) AS follow_up_history_count,
+        (SELECT COUNT(*) FROM outreach_events e WHERE e.target_id=t.id AND e.event_type='reply_logged') AS reply_count,
+        (SELECT j.state FROM job_queue j WHERE j.id=t.call_prep_job_id) AS call_prep_job_state,
+        (SELECT j.last_error FROM job_queue j WHERE j.id=t.call_prep_job_id) AS call_prep_job_error,
+        (SELECT j.next_attempt_at FROM job_queue j WHERE j.id=t.call_prep_job_id) AS call_prep_job_next_attempt_at,
+        (SELECT j.attempts FROM job_queue j WHERE j.id=t.call_prep_job_id) AS call_prep_job_attempts
     FROM outreach_targets t
 """
 TEXT_FIELDS = (
@@ -540,6 +545,15 @@ def _record(
     item["draft_claims"] = json.loads(draft_claims_json)
     item["follow_up_claims"] = json.loads(follow_up_claims_json)
     item["call_prep_claims"] = json.loads(item.pop("call_prep_claims_json", None) or "[]")
+    job_state = item.pop("call_prep_job_state", None)
+    job = {
+        "state": job_state,
+        "error": item.pop("call_prep_job_error", None) or "",
+        "next_attempt_at": item.pop("call_prep_job_next_attempt_at", None),
+        "attempts": int(item.pop("call_prep_job_attempts", None) or 0),
+    }
+    item["call_prep_job"] = job if job_state else None
+    item["reply_count"] = int(item.get("reply_count") or 0)
     if item.get("research_confidence") == "confirmed":
         item["draft_claims"] = _confirmed_claims(item["draft_claims"])
         item["follow_up_claims"] = _confirmed_claims(item["follow_up_claims"])

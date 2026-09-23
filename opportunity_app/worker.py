@@ -17,6 +17,8 @@ from .operations import enqueue_job, recover_stale_jobs, run_next_job, run_reten
 from .schema import connect_product
 
 STAGES = ("fetch", "enrich", "score", "liveness", "report")
+# Run by a thread inside the web app, which recovers its own interrupted jobs.
+WEB_APP_JOB_TYPES = ("outreach_call_prep",)
 
 
 def _scheduled_stages() -> dict[str, float]:
@@ -67,7 +69,7 @@ def enqueue_due_schedules(conn, *, now: datetime | None = None) -> list[str]:
 def run_once(target: Path | str = DEFAULT_PLATFORM_DB):
     with closing(connect_product(target)) as conn:
         stale_before = (datetime.now(timezone.utc) - timedelta(minutes=15)).isoformat()
-        recover_stale_jobs(conn, stale_before=stale_before)
+        recover_stale_jobs(conn, stale_before=stale_before, exclude_types=WEB_APP_JOB_TYPES)
         # Due reminders fire on every pass: they are time-sensitive and the
         # handler is idempotent (completed reminders are never re-sent).
         send_due_reminders(conn)
@@ -82,7 +84,7 @@ def run_once(target: Path | str = DEFAULT_PLATFORM_DB):
         }
         for stage in STAGES:
             handlers[f"pipeline_{stage}"] = stage_handler
-        return run_next_job(conn, handlers)
+        return run_next_job(conn, handlers, exclude_types=WEB_APP_JOB_TYPES)
 
 
 def main() -> int:

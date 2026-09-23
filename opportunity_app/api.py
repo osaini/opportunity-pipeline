@@ -252,7 +252,9 @@ from .outreach_contacts import (
     find_contacts as find_outreach_contacts,
     list_candidates as list_outreach_candidates,
 )
-from .outreach_call_prep import generate_call_prep
+from .outreach_call_prep import (
+    CallPrepWorker, NotReplied, ReplyRequired, auto_queue_call_prep, queue_call_prep,
+)
 from .outreach_render import default_renderer
 from .outreach_smtp import default_verifier as default_smtp_verifier
 from .outreach_discovery import scope_definitions as discovery_scope_definitions, DiscoveryBusy, DiscoveryManager, last_runs as last_discovery_runs
@@ -800,6 +802,8 @@ def create_app(
     outreach_draft_provider: str | None = None,
     outreach_provider_factory: Callable[[str, str], AgentProvider] | None = None,
     outreach_gmail_client_factory: Callable[[], httpx.Client] | None = None,
+    call_prep_worker: CallPrepWorker | None = None,
+    start_call_prep_worker: bool | None = None,
     typesafe_client_factory: Callable[[], DecisionClient] | None = None,
     profile_file: Path | None = None,
     early_programs_file: Path | None = None,
@@ -899,6 +903,15 @@ def create_app(
             contact_delay=outreach_contact_delay,
         )
 
+    # Call prep is written by a background thread from durable jobs, so it
+    # survives a restart or a sleeping laptop. Tests run the jobs themselves.
+    if call_prep_worker is None:
+        call_prep_worker = CallPrepWorker(
+            database_target, provider_factory=resolved_outreach_provider_factory, provider=outreach_draft_provider,
+        )
+    if start_call_prep_worker is None:
+        start_call_prep_worker = real_product_db
+
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         database_exists = is_postgres_target(database_target) or Path(database_target).exists()
@@ -909,10 +922,13 @@ def create_app(
         else:
             with closing(connect_product(database_target)) as migration_connection:
                 ensure_product_schema(migration_connection)
+            if start_call_prep_worker:
+                call_prep_worker.start()
         LOGGER.warning("Local web access token: %s", application.state.access_token)
         try:
             yield
         finally:
+            call_prep_worker.stop()
             for connection in list(open_connections):
                 try:
                     connection.close()
@@ -936,6 +952,7 @@ def create_app(
         app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
     app.state.db_path = database_target
     app.state.access_token = resolved_token
+    app.state.call_prep_worker = call_prep_worker
     app.state.employer_token = resolved_employer_token
     app.state.admin_token = resolved_admin_token
 
@@ -2044,24 +2061,26 @@ def create_app(
         except RuntimeError as exc:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"The draft model failed: {exc}") from exc
 
-    @app.post("/api/v1/outreach/{target_id}/call-prep")
+    @app.post("/api/v1/outreach/{target_id}/call-prep", status_code=status.HTTP_202_ACCEPTED)
     def call_prep_for_outreach(
         target_id: str,
         conn: sqlite3.Connection = Depends(writable_connection),
         user_id: str = Depends(require_auth),
     ) -> dict[str, Any]:
-        """Write call-prep notes once a company has replied. Replaced notes stay in the history."""
+        """Queue new call-prep notes, written in the background. Replaced notes stay in the history.
+
+        409 when no reply is logged: the notes are written from it.
+        """
         try:
-            return generate_call_prep(
-                conn, target_id, user_id=user_id,
-                provider_factory=resolved_outreach_provider_factory, provider=outreach_draft_provider,
-            )
+            target = queue_call_prep(conn, target_id, user_id=user_id, replace=True, reason="You asked for new call prep")
         except OutreachNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
-        except ValueError as exc:
+        except ReplyRequired as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        except (NotReplied, ValueError) as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"The model failed: {exc}") from exc
+        call_prep_worker.wake()
+        return target
 
     @app.get("/api/v1/outreach/{target_id}/drafts")
     def outreach_draft_history(
@@ -2197,7 +2216,12 @@ def create_app(
         user_id: str = Depends(require_auth),
     ) -> dict[str, Any]:
         try:
-            return log_outreach_reply(conn, target_id, payload.text, user_id=user_id)
+            logged = log_outreach_reply(conn, target_id, payload.text, user_id=user_id)
+            # A reply logged on a company already at a reply status starts its call prep.
+            if auto_queue_call_prep(conn, target_id, user_id=user_id, reason="Reply logged"):
+                call_prep_worker.wake()
+                logged["target"] = get_outreach_target(conn, target_id, user_id=user_id, include_events=True)
+            return logged
         except OutreachNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
         except ValueError as exc:
@@ -2222,7 +2246,15 @@ def create_app(
         user_id: str = Depends(require_auth),
     ) -> dict[str, Any]:
         try:
-            return update_outreach_target(conn, target_id, payload.model_dump(exclude_unset=True), user_id=user_id)
+            before = get_outreach_target(conn, target_id, user_id=user_id)
+            updated = update_outreach_target(conn, target_id, payload.model_dump(exclude_unset=True), user_id=user_id)
+            # Reaching a reply status starts call prep on its own, when there is a reply to write it from.
+            if updated["status"] != before["status"] and auto_queue_call_prep(
+                conn, target_id, user_id=user_id, reason=f"Status moved to {updated['status'].replace('_', ' ')}",
+            ):
+                call_prep_worker.wake()
+                updated = get_outreach_target(conn, target_id, user_id=user_id)
+            return updated
         except OutreachNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
         # LocationConflictError subclasses ValueError, so this ordering is what

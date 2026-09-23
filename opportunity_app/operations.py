@@ -42,17 +42,44 @@ def _job(row: Any) -> dict[str, Any]:
     return result
 
 
-def run_next_job(conn: sqlite3.Connection, handlers: dict[str, Callable[[dict[str, Any]], Any]], *, now: str | None = None) -> dict[str, Any] | None:
+def run_next_job(
+    conn: sqlite3.Connection,
+    handlers: dict[str, Callable[[dict[str, Any]], Any]],
+    *,
+    now: str | None = None,
+    only_handled: bool = False,
+    exclude_types: tuple[str, ...] = (),
+) -> dict[str, Any] | None:
+    """Claim and run the next due job.
+
+    By default any job type is claimed, so one nobody handles dies loudly
+    instead of waiting forever. The web app's background thread passes
+    ``only_handled`` and the maintenance worker ``exclude_types``, so the two
+    never take each other's jobs from this shared table.
+    """
     now = now or utc_now()
+    clauses, params = ["state IN ('queued', 'retry')", "next_attempt_at<=?"], [now]
+    if only_handled:
+        types = sorted(handlers)
+        clauses.append(f"job_type IN ({', '.join('?' for _ in types) or 'NULL'})")
+        params.extend(types)
+    if exclude_types:
+        clauses.append(f"job_type NOT IN ({', '.join('?' for _ in exclude_types)})")
+        params.extend(exclude_types)
     with conn:
         row = conn.execute(
-            """SELECT * FROM job_queue WHERE state IN ('queued', 'retry') AND next_attempt_at<=?
+            f"""SELECT * FROM job_queue WHERE {' AND '.join(clauses)}
                ORDER BY next_attempt_at, created_at LIMIT 1""",
-            (now,),
+            params,
         ).fetchone()
         if not row:
             return None
-        conn.execute("UPDATE job_queue SET state='running', locked_at=?, updated_at=? WHERE id=?", (now, now, row["id"]))
+        claimed = conn.execute(
+            "UPDATE job_queue SET state='running', locked_at=?, updated_at=? WHERE id=? AND state IN ('queued', 'retry')",
+            (now, now, row["id"]),
+        )
+        if not claimed.rowcount:
+            return None
     payload = json.loads(row["payload_json"])
     try:
         handler = handlers[row["job_type"]]
@@ -89,12 +116,23 @@ def queue_status(conn: sqlite3.Connection) -> dict[str, Any]:
     return {"states": states, "backpressure": states["queued"] + states["retry"] >= 1000}
 
 
-def recover_stale_jobs(conn: sqlite3.Connection, *, stale_before: str) -> int:
+def recover_stale_jobs(
+    conn: sqlite3.Connection, *, stale_before: str, job_types: tuple[str, ...] | None = None,
+    exclude_types: tuple[str, ...] = (), reason: str = "worker lease expired",
+) -> int:
+    """Put jobs a dead worker left running back in line. Optionally only some job types."""
+    clauses, params = ["state='running'", "locked_at<?"], [stale_before]
+    if job_types is not None:
+        clauses.append(f"job_type IN ({', '.join('?' for _ in job_types) or 'NULL'})")
+        params.extend(job_types)
+    if exclude_types:
+        clauses.append(f"job_type NOT IN ({', '.join('?' for _ in exclude_types)})")
+        params.extend(exclude_types)
     with conn:
         return conn.execute(
-            """UPDATE job_queue SET state='retry', locked_at=NULL, next_attempt_at=?,
-               last_error='worker lease expired', updated_at=? WHERE state='running' AND locked_at<?""",
-            (utc_now(), utc_now(), stale_before),
+            f"""UPDATE job_queue SET state='retry', locked_at=NULL, next_attempt_at=?,
+               last_error=?, updated_at=? WHERE {' AND '.join(clauses)}""",
+            (utc_now(), reason, utc_now(), *params),
         ).rowcount
 
 

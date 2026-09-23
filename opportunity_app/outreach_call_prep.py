@@ -10,25 +10,48 @@ or a confirmed profile field, and a number found in none of them is refused.
 Only "what I could bring" may rest on inference, and it says so. Profile
 entries the student marked "omit" for outreach are never shown to the model.
 
-Generating replaces the text in the editor; the text it replaces is kept in
-the history, so a hand-edited set of notes is never lost.
+Notes are written only from a logged reply: the reply is what the call is
+about, and without it the notes would guess. Generating replaces the text in
+the editor; the text it replaces is kept in the history, so a hand-edited set
+of notes is never lost.
+
+Generation runs in the background as a durable job in job_queue. Moving a
+company to a reply status with a reply logged, or logging a reply on one,
+queues it on its own. A thread inside the web app runs the jobs. Because the
+job's state is in the database, a server that stops mid-generation picks the
+job back up when it starts, and a model call cut off by a sleeping laptop is
+retried with backoff.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sqlite3
+import threading
+from contextlib import closing
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from .agent_providers import CliAgentProvider, complete_text
-from .outreach import CALL_PREP_STATUSES, _log, get_target
+from .operations import enqueue_job, recover_stale_jobs, run_next_job
+from .outreach import CALL_PREP_STATUSES, OutreachNotFoundError, _log, get_target
 from .outreach_drafting import (
     DRAFT_FACT_FIELDS, INFERENCE_BASIS, RESEARCH_FIELDS, ProviderFactory, _entry_name, _field_basis,
     _unsupported_numbers, outreach_proof, resolve_provider,
 )
 from .preparation import confirmed_facts
-from .schema import utc_now
+from .schema import connect_product, utc_now
+
+LOGGER = logging.getLogger(__name__)
+JOB_TYPE = "outreach_call_prep"
+# The first try plus three retries, 1, 2, then 4 minutes apart: long enough to
+# ride out a laptop waking up and reconnecting.
+MAX_ATTEMPTS = 4
+ACTIVE_JOB_STATES = {"queued", "running", "retry"}
+REPLY_REQUIRED = "Paste their reply under Replies and history first. Call prep is written from it."
 
 # Sections the model writes, in the order they print, with their headings.
 MODEL_SECTIONS = (
@@ -78,13 +101,30 @@ class CallPrepRejected(ValueError):
     """The model's notes cited or stated something the inputs do not support."""
 
 
+class ReplyRequired(ValueError):
+    """No reply is logged, and call prep is written from the reply."""
+
+
+class NotReplied(ValueError):
+    """The company is not at a reply status."""
+
+
 def logged_replies(target: dict[str, Any]) -> list[dict[str, str]]:
     """Every reply the student pasted in, oldest first."""
     events = target.get("events") or []
     return [
-        {"logged_at": event["created_at"], "text": event["detail"]}
+        # The date alone: a full timestamp's digits would let the number check
+        # accept a made-up figure that happens to appear in its microseconds.
+        {"logged_on": event["created_at"][:10], "text": event["detail"]}
         for event in reversed(events) if event["event_type"] == "reply_logged" and event.get("detail")
     ]
+
+
+def check_can_prep(target: dict[str, Any]) -> None:
+    if target["status"] not in CALL_PREP_STATUSES:
+        raise NotReplied("Call prep opens once the company has replied")
+    if not logged_replies(target):
+        raise ReplyRequired(REPLY_REQUIRED)
 
 
 def call_prep_inputs(conn: sqlite3.Connection, target: dict[str, Any], user_id: str) -> dict[str, Any]:
@@ -194,7 +234,8 @@ def template_call_prep(inputs: dict[str, Any]) -> dict[str, list[Any]]:
     company = research.get("company", "the company")
     return {
         "about_them": about,
-        "their_reply": [],
+        # No model to summarize it, so the latest reply as they wrote it.
+        "their_reply": [{"text": _clean(inputs["replies"][-1]["text"]), "basis": REPLY_BASIS}] if inputs["replies"] else [],
         "talking_points": points[:MAX_BULLETS],
         "what_i_bring": [],
         "questions": [
@@ -210,13 +251,10 @@ def render_call_prep(company: str, sections: dict[str, list[Any]], inputs: dict[
     """Plain-text notes: short headings and dashes, easy to read and to write into."""
     lines = [
         f"CALL PREP: {company}",
-        f"Written {generated_on} from your confirmed profile, the research on file"
-        + (", and the replies you logged" if inputs["replies"] else "") + ". Check it before the call.",
+        f"Written {generated_on} from your confirmed profile, the research on file, and their reply. Check it before the call.",
     ]
     for key, heading in MODEL_SECTIONS:
         entries = sections.get(key) or []
-        if key == "their_reply" and not inputs["replies"]:
-            entries = ["No reply logged yet. Paste it under Replies and history, then regenerate."]
         if key == "what_i_bring" and not entries:
             entries = ["(Write one or two: which part of your work fits theirs, and what you'd do.)"]
         if not entries:
@@ -239,10 +277,13 @@ def generate_call_prep(
     user_id: str,
     provider_factory: ProviderFactory,
     provider: str | None = None,
+    keep_existing: bool = False,
 ) -> dict[str, Any]:
+    """Write call prep now. ``keep_existing`` leaves notes the student already has alone."""
     target = get_target(conn, target_id, user_id=user_id, include_events=True)
-    if target["status"] not in CALL_PREP_STATUSES:
-        raise ValueError("Call prep opens once the company has replied")
+    check_can_prep(target)
+    if keep_existing and target.get("call_prep"):
+        return target
     inputs = call_prep_inputs(conn, target, user_id)
     provider_id, model = resolve_provider(provider)
     if provider_id == "legacy":
@@ -268,9 +309,16 @@ def generate_call_prep(
         for key, _ in MODEL_SECTIONS for entry in sections.get(key, []) if isinstance(entry, dict)
     ]
     with conn:
-        if target.get("call_prep") and target["call_prep"] != text:
+        # Read again: the student may have saved notes while the model worked.
+        row = conn.execute("SELECT call_prep FROM outreach_targets WHERE id=? AND user_id=?", (target_id, user_id)).fetchone()
+        if row is None:
+            raise OutreachNotFoundError(target_id)
+        current = row[0] or ""
+        if keep_existing and current:
+            return get_target(conn, target_id, user_id=user_id)
+        if current and current != text:
             # Kept whole so hand-written notes survive a regeneration.
-            _log(conn, target_id, user_id, "call_prep_replaced", detail=target["call_prep"])
+            _log(conn, target_id, user_id, "call_prep_replaced", detail=current)
         conn.execute(
             """
             UPDATE outreach_targets
@@ -281,3 +329,128 @@ def generate_call_prep(
         )
         _log(conn, target_id, user_id, "call_prep_generated", detail=generated_by)
     return get_target(conn, target_id, user_id=user_id)
+
+
+def queue_call_prep(
+    conn: sqlite3.Connection, target_id: str, *, user_id: str, replace: bool, reason: str,
+) -> dict[str, Any]:
+    """Queue a background job to write call prep, unless one is already on its way.
+
+    ``replace`` is the student asking for new notes; without it the job leaves
+    any notes already there alone, which is what an automatic start wants.
+    """
+    target = get_target(conn, target_id, user_id=user_id, include_events=True)
+    check_can_prep(target)
+    job = target.get("call_prep_job")
+    if job and job["state"] in ACTIVE_JOB_STATES:
+        return get_target(conn, target_id, user_id=user_id)
+    queued = enqueue_job(
+        conn, JOB_TYPE, {"target_id": target_id, "user_id": user_id, "replace": replace},
+        f"call-prep:{target_id}:{uuid4().hex}", max_attempts=MAX_ATTEMPTS,
+    )
+    with conn:
+        conn.execute(
+            "UPDATE outreach_targets SET call_prep_job_id=?, updated_at=? WHERE id=? AND user_id=?",
+            (queued["id"], utc_now(), target_id, user_id),
+        )
+        _log(conn, target_id, user_id, "call_prep_queued", detail=reason)
+    return get_target(conn, target_id, user_id=user_id)
+
+
+def auto_queue_call_prep(conn: sqlite3.Connection, target_id: str, *, user_id: str, reason: str) -> bool:
+    """Start call prep on its own when a replied company has a reply and no notes yet."""
+    try:
+        target = get_target(conn, target_id, user_id=user_id, include_events=True)
+        if target.get("call_prep") or (target.get("call_prep_job") or {}).get("state") in ACTIVE_JOB_STATES:
+            return False
+        check_can_prep(target)
+    except (OutreachNotFoundError, ValueError):
+        return False
+    queue_call_prep(conn, target_id, user_id=user_id, replace=False, reason=reason)
+    return True
+
+
+class CallPrepWorker:
+    """Runs queued call prep jobs on one background thread inside the web app.
+
+    The jobs live in job_queue, so nothing is lost when the process stops. On
+    start, a job still marked running was cut off by the last shutdown, since
+    only this thread runs these jobs, and goes back in line. A job whose model
+    call fails, as one cut off by a sleeping laptop does, is retried by the
+    queue with backoff; the thread polls, so a retry runs soon after it is due.
+    """
+
+    def __init__(
+        self,
+        platform_target: Path | str,
+        *,
+        provider_factory: ProviderFactory,
+        provider: str | None = None,
+        poll_seconds: float = 20.0,
+    ) -> None:
+        self.platform_target = platform_target
+        self._provider_factory = provider_factory
+        self._provider = provider
+        self._poll_seconds = poll_seconds
+        self._wake = threading.Event()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def recover_interrupted(self) -> int:
+        with closing(connect_product(self.platform_target)) as conn:
+            return recover_stale_jobs(
+                conn, stale_before="9999-12-31T00:00:00+00:00", job_types=(JOB_TYPE,),
+                reason="Interrupted when the app stopped; trying again",
+            )
+
+    def _run(self, payload: dict[str, Any]) -> None:
+        with closing(connect_product(self.platform_target)) as conn:
+            try:
+                generate_call_prep(
+                    conn, payload["target_id"], user_id=payload["user_id"],
+                    provider_factory=self._provider_factory, provider=self._provider,
+                    keep_existing=not payload.get("replace"),
+                )
+            except (OutreachNotFoundError, ReplyRequired, NotReplied):
+                # Removed, its reply gone, or moved off a reply status while the
+                # job waited: nothing to write. Anything else is retried.
+                return
+
+    def run_pending(self) -> int:
+        """Run every job that is due now. Returns how many ran."""
+        ran = 0
+        with closing(connect_product(self.platform_target)) as conn:
+            while not self._stop.is_set():
+                record = run_next_job(conn, {JOB_TYPE: self._run}, only_handled=True)
+                if record is None:
+                    return ran
+                ran += 1
+                if record["state"] in {"retry", "dead"}:
+                    LOGGER.warning("Call prep job %s: %s (%s)", record["id"], record["state"], record["last_error"])
+        return ran
+
+    def wake(self) -> None:
+        self._wake.set()
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self.recover_interrupted()
+        self._thread = threading.Thread(target=self._loop, name="call-prep-worker", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._wake.set()
+        if self._thread:
+            self._thread.join(timeout=5)
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self.run_pending()
+            except Exception:  # the thread must outlive any one bad pass
+                LOGGER.exception("Call prep worker pass failed")
+            self._wake.wait(self._poll_seconds)
+            self._wake.clear()
