@@ -32,6 +32,7 @@ from opportunity_app.outreach import (
     update_target,
 )
 from opportunity_app.outreach_drafting import (
+    INSTRUCTIONS,
     DraftRejected,
     DraftVersionNotFoundError,
     draft_versions,
@@ -93,11 +94,11 @@ GOOD = draft_json("Mechanical engineering student interested in Bovi", GOOD_BODY
 
 
 def bay_area_draft(body: str) -> str:
-    """The same reply with the location line where it belongs, at the end of the opening."""
+    """The same reply with the location note where it belongs, right after the school."""
     return draft_json(
         "Hello Bovi",
-        body.replace("at UT Austin.", "at UT Austin. I'm based in the Bay Area during breaks and summers."),
-        [*GOOD_CLAIMS, {"text": "based in the Bay Area during breaks and summers", "basis": "profile:break_location"}],
+        body.replace("at UT Austin.", "at UT Austin (live in the Bay Area)."),
+        [*GOOD_CLAIMS, {"text": "(live in the Bay Area)", "basis": "profile:break_location"}],
     )
 
 
@@ -310,11 +311,11 @@ class DraftingTests(unittest.TestCase):
         provider = ScriptedProvider([missing, bay_area_draft(GOOD_BODY)])
         target = self.generate(provider)
         prompt = json.loads(provider.prompts[0])
-        self.assertEqual(prompt["location_line"], "I'm based in the Bay Area during breaks and summers.")
+        self.assertEqual(prompt["location_line"], "(live in the Bay Area)")
         self.assertEqual(prompt["student"]["break_location"], "Bay Area")
         self.assertIn("leaves out location_line", provider.prompts[1])
         opening, ask = target["email_body"].split("\n\n")[1:3]
-        self.assertIn("I'm based in the Bay Area during breaks and summers.", opening)
+        self.assertIn("at UT Austin (live in the Bay Area).", opening)
         self.assertNotIn("Bay Area", ask)
         self.assertEqual(target["location_region"], "Bay Area")
 
@@ -323,13 +324,28 @@ class DraftingTests(unittest.TestCase):
         update_target(self.conn, self.target["id"], {"location": "San Carlos, CA"}, user_id=USER)
         in_the_ask = draft_json(
             "Hello Bovi",
-            GOOD_BODY.replace("Would you", "I'm based in the Bay Area during breaks and summers. Would you"),
-            [*GOOD_CLAIMS, {"text": "based in the Bay Area during breaks and summers", "basis": "profile:break_location"}],
+            GOOD_BODY.replace("Would you", "I live in the Bay Area. Would you"),
+            [*GOOD_CLAIMS, {"text": "live in the Bay Area", "basis": "profile:break_location"}],
         )
         provider = ScriptedProvider([in_the_ask, bay_area_draft(GOOD_BODY)])
         target = self.generate(provider)
-        self.assertIn("location_line belongs in the opening", provider.prompts[1])
-        self.assertIn("I'm based in the Bay Area during breaks and summers.", target["email_body"].split("\n\n")[1])
+        self.assertIn("says where you live later on instead of the opening's '(live in the Bay Area)'", provider.prompts[1])
+        self.assertIn("at UT Austin (live in the Bay Area).", target["email_body"].split("\n\n")[1])
+
+    def test_the_home_note_goes_right_after_the_school_in_its_own_words(self):
+        confirm_facts(self.conn, break_location="Bay Area")
+        update_target(self.conn, self.target["id"], {"location": "San Carlos, CA"}, user_id=USER)
+        paraphrased = draft_json(
+            "Hello Bovi",
+            GOOD_BODY.replace("at UT Austin.", "at UT Austin. I'm based in the Bay Area."),
+            [*GOOD_CLAIMS, {"text": "based in the Bay Area", "basis": "profile:break_location"}],
+        )
+        provider = ScriptedProvider([paraphrased, bay_area_draft(GOOD_BODY)])
+        target = self.generate(provider)
+        self.assertIn("'(live in the Bay Area)', which goes right after the school's name", provider.prompts[1])
+        self.assertIn("studying Mechanical Engineering at UT Austin (live in the Bay Area).", target["email_body"])
+        self.assertIn('"I\'m a [major] student at [school] [location_line] and', INSTRUCTIONS)
+        self.assertIn("at Georgia Tech (live in the Seattle area) and", INSTRUCTIONS, "the example shows the note")
 
     def test_a_draft_written_before_the_company_was_placed_cannot_be_approved_without_the_line(self):
         # Seen 2026-09-21: discovery drafted Bay Area companies minutes before its
@@ -345,7 +361,7 @@ class DraftingTests(unittest.TestCase):
             next(item for item in list_targets(self.conn, user_id=USER) if item["id"] == target["id"])["draft_location"]["missing"],
             "the list view flags it too",
         )
-        with self.assertRaisesRegex(ValueError, "never says you're based in the Bay Area, though Bovi is in San Carlos, CA"):
+        with self.assertRaisesRegex(ValueError, "never says you live in the Bay Area, though Bovi is in San Carlos, CA"):
             approve_draft(self.conn, target["id"], user_id=USER, fingerprint=target["draft_fingerprint"], acknowledge_warnings=True)
 
         target = self.generate(ScriptedProvider([bay_area_draft(GOOD_BODY)]))
@@ -365,7 +381,7 @@ class DraftingTests(unittest.TestCase):
         def no_client():
             raise AssertionError("Gmail must not be called")
 
-        with self.assertRaisesRegex(ValueError, "never says you're based in the Bay Area"):
+        with self.assertRaisesRegex(ValueError, "never says you live in the Bay Area"):
             create_gmail_draft(self.conn, self.target["id"], user_id=USER, client_factory=no_client)
 
     def test_a_company_away_from_home_or_an_unchecked_location_never_flags_a_draft(self):
@@ -398,7 +414,7 @@ class DraftingTests(unittest.TestCase):
         provider = ScriptedProvider([GOOD, GOOD])
         with self.assertRaises(DraftRejected):
             self.generate(provider)
-        self.assertEqual(json.loads(provider.prompts[0])["location_line"], "I'm based in Austin year-round.")
+        self.assertEqual(json.loads(provider.prompts[0])["location_line"], "(live in Austin year-round)")
         self.assertIn("leaves out location_line", provider.prompts[1])
 
     def test_a_home_city_outside_every_region_still_gets_the_line(self):
@@ -407,12 +423,12 @@ class DraftingTests(unittest.TestCase):
         update_target(self.conn, self.target["id"], {"location": "Seattle, Washington"}, user_id=USER)
         seattle = draft_json(
             "Hello Bovi",
-            GOOD_BODY.replace("at UT Austin.", "at UT Austin. I'm based in Seattle during breaks and summers."),
-            [*GOOD_CLAIMS, {"text": "based in Seattle during breaks and summers", "basis": "profile:break_location"}],
+            GOOD_BODY.replace("at UT Austin.", "at UT Austin (live in Seattle)."),
+            [*GOOD_CLAIMS, {"text": "(live in Seattle)", "basis": "profile:break_location"}],
         )
         provider = ScriptedProvider([seattle])
         target = self.generate(provider)
-        self.assertEqual(json.loads(provider.prompts[0])["location_line"], "I'm based in Seattle during breaks and summers.")
+        self.assertEqual(json.loads(provider.prompts[0])["location_line"], "(live in Seattle)")
         self.assertEqual(target["draft_location"], {"phrase": "Seattle", "terms": ["Seattle"], "missing": False})
 
         for location in ("Seattle, OR", "Tacoma, WA", "Seattle"):
@@ -429,7 +445,7 @@ class DraftingTests(unittest.TestCase):
         confirm_facts(self.conn, break_location="Bay Area")
         update_target(self.conn, self.target["id"], {"location": "Oakland, CA"}, user_id=USER)
         target = generate_draft(self.conn, self.target["id"], user_id=USER, provider_factory=None, provider="legacy")
-        self.assertIn("at UT Austin. I'm based in the Bay Area during breaks and summers.", target["email_body"])
+        self.assertIn("at UT Austin (live in the Bay Area).", target["email_body"])
         self.assertNotIn("Bay Area", target["email_body"].split("\n\n")[2], "the ask does not repeat it")
         self.assertIn("profile:break_location", [claim["basis"] for claim in target["draft_claims"]])
 

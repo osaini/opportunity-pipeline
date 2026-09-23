@@ -2131,7 +2131,7 @@
     const flat = body.replace(/\s+/g, " ");
     const saysHome = (term) => new RegExp(`\\bin ${term.replace(/\s+/g, " ").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(flat);
     if (place && place.terms && place.terms.length && body.trim() && !place.terms.some(saysHome)) {
-      host.appendChild(chip(`Doesn't say you're based in ${place.phrase}; regenerate`, "is-warning"));
+      host.appendChild(chip(`Doesn't say you live in ${place.phrase}; regenerate`, "is-warning"));
     }
   }
 

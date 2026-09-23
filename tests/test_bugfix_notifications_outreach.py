@@ -136,8 +136,8 @@ class LocationPhraseValidationTests(unittest.TestCase):
             facts = {"break_location": "Oakland, CA", "school": "Somewhere U"}
             target = {"location": "Oakland, CA", "location_basis": "company_site"}
             line = location_line(facts, target)
-            self.assertEqual(line, "I'm based in Northern California during breaks and summers.")
-            body = "Hi Sam,\n\nI'm a student at Somewhere U. " + line + "\n\nThanks,\nMe"
+            self.assertEqual(line, "(live in Northern California)")
+            body = "Hi Sam,\n\nI'm a student at Somewhere U " + line + ".\n\nThanks,\nMe"
             raw = json.dumps({"subject": "Hello", "body": body, "claims": [{"text": "x", "basis": "profile:school"}]})
             inputs = {
                 "student": facts, "company_research": {}, "unverified_research": {},
@@ -153,7 +153,7 @@ class LocationPhraseValidationTests(unittest.TestCase):
             inputs = {
                 "student": {"break_location": "Oakland, CA", "school": "Somewhere U"}, "company_research": {},
                 "unverified_research": {}, "source_urls": [], "primary_experience": "",
-                "location_line": "I'm based in Northern California during breaks and summers.",
+                "location_line": "(live in Northern California)",
             }
             _, problems = validate_draft(raw, inputs, "initial")
         self.assertTrue(any("leaves out location_line" in p for p in problems), problems)
@@ -215,7 +215,7 @@ class PerUserRegionTests(_DbCase):
         facts = {"break_location": "Denver, CO", "school": "Somewhere U"}
         target = {"location": "Boulder, CO", "location_basis": "manual"}
         self.assertEqual(
-            location_line(facts, target, regions), "I'm based in Colorado's Front Range during breaks and summers.",
+            location_line(facts, target, regions), "(live in Colorado's Front Range)",
         )
         self.assertEqual(location_region("Oakland, CA", regions), "")
 
@@ -224,7 +224,7 @@ class PerUserRegionTests(_DbCase):
         facts = {"break_location": "Houston, TX", "school": "Somewhere U"}
         self.assertEqual(
             location_line(facts, {"location": "Houston, TX", "location_basis": "company_site"}, regions),
-            "I'm based in Houston during breaks and summers.",
+            "(live in Houston)",
         )
         self.assertEqual(location_line(facts, {"location": "Oakland, CA", "location_basis": "company_site"}, regions), "")
 
