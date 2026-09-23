@@ -334,7 +334,7 @@ def home_terms(home: dict[str, Any]) -> list[str]:
 
 
 def mentions_home(body: str, terms: list[str]) -> bool:
-    """Whether the text says the student is in their home place: "in Seattle", "in the Twin Cities".
+    """Whether the text says the student lives in their home place: "(live in Seattle)", "in the Twin Cities".
 
     A bare name is not enough, because a school's name can carry it ("Portland State")
     without saying anything about where the student lives.
@@ -368,8 +368,9 @@ def location_line_gap(item: dict[str, Any], home: dict[str, Any], regions: list[
 
 def missing_location_message(target: dict[str, Any]) -> str:
     return (
-        f"This draft never says you're based in {target['draft_location']['phrase']}, though "
-        f"{target['company']} is in {target['location']}. Regenerate it, or add that line to the opening."
+        f"This draft never says you live in {target['draft_location']['phrase']}, though "
+        f"{target['company']} is in {target['location']}. "
+        f"Regenerate it, or add '(live in {target['draft_location']['phrase']})' after your school."
     )
 
 

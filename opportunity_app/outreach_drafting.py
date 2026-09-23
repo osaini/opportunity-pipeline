@@ -84,7 +84,13 @@ The student's own results carry the email. A founder or a shared jobs inbox shou
 Follow this formula, in this order:
 1. Subject: the student's most relevant proof plus the company, under 12 words, in the shape "[proof] at [school], interested in interning at [company]".
 2. Greeting: the contact's first name when contact_name is given, otherwise "Hi" and the company team, using the name people call the company without Inc, Corp, Corporation, or LLC.
-3. Opening: who the student is, written the way a person says it (their major and school as they would say them aloud, not the degree's formal title), their current role if any, and the primary_experience entry with its two or three strongest numbers. The whole email is built on this one experience. Never bring in another project, employer, or product of the student's by name anywhere in the email, because the reader has not met it and it would only confuse them. Say what the student did ("I cut its weight"), not what a platform or project did. Copy every number exactly as the input writes it. If location_line is not empty, close the opening with it, keeping its place name, and cite it with basis "profile:break_location"; it tells a company near the student's home, before anything else, that they can be there in person. If location_line is empty, say nothing anywhere in the email about where the student lives or could work.
+3. Opening, two sentences, in this shape:
+   "I'm a [major] student at [school] [location_line] and [a or an] [role] at [primary_experience], where I [what the student built or did there]. I [result], [result], and [result]."
+   - Who the student is, written the way a person says it: their major and school as they would say them aloud, not the degree's formal title.
+   - If location_line is not empty, put it right after the school's name, exactly as written, parentheses included, and cite it with basis "profile:break_location". It tells a company near the student's home, before anything else, that they can be there in person. If location_line is empty, leave it out, and say nothing anywhere in the email about where the student lives or could work.
+   - Their current role and the primary_experience entry, joined with "where I" to the thing the student built or did there.
+   - The second sentence gives three results from the entry as one parallel list of verbs ("I cut..., expanded..., and extended..."), or two when the entry has only two. Prefer before-and-after results ("from 42 kg to 31 kg"), which show how much the student changed something, over totals and counts, and among those pick the ones that matter most to this company. Copy every number exactly as the input writes it.
+   The whole email is built on this one experience. Never bring in another project, employer, or product of the student's by name anywhere in the email, because the reader has not met it and it would only confuse them. Say what the student did ("I cut its weight"), not what a platform or project did.
 4. The bridge, about 50 words in two sentences, written the way a strong "why us" application essay reads: the student should clearly want this company, and the company should clearly want the student. The shape is fixed; the wording is not.
    a. Them, the first sentence: name the company's specific product or effort from the research the way you would name a program at a school (a product by name, a named study or pilot, a specific platform or service), never the company in general and never praise. Set it against what the student has built so far in the primary experience, so the reader sees this company as the next step past it: higher stakes, harder conditions, or a product that goes where the student's could not. Let the contrast between the two show that; never say it outright. Either side can come first, and the verbs are free; do not default to opening with "I've built". The student wants this company because it takes their own work somewhere new.
    b. Me = success, the second sentence: what the student would bring from the primary experience, the company's specific work it goes to, the concrete contribution, and how they would work there. In shape only: [the primary experience's work] to [their product or work], [a concrete action], [with their team].
@@ -101,7 +107,7 @@ Follow this formula, in this order:
 An example of the shape, for a different, invented student and company whose field is unrelated to this student's. Match its length and directness, not its content, its field, its verbs, or its phrasing:
 Subject: Battery pack builder at Georgia Tech, interested in interning at Voltworks
 Hi Dana,
-I'm an electrical engineering student at Georgia Tech and lead the battery pack team for our Formula SAE car. I cut pack mass from 42 kg to 31 kg and kept the cells under 45 C through a full endurance run. I'm based in the Seattle area during breaks and summers.
+I'm an electrical engineering student at Georgia Tech (live in the Seattle area) and battery lead on our Formula SAE team, where I designed and built the car's pack. I cut pack mass from 42 kg to 31 kg, kept the cells under 45 C through a full endurance run, and brought charge time from 90 min to 40 min.
 I've built a pack that only had to last one endurance run, and Voltworks is sealing packs inside boat hulls for years at a time. I'd bring the thermal work from our Formula SAE pack to your hull packs, wiring in thermocouples and bench testing cooling layouts alongside your engineers.
 Would you consider me as an intern for summer 2027? I'm open to part-time work too. If you have 15 minutes, I'd like to hear how you get the heat out through the hull.
 Sam Rivera
@@ -208,7 +214,7 @@ def location_line(
     home = student_home(facts, regions)
     if not near_home(str(target.get("location") or ""), home, regions):
         return ""
-    return f"I'm based in {home['phrase']} {'year-round' if home['year_round'] else 'during breaks and summers'}."
+    return f"(live in {home['phrase']}{' year-round' if home['year_round'] else ''})"
 
 
 def _inputs(conn: sqlite3.Connection, target: dict[str, Any], user_id: str, kind: str) -> dict[str, Any]:
@@ -383,14 +389,14 @@ def validate_draft(
             )
         if inputs.get("location_line"):
             home = student_home(inputs["student"], regions)
-            where = home.get("phrase", "")
-            # location_line writes the region's phrase ("Northern California"),
-            # which need not contain its name ("NorCal"); either one counts.
-            names = home_terms(home)
-            if not mentions_home(body, names):
-                problems.append(f"it leaves out location_line; the opening should say {inputs['location_line']!r}")
-            elif not mentions_home(_opening(body), names):
-                problems.append(f"it mentions {where} later on; location_line belongs in the opening, not further down")
+            line = inputs["location_line"]
+            opening = " ".join(_opening(body).split()).casefold()
+            if " ".join(line.split()).casefold() not in opening:
+                where = "later on" if mentions_home(body, home_terms(home)) else "nowhere"
+                problems.append(
+                    f"it leaves out location_line: it says where you live {where} instead of the opening's {line!r}, "
+                    "which goes right after the school's name, exactly as written"
+                )
         inferences = sum(claim["basis"] == INFERENCE_BASIS for claim in clean_claims)
         if inferences > 1:
             problems.append(f"it rests {inferences} claims on inference, but only the bridge's one claim about what you'd contribute may")
@@ -431,9 +437,14 @@ def template_draft(inputs: dict[str, Any], kind: str) -> dict[str, Any]:
         )
         return {"subject": subject, "body": body, "claims": claims}
     study = ""
+    nearby = f" {inputs['location_line']}" if inputs.get("location_line") else ""
+    if nearby:
+        claims.append({"text": inputs["location_line"], "basis": "profile:break_location"})
     if student.get("degree") and student.get("school"):
-        study = f", studying {student['degree']} at {student['school']}"
+        study = f", studying {student['degree']} at {student['school']}{nearby}"
         claims += [{"text": student["degree"], "basis": "profile:degree"}, {"text": student["school"], "basis": "profile:school"}]
+    elif nearby:
+        study = nearby
     lead = next(
         (
             (field, entry) for field in PROOF_FIELDS for entry in student.get(field, [])
@@ -455,12 +466,8 @@ def template_draft(inputs: dict[str, Any], kind: str) -> dict[str, Any]:
     if research.get("summary"):
         reason = f" I read about {company}'s work and would like to learn more about it."
         claims.append({"text": f"{company}'s work", "basis": "research:summary"})
-    nearby = ""
-    if inputs.get("location_line"):
-        nearby = f" {inputs['location_line']}"
-        claims.append({"text": inputs["location_line"], "basis": "profile:break_location"})
     body = (
-        f"{greeting}\n\nI'm {student['name']}{study}.{nearby}{reason}{skill_sentence}\n\n"
+        f"{greeting}\n\nI'm {student['name']}{study}.{reason}{skill_sentence}\n\n"
         f"Would {company} consider taking on an intern? I would welcome a 15 minute call to learn about your team.\n\n"
         f"Thank you,\n{signature}"
     )

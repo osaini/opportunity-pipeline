@@ -506,7 +506,7 @@ class DiscoveryTests(unittest.TestCase):
                                provider_factory=lambda *_: Recorder(), draft_provider="anthropic")
         self.assertEqual(result["located"]["recorded"], 1)
         self.assertTrue(drafted, "the draft model was asked")
-        self.assertEqual(drafted[0]["location_line"], "I'm based in the Bay Area during breaks and summers.")
+        self.assertEqual(drafted[0]["location_line"], "(live in the Bay Area)")
 
     def test_a_dry_run_changes_no_rows(self):
         before = len(list_targets(self.conn, user_id=USER))

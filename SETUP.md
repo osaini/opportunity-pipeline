@@ -116,7 +116,7 @@ into `config/profile.json`. The field names are the keys in
 | Fields that interest them | `interest_keywords` | e.g. `["batteries", "catalysis", "process control"]` |
 | Titles to push down | `deprioritize_title_keywords` | disciplines they don't want, e.g. `["sales", "software"]` |
 | Authorized to work in the US? US citizen? Need sponsorship? | `work_authorized_us`, `us_citizen`, `requires_sponsorship` | `true` / `false` / `null`. Never infer these. |
-| Home during breaks and summers | `break_location` | "City, ST", or the name of one of their `regions`. Used only for the outreach "I'm based in…" line (see below) |
+| Home during breaks and summers | `break_location` | "City, ST", or the name of one of their `regions`. Used only for the outreach "(live in …)" note (see below) |
 | Pay expectations | `compensation_preferences` | free text or `null` |
 
 **Regions** decide which locations score up. Each is a metro area with a
@@ -144,13 +144,13 @@ name it when the name alone reads oddly, e.g. `"name": "NorCal", "phrase":
 style for names ending in "Area").
 
 **Home and outreach.** Every cold email to a company where the student lives
-opens by saying so ("I'm based in Seattle during breaks and summers"), and a
+says so right after the school's name ("student at [school] (live in Seattle)"), and a
 draft that leaves it out cannot be approved. When `break_location` falls in one
 of their regions, the whole metro counts. Otherwise only the exact city and
 state count, so a Bellevue company is not near a "Seattle, WA" home until the
 student adds a Seattle region that lists Bellevue. A bare town with no state
 ("Portland") matches nothing, because it could be anywhere. When home and
-school are in the same region, the line says "year-round".
+school are in the same region, it says "(live in Seattle year-round)".
 
 Build the `places` list from your own knowledge of the metro and confirm it
 with the student. Use a bigger bonus for their first choice. If they are open
