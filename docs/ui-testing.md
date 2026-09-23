@@ -36,11 +36,12 @@ needs an HTTP URL, never the application object, so the split costs nothing:
 py -3.12 -m venv .venv-fuzz && .venv-fuzz/Scripts/pip install -r requirements-fuzz.txt
 ```
 
-Playwright MCP is pinned in `package.json`:
-
-```bash
-npm install
-```
+Playwright MCP needs no setup step. It is pinned in `package.json`, and
+`.mcp.json` starts it through `scripts/playwright-mcp.mjs`, which runs `npm ci`
+when `node_modules` is missing or holds another version, and installs Chromium
+when this machine has none. Fresh clones and new git worktrees used to fail
+with "Connection closed" because a bare `npx @playwright/mcp` downloaded the
+package at launch and overran the MCP startup timeout.
 
 ## Running
 
