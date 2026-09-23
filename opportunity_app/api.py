@@ -252,6 +252,7 @@ from .outreach_contacts import (
     find_contacts as find_outreach_contacts,
     list_candidates as list_outreach_candidates,
 )
+from .outreach_call_prep import generate_call_prep
 from .outreach_render import default_renderer
 from .outreach_smtp import default_verifier as default_smtp_verifier
 from .outreach_discovery import scope_definitions as discovery_scope_definitions, DiscoveryBusy, DiscoveryManager, last_runs as last_discovery_runs
@@ -403,6 +404,7 @@ class OutreachTargetRequest(BaseModel):
     researched_at: str | None = Field(default=None, max_length=10)
     follow_up_subject: str | None = Field(default=None, max_length=300)
     follow_up_body: str | None = Field(default=None, max_length=20_000)
+    call_prep: str | None = Field(default=None, max_length=20_000)
     contact_evidence_url: str | None = Field(default=None, max_length=500)
     # PATCH only: the student vouches for a location nothing has checked yet.
     # It carries the location the page showed, so a place that changed between
@@ -2041,6 +2043,25 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"The draft model failed: {exc}") from exc
+
+    @app.post("/api/v1/outreach/{target_id}/call-prep")
+    def call_prep_for_outreach(
+        target_id: str,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """Write call-prep notes once a company has replied. Replaced notes stay in the history."""
+        try:
+            return generate_call_prep(
+                conn, target_id, user_id=user_id,
+                provider_factory=resolved_outreach_provider_factory, provider=outreach_draft_provider,
+            )
+        except OutreachNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"The model failed: {exc}") from exc
 
     @app.get("/api/v1/outreach/{target_id}/drafts")
     def outreach_draft_history(

@@ -846,6 +846,8 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 .outreach-claims li { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
 .outreach-claims small { color: var(--ink-muted); }
 .outreach-group.is-draft .outreach-draft-comments textarea { min-height: 64px; font-family: inherit; }
+.outreach-group.is-prep textarea { min-height: 420px; font-family: inherit; font-size: 14px; line-height: 1.6; }
+.outreach-prep-earlier { max-height: 320px; overflow: auto; white-space: pre-wrap; font-family: inherit; }
 .outreach-draft-history-body { display: grid; gap: 8px; margin-top: 8px; }
 .outreach-draft-history-body > .secondary-button { justify-self: start; }
 .outreach-draft-history-position { color: var(--ink-soft); font-size: 11px; }

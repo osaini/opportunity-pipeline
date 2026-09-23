@@ -56,11 +56,11 @@ EXCLUDED = {
         "false positives. tests/test_live_connectors.py covers them behind real "
         "credentials."
     ),
-    "/api/v1/outreach/[^/]+/(draft|find-contacts)$": (
-        "Drafting runs a model and finding contacts reads the target's website; "
+    "/api/v1/outreach/[^/]+/(draft|call-prep|find-contacts)$": (
+        "Drafting and call prep run a model and finding contacts reads the target's website; "
         "fuzzed input would spend model quota and send requests to arbitrary "
-        "domains. tests/test_outreach_drafting.py and "
-        "tests/test_outreach_discovery.py cover both against fakes."
+        "domains. tests/test_outreach_drafting.py, tests/test_outreach_call_prep.py, and "
+        "tests/test_outreach_discovery.py cover them against fakes."
     ),
 }
 EXCLUDED_PATTERN = "|".join(f"({pattern})" for pattern in EXCLUDED)

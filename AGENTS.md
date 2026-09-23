@@ -187,7 +187,7 @@ configure a Playwright MCP server the same way:
   "mcp": {
     "playwright": {
       "type": "local",
-      "command": ["npx", "@playwright/mcp", "--browser", "chromium",
+      "command": ["node", "scripts/playwright-mcp.mjs", "--browser", "chromium",
                   "--isolated", "--allowed-origins", "http://127.0.0.1:8799"],
       "enabled": true
     }
@@ -195,7 +195,10 @@ configure a Playwright MCP server the same way:
 }
 ```
 
-`@playwright/mcp` is already pinned in `package.json`; run `npm install` once.
+`@playwright/mcp` is pinned in `package.json`. Launch it through
+`scripts/playwright-mcp.mjs`, never bare `npx`: the launcher installs the pinned
+packages and Chromium when a fresh clone or worktree lacks them, where `npx`
+would download at editor launch and time out.
 Keep `--allowed-origins` set — an exploring agent should not be able to navigate
 off the sandbox.
 

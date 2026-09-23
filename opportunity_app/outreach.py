@@ -50,6 +50,8 @@ CLOSED_STATUSES = {"replied", "call_scheduled", "offer", "declined", "no_respons
 # On these, follow_up_at is a revisit date, not a follow-up email reminder.
 REVISIT_STATUSES = {"replied", "paused"}
 AWAITING_REPLY = {"sent", "followed_up"}
+# Once a company writes back there may be a call to prepare for.
+CALL_PREP_STATUSES = {"replied", "call_scheduled", "offer"}
 DEFAULT_FOLLOW_UP_DAYS = 7
 OUTREACH_ORIGINS = ("manual", "import", "discovery")
 # Where a target's location came from, most authoritative first. A deep search
@@ -94,11 +96,11 @@ TEXT_FIELDS = (
     "company", "channel", "website", "location", "summary", "fit_rationale", "activity_signal",
     "contact_name", "contact_role", "contact_email", "contact_cc", "contact_linkedin", "contact_route",
     "deadline_label", "email_subject", "email_body", "follow_up_subject", "follow_up_body", "notes",
-    "contact_evidence_url",
+    "contact_evidence_url", "call_prep",
 )
-MULTILINE_FIELDS = {"email_body", "follow_up_body"}
+MULTILINE_FIELDS = {"email_body", "follow_up_body", "call_prep"}
 TEXT_LIMITS = {
-    "email_body": 20_000, "follow_up_body": 20_000, "notes": 10_000, "summary": 5_000,
+    "email_body": 20_000, "follow_up_body": 20_000, "call_prep": 20_000, "notes": 10_000, "summary": 5_000,
     "fit_rationale": 5_000, "activity_signal": 5_000, "location": 200,
 }
 US_STATES = {
@@ -537,9 +539,11 @@ def _record(
     follow_up_claims_json = item.pop("follow_up_claims_json", None) or "[]"
     item["draft_claims"] = json.loads(draft_claims_json)
     item["follow_up_claims"] = json.loads(follow_up_claims_json)
+    item["call_prep_claims"] = json.loads(item.pop("call_prep_claims_json", None) or "[]")
     if item.get("research_confidence") == "confirmed":
         item["draft_claims"] = _confirmed_claims(item["draft_claims"])
         item["follow_up_claims"] = _confirmed_claims(item["follow_up_claims"])
+        item["call_prep_claims"] = _confirmed_claims(item["call_prep_claims"])
     item["draft_fingerprint"] = _draft_fingerprint(
         "initial", item.get("email_subject", ""), item.get("email_body", ""), item.get("contact_email", ""),
         draft_claims_json, item.get("draft_generated_by", ""), item.get("contact_cc", ""),
