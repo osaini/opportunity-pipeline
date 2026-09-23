@@ -1936,6 +1936,7 @@
     // an import file claimed and the tracker refused, not what it accepted.
     location_import_claim: "Import file's unverified location claim",
     location_entered: "Location entered",
+    call_prep_queued: "Call prep started",
     call_prep_generated: "Call prep written",
     call_prep_replaced: "Call prep replaced",
   };
@@ -2567,7 +2568,13 @@
         });
         const suggested = payload.suggestion.status;
         text.value = "";
-        result.replaceChildren(element("p", "form-status", `Saved to history. ${payload.suggestion.reason}.`));
+        const writing = CALL_PREP_ACTIVE.includes(payload.target?.call_prep_job?.state);
+        result.replaceChildren(element("p", "form-status", `Saved to history. ${payload.suggestion.reason}.${writing ? " Writing call prep in the background." : ""}`));
+        if (writing) {
+          watchCallPrep(item.id);
+          showCallPrepWriting(section.closest("[data-outreach-id]"));
+        }
+        item.reply_count = (item.reply_count || 0) + 1;
         if (suggested !== item.status) {
           const apply = element("button", "primary-button", `Mark ${OUTREACH_STATUS_LABELS[suggested]}`);
           apply.type = "button";
@@ -3058,12 +3065,13 @@
   }
 
   async function patchOutreach(item, changes, message, ...focusSelectors) {
-    await api(`/api/v1/outreach/${encodeURIComponent(item.id)}`, { method: "PATCH", body: JSON.stringify(changes) });
-    if (changes.status) openCallPrepOnReply(item, changes.status);
+    const saved = await api(`/api/v1/outreach/${encodeURIComponent(item.id)}`, { method: "PATCH", body: JSON.stringify(changes) });
+    const askedForReply = changes.status ? afterReplyStatus(item, saved) : false;
     state.outreachOpen = item.id;
     announce(message);
     await loadOutreach();
-    refocusOutreach(item.id, ...focusSelectors, ".application-controls select");
+    if (askedForReply) goToReplyBox(item.id);
+    else refocusOutreach(item.id, ...focusSelectors, ".application-controls select");
   }
 
   const OUTREACH_STEPS = ["Research", "Contact", "Draft", "Approve", "Send", "Reply"];
@@ -3094,6 +3102,12 @@
     }
     if (["declined", "no_response"].includes(item.status)) return { label: "Closed", hint: "Nothing left to do unless they write back.", tab: "history" };
     if (OUTREACH_CALL_PREP.includes(item.status) && !item.call_prep) {
+      if (CALL_PREP_ACTIVE.includes(item.call_prep_job?.state)) {
+        return { label: "Writing call prep", hint: "In the background. It keeps going if you leave this page.", tab: "prep", tone: "is-region" };
+      }
+      if (!item.reply_count) {
+        return { label: "Log their reply", hint: "Paste their reply. Call prep is written from it, and starts as soon as it is logged.", tab: "history", tone: "is-soon" };
+      }
       return { label: "Prep for the call", hint: "Write call prep: what they do, talking points, what you can bring, and questions to ask.", tab: "prep", tone: "is-region" };
     }
     if (OUTREACH_CALL_PREP.includes(item.status)) {
@@ -3140,9 +3154,78 @@
   }
 
   // Moving a company to a reply status opens its call prep, the next thing to do.
-  function openCallPrepOnReply(item, status) {
-    if (OUTREACH_CALL_PREP.includes(status) && !OUTREACH_CALL_PREP.includes(item.status)) state.outreachTabs[item.id] = "prep";
+  // Call prep is written from their reply, so with none logged it asks for it
+  // first. Returns whether the student chose to paste it now.
+  function afterReplyStatus(item, saved) {
+    if (!OUTREACH_CALL_PREP.includes(saved.status) || OUTREACH_CALL_PREP.includes(item.status)) return false;
+    state.outreachTabs[item.id] = "prep";
+    return saved.reply_count ? false : askForReply(item);
   }
+
+  // A native popup, like the research warning before approving a draft.
+  function askForReply(item) {
+    const ok = window.confirm(
+      `Call prep for ${item.company} is written from their reply, and no reply is logged yet.\n\n`
+      + "Paste their reply now? It starts writing as soon as you log it."
+    );
+    if (ok) state.outreachTabs[item.id] = "history";
+    return ok;
+  }
+
+  // The Call prep tab was drawn before the job started; say it is writing now.
+  function showCallPrepWriting(card) {
+    const button = card?.querySelector("[data-call-prep-generate]");
+    if (!button || card.querySelector("[data-call-prep-status]")) return;
+    button.disabled = true;
+    button.textContent = "Writing call prep…";
+    const status = element("p", "outreach-note", CALL_PREP_WRITING);
+    status.dataset.callPrepStatus = "queued";
+    button.closest(".outreach-draft-buttons").after(status);
+  }
+
+  function goToReplyBox(id) {
+    const card = els.results.querySelector(`[data-outreach-id="${CSS.escape(id)}"]`);
+    if (!card) return;
+    selectOutreachPaneTab(card, "history");
+    card.querySelector(`#outreach-reply-${CSS.escape(id)}`)?.focus();
+  }
+
+  // Call prep is written by a background job on the server. While one runs,
+  // its company is checked every few seconds and the list reloads when it
+  // ends. The job's state is on the server, so a reload or a laptop waking up
+  // finds it again; a hidden tab is checked the moment it is shown.
+  const CALL_PREP_ACTIVE = ["queued", "running", "retry"];
+  const CALL_PREP_WRITING = "Writing call prep in the background. It keeps going if you leave this page, and picks back up if your laptop sleeps or the app restarts.";
+  const callPrepWatches = new Map();
+
+  function watchCallPrep(id, delay = 5000) {
+    if (callPrepWatches.has(id) && delay) return;
+    window.clearTimeout(callPrepWatches.get(id));
+    callPrepWatches.set(id, window.setTimeout(() => checkCallPrep(id), delay));
+  }
+
+  async function checkCallPrep(id) {
+    let active = true;
+    try {
+      const target = await api(`/api/v1/outreach/${encodeURIComponent(id)}`);
+      active = CALL_PREP_ACTIVE.includes(target.call_prep_job?.state);
+    } catch (error) {
+      active = error.status !== 404;
+    }
+    if (active) {
+      callPrepWatches.set(id, window.setTimeout(() => checkCallPrep(id), 5000));
+      return;
+    }
+    callPrepWatches.delete(id);
+    if (state.view !== "outreach") return;
+    // Unsaved words in the pane come across the reload.
+    state.outreachOpen = id;
+    await loadOutreach();
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") [...callPrepWatches.keys()].forEach((id) => watchCallPrep(id, 0));
+  });
 
   function selectOutreachPaneTab(pane, id, { focus = false, remember = true } = {}) {
     if (remember) state.outreachTabs[pane.dataset.outreachId] = id;
@@ -3331,34 +3414,47 @@
     group.appendChild(element("legend", "", "Call prep"));
     group.appendChild(element("p", "outreach-note is-wide", item.call_prep
       ? "Edit freely and fill in the blanks on the call. Save changes keeps your edits."
-      : "Log their reply under Replies and history first, so the notes can use it. Then write the prep: what they do, talking points, what you can bring, and questions to ask."));
+      : item.reply_count
+        ? "Call prep covers what they do, what they said, talking points, what you can bring, and questions to ask. It starts on its own when a company replies."
+        : "Call prep is written from their reply. Paste it under Replies and history, and the notes start writing as soon as it is logged."));
     const notes = outreachField(group, "Notes", "call_prep", item.call_prep || "", { multiline: true, wide: true });
     notes.rows = 24;
     notes.placeholder = "Call prep notes appear here. You can also write your own.";
     const assistant = element("div", "outreach-draft-assistant is-wide");
     const buttons = element("div", "outreach-draft-buttons");
-    const generate = element("button", "primary-button", item.call_prep ? "Rewrite call prep" : "Write call prep");
+    const job = item.call_prep_job;
+    const active = CALL_PREP_ACTIVE.includes(job?.state);
+    const generate = element("button", "primary-button", active ? "Writing call prep…" : item.call_prep ? "Rewrite call prep" : "Write call prep");
     generate.type = "button";
+    generate.disabled = active;
     generate.dataset.callPrepGenerate = "";
     const copy = element("button", "secondary-button", "Copy notes");
     copy.type = "button";
     const message = element("p", "form-status");
     message.setAttribute("aria-live", "polite");
     generate.addEventListener("click", async () => {
+      if (!item.reply_count) {
+        if (askForReply(item)) goToReplyBox(item.id);
+        return;
+      }
       const unsaved = notes.value !== notes.dataset.initial;
       if (unsaved && !window.confirm("Replace your unsaved notes with new call prep? Save changes first to keep them in the history.")) return;
       generate.disabled = true;
-      message.textContent = "Writing call prep from your confirmed profile, this research, and their reply. This can take a minute…";
       try {
         await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/call-prep`, { method: "POST" });
         state.outreachOpen = item.id;
         state.outreachDiscardEdits = true;
-        announce(`Wrote call prep for ${item.company}.${item.call_prep ? " The earlier notes are in the history." : ""}`);
+        announce(`Writing call prep for ${item.company} in the background.${item.call_prep ? " The earlier notes will be in the history." : ""}`);
         await loadOutreach();
-        refocusOutreach(item.id, '[name="call_prep"]');
+        refocusOutreach(item.id, "[data-call-prep-status]");
       } catch (error) {
-        message.textContent = error.message;
         generate.disabled = false;
+        // The server's own check: no reply logged, so ask for it.
+        if (error.status === 409) {
+          if (askForReply(item)) goToReplyBox(item.id);
+          return;
+        }
+        message.textContent = error.message;
       }
     });
     copy.addEventListener("click", async () => {
@@ -3375,6 +3471,24 @@
     });
     buttons.append(generate, copy);
     assistant.append(buttons, message);
+    if (job && job.state !== "succeeded") {
+      const when = job.next_attempt_at ? formatDate(job.next_attempt_at) : "soon";
+      const text = {
+        queued: CALL_PREP_WRITING,
+        running: CALL_PREP_WRITING,
+        retry: `The last try did not finish (${job.error || "no reason given"}). Trying again ${when}.`,
+        dead: `Could not write call prep after ${job.attempts} tries: ${job.error || "no reason given"}. Press the button to try again.`,
+        cancelled: "The last call prep request was cancelled.",
+      }[job.state];
+      if (text) {
+        const status = element("p", `outreach-note${job.state === "dead" ? " form-error" : ""}`, text);
+        status.dataset.callPrepStatus = job.state;
+        status.tabIndex = -1;
+        status.setAttribute("aria-live", "polite");
+        assistant.appendChild(status);
+      }
+    }
+    if (active) watchCallPrep(item.id);
     const claims = item.call_prep_claims || [];
     if (claims.length) {
       const details = element("details", "outreach-claims");
@@ -3521,15 +3635,16 @@
         const previous = item.status;
         select.disabled = true;
         try {
-          await api(`/api/v1/outreach/${encodeURIComponent(item.id)}`, {
+          const saved = await api(`/api/v1/outreach/${encodeURIComponent(item.id)}`, {
             method: "PATCH",
             body: JSON.stringify({ status }),
           });
-          openCallPrepOnReply(item, status);
+          const askedForReply = afterReplyStatus(item, saved);
           state.outreachKeep.add(item.id);
           state.outreachSelected = item.id;
           await loadOutreach();
-          if (trigger !== "blur") els.results.querySelector(`[data-outreach-id="${CSS.escape(item.id)}"] .application-controls select`)?.focus();
+          if (askedForReply) goToReplyBox(item.id);
+          else if (trigger !== "blur") els.results.querySelector(`[data-outreach-id="${CSS.escape(item.id)}"] .application-controls select`)?.focus();
           announce(`${item.company} marked ${OUTREACH_STATUS_LABELS[status]}.`);
         } catch (error) {
           select.value = previous;
