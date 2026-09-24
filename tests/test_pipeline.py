@@ -8,6 +8,7 @@ import sys
 import unittest
 import unittest.mock
 import urllib.parse
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -2290,6 +2291,45 @@ class PipelineTests(unittest.TestCase):
                 self.assertIsNone(pipeline.backup_sqlite(memory, "memory"))
             finally:
                 memory.close()
+
+    def _backups_at(self, clock_times, keep):
+        """Back up a scratch database once per clock reading; return the paths made and kept."""
+        readings = iter(clock_times)
+
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return next(readings)
+
+        with TemporaryDirectory() as tmp:
+            tmp = Path(tmp).resolve()
+            conn = sqlite3.connect(tmp / "pipeline.db")
+            try:
+                conn.execute("CREATE TABLE t(x)")
+                conn.commit()
+                with unittest.mock.patch.object(pipeline, "datetime", Clock):
+                    created = [pipeline.backup_sqlite(conn, "pipeline", keep=keep) for _ in clock_times]
+                kept = sorted((tmp / "backups").glob("pipeline-*.db"))
+                return created, kept, [path.exists() for path in created]
+            finally:
+                conn.close()
+
+    def test_backups_made_in_one_clock_tick_do_not_overwrite_each_other(self):
+        # A coarse clock can give consecutive backups the same reading, which
+        # used to give them the same file name, so the second replaced the first.
+        tick = datetime(2026, 9, 24, 19, 27, 30, 229556, tzinfo=timezone.utc)
+        created, kept, _ = self._backups_at([tick, tick, tick], keep=5)
+        self.assertEqual(len(set(created)), 3, "two backups were written to the same file")
+        self.assertEqual(kept, created, "backups do not sort in the order they were made")
+
+    def test_a_backup_made_after_the_clock_steps_back_is_not_pruned_at_once(self):
+        # If the clock steps back, a new snapshot named by it sorts before the
+        # existing ones and the keep-newest pruning deletes it straight away,
+        # leaving the caller to go ahead with a destructive change unprotected.
+        now = datetime(2026, 9, 24, 19, 0, 0, tzinfo=timezone.utc)
+        created, kept, exists = self._backups_at([now, now + timedelta(seconds=1), now - timedelta(hours=1)], keep=2)
+        self.assertTrue(exists[-1], "the backup just made was pruned")
+        self.assertEqual(kept, created[-2:])
 
     def test_check_liveness_promotes_the_survivor_when_a_canonical_is_retired(self):
         """Retiring a canonical must not take its duplicates down with it.

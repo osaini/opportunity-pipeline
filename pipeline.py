@@ -1881,15 +1881,23 @@ def backup_sqlite(conn: sqlite3.Connection, label: str, keep: int = PURGE_BACKUP
         return None
     backup_dir = Path(main[2]).parent / "backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    target = backup_dir / f"{label}-{stamp}.db"
+    # Prune only snapshots this function names, never backups made by hand.
+    pattern = re.compile(rf"{re.escape(label)}-(\d{{8}}T\d{{12}})Z\.db")
+    stamps = sorted(match[1] for path in backup_dir.iterdir() if (match := pattern.fullmatch(path.name)))
+    # Name the snapshot after the newest existing one even when the clock
+    # disagrees. Two backups in one clock tick would otherwise share a name,
+    # the second overwriting the first, and after the clock steps back the new
+    # snapshot would sort oldest and be pruned below before the caller used it.
+    taken = datetime.now(timezone.utc)
+    if stamps:
+        newest = datetime.strptime(stamps[-1], "%Y%m%dT%H%M%S%f").replace(tzinfo=timezone.utc)
+        taken = max(taken, newest + timedelta(microseconds=1))
+    target = backup_dir / f"{label}-{taken.strftime('%Y%m%dT%H%M%S%fZ')}.db"
     destination = sqlite3.connect(target)
     try:
         conn.backup(destination)
     finally:
         destination.close()
-    # Prune only snapshots this function names, never backups made by hand.
-    pattern = re.compile(rf"{re.escape(label)}-\d{{8}}T\d{{12}}Z\.db")
     snapshots = sorted(path for path in backup_dir.iterdir() if pattern.fullmatch(path.name))
     for stale in snapshots[:-keep] if keep > 0 else []:
         stale.unlink(missing_ok=True)
