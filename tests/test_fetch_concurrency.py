@@ -40,6 +40,47 @@ def sources(*specs):
 GREENHOUSE_8 = sources(*[("greenhouse", f"G{i}", {}) for i in range(8)])
 
 
+class InFlight:
+    """A fetcher that records the most fetches ever in flight at once.
+
+    Each fetch holds until the scheduler next stops submitting and waits for
+    one to finish. By then it has submitted everything its ceilings admit in
+    that round, and anything past them, so every round's peak is exact. A
+    fixed sleep is not: the scheduler commits a ``fetch_runs`` row before every
+    submit, and on a slow disk one commit can outlast the sleep, so each fetch
+    finished before the next began. That made the peak 1 on a correct
+    scheduler and hid one that overran its ceiling.
+    """
+
+    def __init__(self):
+        self.live = 0
+        self.peak = 0
+        self._waits = 0
+        self._changed = threading.Condition()
+
+    def __call__(self, source, _terms):
+        with self._changed:
+            self.live += 1
+            self.peak = max(self.peak, self.live)
+            started_during = self._waits
+            # The timeout only bounds a hung run; it is never reached when
+            # the scheduler works.
+            self._changed.wait_for(lambda: self._waits > started_during, timeout=5)
+            self.live -= 1
+        return []
+
+    def observing(self):
+        real_wait = pipeline.futures_wait
+
+        def futures_wait(*args, **kwargs):
+            with self._changed:
+                self._waits += 1
+                self._changed.notify_all()
+            return real_wait(*args, **kwargs)
+
+        return unittest.mock.patch.object(pipeline, "futures_wait", futures_wait)
+
+
 class FetchConcurrencyTests(unittest.TestCase):
     def setUp(self):
         temp = TemporaryDirectory()
@@ -66,49 +107,27 @@ class FetchConcurrencyTests(unittest.TestCase):
     # --- ceilings -----------------------------------------------------------
 
     def test_never_exceeds_the_per_host_ceiling(self):
-        live = 0
-        peak = 0
-        lock = threading.Lock()
-
-        def fetcher(source, _terms):
-            nonlocal live, peak
-            with lock:
-                live += 1
-                peak = max(peak, live)
-            time.sleep(0.05)
-            with lock:
-                live -= 1
-            return []
-
-        self.run_fetch(GREENHOUSE_8, fetcher, max_workers=12, max_per_host=3)
-        self.assertLessEqual(peak, 3, "more than max_per_host requests were in flight on one host")
-        self.assertGreater(peak, 1, "nothing ran concurrently at all")
+        fetcher = InFlight()
+        with fetcher.observing():
+            self.run_fetch(GREENHOUSE_8, fetcher, max_workers=12, max_per_host=3)
+        self.assertLessEqual(fetcher.peak, 3, "more than max_per_host requests were in flight on one host")
+        self.assertEqual(fetcher.peak, 3, "the scheduler never used the host's full allowance")
 
     def test_never_exceeds_the_global_ceiling(self):
-        live = 0
-        peak = 0
-        lock = threading.Lock()
+        fetcher = InFlight()
         # Eight distinct hosts, so only the global limit can bind.
         config = sources(*[
             ("workday", f"W{i}", {"tenant": f"t{i}", "datacenter": "wd1", "site": "s"})
             for i in range(8)
         ])
 
-        def fetcher(source, _terms):
-            nonlocal live, peak
-            with lock:
-                live += 1
-                peak = max(peak, live)
-            time.sleep(0.05)
-            with lock:
-                live -= 1
-            return []
-
-        with unittest.mock.patch.dict(pipeline._SOURCE_FETCHERS, {"workday": fetcher}), \
+        with fetcher.observing(), \
+                unittest.mock.patch.dict(pipeline._SOURCE_FETCHERS, {"workday": fetcher}), \
                 unittest.mock.patch("sys.stdout", io.StringIO()), \
                 unittest.mock.patch("sys.stderr", io.StringIO()):
             pipeline.fetch_all(self.conn, config, max_workers=3, max_per_host=4)
-        self.assertLessEqual(peak, 3)
+        self.assertLessEqual(fetcher.peak, 3, "more than max_workers requests were in flight")
+        self.assertEqual(fetcher.peak, 3, "the scheduler never used its full worker allowance")
 
     def test_a_saturated_host_does_not_starve_another_host(self):
         """The scheduler must not park queued work in the worker pool.
