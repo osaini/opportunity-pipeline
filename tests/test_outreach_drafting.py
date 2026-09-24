@@ -772,6 +772,15 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(result["target"]["status"], "sent")
         self.assertEqual(result["target"]["events"][0]["event_type"], "reply_logged")
 
+    def test_events_keep_their_order_when_the_clock_does_not_move(self):
+        # The Windows clock on Python 3.12 ticks about every 15ms, so one action
+        # that logs two events can stamp both with the same time. Freeze the
+        # clock to force that tie everywhere.
+        with mock.patch("opportunity_app.outreach.utc_now", return_value="2026-09-23T12:00:00.000000+00:00"):
+            target = create_target(self.conn, {"company": "Align", "status": "sent"}, user_id=USER)
+            result = log_reply(self.conn, target["id"], "Happy to chat, when are you free?", user_id=USER)
+        self.assertEqual([event["event_type"] for event in result["target"]["events"]], ["reply_logged", "created"])
+
     def test_logging_a_long_reply_keeps_the_whole_accepted_text(self):
         target = create_target(self.conn, {"company": "Long Reply", "status": "sent"}, user_id=USER)
         body = "Start\n" + "x" * 2500 + "\nEnd marker"
