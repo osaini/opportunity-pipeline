@@ -54,6 +54,7 @@ class OpportunityFilters:
     min_hourly_pay: float | None = None
     posted_since: str = ""
     deadline_before: str = ""
+    tag: str = ""
     sort: str = "score"
     active_only: bool = True
     unique_only: bool = True
@@ -75,6 +76,7 @@ class OpportunityFilters:
             min_hourly_pay=max(0.0, float(self.min_hourly_pay)) if self.min_hourly_pay is not None else None,
             posted_since=self.posted_since.strip(),
             deadline_before=self.deadline_before.strip(),
+            tag=self.tag.strip().lstrip("#").lower(),
             sort=self.sort if self.sort in SORT_SQL else "score",
             active_only=bool(self.active_only),
             unique_only=bool(self.unique_only),
@@ -218,8 +220,16 @@ def _row_to_opportunity(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+# The view's user-owned columns belong to this account; see _where.
+_INVENTORY_USER_ID = "local-user"
+
+
 def _where(
-    filters: OpportunityFilters, *, include_user_state: bool = True, alias: str = "o"
+    filters: OpportunityFilters,
+    *,
+    include_user_state: bool = True,
+    alias: str = "o",
+    user_id: str = _INVENTORY_USER_ID,
 ) -> tuple[str, list[Any]]:
     """Build the WHERE clause for either the inventory view or a tenant CTE.
 
@@ -291,6 +301,28 @@ def _where(
             f"{alias}.deadline_at IS NOT NULL AND substr({alias}.deadline_at, 1, 10) <= substr(?, 1, 10)"
         )
         params.append(filters.deadline_before)
+    if filters.tag:
+        # A company carries a tag when it was generated and this user has not
+        # removed it, or when this user added it (opportunity_app/company_tags.py).
+        clauses.append(
+            f"""(
+            EXISTS (
+                SELECT 1 FROM company_tags auto_tag
+                WHERE auto_tag.company_key = {alias}.company_sort_key AND auto_tag.tag = ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM company_tag_choices removed
+                      WHERE removed.user_id = ? AND removed.company_key = auto_tag.company_key
+                        AND removed.tag = auto_tag.tag AND removed.choice = 'removed'
+                  )
+            )
+            OR EXISTS (
+                SELECT 1 FROM company_tag_choices added
+                WHERE added.user_id = ? AND added.company_key = {alias}.company_sort_key
+                  AND added.tag = ? AND added.choice = 'added'
+            )
+        )"""
+        )
+        params.extend([filters.tag, user_id, user_id, filters.tag])
     return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
 
 
@@ -401,7 +433,7 @@ class OpportunityRepository:
         suffix: str = "",
     ) -> tuple[str, list[Any]]:
         cte, params = self._tenant_cte()
-        where_sql, where_params = _where(filters, alias="tenant")
+        where_sql, where_params = _where(filters, alias="tenant", user_id=self.user_id)
         if opportunity_id is not None:
             joiner = " AND " if where_sql else " WHERE "
             where_sql += f"{joiner}tenant.id = ?"

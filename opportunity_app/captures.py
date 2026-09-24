@@ -23,6 +23,7 @@ from uuid import uuid4
 from PIL import Image, UnidentifiedImageError
 
 from . import ROOT
+from .company_tags import regenerate_company_tags
 from .opportunity_metadata import extract_opportunity_metadata
 from .resumes import ResumeValidationError, detect_media_type, extract_pdf, scan_resume_file
 from .schema import sort_key, RULESET_VERSION, utc_now
@@ -361,4 +362,5 @@ def confirm_capture(
             """,
             (actual_application, timestamp, capture_id, user_id),
         )
+        regenerate_company_tags(conn, [sort_key(company)])
     return get_capture(conn, capture_id, user_id=user_id)

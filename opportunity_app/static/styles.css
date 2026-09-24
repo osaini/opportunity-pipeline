@@ -295,7 +295,11 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 .workspace { border-top: 1px solid var(--line-strong); padding-top: 24px; }
 .filter-panel { display: grid; gap: 12px; }
 .search-field { min-height: var(--control-lg); padding: 0 var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); display: flex; align-items: center; gap: 11px; color: var(--ink-muted); }
-.search-field input { width: 100%; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 15px; }
+.search-label { display: flex; align-items: center; align-self: stretch; cursor: text; }
+.search-field input { width: 100%; min-width: 0; align-self: stretch; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 15px; }
+/* The tag picker sits inside the search box, after a hairline divider. */
+.search-field .tag-filter { flex: 0 1 auto; max-width: 42%; min-height: var(--control-sm); padding: 0 var(--field-pad-x); border: 0; border-left: 1px solid var(--line); border-radius: 0; background: transparent; color: var(--ink-soft); font-size: 12px; font-weight: 650; cursor: pointer; }
+.search-field .tag-filter:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .search-field:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-soft); }
 .select-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .select-row label { display: grid; gap: 5px; color: var(--ink-muted); font-size: 10px; font-weight: 750; text-transform: uppercase; letter-spacing: .08em; }
@@ -1075,3 +1079,25 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 }
 .system-status-job .form-status:empty { display: none; }
 .outreach-recontact-report > .outreach-scope { font-size: 12px; }
+
+/* Company tags: dashed = inferred from postings, solid = added by the student. */
+.tag-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.tag-list[hidden] { display: none; }
+.opportunity-card > .tag-list { padding: 0 var(--space-5) var(--space-4); }
+.tag-chip { display: inline-flex; align-items: stretch; border: 1px solid var(--line-strong); border-radius: var(--radius-pill); background: var(--surface); color: var(--ink-soft); font-size: 11px; font-weight: 700; overflow: hidden; }
+.tag-chip.is-auto { border-style: dashed; }
+.tag-chip.is-manual { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-strong); }
+.tag-name, .tag-remove { min-height: 26px; border: 0; background: none; color: inherit; font: inherit; cursor: pointer; }
+.tag-name { padding: 0 4px 0 10px; }
+.tag-remove { min-width: 26px; padding: 0 8px 0 4px; font-size: 14px; line-height: 1; opacity: .7; }
+.tag-name:hover { color: var(--ink); text-decoration: underline; }
+.tag-remove:hover { opacity: 1; color: var(--danger); background: var(--danger-soft); }
+.tag-name:focus-visible, .tag-remove:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
+.company-tags .tag-help { margin: 0 0 10px; color: var(--ink-soft); font-size: 12px; line-height: 1.45; }
+.company-tags .tag-list { margin-bottom: 12px; }
+.tag-add-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; }
+.status-undo { margin-left: 6px; color: var(--accent-strong); font-weight: 750; text-decoration: underline; }
+
+@media (max-width: 720px) {
+  .search-field .tag-filter { max-width: 48%; }
+}

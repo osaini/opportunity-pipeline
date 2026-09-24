@@ -87,6 +87,7 @@
     pageTitle: document.getElementById("page-title"),
     pageLede: document.getElementById("page-lede"),
     search: document.getElementById("search-input"),
+    tagFilter: document.getElementById("tag-filter"),
     role: document.getElementById("role-filter"),
     region: document.getElementById("region-filter"),
     source: document.getElementById("source-filter"),
@@ -454,7 +455,7 @@
     els.resultCount.textContent = "Loading opportunities…";
     els.pageStatus.textContent = "";
     [els.statActive, els.statTotal, els.statTracked, els.statScore].forEach((stat) => { stat.textContent = "—"; });
-    [els.role, els.region, els.source, els.term].forEach((select) => { select.options.length = 1; });
+    [els.role, els.region, els.source, els.term, els.tagFilter].forEach((select) => { select.options.length = 1; });
     els.userName.textContent = "";
     els.userChip.hidden = true;
     els.personalizePrompt.hidden = true;
@@ -1086,7 +1087,8 @@
     });
 
     actions.append(save, pass, apply);
-    article.append(button, actions);
+    // Outside the card button: a button may not contain other controls.
+    article.append(button, createTagList(item), actions);
     return article;
   }
 
@@ -1219,6 +1221,7 @@
       sort: els.sort.value,
     });
     if (els.search.value.trim()) params.set("q", els.search.value.trim());
+    if (els.tagFilter.value) params.set("tag", els.tagFilter.value);
     if (els.role.value) params.set("role_type", els.role.value);
     if (els.region.value) params.set("region", els.region.value);
     if (els.source.value) params.set("source", els.source.value);
@@ -1277,6 +1280,188 @@
     populateSelect(els.region, facets.regions || []);
     populateSelect(els.source, facets.sources || []);
     populateSelect(els.term, facets.terms || []);
+    populateTagFilter(facets.tags || []);
+  }
+
+  // ---- Company tags ------------------------------------------------------
+  // One-word industry tags per company. Automatic tags are inferred from the
+  // company's postings, look different (dashed), and carry their evidence;
+  // x removes a tag for this student only, and it stays removed on refresh.
+
+  function populateTagFilter(tags) {
+    const current = els.tagFilter.value;
+    els.tagFilter.options.length = 1;
+    tags.forEach(({ tag, companies }) => {
+      const option = document.createElement("option");
+      option.value = tag;
+      option.textContent = `#${tag} (${companies})`;
+      els.tagFilter.appendChild(option);
+    });
+    // A tag the student is filtering by stays selectable even at zero companies.
+    if (current && !tags.some(({ tag }) => tag === current)) {
+      const option = document.createElement("option");
+      option.value = current;
+      option.textContent = `#${current} (0)`;
+      els.tagFilter.appendChild(option);
+    }
+    els.tagFilter.value = current;
+  }
+
+  async function loadTagFacets() {
+    try {
+      const facets = await api("/api/v1/facets");
+      populateTagFilter(facets.tags || []);
+    } catch (_) {
+      // The counts refresh on the next sign-in; the tag change itself stuck.
+    }
+  }
+
+  function applyTagFilter(tag) {
+    if (![...els.tagFilter.options].some((option) => option.value === tag)) {
+      const option = document.createElement("option");
+      option.value = tag;
+      option.textContent = `#${tag}`;
+      els.tagFilter.appendChild(option);
+    }
+    els.tagFilter.value = tag;
+    if (state.selectedId) closeDetail();
+    if (!["discover", "saved"].includes(state.view)) setView("discover");
+    state.offset = 0;
+    loadCurrentView();
+    announce(`Showing companies tagged ${tag}.`);
+  }
+
+  function createTagList(item) {
+    const list = element("ul", "tag-list");
+    list.setAttribute("aria-label", `Tags for ${item.company}`);
+    list.hidden = !item.tags?.length;
+    (item.tags || []).forEach((tag) => {
+      const inferred = tag.origin === "auto";
+      const entry = element("li", `tag-chip ${inferred ? "is-auto" : "is-manual"}`);
+      entry.title = inferred ? `${tag.evidence} Inferred, not stated by the employer.` : tag.evidence;
+      const name = element("button", "tag-name", `#${tag.tag}`);
+      name.type = "button";
+      name.dataset.tag = tag.tag;
+      name.setAttribute("aria-label", `Show only companies tagged ${tag.tag}${inferred ? " (inferred tag)" : ""}`);
+      name.addEventListener("click", () => applyTagFilter(tag.tag));
+      const remove = element("button", "tag-remove", "×");
+      remove.type = "button";
+      remove.setAttribute("aria-label", `Remove tag ${tag.tag} from ${item.company}`);
+      remove.addEventListener("click", () => changeCompanyTag(item, tag.tag, false));
+      entry.append(name, remove);
+      list.appendChild(entry);
+    });
+    return list;
+  }
+
+  // Swap every rendered tag list for this company, keeping keyboard focus on a
+  // neighbouring tag (or the card) when the focused chip is the one removed.
+  function applyCompanyTags(companyKey, tags) {
+    const focusedList = document.activeElement?.closest?.(".tag-list");
+    const focusedIndex = focusedList
+      ? [...focusedList.querySelectorAll(".tag-name, .tag-remove")].indexOf(document.activeElement)
+      : -1;
+    let refocus = null;
+    const replace = (oldList, item) => {
+      item.tags = tags;
+      const next = createTagList(item);
+      if (oldList === focusedList) {
+        const controls = [...next.querySelectorAll(".tag-name, .tag-remove")];
+        refocus = controls[Math.min(focusedIndex, controls.length - 1)]
+          || oldList.closest(".opportunity-card")?.querySelector(".card-button")
+          || oldList.closest(".company-tags")?.querySelector("input")
+          || null;
+      }
+      oldList.replaceWith(next);
+    };
+    els.results.querySelectorAll(".opportunity-card").forEach((card) => {
+      const item = cardItems.get(card);
+      const list = card.querySelector(".tag-list");
+      if (item && list && item.company_sort_key === companyKey) replace(list, item);
+    });
+    const detailList = els.detailContent.querySelector(".company-tags .tag-list");
+    if (detailList && state.detailItem?.company_sort_key === companyKey) replace(detailList, state.detailItem);
+    refocus?.focus();
+  }
+
+  function announceWithUndo(message, undo) {
+    announce(message);
+    const button = element("button", "text-button status-undo", "Undo");
+    button.type = "button";
+    button.addEventListener("click", () => {
+      announce("");
+      undo();
+    }, { once: true });
+    els.actionStatus.append(" ", button);
+  }
+
+  async function changeCompanyTag(item, tag, present, { quiet = false } = {}) {
+    clearError();
+    try {
+      const result = await api("/api/v1/company-tags", {
+        method: "PUT",
+        body: JSON.stringify({ company: item.company, tag, present }),
+      });
+      applyCompanyTags(result.company_key, result.tags);
+      loadTagFacets();
+      if (quiet && (!document.activeElement || document.activeElement === document.body)) {
+        // Undo removed its own button; land on the tag it restored, or the card.
+        const card = [...els.results.querySelectorAll(".opportunity-card")]
+          .find((node) => cardItems.get(node)?.company_sort_key === result.company_key);
+        (card?.querySelector(`.tag-name[data-tag="${CSS.escape(tag)}"]`) || card?.querySelector(".card-button"))?.focus();
+      }
+      // Removing the tag being filtered on (or adding it back) changes which
+      // cards belong in the deck.
+      if (els.tagFilter.value === tag && ["discover", "saved"].includes(state.view)) {
+        await loadCurrentView();
+      }
+      if (!quiet) {
+        announceWithUndo(
+          present ? `Added tag ${tag} to ${item.company}.` : `Removed tag ${tag} from ${item.company}.`,
+          () => changeCompanyTag(item, tag, !present, { quiet: true })
+        );
+      }
+      return true;
+    } catch (error) {
+      if (error.message !== "Authentication required") showError(error.message);
+      return false;
+    }
+  }
+
+  function companyTagsSection(item) {
+    const section = element("section", "detail-section company-tags");
+    section.appendChild(element("p", "eyebrow", "Company tags"));
+    section.appendChild(element(
+      "p",
+      "tag-help",
+      "Dashed tags are inferred from this company's postings; hover one to see the words behind it. Tags apply to every role at this company, and × removes one for good."
+    ));
+    section.appendChild(createTagList(item));
+    const form = element("form", "tag-add-form");
+    const label = element("label", "profile-field");
+    label.appendChild(element("span", "", "Add a tag"));
+    const input = document.createElement("input");
+    input.type = "text";
+    input.maxLength = 25;
+    input.placeholder = "One word, e.g. robotics";
+    input.pattern = "#?[A-Za-z0-9][A-Za-z0-9\\-]{0,23}";
+    input.title = "One word: letters, numbers, or hyphens.";
+    input.autocomplete = "off";
+    label.appendChild(input);
+    const add = element("button", "secondary-button", "Add tag");
+    add.type = "submit";
+    form.append(label, add);
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const tag = input.value.trim().replace(/^#/, "").toLowerCase();
+      if (!tag) return;
+      add.disabled = true;
+      if (await changeCompanyTag(item, tag, true)) input.value = "";
+      add.disabled = false;
+      input.focus();
+    });
+    section.appendChild(form);
+    return section;
   }
 
   function createApplicationCard(item, { board = false } = {}) {
@@ -6649,6 +6834,7 @@
   }
 
   function renderDetail(item) {
+    state.detailItem = item;
     const content = document.createDocumentFragment();
     content.appendChild(element("p", "detail-company", item.company));
     const title = element("h2", "", item.title);
@@ -6690,6 +6876,7 @@
     content.appendChild(facts);
     const deadlineSection = userDeadlineSection(item);
     if (deadlineSection) content.appendChild(deadlineSection);
+    if (item.company_sort_key) content.appendChild(companyTagsSection(item));
 
     const why = element("section", "detail-section");
     why.appendChild(element("p", "eyebrow", "Why it ranked here"));
@@ -6901,7 +7088,7 @@
     }
   });
 
-  [els.role, els.region, els.source, els.sort, els.term, els.remote, els.year, els.pay, els.posted, els.deadline].forEach((select) => {
+  [els.role, els.region, els.source, els.sort, els.term, els.remote, els.year, els.pay, els.posted, els.deadline, els.tagFilter].forEach((select) => {
     select.addEventListener("change", () => {
       state.offset = 0;
       loadCurrentView();

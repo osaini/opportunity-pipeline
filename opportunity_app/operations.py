@@ -145,6 +145,7 @@ ACCOUNT_QUERIES = {
     "interactions": "SELECT * FROM opportunity_interactions WHERE user_id=?",
     "opportunity_deadlines": "SELECT * FROM opportunity_deadlines WHERE user_id=?",
     "early_program_status": "SELECT * FROM early_program_status WHERE user_id=?",
+    "company_tag_choices": "SELECT * FROM company_tag_choices WHERE user_id=?",
     "applications": "SELECT * FROM applications WHERE user_id=?",
     "application_events": "SELECT e.* FROM application_events e JOIN applications a ON a.id=e.application_id WHERE a.user_id=?",
     "application_contacts": "SELECT * FROM application_contacts WHERE user_id=?",

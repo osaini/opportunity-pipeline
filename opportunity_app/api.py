@@ -51,6 +51,7 @@ from .actions import (
     update_application,
     update_application_task,
 )
+from .company_tags import CompanyNotFoundError, decorate_with_tags, set_company_tag, tag_facets
 from .early_programs import (
     DEFAULT_EARLY_PROGRAMS,
     EarlyProgramNotFoundError,
@@ -478,6 +479,14 @@ class TaskCreateRequest(BaseModel):
 class DeadlineRequest(BaseModel):
     deadline_on: str = Field(min_length=10, max_length=10)
     note: str = Field(default="", max_length=200)
+
+
+class CompanyTagRequest(BaseModel):
+    # The company as displayed on the opportunity; matched on the stored fold.
+    company: str = Field(min_length=1, max_length=200)
+    tag: str = Field(min_length=1, max_length=25)
+    # False removes the tag (an automatic one stays removed after a refresh).
+    present: bool
 
 
 class EarlyProgramStatusRequest(BaseModel):
@@ -1489,6 +1498,7 @@ def create_app(
         min_hourly_pay: float | None = Query(default=None, ge=0, le=1000),
         posted_since: str = Query(default="", max_length=40),
         deadline_before: str = Query(default="", max_length=40),
+        tag: str = Query(default="", max_length=25),
         sort: Literal["score", "newest", "discovered", "company", "deadline"] = "score",
         limit: int = Query(default=50, ge=1, le=200),
         offset: int = Query(default=0, ge=0),
@@ -1509,6 +1519,7 @@ def create_app(
             min_hourly_pay=min_hourly_pay,
             posted_since=posted_since,
             deadline_before=deadline_before,
+            tag=tag,
             sort=sort,
             active_only=not include_inactive,
             unique_only=not include_duplicates,
@@ -1522,6 +1533,7 @@ def create_app(
                 repo.connection, [item["id"] for item in items], user_id=repo.user_id
             )
             items = [{**item, "user_deadline_on": deadlines.get(item["id"])} for item in items]
+            items = decorate_with_tags(repo.connection, items, user_id=repo.user_id)
         return OpportunityListResponse(
             items=items,
             total=total,
@@ -1545,7 +1557,22 @@ def create_app(
                 "user_deadline": user_deadline(repo.connection, opportunity_id, user_id=repo.user_id),
                 "can_set_user_deadline": visible_opportunity(repo.connection, repo.user_id, opportunity_id),
             }
+            item = decorate_with_tags(repo.connection, [item], user_id=repo.user_id)[0]
         return item
+
+    @app.put("/api/v1/company-tags")
+    def put_company_tag(
+        payload: CompanyTagRequest,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """Add or remove one tag on a company, for the caller only."""
+        try:
+            return set_company_tag(conn, payload.company, payload.tag, user_id=user_id, present=payload.present)
+        except CompanyNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Company not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
     @app.put("/api/v1/opportunities/{opportunity_id}/deadline")
     def put_user_deadline(
@@ -3791,8 +3818,11 @@ def create_app(
         return school_aggregate(conn)
 
     @app.get("/api/v1/facets")
-    def facets(repo: OpportunityRepository = Depends(repository)) -> dict[str, list[str]]:
-        return repo.facets()
+    def facets(repo: OpportunityRepository = Depends(repository)) -> dict[str, list[Any]]:
+        result: dict[str, list[Any]] = dict(repo.facets())
+        if repo.user_id:
+            result["tags"] = tag_facets(repo.connection, user_id=repo.user_id)
+        return result
 
     @app.get("/api/v1/stats")
     def stats(
