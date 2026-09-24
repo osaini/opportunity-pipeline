@@ -7,13 +7,15 @@ on every run.
 
 Tags are keyed by the company's stored fold (``company_sort_key``), so every
 posting from one company shares them. Automatic tags live in ``company_tags``
-and are rebuilt on every sync. A student's own edits live in
+and are rebuilt on every sync, and on startup whenever the rules below have
+changed since the last rebuild. A student's own edits live in
 ``company_tag_choices`` and outlive every rebuild: removing an automatic tag
 records a 'removed' choice, so the next sync cannot bring it back.
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
 import sqlite3
 from collections import defaultdict
@@ -33,6 +35,12 @@ NAME_WEIGHT = 3
 TITLE_WEIGHT = 2
 TITLE_CAP = 4
 DESCRIPTION_CAP = 2
+# A niche tag also counts when its words recur across the company's postings:
+# in at least this many, and at least this share of them. That recurring text
+# is usually the company describing itself ("the largest drone delivery
+# service"), which is exactly the signal a narrow tag needs.
+NICHE_MIN_POSTINGS = 2
+NICHE_MIN_SHARE = 0.2
 
 TAG_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,23}$")
 
@@ -45,6 +53,9 @@ class TagRule:
     # Matched only in the company name: words too common in postings to mean
     # anything there ("bank holiday", "health insurance").
     name_only: tuple[str, ...] = ()
+    # Narrow enough that repetition is evidence rather than boilerplate, and
+    # never crowded out by the MAX_AUTO_TAGS broad ones.
+    niche: bool = False
 
 
 # Keywords are regex fragments matched on word boundaries, case-insensitively.
@@ -52,7 +63,10 @@ class TagRule:
 # ("insurance", "healthcare", "military", "veteran"), and generic stack words
 # ("software", "data", "AWS") that would tag every company alike.
 RULES: tuple[TagRule, ...] = (
-    TagRule("robotics", (r"robot(?:s|ic|ics)?", r"autonomous (?:systems?|robots?|vehicles?)", r"humanoid", r"manipulators?", r"drones?", r"uavs?")),
+    TagRule("robotics", (r"robot(?:s|ic|ics)?", r"autonomous (?:systems?|robots?|vehicles?)", r"humanoid", r"manipulators?")),
+    # Its own tag, not part of robotics: a drone company may be either, both,
+    # or aerospace, and the student sorts by it on its own.
+    TagRule("drone", (r"drones?", r"uavs?", r"s?uas", r"unmanned aerial (?:vehicles?|systems?)", r"unmanned aircraft(?: systems?)?", r"quadcopters?", r"multirotors?"), (r"drones?",), niche=True),
     TagRule("ai", (r"artificial intelligence", r"machine learning", r"deep learning", r"large language models?", r"llms?", r"generative ai", r"computer vision", r"neural networks?", r"reinforcement learning"), (r"ai",)),
     TagRule("semiconductors", (r"semiconductors?", r"asics?", r"fpgas?", r"vlsi", r"wafers?", r"lithography", r"chip design", r"silicon validation", r"rtl design")),
     TagRule("hardware", (r"pcb(?:a|s)?", r"embedded systems?", r"firmware", r"consumer electronics", r"power electronics", r"electronics design", r"circuit boards?", r"hardware engineering")),
@@ -90,16 +104,40 @@ RULES: tuple[TagRule, ...] = (
 
 KNOWN_TAGS = frozenset(rule.tag for rule in RULES)
 
+# Bump when classify_company's logic changes; RULES and the weights are
+# fingerprinted directly. A changed fingerprint rebuilds tags on startup, so a
+# rule edit shows up without waiting for the next refresh.
+CLASSIFIER_VERSION = 2
+RULES_FINGERPRINT = hashlib.sha256(
+    repr((
+        CLASSIFIER_VERSION, RULES, MAX_AUTO_TAGS, MIN_SCORE, NAME_WEIGHT, TITLE_WEIGHT,
+        TITLE_CAP, DESCRIPTION_CAP, NICHE_MIN_POSTINGS, NICHE_MIN_SHARE,
+    )).encode()
+).hexdigest()[:16]
+
 
 def _compile(parts: Iterable[str]) -> re.Pattern[str] | None:
     parts = tuple(parts)
     if not parts:
         return None
-    return re.compile(r"(?<!\w)(" + "|".join(parts) + r")(?!\w)", re.IGNORECASE)
+    # One capture group per keyword, so every match reports which keyword it
+    # was: "fpga" and "fpgas" are one keyword, not two different ones.
+    return re.compile(r"(?<!\w)(?:" + "|".join(f"({part})" for part in parts) + r")(?!\w)", re.IGNORECASE)
+
+
+def _hits(pattern: re.Pattern[str] | None, text: str) -> dict[int, str]:
+    """Keyword index -> the first text that keyword matched."""
+
+    found: dict[int, str] = {}
+    if pattern is None or not text:
+        return found
+    for match in pattern.finditer(text):
+        found.setdefault(match.lastindex or 0, match.group(match.lastindex or 0).lower())
+    return found
 
 
 _COMPILED = tuple(
-    (rule.tag, _compile(rule.keywords), _compile((*rule.keywords, *rule.name_only)))
+    (rule, _compile(rule.keywords), _compile((*rule.keywords, *rule.name_only)))
     for rule in RULES
 )
 
@@ -123,28 +161,44 @@ def classify_company(company: str, postings: Iterable[tuple[str, str]]) -> list[
     ``postings`` is (title, description) pairs. The name counts once, each
     title that matches counts (capped), and descriptions count the number of
     *different* keywords they contain across all postings (capped), never how
-    often one keyword repeats.
+    often one keyword repeats. Spellings of one keyword ("fpga", "FPGAs")
+    are the same keyword. A niche tag may instead qualify by recurring across
+    postings (NICHE_MIN_POSTINGS, NICHE_MIN_SHARE); broad tags are capped at
+    MAX_AUTO_TAGS, niche ones are kept alongside them.
     """
 
     postings = list(postings)
     found: list[dict[str, Any]] = []
-    for tag, keywords, name_pattern in _COMPILED:
-        name_hits = {hit.lower() for hit in name_pattern.findall(company or "")} if name_pattern else set()
-        title_hits: list[str] = []
+    for rule, keywords, name_pattern in _COMPILED:
+        name_hits = _hits(name_pattern, company or "")
+        title_hits: dict[int, str] = {}
         title_score = 0
-        description_hits: set[str] = set()
+        description_hits: dict[int, str] = {}
+        postings_with_hits = 0
         if keywords is not None:
             for title, description in postings:
-                in_title = {hit.lower() for hit in keywords.findall(title or "")}
+                in_title = _hits(keywords, title or "")
                 if in_title:
                     title_score += TITLE_WEIGHT
-                    title_hits.extend(sorted(in_title))
-                description_hits.update(hit.lower() for hit in keywords.findall(description or ""))
+                    for index, word in in_title.items():
+                        title_hits.setdefault(index, word)
+                in_description = _hits(keywords, description or "")
+                for index, word in in_description.items():
+                    description_hits.setdefault(index, word)
+                if in_title or in_description:
+                    postings_with_hits += 1
         score = (
             (NAME_WEIGHT if name_hits else 0)
             + min(title_score, TITLE_CAP)
             + min(len(description_hits), DESCRIPTION_CAP)
         )
+        recurring = (
+            rule.niche
+            and postings_with_hits >= NICHE_MIN_POSTINGS
+            and postings_with_hits >= NICHE_MIN_SHARE * len(postings)
+        )
+        if recurring:
+            score = max(score, MIN_SCORE)
         if score < MIN_SCORE:
             continue
         places = [
@@ -152,20 +206,28 @@ def classify_company(company: str, postings: Iterable[tuple[str, str]]) -> list[
             for label, hits in (("company name", name_hits), ("job titles", title_hits), ("job descriptions", description_hits))
             if hits
         ]
-        words = list(dict.fromkeys([*sorted(name_hits), *title_hits, *sorted(description_hits)]))[:3]
+        words = list(dict.fromkeys([*name_hits.values(), *title_hits.values(), *description_hits.values()]))[:3]
         where = places[0] if len(places) == 1 else ", ".join(places[:-1]) + " and " + places[-1]
-        evidence = f"Inferred from the {where}: " + ", ".join(f"“{word}”" for word in words) + "."
-        found.append({"tag": tag, "score": score, "evidence": evidence})
+        evidence = f"Inferred from the {where}: " + ", ".join(f"“{word}”" for word in words)
+        if recurring:
+            evidence += f" (in {postings_with_hits} of {len(postings)} postings)"
+        found.append({"tag": rule.tag, "score": score, "evidence": evidence + ".", "niche": rule.niche})
     found.sort(key=lambda item: (-item["score"], item["tag"]))
-    return found[:MAX_AUTO_TAGS]
+    broad = [item for item in found if not item["niche"]][:MAX_AUTO_TAGS]
+    kept = {id(item) for item in broad}
+    return [
+        {key: value for key, value in item.items() if key != "niche"}
+        for item in found
+        if id(item) in kept or item["niche"]
+    ]
 
 
 def regenerate_company_tags(conn: sqlite3.Connection, company_keys: Iterable[str] | None = None) -> int:
     """Rebuild automatic tags from the stored postings. Returns rows written.
 
     With ``company_keys`` only those companies are rebuilt (a capture adds one
-    company); otherwise every company is. The caller owns the transaction.
-    Student choices are untouched.
+    company); otherwise every company is, and the rules fingerprint is
+    recorded. The caller owns the transaction. Student choices are untouched.
     """
 
     keys = None if company_keys is None else sorted({str(key) for key in company_keys if key})
@@ -199,7 +261,35 @@ def regenerate_company_tags(conn: sqlite3.Connection, company_keys: Iterable[str
             "INSERT INTO company_tags(company_key, tag, score, evidence, generated_at) VALUES(?, ?, ?, ?, ?)",
             rows,
         )
+    if keys is None:
+        conn.execute(
+            """
+            INSERT INTO company_tag_rules(id, fingerprint, generated_at) VALUES(1, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                fingerprint = excluded.fingerprint,
+                generated_at = excluded.generated_at
+            """,
+            (RULES_FINGERPRINT, timestamp),
+        )
     return len(rows)
+
+
+def ensure_company_tags_current(conn: sqlite3.Connection) -> bool:
+    """Rebuild every tag if the rules changed since the last full rebuild."""
+
+    # A database migrated only part of the way (as some tests stage it) has
+    # no tag tables yet; it is brought current once 0027 is applied.
+    applied = conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE name = '0027_company_tag_rules.sql'"
+    ).fetchone()
+    if applied is None:
+        return False
+    row = conn.execute("SELECT fingerprint FROM company_tag_rules WHERE id = 1").fetchone()
+    if row is not None and row["fingerprint"] == RULES_FINGERPRINT:
+        return False
+    with conn:
+        regenerate_company_tags(conn)
+    return True
 
 
 def _chunks(values: list[str], size: int = 500) -> Iterable[list[str]]:

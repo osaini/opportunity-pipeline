@@ -18,7 +18,7 @@ from pipeline import region_label
 from pipeline_core import OpportunityFilters, OpportunityRepository
 
 from . import DEFAULT_LEGACY_DB, DEFAULT_PLATFORM_DB, DEFAULT_PROFILE, ROOT
-from .company_tags import regenerate_company_tags
+from .company_tags import ensure_company_tags_current, regenerate_company_tags
 from .opportunity_metadata import extract_opportunity_metadata
 from .timestamps import canonical_utc
 from .database import PostgresConnection, is_postgres_target
@@ -220,17 +220,11 @@ def _apply_company_sort_keys(conn: sqlite3.Connection, sql: str) -> None:
     backfill_sort_keys(conn)
 
 
-def _apply_company_tags(conn: sqlite3.Connection, sql: str) -> None:
-    conn.executescript(sql)
-    regenerate_company_tags(conn)
-
-
 # Migrations whose SQL alone cannot express the change: parsing timestamps is
 # not portable across SQLite and PostgreSQL, so a Python step owns it.
 _MIGRATION_STEPS: dict[str, Callable[[Any, str], None]] = {
     "0020_posted_at_utc.sql": _apply_posted_at_utc,
     "0021_company_sort_keys.sql": _apply_company_sort_keys,
-    "0026_company_tags.sql": _apply_company_tags,
 }
 
 
@@ -261,6 +255,9 @@ def ensure_product_schema(conn: sqlite3.Connection) -> None:
             (migration.name, utc_now()),
         )
         conn.commit()
+    # Tags are derived data: backfilled on first run, and rebuilt when the
+    # tagging rules change, so an edit to them needs no migration.
+    ensure_company_tags_current(conn)
 
 
 def _load_profile(path: Path) -> dict[str, Any]:
