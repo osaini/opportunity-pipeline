@@ -12,9 +12,9 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
-from opportunity_app.company_tags import classify_company, normalize_tag
+from opportunity_app.company_tags import RULES_FINGERPRINT, classify_company, ensure_company_tags_current, normalize_tag
 from opportunity_app.operations import export_account
-from opportunity_app.schema import LOCAL_USER_ID, connect_product, migrate_legacy_database
+from opportunity_app.schema import LOCAL_USER_ID, connect_product, ensure_product_schema, migrate_legacy_database
 
 from helpers_platform import build_and_migrate, build_profile
 
@@ -62,6 +62,37 @@ class ClassifyCompanyTests(unittest.TestCase):
         )
         self.assertEqual(len(found), 3)
         self.assertEqual(found[0]["tag"], "robotics")
+
+    def test_spellings_of_one_keyword_count_once(self):
+        # "fpga" and "FPGAs" once tagged a humanoid-robot maker semiconductors.
+        self.assertEqual(classify_company("Northwind", [("Intern", "FPGA work. Our FPGAs are fast.")]), [])
+
+    def test_drone_is_its_own_tag_not_robotics(self):
+        found = classify_company("Northwind", [("Drone Test Intern", "")])
+        self.assertEqual(tags_of(found), ["drone"])
+
+    def test_a_drone_company_describing_itself_in_every_posting_is_tagged(self):
+        about = "Northwind is the world's largest drone delivery service."
+        postings = [(f"Role {n}", about + " Great benefits.") for n in range(5)]
+        found = classify_company("Northwind", postings)
+        self.assertEqual(tags_of(found), ["drone"])
+        self.assertIn("in 5 of 5 postings", found[0]["evidence"])
+
+    def test_one_passing_drone_mention_is_not_enough(self):
+        postings = [("Intern", "Experience on a rocket, UAV, or design team.")] + [("Intern", "Composites.")] * 9
+        self.assertEqual(classify_company("Northwind", postings), [])
+        # Two postings, but only a tenth of them: still a side mention.
+        postings = [("Intern", "Supersonic unmanned aircraft.")] * 2 + [("Intern", "Composites.")] * 18
+        self.assertEqual(classify_company("Northwind", postings), [])
+
+    def test_a_niche_tag_is_not_crowded_out_by_broad_ones(self):
+        postings = [
+            ("Aircraft Manufacturing Engineer", "Firmware and supply chain for our drones."),
+            ("Avionics Hardware Engineer", "Machining and logistics for our drones."),
+        ]
+        found = tags_of(classify_company("Northwind", postings))
+        self.assertIn("drone", found)
+        self.assertEqual(len([tag for tag in found if tag != "drone"]), 3)
 
     def test_tags_are_one_word(self):
         self.assertEqual(normalize_tag("  #Climate-Tech "), "climate-tech")
@@ -159,6 +190,20 @@ class CompanyTagApiTests(unittest.TestCase):
         self.assertEqual(self.tags_by_company()["Orbit Systems"], [])
         with closing(connect_product(self.platform_path)) as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM company_tag_choices").fetchone()[0], 0)
+
+    def test_changed_rules_rebuild_tags_on_startup_and_keep_choices(self):
+        self.put_tag("Orbit Systems", "controls", True)
+        with closing(connect_product(self.platform_path)) as conn:
+            self.assertFalse(ensure_company_tags_current(conn))
+            conn.execute("DELETE FROM company_tags")
+            conn.execute("UPDATE company_tag_rules SET fingerprint = 'older-rules'")
+            conn.commit()
+            ensure_product_schema(conn)
+            fingerprint = conn.execute("SELECT fingerprint FROM company_tag_rules").fetchone()[0]
+        self.assertEqual(fingerprint, RULES_FINGERPRINT)
+        tags = self.tags_by_company()
+        self.assertEqual(tags_of(tags["Acme Robotics"]), ["robotics"])
+        self.assertEqual(tags_of(tags["Orbit Systems"]), ["controls"])
 
     def test_choices_are_exported_with_the_account(self):
         self.put_tag("Acme Robotics", "robotics", False)
