@@ -11,6 +11,12 @@ and are rebuilt on every sync, and on startup whenever the rules below have
 changed since the last rebuild. A student's own edits live in
 ``company_tag_choices`` and outlive every rebuild: removing an automatic tag
 records a 'removed' choice, so the next sync cannot bring it back.
+
+Outreach companies usually have no posting, so their tags come from the
+student's own research summary instead, stored per student in
+``outreach_company_tags`` (one student's private research never tags a
+company for another). Both kinds share the company key and the choices, so
+removing a tag removes it on Discover and on Outreach alike.
 """
 
 from __future__ import annotations
@@ -107,7 +113,7 @@ KNOWN_TAGS = frozenset(rule.tag for rule in RULES)
 # Bump when classify_company's logic changes; RULES and the weights are
 # fingerprinted directly. A changed fingerprint rebuilds tags on startup, so a
 # rule edit shows up without waiting for the next refresh.
-CLASSIFIER_VERSION = 2
+CLASSIFIER_VERSION = 3
 RULES_FINGERPRINT = hashlib.sha256(
     repr((
         CLASSIFIER_VERSION, RULES, MAX_AUTO_TAGS, MIN_SCORE, NAME_WEIGHT, TITLE_WEIGHT,
@@ -155,7 +161,12 @@ def normalize_tag(value: str) -> str:
     return tag
 
 
-def classify_company(company: str, postings: Iterable[tuple[str, str]]) -> list[dict[str, Any]]:
+def classify_company(
+    company: str,
+    postings: Iterable[tuple[str, str]],
+    *,
+    labels: tuple[str, str] = ("job titles", "job descriptions"),
+) -> list[dict[str, Any]]:
     """Score every rule against one company; return the tags that clear the bar.
 
     ``postings`` is (title, description) pairs. The name counts once, each
@@ -203,7 +214,7 @@ def classify_company(company: str, postings: Iterable[tuple[str, str]]) -> list[
             continue
         places = [
             label
-            for label, hits in (("company name", name_hits), ("job titles", title_hits), ("job descriptions", description_hits))
+            for label, hits in (("company name", name_hits), (labels[0], title_hits), (labels[1], description_hits))
             if hits
         ]
         words = list(dict.fromkeys([*name_hits.values(), *title_hits.values(), *description_hits.values()]))[:3]
@@ -262,6 +273,7 @@ def regenerate_company_tags(conn: sqlite3.Connection, company_keys: Iterable[str
             rows,
         )
     if keys is None:
+        _regenerate_all_outreach_tags(conn)
         conn.execute(
             """
             INSERT INTO company_tag_rules(id, fingerprint, generated_at) VALUES(1, ?, ?)
@@ -278,9 +290,9 @@ def ensure_company_tags_current(conn: sqlite3.Connection) -> bool:
     """Rebuild every tag if the rules changed since the last full rebuild."""
 
     # A database migrated only part of the way (as some tests stage it) has
-    # no tag tables yet; it is brought current once 0027 is applied.
+    # no tag tables yet; it is brought current once 0028 is applied.
     applied = conn.execute(
-        "SELECT 1 FROM schema_migrations WHERE name = '0027_company_tag_rules.sql'"
+        "SELECT 1 FROM schema_migrations WHERE name = '0028_outreach_company_tags.sql'"
     ).fetchone()
     if applied is None:
         return False
@@ -290,6 +302,115 @@ def ensure_company_tags_current(conn: sqlite3.Connection) -> bool:
     with conn:
         regenerate_company_tags(conn)
     return True
+
+
+def tag_key(company: str) -> str:
+    """The key tags are stored under: the fold schema.sort_key stores."""
+
+    return str(company or "").casefold()
+
+
+def classify_outreach(company: str, summary: str, notes: str, *, unverified: bool) -> list[dict[str, Any]]:
+    """Tags for an outreach company, from the student's research on it.
+
+    The summary is a sentence or two about what the company does, with no
+    boilerplate, so it counts like a job title: one keyword is enough. The
+    evidence says when that research is unconfirmed deep-search output.
+    """
+
+    found = classify_company(company, [(summary, notes)], labels=("research summary", "research notes"))
+    if unverified:
+        for item in found:
+            item["evidence"] += " The research is unverified deep-search output."
+    return found
+
+
+def _outreach_rows(conn: sqlite3.Connection, user_id: str) -> list[tuple[str, str, str, str]]:
+    return [
+        (str(row["company"] or ""), str(row["summary"] or ""), str(row["activity_signal"] or ""), str(row["research_confidence"] or ""))
+        for row in conn.execute(
+            "SELECT company, summary, activity_signal, research_confidence FROM outreach_targets WHERE user_id=? ORDER BY id",
+            (user_id,),
+        ).fetchall()
+    ]
+
+
+def _outreach_signature(rows: list[tuple[str, str, str, str]]) -> str:
+    return hashlib.sha256(repr((RULES_FINGERPRINT, rows)).encode()).hexdigest()[:24]
+
+
+def _write_outreach_tags(conn: sqlite3.Connection, user_id: str, rows: list[tuple[str, str, str, str]]) -> None:
+    """Replace one student's outreach tags. The caller owns the transaction."""
+
+    timestamp = utc_now()
+    best: dict[tuple[str, str], dict[str, Any]] = {}
+    for company, summary, notes, confidence in rows:
+        key = tag_key(company)
+        if not key:
+            continue
+        for item in classify_outreach(company, summary, notes, unverified=confidence == "unverified"):
+            current = best.get((key, item["tag"]))
+            if current is None or item["score"] > current["score"]:
+                best[(key, item["tag"])] = item
+    conn.execute("DELETE FROM outreach_company_tags WHERE user_id=?", (user_id,))
+    if best:
+        conn.executemany(
+            """
+            INSERT INTO outreach_company_tags(user_id, company_key, tag, score, evidence, generated_at)
+            VALUES(?, ?, ?, ?, ?, ?)
+            """,
+            [(user_id, key, tag, item["score"], item["evidence"], timestamp) for (key, tag), item in best.items()],
+        )
+    conn.execute(
+        """
+        INSERT INTO outreach_tag_state(user_id, signature, generated_at) VALUES(?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            signature = excluded.signature,
+            generated_at = excluded.generated_at
+        """,
+        (user_id, _outreach_signature(rows), timestamp),
+    )
+
+
+def _regenerate_all_outreach_tags(conn: sqlite3.Connection) -> None:
+    conn.execute("DELETE FROM outreach_company_tags")
+    conn.execute("DELETE FROM outreach_tag_state")
+    for row in conn.execute("SELECT DISTINCT user_id FROM outreach_targets").fetchall():
+        user_id = str(row["user_id"])
+        _write_outreach_tags(conn, user_id, _outreach_rows(conn, user_id))
+
+
+def sync_outreach_tags(conn: sqlite3.Connection, user_id: str) -> bool:
+    """Bring one student's outreach tags up to date with their outreach list.
+
+    Companies are added, imported, found by deep search, renamed and edited
+    through many paths; rather than hook each, the tags are rebuilt whenever
+    the tag-relevant columns of the list differ from the last rebuild. The
+    comparison reads a few short columns, so an unchanged list costs little.
+    """
+
+    rows = _outreach_rows(conn, user_id)
+    state = conn.execute("SELECT signature FROM outreach_tag_state WHERE user_id=?", (user_id,)).fetchone()
+    if state is not None and state["signature"] == _outreach_signature(rows):
+        return False
+    with conn:
+        _write_outreach_tags(conn, user_id, rows)
+    return True
+
+
+def decorate_outreach_with_tags(
+    conn: sqlite3.Connection, items: list[dict[str, Any]], *, user_id: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Outreach items with their tags, and each tag's company count among them."""
+
+    keyed = [{**item, "company_sort_key": tag_key(item.get("company") or "")} for item in items]
+    tags = tags_for_companies(conn, (item["company_sort_key"] for item in keyed), user_id=user_id)
+    decorated = [{**item, "tags": tags.get(item["company_sort_key"], [])} for item in keyed]
+    counts: dict[str, int] = defaultdict(int)
+    for item in decorated:
+        for tag in item["tags"]:
+            counts[tag["tag"]] += 1
+    return decorated, [{"tag": tag, "companies": count} for tag, count in sorted(counts.items())]
 
 
 def _chunks(values: list[str], size: int = 500) -> Iterable[list[str]]:
@@ -313,11 +434,23 @@ def tags_for_companies(
                 [user_id, *chunk],
             ).fetchall()
         }
-        for row in conn.execute(
-            f"SELECT company_key, tag, evidence FROM company_tags WHERE company_key IN ({placeholders}) ORDER BY score DESC, tag",
-            chunk,
-        ).fetchall():
+        # Posting-derived tags first, then ones from this student's own
+        # outreach research; a tag both produce shows once, with the posting's
+        # evidence.
+        generated = conn.execute(
+            f"""
+            SELECT company_key, tag, evidence, score, 0 AS private FROM company_tags
+            WHERE company_key IN ({placeholders})
+            UNION ALL
+            SELECT company_key, tag, evidence, score, 1 AS private FROM outreach_company_tags
+            WHERE user_id = ? AND company_key IN ({placeholders})
+            """,
+            [*chunk, user_id, *chunk],
+        ).fetchall()
+        for row in sorted(generated, key=lambda row: (row["private"], -int(row["score"]), row["tag"])):
             if choices.get((row["company_key"], row["tag"])) == "removed":
+                continue
+            if any(item["tag"] == row["tag"] for item in result[row["company_key"]]):
                 continue
             result[row["company_key"]].append({"tag": row["tag"], "origin": "auto", "evidence": row["evidence"]})
         for (key, tag), choice in sorted(choices.items()):
@@ -357,8 +490,9 @@ class CompanyNotFoundError(LookupError):
 
 
 def _company_key(conn: sqlite3.Connection, company: str, *, user_id: str) -> str:
-    # The same fold schema.sort_key stores, applied to the name as displayed.
-    key = str(company or "").casefold()
+    """The key of a company this student can see: a posting or their own outreach."""
+
+    key = tag_key(company)
     if not key.strip():
         raise CompanyNotFoundError("Company not found")
     visible = capture_visible_sql("o")
@@ -366,14 +500,19 @@ def _company_key(conn: sqlite3.Connection, company: str, *, user_id: str) -> str
         f"SELECT 1 FROM opportunities o WHERE o.company_sort_key = ? AND {visible} LIMIT 1",
         [key, user_id],
     ).fetchone()
-    if row is None:
+    if row is None and not any(tag_key(name) == key for name, *_ in _outreach_rows(conn, user_id)):
         raise CompanyNotFoundError("Company not found")
     return key
 
 
-def _is_auto(conn: sqlite3.Connection, key: str, tag: str) -> bool:
+def _is_auto(conn: sqlite3.Connection, key: str, tag: str, *, user_id: str) -> bool:
     return conn.execute(
-        "SELECT 1 FROM company_tags WHERE company_key=? AND tag=?", (key, tag)
+        """
+        SELECT 1 FROM company_tags WHERE company_key=? AND tag=?
+        UNION ALL
+        SELECT 1 FROM outreach_company_tags WHERE user_id=? AND company_key=? AND tag=?
+        """,
+        (key, tag, user_id, key, tag),
     ).fetchone() is not None
 
 
@@ -384,7 +523,8 @@ def set_company_tag(
 
     tag = normalize_tag(tag)
     key = _company_key(conn, company, user_id=user_id)
-    auto = _is_auto(conn, key, tag)
+    sync_outreach_tags(conn, user_id)
+    auto = _is_auto(conn, key, tag, user_id=user_id)
     with conn:
         if present == auto:
             # Adding an automatic tag back, or removing a tag that exists

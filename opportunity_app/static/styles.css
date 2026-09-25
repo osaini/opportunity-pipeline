@@ -1101,3 +1101,8 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 @media (max-width: 720px) {
   .search-field .tag-filter { max-width: 48%; }
 }
+
+/* Outreach tags: plain text on the row (a button), chips with x in the pane. */
+.outreach-row-tags { color: var(--ink-muted); font-size: 10px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.outreach-pane .company-tags { margin-top: var(--space-4); }
+.outreach-pane .company-tags .tag-help { font-size: 11px; }

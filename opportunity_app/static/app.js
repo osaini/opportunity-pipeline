@@ -32,6 +32,7 @@
     // Outreach cards acted on in this tab stay visible after they move out of it.
     outreachKeep: new Set(),
     outreachQuery: "",
+    outreachTag: "",
     outreachSort: "contact",
     // The company shown in the split view's pane, and the tab picked per company.
     outreachSelected: null,
@@ -1317,6 +1318,12 @@
   }
 
   function applyTagFilter(tag) {
+    if (state.view === "outreach") {
+      state.outreachTag = tag;
+      loadOutreach().then(() => els.results.querySelector(".outreach-search .tag-filter")?.focus());
+      announce(`Showing outreach companies tagged ${tag}.`);
+      return;
+    }
     if (![...els.tagFilter.options].some((option) => option.value === tag)) {
       const option = document.createElement("option");
       option.value = tag;
@@ -1402,7 +1409,16 @@
         method: "PUT",
         body: JSON.stringify({ company: item.company, tag, present }),
       });
-      applyCompanyTags(result.company_key, result.tags);
+      if (state.view === "outreach") {
+        // The outreach list and its tag counts are rebuilt from the server.
+        await loadOutreach();
+        const pane = els.results.querySelector(".outreach-pane");
+        if (!document.activeElement || document.activeElement === document.body) {
+          (pane?.querySelector(`.tag-name[data-tag="${CSS.escape(tag)}"]`) || pane?.querySelector(".company-tags input"))?.focus();
+        }
+      } else {
+        applyCompanyTags(result.company_key, result.tags);
+      }
       loadTagFacets();
       if (quiet && (!document.activeElement || document.activeElement === document.body)) {
         // Undo removed its own button; land on the tag it restored, or the card.
@@ -1428,13 +1444,15 @@
     }
   }
 
-  function companyTagsSection(item) {
-    const section = element("section", "detail-section company-tags");
+  function companyTagsSection(item, { outreach = false } = {}) {
+    const section = element("section", `detail-section company-tags${outreach ? " is-outreach" : ""}`);
     section.appendChild(element("p", "eyebrow", "Company tags"));
     section.appendChild(element(
       "p",
       "tag-help",
-      "Dashed tags are inferred from this company's postings; hover one to see the words behind it. Tags apply to every role at this company, and × removes one for good."
+      outreach
+        ? "Dashed tags are inferred from your research summary; hover one to see the words behind it. × removes one here and on Discover."
+        : "Dashed tags are inferred from this company's postings; hover one to see the words behind it. Tags apply to every role at this company, and × removes one for good."
     ));
     section.appendChild(createTagList(item));
     const form = element("form", "tag-add-form");
@@ -3447,6 +3465,9 @@
     const bottom = element("span", "outreach-row-bottom");
     bottom.append(chip(next.label, next.tone || ""), element("span", "outreach-row-status", OUTREACH_STATUS_LABELS[item.status] || item.status));
     row.append(top, contact, bottom);
+    if (item.tags?.length) {
+      row.appendChild(element("span", "outreach-row-tags", item.tags.map((tag) => `#${tag.tag}`).join(" ")));
+    }
     row.addEventListener("click", onPick);
     return row;
   }
@@ -3797,7 +3818,7 @@
       if (now) step.setAttribute("aria-current", "step");
       steps.appendChild(step);
     });
-    head.append(heading, facts, steps);
+    head.append(heading, facts, companyTagsSection(item, { outreach: true }), steps);
 
     // The next-step bar: what to do now, the status, and every hand-off action.
     const next = outreachNextStep(item);
@@ -4264,14 +4285,18 @@
     return [add, transfer];
   }
 
-  function outreachListToolbar() {
+  function outreachListToolbar(tags = []) {
     const toolbar = element("div", "outreach-toolbar");
-    const search = element("label", "search-field outreach-search");
-    search.appendChild(element("span", "sr-only", "Search outreach"));
+    const search = element("div", "search-field outreach-search");
+    const label = element("label", "search-label");
+    label.htmlFor = "outreach-search-input";
+    label.appendChild(element("span", "sr-only", "Search outreach"));
     const glyph = element("span", "", "⌕");
     glyph.setAttribute("aria-hidden", "true");
-    search.appendChild(glyph);
+    label.appendChild(glyph);
+    search.appendChild(label);
     const input = document.createElement("input");
+    input.id = "outreach-search-input";
     input.type = "search";
     input.placeholder = "Search company, contact, channel, or notes";
     input.autocomplete = "off";
@@ -4290,6 +4315,28 @@
       }, 220);
     });
     search.appendChild(input);
+
+    const tagSelect = document.createElement("select");
+    tagSelect.className = "tag-filter";
+    tagSelect.setAttribute("aria-label", "Filter outreach by company tag");
+    const all = document.createElement("option");
+    all.value = "";
+    all.textContent = "All tags";
+    tagSelect.appendChild(all);
+    const known = tags.some(({ tag }) => tag === state.outreachTag);
+    [...tags, ...(state.outreachTag && !known ? [{ tag: state.outreachTag, companies: 0 }] : [])].forEach(({ tag, companies }) => {
+      const option = document.createElement("option");
+      option.value = tag;
+      option.textContent = `#${tag} (${companies})`;
+      tagSelect.appendChild(option);
+    });
+    tagSelect.value = state.outreachTag;
+    tagSelect.addEventListener("change", async () => {
+      state.outreachTag = tagSelect.value;
+      await loadOutreach();
+      els.results.querySelector(".outreach-search .tag-filter")?.focus();
+    });
+    search.appendChild(tagSelect);
 
     const sortLabel = element("label", "outreach-filter");
     sortLabel.appendChild(element("span", "", "Sort"));
@@ -4428,10 +4475,11 @@
       } else {
         const [, compare] = OUTREACH_SORTS[state.outreachSort] || OUTREACH_SORTS.contact;
         const kept = (item) => state.outreachKeep.has(item.id);
+        const tagged = (item) => !state.outreachTag || (item.tags || []).some((tag) => tag.tag === state.outreachTag);
         const items = payload.items
-          .filter((item) => (tab.test(item) && outreachMatchesQuery(item, state.outreachQuery)) || kept(item))
+          .filter((item) => (tab.test(item) && outreachMatchesQuery(item, state.outreachQuery) && tagged(item)) || kept(item))
           .sort(compare);
-        els.results.appendChild(outreachListToolbar());
+        els.results.appendChild(outreachListToolbar(payload.tags || []));
         if (running) {
           const banner = element("div", "outreach-banner");
           banner.appendChild(element("p", "", "The deep search is running. New companies land in From deep search when it finishes."));
@@ -4446,12 +4494,12 @@
 
         if (!items.length) {
           const empty = element("div", "empty-state");
-          const searching = Boolean(state.outreachQuery);
+          const searching = Boolean(state.outreachQuery || state.outreachTag);
           empty.appendChild(element("strong", "", searching
             ? "No company matches that search"
             : payload.items.length ? `Nothing in ${tab.label}` : "No outreach targets yet"));
           empty.appendChild(element("p", "", searching
-            ? "Clear the search, or look under All companies."
+            ? `Clear the search${state.outreachTag ? " or the tag filter" : ""}, or look under All companies.`
             : !payload.items.length
               ? "Add a startup you want to cold email under Tools, or run a deep search."
               : tab.id === "to-contact"
