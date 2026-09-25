@@ -88,7 +88,6 @@
     pageTitle: document.getElementById("page-title"),
     pageLede: document.getElementById("page-lede"),
     search: document.getElementById("search-input"),
-    tagFilter: document.getElementById("tag-filter"),
     role: document.getElementById("role-filter"),
     region: document.getElementById("region-filter"),
     source: document.getElementById("source-filter"),
@@ -456,7 +455,8 @@
     els.resultCount.textContent = "Loading opportunities…";
     els.pageStatus.textContent = "";
     [els.statActive, els.statTotal, els.statTracked, els.statScore].forEach((stat) => { stat.textContent = "—"; });
-    [els.role, els.region, els.source, els.term, els.tagFilter].forEach((select) => { select.options.length = 1; });
+    [els.role, els.region, els.source, els.term].forEach((select) => { select.options.length = 1; });
+    discoverTagPicker.reset();
     els.userName.textContent = "";
     els.userChip.hidden = true;
     els.personalizePrompt.hidden = true;
@@ -1222,7 +1222,7 @@
       sort: els.sort.value,
     });
     if (els.search.value.trim()) params.set("q", els.search.value.trim());
-    if (els.tagFilter.value) params.set("tag", els.tagFilter.value);
+    if (discoverTagPicker.value) params.set("tag", discoverTagPicker.value);
     if (els.role.value) params.set("role_type", els.role.value);
     if (els.region.value) params.set("region", els.region.value);
     if (els.source.value) params.set("source", els.source.value);
@@ -1289,24 +1289,184 @@
   // company's postings, look different (dashed), and carry their evidence;
   // x removes a tag for this student only, and it stays removed on refresh.
 
-  function populateTagFilter(tags) {
-    const current = els.tagFilter.value;
-    els.tagFilter.options.length = 1;
-    tags.forEach(({ tag, companies }) => {
-      const option = document.createElement("option");
-      option.value = tag;
-      option.textContent = `#${tag} (${companies})`;
-      els.tagFilter.appendChild(option);
-    });
-    // A tag the student is filtering by stays selectable even at zero companies.
-    if (current && !tags.some(({ tag }) => tag === current)) {
-      const option = document.createElement("option");
-      option.value = current;
-      option.textContent = `#${current} (0)`;
-      els.tagFilter.appendChild(option);
+  // The tag filter inside a search box: a trigger that names the active tag,
+  // a separate x that clears it, and a panel of tag chips, most common first,
+  // with a field to find one. Native <select> lists were an unsorted wall of
+  // text, and unreadable in dark mode on Windows.
+  function createTagPicker({ label, onChange }) {
+    let tags = [];
+    let value = "";
+    let open = false;
+
+    const root = element("div", "tag-picker");
+    const trigger = element("button", "tag-picker-trigger");
+    trigger.type = "button";
+    trigger.setAttribute("aria-haspopup", "true");
+    trigger.setAttribute("aria-expanded", "false");
+    const clear = element("button", "tag-picker-clear", "×");
+    clear.type = "button";
+    const panel = element("div", "tag-picker-panel");
+    panel.setAttribute("role", "group");
+    panel.setAttribute("aria-label", label);
+    panel.hidden = true;
+    const find = document.createElement("input");
+    find.type = "search";
+    find.className = "tag-picker-find";
+    find.placeholder = "Find a tag";
+    find.autocomplete = "off";
+    find.setAttribute("aria-label", "Find a tag");
+    const options = element("div", "tag-picker-options");
+    const empty = element("p", "tag-picker-empty", "No tags match.");
+    const note = element("p", "tag-picker-note", "Sorted by how many companies carry each tag.");
+    panel.append(find, options, empty, note);
+    root.append(trigger, clear, panel);
+
+    const counted = () => {
+      const list = [...tags];
+      // A tag being filtered on stays visible even when no company has it now.
+      if (value && !list.some((entry) => entry.tag === value)) list.push({ tag: value, companies: 0 });
+      return list.sort((a, b) => b.companies - a.companies || a.tag.localeCompare(b.tag));
+    };
+
+    function paintTrigger() {
+      const active = counted().find((entry) => entry.tag === value);
+      trigger.replaceChildren();
+      trigger.classList.toggle("is-active", Boolean(value));
+      if (value) {
+        trigger.append(element("span", "tag-picker-hash", "#"), element("span", "tag-picker-label", value));
+        trigger.append(element("span", "tag-picker-count", String(active?.companies ?? 0)));
+        trigger.setAttribute("aria-label", `${label}: ${value}, ${plural(active?.companies ?? 0, "company", "companies")}. Change tag`);
+      } else {
+        trigger.append(element("span", "tag-picker-hash", "#"), element("span", "tag-picker-label", "Tags"));
+        if (tags.length) trigger.append(element("span", "tag-picker-count", String(tags.length)));
+        trigger.setAttribute("aria-label", `${label}: all companies. ${plural(tags.length, "tag", "tags")} to choose from`);
+      }
+      trigger.append(element("span", "tag-picker-caret", "▾"));
+      trigger.querySelector(".tag-picker-caret").setAttribute("aria-hidden", "true");
+      trigger.querySelector(".tag-picker-hash").setAttribute("aria-hidden", "true");
+      clear.hidden = !value;
+      clear.setAttribute("aria-label", value ? `Clear tag filter ${value}` : "Clear tag filter");
+      trigger.disabled = !tags.length && !value;
     }
-    els.tagFilter.value = current;
+
+    function paintOptions() {
+      const query = find.value.trim().replace(/^#/, "").toLowerCase();
+      const shown = counted().filter((entry) => entry.tag.includes(query));
+      options.replaceChildren(...shown.map((entry) => {
+        const option = element("button", `tag-option${entry.tag === value ? " is-selected" : ""}`);
+        option.type = "button";
+        option.dataset.tag = entry.tag;
+        option.setAttribute("aria-pressed", String(entry.tag === value));
+        option.setAttribute("aria-label", `${entry.tag}, ${plural(entry.companies, "company", "companies")}`);
+        option.append(element("span", "tag-option-name", `#${entry.tag}`), element("span", "tag-option-count", String(entry.companies)));
+        option.addEventListener("click", () => choose(entry.tag === value ? "" : entry.tag));
+        return option;
+      }));
+      empty.hidden = shown.length > 0;
+    }
+
+    function onOutside(event) {
+      if (!root.contains(event.target)) setOpen(false);
+    }
+
+    function setOpen(next, { focusTrigger = false } = {}) {
+      if (next === open) return;
+      open = next;
+      panel.hidden = !open;
+      trigger.setAttribute("aria-expanded", String(open));
+      root.classList.toggle("is-open", open);
+      if (open) {
+        find.value = "";
+        paintOptions();
+        document.addEventListener("pointerdown", onOutside, true);
+        (options.querySelector(".is-selected") || find).focus();
+      } else {
+        document.removeEventListener("pointerdown", onOutside, true);
+        if (focusTrigger) trigger.focus();
+      }
+    }
+
+    function choose(tag) {
+      setOpen(false, { focusTrigger: true });
+      if (tag === value) return;
+      value = tag;
+      paintTrigger();
+      onChange(value);
+    }
+
+    trigger.addEventListener("click", () => setOpen(!open));
+    clear.addEventListener("click", () => {
+      value = "";
+      paintTrigger();
+      trigger.focus();
+      onChange(value);
+    });
+    find.addEventListener("input", paintOptions);
+    root.addEventListener("keydown", (event) => {
+      if (!open) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setOpen(false, { focusTrigger: true });
+        return;
+      }
+      if (event.key === "Enter" && event.target === find) {
+        event.preventDefault();
+        const first = options.querySelector(".tag-option");
+        if (first) choose(first.dataset.tag === value ? value : first.dataset.tag);
+        return;
+      }
+      if (!["ArrowDown", "ArrowUp", "ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) return;
+      const buttons = [...options.querySelectorAll(".tag-option")];
+      if (!buttons.length) return;
+      const index = buttons.indexOf(document.activeElement);
+      if (index < 0 && event.target !== find) return;
+      event.preventDefault();
+      const step = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : -1;
+      const next = event.key === "Home" ? 0
+        : event.key === "End" ? buttons.length - 1
+          : index < 0 ? 0 : Math.min(buttons.length - 1, Math.max(0, index + step));
+      buttons[next].focus();
+    });
+    root.addEventListener("focusout", (event) => {
+      if (open && event.relatedTarget && !root.contains(event.relatedTarget)) setOpen(false);
+    });
+
+    paintTrigger();
+    return {
+      root,
+      trigger,
+      get value() { return value; },
+      setTags(next) {
+        tags = next || [];
+        paintTrigger();
+        if (open) paintOptions();
+      },
+      setValue(next) {
+        value = next || "";
+        paintTrigger();
+        if (open) paintOptions();
+      },
+      reset() {
+        setOpen(false);
+        tags = [];
+        value = "";
+        paintTrigger();
+      },
+    };
   }
+
+  function populateTagFilter(tags) {
+    discoverTagPicker.setTags(tags);
+  }
+
+  const discoverTagPicker = createTagPicker({
+    label: "Filter by company tag",
+    onChange: () => {
+      state.offset = 0;
+      loadCurrentView();
+    },
+  });
 
   async function loadTagFacets() {
     try {
@@ -1320,17 +1480,11 @@
   function applyTagFilter(tag) {
     if (state.view === "outreach") {
       state.outreachTag = tag;
-      loadOutreach().then(() => els.results.querySelector(".outreach-search .tag-filter")?.focus());
+      loadOutreach().then(() => els.results.querySelector(".outreach-search .tag-picker-trigger")?.focus());
       announce(`Showing outreach companies tagged ${tag}.`);
       return;
     }
-    if (![...els.tagFilter.options].some((option) => option.value === tag)) {
-      const option = document.createElement("option");
-      option.value = tag;
-      option.textContent = `#${tag}`;
-      els.tagFilter.appendChild(option);
-    }
-    els.tagFilter.value = tag;
+    discoverTagPicker.setValue(tag);
     if (state.selectedId) closeDetail();
     if (!["discover", "saved"].includes(state.view)) setView("discover");
     state.offset = 0;
@@ -1345,7 +1499,7 @@
     (item.tags || []).forEach((tag) => {
       const inferred = tag.origin === "auto";
       const entry = element("li", `tag-chip ${inferred ? "is-auto" : "is-manual"}`);
-      entry.title = inferred ? `${tag.evidence} Inferred, not stated by the employer.` : tag.evidence;
+      entry.title = inferred ? `${tag.evidence} Inferred, not stated by the company.` : tag.evidence;
       const name = element("button", "tag-name", `#${tag.tag}`);
       name.type = "button";
       name.dataset.tag = tag.tag;
@@ -1428,7 +1582,7 @@
       }
       // Removing the tag being filtered on (or adding it back) changes which
       // cards belong in the deck.
-      if (els.tagFilter.value === tag && ["discover", "saved"].includes(state.view)) {
+      if (discoverTagPicker.value === tag && ["discover", "saved"].includes(state.view)) {
         await loadCurrentView();
       }
       if (!quiet) {
@@ -4316,27 +4470,17 @@
     });
     search.appendChild(input);
 
-    const tagSelect = document.createElement("select");
-    tagSelect.className = "tag-filter";
-    tagSelect.setAttribute("aria-label", "Filter outreach by company tag");
-    const all = document.createElement("option");
-    all.value = "";
-    all.textContent = "All tags";
-    tagSelect.appendChild(all);
-    const known = tags.some(({ tag }) => tag === state.outreachTag);
-    [...tags, ...(state.outreachTag && !known ? [{ tag: state.outreachTag, companies: 0 }] : [])].forEach(({ tag, companies }) => {
-      const option = document.createElement("option");
-      option.value = tag;
-      option.textContent = `#${tag} (${companies})`;
-      tagSelect.appendChild(option);
+    const picker = createTagPicker({
+      label: "Filter outreach by company tag",
+      onChange: async (tag) => {
+        state.outreachTag = tag;
+        await loadOutreach();
+        els.results.querySelector(".outreach-search .tag-picker-trigger")?.focus();
+      },
     });
-    tagSelect.value = state.outreachTag;
-    tagSelect.addEventListener("change", async () => {
-      state.outreachTag = tagSelect.value;
-      await loadOutreach();
-      els.results.querySelector(".outreach-search .tag-filter")?.focus();
-    });
-    search.appendChild(tagSelect);
+    picker.setTags(tags);
+    picker.setValue(state.outreachTag);
+    search.appendChild(picker.root);
 
     const sortLabel = element("label", "outreach-filter");
     sortLabel.appendChild(element("span", "", "Sort"));
@@ -7136,7 +7280,8 @@
     }
   });
 
-  [els.role, els.region, els.source, els.sort, els.term, els.remote, els.year, els.pay, els.posted, els.deadline, els.tagFilter].forEach((select) => {
+  els.search.closest(".search-field").appendChild(discoverTagPicker.root);
+  [els.role, els.region, els.source, els.sort, els.term, els.remote, els.year, els.pay, els.posted, els.deadline].forEach((select) => {
     select.addEventListener("change", () => {
       state.offset = 0;
       loadCurrentView();
