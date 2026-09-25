@@ -269,7 +269,7 @@ a { color: inherit; }
 }
 .subnav-item:hover { background: var(--hover); color: var(--ink); }
 .subnav-item.is-active { background: var(--surface-strong); color: var(--accent-strong); box-shadow: 0 1px 6px rgba(25, 36, 29, .07); }
-.subnav-count { min-width: 22px; padding: 1px 7px; border-radius: var(--radius-pill); background: var(--hover); color: var(--ink-muted); font-size: 10px; font-weight: 750; text-align: center; font-variant-numeric: tabular-nums; }
+.subnav-count { min-width: 22px; white-space: nowrap; padding: 1px 7px; border-radius: var(--radius-pill); background: var(--hover); color: var(--ink-muted); font-size: 10px; font-weight: 750; text-align: center; font-variant-numeric: tabular-nums; }
 .subnav-item.is-active .subnav-count { background: var(--accent-soft); color: var(--accent-strong); }
 .subnav-count.is-alert { background: var(--danger-soft); color: var(--danger); }
 .subnav-count.is-soon { background: var(--warn-soft); color: var(--warn-ink); }

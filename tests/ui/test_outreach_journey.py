@@ -713,6 +713,21 @@ def test_contacted_companies_leave_the_to_contact_tab(owner_page, base_url):
     expect(row_for(owner_page, "Fresh Lead")).to_have_count(0)
 
 
+def test_a_search_shows_each_tab_count_as_shown_of_total(owner_page, base_url):
+    seed_target(owner_page, base_url, company="Drone Works", status="sent", contact_email="a@drone.example")
+    seed_target(owner_page, base_url, company="Farm Bots", status="sent", contact_email="b@farm.example")
+    open_outreach(owner_page, "awaiting")
+    count = owner_page.locator('#subnav [data-subtab="awaiting"] .subnav-count')
+    expect(count).to_have_text("2")
+
+    owner_page.locator("#outreach-search-input").fill("drone")
+    expect(count).to_have_text("1 of 2")
+    expect(owner_page.locator(".outreach-row")).to_have_count(1)
+
+    owner_page.locator("#outreach-search-input").fill("")
+    expect(count).to_have_text("2")
+
+
 def test_a_card_marked_sent_stays_until_you_leave_the_tab(owner_page, base_url):
     seed_target(
         owner_page, base_url, contact_email="jane@bovi.example", contact_confidence="confirmed",
