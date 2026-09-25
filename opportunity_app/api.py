@@ -279,7 +279,7 @@ from .outreach_drafting import (
     restore_draft_version as restore_outreach_draft_version,
     sender_account,
 )
-from .outreach_gmail import GmailAuthError, create_gmail_draft, default_client_factory as default_gmail_client_factory, gmail_drafts_status
+from .outreach_gmail import GmailAuthError, create_gmail_draft, default_client_factory as default_gmail_client_factory, gmail_drafts_status, send_gmail_message
 from .operations import (
     OperationsError,
     delete_account,
@@ -433,6 +433,12 @@ class OutreachDraftRequest(BaseModel):
 class OutreachApprovalRequest(BaseModel):
     kind: Literal["initial", "follow_up"] = "initial"
     acknowledge_warnings: bool = False
+    fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class OutreachSendRequest(BaseModel):
+    kind: Literal["initial", "follow_up"] = "initial"
+    # The approved draft the student confirmed; a draft changed since is not sent.
     fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
@@ -1883,7 +1889,7 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
     def outreach_compose_settings() -> dict[str, str]:
-        """Where an approved draft opens. The app never sends; the student does."""
+        """Where an approved draft opens when Gmail is not connected to send it."""
         provider = os.environ.get("PIPELINE_OUTREACH_COMPOSE", "mailto").strip().lower()
         account = sender_account()
         if provider not in {"gmail", "mailto"} or (provider == "gmail" and not account):
@@ -2186,6 +2192,29 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
         except (RuntimeError, httpx.HTTPError) as exc:
             detail = str(exc) if isinstance(exc, RuntimeError) else "Could not reach Gmail"
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail) from exc
+
+    @app.post("/api/v1/outreach/{target_id}/gmail-send")
+    def gmail_send_for_outreach(
+        target_id: str,
+        payload: OutreachSendRequest,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """Send the approved draft the student confirmed from their Gmail, and mark it sent."""
+        try:
+            return send_gmail_message(
+                conn, target_id, user_id=user_id, kind=payload.kind, fingerprint=payload.fingerprint,
+                client_factory=outreach_gmail_client_factory or default_gmail_client_factory,
+            )
+        except OutreachNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        except (GmailAuthError, DraftChangedError) as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        except (RuntimeError, httpx.HTTPError) as exc:
+            detail = str(exc) if isinstance(exc, RuntimeError) else "Could not reach Gmail, so the email may not have been sent. Check your Gmail Sent folder before trying again"
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail) from exc
 
     @app.post("/api/v1/outreach/{target_id}/confirm-research")

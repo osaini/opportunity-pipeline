@@ -909,8 +909,10 @@ minimal environment where a bare `py` often isn't on `PATH`.
 
 ## Cold outreach pipeline
 
-The Outreach tab runs cold email from research to reply. **Nothing sends from
-the app**: an approved draft opens in your own email account, where you press Send.
+The Outreach tab runs cold email from research to reply. **Nothing sends on its
+own**: an approved draft opens in your own email account, where you press Send,
+or, with Gmail connected, goes out when you press **Send** in the app and then
+confirm the recipient.
 
 1. **Find companies.** The deep search runs on Monday and Thursday mornings (or
    **Run deep search now**). Claude Code searches for accelerator startups
@@ -1026,16 +1028,26 @@ A deep search does this for its own new companies; `discover --no-locate`
 skips it. Each run reports what it refused and why, so a company with no
 sourced location stays visibly empty rather than getting a guess.
 
-### Gmail drafts with an attachment
+### Sending through Gmail, with an attachment
 
-A compose link cannot attach a file. To attach your resume, connect Gmail: the
-Outreach tab then shows **Open in Gmail with resume.pdf**, which creates the
-approved draft in your Gmail Drafts folder through the Gmail API and opens it.
-You still press Send in Gmail. The app requests only the `gmail.compose` scope
-(Google has no narrower scope that can create drafts) and only calls
-`drafts.create`, `drafts.get`, and `profile`. Clicking again for the same
-approved words reopens the same draft. The connection is refused if Google
-signs in as an account other than `PIPELINE_OUTREACH_ACCOUNT`.
+A compose link cannot attach a file. To attach your resume, connect Gmail. An
+approved draft then shows two buttons:
+
+- **Send with resume.pdf** sends it from your Gmail without leaving the app.
+  The first click only asks: the button becomes **Send to jane@company.com?**,
+  and a second click sends. Escape, clicking elsewhere, or waiting eight seconds
+  cancels. A successful send marks the company Sent and sets the follow-up a
+  week out, the same as **I sent it**. Each email goes out at most once, and
+  nothing is sent if the draft changed after you confirmed it.
+- **Open in Gmail with resume.pdf** creates the draft in your Gmail Drafts
+  folder and opens it, for when you want to edit it there first. Clicking again
+  for the same approved words reopens the same draft. If you later press Send
+  in the app instead, that draft is the one sent, so no stale copy is left.
+
+The app requests only the `gmail.compose` scope, which covers both drafts and
+sending, and calls only `drafts.create`, `drafts.get`, `drafts.send`,
+`messages.send`, and `profile`. The connection is refused if Google signs in as
+an account other than `PIPELINE_OUTREACH_ACCOUNT`.
 
 One-time setup:
 

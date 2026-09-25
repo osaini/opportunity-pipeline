@@ -1,4 +1,4 @@
-"""Approved outreach drafts written to Gmail Drafts with an attachment, against a mocked Gmail."""
+"""Approved outreach drafts written to Gmail Drafts, or sent once confirmed, against a mocked Gmail."""
 
 import base64
 import email
@@ -39,6 +39,8 @@ class FakeGmail:
         self.expired_tokens = set()
         self.refresh_ok = True
         self.drafts = {}
+        self.sent = []
+        self.send_status = 200
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -55,6 +57,17 @@ class FakeGmail:
             number = len(self.drafts) + 1
             self.drafts[f"r-{number}"] = json.loads(request.content)
             return httpx.Response(200, json={"id": f"r-{number}", "message": {"id": f"18c{number}", "threadId": f"18c{number}"}})
+        if request.method == "POST" and path.endswith("/messages/send"):
+            if self.send_status != 200:
+                return httpx.Response(self.send_status)
+            self.sent.append(json.loads(request.content))
+            return httpx.Response(200, json={"id": f"sent-{len(self.sent)}", "threadId": f"thread-{len(self.sent)}"})
+        if request.method == "POST" and path.endswith("/drafts/send"):
+            draft_id = json.loads(request.content)["id"]
+            if draft_id not in self.drafts:
+                return httpx.Response(404)
+            self.sent.append(self.drafts.pop(draft_id)["message"])
+            return httpx.Response(200, json={"id": f"sent-{len(self.sent)}", "threadId": f"thread-{len(self.sent)}"})
         if request.method == "GET" and "/drafts/" in path:
             draft_id = path.rsplit("/", 1)[1]
             return httpx.Response(200, json={"id": draft_id}) if draft_id in self.drafts else httpx.Response(404)
@@ -263,6 +276,112 @@ class GmailDraftTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertIn("Resume.pdf", response.json()["detail"])
         self.assertEqual(self.gmail.drafts, {})
+
+    def send(self, target, kind="initial", fingerprint=None):
+        print_ = fingerprint or target["draft_fingerprint" if kind == "initial" else "follow_up_fingerprint"]
+        return self.client.post(f"/api/v1/outreach/{target['id']}/gmail-send", headers=AUTH, json={"kind": kind, "fingerprint": print_})
+
+    def sent_message(self, index=0):
+        return email.message_from_bytes(base64.urlsafe_b64decode(self.gmail.sent[index]["raw"]), policy=policy.default)
+
+    def test_send_delivers_the_approved_email_and_marks_it_sent(self):
+        self.connect()
+        target = self.approved_target()
+        response = self.send(target)
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual((body["to"], body["account"], body["status"]), ("greg@bovi.example", ACCOUNT, "sent"))
+        self.assertTrue(body["follow_up_at"])
+
+        message = self.sent_message()
+        self.assertEqual((message["To"], message["From"], message["Subject"]), ("greg@bovi.example", ACCOUNT, "Robotics internship question"))
+        self.assertIn("Short note about Bovi.", message.get_body(("plain",)).get_content())
+        self.assertEqual([part.get_filename() for part in message.iter_attachments()], ["Resume.pdf"])
+
+        detail = self.client.get(f"/api/v1/outreach/{target['id']}", headers=AUTH).json()
+        self.assertEqual(detail["status"], "sent")
+        self.assertTrue(detail["sent_at"])
+        self.assertIn("gmail_sent", [event["event_type"] for event in detail["events"]])
+
+    def test_send_goes_out_once(self):
+        self.connect()
+        target = self.approved_target()
+        self.assertEqual(self.send(target).status_code, 200)
+        again = self.send(target)
+        self.assertEqual(again.status_code, 422)
+        self.assertEqual(len(self.gmail.sent), 1)
+
+    def test_send_refuses_words_changed_after_confirming(self):
+        self.connect()
+        target = self.approved_target()
+        response = self.send(target, fingerprint="0" * 64)
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("changed", response.json()["detail"])
+        self.assertEqual(self.gmail.sent, [])
+
+    def test_send_refuses_an_unapproved_draft(self):
+        self.connect()
+        created = self.client.post("/api/v1/outreach", headers=AUTH, json={
+            "company": "Unapproved", "contact_email": "a@b.example", "email_subject": "Hi", "email_body": "Body",
+        }).json()
+        response = self.send(created)
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(self.gmail.requests, [])
+
+    def test_send_refuses_a_target_already_marked_sent_by_hand(self):
+        self.connect()
+        target = self.approved_target()
+        self.client.patch(f"/api/v1/outreach/{target['id']}", headers=AUTH, json={"status": "sent"})
+        response = self.send(target)
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(self.gmail.requests, [])
+
+    def test_send_uses_the_existing_gmail_draft_so_no_stale_copy_is_left(self):
+        self.connect()
+        target = self.approved_target()
+        self.assertEqual(self.draft(target).status_code, 200)
+        self.assertEqual(self.send(target).status_code, 200)
+        self.assertEqual(self.gmail.drafts, {}, "the draft was sent, not duplicated")
+        self.assertEqual(len(self.gmail.sent), 1)
+        self.assertFalse([r for r in self.gmail.requests if r.url.path.endswith("/messages/send")])
+
+    def test_failed_send_leaves_the_target_unsent(self):
+        self.connect()
+        target = self.approved_target()
+        self.gmail.send_status = 500
+        response = self.send(target)
+        self.assertEqual(response.status_code, 502)
+        self.assertIn("Nothing was sent", response.json()["detail"])
+        detail = self.client.get(f"/api/v1/outreach/{target['id']}", headers=AUTH).json()
+        self.assertNotEqual(detail["status"], "sent")
+        self.assertNotIn("gmail_sent", [event["event_type"] for event in detail["events"]])
+
+    def test_send_refuses_the_wrong_google_account(self):
+        self.connect()
+        self.gmail.profile_email = "someone-else@gmail.example"
+        response = self.send(self.approved_target())
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.gmail.sent, [])
+
+    def test_follow_up_sends_only_after_the_first_email(self):
+        self.connect()
+        target = self.approved_target()
+        written = self.client.patch(f"/api/v1/outreach/{target['id']}", headers=AUTH, json={
+            "follow_up_subject": "Re: Robotics internship question", "follow_up_body": "Hi Greg,\n\nFollowing up.\n\nSam",
+        }).json()
+        approved = self.client.post(f"/api/v1/outreach/{target['id']}/approve", headers=AUTH, json={
+            "kind": "follow_up", "fingerprint": written["follow_up_fingerprint"], "acknowledge_warnings": True,
+        })
+        self.assertEqual(approved.status_code, 200, approved.text)
+        early = self.send(approved.json(), kind="follow_up")
+        self.assertEqual(early.status_code, 422)
+        self.assertEqual(self.gmail.sent, [])
+
+        self.assertEqual(self.send(target).status_code, 200)
+        response = self.send(approved.json(), kind="follow_up")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["status"], "followed_up")
+        self.assertEqual(self.sent_message(1)["Subject"], "Re: Robotics internship question")
 
     def test_oauth_start_requests_only_compose_for_the_sending_account(self):
         response = self.client.get("/api/v1/connections/oauth/gmail_drafts/start", headers=AUTH)
