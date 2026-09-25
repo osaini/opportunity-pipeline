@@ -993,6 +993,10 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 }
 
 /* Outreach split view: the company list beside one company's pane. */
+/* The split and the pane size themselves by the room they actually have, not
+   by the window: the sidebar and section menu take ~430px of a desktop window,
+   so a 1280px window left the pane ~390px wide, clipping its step bar and
+   squeezing the draft editor. See the @container rules after the media ones. */
 .outreach-split { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(250px, 330px) minmax(0, 1fr); gap: 18px; align-items: start; }
 .outreach-list { position: sticky; top: 16px; max-height: calc(100vh - 32px); overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 3px; }
 .outreach-row { width: 100%; display: flex; flex-direction: column; gap: 7px; padding: var(--space-3) var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-md); background: transparent; color: var(--ink); text-align: left; cursor: pointer; }
@@ -1010,7 +1014,7 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 .outreach-dot.is-soon { background: var(--gold); }
 .outreach-dot.is-bad { background: var(--danger); }
 
-.outreach-pane { padding: 0; overflow: hidden; }
+.outreach-pane { padding: 0; overflow: hidden; container: outreach-pane / inline-size; }
 .outreach-pane-head { display: grid; gap: 14px; padding: var(--space-6) var(--space-6) var(--space-5); }
 .outreach-pane .application-heading h3 { font-size: 32px; line-height: 1.05; }
 .outreach-head-side { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 10px; }
@@ -1084,6 +1088,29 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
   .outreach-pane .application-heading { flex-direction: column; gap: 12px; }
   /* The next-step bar names the current step; the dots alone show progress. */
   .outreach-step-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+}
+/* Below ~900px the list and a workable pane no longer fit side by side. A
+   container query styles only descendants, so this measures #results, the
+   split's parent. */
+#results { container: results / inline-size; }
+@container results (max-width: 900px) {
+  .outreach-split { grid-template-columns: minmax(0, 1fr); }
+  .outreach-list { position: static; max-height: 40vh; }
+}
+/* A narrow pane: one-column draft editor, and a step bar of dots (six labelled
+   steps need ~535px; the next-step bar already names the current one). */
+@container outreach-pane (max-width: 620px) {
+  .outreach-panel.is-draft { grid-template-columns: minmax(0, 1fr); }
+  .outreach-step-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+  .outreach-head-side { justify-content: flex-start; }
+  .outreach-pane .application-heading { flex-direction: column; gap: 12px; }
+}
+@container outreach-pane (max-width: 460px) {
+  .outreach-pane-head { padding: var(--space-5) var(--space-4) var(--space-4); }
+  .outreach-pane .application-controls.outreach-next { margin: 0 16px 14px; }
+  .outreach-tabs { padding: 0 var(--field-pad-x); }
+  .outreach-pane .outreach-form { padding: var(--space-4) var(--space-4) 0; }
+  .outreach-pane .outreach-form-actions { margin: 16px -16px 0; padding: var(--space-3) var(--space-4); }
 }
 .system-status-job .form-status:empty { display: none; }
 .outreach-recontact-report > .outreach-scope { font-size: 12px; }
