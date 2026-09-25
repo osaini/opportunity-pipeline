@@ -64,7 +64,7 @@ sandboxed by default, and the automated suites keep covering them.
 | Open gate | Disposition | What stands in for it |
 |---|---|---|
 | Hosted visual/screen-reader pass | Out of scope: no hosted deployment | Automated axe WCAG 2.1 A/AA, keyboard, focus, responsive and target-size suites; Windows visual baselines |
-| Live Google delivery sign-off | Superseded: Google OAuth is configured locally and used for outreach Gmail drafts (draft-only, never send). The Cloud project stays in Testing mode, so consent is renewed about weekly | OAuth, encrypted-token and Gmail-draft tests |
+| Live Google delivery sign-off | Superseded: Google OAuth is configured locally and used for outreach Gmail drafts and for sending an approved email after the student presses Send and confirms the recipient. The Cloud project stays in Testing mode, so consent is renewed about weekly | OAuth, encrypted-token, Gmail-draft and Gmail-send tests |
 | Live Microsoft delivery sign-off | Out of scope: no Microsoft account in use | OAuth path stays disabled until credentials exist |
 | Live SMS/voice/web-push transports | Out of scope: SMTP email (disabled by default) and in-app reminders are the shipped channels | Sandbox provider, STOP/opt-out and destination-safety tests |
 | External alert routing and distributed tracing | Out of scope: one local machine | Local structured logs, request traces, p95/error metrics and SLO evaluation |

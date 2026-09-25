@@ -177,6 +177,55 @@ def test_connected_gmail_creates_the_draft_with_the_attachment(owner_page, base_
     expect(owner_page.locator("#action-status")).to_contain_text("Created the Gmail draft for Bovi with resume.pdf")
 
 
+def test_send_from_gmail_asks_for_a_second_click_naming_the_recipient(owner_page, base_url):
+    """A sent email cannot be taken back, so the first click on Send only asks.
+
+    The route is mocked; the server's send path is covered by tests/test_outreach_gmail.py.
+    """
+    target = seed_target(
+        owner_page, base_url, contact_email="jane@bovi.example", contact_name="Jane Doe",
+        email_subject="Internship question", email_body="Hi Jane,\n\nWould you be open to a call?\n\nTest Student",
+    )
+    approved = owner_page.request.post(
+        f"{base_url}/api/v1/outreach/{target['id']}/approve", headers=BEARER,
+        data={"fingerprint": target["draft_fingerprint"]},
+    )
+    assert approved.ok, approved.text()
+    gmail = {"configured": True, "connected": True, "needs_reconnect": False, "account": COMPOSE_ACCOUNT,
+             "attachment": "resume.pdf", "attachment_problem": ""}
+
+    def listing(route):
+        response = route.fetch()
+        route.fulfill(response=response, json={**response.json(), "gmail_drafts": gmail})
+
+    send_requests = []
+
+    def send(route):
+        send_requests.append(route.request.post_data_json)
+        route.fulfill(json={"kind": "initial", "to": "jane@bovi.example", "cc": "", "account": COMPOSE_ACCOUNT,
+                            "attachment": "resume.pdf", "status": "sent", "follow_up_at": "2026-10-02",
+                            "message_id": "sent-1", "thread_id": "thread-1", "fingerprint": target["draft_fingerprint"]})
+
+    owner_page.route(re.compile(r".*/api/v1/outreach(\?.*)?$"), listing)
+    owner_page.route(f"**/api/v1/outreach/{target['id']}/gmail-send", send)
+    open_outreach(owner_page)
+    card = card_for(owner_page, "Bovi")
+    expect(card.get_by_role("button", name="Open in Gmail with resume.pdf ↗")).to_be_visible()
+    button = card.locator("button.outreach-send")
+    expect(button).to_have_text("Send with resume.pdf")
+    button.click()
+    expect(button).to_have_text("Send to jane@bovi.example?")
+    assert send_requests == [], "the first click only asks"
+
+    owner_page.keyboard.press("Escape")
+    expect(button).to_have_text("Send with resume.pdf")
+    button.click()
+    button.click()
+    expect(owner_page.locator("#action-status")).to_contain_text("Sent to jane@bovi.example")
+    assert send_requests == [{"kind": "initial", "fingerprint": target["draft_fingerprint"]}]
+    assert len(owner_page.context.pages) == 1, "no Gmail tab opens"
+
+
 def test_unsaved_edits_stop_every_hand_off_of_the_approved_draft(owner_page, base_url):
     """Gmail, the compose link, and Copy all send the saved draft, so unsaved text must stop them."""
     target = seed_target(
@@ -198,6 +247,7 @@ def test_unsaved_edits_stop_every_hand_off_of_the_approved_draft(owner_page, bas
     draft_requests = []
     owner_page.route(re.compile(r".*/api/v1/outreach(\?.*)?$"), listing)
     owner_page.route(f"**/api/v1/outreach/{target['id']}/gmail-draft", lambda route: draft_requests.append(route.request) or route.abort())
+    owner_page.route(f"**/api/v1/outreach/{target['id']}/gmail-send", lambda route: draft_requests.append(route.request) or route.abort())
     open_outreach(owner_page)
     card = card_for(owner_page, "Bovi")
     details = open_details(card)
@@ -206,6 +256,12 @@ def test_unsaved_edits_stop_every_hand_off_of_the_approved_draft(owner_page, bas
     card.get_by_role("button", name="Open in Gmail with resume.pdf ↗").click()
     expect(owner_page.locator("#error-banner")).to_contain_text("unsaved edits")
     assert draft_requests == [], "no Gmail draft is made from the stale approved text"
+
+    send = card.locator("button.outreach-send")
+    send.click()
+    send.click()
+    expect(send).to_have_text("Send with resume.pdf")
+    assert draft_requests == [], "nothing is sent from the stale approved text"
     assert len(owner_page.context.pages) == 1, "no Gmail tab opens"
 
     owner_page.evaluate("() => { window.__copied = null; navigator.clipboard.writeText = async (text) => { window.__copied = text; }; }")

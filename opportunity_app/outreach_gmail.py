@@ -2,10 +2,11 @@
 
 A compose URL cannot carry an attachment, so once the student connects Gmail
 the app writes the approved draft into their Drafts folder through the Gmail
-API instead. It only ever creates and looks up drafts: the student opens the
-draft in Gmail and presses Send themselves. The OAuth connection is the
-separate "gmail_drafts" connector, so its gmail.compose scope is never mixed
-with the read-only monitoring connection.
+API instead. The student can also send an approved draft from the app, but
+only by pressing Send and then confirming the recipient; nothing goes out
+without both. The OAuth connection is the separate "gmail_drafts" connector, so
+its gmail.compose scope (which covers drafts and sending) is never mixed with
+the read-only monitoring connection.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from . import ROOT
 from .connections import OAUTH_PROVIDERS
-from .outreach import DRAFT_KINDS, _log, get_target, missing_location_message
+from .outreach import DRAFT_KINDS, DraftChangedError, _log, get_target, missing_location_message, update_target
 from .outreach_drafting import sender_account
 from .schema import utc_now
 
@@ -36,6 +37,11 @@ PROVIDER = "gmail_drafts"
 GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me"
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 DRAFT_EVENT = "gmail_draft_created"
+SENT_EVENT = "gmail_sent"
+# The status a successful send moves the target to, as "I sent it" would.
+SENT_STATUS = {"initial": "sent", "follow_up": "followed_up"}
+# Statuses the first email can still go out from.
+UNSENT_STATUSES = {"not_started", "drafted", "paused"}
 # The signature links are written as bare URLs in the plain text body. The HTML
 # alternative turns each one into an anchor so Gmail shows it as a live link in
 # the compose window instead of flat text. Trailing sentence punctuation is left
@@ -224,6 +230,54 @@ def _previous_draft(
     return None
 
 
+class _Approved:
+    """An approved draft that has passed every check for leaving the app."""
+
+    def __init__(self, conn: sqlite3.Connection, target_id: str, user_id: str, kind: str, action: str):
+        if kind not in DRAFT_KINDS:
+            raise ValueError("kind must be initial or follow_up")
+        subject_field, body_field, status_field = DRAFT_KINDS[kind]
+        target = get_target(conn, target_id, user_id=user_id)
+        if target[status_field] != "approved":
+            raise ValueError(f"Approve this draft before {action}")
+        # Approval can predate the check that placed the company near the student.
+        if kind == "initial" and target["draft_location"]["missing"]:
+            raise ValueError(missing_location_message(target))
+        if not target["contact_email"]:
+            raise ValueError(f"Add a contact email before {action}")
+        path = attachment_path()
+        problem = attachment_problem(path)
+        if problem:
+            raise ValueError(problem)
+        self.target, self.kind, self.path = target, kind, path
+        self.subject, self.body = target[subject_field], target[body_field]
+        self.fingerprint = target["draft_fingerprint"] if kind == "initial" else target["follow_up_fingerprint"]
+        self.attachment = path.name if path else ""
+        self.attachment_sha256 = hashlib.sha256(path.read_bytes()).hexdigest() if path else ""
+
+    def raw(self, account: str) -> str:
+        return _mime(account, self.target["contact_email"], self.subject, self.body, self.path, cc=self.target["contact_cc"])
+
+    def live_draft(self, conn: sqlite3.Connection, gmail: _Gmail, user_id: str) -> dict[str, Any] | None:
+        """The Gmail draft already made of these exact words, if it is still in Drafts."""
+        previous = _previous_draft(
+            conn, self.target["id"], user_id, self.kind, self.fingerprint, self.attachment, self.attachment_sha256
+        )
+        if not previous:
+            return None
+        existing = gmail.request("GET", f"/drafts/{quote(previous['draft_id'], safe='')}", params={"format": "minimal"})
+        return previous if existing.status_code == 200 else None
+
+
+def _require_account(gmail: _Gmail, account: str) -> None:
+    if not account:
+        return
+    profile = gmail.request("GET", "/profile")
+    connected_as = str(profile.json().get("emailAddress", "")) if profile.status_code == 200 else ""
+    if connected_as.lower() != account.lower():
+        raise GmailAuthError(f"Gmail is connected as {connected_as or 'an unknown account'}, not {account}; reconnect with {account}")
+
+
 def create_gmail_draft(
     conn: sqlite3.Connection,
     target_id: str,
@@ -237,52 +291,92 @@ def create_gmail_draft(
     Clicking again for the same approved words reopens the draft already made,
     unless it has since been sent or deleted in Gmail.
     """
-    if kind not in DRAFT_KINDS:
-        raise ValueError("kind must be initial or follow_up")
-    subject_field, body_field, status_field = DRAFT_KINDS[kind]
-    target = get_target(conn, target_id, user_id=user_id)
-    if target[status_field] != "approved":
-        raise ValueError("Approve this draft before creating it in Gmail")
-    # Approval can predate the check that placed the company near the student.
-    if kind == "initial" and target["draft_location"]["missing"]:
-        raise ValueError(missing_location_message(target))
-    if not target["contact_email"]:
-        raise ValueError("Add a contact email before creating the Gmail draft")
-    path = attachment_path()
-    problem = attachment_problem(path)
-    if problem:
-        raise ValueError(problem)
-    fingerprint = target["draft_fingerprint"] if kind == "initial" else target["follow_up_fingerprint"]
-    attachment_name = path.name if path else ""
-    attachment_sha256 = hashlib.sha256(path.read_bytes()).hexdigest() if path else ""
+    approved = _Approved(conn, target_id, user_id, kind, "creating it in Gmail")
     account = sender_account()
 
     with client_factory() as client:
         gmail = _Gmail(conn, client, user_id)
-        if account:
-            profile = gmail.request("GET", "/profile")
-            connected_as = str(profile.json().get("emailAddress", "")) if profile.status_code == 200 else ""
-            if connected_as.lower() != account.lower():
-                raise GmailAuthError(f"Gmail is connected as {connected_as or 'an unknown account'}, not {account}; reconnect with {account}")
-        previous = _previous_draft(
-            conn, target_id, user_id, kind, fingerprint, attachment_name, attachment_sha256
-        )
+        _require_account(gmail, account)
+        previous = approved.live_draft(conn, gmail, user_id)
         if previous:
-            existing = gmail.request("GET", f"/drafts/{quote(previous['draft_id'], safe='')}", params={"format": "minimal"})
-            if existing.status_code == 200:
-                public = {key: value for key, value in previous.items() if key != "attachment_sha256"}
-                return {**public, "url": draft_url(account, previous["message_id"]), "reused": True}
-        raw = _mime(account, target["contact_email"], target[subject_field], target[body_field], path, cc=target["contact_cc"])
-        response = gmail.request("POST", "/drafts", json={"message": {"raw": raw}})
+            public = {key: value for key, value in previous.items() if key != "attachment_sha256"}
+            return {**public, "url": draft_url(account, previous["message_id"]), "reused": True}
+        response = gmail.request("POST", "/drafts", json={"message": {"raw": approved.raw(account)}})
         if response.status_code != 200:
             raise RuntimeError(f"Gmail did not create the draft (HTTP {response.status_code})")
         created = response.json()
     detail = {
-        "kind": kind, "fingerprint": fingerprint, "attachment": attachment_name,
-        "attachment_sha256": attachment_sha256,
+        "kind": kind, "fingerprint": approved.fingerprint, "attachment": approved.attachment,
+        "attachment_sha256": approved.attachment_sha256,
         "draft_id": str(created["id"]), "message_id": str(created["message"]["id"]),
     }
     with conn:
         _log(conn, target_id, user_id, DRAFT_EVENT, detail=json.dumps(detail, sort_keys=True))
     public = {key: value for key, value in detail.items() if key != "attachment_sha256"}
     return {**public, "url": draft_url(account, detail["message_id"]), "reused": False}
+
+
+def _already_sent(conn: sqlite3.Connection, target_id: str, user_id: str, kind: str) -> bool:
+    rows = conn.execute(
+        "SELECT detail FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=?",
+        (target_id, user_id, SENT_EVENT),
+    ).fetchall()
+    for row in rows:
+        try:
+            if json.loads(row["detail"]).get("kind") == kind:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def send_gmail_message(
+    conn: sqlite3.Connection,
+    target_id: str,
+    *,
+    user_id: str,
+    kind: str = "initial",
+    fingerprint: str,
+    client_factory: ClientFactory = default_client_factory,
+) -> dict[str, Any]:
+    """Send an approved draft from the student's Gmail after they confirm it.
+
+    The fingerprint is the approved draft the student confirmed; if the words
+    changed since, nothing is sent. Each draft kind goes out at most once, and a
+    successful send moves the target to Sent (or Followed up) exactly as
+    "I sent it" would. If a Gmail draft of these approved words is still in
+    Drafts, that draft is the one sent, so no stale copy is left behind to be
+    sent a second time.
+    """
+    approved = _Approved(conn, target_id, user_id, kind, "sending it")
+    target = approved.target
+    if fingerprint != approved.fingerprint:
+        raise DraftChangedError("This draft changed after you confirmed it. Review it, then send again")
+    if _already_sent(conn, target_id, user_id, kind):
+        raise ValueError("This email was already sent from Gmail")
+    if kind == "initial" and (target["sent_at"] or target["status"] not in UNSENT_STATUSES):
+        raise ValueError(f"{target['company']} is already marked {target['status'].replace('_', ' ')}, so the first email is not sent again")
+    if kind == "follow_up" and target["status"] != "sent":
+        raise ValueError("A follow-up goes out only after the first email, while the company is marked sent")
+    account = sender_account()
+
+    with client_factory() as client:
+        gmail = _Gmail(conn, client, user_id)
+        _require_account(gmail, account)
+        previous = approved.live_draft(conn, gmail, user_id)
+        if previous:
+            response = gmail.request("POST", "/drafts/send", json={"id": previous["draft_id"]})
+        else:
+            response = gmail.request("POST", "/messages/send", json={"raw": approved.raw(account)})
+        if response.status_code != 200:
+            raise RuntimeError(f"Gmail did not send the email (HTTP {response.status_code}). Nothing was sent")
+        sent = response.json()
+    detail = {
+        "kind": kind, "fingerprint": approved.fingerprint, "attachment": approved.attachment,
+        "to": target["contact_email"], "cc": target["contact_cc"],
+        "message_id": str(sent.get("id", "")), "thread_id": str(sent.get("threadId", "")),
+    }
+    with conn:
+        _log(conn, target_id, user_id, SENT_EVENT, detail=json.dumps(detail, sort_keys=True))
+    updated = update_target(conn, target_id, {"status": SENT_STATUS[kind]}, user_id=user_id)
+    return {**detail, "account": account, "status": updated["status"], "follow_up_at": updated["follow_up_at"]}

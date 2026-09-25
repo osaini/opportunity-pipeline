@@ -2287,6 +2287,7 @@
     research_confirmed: "Research confirmed",
     contact_applied: "Contact applied",
     gmail_draft_created: "Draft created in Gmail",
+    gmail_sent: "Sent from Gmail",
     draft_restored: "Earlier draft restored",
     follow_up_restored: "Earlier follow-up restored",
     // Named apart from an ordinary "location recorded" on purpose: this is what
@@ -2391,13 +2392,75 @@
     return link;
   }
 
-  // With Gmail connected, the approved draft is written into Gmail Drafts with
-  // the configured attachment (a compose URL cannot attach a file). The app
-  // still never sends: the draft opens and the student presses Send.
+  // With Gmail connected, the approved draft can be sent straight from here.
+  // A sent email cannot be taken back, so the first click only asks: the
+  // button turns into "Send to <address>?" and a second click sends. Leaving
+  // it, pressing Escape, or waiting a few seconds puts it back.
+  const SEND_CONFIRM_MS = 8000;
+
+  function gmailSendButton(gmail, item, kind) {
+    const attachment = gmail.attachment ? ` with ${gmail.attachment}` : "";
+    const label = kind === "follow_up" ? `Send follow-up${attachment}` : `Send${attachment}`;
+    const recipients = item.contact_cc ? `${item.contact_email} (Cc ${item.contact_cc})` : item.contact_email;
+    const button = element("button", "primary-button outreach-compose outreach-send", label);
+    button.type = "button";
+    if (gmail.attachment_problem) {
+      button.disabled = true;
+      button.title = gmail.attachment_problem;
+    }
+    let timer = null;
+    const reset = () => {
+      clearTimeout(timer);
+      timer = null;
+      delete button.dataset.confirming;
+      button.textContent = label;
+    };
+    button.addEventListener("blur", () => { if (button.dataset.confirming) reset(); });
+    button.addEventListener("keydown", (event) => { if (event.key === "Escape" && button.dataset.confirming) reset(); });
+    button.addEventListener("click", async () => {
+      if (refuseUnsavedHandOff(button, kind)) return;
+      if (!button.dataset.confirming) {
+        button.dataset.confirming = "true";
+        button.textContent = `Send to ${recipients}?`;
+        announce(`Press again to send the ${kind === "follow_up" ? "follow-up" : "email"} to ${recipients} from ${gmail.account || "Gmail"}.`);
+        timer = setTimeout(reset, SEND_CONFIRM_MS);
+        return;
+      }
+      clearTimeout(timer);
+      button.disabled = true;
+      button.textContent = "Sending…";
+      try {
+        const sent = await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/gmail-send`, {
+          method: "POST",
+          body: JSON.stringify({ kind, fingerprint: kind === "follow_up" ? item.follow_up_fingerprint : item.draft_fingerprint }),
+        });
+        state.outreachOpen = item.id;
+        announce(kind === "follow_up"
+          ? `Sent the follow-up to ${sent.to}. ${item.company} is marked followed up.`
+          : `Sent to ${sent.to} from ${sent.account || "Gmail"}. ${item.company} is marked sent, with a follow-up set for ${formatCalendarDate(sent.follow_up_at)}.`);
+        await loadOutreach();
+      } catch (error) {
+        reset();
+        button.disabled = false;
+        // A changed or already-sent draft means the card is stale; reloading
+        // clears errors, so the reason is shown after it.
+        if (error.status === 409 || error.status === 422) {
+          state.outreachOpen = item.id;
+          await loadOutreach();
+        }
+        showError(error.message);
+      }
+    });
+    return button;
+  }
+
+  // The approved draft can also be written into Gmail Drafts with the
+  // configured attachment (a compose URL cannot attach a file), for editing
+  // there before sending.
   function gmailDraftButton(gmail, item, kind) {
     const attachment = gmail.attachment ? ` with ${gmail.attachment}` : "";
     const label = kind === "follow_up" ? `Open follow-up in Gmail${attachment} ↗` : `Open in Gmail${attachment} ↗`;
-    const button = element("button", "primary-button outreach-compose", label);
+    const button = element("button", "secondary-button outreach-compose", label);
     button.type = "button";
     if (gmail.attachment_problem) {
       button.disabled = true;
@@ -2434,7 +2497,12 @@
   }
 
   function composeControl(context, item, kind) {
-    return context.gmail?.connected ? gmailDraftButton(context.gmail, item, kind) : composeLink(context.compose, item, kind);
+    if (!context.gmail?.connected) return composeLink(context.compose, item, kind);
+    const controls = document.createDocumentFragment();
+    // A paused company that was already written to is never sent the first email again.
+    if (kind === "follow_up" || !item.sent_at) controls.append(gmailSendButton(context.gmail, item, kind));
+    controls.append(gmailDraftButton(context.gmail, item, kind));
+    return controls;
   }
 
   function gmailConnectPanel(gmail) {
@@ -2443,7 +2511,7 @@
     const what = gmail.attachment ? ` with ${gmail.attachment} attached` : "";
     panel.appendChild(element("p", "profile-help", gmail.needs_reconnect
       ? "Gmail stopped accepting the connection. Reconnect it to keep creating drafts with attachments."
-      : `Connect Gmail to create approved drafts in your Drafts folder${what}. The app only creates drafts; you send them.`));
+      : `Connect Gmail to send approved emails${what} from here, or open them as drafts in Gmail first. Nothing sends until you press Send and confirm the recipient.`));
     const connect = element("button", "secondary-button", gmail.needs_reconnect ? "Reconnect Gmail" : `Connect Gmail${gmail.account ? ` (${gmail.account})` : ""}`);
     connect.type = "button";
     connect.addEventListener("click", async () => {
@@ -2513,7 +2581,7 @@
           earlier.appendChild(element("summary", "", "The notes it replaced"));
           earlier.appendChild(element("pre", "outreach-event-detail outreach-prep-earlier", event.detail));
           row.appendChild(earlier);
-        } else if (event.detail && !["draft_generated", "gmail_draft_created", "call_prep_generated"].includes(event.event_type)) {
+        } else if (event.detail && !["draft_generated", "gmail_draft_created", "gmail_sent", "call_prep_generated"].includes(event.event_type)) {
           row.appendChild(element("p", "outreach-event-detail", event.detail));
         }
         list.appendChild(row);
@@ -2622,7 +2690,7 @@
           await send(print, true);
         }
         state.outreachOpen = item.id;
-        announce(`${editing ? "Saved your edits and approved" : "Approved"} the ${item.company} ${noun}. Open it in your email to send.`);
+        announce(`${editing ? "Saved your edits and approved" : "Approved"} the ${item.company} ${noun}. It is ready to send.`);
         await loadOutreach();
         refocusOutreach(item.id, ".outreach-compose");
       } catch (error) {
@@ -4208,7 +4276,9 @@
     refreshChecks();
     draft.appendChild(checks);
     draftAssistant(draft, item, "initial", subject, body);
-    draft.appendChild(element("p", "outreach-note", "Nothing sends from here. Approving a draft unlocks a link that opens it in your own email, where you press Send."));
+    draft.appendChild(element("p", "outreach-note", context.gmail?.connected
+      ? "Nothing sends on its own. Approving a draft unlocks Send, which asks you to confirm the recipient before the email goes out from your Gmail."
+      : "Nothing sends from here. Approving a draft unlocks a link that opens it in your own email, where you press Send."));
 
     let followUpGroup = null;
     if (item.status === "sent" || item.status === "followed_up" || item.follow_up_body) {
