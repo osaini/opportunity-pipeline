@@ -4545,8 +4545,9 @@
         if (outreachUnsavedEdits(current) && !window.confirm(`Discard unsaved changes to ${current.querySelector("h3")?.textContent || "this company"}?`)) return;
         state.outreachSelected = item.id;
         show(item);
-        // Stacked on a narrow screen, the pane sits below the list.
-        if (window.matchMedia?.("(max-width: 1180px)").matches) host.scrollIntoView({ block: "start" });
+        // Stacked, the pane sits below the list. The split stacks by its own
+        // width, not the window's (styles.css), so ask the layout, not a media query.
+        if (getComputedStyle(split).gridTemplateColumns.trim().split(/\s+/).length === 1) host.scrollIntoView({ block: "start" });
       });
       if (moved(item)) {
         row.classList.add("is-moved");
