@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Run everything, portability included, on a branch before merging a change
+  # that touches paths, processes, or setup: Actions > CI > Run workflow.
+  workflow_dispatch:
 permissions:
   contents: read
   pull-requests: read
@@ -30,7 +33,10 @@ jobs:
   portability:
     # Students run their own copies on Windows 10/11 and macOS, not only Linux.
     # This covers the unit suite, first-run setup, and the extension tests on
-    # each, plus the oldest supported Python.
+    # each, plus the oldest supported Python. These are the slowest and most
+    # expensive jobs and rarely fail, so they run on pushes to main (after a
+    # merge) and on manual dispatch, not on every pull request commit.
+    if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
