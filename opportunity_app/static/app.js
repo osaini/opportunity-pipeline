@@ -4589,10 +4589,18 @@
       if (sequence !== state.loadSequence || state.view !== "outreach") return;
       const tab = OUTREACH_TABS.find((entry) => entry.id === state.subtabs.outreach) || OUTREACH_TABS[0];
       const running = payload.discovery.active?.state === "running";
-      renderSubnav(OUTREACH_TABS.map((entry) => ({
-        ...entry,
-        count: entry.tool ? outreachToolCount(entry.id, payload) : payload.items.filter(entry.test).length,
-      })));
+      // A search or tag narrows every tab, so each count reads "6 of 20" and
+      // matches the list it opens.
+      const filtering = Boolean(state.outreachQuery || state.outreachTag);
+      const tagged = (item) => !state.outreachTag || (item.tags || []).some((tag) => tag.tag === state.outreachTag);
+      const matches = (item) => outreachMatchesQuery(item, state.outreachQuery) && tagged(item);
+      renderSubnav(OUTREACH_TABS.map((entry) => {
+        if (entry.tool) return { ...entry, count: outreachToolCount(entry.id, payload) };
+        const inTab = payload.items.filter(entry.test);
+        return filtering && inTab.length
+          ? { ...entry, count: inTab.filter(matches).length, total: inTab.length }
+          : { ...entry, count: inTab.length };
+      }));
       // Cards acted on here stay put after they move to another tab, so an
       // action never makes the card vanish from under the pointer.
       if (state.outreachOpen) state.outreachKeep.add(state.outreachOpen);
@@ -4620,9 +4628,8 @@
       } else {
         const [, compare] = OUTREACH_SORTS[state.outreachSort] || OUTREACH_SORTS.contact;
         const kept = (item) => state.outreachKeep.has(item.id);
-        const tagged = (item) => !state.outreachTag || (item.tags || []).some((tag) => tag.tag === state.outreachTag);
         const items = payload.items
-          .filter((item) => (tab.test(item) && outreachMatchesQuery(item, state.outreachQuery) && tagged(item)) || kept(item))
+          .filter((item) => (tab.test(item) && matches(item)) || kept(item))
           .sort(compare);
         els.results.appendChild(outreachListToolbar(payload.tags || []));
         if (running) {
@@ -6731,8 +6738,9 @@
       button.dataset.subtab = tab.id;
       button.appendChild(element("span", "subnav-label", tab.label));
       if (tab.count !== undefined && tab.count !== null) {
-        const count = element("span", `subnav-count ${tab.count ? tab.tone || "" : "is-zero"}`.trim(), String(tab.count));
-        count.setAttribute("aria-label", `(${tab.count})`);
+        const text = tab.total === undefined ? String(tab.count) : `${tab.count} of ${tab.total}`;
+        const count = element("span", `subnav-count ${tab.count ? tab.tone || "" : "is-zero"}`.trim(), text);
+        count.setAttribute("aria-label", `(${text})`);
         button.appendChild(count);
       }
       if (tab.id === active) button.setAttribute("aria-current", "true");
