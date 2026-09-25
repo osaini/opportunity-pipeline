@@ -294,12 +294,10 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 
 .workspace { border-top: 1px solid var(--line-strong); padding-top: 24px; }
 .filter-panel { display: grid; gap: 12px; }
-.search-field { min-height: var(--control-lg); padding: 0 var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); display: flex; align-items: center; gap: 11px; color: var(--ink-muted); }
+.search-field { position: relative; min-height: var(--control-lg); padding: 0 var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); display: flex; align-items: center; gap: 11px; color: var(--ink-muted); }
 .search-label { display: flex; align-items: center; align-self: stretch; cursor: text; }
 .search-field input { width: 100%; min-width: 0; align-self: stretch; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 15px; }
 /* The tag picker sits inside the search box, after a hairline divider. */
-.search-field .tag-filter { flex: 0 1 auto; max-width: 42%; min-height: var(--control-sm); padding: 0 var(--field-pad-x); border: 0; border-left: 1px solid var(--line); border-radius: 0; background: transparent; color: var(--ink-soft); font-size: 12px; font-weight: 650; cursor: pointer; }
-.search-field .tag-filter:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .search-field:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-soft); }
 .select-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .select-row label { display: grid; gap: 5px; color: var(--ink-muted); font-size: 10px; font-weight: 750; text-transform: uppercase; letter-spacing: .08em; }
@@ -1099,10 +1097,42 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 .status-undo { margin-left: 6px; color: var(--accent-strong); font-weight: 750; text-decoration: underline; }
 
 @media (max-width: 720px) {
-  .search-field .tag-filter { max-width: 48%; }
 }
 
 /* Outreach tags: plain text on the row (a button), chips with x in the pane. */
 .outreach-row-tags { color: var(--ink-muted); font-size: 10px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .outreach-pane .company-tags { margin-top: var(--space-4); }
 .outreach-pane .company-tags .tag-help { font-size: 11px; }
+
+/* Tag picker: a trigger inside the search box, and a panel of tag chips. */
+.tag-picker { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; padding-left: 10px; border-left: 1px solid var(--line); }
+.tag-picker-trigger { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 10px; border: 1px solid transparent; border-radius: var(--radius-pill); background: transparent; color: var(--ink-soft); font-size: 12px; font-weight: 750; cursor: pointer; white-space: nowrap; }
+.tag-picker-trigger:hover:not(:disabled) { background: var(--hover); color: var(--ink); }
+.tag-picker-trigger:disabled { cursor: default; opacity: .55; }
+.tag-picker-trigger.is-active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-strong); }
+.tag-picker.is-open .tag-picker-trigger { border-color: var(--accent); }
+.tag-picker-hash { color: var(--accent); font-weight: 850; }
+.tag-picker-label { max-width: 16ch; overflow: hidden; text-overflow: ellipsis; }
+.tag-picker-count { min-width: 20px; padding: 1px 6px; border-radius: var(--radius-pill); background: var(--surface-sunken); color: var(--ink-muted); font-size: 10px; font-weight: 800; text-align: center; }
+.tag-picker-trigger.is-active .tag-picker-count { background: var(--surface); color: var(--accent-strong); }
+.tag-picker-caret { color: var(--ink-muted); font-size: 10px; }
+.tag-picker-clear { min-width: 28px; min-height: 28px; border: 0; border-radius: 50%; background: transparent; color: var(--ink-muted); font-size: 16px; line-height: 1; cursor: pointer; }
+.tag-picker-clear:hover { background: var(--danger-soft); color: var(--danger); }
+.tag-picker-trigger:focus-visible, .tag-picker-clear:focus-visible, .tag-option:focus-visible, .tag-picker-find:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.tag-picker-panel { position: absolute; z-index: 30; top: calc(100% + 8px); right: 0; width: min(440px, 100%); padding: 14px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-strong); color: var(--ink); box-shadow: var(--shadow); }
+.tag-picker-panel[hidden] { display: none; }
+.tag-picker-find { width: 100%; min-height: var(--control-sm); padding: 0 var(--field-pad-x); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); color: var(--ink); font-size: 13px; }
+.tag-picker-options { display: flex; flex-wrap: wrap; gap: 6px; max-height: 260px; margin-top: 12px; overflow-y: auto; padding: 2px; }
+.tag-option { display: inline-flex; align-items: center; gap: 7px; min-height: 30px; padding: 0 6px 0 11px; border: 1px solid var(--line); border-radius: var(--radius-pill); background: var(--surface); color: var(--ink); font-size: 12px; font-weight: 700; cursor: pointer; }
+.tag-option:hover { border-color: var(--accent); background: var(--hover); }
+.tag-option-count { min-width: 20px; padding: 1px 6px; border-radius: var(--radius-pill); background: var(--surface-sunken); color: var(--ink-muted); font-size: 10px; font-weight: 800; text-align: center; }
+.tag-option.is-selected { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+.tag-option.is-selected .tag-option-count { background: rgba(255, 255, 255, .22); color: var(--on-accent); }
+.tag-picker-empty { margin: 10px 2px 0; color: var(--ink-muted); font-size: 12px; }
+.tag-picker-note { margin: 10px 2px 0; color: var(--ink-muted); font-size: 11px; }
+
+@media (max-width: 720px) {
+  .tag-picker { padding-left: 6px; }
+  .tag-picker-label { max-width: 9ch; }
+  .tag-picker-panel { width: 100%; }
+}
