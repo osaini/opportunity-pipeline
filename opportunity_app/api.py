@@ -51,7 +51,14 @@ from .actions import (
     update_application,
     update_application_task,
 )
-from .company_tags import CompanyNotFoundError, decorate_with_tags, set_company_tag, tag_facets
+from .company_tags import (
+    CompanyNotFoundError,
+    decorate_outreach_with_tags,
+    decorate_with_tags,
+    set_company_tag,
+    sync_outreach_tags,
+    tag_facets,
+)
 from .early_programs import (
     DEFAULT_EARLY_PROGRAMS,
     EarlyProgramNotFoundError,
@@ -1915,15 +1922,18 @@ def create_app(
     ) -> dict[str, Any]:
         if status_filter and status_filter not in OUTREACH_STATUSES:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Unknown outreach status")
+        sync_outreach_tags(conn, user_id)
         everything = list_outreach_targets(conn, user_id=user_id)
         items = (
             list_outreach_targets(conn, user_id=user_id, status=status_filter, channel=channel, query=q)
             if status_filter or channel or q.strip()
             else everything
         )
+        items, tags = decorate_outreach_with_tags(conn, items, user_id=user_id)
         return {
             "items": items,
             "total": len(items),
+            "tags": tags,
             "summary": outreach_summary(everything),
             "statuses": list(OUTREACH_STATUSES),
             "priorities": list(OUTREACH_PRIORITIES),

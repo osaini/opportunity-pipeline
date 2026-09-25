@@ -302,18 +302,26 @@ def _where(
         )
         params.append(filters.deadline_before)
     if filters.tag:
-        # A company carries a tag when it was generated and this user has not
-        # removed it, or when this user added it (opportunity_app/company_tags.py).
+        # A company carries a tag when it was generated (from its postings, or
+        # from this user's own outreach research) and this user has not removed
+        # it, or when this user added it (opportunity_app/company_tags.py).
         clauses.append(
             f"""(
-            EXISTS (
-                SELECT 1 FROM company_tags auto_tag
-                WHERE auto_tag.company_key = {alias}.company_sort_key AND auto_tag.tag = ?
-                  AND NOT EXISTS (
-                      SELECT 1 FROM company_tag_choices removed
-                      WHERE removed.user_id = ? AND removed.company_key = auto_tag.company_key
-                        AND removed.tag = auto_tag.tag AND removed.choice = 'removed'
-                  )
+            (
+                EXISTS (
+                    SELECT 1 FROM company_tags auto_tag
+                    WHERE auto_tag.company_key = {alias}.company_sort_key AND auto_tag.tag = ?
+                )
+                OR EXISTS (
+                    SELECT 1 FROM outreach_company_tags research_tag
+                    WHERE research_tag.user_id = ? AND research_tag.company_key = {alias}.company_sort_key
+                      AND research_tag.tag = ?
+                )
+            )
+            AND NOT EXISTS (
+                SELECT 1 FROM company_tag_choices removed
+                WHERE removed.user_id = ? AND removed.company_key = {alias}.company_sort_key
+                  AND removed.tag = ? AND removed.choice = 'removed'
             )
             OR EXISTS (
                 SELECT 1 FROM company_tag_choices added
@@ -322,7 +330,7 @@ def _where(
             )
         )"""
         )
-        params.extend([filters.tag, user_id, user_id, filters.tag])
+        params.extend([filters.tag, user_id, filters.tag, user_id, filters.tag, user_id, filters.tag])
     return (" WHERE " + " AND ".join(clauses)) if clauses else "", params
 
 

@@ -205,6 +205,75 @@ class CompanyTagApiTests(unittest.TestCase):
         self.assertEqual(tags_of(tags["Acme Robotics"]), ["robotics"])
         self.assertEqual(tags_of(tags["Orbit Systems"]), ["controls"])
 
+    def add_outreach(self, company, summary, headers=OWNER):
+        created = self.client.post("/api/v1/outreach", headers=headers, json={"company": company, "summary": summary})
+        self.assertEqual(created.status_code, 201, created.text)
+        return created.json()
+
+    def outreach(self, headers=OWNER):
+        response = self.client.get("/api/v1/outreach", headers=headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def test_outreach_companies_are_tagged_from_their_research_summary(self):
+        target = self.add_outreach("Skyways", "Builds long-range autonomous cargo drones.")
+        payload = self.outreach()
+        (item,) = [entry for entry in payload["items"] if entry["id"] == target["id"]]
+        self.assertEqual(tags_of(item["tags"]), ["drone"])
+        self.assertIn("research summary", item["tags"][0]["evidence"])
+        self.assertIn({"tag": "drone", "companies": 1}, payload["tags"])
+
+        # Editing the summary re-tags on the next load; nothing else to call.
+        edited = self.client.patch(
+            f"/api/v1/outreach/{target['id']}", headers=OWNER,
+            json={"summary": "Designs satellites and launch vehicles."},
+        )
+        self.assertEqual(edited.status_code, 200, edited.text)
+        (item,) = [entry for entry in self.outreach()["items"] if entry["id"] == target["id"]]
+        self.assertEqual(tags_of(item["tags"]), ["aerospace"])
+
+    def test_unverified_research_says_so_in_the_evidence(self):
+        target = self.add_outreach("Skyways", "Builds cargo drones.")
+        with closing(connect_product(self.platform_path)) as conn:
+            conn.execute("UPDATE outreach_targets SET research_confidence='unverified' WHERE id=?", (target["id"],))
+            conn.commit()
+        (item,) = [entry for entry in self.outreach()["items"] if entry["id"] == target["id"]]
+        self.assertIn("unverified", item["tags"][0]["evidence"])
+
+    def test_a_removal_on_outreach_holds_on_discover_too(self):
+        # Acme Robotics has a posting and is also an outreach company.
+        self.add_outreach("Acme Robotics", "Makes robots.")
+        (item,) = [entry for entry in self.outreach()["items"] if entry["company"] == "Acme Robotics"]
+        self.assertEqual(tags_of(item["tags"]), ["robotics"])
+        self.assertEqual(self.put_tag("Acme Robotics", "robotics", False).status_code, 200)
+        (item,) = [entry for entry in self.outreach()["items"] if entry["company"] == "Acme Robotics"]
+        self.assertEqual(item["tags"], [])
+        self.assertEqual(self.tags_by_company()["Acme Robotics"], [])
+        self.assertEqual(self.listing(tag="robotics")["total"], 0)
+
+    def test_a_tag_can_be_added_to_and_removed_from_an_outreach_only_company(self):
+        target = self.add_outreach("Quiet Startup", "Stealth.")
+        self.assertEqual(self.put_tag("Quiet Startup", "stealth", True).status_code, 200)
+        (item,) = [entry for entry in self.outreach()["items"] if entry["id"] == target["id"]]
+        self.assertEqual(item["tags"], [{"tag": "stealth", "origin": "manual", "evidence": "Added by you."}])
+        self.assertEqual(self.put_tag("Quiet Startup", "stealth", False).status_code, 200)
+        (item,) = [entry for entry in self.outreach()["items"] if entry["id"] == target["id"]]
+        self.assertEqual(item["tags"], [])
+
+    def test_outreach_research_never_tags_a_company_for_another_student(self):
+        other = self.register_other()
+        # The owner's private research on a company that also has a posting.
+        self.add_outreach("Orbit Systems", "Builds drones for inspection.")
+        # Outreach tags are rebuilt when the Outreach list loads, as the page
+        # does after every outreach change; Discover then sees them.
+        self.outreach()
+        self.outreach(other)
+        self.assertEqual(tags_of(self.tags_by_company()["Orbit Systems"]), ["drone"])
+        self.assertEqual(self.listing(tag="drone")["total"], 1)
+        self.assertEqual(self.tags_by_company(other)["Orbit Systems"], [])
+        self.assertEqual(self.listing(other, tag="drone")["total"], 0)
+        self.assertEqual(self.put_tag("Quiet Startup", "x", True, headers=other).status_code, 404)
+
     def test_choices_are_exported_with_the_account(self):
         self.put_tag("Acme Robotics", "robotics", False)
         with closing(connect_product(self.platform_path)) as conn:
@@ -218,7 +287,7 @@ class CompanyTagApiTests(unittest.TestCase):
             "/api/v1/company-tags", json={"company": "Acme Robotics", "tag": "x", "present": True}
         ).status_code, 401)
 
-    def test_one_students_tag_edits_never_reach_another(self):
+    def register_other(self):
         with TestClient(self.client.app):
             enabled = self.client.put(
                 "/api/v1/admin/feature-flags/allow_public_signup",
@@ -231,8 +300,10 @@ class CompanyTagApiTests(unittest.TestCase):
             json={"email": "b@example.com", "password": "PasswordB123", "display_name": "Student B"},
         )
         self.assertEqual(registered.status_code, 201, registered.text)
-        other = {"Authorization": f"Bearer {registered.json()['api_token']}"}
+        return {"Authorization": f"Bearer {registered.json()['api_token']}"}
 
+    def test_one_students_tag_edits_never_reach_another(self):
+        other = self.register_other()
         self.put_tag("Acme Robotics", "robotics", False)
         self.put_tag("Orbit Systems", "controls", True)
         tags = self.tags_by_company(other)
