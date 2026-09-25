@@ -795,7 +795,11 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 }
 
 /* Outreach: cold email tracker for startups without a posting. */
-.outreach-card.is-due { border-color: var(--danger-line); box-shadow: inset 4px 0 0 var(--danger); }
+/* A follow-up or revisit is due. The stripe is its own layer: an inset
+   shadow paints beneath the card's children, so any child with a background
+   (the tab strip's scroll shades) cut a gap into it. */
+.outreach-card.is-due { position: relative; border-color: var(--danger-line); }
+.outreach-card.is-due::before { content: ""; position: absolute; z-index: 2; top: 0; bottom: 0; left: 0; width: 4px; background: var(--danger); pointer-events: none; }
 .outreach-location { margin: 6px 0 0; color: var(--ink); font-size: 13px; line-height: 1.45; }
 .outreach-location.is-missing { color: var(--ink-muted); font-style: italic; }
 .outreach-location-region { margin-left: 8px; padding: 1px 8px; border: 1px solid var(--line); border-radius: var(--radius-pill); color: var(--ink-soft); font-size: 11px; font-weight: 700; }
@@ -1033,10 +1037,16 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 .outreach-next .tracker-exports { flex-wrap: wrap; justify-content: flex-end; }
 
 .outreach-tabs {
-  display: flex; gap: 2px; padding: 0 var(--space-4); border-bottom: 1px solid var(--line);
-  overflow-x: auto; overscroll-behavior-x: contain; --shade-bg: var(--surface);
+  display: flex; gap: 2px; padding: 0 var(--space-4);
+  /* The divider is drawn inside the strip, under the active tab's underline.
+     A border plus a -1px tab margin overflowed by a pixel, which Windows
+     answered with a vertical scrollbar. The strip still scrolls sideways on a
+     narrow screen; its edge shades say so, so the scrollbar is hidden. */
+  box-shadow: inset 0 -1px 0 var(--line);
+  overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; scrollbar-width: none; --shade-bg: var(--surface);
 }
-.outreach-tab { flex: 0 0 auto; min-height: var(--control-md); margin-bottom: -1px; padding: 0 var(--field-pad-x); border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--ink-soft); cursor: pointer; font-size: 13px; font-weight: 600; white-space: nowrap; }
+.outreach-tabs::-webkit-scrollbar { display: none; }
+.outreach-tab { flex: 0 0 auto; min-height: var(--control-md); padding: 0 var(--field-pad-x); border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--ink-soft); cursor: pointer; font-size: 13px; font-weight: 600; white-space: nowrap; }
 .outreach-tab:hover { color: var(--ink); }
 .outreach-tab.is-active { border-bottom-color: var(--accent); color: var(--accent-strong); font-weight: 750; }
 
