@@ -288,8 +288,11 @@ themselves (rule 3). The details:
 - **Adzuna** (`ADZUNA_APP_ID`, `ADZUNA_APP_KEY`): free. Copy the adzuna entry
   from the example overlay, set their city, and set `"enabled": true`.
 - **AI**: Claude Code or Codex CLI signed in on their own subscription covers
-  the deep search and drafting. `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` is only
-  for the in-app career agent, and is pay per use.
+  everything: the deep search, drafts, call prep, the follow-up reviewer, and
+  the career agent. `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` works too, pay per
+  use. One is enough. Show them Outreach → Settings, where each AI feature has
+  its own choice listing only what is set up; with two (say Claude Code and
+  Codex), the follow-up reviewer picks the one that did not write the email.
 - **Jev** (`TYPESAFE_API_KEY`): optional and waitlisted; skip it freely. If they
   set it, tell them Jev inbox suggestions are a separate switch under Outreach →
   Outreach settings, off until they turn it on, because it sends reply and email
@@ -302,7 +305,8 @@ themselves (rule 3). The details:
   Ask whether they want the **Automation** switches under Outreach → Outreach
   settings: writing drafts automatically, finding a new contact after a bounce,
   sending on the recipient's weekday morning, and having a second model check
-  each follow-up (it needs the Codex CLI signed in; skip it if they have none).
+  each follow-up (any model set up here works; with only one, it says the
+  reviewer is from the same company as the writer).
   All are off until they turn them on. Every email still waits for their approval; the last switch only
   changes when an approved, confirmed email goes out.
 

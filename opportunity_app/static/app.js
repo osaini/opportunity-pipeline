@@ -3476,21 +3476,24 @@
   // saved at once and applies without restarting the app.
   async function jevInboxField() {
     const field = element("div", "settings-field jev-inbox-setting");
-    const label = element("label", "settings-checkbox");
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.id = "settings-jev-inbox";
-    box.disabled = true;
-    label.append(box, document.createTextNode(" Suggest reply and email outcomes with Jev"));
+    const label = element("label", "", "Who suggests reply and email outcomes");
+    label.htmlFor = "settings-jev-inbox";
+    const select = document.createElement("select");
+    select.id = "settings-jev-inbox";
+    select.disabled = true;
     const help = element("p", "profile-help");
     const status = element("p", "profile-help jev-inbox-status");
     status.setAttribute("aria-live", "polite");
-    field.append(label, help, status);
+    field.append(label, select, help, status);
     function show(setting) {
-      box.checked = setting.enabled;
-      box.disabled = false;
+      select.replaceChildren(
+        Object.assign(document.createElement("option"), { value: "rules", textContent: "Keyword rules (no AI)" }),
+        Object.assign(document.createElement("option"), { value: "jev", textContent: setting.available ? "Jev (TypeSafe)" : "Jev (TypeSafe, not set up)" }),
+      );
+      select.value = setting.enabled ? "jev" : "rules";
+      select.disabled = false;
       help.textContent = setting.available
-        ? `${setting.sends} Both go to TypeSafe. When Jev is unsure or unreachable, the keyword rules suggest instead, and every suggestion says which one made it. You still confirm each change.`
+        ? `${setting.sends} With Jev, both go to TypeSafe. When Jev is unsure or unreachable, the keyword rules suggest instead, and every suggestion says which one made it. You still confirm each change.`
         : "Jev is not set up on this computer (TYPESAFE_API_KEY in .env), so the keyword rules make these suggestions. Nothing is sent anywhere.";
     }
     try {
@@ -3499,15 +3502,16 @@
       help.textContent = `Jev inbox suggestions could not be checked: ${error.message}`;
       return field;
     }
-    box.addEventListener("change", async () => {
-      box.disabled = true;
+    select.addEventListener("change", async () => {
+      const wanted = select.value === "jev";
+      select.disabled = true;
       status.textContent = "Saving…";
       try {
-        show(await api("/api/v1/typesafe/inbox-suggestions", { method: "PUT", body: JSON.stringify({ enabled: box.checked }) }));
-        status.textContent = box.checked ? "Jev inbox suggestions on." : "Jev inbox suggestions off.";
+        show(await api("/api/v1/typesafe/inbox-suggestions", { method: "PUT", body: JSON.stringify({ enabled: wanted }) }));
+        status.textContent = wanted ? "Jev inbox suggestions on." : "Jev inbox suggestions off.";
       } catch (error) {
-        box.checked = !box.checked;
-        box.disabled = false;
+        select.value = wanted ? "rules" : "jev";
+        select.disabled = false;
         status.textContent = error.message;
       }
     });
@@ -3520,7 +3524,7 @@
     ["auto_drafts", "Write drafts automatically", "Every company with a contact and a location gets a draft written, whether a deep search found it, you added it, or a contact turned up later. Each one waits for your approval."],
     ["bounce_recovery", "Find a new contact after a bounce", "When an email bounces, the app searches the company's site again, picks the best address that has not bounced, and updates the greeting. You review the draft and send it again."],
     ["scheduled_sending", "Send on their weekday morning", "Your confirmed Send queues the approved email for 9 to 9:40 AM on the recipient's next weekday, in their timezone (from the company's US state, or yours when it names none). Editing the draft cancels it; Send now and Cancel stay on the card. Turning this off does not cancel emails already scheduled; cancel them on their cards. Needs Gmail connected. Just before it goes, Gmail is checked again for a reply or a bounce; a follow-up never goes to a company that replied."],
-    ["follow_up_review", "Have a second model check each follow-up", "Before a scheduled follow-up goes out, Codex (a different model from the one that drafts) reads it with the whole thread: your first email, every reply and out-of-office, and your facts. It goes only on a clean pass. An out-of-office with a return date holds it until then; any other problem stops it and shows the reason here. If the reviewer cannot run, the follow-up waits. Needs the Codex CLI signed in on this computer."],
+    ["follow_up_review", "Have a second model check each follow-up", "Before a scheduled follow-up goes out, a second model reads it with the whole thread: your first email, every reply and out-of-office, and your facts. Pick it under \"Who reviews follow-ups\" below; on Automatic it is a model from a different company than the follow-up writer when one is set up. It goes only on a clean pass. An out-of-office with a return date holds it until then; any other problem stops it and shows the reason here. If the reviewer cannot run, the follow-up waits."],
   ];
 
   async function automationFields() {
@@ -3624,7 +3628,7 @@
 
     const drafts = settings.draft_provider;
     const defaultLabel = drafts.options.find((option) => option.id === drafts.default)?.label || drafts.default;
-    const [draftField, draftSelect] = selectField("settings-draft-provider", "Who writes drafts",
+    const [draftField, draftSelect] = selectField("settings-draft-provider", "Who writes first-email drafts",
       "Every draft still waits for your approval, whoever writes it.");
     const automatic = document.createElement("option");
     automatic.value = "";
@@ -3644,9 +3648,64 @@
       save({ draft_provider: draftSelect.value }, "Draft writer");
     });
 
+    // Follow-ups and call prep default to the first-email writer; each can differ.
+    function followingField(key, id, labelText, help, what) {
+      const setting = settings[key];
+      const [field, select] = selectField(id, labelText, help);
+      const same = document.createElement("option");
+      same.value = "";
+      same.textContent = "Same as first-email drafts";
+      same.selected = !setting.value;
+      select.appendChild(same);
+      setting.options.forEach((option) => select.appendChild(providerOption(option, setting.value)));
+      const hint = element("p", "profile-help");
+      const showHint = () => {
+        const chosen = setting.options.find((option) => option.id === select.value);
+        hint.textContent = chosen && !chosen.available ? chosen.hint : "";
+      };
+      showHint();
+      field.appendChild(hint);
+      select.addEventListener("change", () => {
+        showHint();
+        save({ [key]: select.value }, what);
+      });
+      return field;
+    }
+    const followField = followingField("follow_up_provider", "settings-follow-up-provider", "Who writes follow-ups",
+      "Follow-ups wait for your approval too.", "Follow-up writer");
+    const prepField = followingField("call_prep_provider", "settings-call-prep-provider", "Who writes call prep",
+      "Written in the background once a company replies.", "Call prep writer");
+
+    const review = settings.review_provider;
+    const [reviewField, reviewSelect] = selectField("settings-review-provider", "Who reviews follow-ups before they go",
+      "Used when \"Have a second model check each follow-up\" is on. Automatic picks a model from a different company than the follow-up writer, so it does not share its blind spots.");
+    const reviewAutomatic = document.createElement("option");
+    reviewAutomatic.value = "";
+    const nowReviewing = review.options.find((option) => option.id === review.automatic.id)?.label || review.automatic.id;
+    reviewAutomatic.textContent = review.automatic.problem
+      ? "Automatic (no model is set up)"
+      : `Automatic (now: ${nowReviewing}${review.automatic.note ? ", same company as the writer" : ""})`;
+    reviewAutomatic.selected = !review.value;
+    reviewSelect.appendChild(reviewAutomatic);
+    review.options.forEach((option) => reviewSelect.appendChild(providerOption(option, review.value)));
+    const reviewHint = element("p", "profile-help");
+    const showReviewHint = () => {
+      const chosen = review.options.find((option) => option.id === reviewSelect.value);
+      if (chosen && !chosen.available) reviewHint.textContent = chosen.hint;
+      else if (!reviewSelect.value && review.automatic.problem) reviewHint.textContent = `${review.automatic.problem}. Reviewed follow-ups wait until one is.`;
+      else if (!reviewSelect.value && review.automatic.note) reviewHint.textContent = "Only one company's models are set up here, so the reviewer is from the same company as the writer. It still reads every follow-up; set up another model for a fully independent check.";
+      else reviewHint.textContent = "";
+    };
+    showReviewHint();
+    reviewField.appendChild(reviewHint);
+    reviewSelect.addEventListener("change", () => {
+      showReviewHint();
+      save({ review_provider: reviewSelect.value }, "Follow-up reviewer");
+    });
+
     const research = settings.research_agent;
     const [researchField, researchSelect] = selectField("settings-research-agent", "Who does the web research",
-      "Used by the deep search and Find people. It runs the CLI signed in on this computer.");
+      "Used by the deep search, placing companies, Find people, and searching other sites for addresses. It runs the CLI signed in on this computer.");
     research.options.forEach((option) => researchSelect.appendChild(providerOption(option, research.value)));
     researchSelect.addEventListener("change", () => save({ research_agent: researchSelect.value }, "Research agent"));
 
@@ -3682,7 +3741,7 @@
       save({ attachment_resume_id: attachSelect.value }, "Attachment");
     });
 
-    body.append(draftField, researchField, attachField, status);
+    body.append(draftField, followField, prepField, reviewField, researchField, attachField, status);
     return panel;
   }
 
@@ -6340,7 +6399,7 @@
       });
       sidebar.append(providerSelect, newThread);
       if (!providers.length) {
-        sidebar.appendChild(element("p", "empty-inline", "The built-in grounded assistant is ready. Add OPENAI_API_KEY or ANTHROPIC_API_KEY for a model-backed thread."));
+        sidebar.appendChild(element("p", "empty-inline", "The built-in grounded assistant is ready. For a model-backed thread, sign in to Claude Code (`claude`) or Codex CLI (`codex login`) on your subscription, or add OPENAI_API_KEY or ANTHROPIC_API_KEY to .env."));
       }
       threads.forEach((thread) => {
         const button = element("button", `agent-thread-button ${thread.id === state.agentThreadId ? "is-active" : ""}`.trim());

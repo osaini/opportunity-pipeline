@@ -36,11 +36,25 @@ def test_settings_save_at_once_and_attach_a_resume_under_its_own_name(owner_page
 
     open_outreach(owner_page, "settings")
     panel = owner_page.locator("section.outreach-settings")
-    expect(panel.get_by_label("Who writes drafts")).to_be_visible()
+    expect(panel.get_by_label("Who writes first-email drafts")).to_be_visible()
 
-    panel.get_by_label("Who writes drafts").select_option("legacy")
+    panel.get_by_label("Who writes first-email drafts").select_option("legacy")
     expect(panel.locator(".form-status")).to_have_text("Draft writer saved.")
     assert os.environ["PIPELINE_OUTREACH_PROVIDER"] == "legacy"
+
+    # Follow-ups and call prep can have their own writer, and default to the first-email one.
+    follow = panel.get_by_label("Who writes follow-ups")
+    expect(follow).to_have_value("")
+    follow.select_option("legacy")
+    expect(panel.locator(".form-status")).to_have_text("Follow-up writer saved.")
+    assert os.environ["PIPELINE_OUTREACH_FOLLOW_UP_PROVIDER"] == "legacy"
+    follow.select_option("")
+    expect(panel.locator(".form-status")).to_have_text("Follow-up writer saved.")
+    assert os.environ["PIPELINE_OUTREACH_FOLLOW_UP_PROVIDER"] == ""
+    expect(panel.get_by_label("Who writes call prep")).to_have_value("")
+    reviewer = panel.get_by_label("Who reviews follow-ups before they go")
+    expect(reviewer).to_have_value("")
+    expect(reviewer.locator("option").first).to_contain_text("Automatic")
 
     attach = panel.get_by_label("Attach to Gmail drafts")
     option = attach.locator("option", has_text="Student Resume.docx")
@@ -65,10 +79,10 @@ def test_jev_inbox_suggestions_are_off_until_the_student_turns_them_on(owner_pag
     seed_target(owner_page, base_url, status="sent")
     open_outreach(owner_page, "settings")
     panel = owner_page.locator("section.outreach-settings")
-    box = panel.get_by_label("Suggest reply and email outcomes with Jev")
-    expect(box).to_be_enabled()
-    expect(box).not_to_be_checked()
-    expect(panel.locator(".jev-inbox-setting")).to_contain_text("Both go to TypeSafe")
+    choice = panel.get_by_label("Who suggests reply and email outcomes")
+    expect(choice).to_be_enabled()
+    expect(choice).to_have_value("rules")
+    expect(panel.locator(".jev-inbox-setting")).to_contain_text("both go to TypeSafe")
 
     def log_reply():
         open_outreach(owner_page, "awaiting")
@@ -82,8 +96,8 @@ def test_jev_inbox_suggestions_are_off_until_the_student_turns_them_on(owner_pag
     expect(result).not_to_contain_text("Jev")
 
     open_outreach(owner_page, "settings")
-    box = owner_page.locator("section.outreach-settings").get_by_label("Suggest reply and email outcomes with Jev")
-    box.check()
+    choice = owner_page.locator("section.outreach-settings").get_by_label("Who suggests reply and email outcomes")
+    choice.select_option("jev")
     expect(owner_page.locator(".jev-inbox-status")).to_have_text("Jev inbox suggestions on.")
     # The fake Jev answers the first option, so the suggestion is visibly Jev's.
     expect(log_reply()).to_contain_text("Jev suggestion, 94% sure")

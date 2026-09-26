@@ -285,7 +285,7 @@ def generate_call_prep(
     if keep_existing and target.get("call_prep"):
         return target
     inputs = call_prep_inputs(conn, target, user_id)
-    provider_id, model = resolve_provider(provider)
+    provider_id, model = resolve_provider(provider, purpose="call_prep")
     if provider_id == "legacy":
         sections = template_call_prep(inputs)
         generated_by = "template"

@@ -1,10 +1,17 @@
 """The outreach settings a student would otherwise edit in .env by hand.
 
-Three values, none of them secret:
+None of these values is secret:
 
-- PIPELINE_OUTREACH_PROVIDER: who writes outreach drafts.
-- PIPELINE_OUTREACH_DISCOVERY_PROVIDER: which CLI does the deep search's web research.
+- PIPELINE_OUTREACH_PROVIDER: who writes first-email drafts.
+- PIPELINE_OUTREACH_FOLLOW_UP_PROVIDER and PIPELINE_OUTREACH_CALL_PREP_PROVIDER:
+  who writes follow-ups and call prep; empty means the same as first emails.
+- PIPELINE_OUTREACH_REVIEW_PROVIDER: who reviews a follow-up before it goes;
+  empty means automatic (outreach_review.review_choice).
+- PIPELINE_OUTREACH_DISCOVERY_PROVIDER: which CLI does the web research (the
+  deep search, placing companies, Find people, and searching other sites).
 - PIPELINE_OUTREACH_ATTACHMENT: the file attached to Gmail drafts.
+
+Every choice lists what this computer can run, and says what is not set up.
 
 Every reader looks these up in os.environ when it runs, so a change is written
 to .env (kept for the next start) and to os.environ (in effect now), and no
@@ -27,6 +34,11 @@ from .resumes import DEFAULT_STORAGE, ResumeNotFoundError, list_resumes, resume_
 
 DRAFT_ENV = "PIPELINE_OUTREACH_PROVIDER"
 RESEARCH_ENV = "PIPELINE_OUTREACH_DISCOVERY_PROVIDER"
+FOLLOW_UP_ENV = "PIPELINE_OUTREACH_FOLLOW_UP_PROVIDER"
+CALL_PREP_ENV = "PIPELINE_OUTREACH_CALL_PREP_PROVIDER"
+REVIEW_ENV = "PIPELINE_OUTREACH_REVIEW_PROVIDER"
+# Writers that fall back to the first-email setting when left empty.
+FOLLOWING_DRAFTS = {"follow_up_provider": FOLLOW_UP_ENV, "call_prep_provider": CALL_PREP_ENV}
 ATTACHMENT_ENV = "PIPELINE_OUTREACH_ATTACHMENT"
 RESEARCH_AGENTS = ("claude-code", "codex-cli")
 LEGACY_OPTION = {
@@ -59,7 +71,25 @@ class OutreachSettings:
         ] + [LEGACY_OPTION]
         research = [option for option in drafts if option["id"] in RESEARCH_AGENTS]
         attached = attachment_path()
+        try:
+            from .outreach_review import review_choice
+
+            chosen, note = review_choice()
+            automatic_review = {"id": chosen, "note": note, "problem": ""}
+        except ValueError as exc:
+            automatic_review = {"id": "", "note": "", "problem": str(exc)}
+        following = {
+            key: {"value": os.environ.get(env, "").strip(), "options": drafts}
+            for key, env in FOLLOWING_DRAFTS.items()
+        }
         return {
+            **following,
+            "review_provider": {
+                "value": os.environ.get(REVIEW_ENV, "").strip(),
+                # On Automatic: which model reviews now, and why.
+                "automatic": automatic_review,
+                "options": [option for option in drafts if option["id"] != "legacy"],
+            },
             "draft_provider": {
                 "value": os.environ.get(DRAFT_ENV, "").strip(),
                 # With nothing set, drafting uses the first provider that is set up.
@@ -90,6 +120,18 @@ class OutreachSettings:
             if value and value not in known:
                 raise ValueError("Unknown draft writer")
             updates[DRAFT_ENV] = value
+        known = {item["id"] for item in provider_catalog()}
+        for key, env in FOLLOWING_DRAFTS.items():
+            if key in changes:
+                value = str(changes[key] or "").strip()
+                if value and value not in known | {"legacy"}:
+                    raise ValueError("Unknown writer")
+                updates[env] = value
+        if "review_provider" in changes:
+            value = str(changes["review_provider"] or "").strip()
+            if value and value not in known:
+                raise ValueError("Unknown reviewer")
+            updates[REVIEW_ENV] = value
         if "research_agent" in changes:
             value = str(changes["research_agent"] or "").strip()
             if value not in RESEARCH_AGENTS:

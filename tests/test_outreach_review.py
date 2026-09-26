@@ -312,15 +312,23 @@ class SendGateTests(unittest.TestCase):
                 self.assertEqual(stopped["state"], "failed", "never left stuck in sending")
                 self.assertEqual(len(self.gmail.sent), 1)
 
-    def test_the_reviewer_is_codex_unless_set_otherwise(self):
-        with mock.patch.dict("os.environ", {"PIPELINE_OUTREACH_REVIEW_PROVIDER": ""}):
-            self.assertEqual(review_runner()[0], "codex-cli")
-        with mock.patch.dict("os.environ", {"PIPELINE_OUTREACH_REVIEW_PROVIDER": "claude-code"}):
-            self.assertEqual(review_runner()[0], "claude-code")
-        with mock.patch.dict("os.environ", {"PIPELINE_OUTREACH_REVIEW_PROVIDER": "gpt"}):
-            with self.assertRaises(ValueError):
-                review_runner()
+    def test_the_reviewer_is_the_students_pick_or_another_company_than_the_writer(self):
+        # A fixed catalog, so the answer does not depend on which CLIs this machine has.
+        from opportunity_app import agent_providers
 
+        both = [
+            {"id": provider, "display_name": provider, "model": "m", "configured": provider in {"claude-code", "codex-cli"}, "setup_hint": ""}
+            for provider in ("openai", "anthropic", "claude-code", "codex-cli")
+        ]
+        writer = {"PIPELINE_OUTREACH_PROVIDER": "claude-code", "PIPELINE_OUTREACH_FOLLOW_UP_PROVIDER": ""}
+        with mock.patch.object(agent_providers, "provider_catalog", return_value=both):
+            with mock.patch.dict("os.environ", {**writer, "PIPELINE_OUTREACH_REVIEW_PROVIDER": ""}):
+                self.assertEqual(review_runner()[0], "codex-cli")
+            with mock.patch.dict("os.environ", {**writer, "PIPELINE_OUTREACH_REVIEW_PROVIDER": "claude-code"}):
+                self.assertEqual(review_runner()[0], "claude-code")
+            with mock.patch.dict("os.environ", {**writer, "PIPELINE_OUTREACH_REVIEW_PROVIDER": "gpt"}):
+                with self.assertRaises(ValueError):
+                    review_runner()
 
 if __name__ == "__main__":
     unittest.main()
