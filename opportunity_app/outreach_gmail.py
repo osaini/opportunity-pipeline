@@ -6,7 +6,8 @@ API instead. The student can also send an approved draft from the app, but
 only by pressing Send and then confirming the recipient; nothing goes out
 without both. The OAuth connection is the separate "gmail_drafts" connector, so
 its gmail.compose scope (which covers drafts and sending) is never mixed with
-the read-only monitoring connection.
+the read-only monitoring connection. Its read scope, gmail.readonly, is for
+finding bounces (outreach_delivery.py).
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ from . import ROOT
 from .connections import OAUTH_PROVIDERS
 from .outreach import (
     DRAFT_KINDS,
+    UNSENT_STATUSES,
     DraftChangedError,
     _is_unique_violation,
     _log,
@@ -47,12 +49,15 @@ from .schema import utc_now
 PROVIDER = "gmail_drafts"
 GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me"
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+READ_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 DRAFT_EVENT = "gmail_draft_created"
 SENT_EVENT = "gmail_sent"
+# Logged by outreach_delivery.record_bounce. Every send and draft before the
+# latest bounce went to an address that failed, so none of them counts
+# against sending the email again to a new contact.
+BOUNCE_EVENT = "bounced"
 # The status a successful send moves the target to, as "I sent it" would.
 SENT_STATUS = {"initial": "sent", "follow_up": "followed_up"}
-# Statuses the first email can still go out from.
-UNSENT_STATUSES = {"not_started", "drafted", "paused"}
 # The signature links are written as bare URLs in the plain text body. The HTML
 # alternative turns each one into an anchor so Gmail shows it as a live link in
 # the compose window instead of flat text. Trailing sentence punctuation is left
@@ -100,10 +105,17 @@ def gmail_drafts_status(conn: sqlite3.Connection, *, user_id: str) -> dict[str, 
     configured = all(os.environ.get(name, "").strip() for name in (config["client_id_env"], config["client_secret_env"], "PIPELINE_CONNECTION_KEY"))
     row = _connector(conn, user_id)
     path = attachment_path()
+    try:
+        granted = json.loads(row["scopes_json"] or "[]") if row else []
+    except (TypeError, ValueError):
+        granted = []
     return {
         "configured": configured,
         "connected": bool(configured and row and row["status"] == "connected"),
         "needs_reconnect": bool(row and row["status"] == "error"),
+        # A connection made before the app asked to read mail sends fine but
+        # cannot see bounces until it is reconnected.
+        "bounce_check": bool(configured and row and row["status"] == "connected" and READ_SCOPE in granted),
         "account": sender_account(),
         "attachment": path.name if path else "",
         "attachment_problem": attachment_problem(path),
@@ -372,6 +384,12 @@ def _claim_held(row: sqlite3.Row) -> bool:
     return age < FOREIGN_CLAIM_GRACE
 
 
+def _superseded(conn: sqlite3.Connection, row: sqlite3.Row, target_id: str, user_id: str) -> bool:
+    """Whether a bounce came after this claim, so what it guarded went to an address that failed."""
+    bounce = last_bounce(conn, target_id, user_id)
+    return bounce is not None and datetime.fromisoformat(row["claimed_at"]) < bounce
+
+
 def _claim_reason(row: sqlite3.Row) -> str:
     return _DRAFT_UNCERTAIN if row["action"] == "draft" else _SEND_UNCERTAIN
 
@@ -430,12 +448,28 @@ def _settle_claim(conn: sqlite3.Connection, target_id: str, kind: str, token: st
         pass
 
 
+def last_bounce(conn: sqlite3.Connection, target_id: str, user_id: str) -> datetime | None:
+    """When this target's email last bounced, or None."""
+    row = conn.execute(
+        "SELECT MAX(created_at) FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=?",
+        (target_id, user_id, BOUNCE_EVENT),
+    ).fetchone()
+    return datetime.fromisoformat(row[0]) if row and row[0] else None
+
+
+def _since(stamp: str, bounce: datetime | None) -> bool:
+    return bounce is None or datetime.fromisoformat(stamp) > bounce
+
+
 def _already_sent(conn: sqlite3.Connection, target_id: str, user_id: str, kind: str) -> bool:
+    bounce = last_bounce(conn, target_id, user_id)
     rows = conn.execute(
-        "SELECT detail FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=?",
+        "SELECT detail, created_at FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=?",
         (target_id, user_id, SENT_EVENT),
     ).fetchall()
     for row in rows:
+        if not _since(row["created_at"], bounce):
+            continue
         try:
             if json.loads(row["detail"]).get("kind") == kind:
                 return True
@@ -445,13 +479,16 @@ def _already_sent(conn: sqlite3.Connection, target_id: str, user_id: str, kind: 
 
 
 def _draft_events(conn: sqlite3.Connection, target_id: str, user_id: str, kind: str) -> list[tuple[str, dict[str, Any]]]:
-    """Every Gmail draft the app made of this kind, whatever version of the words it held."""
+    """Every Gmail draft the app made of this kind since the last bounce, whatever version of the words it held."""
+    bounce = last_bounce(conn, target_id, user_id)
     rows = conn.execute(
-        "SELECT id, detail FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=? ORDER BY created_at DESC",
+        "SELECT id, detail, created_at FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=? ORDER BY created_at DESC",
         (target_id, user_id, DRAFT_EVENT),
     ).fetchall()
     events = []
     for row in rows:
+        if not _since(row["created_at"], bounce):
+            continue
         try:
             detail = json.loads(row["detail"])
         except (TypeError, ValueError):
@@ -476,6 +513,10 @@ def _approved_for(
     conn: sqlite3.Connection, target_id: str, user_id: str, kind: str, *, sending: bool, fingerprint: str | None = None,
 ) -> _Approved:
     approved = _Approved(conn, target_id, user_id, kind, "sending it" if sending else "creating it in Gmail")
+    if approved.target["contact_bounced"]:
+        raise ValueError(f"Email to {approved.target['contact_email']} bounced, so nothing more goes there. Choose another contact first")
+    if approved.target["cc_bounced"]:
+        raise ValueError(f"Email to the Cc {approved.target['contact_cc']} bounced. Remove it or choose another first")
     if fingerprint is not None and fingerprint != approved.fingerprint:
         raise DraftChangedError("This draft changed after you confirmed it. Review it, then send again")
     if _already_sent(conn, target_id, user_id, kind):
@@ -534,16 +575,20 @@ def create_gmail_draft(
     copy in Drafts could be sent a second time.
     """
     _approved_for(conn, target_id, user_id, kind, sending=False)
+    stale_token = ""
     existing = _claim(conn, target_id, user_id, kind)
     if existing is not None:
-        if existing["state"] == "sent":
-            raise ValueError("This email was already sent from Gmail")
         if _claim_held(existing):
             raise SendConflictError(IN_PROGRESS)
-        raise SendConflictError(f"{_claim_reason(existing)} Until then no new draft is made.")
+        if _superseded(conn, existing, target_id, user_id):
+            stale_token = existing["token"]
+        elif existing["state"] == "sent":
+            raise ValueError("This email was already sent from Gmail")
+        else:
+            raise SendConflictError(f"{_claim_reason(existing)} Until then no new draft is made.")
     account = sender_account()
     revalidate = lambda: _approved_for(conn, target_id, user_id, kind, sending=False)  # noqa: E731
-    with _claimed(conn, target_id, user_id, kind, "draft", revalidate) as (token, approved):
+    with _claimed(conn, target_id, user_id, kind, "draft", revalidate, stale_token=stale_token) as (token, approved):
         try:
             client = client_factory()
         except BaseException:
@@ -613,12 +658,15 @@ def send_gmail_message(
     stale_token = ""
     existing = _claim(conn, target_id, user_id, kind)
     if existing is not None:
-        if existing["state"] == "sent":
-            raise ValueError("This email was already sent from Gmail")
         if _claim_held(existing):
             raise SendConflictError(IN_PROGRESS)
         stale_token = existing["token"]
-        reasons[f"claim:{stale_token}"] = _claim_reason(existing)
+        if _superseded(conn, existing, target_id, user_id):
+            pass
+        elif existing["state"] == "sent":
+            raise ValueError("This email was already sent from Gmail")
+        else:
+            reasons[f"claim:{stale_token}"] = _claim_reason(existing)
     account = sender_account()
 
     with client_factory() as client:

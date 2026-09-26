@@ -36,12 +36,15 @@ OAUTH_PROVIDERS = {
         "client_id_env": "GOOGLE_OAUTH_CLIENT_ID",
         "client_secret_env": "GOOGLE_OAUTH_CLIENT_SECRET",
     },
-    # Approved outreach drafts, with the resume attached. gmail.compose is the
-    # narrowest scope that can create a draft; the app only ever creates them.
+    # Approved outreach, as drafts or sent after a confirm click, with the
+    # resume attached. gmail.compose drafts and sends. gmail.readonly lets the
+    # app find and read the delivery failure notice for a send that bounced
+    # (outreach_delivery.py). Not gmail.metadata: with that granted, Gmail
+    # refuses to return a message's text even alongside gmail.readonly.
     "gmail_drafts": {
         "authorize": "https://accounts.google.com/o/oauth2/v2/auth",
         "token": "https://oauth2.googleapis.com/token",
-        "scopes": ["https://www.googleapis.com/auth/gmail.compose"],
+        "scopes": ["https://www.googleapis.com/auth/gmail.compose", "https://www.googleapis.com/auth/gmail.readonly"],
         "client_id_env": "GOOGLE_OAUTH_CLIENT_ID",
         "client_secret_env": "GOOGLE_OAUTH_CLIENT_SECRET",
     },
