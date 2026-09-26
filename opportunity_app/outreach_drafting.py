@@ -154,9 +154,22 @@ def sender_account() -> str:
     return os.environ.get("PIPELINE_OUTREACH_ACCOUNT", "").strip()
 
 
-def resolve_provider(requested: str | None = None) -> tuple[str, str]:
-    """Pick the provider and model: explicit, then PIPELINE_OUTREACH_PROVIDER, then the agent default."""
-    provider = (requested or os.environ.get("PIPELINE_OUTREACH_PROVIDER", "") or default_provider()).strip()
+# What each writer reads before falling back to the first-email drafts setting.
+PURPOSE_ENV = {
+    "follow_up": "PIPELINE_OUTREACH_FOLLOW_UP_PROVIDER",
+    "call_prep": "PIPELINE_OUTREACH_CALL_PREP_PROVIDER",
+}
+
+
+def resolve_provider(requested: str | None = None, purpose: str = "initial") -> tuple[str, str]:
+    """Pick the provider and model for one kind of writing.
+
+    Explicit, then the setting for this purpose (follow-ups and call prep have
+    their own), then PIPELINE_OUTREACH_PROVIDER, then the first provider that
+    is set up on this computer.
+    """
+    own = os.environ.get(PURPOSE_ENV[purpose], "") if purpose in PURPOSE_ENV else ""
+    provider = (requested or own or os.environ.get("PIPELINE_OUTREACH_PROVIDER", "") or default_provider()).strip()
     if provider == "legacy":
         return "legacy", ""
     record = next((item for item in provider_catalog() if item["id"] == provider), None)
@@ -625,7 +638,7 @@ def generate_draft(
             raise ValueError("A follow-up needs the original email text")
     inputs = _inputs(conn, target, user_id, kind)
     regions = user_regions(conn, user_id)
-    provider_id, model = resolve_provider(provider)
+    provider_id, model = resolve_provider(provider, purpose=kind)
 
     if provider_id == "legacy":
         if comments:
