@@ -24,7 +24,7 @@ from uuid import uuid4
 
 from .agent_providers import AgentProvider, CliAgentProvider, complete_text, default_provider, provider_catalog
 from .outreach import (
-    AWAITING_REPLY, DRAFT_KINDS, _log, draft_checks, get_target, home_terms, location_usable, mentions_home, near_home, student_home,
+    AWAITING_REPLY, DRAFT_KINDS, _cancel_schedules, _log, draft_checks, get_target, home_terms, location_usable, mentions_home, near_home, student_home,
     user_regions,
 )
 from .preparation import confirmed_facts
@@ -594,6 +594,7 @@ def restore_draft_version(conn: sqlite3.Connection, target_id: str, version_id: 
         )
         if target[status_field] == "approved":
             _log(conn, target_id, user_id, "approval_withdrawn", detail=f"An earlier {label} was restored")
+            _cancel_schedules(conn, target_id, user_id, [kind], f"An earlier {label} was restored after you scheduled it")
         _log(conn, target_id, user_id, "draft_restored" if kind == "initial" else "follow_up_restored",
              detail=f"Restored the {label} from {version['created_at']}")
         if assignments.get("status"):
@@ -674,6 +675,7 @@ def generate_draft(
         )
         if target[status_field] == "approved":
             _log(conn, target_id, user_id, "approval_withdrawn", detail=f"The {kind.replace('_', '-')} draft was regenerated")
+            _cancel_schedules(conn, target_id, user_id, [kind], "The draft was regenerated after you scheduled it")
         _log(conn, target_id, user_id, "draft_generated" if kind == "initial" else "follow_up_generated", detail=generated_by)
         if assignments.get("status"):
             _log(conn, target_id, user_id, "status", from_status=target["status"], to_status="drafted")

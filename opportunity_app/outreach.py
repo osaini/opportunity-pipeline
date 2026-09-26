@@ -652,6 +652,35 @@ def _apply_status_side_effects(values: dict[str, Any], previous: dict[str, Any] 
             values["follow_up_at"] = None
 
 
+def _schedules(conn: sqlite3.Connection, user_id: str, target_id: str | None = None) -> dict[str, dict[str, Any]]:
+    """Scheduled sends still to report on (outreach_schedule.py), by target and kind."""
+    sql = (
+        "SELECT target_id, kind, send_at, label, state, error FROM outreach_scheduled_sends "
+        "WHERE user_id=? AND state IN ('scheduled', 'sending', 'transmitting', 'failed')"
+    )
+    params: list[Any] = [user_id]
+    if target_id:
+        sql += " AND target_id=?"
+        params.append(target_id)
+    found: dict[str, dict[str, Any]] = {}
+    for row in conn.execute(sql, params).fetchall():
+        found.setdefault(row["target_id"], {})[row["kind"]] = {
+            "send_at": row["send_at"], "label": row["label"], "state": row["state"], "error": row["error"],
+        }
+    return found
+
+
+def _cancel_schedules(conn: sqlite3.Connection, target_id: str, user_id: str, kinds: list[str], reason: str) -> None:
+    """Stop a scheduled send whose approved draft no longer stands. Runs inside the caller's transaction."""
+    for kind in kinds:
+        if conn.execute(
+            "UPDATE outreach_scheduled_sends SET state='cancelled', error=?, updated_at=? "
+            "WHERE target_id=? AND user_id=? AND kind=? AND state='scheduled'",
+            (reason, utc_now(), target_id, user_id, kind),
+        ).rowcount:
+            _log(conn, target_id, user_id, "send_cancelled", detail=reason)
+
+
 def _apply_draft_side_effects(values: dict[str, Any], previous: dict[str, Any] | None) -> list[str]:
     """Any change to a draft's words or its recipient sends it back for review.
 
@@ -808,7 +837,8 @@ def list_targets(
     ).fetchall()
     regions = user_regions(conn, user_id)
     home = user_home(conn, user_id, regions)
-    return [_record(row, today, regions, home) for row in rows]
+    schedules = _schedules(conn, user_id)
+    return [{**_record(row, today, regions, home), "scheduled": schedules.get(row["id"], {})} for row in rows]
 
 
 def is_new_from_search(item: dict[str, Any]) -> bool:
@@ -860,6 +890,7 @@ def get_target(
         raise OutreachNotFoundError(target_id)
     regions = user_regions(conn, user_id)
     item = _record(row, today or local_today(conn, user_id), regions, user_home(conn, user_id, regions))
+    item["scheduled"] = _schedules(conn, user_id, target_id).get(target_id, {})
     if include_events:
         item["events"] = [
             dict(event)
@@ -1028,6 +1059,11 @@ def update_target(conn: sqlite3.Connection, target_id: str, payload: dict[str, A
                     _log(conn, target_id, user_id, "greeting_updated", detail=f'{label}: "{old_line}" is now "{new_line}" for the new contact')
                 for kind in withdrawn:
                     _log(conn, target_id, user_id, "approval_withdrawn", detail=f"The {kind.replace('_', '-')} draft changed after approval")
+                _cancel_schedules(conn, target_id, user_id, withdrawn, "The draft or its recipient changed after you scheduled it")
+                # Marked sent by hand: the scheduled copy must not go out as well.
+                sent_kind = {"sent": "initial", "followed_up": "follow_up"}.get(values.get("status", ""))
+                if sent_kind and values["status"] != previous["status"]:
+                    _cancel_schedules(conn, target_id, user_id, [sent_kind], "You marked it sent")
         except _ConfirmRaced:
             previous = get_target(conn, target_id, user_id=user_id, today=today)
             if previous["location_verified"]:

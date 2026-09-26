@@ -289,6 +289,7 @@ from .outreach_drafting import (
 from .outreach_delivery import bounce_from_text, check_deliveries
 from .outreach_inbox import InboxWatcher, capture_replies
 from .outreach_automation import AutomationWorker, settings as automation_settings, update_settings as update_automation_settings
+from .outreach_schedule import cancel_send, schedule_send
 from .outreach_gmail import (
     GmailAuthError,
     SendConflictError,
@@ -472,6 +473,12 @@ class OutreachReplyRequest(BaseModel):
 class OutreachAutomationRequest(BaseModel):
     auto_drafts: bool | None = None
     bounce_recovery: bool | None = None
+    scheduled_sending: bool | None = None
+
+
+class OutreachScheduleRequest(BaseModel):
+    kind: Literal["initial", "follow_up"] = "initial"
+    fingerprint: str = Field(min_length=1, max_length=128)
 
 
 class OutreachBounceRequest(BaseModel):
@@ -996,6 +1003,7 @@ def create_app(
         database_target, fetcher_factory=resolved_contact_client_factory, renderer_factory=resolved_renderer_factory,
         verifier_factory=resolved_smtp_verifier_factory, provider_factory=resolved_outreach_provider_factory,
         draft_provider=outreach_draft_provider, contact_delay=outreach_contact_delay,
+        gmail_client_factory=resolved_gmail_client_factory,
     )
     if start_automation_worker is None:
         start_automation_worker = real_product_db
@@ -2037,6 +2045,7 @@ def create_app(
             "contact_confidence": list(CONTACT_CONFIDENCE),
             "compose": outreach_compose_settings(),
             "gmail_drafts": gmail_drafts_status(conn, user_id=user_id),
+            "automation": automation_settings(conn, user_id=user_id),
             "discovery": outreach_discovery_payload(conn, user_id),
             "recontact": outreach_recontact_payload(conn, user_id),
         }
@@ -2312,11 +2321,14 @@ def create_app(
     ) -> dict[str, Any]:
         """Send the approved draft the student confirmed from their Gmail, and mark it sent."""
         try:
-            return send_gmail_message(
+            sent = send_gmail_message(
                 conn, target_id, user_id=user_id, kind=payload.kind, fingerprint=payload.fingerprint,
                 sent_folder_check=payload.sent_folder_check,
                 client_factory=outreach_gmail_client_factory or default_gmail_client_factory,
             )
+            # Sent now instead of at the scheduled time.
+            cancel_send(conn, target_id, user_id=user_id, kind=payload.kind, reason="You sent it now instead")
+            return sent
         except OutreachNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
         except SendNeedsCheckError as exc:
@@ -2381,6 +2393,39 @@ def create_app(
     ) -> dict[str, Any]:
         try:
             return dismiss_reply_suggestion(conn, target_id, user_id=user_id)
+        except OutreachNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+
+    @app.post("/api/v1/outreach/{target_id}/schedule")
+    def schedule_outreach_send(
+        target_id: str,
+        payload: OutreachScheduleRequest,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """Queue the approved draft the student confirmed for the recipient's next weekday morning."""
+        try:
+            scheduled = schedule_send(conn, target_id, user_id=user_id, kind=payload.kind, fingerprint=payload.fingerprint)
+        except OutreachNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        except (DraftChangedError, SendConflictError) as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        automation_worker.wake()
+        return scheduled
+
+    @app.delete("/api/v1/outreach/{target_id}/schedule")
+    def cancel_outreach_send(
+        target_id: str,
+        kind: Literal["initial", "follow_up"] = "initial",
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        try:
+            cancelled = cancel_send(conn, target_id, user_id=user_id, kind=kind)
+            # False: nothing was left to stop, for example it had already gone out.
+            return {**get_outreach_target(conn, target_id, user_id=user_id), "cancelled": cancelled}
         except OutreachNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
 

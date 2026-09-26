@@ -300,9 +300,10 @@ themselves (rule 3). The details:
   `PIPELINE_CONNECTION_KEY` was already generated in step 2.
   Once Gmail is connected the app catches bounces and logs replies on its own.
   Ask whether they want the **Automation** switches under Outreach → Outreach
-  settings: writing drafts automatically, and finding a new contact after a
-  bounce. Both are off until they turn them on, and neither sends mail; every
-  email still waits for their approval.
+  settings: writing drafts automatically, finding a new contact after a bounce,
+  and sending on the recipient's weekday morning. All are off until they turn
+  them on. Every email still waits for their approval; the last switch only
+  changes when an approved, confirmed email goes out.
 
 ## 7. Resume (optional, recommended)
 
