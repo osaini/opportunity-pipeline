@@ -27,5 +27,7 @@
   "hours_per_week": null,
   "available_terms": [],
   "break_location": "",
+  "greeting_word": "Hi",
+  "unnamed_greeting": "{company} team",
   "compensation_preferences": null
 }

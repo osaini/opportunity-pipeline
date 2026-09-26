@@ -731,14 +731,83 @@ _HONORIFICS = {"dr", "mr", "mrs", "ms", "mx", "prof", "professor"}
 _GENERIC_GREETINGS = {"there", "team", "all", "everyone", "hiring team", "recruiting team"}
 
 
+# How a student opens an email, from their own profile (greeting_word and
+# unnamed_greeting). These are the fallbacks when they have not said.
+DEFAULT_GREETING = {"word": "Hi", "unnamed": "{company} team"}
+_GREETING_WORD = re.compile(r"[^\W\d_][^\W\d_ '\u2019.-]*(?:[ '\u2019.-][^\W\d_]+){0,3}")
+# The legal ending people leave off when they say a company's name.
+_LEGAL_ENDING = re.compile(r"[,\s]+(?:inc|incorporated|corp|corporation|llc|ltd|pbc)\.?$", re.IGNORECASE)
+_PROFILE_DATA_CACHE: dict[str, Any] = {"key": None, "data": {}}
+
+
+def greeting_style_error(word: Any, unnamed: Any) -> str | None:
+    """Why a greeting word or shared-inbox greeting cannot be used, or None."""
+    if word not in (None, "") and not (isinstance(word, str) and len(word.strip()) <= 30 and _GREETING_WORD.fullmatch(word.strip())):
+        return "The greeting word must be a word or two, like Hi, Hello, or Dear"
+    if unnamed not in (None, ""):
+        text = unnamed.strip() if isinstance(unnamed, str) else ""
+        if not text or len(text) > 60 or "\n" in text or text.replace("{company}", "").count("{") or text.replace("{company}", "").count("}"):
+            return "The shared-inbox greeting must be short, like {company} team or there"
+    return None
+
+
+def _owner_profile() -> dict[str, Any]:
+    """config/profile.json, re-read when the file changes."""
+    try:
+        key = (str(PROFILE_PATH), PROFILE_PATH.stat().st_mtime_ns)
+    except OSError:
+        return {}
+    if _PROFILE_DATA_CACHE["key"] != key:
+        try:
+            data = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        _PROFILE_DATA_CACHE.update(key=key, data=data if isinstance(data, dict) else {})
+    return _PROFILE_DATA_CACHE["data"]
+
+
+def greeting_style(conn: sqlite3.Connection | None, user_id: str = LOCAL_USER_ID) -> dict[str, str]:
+    """How this student greets: their own words, never another student's.
+
+    The local owner's come from config/profile.json, like their regions; anyone
+    else's from their own confirmed profile. Missing or unusable values fall
+    back to DEFAULT_GREETING.
+    """
+    if conn is None or user_id == LOCAL_USER_ID:
+        source = _owner_profile()
+    else:
+        from .preparation import confirmed_facts
+
+        source = confirmed_facts(conn, user_id)
+    word = source.get("greeting_word")
+    unnamed = source.get("unnamed_greeting")
+    if greeting_style_error(word, None) or not word:
+        word = DEFAULT_GREETING["word"]
+    if greeting_style_error(None, unnamed) or not unnamed:
+        unnamed = DEFAULT_GREETING["unnamed"]
+    return {"word": " ".join(str(word).split()), "unnamed": " ".join(str(unnamed).split())}
+
+
+def spoken_company(company: str) -> str:
+    """The name people call a company by: "Acme Robotics, Inc." is "Acme Robotics"."""
+    name = str(company or "").strip()
+    while (shorter := _LEGAL_ENDING.sub("", name)) != name:
+        name = shorter
+    return name or str(company or "").strip()
+
+
+def unnamed_greeting(company: str, style: dict[str, str]) -> str:
+    return style["unnamed"].replace("{company}", spoken_company(company)).strip()
+
+
+def greeting_line(company: str, contact_name: str, style: dict[str, str]) -> str:
+    """The line a draft opens with: the contact's first name, or the student's shared-inbox greeting."""
+    return f"{style['word']} {contact_first_name(contact_name) or unnamed_greeting(company, style)},"
+
+
 def contact_first_name(name: str) -> str:
     words = [word for word in str(name or "").replace(",", " ").split() if word.rstrip(".").casefold() not in _HONORIFICS]
     return words[0] if words else ""
-
-
-def greeting_name(contact_name: str, company: str) -> str:
-    """Who a draft greets: the contact's first name, or the company's team for a shared inbox."""
-    return contact_first_name(contact_name) or f"{company} team"
 
 
 def _own_team(greeted: str, company: str) -> bool:
@@ -771,7 +840,7 @@ def readdress_greeting(body: str, old_names: set[str], new_name: str, company: s
     return "\n".join(lines), old_greeting, new_greeting.strip()
 
 
-def _readdress_drafts(values: dict[str, Any], previous: dict[str, Any]) -> list[tuple[str, str, str]]:
+def _readdress_drafts(values: dict[str, Any], previous: dict[str, Any], style: dict[str, str]) -> list[tuple[str, str, str]]:
     """Point unsent drafts' greetings at a changed contact. Returns (kind, old line, new line) per draft."""
     name_changed = "contact_name" in values and values["contact_name"] != previous["contact_name"]
     email_changed = "contact_email" in values and values["contact_email"].casefold() != previous["contact_email"].casefold()
@@ -782,10 +851,11 @@ def _readdress_drafts(values: dict[str, Any], previous: dict[str, Any]) -> list[
     old_names = {
         name.casefold() for name in (
             contact_first_name(previous["contact_name"]), " ".join(previous["contact_name"].split()),
-            mailbox, f"{previous['company']} team", *_GENERIC_GREETINGS,
+            mailbox, f"{previous['company']} team", unnamed_greeting(previous["company"], style), *_GENERIC_GREETINGS,
         ) if name
     }
-    new_name = greeting_name(values.get("contact_name", previous["contact_name"]), values.get("company", previous["company"]))
+    company = values.get("company", previous["company"])
+    new_name = contact_first_name(values.get("contact_name", previous["contact_name"])) or unnamed_greeting(company, style)
     # A sent email's text is the record of what went out, so only unsent drafts move.
     initial_unsent = not previous.get("sent_at") and previous["status"] in UNSENT_STATUSES
     changed = []
@@ -1015,7 +1085,7 @@ def update_target(conn: sqlite3.Connection, target_id: str, payload: dict[str, A
             if previous["location_basis"] in {"research", ""}:
                 values["location_basis"] = "manual"
         _apply_status_side_effects(values, previous, today)
-        readdressed = _readdress_drafts(values, previous)
+        readdressed = _readdress_drafts(values, previous, greeting_style(conn, user_id))
         withdrawn = _apply_draft_side_effects(values, previous)
         if not values:
             return previous

@@ -32,7 +32,6 @@ from uuid import uuid4
 import httpx
 
 from .outreach import _EMAIL, MANUAL_CONTACT_ROUTE, _log, get_target, update_target, website_domain
-from .outreach_drafting import greeting, with_greeting
 from .schema import utc_now
 
 USER_AGENT = "Mozilla/5.0 (compatible; internship-pipeline-outreach/1.0; one student's research)"
@@ -853,13 +852,8 @@ def apply_candidate(
     changes["contact_route"] = route
     if row["evidence_url"] and row["evidence_url"] not in target["source_urls"]:
         changes["source_urls"] = [*target["source_urls"], row["evidence_url"]]
-    # A draft not yet sent greets whoever it now goes to: the new first name, or
-    # the company's team when the address has no name behind it.
-    unsent = not target["sent_at"] and target["status"] in {"not_started", "drafted"}
-    if row["name"] != target["contact_name"] and target["email_body"] and unsent:
-        body = with_greeting(target["email_body"], greeting(target["company"], row["name"]))
-        if body != target["email_body"]:
-            changes["email_body"] = body
+    # A draft not yet sent greets whoever it now goes to; update_target swaps
+    # the greeting in the student's own style (outreach._readdress_drafts).
     update_target(conn, target_id, changes, user_id=user_id)
     with conn:
         _log(conn, target_id, user_id, "contact_applied",

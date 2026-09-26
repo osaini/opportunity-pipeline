@@ -5311,6 +5311,9 @@
       { placeholder: "Atlanta, Bay Area" }
     );
     const breakLocation = profileField(form, "Home during breaks and summers", "break_location", profile.break_location, { placeholder: "City, ST or a target region" });
+    // How outreach emails open, in the student's own words: "Hi Dana," or "Hello there,".
+    const greetingWord = profileField(form, "Email greeting", "greeting_word", profile.greeting_word, { placeholder: "Hi" });
+    const unnamedGreeting = profileField(form, "Greeting for a shared inbox", "unnamed_greeting", profile.unnamed_greeting, { placeholder: "{company} team" });
     const hours = profileField(form, "Hours per week", "hours_per_week", profile.hours_per_week, { type: "number", min: 1, max: 80 });
     const workAuthorized = profileSelect(form, "Authorized to work in the U.S.", "work_authorized_us", profile.work_authorized_us);
     const citizen = profileSelect(form, "U.S. citizen", "us_citizen", profile.us_citizen);
@@ -5356,6 +5359,8 @@
         regions,
         preferred_locations: regionNames,
         break_location: breakLocation.value.trim(),
+        greeting_word: greetingWord.value.trim(),
+        unnamed_greeting: unnamedGreeting.value.trim(),
         hours_per_week: hours.value ? Number(hours.value) : null,
         work_authorized_us: nullableBoolean(workAuthorized.value),
         us_citizen: nullableBoolean(citizen.value),
