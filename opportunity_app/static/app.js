@@ -2295,6 +2295,9 @@
     greeting_updated: "Greeting updated for the new contact",
     auto_reply: "Automatic reply (out of office)",
     contact_recovery: "Looked for another contact after the bounce",
+    send_scheduled: "Send scheduled",
+    send_cancelled: "Scheduled send cancelled",
+    scheduled_send_failed: "Scheduled send stopped",
     auto_draft_failed: "Automatic draft failed",
     draft_restored: "Earlier draft restored",
     follow_up_restored: "Earlier follow-up restored",
@@ -2406,11 +2409,11 @@
   // it, pressing Escape, or waiting a few seconds puts it back.
   const SEND_CONFIRM_MS = 8000;
 
-  function gmailSendButton(gmail, item, kind) {
+  function gmailSendButton(gmail, item, kind, { now = false } = {}) {
     const attachment = gmail.attachment ? ` with ${gmail.attachment}` : "";
-    const label = kind === "follow_up" ? `Send follow-up${attachment}` : `Send${attachment}`;
+    const label = now ? "Send now" : kind === "follow_up" ? `Send follow-up${attachment}` : `Send${attachment}`;
     const recipients = item.contact_cc ? `${item.contact_email} (Cc ${item.contact_cc})` : item.contact_email;
-    const button = element("button", "primary-button outreach-compose outreach-send", label);
+    const button = element("button", `${now ? "secondary-button" : "primary-button"} outreach-compose outreach-send`, label);
     button.type = "button";
     if (gmail.attachment_problem) {
       button.disabled = true;
@@ -2552,11 +2555,92 @@
     return button;
   }
 
+  // With scheduled sending on, the confirmed click queues the approved email
+  // for the recipient's next weekday morning instead of sending it now.
+  function gmailScheduleButton(item, kind) {
+    const recipients = item.contact_cc ? `${item.contact_email} (Cc ${item.contact_cc})` : item.contact_email;
+    const label = kind === "follow_up" ? "Schedule follow-up for their morning" : "Schedule for their morning";
+    const button = element("button", "primary-button outreach-compose outreach-schedule", label);
+    button.type = "button";
+    let timer = null;
+    const reset = () => {
+      clearTimeout(timer);
+      delete button.dataset.confirming;
+      button.textContent = label;
+    };
+    button.addEventListener("blur", () => { if (button.dataset.confirming) reset(); });
+    button.addEventListener("keydown", (event) => { if (event.key === "Escape" && button.dataset.confirming) reset(); });
+    button.addEventListener("click", async () => {
+      if (refuseUnsavedHandOff(button, kind)) return;
+      if (!button.dataset.confirming) {
+        button.dataset.confirming = "true";
+        button.textContent = `Schedule to ${recipients}?`;
+        announce(`Press again to schedule the ${kind === "follow_up" ? "follow-up" : "email"} to ${recipients} for their next weekday morning.`);
+        timer = setTimeout(reset, SEND_CONFIRM_MS);
+        return;
+      }
+      clearTimeout(timer);
+      button.disabled = true;
+      try {
+        const scheduled = await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/schedule`, {
+          method: "POST",
+          body: JSON.stringify({ kind, fingerprint: kind === "follow_up" ? item.follow_up_fingerprint : item.draft_fingerprint }),
+        });
+        state.outreachOpen = item.id;
+        state.outreachKeep.add(item.id);
+        await loadOutreach();
+        announce(`Scheduled: goes out ${scheduled.label}.`);
+      } catch (error) {
+        reset();
+        button.disabled = false;
+        showError(error.message);
+      }
+    });
+    return button;
+  }
+
+  function cancelScheduleButton(item, kind, text = "Cancel") {
+    const button = element("button", "secondary-button", text);
+    button.type = "button";
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/schedule?kind=${kind}`, { method: "DELETE" });
+        state.outreachOpen = item.id;
+        await loadOutreach();
+        announce(text === "Cancel" ? `Cancelled the scheduled send to ${item.contact_email}.` : "Dismissed.");
+      } catch (error) {
+        showError(error.message);
+        button.disabled = false;
+      }
+    });
+    return button;
+  }
+
   function composeControl(context, item, kind) {
     if (!context.gmail?.connected) return composeLink(context.compose, item, kind);
     const controls = document.createDocumentFragment();
+    const schedule = item.scheduled?.[kind];
+    if (schedule?.state === "scheduled" || schedule?.state === "sending") {
+      // A Gmail draft made now would stop the scheduled send, so it is not offered.
+      controls.append(
+        chip(schedule.state === "sending" ? "Sending…" : `Goes out ${schedule.label}`, "is-region"),
+        cancelScheduleButton(item, kind),
+        gmailSendButton(context.gmail, item, kind, { now: true }),
+      );
+      return controls;
+    }
+    if (schedule?.state === "failed") {
+      controls.append(chip(`Scheduled send stopped: ${schedule.error}`, "is-warning"), cancelScheduleButton(item, kind, "Dismiss"));
+    }
     // A paused company that was already written to is never sent the first email again.
-    if (kind === "follow_up" || !item.sent_at) controls.append(gmailSendButton(context.gmail, item, kind));
+    if (kind === "follow_up" || !item.sent_at) {
+      if (context.automation?.scheduled_sending) {
+        controls.append(gmailScheduleButton(item, kind), gmailSendButton(context.gmail, item, kind, { now: true }));
+      } else {
+        controls.append(gmailSendButton(context.gmail, item, kind));
+      }
+    }
     controls.append(gmailDraftButton(context.gmail, item, kind));
     return controls;
   }
@@ -3141,7 +3225,8 @@
   // narrows that list here, so every count stays in step with the cards.
   const OUTREACH_TABS = [
     { id: "to-contact", label: "To contact", test: outreachToContact },
-    { id: "ready", label: "Ready to send", group: "Before sending", tone: "is-good", test: (item) => outreachToContact(item) && item.draft_status === "approved" && Boolean(item.contact_email) && !item.contact_bounced && !item.cc_bounced },
+    { id: "ready", label: "Ready to send", group: "Before sending", tone: "is-good", test: (item) => outreachToContact(item) && item.draft_status === "approved" && Boolean(item.contact_email) && !item.contact_bounced && !item.cc_bounced && item.scheduled?.initial?.state !== "scheduled" },
+    { id: "scheduled", label: "Scheduled", group: "Before sending", tone: "is-region", test: (item) => ["scheduled", "sending", "failed"].includes(item.scheduled?.initial?.state) || ["scheduled", "sending", "failed"].includes(item.scheduled?.follow_up?.state) },
     { id: "needs-review", label: "Drafts to review", group: "Before sending", tone: "is-soon", test: (item) => outreachDraftNeedsReview(item, "initial") || outreachDraftNeedsReview(item, "follow_up") },
     { id: "needs-contact", label: "Needs a contact", group: "Before sending", tone: "is-soon", test: (item) => outreachToContact(item) && (!item.contact_email || item.contact_bounced) },
     { id: "bounced", label: "Bounced", group: "Before sending", tone: "is-alert", test: (item) => Boolean(item.bounced_at) },
@@ -3416,6 +3501,7 @@
   const AUTOMATION_SWITCHES = [
     ["auto_drafts", "Write drafts automatically", "Every company with a contact and a location gets a draft written, whether a deep search found it, you added it, or a contact turned up later. Each one waits for your approval."],
     ["bounce_recovery", "Find a new contact after a bounce", "When an email bounces, the app searches the company's site again, picks the best address that has not bounced, and updates the greeting. You review the draft and send it again."],
+    ["scheduled_sending", "Send on their weekday morning", "Your confirmed Send queues the approved email for 9 to 9:40 AM on the recipient's next weekday, in their timezone (from the company's US state, or yours when it names none). Editing the draft cancels it; Send now and Cancel stay on the card. Needs Gmail connected."],
   ];
 
   async function automationFields() {
@@ -3750,6 +3836,9 @@
     if (!item.contact_email) return { label: "Find a contact", hint: "Search their site for a published address, or add one you found.", tab: "contact", tone: "is-soon" };
     if (!item.email_body) return { label: "Write the draft", hint: "Generate a draft from your confirmed profile and this research.", tab: "draft" };
     if (outreachDraftNeedsReview(item, "initial") || item.draft_status !== "approved") return { label: "Review the draft", hint: "Read it, fix anything, then approve it. Approving unlocks the email hand-off.", tab: "draft", tone: "is-soon" };
+    const scheduled = item.scheduled?.initial;
+    if (scheduled?.state === "scheduled") return { label: "Scheduled", hint: `Goes out ${scheduled.label}. Cancel it or send it now below.`, tab: null, tone: "is-region" };
+    if (scheduled?.state === "failed") return { label: "Scheduled send stopped", hint: `${scheduled.error}.`, tab: null, tone: "is-warning" };
     return { label: "Send it from your email", hint: "Open the approved draft in your email, send it, then mark it sent here.", tab: null, tone: "is-region" };
   }
 
@@ -4963,7 +5052,7 @@
                 : "Pick another tab beside the page."));
           els.results.appendChild(empty);
         } else {
-          els.results.appendChild(outreachSplitView(items, tab, { compose: payload.compose, gmail: payload.gmail_drafts }));
+          els.results.appendChild(outreachSplitView(items, tab, { compose: payload.compose, gmail: payload.gmail_drafts, automation: payload.automation }));
         }
         els.resultCount.textContent = `${plural(items.length, "company", "companies")} · ${tab.label}`;
       }

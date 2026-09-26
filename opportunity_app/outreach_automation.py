@@ -7,8 +7,11 @@
   again and the best other contact applied (choose_contact, never an address
   that bounced). The greeting follows (outreach._readdress_drafts) and the draft
   goes back for approval.
+- scheduled_sending: the student's confirmed Send queues the approved email
+  for the recipient's next weekday morning (outreach_schedule.py).
 
-Nothing here sends mail. Every switch is off until the student turns it on
+Only scheduled_sending leads to mail going out, and only an email the student
+approved and scheduled. Every switch is off until the student turns it on
 (user_settings). ``AutomationWorker`` runs the work on a background thread.
 """
 
@@ -34,6 +37,7 @@ LOGGER = logging.getLogger(__name__)
 SETTINGS = {
     "auto_drafts": "Write a draft for every company with a contact and a location",
     "bounce_recovery": "After a bounce, find another contact and fix the greeting",
+    "scheduled_sending": "Send approved emails on the recipient's next weekday morning",
 }
 RECOVERY_EVENT = "contact_recovery"
 AUTO_DRAFT_FAILED = "auto_draft_failed"
@@ -177,8 +181,10 @@ def auto_draft(
 class AutomationWorker:
     """Runs each student's switched-on automation on one background thread.
 
-    A pass recovers every bounced contact that is due, then writes at most one
-    draft, so a slow model call never holds the others up for long.
+    A pass first sends every scheduled email that is due (for any student:
+    turning the switch off does not strand one already scheduled), then
+    recovers every bounced contact that is due, then writes at most one draft,
+    so a slow model call never holds the others up for long.
     """
 
     def __init__(
@@ -191,9 +197,11 @@ class AutomationWorker:
         provider_factory: Callable[[str, str], Any] | None = None,
         draft_provider: str | None = None,
         contact_delay: float = 1.0,
+        gmail_client_factory: Callable[[], Any] | None = None,
         interval_seconds: float = 60.0,
     ) -> None:
         self.platform_target = platform_target
+        self._gmail_client_factory = gmail_client_factory
         self._fetcher_factory = fetcher_factory
         self._renderer_factory = renderer_factory
         self._verifier_factory = verifier_factory
@@ -206,8 +214,12 @@ class AutomationWorker:
         self._thread: threading.Thread | None = None
 
     def run_once(self) -> dict[str, Any]:
-        report: dict[str, Any] = {"recovered": [], "drafted": []}
+        report: dict[str, Any] = {"sent": [], "recovered": [], "drafted": []}
         with closing(connect_product(self.platform_target)) as conn:
+            if self._gmail_client_factory is not None:
+                from .outreach_schedule import run_due_sends  # imported here: it pulls in the Gmail send path
+
+                report["sent"] = run_due_sends(conn, client_factory=self._gmail_client_factory)
             users = [row[0] for row in conn.execute(
                 f"SELECT DISTINCT user_id FROM user_settings WHERE value='on' AND key IN ({', '.join('?' for _ in SETTINGS)})",
                 tuple(SETTINGS),

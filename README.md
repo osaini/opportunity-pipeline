@@ -1090,6 +1090,15 @@ that was waiting (or marked No response) to **Replied**. What the reply means
 out-of-office reply is noted and changes nothing. The app checks every few
 minutes in the background while it runs, and whenever the Outreach list loads.
 
+With **Send on their weekday morning** switched on under Outreach settings →
+Automation, the confirmed click schedules the approved email instead of sending
+it: it goes out between 9:00 and 9:40 on the recipient's next weekday, in the
+timezone of the company's US state (or yours, when the location names none;
+the card says which). The app sends it through the same once-only path while
+it runs. Editing the draft or changing the recipient cancels it, and the card
+keeps **Cancel** and **Send now**. A send that could not go (Gmail unreachable
+three times, the draft sent some other way) is shown on the card with why.
+
 The app requests two scopes. `gmail.compose` covers drafts and sending.
 `gmail.readonly` covers bounces and replies. With it the app reads the headers
 of its own sent threads, delivery failure notices, and mail from the companies
