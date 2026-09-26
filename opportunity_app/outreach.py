@@ -32,6 +32,10 @@ from .typesafe_decisions import DecisionClient
 from .user_time import user_timezone
 
 
+# How contact_route opens for an address the student typed in themselves.
+MANUAL_CONTACT_ROUTE = "You added this address"
+
+
 class OutreachNotFoundError(LookupError):
     pass
 
@@ -1258,7 +1262,8 @@ def approve_draft(
         warnings.append("this company's research is unverified deep-search text; confirm the research or accept the risk")
     if target["contact_confidence"] == "unverified":
         cc = f"; {target['contact_cc']} is in Cc" if target["contact_cc"] else ""
-        warnings.append(f"{target['contact_email']} is a guessed address, not confirmed{cc}; check it or accept the risk")
+        what = "an address you added" if target["contact_route"].startswith(MANUAL_CONTACT_ROUTE) else "a guessed address"
+        warnings.append(f"{target['contact_email']} is {what}, not confirmed{cc}; check it or accept the risk")
     if warnings and not acknowledge_warnings:
         raise ValueError("Review these warnings, then approve again to accept them: " + "; ".join(warnings))
     if target[status_field] == "approved":

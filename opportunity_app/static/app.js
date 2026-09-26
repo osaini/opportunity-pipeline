@@ -2265,6 +2265,7 @@
     pattern_guess: "Guessed from a name on their site",
     published_elsewhere: "Printed on another site",
     ai_research: "Named in deep search research",
+    manual: "Added by you",
   };
   // What the company's mail server said when asked about an address. Asking
   // sends no email, and even an accepted address stays unverified.
@@ -3029,7 +3030,7 @@
 
   function outreachContactsSection(item) {
     const section = element("section", "tracker-subsection outreach-contacts");
-    section.appendChild(element("h4", "", "Contacts from their website"));
+    section.appendChild(element("h4", "", "Contacts found"));
     const intro = element("p", "outreach-note", item.website
       ? "Reads a few pages of their own site. Published addresses count as confirmed. Guesses are checked with their mail server, which sends no email, and stay unverified."
       : "Add their website under Research to search it for contacts.");
@@ -3130,6 +3131,74 @@
         }
       },
     };
+  }
+
+  // An address the student found anywhere else. Its fields carry no name
+  // attribute, so the pane's Save never sends them, and Enter adds rather than
+  // submitting the pane's form.
+  function outreachManualContactSection(item) {
+    const section = element("section", "tracker-subsection outreach-contacts outreach-manual-contact");
+    section.appendChild(element("h4", "", "Add a contact yourself"));
+    section.appendChild(element("p", "outreach-note",
+      "Found an address somewhere else? Add it and it becomes the contact. With no name, the draft greets the company's team."));
+    const fields = element("div", "outreach-manual-fields");
+    const field = (labelText, type, placeholder) => {
+      const label = element("label", "profile-field");
+      label.appendChild(element("span", "", labelText));
+      const input = document.createElement("input");
+      input.type = type;
+      input.placeholder = placeholder;
+      label.appendChild(input);
+      fields.appendChild(label);
+      return input;
+    };
+    const email = field("Email", "email", "hello@company.com");
+    email.required = true;
+    email.autocomplete = "off";
+    const name = field("Name (optional)", "text", "Leave blank for a shared inbox");
+    const role = field("Role (optional)", "text", "Founder, CTO…");
+    const where = field("Where you found it (optional)", "url", "https://…");
+    const confirmedLabel = element("label", "outreach-scope");
+    const confirmed = document.createElement("input");
+    confirmed.type = "checkbox";
+    confirmedLabel.append(confirmed, document.createTextNode(" I confirmed this address: they gave it to me or published it"));
+    const add = element("button", "secondary-button", "Add and use this contact");
+    add.type = "button";
+    const status = element("p", "form-status");
+    status.setAttribute("aria-live", "polite");
+    section.append(fields, confirmedLabel, add, status);
+
+    const submit = async () => {
+      if (!email.value.trim() || !email.checkValidity()) {
+        status.textContent = "Enter an email address first.";
+        email.focus();
+        return;
+      }
+      add.disabled = true;
+      try {
+        const saved = await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/contacts`, {
+          method: "POST",
+          body: JSON.stringify({
+            email: email.value.trim(), name: name.value.trim(), role: role.value.trim(),
+            evidence_url: where.value.trim(), confirmed: confirmed.checked,
+          }),
+        });
+        state.outreachOpen = item.id;
+        announce(`${saved.contact_email} is now the ${item.company} contact${saved.contact_confidence === "confirmed" ? "" : ", marked unverified"}.`);
+        await loadOutreach();
+        refocusOutreach(item.id, ".outreach-manual-contact input");
+      } catch (error) {
+        status.textContent = error.message;
+        add.disabled = false;
+      }
+    };
+    add.addEventListener("click", submit);
+    fields.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      submit();
+    });
+    return section;
   }
 
   function outreachReplySection(item) {
@@ -4660,7 +4729,7 @@
       if (item.contact_confidence === "unverified") {
         draft.appendChild(element("p", "outreach-note outreach-guess is-wide", item.contact_cc
           ? `${item.contact_email} is a guessed address, not confirmed. ${item.contact_cc} is in Cc, so a wrong guess still reaches the company.`
-          : `${item.contact_email} is a guessed address, not confirmed. Check it before you send.`));
+          : `${item.contact_email} is ${item.contact_route?.startsWith("You added this address") ? "an address you added" : "a guessed address"}, not confirmed. Check it before you send.`));
       }
       if (item.contact_bounced) {
         draft.appendChild(element("p", "outreach-note outreach-guess is-wide", `Email to ${item.contact_email} bounced, so nothing more goes there. Pick another contact under Contact; the greeting updates to match.`));
@@ -4730,7 +4799,7 @@
     researchPanel.append(research, notesGroup);
     const contactsSection = outreachContactsSection(item);
     const contactPanel = panel("contact");
-    contactPanel.append(contact, contactsSection.element);
+    contactPanel.append(contact, outreachManualContactSection(item), contactsSection.element);
     const timingPanel = panel("timing");
     timingPanel.appendChild(timing);
     const historyPanel = panel("history");

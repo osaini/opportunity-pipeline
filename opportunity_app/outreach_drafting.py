@@ -268,6 +268,48 @@ def _inputs(conn: sqlite3.Connection, target: dict[str, Any], user_id: str, kind
     return payload
 
 
+# The legal ending people leave off when they say a company's name.
+_LEGAL_SUFFIX = re.compile(r"[,\s]+(?:inc|incorporated|corp|corporation|llc|ltd|pbc)\.?$", re.IGNORECASE)
+# A greeting on a line of its own: "Hi Dana," or "Hello Acme team,".
+_GREETING_LINE = re.compile(r"^(?:hi|hello|hey|dear)\b[^\n,]{0,80},$", re.IGNORECASE)
+
+
+def spoken_company(company: str) -> str:
+    name = company.strip()
+    while (shorter := _LEGAL_SUFFIX.sub("", name)) != name:
+        name = shorter
+    return name or company.strip()
+
+
+def greeting(company: str, contact_name: str) -> str:
+    """The contact's first name, or the company's team when no one is named."""
+    first = contact_name.split()[0] if contact_name.split() else ""
+    return f"Hi {first}," if first else f"Hi {spoken_company(company)} team,"
+
+
+def with_greeting(body: str, new: str) -> str:
+    """The body with its greeting line replaced. A body that opens any other way is left alone."""
+    lines = body.split("\n")
+    for index, line in enumerate(lines):
+        if not line.strip():
+            continue
+        if _GREETING_LINE.match(line.strip()):
+            lines[index] = new
+        break
+    return "\n".join(lines)
+
+
+def _unnamed_greeting_problem(body: str, inputs: dict[str, Any]) -> str | None:
+    """A greeting that names someone when the contact is only an address."""
+    if inputs["company_research"].get("contact_name") or inputs["unverified_research"].get("contact_name"):
+        return None
+    first = next((line.strip() for line in body.split("\n") if line.strip()), "")
+    if not _GREETING_LINE.match(first) or "team" in first.casefold():
+        return None
+    company = inputs["company_research"].get("company", "")
+    return f"it greets {first!r}, but the contact has no name; greet the company's team, as in {greeting(company, '')!r}"
+
+
 def _allowed_bases(inputs: dict[str, Any]) -> set[str]:
     bases = {f"profile:{field}" for field in inputs["student"]}
     bases |= {f"research:{field}" for field in inputs["company_research"]}
@@ -389,6 +431,9 @@ def validate_draft(
         clean_claims.append({"text": text, "basis": basis})
     if body and not clean_claims:
         problems.append("it cites no basis for any of its claims")
+    unnamed = _unnamed_greeting_problem(body, inputs)
+    if unnamed:
+        problems.append(unnamed)
     numbers = _unsupported_numbers(body, inputs)
     if numbers:
         problems.append("it states numbers found in neither your profile nor the research: " + ", ".join(numbers))
@@ -436,8 +481,7 @@ def template_draft(inputs: dict[str, Any], kind: str) -> dict[str, Any]:
     student = inputs["student"]
     research = inputs["company_research"]
     company = research.get("company", "your team")
-    first_name = str(research.get("contact_name", "")).split(" ")[0]
-    greeting = f"Hi {first_name}," if first_name else f"Hi {company} team,"
+    opening = greeting(company, str(research.get("contact_name", "")))
     claims = [{"text": f"I'm {student['name']}", "basis": "profile:name"}]
     contact_line = " | ".join(part for part in (inputs.get("sender_address", ""), *inputs.get("links", [])) if part)
     signature = "\n".join(part for part in (student["name"], contact_line) if part)
@@ -445,7 +489,7 @@ def template_draft(inputs: dict[str, Any], kind: str) -> dict[str, Any]:
         original = inputs["original_email"]
         subject = original["subject"] if original["subject"].lower().startswith("re:") else f"Re: {original['subject']}"
         body = (
-            f"{greeting}\n\nI wanted to follow up on my note below about internship opportunities at {company}. "
+            f"{opening}\n\nI wanted to follow up on my note below about internship opportunities at {company}. "
             f"I would still welcome the chance to talk if the timing works.\n\nThank you,\n{signature}"
         )
         return {"subject": subject, "body": body, "claims": claims}
@@ -480,7 +524,7 @@ def template_draft(inputs: dict[str, Any], kind: str) -> dict[str, Any]:
         reason = f" I read about {company}'s work and would like to learn more about it."
         claims.append({"text": f"{company}'s work", "basis": "research:summary"})
     body = (
-        f"{greeting}\n\nI'm {student['name']}{study}.{reason}{skill_sentence}\n\n"
+        f"{opening}\n\nI'm {student['name']}{study}.{reason}{skill_sentence}\n\n"
         f"Would {company} consider taking on an intern? I would welcome a 15 minute call to learn about your team.\n\n"
         f"Thank you,\n{signature}"
     )

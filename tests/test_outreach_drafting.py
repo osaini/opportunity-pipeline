@@ -456,6 +456,18 @@ class DraftingTests(unittest.TestCase):
         self.assertIn("Mechanical Engineering at UT Austin", target["email_body"])
         self.assertEqual(target["draft_checks"]["warnings"], [])
 
+    def test_a_draft_to_an_address_with_no_name_greets_the_company_team(self):
+        update_target(self.conn, self.target["id"], {"company": "Bovi, Inc.", "contact_name": ""}, user_id=USER)
+        target = generate_draft(self.conn, self.target["id"], user_id=USER, provider_factory=None, provider="legacy")
+        self.assertTrue(target["email_body"].startswith("Hi Bovi team,\n"), target["email_body"])
+
+        team = GOOD.replace("Hi Greg,", "Hi Bovi team,")
+        provider = ScriptedProvider([GOOD, team])
+        target = self.generate(provider)
+        self.assertIn("the contact has no name", provider.prompts[1])
+        self.assertIn("'Hi Bovi team,'", provider.prompts[1])
+        self.assertTrue(target["email_body"].startswith("Hi Bovi team,"))
+
     def test_comments_steer_a_regeneration_without_becoming_a_source(self):
         self.generate(ScriptedProvider([GOOD]))
         shorter = GOOD.replace("Bovi's work on dairy robotics caught my attention, and ", "")
@@ -631,7 +643,8 @@ class DraftingTests(unittest.TestCase):
         target = create_target(self.conn, {
             "company": "Unverified Co", "website": "https://unverified.example", "summary": "Secret propulsion",
             "activity_signal": "$90M seed", "contact_name": "Dana Founder", "contact_role": "CEO",
-            "contact_email": "dana@unverified.example", "source_urls": ["https://unverified.example/about"],
+            "contact_name": "Dana Ruiz", "contact_email": "dana@unverified.example",
+            "source_urls": ["https://unverified.example/about"],
         }, user_id=USER, origin="discovery")
         provider = ScriptedProvider([draft_json(
             "Hello", "Hi team,\n\nUnverified Co builds Secret propulsion.\n\nTest Student",
@@ -660,7 +673,8 @@ class DraftingTests(unittest.TestCase):
         target = create_target(self.conn, {
             "company": "Unverified Co", "website": "https://unverified.example", "summary": "Secret propulsion",
             "contact_name": "Dana Founder", "contact_role": "CEO",
-            "contact_email": "dana@unverified.example", "source_urls": ["https://unverified.example/about"],
+            "contact_name": "Dana Ruiz", "contact_email": "dana@unverified.example",
+            "source_urls": ["https://unverified.example/about"],
         }, user_id=USER, origin="discovery")
         provider = ScriptedProvider([draft_json(
             "Hello", "Hi Dana,\n\nUnverified Co builds Secret propulsion.\n\nTest Student",
@@ -708,7 +722,8 @@ class DraftingTests(unittest.TestCase):
     def test_unverified_research_source_url_claim_requires_acknowledgement(self):
         target = create_target(self.conn, {
             "company": "Unverified Source", "website": "https://unverified.example",
-            "contact_email": "dana@unverified.example", "source_urls": ["https://unverified.example/about"],
+            "contact_name": "Dana Ruiz", "contact_email": "dana@unverified.example",
+            "source_urls": ["https://unverified.example/about"],
         }, user_id=USER, origin="discovery")
         provider = ScriptedProvider([draft_json(
             "Hello", "Hi Dana,\n\nI saw Unverified Source's work.\n\nTest Student",
@@ -902,6 +917,20 @@ class DraftingApiTests(unittest.TestCase):
         self.assertEqual(listing["summary"]["drafts_awaiting_approval"], 0)
         self.assertFalse(listing["discovery"]["available"], "a test database never gets a live deep search")
 
+    def test_a_contact_added_by_hand_becomes_the_contact(self):
+        created = self.client.post("/api/v1/outreach", headers=AUTH, json={"company": "Bovi"}).json()
+        added = self.client.post(f"/api/v1/outreach/{created['id']}/contacts", headers=AUTH, json={"email": "hello@bovi.example"})
+        self.assertEqual(added.status_code, 201, added.text)
+        self.assertEqual((added.json()["contact_email"], added.json()["contact_name"]), ("hello@bovi.example", ""))
+        self.assertEqual(added.json()["contact_confidence"], "unverified")
+        listed = self.client.get(f"/api/v1/outreach/{created['id']}/contacts", headers=AUTH).json()["candidates"]
+        self.assertEqual([(row["email"], row["method"]) for row in listed], [("hello@bovi.example", "manual")])
+
+        bad = self.client.post(f"/api/v1/outreach/{created['id']}/contacts", headers=AUTH, json={"email": "not an address"})
+        self.assertEqual(bad.status_code, 422)
+        missing = self.client.post("/api/v1/outreach/nope/contacts", headers=AUTH, json={"email": "a@b.example"})
+        self.assertEqual(missing.status_code, 404)
+
     def test_stale_and_malformed_approval_fingerprints_are_rejected(self):
         created = self.client.post("/api/v1/outreach", headers=AUTH, json={
             "company": "Stale", "contact_email": "x@stale.example", "email_subject": "Hi", "email_body": "Body",
@@ -930,7 +959,7 @@ class DraftingApiTests(unittest.TestCase):
 
     def test_draft_history_routes(self):
         created = self.client.post("/api/v1/outreach", headers=AUTH, json={
-            "company": "Bovi", "summary": "Dairy robotics", "contact_email": "greg@bovi.example",
+            "company": "Bovi", "summary": "Dairy robotics", "contact_name": "Greg Hall", "contact_email": "greg@bovi.example",
             "email_subject": "Old", "email_body": "Hi, an older draft.",
         }).json()
         other = self.client.post("/api/v1/outreach", headers=AUTH, json={"company": "Other"}).json()
