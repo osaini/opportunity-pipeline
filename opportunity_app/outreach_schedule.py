@@ -138,8 +138,12 @@ def schedule_send(
     if current and current[0] in {"sending", "transmitting"}:
         raise SendConflictError("This email is being sent right now. Wait a moment, then reload")
     approved = _approved_for(conn, target_id, user_id, kind, sending=True, fingerprint=fingerprint)
-    if not gmail_drafts_status(conn, user_id=user_id)["connected"]:
+    gmail = gmail_drafts_status(conn, user_id=user_id)
+    if not gmail["connected"]:
         raise ValueError("Connect Gmail before scheduling; scheduled emails go out from your Gmail")
+    if not gmail["bounce_check"]:
+        # The check just before sending reads Gmail for replies and bounces.
+        raise ValueError("Reconnect Gmail once before scheduling, so the app can check for replies and bounces before it sends")
     zone, basis = recipient_zone(conn, approved.target, user_id=user_id)
     send_at = next_morning(now, zone, f"{target_id}:{kind}")
     label = _label(send_at, zone, basis)

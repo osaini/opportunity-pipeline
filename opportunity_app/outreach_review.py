@@ -28,7 +28,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Callable
 
-from .agent_providers import CliAgentProvider, _cli_binary
+from .agent_providers import _cli_binary
 from .outreach import get_target
 from .outreach_delivery import check_deliveries
 from .outreach_inbox import capture_replies
@@ -107,6 +107,25 @@ def _thread(target: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
     return thread
 
 
+def _one_answer(output: Any) -> dict[str, Any] | None:
+    """The reviewer's answer when its reply is exactly one JSON object, else None.
+
+    A reply with two objects (the example echoed back, then the real answer)
+    or anything else around the object is not read as a pass or a hold: it is
+    unclear, and unclear holds.
+    """
+    if not isinstance(output, str):
+        return None
+    text = output.strip()
+    if text.startswith("```"):
+        text = text.strip("`").removeprefix("json").strip()
+    try:
+        answer = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return answer if isinstance(answer, dict) else None
+
+
 def review_follow_up(
     conn: sqlite3.Connection, target_id: str, *, user_id: str, runner: Runner, reviewer: str, today: date,
 ) -> dict[str, Any]:
@@ -134,9 +153,12 @@ def review_follow_up(
     }
     prompt = f"{REVIEW_INSTRUCTIONS}\n\nJSON input:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
     try:
-        answer = CliAgentProvider.extract_json(runner(prompt))
+        output = runner(prompt)
     except (RuntimeError, OSError, subprocess.SubprocessError, ValueError) as exc:
         return {**held, "problems": [f"The reviewer could not run: {exc}"[:300]]}
+    answer = _one_answer(output)
+    if answer is None:
+        return {**held, "problems": ["The reviewer's answer could not be read"]}
     send, problems, away = answer.get("send"), answer.get("problems"), answer.get("away_until")
     if not isinstance(send, bool) or not isinstance(problems, list) or not all(isinstance(item, str) for item in problems):
         return {**held, "problems": ["The reviewer's answer could not be read"]}

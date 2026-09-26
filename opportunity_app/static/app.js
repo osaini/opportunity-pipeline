@@ -2652,7 +2652,8 @@
     }
     // A paused company that was already written to is never sent the first email again.
     if (kind === "follow_up" || !item.sent_at) {
-      if (context.automation?.scheduled_sending) {
+      // The check just before a scheduled send reads Gmail, so it needs read access.
+      if (context.automation?.scheduled_sending && context.gmail.bounce_check) {
         controls.append(gmailScheduleButton(item, kind), gmailSendButton(context.gmail, item, kind, { now: true }));
       } else {
         controls.append(gmailSendButton(context.gmail, item, kind));

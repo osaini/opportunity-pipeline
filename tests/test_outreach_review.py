@@ -83,6 +83,7 @@ class SendGateTests(unittest.TestCase):
         outreach_delivery._LAST_LOOK.clear()
         outreach_delivery._READ_NOTICES.clear()
         outreach_inbox._LAST_CAPTURE.clear()
+        update_settings(self.conn, {"scheduled_sending": True}, user_id=USER)
         fernet = Fernet(self.key.encode())
         with self.conn:
             self.conn.execute(
@@ -179,6 +180,47 @@ class SendGateTests(unittest.TestCase):
         self.assertIn("Nothing was sent", stopped["error"])
         self.assertEqual(len(self.gmail.sent), 1)
 
+    def test_a_gmail_error_on_any_read_holds_the_follow_up(self):
+        for status in (500, 429):
+            with self.subTest(status=status):
+                target = self.scheduled_follow_up() if status == 500 else target
+                if status == 429:
+                    with self.conn:
+                        self.conn.execute("UPDATE outreach_scheduled_sends SET state='scheduled', attempts=0, error=''")
+                self.gmail.thread_status = status
+                self.assertEqual([item["state"] for item in self.due(target)], ["retrying"])
+                self.assertIn("Could not check Gmail", self.target(target)["scheduled"]["follow_up"]["error"])
+                self.assertEqual(len(self.gmail.sent), 1, "sending still works, but nothing goes unchecked")
+
+    def test_a_failed_bounce_read_is_not_taken_as_no_bounce(self):
+        from opportunity_app.outreach_delivery import check_deliveries
+
+        target = self.scheduled_follow_up()
+        self.gmail.thread_status = 500
+        result = check_deliveries(self.conn, user_id=USER, client_factory=self.factory, force_target=target["id"])
+        self.assertEqual(result["state"], "unreachable")
+
+    def test_a_bounce_from_days_ago_still_stops_the_follow_up(self):
+        target = self.scheduled_follow_up()
+        # The first email went a week ago, and its bounce was never recorded (the app was off).
+        week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat(timespec="microseconds")
+        with self.conn:
+            self.conn.execute("UPDATE outreach_events SET created_at=? WHERE event_type='gmail_sent'", (week_ago,))
+        self.gmail.replies["thread-1"] = [failure_notice()]
+        self.assertEqual([item["state"] for item in self.due(target)], ["cancelled"])
+        self.assertEqual(len(self.gmail.sent), 1)
+        self.assertTrue(self.target(target)["contact_bounced"])
+
+    def test_scheduling_needs_gmail_read_access(self):
+        first = self.approved_first_email()
+        with self.conn:
+            self.conn.execute("UPDATE connector_accounts SET scopes_json=?", (json.dumps(SCOPES[:1]),))
+        refused = self.client.post(f"/api/v1/outreach/{first['id']}/schedule", headers=AUTH, json={
+            "kind": "initial", "fingerprint": first["draft_fingerprint"],
+        })
+        self.assertEqual(refused.status_code, 422)
+        self.assertIn("Reconnect Gmail", refused.json()["detail"])
+
     # --- The second model ---------------------------------------------------------------
 
     def test_with_the_switch_off_the_reviewer_is_not_asked(self):
@@ -232,6 +274,9 @@ class SendGateTests(unittest.TestCase):
             ({"send": True, "problems": ["Greeting uses the wrong name"]}, "send with problems"),
             ({"send": True, "away_until": "next week", "problems": []}, "a return date that is not a date"),
             ({"send": False, "problems": []}, "no send and no reason"),
+            ('The format is {"send": true, "away_until": null, "problems": []}. My answer: {"send": false, "problems": ["x"]}',
+             "two objects: the example echoed, then the answer"),
+            ('[{"send": true, "away_until": null, "problems": []}]', "a list around the answer"),
         ):
             with self.subTest(why=why):
                 target = self.scheduled_follow_up() if why == "no JSON" else target
@@ -248,6 +293,24 @@ class SendGateTests(unittest.TestCase):
         self.assertEqual([item["state"] for item in self.due(target, reviewer=reviewer)], ["failed"])
         self.assertIn("not signed in", self.target(target)["scheduled"]["follow_up"]["error"])
         self.assertEqual(len(self.gmail.sent), 1)
+
+    def test_any_reviewer_failure_holds_it_and_the_run_goes_on(self):
+        self.review_on()
+        target = self.scheduled_follow_up()
+
+        def broken_factory():
+            raise FileNotFoundError("codex is not installed")
+
+        for why, reviewer in (("not installed", broken_factory), ("crashes", Reviewer(error=TypeError("bad"))), ("says nothing", Reviewer(answer=None))):
+            with self.subTest(why=why):
+                with self.conn:
+                    self.conn.execute("UPDATE outreach_scheduled_sends SET state='scheduled', error='', attempts=0 WHERE kind='follow_up'")
+                if isinstance(reviewer, Reviewer) and reviewer.answer is None and reviewer.error is None:
+                    reviewer.run = lambda prompt: None
+                self.assertEqual([item["state"] for item in self.due(target, reviewer=reviewer)], ["failed"])
+                stopped = self.target(target)["scheduled"]["follow_up"]
+                self.assertEqual(stopped["state"], "failed", "never left stuck in sending")
+                self.assertEqual(len(self.gmail.sent), 1)
 
     def test_the_reviewer_is_codex_unless_set_otherwise(self):
         with mock.patch.dict("os.environ", {"PIPELINE_OUTREACH_REVIEW_PROVIDER": ""}):
