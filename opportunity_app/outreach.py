@@ -656,7 +656,7 @@ def _schedules(conn: sqlite3.Connection, user_id: str, target_id: str | None = N
     """Scheduled sends still to report on (outreach_schedule.py), by target and kind."""
     sql = (
         "SELECT target_id, kind, send_at, label, state, error FROM outreach_scheduled_sends "
-        "WHERE user_id=? AND state IN ('scheduled', 'sending', 'failed')"
+        "WHERE user_id=? AND state IN ('scheduled', 'sending', 'transmitting', 'failed')"
     )
     params: list[Any] = [user_id]
     if target_id:

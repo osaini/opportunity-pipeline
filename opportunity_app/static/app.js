@@ -2624,6 +2624,11 @@
     const controls = document.createDocumentFragment();
     const schedule = item.scheduled?.[kind];
     // A scheduled send can always be cancelled, even while Gmail needs reconnecting.
+    if (schedule?.state === "transmitting") {
+      // Handed to Gmail: too late to cancel, and it will show as sent in a moment.
+      controls.append(chip("Sending…", "is-region"));
+      return controls;
+    }
     if (!context.gmail?.connected) {
       if (schedule?.state === "scheduled" || schedule?.state === "sending") {
         controls.append(chip(`Goes out ${schedule.label} once Gmail is reconnected`, "is-warning"), cancelScheduleButton(item, kind));
@@ -3236,7 +3241,7 @@
   const OUTREACH_TABS = [
     { id: "to-contact", label: "To contact", test: outreachToContact },
     { id: "ready", label: "Ready to send", group: "Before sending", tone: "is-good", test: (item) => outreachToContact(item) && item.draft_status === "approved" && Boolean(item.contact_email) && !item.contact_bounced && !item.cc_bounced && item.scheduled?.initial?.state !== "scheduled" },
-    { id: "scheduled", label: "Scheduled", group: "Before sending", tone: "is-region", test: (item) => ["scheduled", "sending", "failed"].includes(item.scheduled?.initial?.state) || ["scheduled", "sending", "failed"].includes(item.scheduled?.follow_up?.state) },
+    { id: "scheduled", label: "Scheduled", group: "Before sending", tone: "is-region", test: (item) => ["initial", "follow_up"].some((kind) => ["scheduled", "sending", "transmitting", "failed"].includes(item.scheduled?.[kind]?.state)) },
     { id: "needs-review", label: "Drafts to review", group: "Before sending", tone: "is-soon", test: (item) => outreachDraftNeedsReview(item, "initial") || outreachDraftNeedsReview(item, "follow_up") },
     { id: "needs-contact", label: "Needs a contact", group: "Before sending", tone: "is-soon", test: (item) => outreachToContact(item) && (!item.contact_email || item.contact_bounced) },
     { id: "bounced", label: "Bounced", group: "Before sending", tone: "is-alert", test: (item) => Boolean(item.bounced_at) },
@@ -3511,7 +3516,7 @@
   const AUTOMATION_SWITCHES = [
     ["auto_drafts", "Write drafts automatically", "Every company with a contact and a location gets a draft written, whether a deep search found it, you added it, or a contact turned up later. Each one waits for your approval."],
     ["bounce_recovery", "Find a new contact after a bounce", "When an email bounces, the app searches the company's site again, picks the best address that has not bounced, and updates the greeting. You review the draft and send it again."],
-    ["scheduled_sending", "Send on their weekday morning", "Your confirmed Send queues the approved email for 9 to 9:40 AM on the recipient's next weekday, in their timezone (from the company's US state, or yours when it names none). Editing the draft cancels it; Send now and Cancel stay on the card. Needs Gmail connected."],
+    ["scheduled_sending", "Send on their weekday morning", "Your confirmed Send queues the approved email for 9 to 9:40 AM on the recipient's next weekday, in their timezone (from the company's US state, or yours when it names none). Editing the draft cancels it; Send now and Cancel stay on the card. Turning this off does not cancel emails already scheduled; cancel them on their cards. Needs Gmail connected."],
   ];
 
   async function automationFields() {

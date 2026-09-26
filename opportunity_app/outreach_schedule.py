@@ -67,7 +67,7 @@ SPREAD_MINUTES = 40
 RETRY_AFTER = timedelta(minutes=10)
 MAX_ATTEMPTS = 3
 STUCK_AFTER = timedelta(minutes=10)
-LIVE_STATES = ("scheduled", "sending", "failed")
+LIVE_STATES = ("scheduled", "sending", "transmitting", "failed")
 
 
 # A state code at the end, with or without a comma or ZIP: "Denver CO", "Boston, MA 02110".
@@ -129,7 +129,7 @@ def schedule_send(
     current = conn.execute(
         "SELECT state FROM outreach_scheduled_sends WHERE target_id=? AND user_id=? AND kind=?", (target_id, user_id, kind),
     ).fetchone()
-    if current and current[0] == "sending":
+    if current and current[0] in {"sending", "transmitting"}:
         raise SendConflictError("This email is being sent right now. Wait a moment, then reload")
     approved = _approved_for(conn, target_id, user_id, kind, sending=True, fingerprint=fingerprint)
     if not gmail_drafts_status(conn, user_id=user_id)["connected"]:
@@ -145,7 +145,7 @@ def schedule_send(
             VALUES(?, ?, ?, ?, ?, ?, ?, 'scheduled', '', 0, ?, ?)
             ON CONFLICT(target_id, kind) DO UPDATE SET fingerprint=excluded.fingerprint, send_at=excluded.send_at,
                 timezone=excluded.timezone, label=excluded.label, state='scheduled', error='', attempts=0, updated_at=excluded.updated_at
-                WHERE outreach_scheduled_sends.state <> 'sending'
+                WHERE outreach_scheduled_sends.state NOT IN ('sending', 'transmitting')
             """,
             (target_id, user_id, kind, fingerprint, send_at.isoformat(timespec="seconds"), getattr(zone, "key", "system-local"),
              label, stamp, stamp),
@@ -156,10 +156,12 @@ def schedule_send(
 
 
 def cancel_send(conn: sqlite3.Connection, target_id: str, *, user_id: str, kind: str, reason: str = "You cancelled it") -> bool:
-    """Stop a scheduled send. False when there was nothing left to stop (it had already gone, or none was scheduled).
+    """Stop a scheduled send. False when there was nothing left to stop.
 
-    A send the worker has picked up but not yet handed to Gmail is stopped too:
-    the worker looks at the row once more just before it sends.
+    A send the worker is still checking is stopped too: the worker hands it to
+    Gmail only if the row is still its own ('sending' to 'transmitting' in one
+    step). One already handed over ('transmitting') cannot be stopped, and
+    this says so by returning False.
     """
     get_target(conn, target_id, user_id=user_id)
     with conn:
@@ -175,7 +177,7 @@ def cancel_send(conn: sqlite3.Connection, target_id: str, *, user_id: str, kind:
 
 def _finish(conn: sqlite3.Connection, row: sqlite3.Row, state: str, error: str = "") -> None:
     """Settle a row the worker holds. A send that went out is recorded even if it was cancelled meanwhile."""
-    held = "" if state == "sent" else " AND state='sending'"
+    held = "" if state == "sent" else " AND state IN ('sending', 'transmitting')"
     with conn:
         if not conn.execute(
             f"UPDATE outreach_scheduled_sends SET state=?, error=?, updated_at=? WHERE target_id=? AND kind=?{held}",
@@ -196,12 +198,16 @@ def run_due_sends(conn: sqlite3.Connection, *, client_factory: ClientFactory, no
     # Due times are stored in UTC and compared as text, so ``now`` must be UTC too.
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     stamp = now.isoformat(timespec="seconds")
-    # A send cut off mid-way (the app stopped) may or may not have reached Gmail.
+    # A send cut off mid-way (the app stopped). Still being checked, it never
+    # reached Gmail and goes back in line; handed over, it may have gone out.
+    stuck = (now - STUCK_AFTER).isoformat(timespec="microseconds")
     for row in conn.execute(
-        "SELECT * FROM outreach_scheduled_sends WHERE state='sending' AND updated_at<?",
-        ((now - STUCK_AFTER).isoformat(timespec="microseconds"),),
+        "SELECT * FROM outreach_scheduled_sends WHERE state IN ('sending', 'transmitting') AND updated_at<?", (stuck,),
     ).fetchall():
-        _finish(conn, row, "failed", "The app stopped while sending this. Check your Gmail Sent folder before sending it again")
+        if row["state"] == "sending":
+            _hold_for_retry(conn, row, now, "The app stopped before sending this")
+        else:
+            _finish(conn, row, "failed", "The app stopped while sending this. Check your Gmail Sent folder before sending it again")
     results = []
     for row in conn.execute(
         "SELECT * FROM outreach_scheduled_sends WHERE state='scheduled' AND send_at<=? ORDER BY send_at", (stamp,),
@@ -231,13 +237,22 @@ def _still_held(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
     return bool(found) and found[0] == "sending"
 
 
+def _hand_over(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
+    """Mark the row as handed to Gmail, in one step with checking it was not cancelled. False if it was."""
+    with conn:
+        return bool(conn.execute(
+            "UPDATE outreach_scheduled_sends SET state='transmitting', updated_at=? WHERE target_id=? AND kind=? AND state='sending'",
+            (utc_now(), row["target_id"], row["kind"]),
+        ).rowcount)
+
+
 def _send_one(conn: sqlite3.Connection, row: sqlite3.Row, *, client_factory: ClientFactory, now: datetime) -> str:
     """Send one claimed row and return its outcome.
 
     An error this raises was raised before Gmail was asked to send. One raised
     by the send itself is settled here, since Gmail may have acted on it.
     """
-    if not _still_held(conn, row):
+    if not _hand_over(conn, row):
         return "cancelled"  # cancelled while it waited
     try:
         sent = send_gmail_message(
@@ -275,7 +290,7 @@ def _hold_for_retry(conn: sqlite3.Connection, row: sqlite3.Row, now: datetime, r
     with conn:
         conn.execute(
             "UPDATE outreach_scheduled_sends SET state='scheduled', attempts=?, send_at=?, error=?, updated_at=? "
-            "WHERE target_id=? AND kind=? AND state='sending'",
+            "WHERE target_id=? AND kind=? AND state IN ('sending', 'transmitting')",
             (attempts, (now + RETRY_AFTER).isoformat(timespec="seconds"), reason[:500], utc_now(), row["target_id"], row["kind"]),
         )
     return "retrying"

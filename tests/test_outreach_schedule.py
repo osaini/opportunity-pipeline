@@ -298,12 +298,35 @@ class ScheduledSendTests(unittest.TestCase):
         self.schedule(target)
         long_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(timespec="microseconds")
         with self.conn:
-            self.conn.execute("UPDATE outreach_scheduled_sends SET state='sending', updated_at=?", (long_ago,))
+            self.conn.execute("UPDATE outreach_scheduled_sends SET state='transmitting', updated_at=?", (long_ago,))
         run_due_sends(self.conn, client_factory=self.factory)
         stopped = self.target(target)["scheduled"]["initial"]
         self.assertEqual(stopped["state"], "failed")
         self.assertIn("Check your Gmail Sent folder", stopped["error"])
         self.assertEqual(self.gmail.sent, [])
+
+    def test_a_send_cut_off_before_it_reached_gmail_goes_back_in_line(self):
+        self.connect()
+        target = self.approved()
+        self.schedule(target)
+        long_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(timespec="microseconds")
+        with self.conn:
+            self.conn.execute("UPDATE outreach_scheduled_sends SET state='sending', updated_at=?", (long_ago,))
+        run_due_sends(self.conn, client_factory=self.factory)
+        self.assertEqual(self.target(target)["scheduled"]["initial"]["state"], "scheduled", "never handed to Gmail, so tried again")
+
+    def test_a_cancel_that_comes_while_gmail_is_sending_says_it_was_too_late(self):
+        self.connect()
+        target = self.approved()
+        self.schedule(target)
+        seen = {}
+        self.gmail.hooks["send"] = lambda: seen.update(
+            response=self.client.delete(f"/api/v1/outreach/{target['id']}/schedule", headers=AUTH).json()
+        )
+        self.assertEqual([item["state"] for item in self.due(target)], ["sent"])
+        self.assertFalse(seen["response"]["cancelled"], "it was already on its way")
+        self.assertEqual(len(self.gmail.sent), 1)
+        self.assertEqual(self.target(target)["status"], "sent")
 
     def test_the_worker_sends_what_is_due_even_with_the_switch_off(self):
         self.connect()

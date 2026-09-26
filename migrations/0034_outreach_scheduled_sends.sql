@@ -4,8 +4,9 @@
 --
 -- fingerprint is the approved draft the student scheduled: if the words or the
 -- recipient change, the send is cancelled rather than sending other words.
--- state is 'scheduled', 'sending' while the worker holds it, 'sent',
--- 'cancelled', or 'failed' with the reason in error. label is the send time as
+-- state is 'scheduled', 'sending' while the worker checks it (it can still be
+-- cancelled), 'transmitting' once it is handed to Gmail (too late to cancel),
+-- 'sent', 'cancelled', or 'failed' with the reason in error. label is the send time as
 -- the student was shown it ("Tue, Sep 29, 9:12 AM CDT").
 CREATE TABLE IF NOT EXISTS outreach_scheduled_sends (
     target_id TEXT NOT NULL REFERENCES outreach_targets(id) ON DELETE CASCADE,
