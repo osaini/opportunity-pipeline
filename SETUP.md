@@ -119,6 +119,7 @@ into `config/profile.json`. The field names are the keys in
 | Authorized to work in the US? US citizen? Need sponsorship? | `work_authorized_us`, `us_citizen`, `requires_sponsorship` | `true` / `false` / `null`. Never infer these. |
 | Home during breaks and summers | `break_location` | "City, ST", or the name of one of their `regions`. Used only for the outreach "(live in …)" note (see below) |
 | Pay expectations | `compensation_preferences` | free text or `null` |
+| How they open an email | `greeting_word`, `unnamed_greeting` | Their word before a name (`"Hi"`, `"Hello"`, `"Dear"`), and how they greet a shared inbox with no name: `"{company} team"`, `"there"`, or `"{company} hiring team"`. Drafts and contact changes use these; left out, they are `"Hi"` and `"{company} team"`. Editable later on the Profile page. |
 
 **Regions** decide which locations score up. Each is a metro area with a
 bonus. There is no geocoding: a region is the list of towns it covers, and a

@@ -875,6 +875,7 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 .outreach-candidate > div:first-child span { color: var(--ink-muted); font-size: 11px; }
 .outreach-evidence { color: var(--accent-strong); font-size: 10px; font-weight: 750; }
 .outreach-reply .profile-field { width: 100%; }
+.outreach-manual-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; width: 100%; }
 .outreach-reply-result { display: grid; gap: 8px; justify-items: start; }
 .outreach-deep-search { grid-column: 1 / -1; margin-top: 0; padding: var(--space-5) var(--space-6); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
 .outreach-deep-search-body { display: grid; gap: 12px; justify-items: start; margin-top: 12px; }
@@ -903,7 +904,7 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
   .nav-list { gap: 1px; }
   .nav-item { min-width: 40px; padding-inline: 2px; }
   .sidebar-foot #logout-button { width: 44px; }
-  .outreach-add-form, .outreach-group { grid-template-columns: 1fr; }
+  .outreach-add-form, .outreach-group, .outreach-manual-fields { grid-template-columns: 1fr; }
   .outreach-candidate { grid-template-columns: 1fr; }
   .application-controls .tracker-exports { justify-content: flex-start; }
 }

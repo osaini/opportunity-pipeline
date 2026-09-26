@@ -31,7 +31,7 @@ from uuid import uuid4
 
 import httpx
 
-from .outreach import _log, get_target, update_target, website_domain
+from .outreach import _EMAIL, MANUAL_CONTACT_ROUTE, _log, get_target, update_target, website_domain
 from .schema import utc_now
 
 USER_AGENT = "Mozilla/5.0 (compatible; internship-pipeline-outreach/1.0; one student's research)"
@@ -723,7 +723,7 @@ def store_candidate(conn: sqlite3.Connection, target_id: str, user_id: str, cand
 
 
 # Candidates a re-run of the site crawl does not produce, so it must not delete.
-KEPT_ACROSS_CRAWLS = ("ai_research", "published_elsewhere")
+KEPT_ACROSS_CRAWLS = ("ai_research", "published_elsewhere", "manual")
 
 
 def find_contacts(
@@ -795,6 +795,9 @@ def contact_route(row: dict[str, Any], *, cc: str = "") -> str:
             route += f"; {VERIFICATION_WORDS[row['verification']]}"
     elif row["method"] == "site_generic":
         route = f"Shared inbox published on {evidence}"
+    elif row["method"] == "manual":
+        route = MANUAL_CONTACT_ROUTE + (f" from {evidence}" if evidence else "")
+        route += "" if row["confidence"] == "confirmed" else "; not confirmed"
     else:
         route = f"Address published on {evidence}"
     if cc:
@@ -849,11 +852,50 @@ def apply_candidate(
     changes["contact_route"] = route
     if row["evidence_url"] and row["evidence_url"] not in target["source_urls"]:
         changes["source_urls"] = [*target["source_urls"], row["evidence_url"]]
+    # A draft not yet sent greets whoever it now goes to; update_target swaps
+    # the greeting in the student's own style (outreach._readdress_drafts).
     update_target(conn, target_id, changes, user_id=user_id)
     with conn:
         _log(conn, target_id, user_id, "contact_applied",
              detail=f"{row['email']} ({row['confidence']}, {row['method'].replace('_', ' ')})" + (f", cc {cc}" if cc else ""))
     return get_target(conn, target_id, user_id=user_id)
+
+
+def add_manual_contact(
+    conn: sqlite3.Connection,
+    target_id: str,
+    *,
+    user_id: str,
+    email: str,
+    name: str = "",
+    role: str = "",
+    evidence_url: str = "",
+    confirmed: bool = False,
+) -> dict[str, Any]:
+    """Keep an address the student found themselves and make it the contact.
+
+    It is confirmed only when the student says so; otherwise it stays
+    unverified. With no name, drafts greet the company's team.
+    """
+    get_target(conn, target_id, user_id=user_id)
+    email, name, role, evidence_url = email.strip(), " ".join(name.split()), " ".join(role.split()), evidence_url.strip()
+    if not _EMAIL.match(email):
+        raise ValueError("That does not look like an email address")
+    if evidence_url and public_web_url_error(evidence_url):
+        raise ValueError("Where you found it must be a public http(s) URL")
+    candidate = {
+        "name": name, "role": role if name else "", "email": email, "method": "manual",
+        "confidence": "confirmed" if confirmed else "unverified", "evidence_url": evidence_url,
+    }
+    with conn:
+        store_candidate(conn, target_id, user_id, candidate, utc_now())
+    # The same address and name may already be listed from a stronger source,
+    # which store_candidate keeps; that row is the one to use.
+    row = conn.execute(
+        "SELECT id FROM outreach_contact_candidates WHERE target_id=? AND user_id=? AND email=? AND name=?",
+        (target_id, user_id, email[:320], name[:200]),
+    ).fetchone()
+    return apply_candidate(conn, target_id, row[0], user_id=user_id)
 
 
 # The shared inbox worth writing to about an internship, best first. Any other

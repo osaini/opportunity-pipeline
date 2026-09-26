@@ -24,7 +24,7 @@ from uuid import uuid4
 
 from .agent_providers import AgentProvider, CliAgentProvider, complete_text, default_provider, provider_catalog
 from .outreach import (
-    AWAITING_REPLY, DRAFT_KINDS, _cancel_schedules, _log, draft_checks, get_target, home_terms, location_usable, mentions_home, near_home, student_home,
+    AWAITING_REPLY, DEFAULT_GREETING, DRAFT_KINDS, _cancel_schedules, _log, draft_checks, get_target, greeting_line, greeting_style, home_terms, location_usable, mentions_home, near_home, student_home,
     user_regions,
 )
 from .preparation import confirmed_facts
@@ -83,7 +83,7 @@ The student's own results carry the email. A founder or a shared jobs inbox shou
 
 Follow this formula, in this order:
 1. Subject: the student's most relevant proof plus the company, under 12 words, in the shape "[proof] at [school], interested in interning at [company]".
-2. Greeting: the contact's first name when contact_name is given, otherwise "Hi" and the company team, using the name people call the company without Inc, Corp, Corporation, or LLC.
+2. Greeting: the greeting line in the input, exactly as written, on its own line. It is the student's own style.
 3. Opening, two sentences, in this shape:
    "I'm a [major] student at [school] [location_line] and [a or an] [role] at [primary_experience], where I [what the student built or did there]. I [result], [result], and [result]."
    - Who the student is, written the way a person says it: their major and school as they would say them aloud, not the degree's formal title.
@@ -134,6 +134,7 @@ Rules:
 - Plain text, no markdown, no em dashes or en dashes, no [placeholders].
 - Politely restate the ask in fewer words than the original. Do not repeat the whole original email.
 - Sound like a person: contractions, plain words, no "just circling back", "hope this email finds you well", or "I'm reaching out".
+- Open with the greeting line in the input, exactly as written.
 - Sign off with the student's name.
 - List every factual claim with its basis, exactly as in the original: "profile:<field>", "research:<field>", or a source URL.
 - unverified_research is unconfirmed deep-search text and must use its matching "unverified:<field>" basis.
@@ -253,6 +254,8 @@ def _inputs(conn: sqlite3.Connection, target: dict[str, Any], user_id: str, kind
         "sender_address": sender_account(),
         "links": [str(contact[field]).strip() for field in LINK_FIELDS if str(contact.get(field) or "").strip()],
         "company_research": confirmed_research,
+        # The student's own way of opening an email, with this contact's name.
+        "greeting": greeting_line(target["company"], target.get("contact_name") or "", greeting_style(conn, user_id)),
         "unverified_research": unverified_research,
         "source_urls": target["source_urls"],
         "max_words": MAX_WORDS[kind],
@@ -266,6 +269,22 @@ def _inputs(conn: sqlite3.Connection, target: dict[str, Any], user_id: str, kind
         payload["original_email"] = {"subject": target["email_subject"], "body": target["email_body"]}
         payload["sent_on"] = target.get("sent_at")
     return payload
+
+
+# A greeting on a line of its own: "Hi Dana," or "Hello Acme team,".
+_GREETING_LINE = re.compile(r"^(?:hi|hello|hey|dear|good (?:morning|afternoon|evening))\b[^\n,]{0,80},$", re.IGNORECASE)
+
+
+def _unnamed_greeting_problem(body: str, inputs: dict[str, Any]) -> str | None:
+    """A greeting that names someone when the contact is only an address."""
+    if inputs["company_research"].get("contact_name") or inputs["unverified_research"].get("contact_name"):
+        return None
+    first = next((line.strip() for line in body.split("\n") if line.strip()), "")
+    # Inputs built without the student's greeting (older callers) get the default style.
+    expected = inputs.get("greeting") or greeting_line(inputs["company_research"].get("company", ""), "", DEFAULT_GREETING)
+    if not _GREETING_LINE.match(first) or first == expected:
+        return None
+    return f"it greets {first!r}, but the contact has no name; open with {expected!r}"
 
 
 def _allowed_bases(inputs: dict[str, Any]) -> set[str]:
@@ -389,6 +408,9 @@ def validate_draft(
         clean_claims.append({"text": text, "basis": basis})
     if body and not clean_claims:
         problems.append("it cites no basis for any of its claims")
+    unnamed = _unnamed_greeting_problem(body, inputs)
+    if unnamed:
+        problems.append(unnamed)
     numbers = _unsupported_numbers(body, inputs)
     if numbers:
         problems.append("it states numbers found in neither your profile nor the research: " + ", ".join(numbers))
@@ -436,8 +458,7 @@ def template_draft(inputs: dict[str, Any], kind: str) -> dict[str, Any]:
     student = inputs["student"]
     research = inputs["company_research"]
     company = research.get("company", "your team")
-    first_name = str(research.get("contact_name", "")).split(" ")[0]
-    greeting = f"Hi {first_name}," if first_name else f"Hi {company} team,"
+    opening = inputs["greeting"]
     claims = [{"text": f"I'm {student['name']}", "basis": "profile:name"}]
     contact_line = " | ".join(part for part in (inputs.get("sender_address", ""), *inputs.get("links", [])) if part)
     signature = "\n".join(part for part in (student["name"], contact_line) if part)
@@ -445,7 +466,7 @@ def template_draft(inputs: dict[str, Any], kind: str) -> dict[str, Any]:
         original = inputs["original_email"]
         subject = original["subject"] if original["subject"].lower().startswith("re:") else f"Re: {original['subject']}"
         body = (
-            f"{greeting}\n\nI wanted to follow up on my note below about internship opportunities at {company}. "
+            f"{opening}\n\nI wanted to follow up on my note below about internship opportunities at {company}. "
             f"I would still welcome the chance to talk if the timing works.\n\nThank you,\n{signature}"
         )
         return {"subject": subject, "body": body, "claims": claims}
@@ -480,7 +501,7 @@ def template_draft(inputs: dict[str, Any], kind: str) -> dict[str, Any]:
         reason = f" I read about {company}'s work and would like to learn more about it."
         claims.append({"text": f"{company}'s work", "basis": "research:summary"})
     body = (
-        f"{greeting}\n\nI'm {student['name']}{study}.{reason}{skill_sentence}\n\n"
+        f"{opening}\n\nI'm {student['name']}{study}.{reason}{skill_sentence}\n\n"
         f"Would {company} consider taking on an intern? I would welcome a 15 minute call to learn about your team.\n\n"
         f"Thank you,\n{signature}"
     )

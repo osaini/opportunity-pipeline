@@ -27,6 +27,7 @@ import httpx
 from opportunity_app import schema
 from opportunity_app.outreach import DraftChangedError, _draft_fingerprint, approve_draft, create_target, get_target, update_target
 from opportunity_app.outreach_contacts import (
+    add_manual_contact,
     apply_candidate,
     apply_choice,
     choose_contact,
@@ -491,6 +492,48 @@ class StoredContactTests(DatabaseCase):
         self.find(target["id"], sites)
         sam = [item for item in list_candidates(self.conn, target["id"], user_id=USER) if item["email"] == "sam.lee@acme.test"]
         self.assertEqual([(item["method"], item["confidence"]) for item in sam], [("site_published", "confirmed")])
+
+    def test_an_address_added_by_hand_with_no_name_greets_the_team_and_stays_unverified(self):
+        target = create_target(self.conn, {
+            "company": "Acme Robotics Inc", "website": "https://acme.test", "contact_name": "Sam Lee",
+            "contact_email": "sam@acme.test", "email_subject": "Internship", "email_body": "Hi Sam,\n\nI build robots.",
+        }, user_id=USER)
+        added = add_manual_contact(self.conn, target["id"], user_id=USER, email=" careers@acme.test ")
+        self.assertEqual((added["contact_email"], added["contact_name"], added["contact_role"]), ("careers@acme.test", "", ""))
+        self.assertEqual(added["contact_confidence"], "unverified")
+        self.assertEqual(added["contact_route"], "You added this address; not confirmed")
+        self.assertEqual(added["email_body"], "Hi Acme Robotics team,\n\nI build robots.")
+        (row,) = list_candidates(self.conn, target["id"], user_id=USER)
+        self.assertEqual((row["method"], row["confidence"]), ("manual", "unverified"))
+        with self.assertRaisesRegex(ValueError, "careers@acme.test is an address you added, not confirmed"):
+            approve_draft(self.conn, target["id"], user_id=USER, fingerprint=added["draft_fingerprint"])
+
+        self.find(target["id"])
+        rows = {(item["email"], item["method"]) for item in list_candidates(self.conn, target["id"], user_id=USER)}
+        self.assertIn(("careers@acme.test", "manual"), rows, "a new crawl keeps what the student added")
+
+    def test_an_address_added_by_hand_is_confirmed_only_when_the_student_says_so(self):
+        target = create_target(self.conn, {"company": "Acme", "email_body": "Hi Acme team,\n\nI build robots."}, user_id=USER)
+        added = add_manual_contact(
+            self.conn, target["id"], user_id=USER, email="rita@acme.test", name="Rita Moreno", role="Founder",
+            evidence_url="https://news.test/rita", confirmed=True,
+        )
+        self.assertEqual((added["contact_name"], added["contact_role"], added["contact_confidence"]), ("Rita Moreno", "Founder", "confirmed"))
+        self.assertEqual(added["contact_route"], "You added this address from https://news.test/rita")
+        self.assertIn("https://news.test/rita", added["source_urls"])
+        self.assertTrue(added["email_body"].startswith("Hi Rita,\n"))
+
+        for bad in ({"email": "not an address"}, {"email": "a@acme.test", "evidence_url": "http://127.0.0.1/x"}):
+            with self.subTest(bad), self.assertRaises(ValueError):
+                add_manual_contact(self.conn, target["id"], user_id=USER, **bad)
+
+    def test_a_sent_email_keeps_its_greeting_when_the_contact_changes(self):
+        target = create_target(self.conn, {
+            "company": "Acme", "contact_name": "Sam Lee", "contact_email": "sam@acme.test",
+            "email_body": "Hi Sam,\n\nI build robots.", "status": "sent", "sent_at": "2026-09-20",
+        }, user_id=USER)
+        added = add_manual_contact(self.conn, target["id"], user_id=USER, email="hello@acme.test")
+        self.assertEqual(added["email_body"], "Hi Sam,\n\nI build robots.")
 
     def test_the_latest_mail_server_answer_replaces_an_older_one(self):
         from opportunity_app.outreach_contacts import store_candidate

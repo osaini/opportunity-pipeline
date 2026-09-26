@@ -262,6 +262,7 @@ from .outreach import (
 )
 from .outreach_contacts import (
     SafeFetcher,
+    add_manual_contact as add_manual_outreach_contact,
     apply_candidate as apply_outreach_candidate,
     default_fetcher as default_contact_fetcher,
     find_contacts as find_outreach_contacts,
@@ -462,6 +463,14 @@ class OutreachSendRequest(BaseModel):
     # The check a 428 answer named, sent back once the student has looked in
     # Gmail. It vouches for exactly the reasons that answer gave.
     sent_folder_check: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+
+
+class OutreachManualContactRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    name: str = Field(default="", max_length=200)
+    role: str = Field(default="", max_length=200)
+    evidence_url: str = Field(default="", max_length=500)
+    confirmed: bool = False
 
 
 class OutreachReplyRequest(BaseModel):
@@ -2455,6 +2464,20 @@ def create_app(
             return {"candidates": list_outreach_candidates(conn, target_id, user_id=user_id)}
         except OutreachNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+
+    @app.post("/api/v1/outreach/{target_id}/contacts", status_code=status.HTTP_201_CREATED)
+    def add_outreach_contact(
+        target_id: str,
+        payload: OutreachManualContactRequest,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        try:
+            return add_manual_outreach_contact(conn, target_id, user_id=user_id, **payload.model_dump())
+        except OutreachNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
     @app.post("/api/v1/outreach/{target_id}/find-contacts")
     def find_contacts_for_outreach(

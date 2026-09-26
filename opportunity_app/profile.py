@@ -23,6 +23,8 @@ ALLOWED_PROFILE_FIELDS = {
     "preferred_locations",
     "regions",
     "break_location",
+    "greeting_word",
+    "unnamed_greeting",
     "out_of_region_penalty",
     "remote_ok",
     "willing_to_relocate",
@@ -226,7 +228,7 @@ def get_profile(conn: sqlite3.Connection, *, user_id: str) -> dict[str, Any]:
 # Every field a web save may set, and the JSON types it may hold. Scoring and
 # the outreach tools read these, so a wrong type must be refused before it is
 # stored rather than coerced into a value the student never gave.
-_TEXT_FIELDS = ("name", "school", "degree", "break_location", "summary")
+_TEXT_FIELDS = ("name", "school", "degree", "break_location", "summary", "greeting_word", "unnamed_greeting")
 _TEXT_LIST_FIELDS = (
     "degree_keywords",
     "preferred_role_types",
@@ -320,6 +322,12 @@ def validate_profile_types(profile: dict[str, Any]) -> None:
         if field in _TEXT_FIELDS:
             if not isinstance(value, str):
                 errors.append(f"{field} must be text")
+            elif field in {"greeting_word", "unnamed_greeting"}:
+                from .outreach import greeting_style_error
+
+                error = greeting_style_error(value if field == "greeting_word" else None, value if field == "unnamed_greeting" else None)
+                if error:
+                    errors.append(error)
         elif field in _TEXT_LIST_FIELDS:
             error = _text_list_error(field, value)
             if error:
