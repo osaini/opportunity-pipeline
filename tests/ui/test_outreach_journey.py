@@ -86,7 +86,7 @@ def test_find_a_contact_draft_approve_and_hand_off_to_gmail(owner_page, base_url
     # Contacts come from the company's own site, each with its evidence.
     details.get_by_role("button", name="Find contacts").click()
     candidates = details.locator(".outreach-candidate")
-    expect(details.locator(".outreach-contacts .form-status")).to_contain_text("Found")
+    expect(details.locator(".outreach-contacts:not(.outreach-manual-contact) .form-status")).to_contain_text("Found")
     jane = candidates.filter(has_text="jane@bovi.example")
     expect(jane).to_contain_text("Published on their site")
     expect(jane).to_contain_text("Contact confirmed")

@@ -3153,7 +3153,9 @@
       return input;
     };
     const email = field("Email", "email", "hello@company.com");
-    email.required = true;
+    // Not "required": the field sits inside the pane's form, and a required
+    // empty field there silently blocks every Save changes on the card. The
+    // Add button checks the address itself.
     email.autocomplete = "off";
     const name = field("Name (optional)", "text", "Leave blank for a shared inbox");
     const role = field("Role (optional)", "text", "Founder, CTO…");
