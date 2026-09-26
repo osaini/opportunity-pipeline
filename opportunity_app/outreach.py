@@ -52,6 +52,8 @@ CLOSED_STATUSES = {"replied", "call_scheduled", "offer", "declined", "no_respons
 # On these, follow_up_at is a revisit date, not a follow-up email reminder.
 REVISIT_STATUSES = {"replied", "paused"}
 AWAITING_REPLY = {"sent", "followed_up"}
+# Statuses the first email can still go out from.
+UNSENT_STATUSES = {"not_started", "drafted", "paused"}
 # Once a company writes back there may be a call to prepare for.
 CALL_PREP_STATUSES = {"replied", "call_scheduled", "offer"}
 DEFAULT_FOLLOW_UP_DAYS = 7
@@ -584,6 +586,10 @@ def _record(
     item["revisit_due"] = bool(
         due and item["status"] in REVISIT_STATUSES and date.fromisoformat(due) <= today
     )
+    bounced = json.loads(item.pop("bounced_addresses_json", None) or "[]")
+    item["bounced_addresses"] = bounced
+    item["contact_bounced"] = bool(item.get("contact_email")) and item["contact_email"].casefold() in bounced
+    item["cc_bounced"] = bool(item.get("contact_cc")) and item["contact_cc"].casefold() in bounced
     item["draft_checks"] = draft_checks(item.get("email_subject", ""), item.get("email_body", ""))
     item["follow_up_checks"] = draft_checks(item.get("follow_up_subject", ""), item.get("follow_up_body", ""))
     item["suggestion"] = lifecycle_suggestion(item, today)
@@ -619,6 +625,11 @@ def _apply_status_side_effects(values: dict[str, Any], previous: dict[str, Any] 
     if status is None or (previous and previous["status"] == status):
         return
     if status in {"sent", "followed_up"}:
+        # An email went out again (or the student says one did), so the bounce
+        # is behind them. The bounced addresses stay on record.
+        if previous and previous.get("bounced_at"):
+            values["bounced_at"] = None
+            values["bounce_reason"] = ""
         if status == "sent" and "sent_at" not in values and not (previous and previous.get("sent_at")):
             values["sent_at"] = today.isoformat()
         if status == "sent" and "follow_up_at" not in values:
@@ -659,6 +670,81 @@ def _apply_draft_side_effects(values: dict[str, Any], previous: dict[str, Any] |
         if kind == "initial" and previous_values.get("draft_approved_at"):
             values["draft_approved_at"] = None
     return withdrawn
+
+
+# The greeting is the draft's first line: "Hi Dana," or "Hi Acme team,". When
+# the contact changes it is the only part written to the old one, so it is
+# swapped here with no model call. The draft still goes back for approval.
+_GREETING = re.compile(
+    r"(?P<word>(?:hi|hello|hey|dear|good (?:morning|afternoon|evening))\s+)(?P<name>[^,!:\n]{1,80}?)(?P<end>\s*[,!:]?)",
+    re.IGNORECASE,
+)
+_HONORIFICS = {"dr", "mr", "mrs", "ms", "mx", "prof", "professor"}
+# Greetings to nobody in particular, which a named contact improves on.
+_GENERIC_GREETINGS = {"there", "team", "all", "everyone", "hiring team", "recruiting team"}
+
+
+def contact_first_name(name: str) -> str:
+    words = [word for word in str(name or "").replace(",", " ").split() if word.rstrip(".").casefold() not in _HONORIFICS]
+    return words[0] if words else ""
+
+
+def greeting_name(contact_name: str, company: str) -> str:
+    """Who a draft greets: the contact's first name, or the company's team for a shared inbox."""
+    return contact_first_name(contact_name) or f"{company} team"
+
+
+def readdress_greeting(body: str, old_names: set[str], new_name: str) -> tuple[str, str, str] | None:
+    """The body greeting ``new_name``, with the old and new greeting lines.
+
+    None when the first line is not a greeting to one of ``old_names``
+    (casefolded) or to a team: a greeting the student wrote to someone else is
+    theirs.
+    """
+    lines = body.split("\n")
+    index = next((number for number, line in enumerate(lines) if line.strip()), None)
+    if index is None:
+        return None
+    old_line = lines[index].strip()
+    match = _GREETING.fullmatch(old_line)
+    greeted = " ".join(match["name"].split()).casefold() if match else ""
+    if not match or not (greeted in old_names or greeted.endswith(" team")):
+        return None
+    new_line = f"{match['word']}{new_name}{match['end'] or ','}"
+    if new_line == old_line:
+        return None
+    lines[index] = new_line
+    return "\n".join(lines), old_line, new_line
+
+
+def _readdress_drafts(values: dict[str, Any], previous: dict[str, Any]) -> list[tuple[str, str, str]]:
+    """Point unsent drafts' greetings at a changed contact. Returns (kind, old line, new line) per draft."""
+    name_changed = "contact_name" in values and values["contact_name"] != previous["contact_name"]
+    email_changed = "contact_email" in values and values["contact_email"].casefold() != previous["contact_email"].casefold()
+    if not (name_changed or email_changed):
+        return []
+    # With no name on record, greg@ or greg.lee@ still says who "Hi Greg," was for.
+    mailbox = re.split(r"[._+-]", previous["contact_email"].split("@", 1)[0])[0] if "@" in previous["contact_email"] else ""
+    old_names = {
+        name.casefold() for name in (
+            contact_first_name(previous["contact_name"]), " ".join(previous["contact_name"].split()),
+            mailbox, f"{previous['company']} team", *_GENERIC_GREETINGS,
+        ) if name
+    }
+    new_name = greeting_name(values.get("contact_name", previous["contact_name"]), values.get("company", previous["company"]))
+    # A sent email's text is the record of what went out, so only unsent drafts move.
+    initial_unsent = not previous.get("sent_at") and previous["status"] in UNSENT_STATUSES
+    changed = []
+    for kind, (_subject_field, body_field, _status_field) in DRAFT_KINDS.items():
+        if not (initial_unsent or (kind == "follow_up" and previous["status"] == "sent")):
+            continue
+        if body_field in values and values[body_field] != previous[body_field]:
+            continue
+        swapped = readdress_greeting(previous[body_field] or "", old_names, new_name)
+        if swapped:
+            values[body_field] = swapped[0]
+            changed.append((kind, swapped[1], swapped[2]))
+    return changed
 
 
 # A confirmed address is the most actionable row, so it leads the list; an
@@ -873,6 +959,7 @@ def update_target(conn: sqlite3.Connection, target_id: str, payload: dict[str, A
             if previous["location_basis"] in {"research", ""}:
                 values["location_basis"] = "manual"
         _apply_status_side_effects(values, previous, today)
+        readdressed = _readdress_drafts(values, previous)
         withdrawn = _apply_draft_side_effects(values, previous)
         if not values:
             return previous
@@ -906,14 +993,18 @@ def update_target(conn: sqlite3.Connection, target_id: str, payload: dict[str, A
                     # establishing a location writes: telling the student's word
                     # apart from a source's is the whole point of this record.
                     _log(conn, target_id, user_id, "location_entered", detail=f"You entered {values['location']}")
-                if ("email_subject" in values and values["email_subject"] != previous["email_subject"]) or (
+                swapped = {kind for kind, _old, _new in readdressed}
+                if "initial" not in swapped and (("email_subject" in values and values["email_subject"] != previous["email_subject"]) or (
                     "email_body" in values and values["email_body"] != previous["email_body"]
-                ):
+                )):
                     _log(conn, target_id, user_id, "draft_edited")
-                if ("follow_up_subject" in values and values["follow_up_subject"] != previous["follow_up_subject"]) or (
+                if "follow_up" not in swapped and (("follow_up_subject" in values and values["follow_up_subject"] != previous["follow_up_subject"]) or (
                     "follow_up_body" in values and values["follow_up_body"] != previous["follow_up_body"]
-                ):
+                )):
                     _log(conn, target_id, user_id, "follow_up_edited")
+                for kind, old_line, new_line in readdressed:
+                    label = "Draft" if kind == "initial" else "Follow-up"
+                    _log(conn, target_id, user_id, "greeting_updated", detail=f'{label}: "{old_line}" is now "{new_line}" for the new contact')
                 for kind in withdrawn:
                     _log(conn, target_id, user_id, "approval_withdrawn", detail=f"The {kind.replace('_', '-')} draft changed after approval")
         except _ConfirmRaced:
@@ -1160,7 +1251,34 @@ REPLY_PATTERNS = (
 )
 
 
+# A delivery failure notice is not a reply: nobody at the company read the
+# email. Read as "replied" it would close a company that never heard from the
+# student, so it is checked before REPLY_PATTERNS and before Jev. "bounced" is
+# not a status; applying it records the bounce (outreach_delivery.record_bounce).
+BOUNCED = "bounced"
+BOUNCE_REASON = "It is a delivery failure notice, not a reply: the email did not reach them"
+_BOUNCE_NOTICE = re.compile(
+    r"\b(mailer-daemon|mail delivery (subsystem|system|failed|failure)|delivery status notification \(failure\)"
+    r"|undeliverable|undelivered mail|returned mail|delivery (has )?failed|could ?n[o']t be delivered"
+    r"|message (was )?not delivered|address not found|recipient address rejected|user unknown|no such user"
+    r"|mailbox (is )?(unavailable|not found|does not exist)|group you tried to contact|permission to post messages"
+    r"|550[ -]5\.\d\.\d+)\b"
+)
+# Gmail is still trying; only a failure is a bounce.
+_DELAY_NOTICE = re.compile(r"\(delay\)|\bdelivery (has been |is )?delayed\b|\bwill (retry|keep trying)\b")
+_PERMANENT = re.compile(r"\(failure\)|\bpermanent(ly)?\b|\b5\d\d[ -]5\.\d\.\d+")
+
+
+def bounce_notice(text: str) -> bool:
+    lowered = " ".join(str(text).lower().split())
+    if _DELAY_NOTICE.search(lowered) and not _PERMANENT.search(lowered):
+        return False
+    return bool(_BOUNCE_NOTICE.search(lowered))
+
+
 def suggest_reply_status(text: str) -> dict[str, str]:
+    if bounce_notice(text):
+        return {"status": BOUNCED, "reason": BOUNCE_REASON}
     lowered = " ".join(str(text).lower().split())
     for status, pattern, reason in REPLY_PATTERNS:
         if re.search(pattern, lowered):
@@ -1174,7 +1292,9 @@ def log_reply(
     """Record a pasted reply and suggest a status. The status is not changed here.
 
     With a decisions client the suggestion comes from Jev when it is sure enough;
-    without one, or when Jev cannot answer, it comes from REPLY_PATTERNS.
+    without one, or when Jev cannot answer, it comes from REPLY_PATTERNS. A
+    delivery failure notice is not a reply, so it is not logged as one: it
+    suggests "bounced", which the student applies to record the bounce.
     """
     body = str(text or "").replace("\r\n", "\n").strip()
     if not body:
@@ -1182,10 +1302,13 @@ def log_reply(
     if len(body) > 20_000:
         raise ValueError("Reply is too long")
     target = get_target(conn, target_id, user_id=user_id)
+    if bounce_notice(body):
+        suggestion = {**suggest_reply_status(body), "source": "rules", "confidence": None, "model": "", "fallback_reason": ""}
+        return {"suggestion": suggestion, "logged": False, "target": get_target(conn, target["id"], user_id=user_id, include_events=True)}
     suggestion = classify_reply(body, suggest_reply_status, decisions)
     with conn:
         _log(conn, target_id, user_id, "reply_logged", detail=body)
-    return {"suggestion": suggestion, "target": get_target(conn, target["id"], user_id=user_id, include_events=True)}
+    return {"suggestion": suggestion, "logged": True, "target": get_target(conn, target["id"], user_id=user_id, include_events=True)}
 
 
 NO_RESPONSE_AFTER_DAYS = 14

@@ -20,7 +20,7 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, outreach_gmail
+from opportunity_app import STATIC_DIR, outreach_delivery, outreach_gmail
 from opportunity_app.api import create_app
 from opportunity_app.schema import connect_product, utc_now
 
@@ -30,6 +30,42 @@ AUTH = {"Authorization": "Bearer gmail-owner"}
 USER = "local-user"
 ACCOUNT = "student@school.example"
 PDF = b"%PDF-1.4 fake resume"
+SCOPES = ["https://www.googleapis.com/auth/gmail.compose", "https://www.googleapis.com/auth/gmail.readonly"]
+
+
+def delivery_report(failed=(), delayed=(), text="Address not found. Your message wasn't delivered."):
+    """A standard delivery status notice (RFC 3464), as the raw text Gmail stores."""
+    blocks = "".join(
+        f"\nFinal-Recipient: rfc822; {address}\nAction: {action}\nStatus: {status}\n"
+        f"Diagnostic-Code: smtp; {status.replace('.', '')[:3]} {status} {address} does not exist\n"
+        for address, action, status in [*((a, "failed", "5.1.1") for a in failed), *((a, "delayed", "4.4.1") for a in delayed)]
+    )
+    return (
+        "From: Mail Delivery Subsystem <mailer-daemon@googlemail.com>\n"
+        f"To: {ACCOUNT}\n"
+        "Subject: Delivery Status Notification (Failure)\n"
+        "MIME-Version: 1.0\n"
+        'Content-Type: multipart/report; report-type=delivery-status; boundary="b"\n\n'
+        "--b\n"
+        'Content-Type: text/plain; charset="UTF-8"\n\n'
+        f"Hello {ACCOUNT},\n\n{text}\n\n"
+        "--b\n"
+        "Content-Type: message/delivery-status\n\n"
+        "Reporting-MTA: dns; googlemail.com\n"
+        f"{blocks}\n"
+        "--b--\n"
+    ).encode()
+
+
+def failure_notice(notice_id="dsn-1", *, subject="Delivery Status Notification (Failure)",
+                   sender="Mail Delivery Subsystem <mailer-daemon@googlemail.com>", failed="", snippet="Address not found"):
+    """A delivery status notice as Gmail's threads.get returns it in the metadata format."""
+    headers = [{"name": "From", "value": sender}, {"name": "Subject", "value": subject},
+               {"name": "Content-Type", "value": 'multipart/report; report-type=delivery-status; boundary="b"'}]
+    if failed:
+        headers.append({"name": "X-Failed-Recipients", "value": failed})
+    return {"id": notice_id, "labelIds": ["INBOX"], "internalDate": "2000", "snippet": snippet,
+            "payload": {"mimeType": "multipart/report", "headers": headers}}
 
 
 class FakeGmail:
@@ -53,6 +89,12 @@ class FakeGmail:
         self.draft_get_status = None
         # Run once, the next time Gmail sees that call: "profile", "send", "create_draft", "get_draft".
         self.hooks = {}
+        # Messages Gmail threaded with a sent email after it, by thread id.
+        self.replies = {}
+        self.thread_status = None
+        # Full text of messages by id, and the ids a search for notices finds.
+        self.raw = {}
+        self.inbox_notices = []
 
     def run_hook(self, name):
         hook = self.hooks.pop(name, None)
@@ -97,6 +139,22 @@ class FakeGmail:
                 return httpx.Response(404)
             self.sent.append(self.drafts.pop(draft_id)["message"])
             return httpx.Response(200, json={"id": f"sent-{len(self.sent)}", "threadId": f"thread-{len(self.sent)}"})
+        if request.method == "GET" and "/threads/" in path:
+            if self.thread_status:
+                return httpx.Response(self.thread_status, json={"error": {"message": "Request had insufficient authentication scopes."}})
+            thread_id = path.rsplit("/", 1)[1]
+            sent = {"id": thread_id.replace("thread-", "sent-"), "labelIds": ["SENT"], "internalDate": "1000"}
+            return httpx.Response(200, json={"id": thread_id, "messages": [sent, *self.replies.get(thread_id, [])]})
+        if request.method == "GET" and path.endswith("/messages"):
+            if self.thread_status:
+                return httpx.Response(self.thread_status)
+            return httpx.Response(200, json={"messages": [{"id": notice_id} for notice_id in self.inbox_notices]})
+        if request.method == "GET" and "/messages/" in path:
+            message_id = path.rsplit("/", 1)[1]
+            if message_id not in self.raw:
+                return httpx.Response(404)
+            raw, received = self.raw[message_id]
+            return httpx.Response(200, json={"id": message_id, "internalDate": str(received), "raw": base64.urlsafe_b64encode(raw).decode()})
         if request.method == "GET" and "/drafts/" in path:
             self.run_hook("get_draft")
             if self.draft_get_status:
@@ -135,19 +193,21 @@ class GmailDraftTests(unittest.TestCase):
         )
         self.client = TestClient(app)
         self.client.__enter__()
+        outreach_delivery._LAST_LOOK.clear()
+        outreach_delivery._READ_NOTICES.clear()
 
     def tearDown(self):
         self.client.__exit__(None, None, None)
         self.env.stop()
         self.tempdir.cleanup()
 
-    def connect(self, access_token="valid-token", refresh_token="refresh-token"):
+    def connect(self, access_token="valid-token", refresh_token="refresh-token", scopes=()):
         fernet = Fernet(self.key.encode())
         with closing(connect_product(self.platform_path)) as conn:
             conn.execute(
                 """INSERT INTO connector_accounts(id, user_id, provider, scopes_json, encrypted_access_token, encrypted_refresh_token, status, created_at, updated_at)
-                   VALUES(?, ?, 'gmail_drafts', '[]', ?, ?, 'connected', ?, ?)""",
-                (f"connector-gmail_drafts-{USER}", USER, fernet.encrypt(access_token.encode()).decode(),
+                   VALUES(?, ?, 'gmail_drafts', ?, ?, ?, 'connected', ?, ?)""",
+                (f"connector-gmail_drafts-{USER}", USER, json.dumps(list(scopes)), fernet.encrypt(access_token.encode()).decode(),
                  fernet.encrypt(refresh_token.encode()).decode(), utc_now(), utc_now()),
             )
             conn.commit()
@@ -169,11 +229,16 @@ class GmailDraftTests(unittest.TestCase):
     def test_listing_reports_connection_and_attachment(self):
         listing = self.client.get("/api/v1/outreach", headers=AUTH).json()
         self.assertEqual(listing["gmail_drafts"], {
-            "configured": True, "connected": False, "needs_reconnect": False,
+            "configured": True, "connected": False, "needs_reconnect": False, "bounce_check": False,
             "account": ACCOUNT, "attachment": "Resume.pdf", "attachment_problem": "",
         })
-        self.connect()
-        self.assertTrue(self.client.get("/api/v1/outreach", headers=AUTH).json()["gmail_drafts"]["connected"])
+        self.connect(scopes=SCOPES[:1])
+        status = self.client.get("/api/v1/outreach", headers=AUTH).json()["gmail_drafts"]
+        self.assertEqual((status["connected"], status["bounce_check"]), (True, False), "connected before bounce checks existed")
+        with closing(connect_product(self.platform_path)) as conn:
+            conn.execute("UPDATE connector_accounts SET scopes_json=?", (json.dumps(SCOPES),))
+            conn.commit()
+        self.assertTrue(self.client.get("/api/v1/outreach", headers=AUTH).json()["gmail_drafts"]["bounce_check"])
         with mock.patch.dict("os.environ", {"PIPELINE_CONNECTION_KEY": ""}):
             status = self.client.get("/api/v1/outreach", headers=AUTH).json()["gmail_drafts"]
         self.assertEqual((status["configured"], status["connected"]), (False, False))
@@ -713,14 +778,202 @@ class GmailDraftTests(unittest.TestCase):
         self.assertEqual(self.send(target).status_code, 200)
         self.assertFalse([r for r in self.gmail.requests if r.url.path.endswith("/drafts/send")])
 
-    def test_oauth_start_requests_only_compose_for_the_sending_account(self):
+    def test_oauth_start_requests_compose_and_metadata_for_the_sending_account(self):
         response = self.client.get("/api/v1/connections/oauth/gmail_drafts/start", headers=AUTH)
         self.assertEqual(response.status_code, 200, response.text)
         query = parse_qs(urlparse(response.json()["authorization_url"]).query)
-        self.assertEqual(query["scope"], ["https://www.googleapis.com/auth/gmail.compose"])
+        self.assertEqual(query["scope"], [" ".join(SCOPES)])
         self.assertEqual(query["login_hint"], [ACCOUNT])
         self.assertTrue(query["redirect_uri"][0].endswith("/connections/oauth/gmail_drafts/callback"))
         self.assertEqual(self.client.get("/connections/oauth/gmail_drafts/callback").status_code, 200)
+
+
+    # --- Bounces --------------------------------------------------------------
+
+    def check(self):
+        response = self.client.post("/api/v1/outreach/delivery-check", headers=AUTH)
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def target(self, target):
+        return self.client.get(f"/api/v1/outreach/{target['id']}", headers=AUTH).json()
+
+    def sent_and_bounced(self):
+        self.connect(scopes=SCOPES)
+        target = self.approved_target()
+        self.assertEqual(self.send(target).status_code, 200)
+        self.gmail.replies["thread-1"] = [failure_notice()]
+        result = self.check()
+        self.assertEqual(result["state"], "ok")
+        self.assertEqual([item["target_id"] for item in result["bounced"]], [target["id"]])
+        return self.target(target)
+
+    def test_a_bounce_in_the_sent_thread_puts_the_target_back_to_drafted(self):
+        bounced = self.sent_and_bounced()
+        self.assertEqual((bounced["status"], bounced["sent_at"], bounced["follow_up_at"]), ("drafted", None, None))
+        self.assertTrue(bounced["bounced_at"])
+        self.assertEqual(bounced["bounce_reason"], "Address not found")
+        self.assertEqual(bounced["bounced_addresses"], ["greg@bovi.example"])
+        self.assertTrue(bounced["contact_bounced"])
+        self.assertIn("bounced", [event["event_type"] for event in bounced["events"]])
+        again = self.send(bounced)
+        self.assertEqual(again.status_code, 422, "nothing more goes to an address that bounced")
+        self.assertIn("bounced", again.json()["detail"])
+        self.assertEqual(len(self.gmail.sent), 1)
+        self.assertEqual(self.draft(bounced).status_code, 422, "nor is a Gmail draft made to it")
+
+    def test_after_a_bounce_the_email_goes_once_to_a_new_contact(self):
+        bounced = self.sent_and_bounced()
+        moved = self.client.patch(f"/api/v1/outreach/{bounced['id']}", headers=AUTH, json={
+            "contact_name": "Dana Ruiz", "contact_email": "dana@bovi.example",
+        }).json()
+        self.assertEqual(moved["email_body"].splitlines()[0], "Hi Dana,", "the greeting follows the new contact")
+        self.assertEqual(moved["draft_status"], "generated")
+        approved = self.client.post(f"/api/v1/outreach/{moved['id']}/approve", headers=AUTH, json={
+            "kind": "initial", "fingerprint": moved["draft_fingerprint"], "acknowledge_warnings": True,
+        }).json()
+        resent = self.send(approved)
+        self.assertEqual(resent.status_code, 200, resent.text)
+        self.assertEqual(self.sent_message(1)["To"], "dana@bovi.example")
+        self.assertTrue(self.sent_message(1).get_body(("plain",)).get_content().startswith("Hi Dana,"))
+        after = self.target(approved)
+        self.assertEqual((after["status"], after["bounced_at"], after["bounce_reason"]), ("sent", None, ""))
+        self.assertEqual(after["bounced_addresses"], ["greg@bovi.example"], "the failed address stays on record")
+        self.assertEqual(self.claim(approved), ("sent", "send"))
+        self.assertEqual(self.send(approved).status_code, 422, "and the new email still goes out only once")
+        self.assertEqual(len(self.gmail.sent), 2)
+
+    def test_a_send_that_bounced_is_no_longer_watched(self):
+        bounced = self.sent_and_bounced()
+        outreach_delivery._LAST_LOOK.clear()
+        self.assertEqual(self.check()["checked"], 0)
+        events = [event["event_type"] for event in self.target(bounced)["events"]]
+        self.assertEqual(events.count("bounced"), 1)
+
+    def test_the_check_waits_between_looks_at_one_send(self):
+        self.connect(scopes=SCOPES)
+        target = self.approved_target()
+        self.send(target)
+        self.assertEqual(self.check()["checked"], 1)
+        self.assertEqual(self.check()["checked"], 0, "a fresh send is looked at again after a short wait, not on every load")
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_a_cc_bounce_alone_leaves_the_email_sent(self):
+        self.connect(scopes=SCOPES)
+        target = self.approved_target()
+        target = self.client.patch(f"/api/v1/outreach/{target['id']}", headers=AUTH, json={"contact_cc": "info@bovi.example"}).json()
+        target = self.client.post(f"/api/v1/outreach/{target['id']}/approve", headers=AUTH, json={
+            "kind": "initial", "fingerprint": target["draft_fingerprint"], "acknowledge_warnings": True,
+        }).json()
+        self.assertEqual(self.send(target).status_code, 200)
+        self.gmail.replies["thread-1"] = [failure_notice(failed="info@bovi.example")]
+        self.check()
+        after = self.target(target)
+        self.assertEqual(after["status"], "sent", "the email still reached the contact")
+        self.assertTrue(after["cc_bounced"])
+        self.assertFalse(after["contact_bounced"])
+        self.assertIn("cc_bounced", [event["event_type"] for event in after["events"]])
+
+    def test_a_delay_notice_or_a_real_reply_is_not_a_bounce(self):
+        self.connect(scopes=SCOPES)
+        target = self.approved_target()
+        self.send(target)
+        self.gmail.replies["thread-1"] = [
+            failure_notice("dsn-delay", subject="Delivery Status Notification (Delay)"),
+            {"id": "reply-1", "labelIds": ["INBOX"], "internalDate": "3000", "snippet": "Happy to chat",
+             "payload": {"mimeType": "text/plain", "headers": [{"name": "From", "value": "Greg <greg@bovi.example>"}]}},
+        ]
+        result = self.check()
+        self.assertEqual((result["checked"], result["bounced"]), (1, []))
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_without_the_metadata_scope_the_check_asks_for_a_reconnect(self):
+        self.connect(scopes=SCOPES[:1])
+        target = self.approved_target()
+        self.send(target)
+        self.gmail.thread_status = 403
+        self.gmail.replies["thread-1"] = [failure_notice()]
+        self.assertEqual(self.check()["state"], "needs_reconnect")
+        self.assertEqual(self.target(target)["status"], "sent")
+        self.gmail.thread_status = None
+        self.assertEqual(len(self.check()["bounced"]), 1, "after reconnecting it looks again straight away")
+
+    def test_the_delivery_report_names_which_recipient_failed(self):
+        self.connect(scopes=SCOPES)
+        target = self.approved_target()
+        target = self.client.patch(f"/api/v1/outreach/{target['id']}", headers=AUTH, json={"contact_cc": "info@bovi.example"}).json()
+        target = self.client.post(f"/api/v1/outreach/{target['id']}/approve", headers=AUTH, json={
+            "kind": "initial", "fingerprint": target["draft_fingerprint"], "acknowledge_warnings": True,
+        }).json()
+        self.send(target)
+        # The headers name no failed recipient; only the report says it was the Cc.
+        self.gmail.replies["thread-1"] = [failure_notice()]
+        self.gmail.raw["dsn-1"] = (delivery_report(failed=["info@bovi.example"]), 2000)
+        self.check()
+        after = self.target(target)
+        self.assertEqual(after["status"], "sent")
+        self.assertEqual((after["cc_bounced"], after["contact_bounced"]), (True, False))
+
+    def test_the_reason_is_the_notice_in_its_own_words(self):
+        self.connect(scopes=SCOPES)
+        target = self.approved_target()
+        self.send(target)
+        self.gmail.replies["thread-1"] = [failure_notice(snippet="Hello student")]
+        self.gmail.raw["dsn-1"] = (delivery_report(
+            text="The group you tried to contact (info) may not exist, or you may not have permission to post messages to the group.",
+        ), 2000)
+        self.check()
+        after = self.target(target)
+        self.assertEqual(after["status"], "drafted", "no report names an address, so the one it went to failed")
+        self.assertTrue(after["bounce_reason"].startswith("The group you tried to contact (info) may not exist"))
+
+    def test_a_report_of_delays_only_is_not_a_bounce(self):
+        self.connect(scopes=SCOPES)
+        target = self.approved_target()
+        self.send(target)
+        self.gmail.replies["thread-1"] = [failure_notice(subject="Delivery Status Notification")]
+        self.gmail.raw["dsn-1"] = (delivery_report(delayed=["greg@bovi.example"], text="Gmail will retry for 46 more hours."), 2000)
+        self.assertEqual(self.check()["bounced"], [])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_a_notice_outside_the_thread_is_matched_by_address(self):
+        self.connect(scopes=SCOPES)
+        target = self.approved_target()
+        self.send(target)
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        self.gmail.inbox_notices = ["dsn-elsewhere", "dsn-other"]
+        self.gmail.raw["dsn-elsewhere"] = (delivery_report(failed=["greg@bovi.example"]), now_ms)
+        self.gmail.raw["dsn-other"] = (delivery_report(failed=["someone@else.example"]), now_ms)
+        result = self.check()
+        self.assertEqual([item["target_id"] for item in result["bounced"]], [target["id"]])
+        self.assertEqual(self.target(target)["status"], "drafted")
+        fetched = [r.url.path.rsplit("/", 1)[1] for r in self.gmail.requests if "/messages/dsn" in r.url.path]
+        self.assertEqual(sorted(fetched), ["dsn-elsewhere", "dsn-other"])
+        second = self.client.post("/api/v1/outreach", headers=AUTH, json={
+            "company": "Kiva", "contact_email": "ana@kiva.example", "email_subject": "Hello", "email_body": "Hi Ana,\n\nA note.",
+        }).json()
+        second = self.client.post(f"/api/v1/outreach/{second['id']}/approve", headers=AUTH, json={
+            "kind": "initial", "fingerprint": second["draft_fingerprint"], "acknowledge_warnings": True,
+        }).json()
+        self.send(second)
+        self.check()
+        refetched = [r.url.path for r in self.gmail.requests if "/messages/dsn" in r.url.path]
+        self.assertEqual(len(refetched), 2, "a notice already read is not fetched again")
+
+    def test_a_notice_from_before_the_send_is_not_about_it(self):
+        self.connect(scopes=SCOPES)
+        target = self.approved_target()
+        self.send(target)
+        an_hour_ago = int((datetime.now(timezone.utc) - timedelta(hours=1)).timestamp() * 1000)
+        self.gmail.inbox_notices = ["dsn-old"]
+        self.gmail.raw["dsn-old"] = (delivery_report(failed=["greg@bovi.example"]), an_hour_ago)
+        self.assertEqual(self.check()["bounced"], [])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_the_check_asks_nothing_of_gmail_when_no_send_is_recent(self):
+        self.connect(scopes=SCOPES)
+        self.assertEqual(self.check(), {"state": "ok", "checked": 0, "bounced": []})
+        self.assertEqual(self.gmail.requests, [])
 
 
 if __name__ == "__main__":

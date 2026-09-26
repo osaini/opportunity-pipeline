@@ -96,6 +96,44 @@ class OutreachApiTests(unittest.TestCase):
     def test_requires_auth(self):
         self.assertEqual(self.client.get("/api/v1/outreach").status_code, 401)
 
+    def patch(self, target, **changes):
+        response = self.client.patch(f"/api/v1/outreach/{target['id']}", headers=AUTH, json=changes)
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def events(self, target):
+        detail = self.client.get(f"/api/v1/outreach/{target['id']}", headers=AUTH).json()
+        return [event["event_type"] for event in detail["events"]]
+
+    def test_a_new_contact_gets_a_matching_greeting_and_needs_approval_again(self):
+        created = self.create(email_subject="Internship question", email_body="Hi Greg,\n\nA short note.\n\nSam")
+        approved = self.client.post(f"/api/v1/outreach/{created['id']}/approve", headers=AUTH, json={
+            "kind": "initial", "fingerprint": created["draft_fingerprint"], "acknowledge_warnings": True,
+        })
+        self.assertEqual(approved.status_code, 200, approved.text)
+        moved = self.patch(created, contact_name="Dr. Dana Ruiz", contact_email="dana@idvera.com")
+        self.assertEqual(moved["email_body"], "Hi Dana,\n\nA short note.\n\nSam")
+        self.assertEqual(moved["draft_status"], "generated", "a new recipient is always reviewed again")
+        events = self.events(created)
+        self.assertIn("greeting_updated", events)
+        self.assertNotIn("draft_edited", events, "the student did not edit it")
+
+        inbox = self.patch(moved, contact_name="", contact_email="careers@idvera.com")
+        self.assertEqual(inbox["email_body"].splitlines()[0], "Hi iDvera team,")
+        person = self.patch(inbox, contact_name="Priya Shah", contact_email="priya@idvera.com")
+        self.assertEqual(person["email_body"].splitlines()[0], "Hi Priya,")
+
+    def test_a_greeting_the_student_wrote_is_left_alone(self):
+        custom = self.create(email_body="Hi Greg and Priya,\n\nA short note.")
+        self.assertEqual(self.patch(custom, contact_name="Dana Ruiz")["email_body"], "Hi Greg and Priya,\n\nA short note.")
+        edited = self.create(company="Bovi", email_body="Hi Greg,\n\nA short note.")
+        saved = self.patch(edited, contact_name="Dana Ruiz", email_body="Hello Dana and team,\n\nA short note.")
+        self.assertEqual(saved["email_body"], "Hello Dana and team,\n\nA short note.", "the student's own words win")
+
+    def test_a_sent_email_keeps_the_words_that_went_out(self):
+        sent = self.create(email_body="Hi Greg,\n\nA short note.", status="sent")
+        self.assertEqual(self.patch(sent, contact_name="Dana Ruiz")["email_body"], "Hi Greg,\n\nA short note.")
+
     def test_marking_sent_sets_sent_date_and_follow_up(self):
         created = self.create()
         with mock.patch("opportunity_app.outreach.local_today", return_value=date(2026, 9, 16)):

@@ -285,6 +285,7 @@ from .outreach_drafting import (
     restore_draft_version as restore_outreach_draft_version,
     sender_account,
 )
+from .outreach_delivery import bounce_from_text, check_deliveries
 from .outreach_gmail import (
     GmailAuthError,
     SendConflictError,
@@ -461,6 +462,11 @@ class OutreachSendRequest(BaseModel):
 
 class OutreachReplyRequest(BaseModel):
     text: str = Field(min_length=1, max_length=20_000)
+
+
+class OutreachBounceRequest(BaseModel):
+    # The delivery failure notice the student pasted, if any.
+    text: str = Field(default="", max_length=20_000)
 
 
 class InboxSuggestionsRequest(BaseModel):
@@ -2265,6 +2271,31 @@ def create_app(
             detail = str(exc) if isinstance(exc, RuntimeError) else "Could not reach Gmail. Nothing was sent"
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail) from exc
 
+    @app.post("/api/v1/outreach/{target_id}/bounce")
+    def mark_outreach_bounced(
+        target_id: str,
+        payload: OutreachBounceRequest,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """Record that the email bounced: back to Drafted, and nothing more to the failed address."""
+        try:
+            return bounce_from_text(conn, target_id, payload.text, user_id=user_id)
+        except OutreachNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+
+    @app.post("/api/v1/outreach/delivery-check")
+    def check_outreach_deliveries(
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """Look in Gmail for bounces of recent sends. Reads only failure notices, and never raises for Gmail trouble."""
+        return check_deliveries(
+            conn, user_id=user_id, client_factory=outreach_gmail_client_factory or default_gmail_client_factory,
+        )
+
     @app.post("/api/v1/outreach/{target_id}/confirm-research")
     def confirm_research_for_outreach(
         target_id: str,
@@ -2335,7 +2366,8 @@ def create_app(
                 decisions=inbox_client_for(conn, resolved_inbox_client_factory, user_id=user_id),
             )
             # A reply logged on a company already at a reply status starts its call prep.
-            if auto_queue_call_prep(conn, target_id, user_id=user_id, reason="Reply logged"):
+            # A bounce notice is not a reply, so it is not logged and starts nothing.
+            if logged["logged"] and auto_queue_call_prep(conn, target_id, user_id=user_id, reason="Reply logged"):
                 call_prep_worker.wake()
                 logged["target"] = get_outreach_target(conn, target_id, user_id=user_id, include_events=True)
             return logged
