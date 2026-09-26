@@ -288,6 +288,7 @@ from .outreach_drafting import (
 )
 from .outreach_delivery import bounce_from_text, check_deliveries
 from .outreach_inbox import InboxWatcher, capture_replies
+from .outreach_automation import AutomationWorker, settings as automation_settings, update_settings as update_automation_settings
 from .outreach_gmail import (
     GmailAuthError,
     SendConflictError,
@@ -466,6 +467,11 @@ class OutreachReplyRequest(BaseModel):
     text: str = Field(min_length=1, max_length=20_000)
     # The student says a text that reads like a bounce notice is a real reply.
     as_reply: bool = False
+
+
+class OutreachAutomationRequest(BaseModel):
+    auto_drafts: bool | None = None
+    bounce_recovery: bool | None = None
 
 
 class OutreachBounceRequest(BaseModel):
@@ -858,6 +864,7 @@ def create_app(
     call_prep_worker: CallPrepWorker | None = None,
     start_call_prep_worker: bool | None = None,
     start_inbox_watcher: bool | None = None,
+    start_automation_worker: bool | None = None,
     typesafe_client_factory: Callable[[], DecisionClient] | None = None,
     inbox_client_factory: Callable[[], DecisionClient | None] | None = None,
     profile_file: Path | None = None,
@@ -984,6 +991,14 @@ def create_app(
     )
     if start_inbox_watcher is None:
         start_inbox_watcher = real_product_db
+    # Drafts and contact searches the student switched on, off the request path.
+    automation_worker = AutomationWorker(
+        database_target, fetcher_factory=resolved_contact_client_factory, renderer_factory=resolved_renderer_factory,
+        verifier_factory=resolved_smtp_verifier_factory, provider_factory=resolved_outreach_provider_factory,
+        draft_provider=outreach_draft_provider, contact_delay=outreach_contact_delay,
+    )
+    if start_automation_worker is None:
+        start_automation_worker = real_product_db
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -999,12 +1014,15 @@ def create_app(
                 call_prep_worker.start()
             if start_inbox_watcher:
                 inbox_watcher.start()
+            if start_automation_worker:
+                automation_worker.start()
         LOGGER.warning("Local web access token: %s", application.state.access_token)
         try:
             yield
         finally:
             call_prep_worker.stop()
             inbox_watcher.stop()
+            automation_worker.stop()
             for connection in list(open_connections):
                 try:
                     connection.close()
@@ -2099,6 +2117,24 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         return outreach_discovery_payload(conn, user_id)
 
+    @app.get("/api/v1/outreach/automation")
+    def get_outreach_automation(
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        return automation_settings(conn, user_id=user_id)
+
+    @app.put("/api/v1/outreach/automation")
+    def put_outreach_automation(
+        payload: OutreachAutomationRequest,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        changes = {key: value for key, value in payload.model_dump().items() if value is not None}
+        updated = update_automation_settings(conn, changes, user_id=user_id)
+        automation_worker.wake()
+        return updated
+
     @app.get("/api/v1/outreach/settings")
     def get_outreach_settings(
         conn: sqlite3.Connection = Depends(writable_connection),
@@ -2332,6 +2368,8 @@ def create_app(
             conn, user_id=user_id, client_factory=resolved_gmail_client_factory,
             decisions=inbox_client_for(conn, resolved_inbox_client_factory, user_id=user_id), on_reply=prep_after_reply,
         )
+        if delivery["bounced"]:
+            automation_worker.wake()  # a bounced contact may be recovered right away
         state = next((value for value in (delivery["state"], replies["state"]) if value != "ok"), "ok")
         return {"state": state, "bounced": delivery["bounced"], "replies": replies["replies"], "automatic": replies["automatic"]}
 
