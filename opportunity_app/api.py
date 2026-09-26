@@ -497,6 +497,9 @@ class OutreachDiscoveryRequest(BaseModel):
 
 class OutreachSettingsRequest(BaseModel):
     draft_provider: str | None = Field(default=None, max_length=40)
+    follow_up_provider: str | None = Field(default=None, max_length=40)
+    call_prep_provider: str | None = Field(default=None, max_length=40)
+    review_provider: str | None = Field(default=None, max_length=40)
     research_agent: str | None = Field(default=None, max_length=40)
     attachment_resume_id: str | None = Field(default=None, max_length=100)
 
@@ -582,7 +585,8 @@ class CaptureConfirmRequest(BaseModel):
 class DocumentCreateRequest(BaseModel):
     opportunity_id: str = Field(min_length=1, max_length=500)
     document_type: Literal["resume", "cover_letter"]
-    provider: Literal["openai", "anthropic"] | None = None
+    # Any provider the Preparation page offers, subscriptions included.
+    provider: Literal["openai", "anthropic", "claude-code", "codex-cli"] | None = None
 
 
 class DocumentEditRequest(BaseModel):
@@ -942,7 +946,7 @@ def create_app(
     if outreach_discovery_manager is None and not is_postgres_target(database_target) and database_target == DEFAULT_PLATFORM_DB.resolve():
         outreach_discovery_manager = DiscoveryManager(
             database_target, provider_factory=resolved_outreach_provider_factory,
-            verifier_factory=default_smtp_verifier, email_search=True,
+            verifier_factory=default_smtp_verifier, email_search=True, draft_provider=outreach_draft_provider,
         )
     resolved_contact_client_factory = outreach_contact_client_factory or default_contact_fetcher
     # Asking mail servers about guesses and rendering pages in a browser both

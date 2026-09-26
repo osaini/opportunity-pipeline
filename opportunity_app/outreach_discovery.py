@@ -829,8 +829,10 @@ class DiscoveryManager:
         renderer_factory: Callable[[], PlaywrightRenderer | None] = default_renderer,
         verifier_factory: Callable[[], Any] = lambda: None,
         email_search: bool = False,
+        draft_provider: str | None = None,
     ) -> None:
         self.platform_target = platform_target
+        self._draft_provider = draft_provider
         self._verifier_factory = verifier_factory
         self._email_search = email_search
         self._form_d_fetcher_factory = form_d_fetcher_factory
@@ -867,7 +869,7 @@ class DiscoveryManager:
                     verifier = self._verifier_factory()
                     result = run_discovery(
                         conn, user_id=user_id, runner=runner, fetcher=fetcher, scopes=scopes,
-                        report_dir=self._report_dir, provider_factory=self._provider_factory,
+                        report_dir=self._report_dir, provider_factory=self._provider_factory, draft_provider=self._draft_provider,
                         contact_delay=self._contact_delay,
                         form_d_fetcher=stack.enter_context(form_d) if form_d is not None else None,
                         renderer=stack.enter_context(renderer) if renderer is not None else None,

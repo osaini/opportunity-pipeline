@@ -11,7 +11,9 @@ Two gates, both fail closed: when a check cannot be made, the email waits.
   follow-up goes only on a clean pass. An out-of-office reply that names a
   return date holds it until then. By default the reviewer is Codex, a
   different family from the Claude drafter, so it does not share the drafter's
-  blind spots (PIPELINE_OUTREACH_REVIEW_PROVIDER picks another).
+  blind spots. The student picks the reviewer under AI models
+  (PIPELINE_OUTREACH_REVIEW_PROVIDER); on Automatic it is a different family
+  from the follow-up writer when one is set up, and says so when none is.
 
 Plain code decides everything it can (a reply exists, the first email
 bounced); the model is asked only for what needs reading.
@@ -71,11 +73,54 @@ def fresh_look(conn: sqlite3.Connection, target_id: str, *, user_id: str, client
     return {"ok": not failed, "reason": reasons.get(failed, failed)}
 
 
+REVIEW_ENV = "PIPELINE_OUTREACH_REVIEW_PROVIDER"
+# Which company's models a provider runs: a reviewer from the drafter's own
+# family shares its blind spots, so the automatic choice avoids it.
+FAMILY = {"claude-code": "anthropic", "anthropic": "anthropic", "codex-cli": "openai", "openai": "openai"}
+# Subscriptions first: they cost nothing per review.
+AUTOMATIC_ORDER = ("codex-cli", "claude-code", "openai", "anthropic")
+
+
+def review_choice() -> tuple[str, str]:
+    """The provider that reviews follow-ups, and a note when it is a compromise.
+
+    The student's pick when it is set up; otherwise a set-up provider from a
+    different family than the follow-up writer, else the best one there is.
+    """
+    from .agent_providers import provider_catalog
+    from .outreach_drafting import resolve_provider
+
+    catalog = {item["id"]: item for item in provider_catalog()}
+    chosen = os.environ.get(REVIEW_ENV, "").strip()
+    if chosen:
+        if chosen not in catalog:
+            raise ValueError(f"{REVIEW_ENV} must be one of: {', '.join(catalog)}")
+        if not catalog[chosen]["configured"]:
+            raise ValueError(f"{catalog[chosen]['display_name']} is not set up: {catalog[chosen]['setup_hint']}")
+        return chosen, ""
+    ready = [provider for provider in AUTOMATIC_ORDER if catalog.get(provider, {}).get("configured")]
+    if not ready:
+        raise ValueError("No model is set up on this computer to review follow-ups")
+    try:
+        drafter = resolve_provider(None, purpose="follow_up")[0]
+    except ValueError:
+        drafter = ""
+    other = [provider for provider in ready if FAMILY.get(provider) != FAMILY.get(drafter)]
+    if other:
+        return other[0], ""
+    return ready[0], "same family as the follow-up writer; no other model is set up"
+
+
 def review_runner() -> tuple[str, Runner]:
-    """The reviewer: Codex unless PIPELINE_OUTREACH_REVIEW_PROVIDER names claude-code. No tools, no web."""
-    provider = (os.environ.get("PIPELINE_OUTREACH_REVIEW_PROVIDER") or "codex-cli").strip()
+    """The reviewer's name and a function that sends it a prompt. CLIs run with no tools and no web."""
+    provider, note = review_choice()
+    name = f"{provider} ({note})" if note else provider
     if provider not in {"codex-cli", "claude-code"}:
-        raise ValueError("PIPELINE_OUTREACH_REVIEW_PROVIDER must be codex-cli or claude-code")
+        from .agent_providers import build_provider, complete_text, provider_catalog
+
+        model = next(item["model"] for item in provider_catalog() if item["id"] == provider)
+        agent = build_provider(provider, model)
+        return name, lambda prompt: complete_text(agent, "Reply with exactly one JSON object and nothing else.", prompt)
 
     def run(prompt: str) -> str:
         with tempfile.TemporaryDirectory(prefix="outreach-review-") as workdir:
@@ -95,7 +140,7 @@ def review_runner() -> tuple[str, Runner]:
                 raise RuntimeError(f"{provider} exited {completed.returncode}: {detail[-300:] or 'no output'}")
             return answer.read_text(encoding="utf-8") if answer.exists() else completed.stdout
 
-    return provider, run
+    return name, run
 
 
 def _thread(target: dict[str, Any]) -> dict[str, list[dict[str, str]]]:

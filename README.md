@@ -967,11 +967,22 @@ Settings in `.env`:
 ```text
 PIPELINE_OUTREACH_COMPOSE=gmail            # gmail or mailto (default mailto)
 PIPELINE_OUTREACH_ACCOUNT=you@school.edu   # the Google account compose opens in
-PIPELINE_OUTREACH_PROVIDER=claude-code     # optional draft model; default is the agent default
-PIPELINE_OUTREACH_DISCOVERY_PROVIDER=claude-code  # or codex-cli for the deep search
+PIPELINE_OUTREACH_PROVIDER=claude-code     # optional first-email writer; default is the first model set up
+PIPELINE_OUTREACH_FOLLOW_UP_PROVIDER=      # optional follow-up writer; empty = same as first emails
+PIPELINE_OUTREACH_CALL_PREP_PROVIDER=      # optional call prep writer; empty = same as first emails
+PIPELINE_OUTREACH_REVIEW_PROVIDER=         # optional follow-up reviewer; empty = automatic
+PIPELINE_OUTREACH_DISCOVERY_PROVIDER=claude-code  # or codex-cli: deep search, locating, Find people
 PIPELINE_OUTREACH_ATTACHMENT=data/outreach-attachments/resume.pdf  # attached to Gmail drafts
 PIPELINE_SEC_USER_AGENT="Your Name you@example.com"  # enables SEC Form D lookups
 ```
+
+Every AI feature has its own choice under Outreach → Settings, and each list
+shows what this computer can run (a provider not set up says so, with how to
+set it up): first-email drafts, follow-ups, call prep, the follow-up reviewer,
+the web research, and reply and email suggestions (the keyword rules or Jev).
+The Agent and Preparation pages pick per thread and per document from the same
+list, subscriptions included. With only one model set up, everything uses it,
+and the reviewer says it is from the same company as the writer.
 
 ### Company locations and SEC Form D
 
@@ -1103,9 +1114,11 @@ Just before any scheduled email goes out, the app reads Gmail again for a
 bounce or a reply about that company, instead of trusting the last background
 check. A follow-up is never sent to a company that replied or whose first email
 bounced, and if Gmail cannot be read the email waits. With **Have a second model
-check each follow-up** on, Codex reads each follow-up with the whole thread
-before it goes (set `PIPELINE_OUTREACH_REVIEW_PROVIDER=claude-code` to use Claude
-instead). It goes only on a clean pass; an out-of-office with a return date
+check each follow-up** on, a second model reads each follow-up with the whole
+thread before it goes. Pick it under **Who reviews follow-ups**; on Automatic it
+is a model from a different company than the follow-up writer when one is set
+up, and the same one (said plainly) when it is the only model here. It goes only
+on a clean pass; an out-of-office with a return date
 holds it until then, and anything else stops it with the reviewer's reasons on
 the card. If the reviewer cannot run, the follow-up waits rather than going
 unchecked.
