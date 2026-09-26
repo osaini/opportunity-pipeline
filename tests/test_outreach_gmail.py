@@ -101,9 +101,12 @@ class FakeGmail:
         # Messages Gmail threaded with a sent email after it, by thread id.
         self.replies = {}
         self.thread_status = None
-        # Full text of messages by id, and the ids a search for notices finds.
+        # Full text of messages by id, the ids a search for failure notices
+        # finds, and the ids a search for replies finds.
         self.raw = {}
         self.inbox_notices = []
+        self.inbox_replies = []
+        self.searches = []
 
     def run_hook(self, name):
         hook = self.hooks.pop(name, None)
@@ -157,7 +160,10 @@ class FakeGmail:
         if request.method == "GET" and path.endswith("/messages"):
             if self.thread_status:
                 return httpx.Response(self.thread_status)
-            return httpx.Response(200, json={"messages": [{"id": notice_id} for notice_id in self.inbox_notices]})
+            query = request.url.params.get("q", "")
+            self.searches.append(query)
+            found = self.inbox_notices if "mailer-daemon" in query else self.inbox_replies
+            return httpx.Response(200, json={"messages": [{"id": message_id} for message_id in found]})
         if request.method == "GET" and "/messages/" in path:
             message_id = path.rsplit("/", 1)[1]
             if message_id not in self.raw:

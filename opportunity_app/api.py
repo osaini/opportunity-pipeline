@@ -250,6 +250,7 @@ from .outreach import (
     confirm_research as confirm_outreach_research,
     create_target as create_outreach_target,
     delete_target as delete_outreach_target,
+    dismiss_reply_suggestion,
     export_csv as export_outreach_csv,
     get_target as get_outreach_target,
     import_targets as import_outreach_targets,
@@ -286,6 +287,7 @@ from .outreach_drafting import (
     sender_account,
 )
 from .outreach_delivery import bounce_from_text, check_deliveries
+from .outreach_inbox import InboxWatcher, capture_replies
 from .outreach_gmail import (
     GmailAuthError,
     SendConflictError,
@@ -853,6 +855,7 @@ def create_app(
     outreach_gmail_client_factory: Callable[[], httpx.Client] | None = None,
     call_prep_worker: CallPrepWorker | None = None,
     start_call_prep_worker: bool | None = None,
+    start_inbox_watcher: bool | None = None,
     typesafe_client_factory: Callable[[], DecisionClient] | None = None,
     inbox_client_factory: Callable[[], DecisionClient | None] | None = None,
     profile_file: Path | None = None,
@@ -963,6 +966,23 @@ def create_app(
     if start_call_prep_worker is None:
         start_call_prep_worker = real_product_db
 
+    resolved_gmail_client_factory = outreach_gmail_client_factory or default_gmail_client_factory
+
+    def prep_after_reply(conn: sqlite3.Connection, target_id: str, user_id: str) -> None:
+        # A reply found in Gmail starts call prep just as a pasted one does.
+        if auto_queue_call_prep(conn, target_id, user_id=user_id, reason="Reply found in Gmail"):
+            call_prep_worker.wake()
+
+    # Bounces and replies are read from Gmail in the background, so they land
+    # even while the page is closed. Tests and sandboxes run the checks themselves.
+    inbox_watcher = InboxWatcher(
+        database_target, client_factory=resolved_gmail_client_factory,
+        decisions_for=lambda conn, user_id: inbox_client_for(conn, resolved_inbox_client_factory, user_id=user_id),
+        on_reply=prep_after_reply,
+    )
+    if start_inbox_watcher is None:
+        start_inbox_watcher = real_product_db
+
     @asynccontextmanager
     async def lifespan(application: FastAPI):
         database_exists = is_postgres_target(database_target) or Path(database_target).exists()
@@ -975,11 +995,14 @@ def create_app(
                 ensure_product_schema(migration_connection)
             if start_call_prep_worker:
                 call_prep_worker.start()
+            if start_inbox_watcher:
+                inbox_watcher.start()
         LOGGER.warning("Local web access token: %s", application.state.access_token)
         try:
             yield
         finally:
             call_prep_worker.stop()
+            inbox_watcher.stop()
             for connection in list(open_connections):
                 try:
                     connection.close()
@@ -2295,6 +2318,31 @@ def create_app(
         return check_deliveries(
             conn, user_id=user_id, client_factory=outreach_gmail_client_factory or default_gmail_client_factory,
         )
+
+    @app.post("/api/v1/outreach/inbox-check")
+    def check_outreach_inbox(
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """Look in Gmail for bounces of recent sends and for replies. Never raises for Gmail trouble."""
+        delivery = check_deliveries(conn, user_id=user_id, client_factory=resolved_gmail_client_factory)
+        replies = capture_replies(
+            conn, user_id=user_id, client_factory=resolved_gmail_client_factory,
+            decisions=inbox_client_for(conn, resolved_inbox_client_factory, user_id=user_id), on_reply=prep_after_reply,
+        )
+        state = next((value for value in (delivery["state"], replies["state"]) if value != "ok"), "ok")
+        return {"state": state, "bounced": delivery["bounced"], "replies": replies["replies"], "automatic": replies["automatic"]}
+
+    @app.delete("/api/v1/outreach/{target_id}/reply-suggestion")
+    def dismiss_outreach_reply_suggestion(
+        target_id: str,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        try:
+            return dismiss_reply_suggestion(conn, target_id, user_id=user_id)
+        except OutreachNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
 
     @app.post("/api/v1/outreach/{target_id}/confirm-research")
     def confirm_research_for_outreach(

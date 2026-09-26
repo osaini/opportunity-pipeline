@@ -592,7 +592,13 @@ def _record(
     item["cc_bounced"] = bool(item.get("contact_cc")) and item["contact_cc"].casefold() in bounced
     item["draft_checks"] = draft_checks(item.get("email_subject", ""), item.get("email_body", ""))
     item["follow_up_checks"] = draft_checks(item.get("follow_up_subject", ""), item.get("follow_up_body", ""))
-    item["suggestion"] = lifecycle_suggestion(item, today)
+    # A captured reply's reading (declined, a call, an offer) outranks the
+    # quiet-company suggestion: someone wrote back.
+    reply = json.loads(item.pop("reply_suggestion_json", None) or "null")
+    item["reply_suggestion"] = reply if reply and reply.get("status") != item["status"] else None
+    item["suggestion"] = (
+        {"status": reply["status"], "reason": reply["reason"]} if item["reply_suggestion"] else lifecycle_suggestion(item, today)
+    )
     return item
 
 
@@ -624,6 +630,9 @@ def _apply_status_side_effects(values: dict[str, Any], previous: dict[str, Any] 
     status = values.get("status")
     if status is None or (previous and previous["status"] == status):
         return
+    # The student has answered what the last captured reply suggested.
+    if previous and previous.get("reply_suggestion"):
+        values["reply_suggestion_json"] = ""
     if status in {"sent", "followed_up"}:
         # An email went out again (or the student says one did), so the bounce
         # is behind them. The bounced addresses stay on record.
@@ -1321,6 +1330,16 @@ def log_reply(
     with conn:
         _log(conn, target_id, user_id, "reply_logged", detail=body)
     return {"suggestion": suggestion, "logged": True, "target": get_target(conn, target["id"], user_id=user_id, include_events=True)}
+
+
+def dismiss_reply_suggestion(conn: sqlite3.Connection, target_id: str, *, user_id: str) -> dict[str, Any]:
+    get_target(conn, target_id, user_id=user_id)
+    with conn:
+        conn.execute(
+            "UPDATE outreach_targets SET reply_suggestion_json='', updated_at=? WHERE id=? AND user_id=?",
+            (utc_now(), target_id, user_id),
+        )
+    return get_target(conn, target_id, user_id=user_id)
 
 
 NO_RESPONSE_AFTER_DAYS = 14
