@@ -2298,6 +2298,8 @@
     send_scheduled: "Send scheduled",
     send_cancelled: "Scheduled send cancelled",
     scheduled_send_failed: "Scheduled send stopped",
+    follow_up_reviewed: "Follow-up reviewed",
+    follow_up_held: "Follow-up held",
     auto_draft_failed: "Automatic draft failed",
     draft_restored: "Earlier draft restored",
     follow_up_restored: "Earlier follow-up restored",
@@ -3516,7 +3518,8 @@
   const AUTOMATION_SWITCHES = [
     ["auto_drafts", "Write drafts automatically", "Every company with a contact and a location gets a draft written, whether a deep search found it, you added it, or a contact turned up later. Each one waits for your approval."],
     ["bounce_recovery", "Find a new contact after a bounce", "When an email bounces, the app searches the company's site again, picks the best address that has not bounced, and updates the greeting. You review the draft and send it again."],
-    ["scheduled_sending", "Send on their weekday morning", "Your confirmed Send queues the approved email for 9 to 9:40 AM on the recipient's next weekday, in their timezone (from the company's US state, or yours when it names none). Editing the draft cancels it; Send now and Cancel stay on the card. Turning this off does not cancel emails already scheduled; cancel them on their cards. Needs Gmail connected."],
+    ["scheduled_sending", "Send on their weekday morning", "Your confirmed Send queues the approved email for 9 to 9:40 AM on the recipient's next weekday, in their timezone (from the company's US state, or yours when it names none). Editing the draft cancels it; Send now and Cancel stay on the card. Turning this off does not cancel emails already scheduled; cancel them on their cards. Needs Gmail connected. Just before it goes, Gmail is checked again for a reply or a bounce; a follow-up never goes to a company that replied."],
+    ["follow_up_review", "Have a second model check each follow-up", "Before a scheduled follow-up goes out, Codex (a different model from the one that drafts) reads it with the whole thread: your first email, every reply and out-of-office, and your facts. It goes only on a clean pass. An out-of-office with a return date holds it until then; any other problem stops it and shows the reason here. If the reviewer cannot run, the follow-up waits. Needs the Codex CLI signed in on this computer."],
   ];
 
   async function automationFields() {

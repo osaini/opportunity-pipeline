@@ -11,6 +11,12 @@ scheduled is sent, and only the words they scheduled. Editing the draft or
 changing the recipient cancels the schedule (outreach._cancel_schedules), as
 does Send now or Cancel. Anything that stops the send is shown on the card.
 
+Just before sending, Gmail is read again for a bounce or a reply
+(outreach_review.fresh_look), and a follow-up is not sent to a company that
+replied or whose first email bounced. With the follow_up_review switch on, a
+second model reads each follow-up first (outreach_review.review_follow_up).
+Both fail closed: a check that cannot be made holds the email.
+
 The recipient's timezone comes from the US state in the company's location;
 without one it is the student's own, and the label says so.
 """
@@ -21,7 +27,7 @@ import hashlib
 import re
 import sqlite3
 from datetime import datetime, time, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -190,10 +196,75 @@ def _finish(conn: sqlite3.Connection, row: sqlite3.Row, state: str, error: str =
             _log(conn, row["target_id"], row["user_id"], "send_cancelled", detail=error[:500])
 
 
-def run_due_sends(conn: sqlite3.Connection, *, client_factory: ClientFactory, now: datetime | None = None) -> list[dict[str, Any]]:
-    """Send every scheduled email that is due. Each outcome is recorded on its row and in the history.
+Reviewer = Callable[[], tuple[str, Callable[[str], str]]]
 
-    One email going wrong never stops the others.
+
+def _gate(conn: sqlite3.Connection, row: sqlite3.Row, *, client_factory: ClientFactory, now: datetime, reviewer: Reviewer | None) -> str | None:
+    """The checks just before an automatic send. None to send; otherwise the outcome it was stopped with."""
+    from .outreach_automation import settings as automation_settings  # imported here: automation imports this module
+    from .outreach_review import fresh_look, review_follow_up, review_runner
+
+    target_id, user_id = row["target_id"], row["user_id"]
+    look = fresh_look(conn, target_id, user_id=user_id, client_factory=client_factory)
+    if not look["ok"]:
+        return _hold_for_retry(conn, row, now, f"Could not check Gmail for replies or bounces first: {look['reason']}")
+    if row["kind"] != "follow_up":
+        return None
+    target = get_target(conn, target_id, user_id=user_id)
+    if target["reply_count"] or target["status"] != "sent":
+        _finish(conn, row, "cancelled", "They replied, or the company moved on, so the follow-up was not sent")
+        return "cancelled"
+    if target["contact_bounced"]:
+        _finish(conn, row, "cancelled", f"Email to {target['contact_email']} bounced, so the follow-up was not sent")
+        return "cancelled"
+    if not automation_settings(conn, user_id=user_id)["follow_up_review"]:
+        return None
+    zone, basis = recipient_zone(conn, target, user_id=user_id)
+    try:
+        name, run = (reviewer or review_runner)()
+        verdict = review_follow_up(
+            conn, target_id, user_id=user_id, runner=run, reviewer=name,
+            today=(now.astimezone(zone) if zone else now.astimezone()).date(),
+        )
+    except Exception as exc:  # noqa: BLE001 - any reviewer failure holds the follow-up
+        _finish(conn, row, "failed", f"The follow-up reviewer could not run: {exc}. Nothing was sent"[:500])
+        return "failed"
+    with conn:
+        _log(conn, target_id, user_id, "follow_up_reviewed", detail=(
+            f"Passed by {name}" if verdict["send"] else f"Held by {name}: " + "; ".join(verdict["problems"])
+        )[:1_000])
+    if verdict["send"]:
+        return None
+    if verdict["away_until"]:
+        back = datetime.combine(verdict["away_until"], time(0, 0))
+        back = back.replace(tzinfo=zone) if zone else back.astimezone()
+        send_at = next_morning(back, zone, f"{target_id}:follow_up")
+        label = _label(send_at, zone, basis)
+        with conn:
+            if conn.execute(
+                "UPDATE outreach_scheduled_sends SET state='scheduled', send_at=?, label=?, error=?, updated_at=? "
+                "WHERE target_id=? AND kind=? AND state='sending'",
+                (send_at.isoformat(timespec="seconds"), label, f"Held until they are back ({verdict['away_until'].isoformat()})",
+                 utc_now(), target_id, row["kind"]),
+            ).rowcount:
+                _log(conn, target_id, user_id, "follow_up_held", detail=f"They are away; the follow-up now goes out {label}")
+        return "held"
+    _finish(conn, row, "failed", "The reviewer held this follow-up: " + "; ".join(verdict["problems"]))
+    return "failed"
+
+
+def run_due_sends(
+    conn: sqlite3.Connection,
+    *,
+    client_factory: ClientFactory,
+    now: datetime | None = None,
+    reviewer: Reviewer | None = None,
+) -> list[dict[str, Any]]:
+    """Send every scheduled email that is due, each after the checks in _gate.
+
+    Each outcome is recorded on its row and in the history, and one email going
+    wrong never stops the others. ``reviewer`` returns the follow-up reviewer's
+    name and runner (outreach_review.review_runner by default).
     """
     # Due times are stored in UTC and compared as text, so ``now`` must be UTC too.
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -221,7 +292,7 @@ def run_due_sends(conn: sqlite3.Connection, *, client_factory: ClientFactory, no
             continue
         outcome = {"target_id": row["target_id"], "kind": row["kind"]}
         try:
-            outcome["state"] = _send_one(conn, row, client_factory=client_factory, now=now)
+            outcome["state"] = _send_one(conn, row, client_factory=client_factory, now=now, reviewer=reviewer)
         except Exception as exc:  # noqa: BLE001 - one bad row must not stop the rest
             # Raised before Gmail was asked to send, so nothing went out.
             _finish(conn, row, "failed", f"Something went wrong before sending: {exc}. Nothing was sent"[:500])
@@ -246,14 +317,22 @@ def _hand_over(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
         ).rowcount)
 
 
-def _send_one(conn: sqlite3.Connection, row: sqlite3.Row, *, client_factory: ClientFactory, now: datetime) -> str:
-    """Send one claimed row and return its outcome.
+def _send_one(
+    conn: sqlite3.Connection, row: sqlite3.Row, *, client_factory: ClientFactory, now: datetime, reviewer: Reviewer | None = None,
+) -> str:
+    """Check, then send, one claimed row and return its outcome.
 
     An error this raises was raised before Gmail was asked to send. One raised
     by the send itself is settled here, since Gmail may have acted on it.
     """
-    if not _hand_over(conn, row):
+    if not _still_held(conn, row):
         return "cancelled"  # cancelled while it waited
+    stopped = _gate(conn, row, client_factory=client_factory, now=now, reviewer=reviewer)
+    if stopped:
+        return stopped
+    # The checks can take a while and Cancel still works during them; from here on it cannot.
+    if not _hand_over(conn, row):
+        return "cancelled"
     try:
         sent = send_gmail_message(
             conn, row["target_id"], user_id=row["user_id"], kind=row["kind"], fingerprint=row["fingerprint"],

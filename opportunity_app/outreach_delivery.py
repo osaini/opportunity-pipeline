@@ -375,8 +375,12 @@ def check_deliveries(
     user_id: str,
     client_factory: ClientFactory,
     now: datetime | None = None,
+    force_target: str | None = None,
 ) -> dict[str, Any]:
     """Look in Gmail for bounces of the app's recent sends, and record each one found.
+
+    ``force_target`` looks at that company's sends now, however recently they
+    were looked at: the check made just before an automatic send.
 
     ``state`` is "ok", "not_connected", "needs_reconnect" (the connection
     predates the read scope, or was revoked), or "unreachable". Nothing is
@@ -386,6 +390,7 @@ def check_deliveries(
     result: dict[str, Any] = {"state": "ok", "checked": 0, "bounced": []}
     watched = _watched(conn, user_id, now)
     due = _take_due(user_id, watched, now)
+    due += [item for item in watched if item["target_id"] == force_target and item not in due]
     if not due:
         return result
     row = _connector(conn, user_id)
