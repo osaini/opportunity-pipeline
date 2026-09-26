@@ -269,6 +269,17 @@ class InboxSuggestionApiTests(unittest.TestCase):
         self.assertTrue(target["contact_bounced"])
         self.assertEqual(target["bounce_reason"], "Delivery Status Notification (Failure)")
 
+    def test_a_reply_that_mentions_a_failed_delivery_can_be_logged_as_a_reply(self):
+        created = self.client.post("/api/v1/outreach", headers=AUTH, json={"company": "Bovi", "status": "sent"}).json()
+        text = "Mail delivery failed to our team alias, but I got your note and can talk Tuesday."
+        first = self.client.post(f"/api/v1/outreach/{created['id']}/reply", headers=AUTH, json={"text": text}).json()
+        self.assertEqual((first["suggestion"]["status"], first["logged"]), ("bounced", False))
+        logged = self.client.post(f"/api/v1/outreach/{created['id']}/reply", headers=AUTH, json={"text": text, "as_reply": True})
+        self.assertEqual(logged.status_code, 200, logged.text)
+        self.assertTrue(logged.json()["logged"])
+        self.assertEqual(logged.json()["target"]["reply_count"], 1)
+        self.assertNotEqual(logged.json()["suggestion"]["status"], "bounced")
+
     def test_connector_email_records_how_it_was_classified(self):
         connector = self.client.post("/api/v1/connections", headers=AUTH, json={"provider": "sandbox"}).json()
         message = {"connector_id": connector["id"], "subject": "Next steps", "body": "Can you interview Tuesday?", "sender": "r@example.com"}

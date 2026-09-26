@@ -2293,6 +2293,7 @@
     bounced: "Bounced",
     partly_bounced: "Partly bounced",
     greeting_updated: "Greeting updated for the new contact",
+    auto_reply: "Automatic reply (out of office)",
     draft_restored: "Earlier draft restored",
     follow_up_restored: "Earlier follow-up restored",
     // Named apart from an ordinary "location recorded" on purpose: this is what
@@ -2475,20 +2476,28 @@
     return button;
   }
 
-  // A bounce usually lands in Gmail within seconds of a send, sometimes hours
-  // later. The server looks in the sent email's thread; this only asks it to,
-  // on each load of the list and a few times right after a send. The server
-  // spaces its own looks, so asking often costs nothing.
+  // A bounce usually lands in Gmail within seconds of a send; a reply can come
+  // any time. The app also checks in the background every few minutes; this
+  // asks for a look on each load of the list and a few times right after a
+  // send. The server spaces its own looks, so asking often costs nothing.
   const BOUNCE_LOOKS_MS = [15000, 45000, 120000, 300000];
   let bounceTimers = [];
 
   async function checkForBounces() {
     try {
-      const result = await api("/api/v1/outreach/delivery-check", { method: "POST" });
-      if (!result.bounced?.length) return;
-      const names = result.bounced.map((entry) => `${entry.company} (${entry.addresses.join(", ")})`).join("; ");
+      const result = await api("/api/v1/outreach/inbox-check", { method: "POST" });
+      const news = [];
+      if (result.bounced?.length) {
+        const names = result.bounced.map((entry) => `${entry.company} (${entry.addresses.join(", ")})`).join("; ");
+        news.push(`Bounced: ${names}. Moved back to Drafted; pick another contact and send again.`);
+      }
+      if (result.replies?.length) {
+        const names = result.replies.map((entry) => `${entry.company} (${entry.from})`).join("; ");
+        news.push(`New ${result.replies.length === 1 ? "reply" : "replies"} from ${names}, logged from Gmail.`);
+      }
+      if (!news.length) return;
       if (state.view === "outreach") await loadOutreach();
-      announce(`Bounced: ${names}. Moved back to Drafted; pick another contact and send again.`);
+      announce(news.join(" "));
     } catch (_error) {
       // A failed look is retried on the next load; it never blocks the page.
     }
@@ -2556,7 +2565,7 @@
     const what = gmail.attachment ? ` with ${gmail.attachment} attached` : "";
     const reconnect = gmail.needs_reconnect || gmail.connected;
     panel.appendChild(element("p", "profile-help", gmail.connected
-      ? "Reconnect Gmail once so the app can spot emails that bounce. It asks for one more permission, to read mail; the app reads only the delivery failure notices for emails it sent."
+      ? "Reconnect Gmail once so the app can catch bounces and log replies for you. It asks for one more permission, to read mail; the app reads only delivery failure notices and mail from the companies you wrote to."
       : gmail.needs_reconnect
         ? "Gmail stopped accepting the connection. Reconnect it to keep creating drafts with attachments."
         : `Connect Gmail to send approved emails${what} from here, or open them as drafts in Gmail first. Nothing sends until you press Send and confirm the recipient.`));
@@ -3065,7 +3074,26 @@
               mark.disabled = false;
             }
           });
-          result.appendChild(mark);
+          // A person can write about a failed delivery too; the student decides.
+          const reply = element("button", "secondary-button", "It's a real reply, log it");
+          reply.type = "button";
+          reply.addEventListener("click", async () => {
+            reply.disabled = true;
+            try {
+              await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/reply`, {
+                method: "POST", body: JSON.stringify({ text: pasted, as_reply: true }),
+              });
+              text.value = "";
+              state.outreachOpen = item.id;
+              state.outreachKeep.add(item.id);
+              await loadOutreach();
+              announce(`Logged the reply from ${item.company}.`);
+            } catch (error) {
+              showError(error.message);
+              reply.disabled = false;
+            }
+          });
+          result.append(mark, reply);
           return;
         }
         text.value = "";
@@ -4103,6 +4131,11 @@
     if (item.research_confidence === "unverified") {
       identity.appendChild(element("p", "outreach-research-warning", "Summarized by the deep search; check the linked sources, then confirm the research."));
     }
+    if (item.reply_suggestion) {
+      const reply = item.reply_suggestion;
+      const label = OUTREACH_STATUS_LABELS[reply.status] || reply.status;
+      identity.appendChild(element("p", "outreach-fit", `${reply.from || "They"} replied ${formatDate(reply.received_at)}, found in Gmail. It reads as ${label}: ${reply.reason}.`));
+    }
     if (item.bounced_at) {
       const failed = item.bounced_addresses.join(", ");
       const why = item.bounce_reason ? ` Gmail said: "${item.bounce_reason}"` : "";
@@ -4313,6 +4346,24 @@
         }
       });
       actions.appendChild(suggest);
+      if (item.reply_suggestion) {
+        const dismiss = element("button", "secondary-button", "Not that");
+        dismiss.type = "button";
+        dismiss.title = "Keep the status as it is and drop this suggestion";
+        dismiss.addEventListener("click", async () => {
+          dismiss.disabled = true;
+          try {
+            await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/reply-suggestion`, { method: "DELETE" });
+            state.outreachOpen = item.id;
+            await loadOutreach();
+            announce(`Dropped the suggestion; ${item.company} stays ${OUTREACH_STATUS_LABELS[item.status] || item.status}.`);
+          } catch (error) {
+            showError(error.message);
+            dismiss.disabled = false;
+          }
+        });
+        actions.appendChild(dismiss);
+      }
     }
     controls.append(nextText, label, ...(OUTREACH_REVISIT.includes(item.status) ? [outreachRevisitControl(item)] : []), actions);
 
