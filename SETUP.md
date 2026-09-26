@@ -298,6 +298,11 @@ themselves (rule 3). The details:
   them through README.md → "Gmail drafts with an attachment". They also set
   `PIPELINE_OUTREACH_ACCOUNT` to their address and `PIPELINE_OUTREACH_COMPOSE=gmail`.
   `PIPELINE_CONNECTION_KEY` was already generated in step 2.
+  Once Gmail is connected the app catches bounces and logs replies on its own.
+  Ask whether they want the **Automation** switches under Outreach → Outreach
+  settings: writing drafts automatically, and finding a new contact after a
+  bounce. Both are off until they turn them on, and neither sends mail; every
+  email still waits for their approval.
 
 ## 7. Resume (optional, recommended)
 
