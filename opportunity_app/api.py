@@ -279,7 +279,15 @@ from .outreach_drafting import (
     restore_draft_version as restore_outreach_draft_version,
     sender_account,
 )
-from .outreach_gmail import GmailAuthError, create_gmail_draft, default_client_factory as default_gmail_client_factory, gmail_drafts_status, send_gmail_message
+from .outreach_gmail import (
+    GmailAuthError,
+    SendConflictError,
+    SendNeedsCheckError,
+    create_gmail_draft,
+    default_client_factory as default_gmail_client_factory,
+    gmail_drafts_status,
+    send_gmail_message,
+)
 from .operations import (
     OperationsError,
     delete_account,
@@ -440,6 +448,9 @@ class OutreachSendRequest(BaseModel):
     kind: Literal["initial", "follow_up"] = "initial"
     # The approved draft the student confirmed; a draft changed since is not sent.
     fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # The check a 428 answer named, sent back once the student has looked in
+    # Gmail. It vouches for exactly the reasons that answer gave.
+    sent_folder_check: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
 
 
 class OutreachReplyRequest(BaseModel):
@@ -2186,7 +2197,7 @@ def create_app(
             )
         except OutreachNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
-        except GmailAuthError as exc:
+        except (GmailAuthError, SendConflictError) as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
@@ -2205,16 +2216,22 @@ def create_app(
         try:
             return send_gmail_message(
                 conn, target_id, user_id=user_id, kind=payload.kind, fingerprint=payload.fingerprint,
+                sent_folder_check=payload.sent_folder_check,
                 client_factory=outreach_gmail_client_factory or default_gmail_client_factory,
             )
         except OutreachNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
-        except (GmailAuthError, DraftChangedError) as exc:
+        except SendNeedsCheckError as exc:
+            # 428: the same request succeeds once it carries the named check.
+            raise HTTPException(
+                status_code=status.HTTP_428_PRECONDITION_REQUIRED, detail={"msg": str(exc), "check": exc.check},
+            ) from exc
+        except (GmailAuthError, DraftChangedError, SendConflictError) as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
         except (RuntimeError, httpx.HTTPError) as exc:
-            detail = str(exc) if isinstance(exc, RuntimeError) else "Could not reach Gmail, so the email may not have been sent. Check your Gmail Sent folder before trying again"
+            detail = str(exc) if isinstance(exc, RuntimeError) else "Could not reach Gmail. Nothing was sent"
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail) from exc
 
     @app.post("/api/v1/outreach/{target_id}/confirm-research")
