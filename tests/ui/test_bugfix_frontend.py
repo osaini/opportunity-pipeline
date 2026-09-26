@@ -175,6 +175,19 @@ def test_an_unsaved_choice_on_another_row_survives_a_slow_save(owner_page):
     assert program_status(owner_page, FUTURE) == pending
 
 
+@pytest.mark.allow_page_errors  # the label request is made to fail on purpose
+def test_the_students_own_programs_label_shows_at_once_after_a_reload(owner_page):
+    # From the 2026-09-26 UI sweep: every load flashed the generic "Programs"
+    # until the label request came back.
+    nav = owner_page.locator("#programs-nav")
+    expect(nav).to_have_accessible_name("Sandbox")
+    # With the label request failing, only the remembered label can name the tab.
+    owner_page.route(PROGRAMS_LIST, lambda route: route.abort())
+    owner_page.reload()
+    expect(nav).to_have_accessible_name("Sandbox")
+    owner_page.unroute(PROGRAMS_LIST)
+
+
 def test_a_row_that_leaves_the_sub_tab_hands_focus_to_the_next_row(owner_page):
     owner_page.click("#programs-nav")
     expect(owner_page.locator('#subnav [data-subtab="open"]')).to_have_attribute("aria-current", "true")

@@ -6775,12 +6775,38 @@
     if (state.view === "programs") els.pageEyebrow.textContent = programsEyebrow();
   }
 
+  // The student's own name for the tab, remembered in this browser so a reload
+  // shows it at once instead of flashing the generic "Programs" first. Only a
+  // convenience: the server's answer always replaces it.
+  const programsLabelKey = (userId) => `programs-label:${userId}`;
+
+  function rememberedProgramsMeta(userId) {
+    try {
+      return JSON.parse(localStorage.getItem(programsLabelKey(userId)) || "null");
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function rememberProgramsMeta(userId, payload) {
+    try {
+      localStorage.setItem(programsLabelKey(userId), JSON.stringify({ label: payload.label || "", audience: payload.audience || "" }));
+    } catch (_error) {
+      // Storage blocked (private window): the label just arrives a moment later.
+    }
+  }
+
   // The nav shows the student's own name for the tab from the moment they sign in.
   async function refreshProgramsLabel() {
     const userId = state.userId;
+    const remembered = rememberedProgramsMeta(userId);
+    if (remembered?.label) applyProgramsMeta(remembered);
     try {
       const payload = await api("/api/v1/early-programs");
-      if (userId === state.userId) applyProgramsMeta(payload);
+      if (userId === state.userId) {
+        applyProgramsMeta(payload);
+        rememberProgramsMeta(userId, payload);
+      }
     } catch (error) {
       // The generic "Programs" label stays; the tab reports errors when opened.
     }
