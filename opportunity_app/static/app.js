@@ -2294,6 +2294,8 @@
     partly_bounced: "Partly bounced",
     greeting_updated: "Greeting updated for the new contact",
     auto_reply: "Automatic reply (out of office)",
+    contact_recovery: "Looked for another contact after the bounce",
+    auto_draft_failed: "Automatic draft failed",
     draft_restored: "Earlier draft restored",
     follow_up_restored: "Earlier follow-up restored",
     // Named apart from an ordinary "location recorded" on purpose: this is what
@@ -3409,6 +3411,52 @@
     return field;
   }
 
+  // Work the app does on its own. Each switch is the student's, stored in the
+  // database, and off until they turn it on. None of them sends mail.
+  const AUTOMATION_SWITCHES = [
+    ["auto_drafts", "Write drafts automatically", "Every company with a contact and a location gets a draft written, whether a deep search found it, you added it, or a contact turned up later. Each one waits for your approval."],
+    ["bounce_recovery", "Find a new contact after a bounce", "When an email bounces, the app searches the company's site again, picks the best address that has not bounced, and updates the greeting. You review the draft and send it again."],
+  ];
+
+  async function automationFields() {
+    const field = element("div", "settings-field automation-settings");
+    field.appendChild(element("h3", "", "Automation"));
+    const status = element("p", "profile-help");
+    status.setAttribute("aria-live", "polite");
+    let current;
+    try {
+      current = await api("/api/v1/outreach/automation");
+    } catch (error) {
+      field.appendChild(element("p", "form-error", `Automation settings could not be loaded: ${error.message}`));
+      return field;
+    }
+    AUTOMATION_SWITCHES.forEach(([key, text, help]) => {
+      const label = element("label", "settings-checkbox");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.id = `settings-automation-${key}`;
+      box.checked = Boolean(current[key]);
+      label.append(box, document.createTextNode(` ${text}`));
+      box.addEventListener("change", async () => {
+        box.disabled = true;
+        status.textContent = "Saving…";
+        try {
+          current = await api("/api/v1/outreach/automation", { method: "PUT", body: JSON.stringify({ [key]: box.checked }) });
+          box.checked = Boolean(current[key]);
+          status.textContent = `${text}: ${box.checked ? "on" : "off"}.`;
+        } catch (error) {
+          box.checked = !box.checked;
+          status.textContent = error.message;
+        } finally {
+          box.disabled = false;
+        }
+      });
+      field.append(label, element("p", "profile-help", help));
+    });
+    field.appendChild(status);
+    return field;
+  }
+
   async function outreachSettingsPanel() {
     const panel = element("section", "tracker-detail outreach-deep-search outreach-settings");
     panel.setAttribute("aria-labelledby", "outreach-settings-heading");
@@ -3418,6 +3466,7 @@
     const body = element("div", "outreach-deep-search-body");
     panel.appendChild(body);
     // Per student and stored in the database, so it shows for every account.
+    body.appendChild(await automationFields());
     body.appendChild(await jevInboxField());
     if (state.userId !== "local-user") {
       body.appendChild(element("p", "profile-help", "These settings belong to the owner of this computer's workspace."));
