@@ -1081,13 +1081,23 @@ without a model call, you approve the draft again, and it can be sent once to
 the new address. A notice pasted into **Log a reply** is caught too, and is
 never logged as a reply.
 
+Replies are read from Gmail too, so there is nothing to paste. The app searches
+for mail from each company you wrote to: the contact, the Cc, and anyone at the
+company's own domain who is answering (a newsletter is not a reply). Each new
+reply is logged as a pasted one would be, starts call prep, and moves a company
+that was waiting (or marked No response) to **Replied**. What the reply means
+(declined, a call, an offer) is shown as a suggestion you apply or dismiss. An
+out-of-office reply is noted and changes nothing. The app checks every few
+minutes in the background while it runs, and whenever the Outreach list loads.
+
 The app requests two scopes. `gmail.compose` covers drafts and sending.
-`gmail.readonly` covers the bounce check. With it the app reads the headers of
-its own sent threads and the full text of delivery failure notices, and nothing
-else. The app calls only `drafts.create`, `drafts.get`, `messages.send`,
-`threads.get` (metadata format), `messages.list` (a search for notices from
-`mailer-daemon` or `postmaster`), `messages.get` (for those notices), and
-`profile`. A connection made before the bounce check existed
+`gmail.readonly` covers bounces and replies. With it the app reads the headers
+of its own sent threads, delivery failure notices, and mail from the companies
+you wrote to, and nothing else. The app calls only `drafts.create`,
+`drafts.get`, `messages.send`, `threads.get` (metadata format),
+`messages.list` (searches for notices from `mailer-daemon` or `postmaster`, and
+for mail from those companies), `messages.get` (for what those searches find),
+and `profile`. A connection made before the bounce check existed
 still sends; the tab asks you to reconnect once to turn the check on. The
 connection is refused if Google signs in as an account other than
 `PIPELINE_OUTREACH_ACCOUNT`.
