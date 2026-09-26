@@ -17,7 +17,8 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
-from opportunity_app.outreach_automation import AutomationWorker
+from opportunity_app import outreach_schedule
+from opportunity_app.outreach_automation import AutomationWorker, update_settings
 from opportunity_app.outreach_schedule import next_morning, recipient_zone, run_due_sends
 from opportunity_app.schema import connect_product, utc_now
 
@@ -60,8 +61,13 @@ class SendTimeTests(unittest.TestCase):
                 self.assertEqual(zone_for("Austin, TX"), "America/Chicago")
                 self.assertEqual(zone_for("El Paso, TX"), "America/Denver")
                 self.assertEqual(zone_for("Seattle, Washington"), "America/Los_Angeles")
+                self.assertEqual(zone_for("Boston, MA 02110"), "America/New_York", "a ZIP after the state")
+                self.assertEqual(zone_for("Denver CO"), "America/Denver", "no comma")
+                self.assertEqual(zone_for("Boston, MA 02110-1234"), "America/New_York")
                 _zone, basis = recipient_zone(conn, {"location": "Berlin, Germany"}, user_id=USER)
-                self.assertIn("your time", basis)
+                self.assertEqual(basis, "your time; their location names no US state")
+                _zone, basis = recipient_zone(conn, {"location": ""}, user_id=USER)
+                self.assertEqual(basis, "your time; no location on file for them", "not a location that was checked")
 
 
 class ScheduledSendTests(unittest.TestCase):
@@ -88,6 +94,7 @@ class ScheduledSendTests(unittest.TestCase):
         self.client = TestClient(app)
         self.client.__enter__()
         self.conn = connect_product(self.platform_path)
+        update_settings(self.conn, {"scheduled_sending": True}, user_id=USER)
 
     def tearDown(self):
         self.conn.close()
@@ -191,6 +198,77 @@ class ScheduledSendTests(unittest.TestCase):
         self.assertEqual(run_due_sends(self.conn, client_factory=self.factory, now=datetime.now(timezone.utc) + timedelta(days=9)), [])
         self.assertEqual(self.gmail.sent, [])
 
+    def test_scheduling_needs_its_switch(self):
+        self.connect()
+        target = self.approved()
+        update_settings(self.conn, {"scheduled_sending": False}, user_id=USER)
+        refused = self.schedule(target)
+        self.assertEqual(refused.status_code, 422)
+        self.assertIn("Turn on", refused.json()["detail"])
+
+    def hold_it_mid_send(self):
+        with self.conn:
+            self.conn.execute("UPDATE outreach_scheduled_sends SET state='sending', updated_at=?", (utc_now(),))
+
+    def test_cancel_stops_a_send_the_worker_has_picked_up(self):
+        self.connect()
+        target = self.approved()
+        self.schedule(target)
+        row = self.conn.execute("SELECT * FROM outreach_scheduled_sends").fetchone()
+        self.hold_it_mid_send()
+        cancelled = self.client.delete(f"/api/v1/outreach/{target['id']}/schedule", headers=AUTH)
+        self.assertTrue(cancelled.json()["cancelled"])
+        self.assertEqual(outreach_schedule._send_one(self.conn, row, client_factory=self.factory, now=datetime.now(timezone.utc)), "cancelled")
+        self.assertEqual(self.gmail.sent, [])
+
+    def test_cancel_says_when_there_was_nothing_left_to_stop(self):
+        self.connect()
+        target = self.approved()
+        self.assertFalse(self.client.delete(f"/api/v1/outreach/{target['id']}/schedule", headers=AUTH).json()["cancelled"])
+
+    def test_a_send_under_way_is_not_rescheduled(self):
+        self.connect()
+        target = self.approved()
+        self.schedule(target)
+        self.hold_it_mid_send()
+        self.assertEqual(self.schedule(target).status_code, 409)
+
+    def test_now_in_any_timezone_is_read_as_the_same_instant(self):
+        self.connect()
+        target = self.approved()
+        self.schedule(target)
+        send_at = datetime.fromisoformat(self.target(target)["scheduled"]["initial"]["send_at"])
+        chicago_now = (send_at + timedelta(minutes=1)).astimezone(CHICAGO)
+        self.assertEqual([item["state"] for item in run_due_sends(self.conn, client_factory=self.factory, now=chicago_now)], ["sent"])
+        tokyo_early = (send_at - timedelta(minutes=30)).astimezone(ZoneInfo("Asia/Tokyo"))
+        self.assertEqual(run_due_sends(self.conn, client_factory=self.factory, now=tokyo_early), [])
+
+    def test_one_email_going_wrong_does_not_stop_the_others(self):
+        self.connect()
+        first = self.approved()
+        second = self.client.post("/api/v1/outreach", headers=AUTH, json={
+            "company": "Kiva", "contact_email": "ana@kiva.example", "location": "Austin, TX",
+            "email_subject": "Hello", "email_body": "Hi Ana,\n\nA note.\n\nSam",
+        }).json()
+        second = self.client.post(f"/api/v1/outreach/{second['id']}/approve", headers=AUTH, json={
+            "kind": "initial", "fingerprint": second["draft_fingerprint"], "acknowledge_warnings": True,
+        }).json()
+        self.schedule(first)
+        self.schedule(second)
+        real_send = outreach_schedule.send_gmail_message
+
+        def flaky(conn, target_id, **kwargs):
+            if target_id == first["id"]:
+                raise TypeError("unexpected")
+            return real_send(conn, target_id, **kwargs)
+
+        later = datetime.now(timezone.utc) + timedelta(days=9)
+        with mock.patch.object(outreach_schedule, "send_gmail_message", flaky):
+            outcomes = {item["target_id"]: item["state"] for item in run_due_sends(self.conn, client_factory=self.factory, now=later)}
+        self.assertEqual(outcomes, {first["id"]: "failed", second["id"]: "sent"})
+        self.assertIn("Check your Gmail Sent folder", self.target(first)["scheduled"]["initial"]["error"],
+                      "an error during the send may mean it went out, so the student looks")
+
     def test_scheduling_needs_gmail_and_an_approved_draft(self):
         target = self.approved()
         refused = self.schedule(target)
@@ -231,6 +309,7 @@ class ScheduledSendTests(unittest.TestCase):
         self.connect()
         target = self.approved()
         self.schedule(target)
+        update_settings(self.conn, {"scheduled_sending": False}, user_id=USER)
         with self.conn:
             self.conn.execute("UPDATE outreach_scheduled_sends SET send_at=?", ((datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(timespec="seconds"),))
         worker = AutomationWorker(self.platform_path, fetcher_factory=lambda: None, gmail_client_factory=self.factory)

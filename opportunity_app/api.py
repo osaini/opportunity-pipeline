@@ -2423,8 +2423,9 @@ def create_app(
         user_id: str = Depends(require_auth),
     ) -> dict[str, Any]:
         try:
-            cancel_send(conn, target_id, user_id=user_id, kind=kind)
-            return get_outreach_target(conn, target_id, user_id=user_id)
+            cancelled = cancel_send(conn, target_id, user_id=user_id, kind=kind)
+            # False: nothing was left to stop, for example it had already gone out.
+            return {**get_outreach_target(conn, target_id, user_id=user_id), "cancelled": cancelled}
         except OutreachNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
 

@@ -2605,10 +2605,13 @@
     button.addEventListener("click", async () => {
       button.disabled = true;
       try {
-        await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/schedule?kind=${kind}`, { method: "DELETE" });
+        const result = await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/schedule?kind=${kind}`, { method: "DELETE" });
         state.outreachOpen = item.id;
         await loadOutreach();
-        announce(text === "Cancel" ? `Cancelled the scheduled send to ${item.contact_email}.` : "Dismissed.");
+        if (text !== "Cancel") announce("Dismissed.");
+        else announce(result.cancelled
+          ? `Cancelled the scheduled send to ${item.contact_email}.`
+          : `Too late to cancel: the email to ${item.contact_email} had already gone out. Check the history.`);
       } catch (error) {
         showError(error.message);
         button.disabled = false;
@@ -2618,9 +2621,16 @@
   }
 
   function composeControl(context, item, kind) {
-    if (!context.gmail?.connected) return composeLink(context.compose, item, kind);
     const controls = document.createDocumentFragment();
     const schedule = item.scheduled?.[kind];
+    // A scheduled send can always be cancelled, even while Gmail needs reconnecting.
+    if (!context.gmail?.connected) {
+      if (schedule?.state === "scheduled" || schedule?.state === "sending") {
+        controls.append(chip(`Goes out ${schedule.label} once Gmail is reconnected`, "is-warning"), cancelScheduleButton(item, kind));
+        return controls;
+      }
+      return composeLink(context.compose, item, kind);
+    }
     if (schedule?.state === "scheduled" || schedule?.state === "sending") {
       // A Gmail draft made now would stop the scheduled send, so it is not offered.
       controls.append(
