@@ -679,6 +679,11 @@ _GREETING = re.compile(
     r"(?P<word>(?:hi|hello|hey|dear|good (?:morning|afternoon|evening))\s+)(?P<name>[^,!:\n]{1,80}?)(?P<end>\s*[,!:]?)",
     re.IGNORECASE,
 )
+# The greeting and the first sentence on one line: "Hi Alex, I'm writing...".
+_LEADING_GREETING = re.compile(
+    r"(?P<word>(?:hi|hello|hey|dear|good (?:morning|afternoon|evening))\s+)(?P<name>[^,!:\n]{1,80}?)(?P<end>\s*[,!:])(?P<rest>\s+\S.*)",
+    re.IGNORECASE,
+)
 _HONORIFICS = {"dr", "mr", "mrs", "ms", "mx", "prof", "professor"}
 # Greetings to nobody in particular, which a named contact improves on.
 _GENERIC_GREETINGS = {"there", "team", "all", "everyone", "hiring team", "recruiting team"}
@@ -694,27 +699,34 @@ def greeting_name(contact_name: str, company: str) -> str:
     return contact_first_name(contact_name) or f"{company} team"
 
 
-def readdress_greeting(body: str, old_names: set[str], new_name: str) -> tuple[str, str, str] | None:
-    """The body greeting ``new_name``, with the old and new greeting lines.
+def _own_team(greeted: str, company: str) -> bool:
+    """"acme robotics team" for Acme Robotics, Inc.; never another company's team."""
+    return bool(company) and greeted.endswith(" team") and company_key(greeted[: -len(" team")]) == company_key(company)
 
-    None when the first line is not a greeting to one of ``old_names``
-    (casefolded) or to a team: a greeting the student wrote to someone else is
-    theirs.
+
+def readdress_greeting(body: str, old_names: set[str], new_name: str, company: str = "") -> tuple[str, str, str] | None:
+    """The body greeting ``new_name``, with the old and new greetings.
+
+    The greeting is the first line, or the start of it when the first sentence
+    follows on the same line. None when it does not greet one of ``old_names``
+    (casefolded) or ``company``'s own team: a greeting the student wrote to
+    someone else is theirs.
     """
     lines = body.split("\n")
     index = next((number for number, line in enumerate(lines) if line.strip()), None)
     if index is None:
         return None
-    old_line = lines[index].strip()
-    match = _GREETING.fullmatch(old_line)
+    line = lines[index].strip()
+    match = _GREETING.fullmatch(line) or _LEADING_GREETING.fullmatch(line)
     greeted = " ".join(match["name"].split()).casefold() if match else ""
-    if not match or not (greeted in old_names or greeted.endswith(" team")):
+    if not match or not (greeted in old_names or _own_team(greeted, company)):
         return None
-    new_line = f"{match['word']}{new_name}{match['end'] or ','}"
-    if new_line == old_line:
+    old_greeting = f"{match['word']}{match['name']}{match['end']}".strip()
+    new_greeting = f"{match['word']}{new_name}{match['end'] or ','}"
+    if new_greeting.strip() == old_greeting:
         return None
-    lines[index] = new_line
-    return "\n".join(lines), old_line, new_line
+    lines[index] = new_greeting + (match.groupdict().get("rest") or "")
+    return "\n".join(lines), old_greeting, new_greeting.strip()
 
 
 def _readdress_drafts(values: dict[str, Any], previous: dict[str, Any]) -> list[tuple[str, str, str]]:
@@ -740,7 +752,7 @@ def _readdress_drafts(values: dict[str, Any], previous: dict[str, Any]) -> list[
             continue
         if body_field in values and values[body_field] != previous[body_field]:
             continue
-        swapped = readdress_greeting(previous[body_field] or "", old_names, new_name)
+        swapped = readdress_greeting(previous[body_field] or "", old_names, new_name, previous["company"])
         if swapped:
             values[body_field] = swapped[0]
             changed.append((kind, swapped[1], swapped[2]))

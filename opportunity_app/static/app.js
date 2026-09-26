@@ -2291,7 +2291,7 @@
     gmail_draft_created: "Draft created in Gmail",
     gmail_sent: "Sent from Gmail",
     bounced: "Bounced",
-    cc_bounced: "Cc bounced",
+    partly_bounced: "Partly bounced",
     greeting_updated: "Greeting updated for the new contact",
     draft_restored: "Earlier draft restored",
     follow_up_restored: "Earlier follow-up restored",
@@ -2629,7 +2629,7 @@
           earlier.appendChild(element("summary", "", "The notes it replaced"));
           earlier.appendChild(element("pre", "outreach-event-detail outreach-prep-earlier", event.detail));
           row.appendChild(earlier);
-        } else if (["bounced", "cc_bounced"].includes(event.event_type) && event.detail) {
+        } else if (["bounced", "partly_bounced"].includes(event.event_type) && event.detail) {
           let bounce = {};
           try { bounce = JSON.parse(event.detail); } catch (_error) { bounce = {}; }
           const who = (bounce.addresses || []).join(", ");
@@ -4149,6 +4149,8 @@
     }
     if (item.sent_at) facts.appendChild(chip(`Sent ${formatCalendarDate(item.sent_at)}`));
     if (item.bounced_at) facts.appendChild(chip("Bounced", "is-warning"));
+    // Part of the email still arrived, so the company stays where it was.
+    else if (item.contact_bounced || item.cc_bounced) facts.appendChild(chip(item.contact_bounced ? "Contact address bounced" : "Cc bounced", "is-warning"));
     if (item.draft_status === "approved") facts.appendChild(chip(...DRAFT_STATUS_LABELS.approved));
     else if (outreachDraftNeedsReview(item, "initial")) facts.appendChild(chip(...DRAFT_STATUS_LABELS.generated));
     if (outreachDraftNeedsReview(item, "follow_up")) facts.appendChild(chip("Follow-up needs review", "is-soon"));

@@ -130,6 +130,14 @@ class OutreachApiTests(unittest.TestCase):
         saved = self.patch(edited, contact_name="Dana Ruiz", email_body="Hello Dana and team,\n\nA short note.")
         self.assertEqual(saved["email_body"], "Hello Dana and team,\n\nA short note.", "the student's own words win")
 
+    def test_a_greeting_sharing_its_line_is_swapped_and_another_teams_is_not(self):
+        inline = self.create(email_body="Hi Greg, I'd like to ask about internships.\n\nSam")
+        self.assertEqual(self.patch(inline, contact_name="Dana Ruiz")["email_body"], "Hi Dana, I'd like to ask about internships.\n\nSam")
+        other = self.create(company="Bovi", email_body="Hi Globex team,\n\nA short note.")
+        self.assertEqual(self.patch(other, contact_name="Dana Ruiz")["email_body"], "Hi Globex team,\n\nA short note.")
+        own = self.create(company="Kiva Labs, Inc.", email_body="Hi Kiva Labs team,\n\nA short note.")
+        self.assertEqual(self.patch(own, contact_name="Dana Ruiz")["email_body"], "Hi Dana,\n\nA short note.")
+
     def test_a_sent_email_keeps_the_words_that_went_out(self):
         sent = self.create(email_body="Hi Greg,\n\nA short note.", status="sent")
         self.assertEqual(self.patch(sent, contact_name="Dana Ruiz")["email_body"], "Hi Greg,\n\nA short note.")

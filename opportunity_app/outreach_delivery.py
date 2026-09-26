@@ -44,8 +44,11 @@ from .outreach_gmail import (
 )
 from .schema import utc_now
 
-# A bounce of the Cc alone: the email still reached the contact.
-CC_BOUNCE_EVENT = "cc_bounced"
+# Some recipients failed and the rest were reached (a bad guess with the shared
+# inbox in Cc): the email did arrive, so nothing is reopened.
+PARTIAL_BOUNCE_EVENT = "partly_bounced"
+# Given up on for silence, but a bounce says the silence was an address that failed.
+REOPENED_BY_BOUNCE = {*AWAITING_REPLY, "no_response"}
 # Most bounces arrive within a minute; a server that keeps retrying gives up
 # within a few days.
 WATCH_FOR = timedelta(days=3)
@@ -55,7 +58,9 @@ WATCH_FOR = timedelta(days=3)
 NOTICE_SEARCH = "from:(mailer-daemon OR postmaster) newer_than:4d"
 _HEADERS = ("From", "Subject", "Content-Type", "X-Failed-Recipients")
 _DAEMONS = {"mailer-daemon", "mailerdaemon", "mail-daemon", "postmaster"}
-_DELAY = re.compile(r"\(delay\)|\bdelayed\b|\bwarning\b|\bwill (retry|keep trying)\b", re.IGNORECASE)
+_DELAY = re.compile(r"\(delay\)|\bdelayed\b|\bwarning\b|\bwill (retry|keep trying)\b|\btemporar(y|ily)\b", re.IGNORECASE)
+# Wording that makes a notice a failure even when it also mentions retrying.
+_FAILED_WORDING = re.compile(r"\(failure\)|\bpermanent(ly)?\b|\bgave up\b|\bgiving up\b|\bcould ?n[o']t be delivered\b|\b5\d\d[ -]5\.\d\.\d+", re.IGNORECASE)
 _ADDRESS = re.compile(r"[^@\s<>\"'(),;:]+@[^@\s<>\"'(),;:]+\.[^@\s<>\"'(),;:]+")
 _SALUTATION = re.compile(r"^(hello|hi)\s+\S+,\s*", re.IGNORECASE)
 
@@ -83,7 +88,7 @@ def _interval(age: timedelta) -> timedelta:
 def _recorded(conn: sqlite3.Connection, target_id: str, user_id: str, notice_id: str) -> bool:
     rows = conn.execute(
         "SELECT detail FROM outreach_events WHERE target_id=? AND user_id=? AND event_type IN (?, ?)",
-        (target_id, user_id, BOUNCE_EVENT, CC_BOUNCE_EVENT),
+        (target_id, user_id, BOUNCE_EVENT, PARTIAL_BOUNCE_EVENT),
     ).fetchall()
     for row in rows:
         try:
@@ -108,25 +113,28 @@ def record_bounce(
     """Record that an outreach email bounced.
 
     ``addresses`` are the ones the notice says failed; with none named, the
-    address the email went to is taken as the one that failed. When that
-    address failed the email reached nobody, so a target awaiting a reply goes
-    back to Drafted with no sent date or follow-up. A failed Cc alone only
-    marks the Cc. Either way the failed addresses are kept for good.
+    address the email went to is taken as the one that failed. Only when every
+    recipient failed did the email reach nobody: then a company still waiting
+    to hear back goes back to Drafted with no sent date or follow-up. When a
+    Cc (or the To) was still reached, only the failed addresses are marked.
+    Either way the failed addresses are kept for good.
     """
     target = get_target(conn, target_id, user_id=user_id)
     if notice_id and _recorded(conn, target_id, user_id, notice_id):
         return target
-    sent_to = str((sent or {}).get("to") or target["contact_email"]).strip().casefold()
+    source_of = sent or {"to": target["contact_email"], "cc": target["contact_cc"]}
+    sent_to = str(source_of.get("to") or "").strip().casefold()
+    recipients = {str(source_of.get(field) or "").strip().casefold() for field in ("to", "cc")} - {""}
     failed = sorted({address.strip().casefold() for address in addresses if address.strip()})
     if not failed:
         if not sent_to:
             raise ValueError("There is no contact address to mark bounced")
         failed = [sent_to]
-    whole = sent_to in failed
+    whole = recipients <= set(failed)
     reason = " ".join(str(reason or "").split())[:500]
     timestamp = utc_now()
     assignments: dict[str, Any] = {"bounced_addresses_json": json.dumps(sorted({*target["bounced_addresses"], *failed}))}
-    reverted = whole and target["status"] in AWAITING_REPLY
+    reverted = whole and target["status"] in REOPENED_BY_BOUNCE
     if whole:
         assignments.update(bounced_at=timestamp, bounce_reason=reason)
     if reverted:
@@ -144,7 +152,7 @@ def record_bounce(
         )
         if reverted:
             _log(conn, target_id, user_id, "status", from_status=target["status"], to_status="drafted")
-        _log(conn, target_id, user_id, BOUNCE_EVENT if whole else CC_BOUNCE_EVENT, detail=json.dumps(detail, sort_keys=True))
+        _log(conn, target_id, user_id, BOUNCE_EVENT if whole else PARTIAL_BOUNCE_EVENT, detail=json.dumps(detail, sort_keys=True))
     return get_target(conn, target_id, user_id=user_id)
 
 
@@ -177,9 +185,11 @@ def read_notice(raw: bytes) -> dict[str, Any] | None:
     delayed = False
     diagnostic = ""
     text = ""
+    report = False
     for part in message.walk():
         kind = part.get_content_type()
         if kind == "message/delivery-status" and isinstance(part.get_payload(), list):
+            report = True
             for block in part.get_payload():
                 action = str(block.get("Action", "")).strip().casefold()
                 recipient = str(block.get("Final-Recipient") or block.get("Original-Recipient") or "")
@@ -196,6 +206,14 @@ def read_notice(raw: bytes) -> dict[str, Any] | None:
                 text = ""
     if delayed and not failed:
         return None
+    subject = str(message.get("Subject", ""))
+    if not report:
+        # No report: the notice's own words say whether it is only a delay, and
+        # an Exim-style notice names the failed address in a header.
+        wording = f"{subject}\n{text}"
+        if _DELAY.search(wording) and not _FAILED_WORDING.search(wording):
+            return None
+        failed = [address.casefold() for _name, address in getaddresses([str(message.get("X-Failed-Recipients", ""))]) if "@" in address]
     reason = _SALUTATION.sub("", " ".join(text.split()))[:300] or diagnostic
     return {"failed": sorted(set(failed)), "reason": reason}
 
@@ -312,7 +330,8 @@ def _addressed(item: dict[str, Any]) -> set[str]:
 
 def _match(conn: sqlite3.Connection, user_id: str, watched: list[dict[str, Any]], failed: list[str], received_ms: int) -> dict[str, Any] | None:
     """The latest unbounced send to a failed address that went out before the notice arrived."""
-    received = datetime.fromtimestamp(received_ms / 1000, tz=timezone.utc) + timedelta(minutes=1)
+    # A few seconds for the send being recorded just after Gmail accepted it.
+    received = datetime.fromtimestamp(received_ms / 1000, tz=timezone.utc) + timedelta(seconds=5)
     candidates = [
         item for item in watched
         if item["sent_at"] <= received and _addressed(item) & set(failed) and not _bounced_since(conn, user_id, item)
@@ -374,8 +393,13 @@ def check_deliveries(
         _forget(user_id, due)
         return {**result, "state": "not_connected" if not row or row["status"] == "disconnected" else "needs_reconnect"}
 
+    reported: set[str] = set()
+
     def record(item: dict[str, Any], notice: dict[str, Any]) -> None:
         detail = item["detail"]
+        if notice["notice_id"] in reported or _recorded(conn, item["target_id"], user_id, notice["notice_id"]):
+            return
+        reported.add(notice["notice_id"])
         target = record_bounce(
             conn, item["target_id"], user_id=user_id, reason=notice["reason"], addresses=notice["failed"],
             source="gmail", sent=detail, notice_id=notice["notice_id"],
