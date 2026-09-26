@@ -186,6 +186,13 @@ school, contact details, notes, application history, and resume prose. See
 [`docs/typesafe-jev.md`](docs/typesafe-jev.md) for the full contract, limitations,
 and test strategy.
 
+**Jev inbox suggestions** are a separate, per-student switch under Outreach →
+Outreach settings, off by default. When on, the text of a reply you paste and of
+an application email a connector delivers is sent to Jev to suggest its outcome.
+Without a key, with the switch off, when TypeSafe errors, or when Jev is less than
+50% sure, the keyword rules suggest instead, and each suggestion says which one
+made it. Either way you confirm every change.
+
 Keep the direct development server bound to `127.0.0.1`. For hosted use, the API
 supports `DATABASE_URL=postgresql://...`, HTTPS-only cookies in
 `PIPELINE_ENV=production`, a separately deployed worker, and the container stack

@@ -31,7 +31,8 @@ Everything below that says "the agent" is an instruction to the agent.
 4. **Everything is optional except Python.** The pipeline runs on the public
    employer job boards with no keys at all. Offer each integration, explain what
    it unlocks, and let the student skip it. In particular, **Jev (TypeSafe) is
-   waitlisted**. Skipping it loses only an optional second-opinion panel.
+   waitlisted**. Skipping it loses only an optional second-opinion panel and
+   Jev inbox suggestions, whose keyword-rule fallback keeps working.
 5. **Stay on this machine.** Never bind the server beyond `127.0.0.1`, and never
    commit `.env`, `config/profile.json`, `config/sources.local.json`,
    `config/early_programs.local.json`, `config/resume.json`, or anything in
@@ -289,7 +290,10 @@ themselves (rule 3). The details:
 - **AI**: Claude Code or Codex CLI signed in on their own subscription covers
   the deep search and drafting. `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` is only
   for the in-app career agent, and is pay per use.
-- **Jev** (`TYPESAFE_API_KEY`): optional and waitlisted; skip it freely.
+- **Jev** (`TYPESAFE_API_KEY`): optional and waitlisted; skip it freely. If they
+  set it, tell them Jev inbox suggestions are a separate switch under Outreach →
+  Outreach settings, off until they turn it on, because it sends reply and email
+  text to TypeSafe.
 - **Gmail drafts**: the student needs their own Google Cloud OAuth client. Walk
   them through README.md → "Gmail drafts with an attachment". They also set
   `PIPELINE_OUTREACH_ACCOUNT` to their address and `PIPELINE_OUTREACH_COMPOSE=gmail`.

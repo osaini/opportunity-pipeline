@@ -224,6 +224,12 @@ from .student_agent import (
     thread_record,
 )
 from .agent_providers import AgentProvider, build_provider, default_provider, provider_catalog
+from .inbox_classifiers import (
+    build_client as build_inbox_client,
+    client_for as inbox_client_for,
+    set_enabled as set_inbox_suggestions,
+    status as inbox_suggestions_status,
+)
 from .typesafe_decisions import (
     DEFAULT_MODEL as TYPESAFE_DEFAULT_MODEL,
     DecisionClient,
@@ -455,6 +461,10 @@ class OutreachSendRequest(BaseModel):
 
 class OutreachReplyRequest(BaseModel):
     text: str = Field(min_length=1, max_length=20_000)
+
+
+class InboxSuggestionsRequest(BaseModel):
+    enabled: bool
 
 
 class OutreachDiscoveryRequest(BaseModel):
@@ -838,6 +848,7 @@ def create_app(
     call_prep_worker: CallPrepWorker | None = None,
     start_call_prep_worker: bool | None = None,
     typesafe_client_factory: Callable[[], DecisionClient] | None = None,
+    inbox_client_factory: Callable[[], DecisionClient | None] | None = None,
     profile_file: Path | None = None,
     early_programs_file: Path | None = None,
     allowed_hosts: list[str] | None = None,
@@ -885,6 +896,7 @@ def create_app(
     open_connections: set[Any] = set()
     resolved_agent_provider_factory = agent_provider_factory or build_provider
     resolved_typesafe_client_factory = typesafe_client_factory or build_typesafe_client
+    resolved_inbox_client_factory = inbox_client_factory or build_inbox_client
     # A manual refresh fetches live sources and rewrites data/pipeline.db, so it
     # is only wired up for the real product database. Test and sandbox apps built
     # over a temporary database get it only when they pass a manager explicitly.
@@ -1676,6 +1688,25 @@ def create_app(
             "setup_hint": "" if client.configured else "Set TYPESAFE_API_KEY to enable Jev reviews",
         }
 
+    @app.get("/api/v1/typesafe/inbox-suggestions")
+    def get_inbox_suggestions(
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """Whether Jev can classify replies and connector emails here, and whether this student turned it on."""
+        return inbox_suggestions_status(conn, resolved_inbox_client_factory, user_id=user_id)
+
+    @app.put("/api/v1/typesafe/inbox-suggestions")
+    def put_inbox_suggestions(
+        payload: InboxSuggestionsRequest,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        # Turning it on without a key is allowed: nothing is sent until a key is set,
+        # and the rules answer in the meantime.
+        set_inbox_suggestions(conn, payload.enabled, user_id=user_id)
+        return inbox_suggestions_status(conn, resolved_inbox_client_factory, user_id=user_id)
+
     @app.post("/api/v1/opportunities/{opportunity_id}/jev-review")
     def opportunity_jev_review(
         opportunity_id: str,
@@ -2299,7 +2330,10 @@ def create_app(
         user_id: str = Depends(require_auth),
     ) -> dict[str, Any]:
         try:
-            logged = log_outreach_reply(conn, target_id, payload.text, user_id=user_id)
+            logged = log_outreach_reply(
+                conn, target_id, payload.text, user_id=user_id,
+                decisions=inbox_client_for(conn, resolved_inbox_client_factory, user_id=user_id),
+            )
             # A reply logged on a company already at a reply status starts its call prep.
             if auto_queue_call_prep(conn, target_id, user_id=user_id, reason="Reply logged"):
                 call_prep_worker.wake()
@@ -3251,7 +3285,10 @@ def create_app(
         user_id: str = Depends(require_auth),
     ) -> dict[str, Any]:
         try:
-            return ingest_message(conn, **payload.model_dump(), user_id=user_id)
+            return ingest_message(
+                conn, **payload.model_dump(), user_id=user_id,
+                decisions=inbox_client_for(conn, resolved_inbox_client_factory, user_id=user_id),
+            )
         except ConnectionNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connector not found") from exc
         except ValueError as exc:
@@ -3279,7 +3316,11 @@ def create_app(
                 ).fetchone()
                 if not owner:
                     raise ConnectionNotFoundError(payload.connector_id)
-                return ingest_message(conn, **payload.model_dump(), user_id=str(owner["user_id"]))
+                owner_id = str(owner["user_id"])
+                return ingest_message(
+                    conn, **payload.model_dump(), user_id=owner_id,
+                    decisions=inbox_client_for(conn, resolved_inbox_client_factory, user_id=owner_id),
+                )
         except ConnectionNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Connector not found") from exc
         except (ValueError, json.JSONDecodeError) as exc:

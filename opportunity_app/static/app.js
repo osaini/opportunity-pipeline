@@ -3011,7 +3011,8 @@
         const suggested = payload.suggestion.status;
         text.value = "";
         const writing = CALL_PREP_ACTIVE.includes(payload.target?.call_prep_job?.state);
-        result.replaceChildren(element("p", "form-status", `Saved to history. ${payload.suggestion.reason}.${writing ? " Writing call prep in the background." : ""}`));
+        const fellBack = payload.suggestion.fallback_reason ? ` (${payload.suggestion.fallback_reason}, so the keyword rules suggested this)` : "";
+        result.replaceChildren(element("p", "form-status", `Saved to history. ${payload.suggestion.reason}${fellBack}.${writing ? " Writing call prep in the background." : ""}`));
         if (writing) {
           watchCallPrep(item.id);
           showCallPrepWriting(section.closest("[data-outreach-id]"));
@@ -3280,6 +3281,46 @@
 
   // The .env values a student would otherwise edit by hand. Each change is
   // saved at once and applies without restarting the app.
+  async function jevInboxField() {
+    const field = element("div", "settings-field jev-inbox-setting");
+    const label = element("label", "settings-checkbox");
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.id = "settings-jev-inbox";
+    box.disabled = true;
+    label.append(box, document.createTextNode(" Suggest reply and email outcomes with Jev"));
+    const help = element("p", "profile-help");
+    const status = element("p", "profile-help jev-inbox-status");
+    status.setAttribute("aria-live", "polite");
+    field.append(label, help, status);
+    function show(setting) {
+      box.checked = setting.enabled;
+      box.disabled = false;
+      help.textContent = setting.available
+        ? `${setting.sends} Both go to TypeSafe. When Jev is unsure or unreachable, the keyword rules suggest instead, and every suggestion says which one made it. You still confirm each change.`
+        : "Jev is not set up on this computer (TYPESAFE_API_KEY in .env), so the keyword rules make these suggestions. Nothing is sent anywhere.";
+    }
+    try {
+      show(await api("/api/v1/typesafe/inbox-suggestions"));
+    } catch (error) {
+      help.textContent = `Jev inbox suggestions could not be checked: ${error.message}`;
+      return field;
+    }
+    box.addEventListener("change", async () => {
+      box.disabled = true;
+      status.textContent = "Saving…";
+      try {
+        show(await api("/api/v1/typesafe/inbox-suggestions", { method: "PUT", body: JSON.stringify({ enabled: box.checked }) }));
+        status.textContent = box.checked ? "Jev inbox suggestions on." : "Jev inbox suggestions off.";
+      } catch (error) {
+        box.checked = !box.checked;
+        box.disabled = false;
+        status.textContent = error.message;
+      }
+    });
+    return field;
+  }
+
   async function outreachSettingsPanel() {
     const panel = element("section", "tracker-detail outreach-deep-search outreach-settings");
     panel.setAttribute("aria-labelledby", "outreach-settings-heading");
@@ -3288,6 +3329,8 @@
     panel.appendChild(heading);
     const body = element("div", "outreach-deep-search-body");
     panel.appendChild(body);
+    // Per student and stored in the database, so it shows for every account.
+    body.appendChild(await jevInboxField());
     if (state.userId !== "local-user") {
       body.appendChild(element("p", "profile-help", "These settings belong to the owner of this computer's workspace."));
       return panel;
@@ -5143,7 +5186,8 @@
       const eventList = element("div", "monitored-event-list");
       pending.forEach((item) => {
         const card = element("article", "monitored-event");
-        card.appendChild(element("strong", "", `${item.event_type.replaceAll("_", " ")} · ${Math.round(item.confidence * 100)}%`));
+        const decidedBy = item.payload.classified_by?.source === "jev" ? "Jev suggestion" : "keyword rules";
+        card.appendChild(element("strong", "", `${item.event_type.replaceAll("_", " ")} · ${Math.round(item.confidence * 100)}% · ${decidedBy}`));
         card.appendChild(element("p", "", item.payload.subject || item.payload.body_preview));
         const select = document.createElement("select");
         (applications.items || []).forEach((application) => {

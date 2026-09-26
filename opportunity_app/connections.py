@@ -19,7 +19,9 @@ import httpx
 from cryptography.fernet import Fernet
 
 from .actions import ApplicationNotFoundError, update_application
+from .inbox_classifiers import classify_email
 from .schema import utc_now
+from .typesafe_decisions import DecisionClient
 
 
 class ConnectionNotFoundError(LookupError):
@@ -245,7 +247,13 @@ def ingest_message(
     sender: str = "",
     *,
     user_id: str,
+    decisions: DecisionClient | None = None,
 ) -> dict[str, Any]:
+    """Record one delivered email as a pending tracker update the student confirms or ignores.
+
+    With a decisions client its type comes from Jev when it is sure enough;
+    without one, or when Jev cannot answer, from classify_monitored_message.
+    """
     connector = connector_record(conn, connector_id, user_id=user_id)
     if connector["status"] != "connected":
         raise ValueError("Connector is disconnected")
@@ -255,10 +263,12 @@ def ingest_message(
     ).fetchone()
     if existing:
         return monitored_event(conn, str(existing[0]), user_id=user_id)
-    event_type, confidence = classify_monitored_message(subject, body)
+    event_type, confidence, classified_by = classify_email(subject, body, classify_monitored_message, decisions)
     event_id = f"event-{uuid4().hex}"
     timestamp = utc_now()
-    payload = {"subject": subject[:1_000], "body_preview": body[:2_000], "sender": sender[:500]}
+    payload = {
+        "subject": subject[:1_000], "body_preview": body[:2_000], "sender": sender[:500], "classified_by": classified_by,
+    }
     with conn:
         conn.execute(
             """

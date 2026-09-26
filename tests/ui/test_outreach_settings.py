@@ -10,7 +10,7 @@ from playwright.sync_api import expect
 
 import outreach_fakes
 from conftest import OWNER_TOKEN
-from test_outreach_journey import open_outreach
+from test_outreach_journey import card_for, open_details, open_outreach, seed_target
 
 BEARER = {"Authorization": f"Bearer {OWNER_TOKEN}"}
 
@@ -59,3 +59,31 @@ def test_settings_save_at_once_and_attach_a_resume_under_its_own_name(owner_page
     attach.select_option("")
     expect(panel.locator(".form-status")).to_have_text("Attachment saved.")
     assert os.environ["PIPELINE_OUTREACH_ATTACHMENT"] == ""
+
+
+def test_jev_inbox_suggestions_are_off_until_the_student_turns_them_on(owner_page, base_url):
+    seed_target(owner_page, base_url, status="sent")
+    open_outreach(owner_page, "settings")
+    panel = owner_page.locator("section.outreach-settings")
+    box = panel.get_by_label("Suggest reply and email outcomes with Jev")
+    expect(box).to_be_enabled()
+    expect(box).not_to_be_checked()
+    expect(panel.locator(".jev-inbox-setting")).to_contain_text("Both go to TypeSafe")
+
+    def log_reply():
+        open_outreach(owner_page, "awaiting")
+        details = open_details(card_for(owner_page, "Bovi"), "Replies and history")
+        details.get_by_label("Paste their reply").fill("Thanks for reaching out! Could we set up a call next week?")
+        details.get_by_role("button", name="Log reply").click()
+        return details.locator(".outreach-reply-result")
+
+    result = log_reply()
+    expect(result).to_contain_text("proposes a call")
+    expect(result).not_to_contain_text("Jev")
+
+    open_outreach(owner_page, "settings")
+    box = owner_page.locator("section.outreach-settings").get_by_label("Suggest reply and email outcomes with Jev")
+    box.check()
+    expect(owner_page.locator(".jev-inbox-status")).to_have_text("Jev inbox suggestions on.")
+    # The fake Jev answers the first option, so the suggestion is visibly Jev's.
+    expect(log_reply()).to_contain_text("Jev suggestion, 94% sure")

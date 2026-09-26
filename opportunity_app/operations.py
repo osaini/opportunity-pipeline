@@ -183,6 +183,7 @@ ACCOUNT_QUERIES = {
     "outreach_discovery_runs": "SELECT * FROM outreach_discovery_runs WHERE user_id=?",
     "outreach_draft_versions": "SELECT * FROM outreach_draft_versions WHERE user_id=?",
     "outreach_send_claims": "SELECT * FROM outreach_send_claims WHERE user_id=?",
+    "user_settings": "SELECT * FROM user_settings WHERE user_id=?",
 }
 
 
