@@ -194,14 +194,16 @@
     }
     if (!response.ok) {
       let detail = `Request failed (${response.status})`;
+      let body = null;
       try {
-        const body = await response.json();
+        body = await response.json();
         detail = errorDetailText(body.detail) || detail;
       } catch (_) {
         // The HTTP status remains a useful fallback.
       }
       const error = new Error(detail);
       error.status = response.status;
+      error.detail = body?.detail;
       throw error;
     }
     if (!["GET", "HEAD", "OPTIONS"].includes(method)) invalidateUrgentBadge(path);
@@ -2408,12 +2410,17 @@
       button.disabled = true;
       button.title = gmail.attachment_problem;
     }
+    // After a 428 the server has named what the student must look for in
+    // Gmail. The next confirmed click sends that check, once: whatever that
+    // attempt's outcome, a later one has to be vouched for again.
+    let check = "";
     let timer = null;
+    const idleLabel = () => (check ? `Checked Gmail — send again${attachment}` : label);
     const reset = () => {
       clearTimeout(timer);
       timer = null;
       delete button.dataset.confirming;
-      button.textContent = label;
+      button.textContent = idleLabel();
     };
     button.addEventListener("blur", () => { if (button.dataset.confirming) reset(); });
     button.addEventListener("keydown", (event) => { if (event.key === "Escape" && button.dataset.confirming) reset(); });
@@ -2429,17 +2436,27 @@
       clearTimeout(timer);
       button.disabled = true;
       button.textContent = "Sending…";
+      const payload = { kind, fingerprint: kind === "follow_up" ? item.follow_up_fingerprint : item.draft_fingerprint };
+      if (check) payload.sent_folder_check = check;
+      check = "";
       try {
         const sent = await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/gmail-send`, {
           method: "POST",
-          body: JSON.stringify({ kind, fingerprint: kind === "follow_up" ? item.follow_up_fingerprint : item.draft_fingerprint }),
+          body: JSON.stringify(payload),
         });
         state.outreachOpen = item.id;
-        announce(kind === "follow_up"
-          ? `Sent the follow-up to ${sent.to}. ${item.company} is marked followed up.`
-          : `Sent to ${sent.to} from ${sent.account || "Gmail"}. ${item.company} is marked sent, with a follow-up set for ${formatCalendarDate(sent.follow_up_at)}.`);
+        if (sent.marked === false) {
+          announce(`Sent to ${sent.to}, but ${item.company} could not be marked ${kind === "follow_up" ? "followed up" : "sent"}. Press "I sent it" to catch it up.`);
+        } else {
+          announce(kind === "follow_up"
+            ? `Sent the follow-up to ${sent.to}. ${item.company} is marked followed up.`
+            : `Sent to ${sent.to} from ${sent.account || "Gmail"}. ${item.company} is marked sent, with a follow-up set for ${formatCalendarDate(sent.follow_up_at)}.`);
+        }
         await loadOutreach();
       } catch (error) {
+        // Gmail may already have this email: the message says where to look,
+        // and the next confirmed click vouches for having looked.
+        if (error.status === 428 && typeof error.detail?.check === "string") check = error.detail.check;
         reset();
         button.disabled = false;
         // A changed or already-sent draft means the card is stale; reloading

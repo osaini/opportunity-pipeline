@@ -226,6 +226,72 @@ def test_send_from_gmail_asks_for_a_second_click_naming_the_recipient(owner_page
     assert len(owner_page.context.pages) == 1, "no Gmail tab opens"
 
 
+@pytest.mark.allow_page_errors  # the 428 and 502 answers are the point of the test
+def test_send_that_gmail_may_already_have_asks_for_a_look_and_vouches_once(owner_page, base_url):
+    """A 428 names what to check in Gmail; the next confirmed click sends that check, and only that click.
+
+    The route is mocked; the server's side is covered by tests/test_outreach_gmail.py.
+    """
+    target = seed_target(
+        owner_page, base_url, contact_email="jane@bovi.example", contact_name="Jane Doe",
+        email_subject="Internship question", email_body="Hi Jane,\n\nWould you be open to a call?\n\nTest Student",
+    )
+    approved = owner_page.request.post(
+        f"{base_url}/api/v1/outreach/{target['id']}/approve", headers=BEARER,
+        data={"fingerprint": target["draft_fingerprint"]},
+    )
+    assert approved.ok, approved.text()
+    gmail = {"configured": True, "connected": True, "needs_reconnect": False, "account": COMPOSE_ACCOUNT,
+             "attachment": "resume.pdf", "attachment_problem": ""}
+
+    def listing(route):
+        response = route.fetch()
+        route.fulfill(response=response, json={**response.json(), "gmail_drafts": gmail})
+
+    check = "a" * 32
+    send_requests = []
+
+    def send(route):
+        send_requests.append(route.request.post_data_json)
+        route.fulfill(status=428, json={"detail": {
+            "msg": "Gmail may already have sent this email. Check your Gmail Sent folder: if it went out, "
+                   "use \"I sent it\"; if not, press Send again.",
+            "check": check,
+        }})
+
+    owner_page.route(re.compile(r".*/api/v1/outreach(\?.*)?$"), listing)
+    owner_page.route(f"**/api/v1/outreach/{target['id']}/gmail-send", send)
+    open_outreach(owner_page)
+    card = card_for(owner_page, "Bovi")
+    button = card.locator("button.outreach-send")
+    button.click()
+    button.click()
+    expect(owner_page.locator("#error-banner")).to_contain_text("Check your Gmail Sent folder")
+    expect(button).to_have_text("Checked Gmail — send again with resume.pdf")
+    assert send_requests == [{"kind": "initial", "fingerprint": target["draft_fingerprint"]}]
+
+    button.click()
+    expect(button).to_have_text("Send to jane@bovi.example?")
+    assert len(send_requests) == 1, "the checked send still asks for the second click"
+    button.click()
+    expect(button).to_have_text("Checked Gmail — send again with resume.pdf")
+    assert send_requests[1] == {"kind": "initial", "fingerprint": target["draft_fingerprint"], "sent_folder_check": check}
+
+    # The check was used by that attempt; the relabel above came from the new 428.
+    owner_page.unroute(f"**/api/v1/outreach/{target['id']}/gmail-send")
+    owner_page.route(f"**/api/v1/outreach/{target['id']}/gmail-send", lambda route: (
+        send_requests.append(route.request.post_data_json), route.fulfill(status=502, json={"detail": "Gmail did not answer"})))
+    button.click()
+    button.click()
+    expect(button).to_have_text("Send with resume.pdf")
+    assert send_requests[2] == {"kind": "initial", "fingerprint": target["draft_fingerprint"], "sent_folder_check": check}
+    button.click()
+    button.click()
+    expect(owner_page.locator("#error-banner")).to_contain_text("Gmail did not answer")
+    assert len(send_requests) == 4
+    assert "sent_folder_check" not in send_requests[3], "a check vouches for one attempt only"
+
+
 def test_unsaved_edits_stop_every_hand_off_of_the_approved_draft(owner_page, base_url):
     """Gmail, the compose link, and Copy all send the saved draft, so unsaved text must stop them."""
     target = seed_target(

@@ -1041,12 +1041,29 @@ approved draft then shows two buttons:
   nothing is sent if the draft changed after you confirmed it.
 - **Open in Gmail with resume.pdf** creates the draft in your Gmail Drafts
   folder and opens it, for when you want to edit it there first. Clicking again
-  for the same approved words reopens the same draft. If you later press Send
-  in the app instead, that draft is the one sent, so no stale copy is left.
+  for the same approved words reopens the same draft. Once a draft exists, send
+  it from Gmail and press **I sent it**: the app never sends a Gmail draft, since
+  it may have been edited there, and it refuses to send its own copy while the
+  draft is still in Drafts.
+
+The app sends only the words you approved, and does not send an email a second
+time on its own:
+
+- Two clicks, two tabs, or a retry cannot send twice. Only one send or draft of
+  an email runs at a time.
+- If Gmail does not confirm a send (a timeout or a Google error), the email may
+  have gone out. The app then asks you to check your Gmail Sent folder before it
+  sends again. The button becomes **Checked Gmail — send again**, and that
+  covers one attempt. The app cannot read your Sent folder, so this check is
+  yours: if the email is there, press **I sent it** instead.
+- If a Gmail draft of the email has left your Drafts, it may have been sent from
+  Gmail, so the app asks the same question.
+- Once an email was sent, or marked sent by hand, no new Gmail draft of it is
+  made.
 
 The app requests only the `gmail.compose` scope, which covers both drafts and
-sending, and calls only `drafts.create`, `drafts.get`, `drafts.send`,
-`messages.send`, and `profile`. The connection is refused if Google signs in as
+sending, and calls only `drafts.create`, `drafts.get`, `messages.send`, and
+`profile`. The connection is refused if Google signs in as
 an account other than `PIPELINE_OUTREACH_ACCOUNT`.
 
 One-time setup:

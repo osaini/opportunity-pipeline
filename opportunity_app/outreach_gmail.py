@@ -21,15 +21,26 @@ import re
 import sqlite3
 from email.message import EmailMessage
 from pathlib import Path
-from typing import Any, Callable
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Iterator
 from urllib.parse import quote
+from uuid import uuid4
 
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
 
 from . import ROOT
 from .connections import OAUTH_PROVIDERS
-from .outreach import DRAFT_KINDS, DraftChangedError, _log, get_target, missing_location_message, update_target
+from .outreach import (
+    DRAFT_KINDS,
+    DraftChangedError,
+    _is_unique_violation,
+    _log,
+    get_target,
+    missing_location_message,
+    update_target,
+)
 from .outreach_drafting import sender_account
 from .schema import utc_now
 
@@ -265,8 +276,7 @@ class _Approved:
         )
         if not previous:
             return None
-        existing = gmail.request("GET", f"/drafts/{quote(previous['draft_id'], safe='')}", params={"format": "minimal"})
-        return previous if existing.status_code == 200 else None
+        return previous if _draft_still_there(gmail, previous["draft_id"]) else None
 
 
 def _require_account(gmail: _Gmail, account: str) -> None:
@@ -278,42 +288,146 @@ def _require_account(gmail: _Gmail, account: str) -> None:
         raise GmailAuthError(f"Gmail is connected as {connected_as or 'an unknown account'}, not {account}; reconnect with {account}")
 
 
-def create_gmail_draft(
-    conn: sqlite3.Connection,
-    target_id: str,
-    *,
-    user_id: str,
-    kind: str = "initial",
-    client_factory: ClientFactory = default_client_factory,
-) -> dict[str, Any]:
-    """Put an approved draft, with the configured attachment, in the student's Gmail Drafts.
+def _draft_still_there(gmail: _Gmail, draft_id: str) -> bool:
+    """Whether a recorded draft is still in Drafts. Gone means sent or deleted in Gmail.
 
-    Clicking again for the same approved words reopens the draft already made,
-    unless it has since been sent or deleted in Gmail.
+    Any other answer is not read as gone: that would let a second copy be made
+    or sent while the first may still be sitting in Drafts.
     """
-    approved = _Approved(conn, target_id, user_id, kind, "creating it in Gmail")
-    account = sender_account()
+    response = gmail.request("GET", f"/drafts/{quote(draft_id, safe='')}", params={"format": "minimal"})
+    if response.status_code == 200:
+        return True
+    if response.status_code == 404:
+        return False
+    raise RuntimeError(f"Could not check your Gmail drafts (HTTP {response.status_code}). Nothing was sent")
 
-    with client_factory() as client:
-        gmail = _Gmail(conn, client, user_id)
-        _require_account(gmail, account)
-        previous = approved.live_draft(conn, gmail, user_id)
-        if previous:
-            public = {key: value for key, value in previous.items() if key != "attachment_sha256"}
-            return {**public, "url": draft_url(account, previous["message_id"]), "reused": True}
-        response = gmail.request("POST", "/drafts", json={"message": {"raw": approved.raw(account)}})
-        if response.status_code != 200:
-            raise RuntimeError(f"Gmail did not create the draft (HTTP {response.status_code})")
-        created = response.json()
-    detail = {
-        "kind": kind, "fingerprint": approved.fingerprint, "attachment": approved.attachment,
-        "attachment_sha256": approved.attachment_sha256,
-        "draft_id": str(created["id"]), "message_id": str(created["message"]["id"]),
-    }
-    with conn:
-        _log(conn, target_id, user_id, DRAFT_EVENT, detail=json.dumps(detail, sort_keys=True))
-    public = {key: value for key, value in detail.items() if key != "attachment_sha256"}
-    return {**public, "url": draft_url(account, detail["message_id"]), "reused": False}
+
+# --- Each email goes out at most once -----------------------------------------
+#
+# A send or a draft first inserts a row in outreach_send_claims for its target
+# and kind; the primary key makes that the lock. The row is released only when
+# Gmail certainly did nothing, kept as 'sent' when Gmail confirmed the send, and
+# kept as 'unconfirmed' when Gmail may or may not have acted. An unconfirmed
+# row, like a draft that vanished from Drafts, asks the student to look in
+# Gmail before anything else is sent, since gmail.compose cannot read Sent.
+
+# The server runs as one process, so a claim from another instance was left by
+# a process that has since died or been replaced. Its request may still have
+# been finishing its one Gmail call, hence the grace period before it counts as
+# stale.
+SERVER_INSTANCE = uuid4().hex
+FOREIGN_CLAIM_GRACE = timedelta(minutes=5)
+IN_PROGRESS = "This email is already being sent or written to Gmail. Wait a moment, then reload"
+_SEND_UNCERTAIN = (
+    "Gmail may already have sent this email. Check your Gmail Sent folder: "
+    "if it went out, use \"I sent it\"; if not, press Send again."
+)
+_DRAFT_UNCERTAIN = (
+    "Gmail may have made a draft of this email that the app did not record. Check your Gmail Drafts and Sent "
+    "folders: delete any draft of it, or send it from Gmail and use \"I sent it\". If nothing went out, press Send again."
+)
+_DRAFT_VANISHED = (
+    "A Gmail draft of this email is no longer in your Drafts, so it may have been sent from Gmail. "
+    "Check your Sent folder: if it went out, use \"I sent it\"; if not, press Send again."
+)
+# Failures that certainly never reached Gmail, or that Gmail refused outright.
+_NOTHING_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, GmailAuthError)
+
+
+class SendConflictError(Exception):
+    """Another request holds this email, or a Gmail draft of it is still live."""
+
+
+class SendNeedsCheckError(Exception):
+    """Gmail may already have this email; the student must look before it is sent.
+
+    ``check`` names exactly what the student is vouching for. Sending again
+    with it acknowledges these reasons and no others.
+    """
+
+    def __init__(self, message: str, check: str):
+        super().__init__(message)
+        self.check = check
+
+
+class SendUnconfirmedError(RuntimeError):
+    """Gmail did not confirm a send it may have carried out."""
+
+
+def _claim(conn: sqlite3.Connection, target_id: str, user_id: str, kind: str) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM outreach_send_claims WHERE target_id=? AND user_id=? AND kind=?", (target_id, user_id, kind)
+    ).fetchone()
+
+
+def _claim_held(row: sqlite3.Row) -> bool:
+    """Whether a request may still be working under this claim."""
+    if row["state"] not in {"drafting", "sending"}:
+        return False
+    if row["instance"] == SERVER_INSTANCE:
+        # A claim this process left behind (its request ended without being
+        # able to settle it) is as uncertain as one from a dead process.
+        return row["token"] in _RUNNING
+    age = datetime.now(timezone.utc) - datetime.fromisoformat(row["claimed_at"])
+    return age < FOREIGN_CLAIM_GRACE
+
+
+def _claim_reason(row: sqlite3.Row) -> str:
+    return _DRAFT_UNCERTAIN if row["action"] == "draft" else _SEND_UNCERTAIN
+
+
+# Tokens of the claims whose requests are running in this process.
+_RUNNING: set[str] = set()
+
+
+@contextmanager
+def _claimed(
+    conn: sqlite3.Connection, target_id: str, user_id: str, kind: str, action: str,
+    revalidate: Callable[[], Any], *, stale_token: str = "",
+) -> Iterator[tuple[str, Any]]:
+    """Hold the claim for the body; the checks are re-run on a fresh read as it is taken.
+
+    The insert comes first so SQLite holds the write lock while the target is
+    re-read, and the checks raising rolls the claim back. The body settles the
+    claim; one it could not settle is treated as uncertain once the body ends.
+    """
+    token = uuid4().hex
+    _RUNNING.add(token)
+    try:
+        try:
+            with conn:
+                if stale_token and not conn.execute(
+                    "DELETE FROM outreach_send_claims WHERE target_id=? AND kind=? AND token=?", (target_id, kind, stale_token)
+                ).rowcount:
+                    raise SendConflictError(IN_PROGRESS)
+                conn.execute(
+                    """
+                    INSERT INTO outreach_send_claims(target_id, user_id, kind, token, state, action, instance, claimed_at)
+                    VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (target_id, user_id, kind, token, "sending" if action == "send" else "drafting", action, SERVER_INSTANCE, utc_now()),
+                )
+                result = revalidate()
+        except Exception as exc:
+            if _is_unique_violation(exc):
+                raise SendConflictError(IN_PROGRESS) from exc
+            raise
+        yield token, result
+    finally:
+        _RUNNING.discard(token)
+
+
+def _settle_claim(conn: sqlite3.Connection, target_id: str, kind: str, token: str, state: str | None) -> None:
+    """Move our own claim to ``state``, or drop it when ``state`` is None. Never raises."""
+    try:
+        with conn:
+            if state is None:
+                conn.execute("DELETE FROM outreach_send_claims WHERE target_id=? AND kind=? AND token=?", (target_id, kind, token))
+            else:
+                conn.execute("UPDATE outreach_send_claims SET state=? WHERE target_id=? AND kind=? AND token=?", (state, target_id, kind, token))
+    except Exception:
+        # Left as it was, the claim still blocks another send, which is the safe side.
+        pass
 
 
 def _already_sent(conn: sqlite3.Connection, target_id: str, user_id: str, kind: str) -> bool:
@@ -330,6 +444,146 @@ def _already_sent(conn: sqlite3.Connection, target_id: str, user_id: str, kind: 
     return False
 
 
+def _draft_events(conn: sqlite3.Connection, target_id: str, user_id: str, kind: str) -> list[tuple[str, dict[str, Any]]]:
+    """Every Gmail draft the app made of this kind, whatever version of the words it held."""
+    rows = conn.execute(
+        "SELECT id, detail FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=? ORDER BY created_at DESC",
+        (target_id, user_id, DRAFT_EVENT),
+    ).fetchall()
+    events = []
+    for row in rows:
+        try:
+            detail = json.loads(row["detail"])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(detail, dict) and detail.get("kind") == kind and detail.get("draft_id"):
+            events.append((str(row["id"]), detail))
+    return events
+
+
+def _refuse_sent(target: dict[str, Any], kind: str, sending: bool) -> None:
+    """The status checks shared by sending and drafting, so "I sent it" also stops a new copy."""
+    if kind == "initial" and (target["sent_at"] or target["status"] not in UNSENT_STATUSES):
+        what = "the first email is not sent again" if sending else "no new draft of the first email is made"
+        raise ValueError(f"{target['company']} is already marked {target['status'].replace('_', ' ')}, so {what}")
+    if kind == "follow_up" and sending and target["status"] != "sent":
+        raise ValueError("A follow-up goes out only after the first email, while the company is marked sent")
+    if kind == "follow_up" and not sending and target["status"] == "followed_up":
+        raise ValueError(f"{target['company']} is already marked followed up, so no new draft of the follow-up is made")
+
+
+def _approved_for(
+    conn: sqlite3.Connection, target_id: str, user_id: str, kind: str, *, sending: bool, fingerprint: str | None = None,
+) -> _Approved:
+    approved = _Approved(conn, target_id, user_id, kind, "sending it" if sending else "creating it in Gmail")
+    if fingerprint is not None and fingerprint != approved.fingerprint:
+        raise DraftChangedError("This draft changed after you confirmed it. Review it, then send again")
+    if _already_sent(conn, target_id, user_id, kind):
+        raise ValueError("This email was already sent from Gmail")
+    _refuse_sent(approved.target, kind, sending)
+    return approved
+
+
+def _post_under_claim(
+    conn: sqlite3.Connection, gmail: _Gmail, target_id: str, kind: str, token: str,
+    path: str, payload: dict[str, Any], *, refused: str, uncertain: str,
+) -> dict[str, Any]:
+    """The one Gmail call that acts, with our claim settled by what Gmail may have done.
+
+    A refusal, or a call that never reached Gmail, releases the claim. A 5xx or
+    a call that got no answer leaves Gmail's outcome unknown, so the claim stays
+    as 'unconfirmed' and the student is asked to look before anything else goes out.
+    """
+    try:
+        response = gmail.request("POST", path, json=payload)
+    except _NOTHING_SENT:
+        _settle_claim(conn, target_id, kind, token, None)
+        raise
+    except httpx.HTTPError as exc:
+        _settle_claim(conn, target_id, kind, token, "unconfirmed")
+        raise SendUnconfirmedError(f"Gmail did not answer, so {uncertain}") from exc
+    except BaseException:
+        _settle_claim(conn, target_id, kind, token, "unconfirmed")
+        raise
+    if response.status_code == 200:
+        try:
+            return response.json()
+        except BaseException:
+            _settle_claim(conn, target_id, kind, token, "unconfirmed")
+            raise
+    if 400 <= response.status_code < 500:
+        _settle_claim(conn, target_id, kind, token, None)
+        raise RuntimeError(f"{refused} (HTTP {response.status_code}). Nothing was sent")
+    _settle_claim(conn, target_id, kind, token, "unconfirmed")
+    raise SendUnconfirmedError(f"Gmail did not confirm it (HTTP {response.status_code}), so {uncertain}")
+
+
+def create_gmail_draft(
+    conn: sqlite3.Connection,
+    target_id: str,
+    *,
+    user_id: str,
+    kind: str = "initial",
+    client_factory: ClientFactory = default_client_factory,
+) -> dict[str, Any]:
+    """Create a Gmail draft of an approved outreach email, with the configured attachment.
+
+    Clicking again for the same approved words reopens the draft already made,
+    unless it has since been sent or deleted in Gmail. Once the email was sent,
+    or while a send of it is under way or unconfirmed, no draft is made: a new
+    copy in Drafts could be sent a second time.
+    """
+    _approved_for(conn, target_id, user_id, kind, sending=False)
+    existing = _claim(conn, target_id, user_id, kind)
+    if existing is not None:
+        if existing["state"] == "sent":
+            raise ValueError("This email was already sent from Gmail")
+        if _claim_held(existing):
+            raise SendConflictError(IN_PROGRESS)
+        raise SendConflictError(f"{_claim_reason(existing)} Until then no new draft is made.")
+    account = sender_account()
+    revalidate = lambda: _approved_for(conn, target_id, user_id, kind, sending=False)  # noqa: E731
+    with _claimed(conn, target_id, user_id, kind, "draft", revalidate) as (token, approved):
+        try:
+            client = client_factory()
+        except BaseException:
+            _settle_claim(conn, target_id, kind, token, None)
+            raise
+        with client:
+            try:
+                gmail = _Gmail(conn, client, user_id)
+                _require_account(gmail, account)
+                previous = approved.live_draft(conn, gmail, user_id)
+                raw = None if previous else approved.raw(account)
+            except BaseException:
+                _settle_claim(conn, target_id, kind, token, None)
+                raise
+            if previous:
+                _settle_claim(conn, target_id, kind, token, None)
+                public = {key: value for key, value in previous.items() if key != "attachment_sha256"}
+                return {**public, "url": draft_url(account, previous["message_id"]), "reused": True}
+            created = _post_under_claim(
+                conn, gmail, target_id, kind, token, "/drafts", {"message": {"raw": raw}},
+                refused="Gmail did not create the draft",
+                uncertain="the draft may be in your Gmail Drafts. Check Drafts before trying again",
+            )
+            try:
+                detail = {
+                    "kind": kind, "fingerprint": approved.fingerprint, "attachment": approved.attachment,
+                    "attachment_sha256": approved.attachment_sha256,
+                    "draft_id": str(created["id"]), "message_id": str(created["message"]["id"]),
+                }
+                with conn:
+                    _log(conn, target_id, user_id, DRAFT_EVENT, detail=json.dumps(detail, sort_keys=True))
+                    conn.execute("DELETE FROM outreach_send_claims WHERE target_id=? AND kind=? AND token=?", (target_id, kind, token))
+            except BaseException:
+                # The draft exists but is not recorded, so the next send asks first.
+                _settle_claim(conn, target_id, kind, token, "unconfirmed")
+                raise
+    public = {key: value for key, value in detail.items() if key != "attachment_sha256"}
+    return {**public, "url": draft_url(account, detail["message_id"]), "reused": False}
+
+
 def send_gmail_message(
     conn: sqlite3.Connection,
     target_id: str,
@@ -337,6 +591,7 @@ def send_gmail_message(
     user_id: str,
     kind: str = "initial",
     fingerprint: str,
+    sent_folder_check: str | None = None,
     client_factory: ClientFactory = default_client_factory,
 ) -> dict[str, Any]:
     """Send an approved draft from the student's Gmail after they confirm it.
@@ -344,39 +599,76 @@ def send_gmail_message(
     The fingerprint is the approved draft the student confirmed; if the words
     changed since, nothing is sent. Each draft kind goes out at most once, and a
     successful send moves the target to Sent (or Followed up) exactly as
-    "I sent it" would. If a Gmail draft of these approved words is still in
-    Drafts, that draft is the one sent, so no stale copy is left behind to be
-    sent a second time.
+    "I sent it" would.
+
+    Only the app's own approved message is sent, never a Gmail draft: a draft
+    can be edited in Gmail at any moment. While a draft of this email is in
+    Drafts the student sends that one from Gmail, or deletes it first. When
+    Gmail may already have the email (an unconfirmed earlier send, or a draft
+    that has left Drafts) nothing is sent until the student has looked and
+    sends again with ``sent_folder_check``.
     """
-    approved = _Approved(conn, target_id, user_id, kind, "sending it")
-    target = approved.target
-    if fingerprint != approved.fingerprint:
-        raise DraftChangedError("This draft changed after you confirmed it. Review it, then send again")
-    if _already_sent(conn, target_id, user_id, kind):
-        raise ValueError("This email was already sent from Gmail")
-    if kind == "initial" and (target["sent_at"] or target["status"] not in UNSENT_STATUSES):
-        raise ValueError(f"{target['company']} is already marked {target['status'].replace('_', ' ')}, so the first email is not sent again")
-    if kind == "follow_up" and target["status"] != "sent":
-        raise ValueError("A follow-up goes out only after the first email, while the company is marked sent")
+    _approved_for(conn, target_id, user_id, kind, sending=True, fingerprint=fingerprint)
+    reasons: dict[str, str] = {}
+    stale_token = ""
+    existing = _claim(conn, target_id, user_id, kind)
+    if existing is not None:
+        if existing["state"] == "sent":
+            raise ValueError("This email was already sent from Gmail")
+        if _claim_held(existing):
+            raise SendConflictError(IN_PROGRESS)
+        stale_token = existing["token"]
+        reasons[f"claim:{stale_token}"] = _claim_reason(existing)
     account = sender_account()
 
     with client_factory() as client:
         gmail = _Gmail(conn, client, user_id)
+        # Everything read from Gmail is read before the claim, so the claim is
+        # held only across the one call that sends.
         _require_account(gmail, account)
-        previous = approved.live_draft(conn, gmail, user_id)
-        if previous:
-            response = gmail.request("POST", "/drafts/send", json={"id": previous["draft_id"]})
-        else:
-            response = gmail.request("POST", "/messages/send", json={"raw": approved.raw(account)})
-        if response.status_code != 200:
-            raise RuntimeError(f"Gmail did not send the email (HTTP {response.status_code}). Nothing was sent")
-        sent = response.json()
-    detail = {
-        "kind": kind, "fingerprint": approved.fingerprint, "attachment": approved.attachment,
-        "to": target["contact_email"], "cc": target["contact_cc"],
-        "message_id": str(sent.get("id", "")), "thread_id": str(sent.get("threadId", "")),
-    }
-    with conn:
-        _log(conn, target_id, user_id, SENT_EVENT, detail=json.dumps(detail, sort_keys=True))
-    updated = update_target(conn, target_id, {"status": SENT_STATUS[kind]}, user_id=user_id)
-    return {**detail, "account": account, "status": updated["status"], "follow_up_at": updated["follow_up_at"]}
+        drafts = _draft_events(conn, target_id, user_id, kind)
+        for _event_id, detail in drafts:
+            if _draft_still_there(gmail, detail["draft_id"]):
+                raise SendConflictError(
+                    "This email is in your Gmail Drafts. Send it from Gmail and use \"I sent it\", "
+                    "or delete that draft to send from here"
+                )
+            reasons[f"draft:{detail['draft_id']}"] = _DRAFT_VANISHED
+        if reasons:
+            check = hashlib.sha256(json.dumps(sorted(reasons)).encode()).hexdigest()[:32]
+            if sent_folder_check != check:
+                raise SendNeedsCheckError(" ".join(dict.fromkeys(reasons.values())), check)
+        seen = [event_id for event_id, _detail in drafts]
+
+        def revalidate() -> tuple[_Approved, str]:
+            fresh = _approved_for(conn, target_id, user_id, kind, sending=True, fingerprint=fingerprint)
+            if [event_id for event_id, _detail in _draft_events(conn, target_id, user_id, kind)] != seen:
+                raise SendConflictError("A Gmail draft of this email was just made. Send it from Gmail, or delete it and send again")
+            return fresh, fresh.raw(account)
+
+        with _claimed(conn, target_id, user_id, kind, "send", revalidate, stale_token=stale_token) as (token, (approved, raw)):
+            sent = _post_under_claim(
+                conn, gmail, target_id, kind, token, "/messages/send", {"raw": raw},
+                refused="Gmail did not send the email",
+                uncertain="it may have gone out. Check your Gmail Sent folder before sending again",
+            )
+            # What Gmail sent is recorded before anything else, so it is never lost.
+            try:
+                detail = {
+                    "kind": kind, "fingerprint": approved.fingerprint, "attachment": approved.attachment,
+                    "to": approved.target["contact_email"], "cc": approved.target["contact_cc"],
+                    "message_id": str(sent.get("id", "")), "thread_id": str(sent.get("threadId", "")),
+                }
+                with conn:
+                    conn.execute("UPDATE outreach_send_claims SET state='sent' WHERE target_id=? AND kind=? AND token=?", (target_id, kind, token))
+                    _log(conn, target_id, user_id, SENT_EVENT, detail=json.dumps(detail, sort_keys=True))
+            except BaseException:
+                _settle_claim(conn, target_id, kind, token, "sent")
+                raise
+    try:
+        updated = update_target(conn, target_id, {"status": SENT_STATUS[kind]}, user_id=user_id)
+    except Exception:
+        # The email went out and is recorded; only the status is behind, and "I sent it" catches it up.
+        current = get_target(conn, target_id, user_id=user_id)
+        return {**detail, "account": account, "status": current["status"], "follow_up_at": current["follow_up_at"], "marked": False}
+    return {**detail, "account": account, "status": updated["status"], "follow_up_at": updated["follow_up_at"], "marked": True}
