@@ -224,6 +224,9 @@ def test_send_from_gmail_asks_for_a_second_click_naming_the_recipient(owner_page
     expect(owner_page.locator("#action-status")).to_contain_text("Sent to jane@bovi.example")
     assert send_requests == [{"kind": "initial", "fingerprint": target["draft_fingerprint"]}]
     assert len(owner_page.context.pages) == 1, "no Gmail tab opens"
+    # The send reloads the list, and that reload can still be inside `listing`'s
+    # route.fetch when the page closes, which errors the next test's setup.
+    owner_page.unroute_all(behavior="ignoreErrors")
 
 
 @pytest.mark.allow_page_errors  # the 428 and 502 answers are the point of the test

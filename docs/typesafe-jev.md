@@ -27,9 +27,11 @@ overall ranking.
 
 ## Trust and privacy boundary
 
-The user must click **Run Jev review**. There are no refresh-time, ingestion-time,
-or background calls. The result is not persisted and cannot modify an
-opportunity, profile, score, application, or outreach record.
+The user must click **Run Jev review**. The review makes no refresh-time,
+ingestion-time, or background calls. The result is not persisted and cannot
+modify an opportunity, profile, score, application, or outreach record.
+Inbox suggestions (below) are the one other use, and they run only after the
+student turns them on.
 
 The external request sends these opportunity fields when present:
 
@@ -67,6 +69,49 @@ enterprise option. Review TypeSafe's current legal terms before using real data.
 The default model is pinned to `jev-1.13.0`. Change `TYPESAFE_MODEL` deliberately
 after testing a new model against labeled examples; do not silently move tuned
 confidence thresholds to a new alias.
+
+## Inbox suggestions, with a keyword-rule fallback
+
+`opportunity_app/inbox_classifiers.py` asks Jev one Choice question for each of
+two suggestions the student already confirms by hand:
+
+- the outreach status a pasted cold-email reply points to (offer, call scheduled,
+  paused, declined, replied), in `outreach.log_reply`;
+- the kind of an application email a connector delivers (offer, rejected,
+  interview, confirmation, deadline, recruiter reply, unknown), in
+  `connections.ingest_message`.
+
+Not every copy has Jev access, so the keyword rules that shipped before
+(`suggest_reply_status`, `classify_monitored_message`) stay the fallback. They
+answer whenever any of these holds:
+
+- the student has not turned on **Suggest reply and email outcomes with Jev**
+  (Outreach settings). This is a per-student `user_settings` row, off by
+  default, because it sends message text to TypeSafe;
+- `TYPESAFE_API_KEY` is not set, or the TypeSafe configuration is invalid;
+- the request times out (8 seconds, two attempts), is rate limited, or returns
+  an answer this app cannot read;
+- Jev's top answer is less than 50% sure.
+
+Each result records which one answered: a reply suggestion carries `source`
+(`jev` or `rules`), `confidence`, `model`, and `fallback_reason`; a monitored
+event stores the same under `payload.classified_by`. The UI says which one made
+each suggestion. Logging a reply never fails because TypeSafe is down.
+
+Why these two: in a blind test on 2026-09-25 (gold labels from Claude and Codex
+labelling independently, with a third labeler settling disagreements), Jev's
+suggestion matched on 90% of 100 replies against the rules' 58%, and 82% of 100
+application emails against 41%. Both sets were synthetic, so treat these as
+evidence for the choice, not as accuracy on real mail. The question wording in
+`inbox_classifiers.py` is the tested wording; change it only with a new test.
+
+The same test found three places Jev should **not** go yet. Posting titles and
+most posting fields (role type, seniority, citizenship, remote mode, graduation
+years) were already 92–99% accurate with the rules. On "will not sponsor" and
+season/term, Jev was worse than the regex. Chat intent routing failed a
+pre-registered check on 120 fresh messages: it matched the topic but routed 16
+open questions to canned answers, against the keywords' 13, often at 0.9+
+confidence.
 
 ## Configuration
 

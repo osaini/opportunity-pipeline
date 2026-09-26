@@ -98,6 +98,7 @@ def main() -> int:
         # Jev review endpoints also stay deterministic and offline. This is
         # particularly important for fuzzing, which exercises every operation.
         typesafe_client_factory=outreach_fakes.FakeTypeSafeClient,
+        inbox_client_factory=outreach_fakes.FakeTypeSafeClient,
     )
 
     print(f"Sandbox app:    http://{args.host}:{args.port}")

@@ -94,7 +94,7 @@ INTEGRATIONS = [
     {
         "id": "jev",
         "env": ["TYPESAFE_API_KEY"],
-        "unlocks": "An optional second-opinion panel on a posting. Never changes scores; skip it if you have no access.",
+        "unlocks": "An optional second-opinion panel on a posting, and (a separate switch, off by default) Jev suggestions for reply and email outcomes. Never changes scores; without it the keyword rules suggest instead. Skip it if you have no access.",
         "get": "TypeSafe (waitlisted): https://typesafe.ai/",
     },
     {

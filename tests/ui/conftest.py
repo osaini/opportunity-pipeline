@@ -170,6 +170,7 @@ def live_server(tmp_path_factory: pytest.TempPathFactory):
         board_tracker=outreach_fakes.board_tracker(root / "boards"),
         outreach_settings=outreach_fakes.outreach_settings(root),
         typesafe_client_factory=outreach_fakes.FakeTypeSafeClient,
+        inbox_client_factory=outreach_fakes.FakeTypeSafeClient,
     )
     port = _free_port()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))

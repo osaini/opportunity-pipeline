@@ -26,7 +26,9 @@ from uuid import uuid4
 
 from pipeline import PROFILE_PATH
 
+from .inbox_classifiers import classify_reply
 from .schema import LOCAL_USER_ID, utc_now
+from .typesafe_decisions import DecisionClient
 from .user_time import user_timezone
 
 
@@ -1166,15 +1168,21 @@ def suggest_reply_status(text: str) -> dict[str, str]:
     return {"status": "replied", "reason": "They replied; nothing in it matched a more specific outcome"}
 
 
-def log_reply(conn: sqlite3.Connection, target_id: str, text: str, *, user_id: str) -> dict[str, Any]:
-    """Record a pasted reply and suggest a status. The status is not changed here."""
+def log_reply(
+    conn: sqlite3.Connection, target_id: str, text: str, *, user_id: str, decisions: DecisionClient | None = None,
+) -> dict[str, Any]:
+    """Record a pasted reply and suggest a status. The status is not changed here.
+
+    With a decisions client the suggestion comes from Jev when it is sure enough;
+    without one, or when Jev cannot answer, it comes from REPLY_PATTERNS.
+    """
     body = str(text or "").replace("\r\n", "\n").strip()
     if not body:
         raise ValueError("Paste the reply text first")
     if len(body) > 20_000:
         raise ValueError("Reply is too long")
     target = get_target(conn, target_id, user_id=user_id)
-    suggestion = suggest_reply_status(body)
+    suggestion = classify_reply(body, suggest_reply_status, decisions)
     with conn:
         _log(conn, target_id, user_id, "reply_logged", detail=body)
     return {"suggestion": suggestion, "target": get_target(conn, target["id"], user_id=user_id, include_events=True)}
