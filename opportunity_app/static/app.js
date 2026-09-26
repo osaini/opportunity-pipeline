@@ -2290,6 +2290,9 @@
     contact_applied: "Contact applied",
     gmail_draft_created: "Draft created in Gmail",
     gmail_sent: "Sent from Gmail",
+    bounced: "Bounced",
+    partly_bounced: "Partly bounced",
+    greeting_updated: "Greeting updated for the new contact",
     draft_restored: "Earlier draft restored",
     follow_up_restored: "Earlier follow-up restored",
     // Named apart from an ordinary "location recorded" on purpose: this is what
@@ -2445,6 +2448,7 @@
           body: JSON.stringify(payload),
         });
         state.outreachOpen = item.id;
+        watchForBounces();
         if (sent.marked === false) {
           announce(`Sent to ${sent.to}, but ${item.company} could not be marked ${kind === "follow_up" ? "followed up" : "sent"}. Press "I sent it" to catch it up.`);
         } else {
@@ -2469,6 +2473,30 @@
       }
     });
     return button;
+  }
+
+  // A bounce usually lands in Gmail within seconds of a send, sometimes hours
+  // later. The server looks in the sent email's thread; this only asks it to,
+  // on each load of the list and a few times right after a send. The server
+  // spaces its own looks, so asking often costs nothing.
+  const BOUNCE_LOOKS_MS = [15000, 45000, 120000, 300000];
+  let bounceTimers = [];
+
+  async function checkForBounces() {
+    try {
+      const result = await api("/api/v1/outreach/delivery-check", { method: "POST" });
+      if (!result.bounced?.length) return;
+      const names = result.bounced.map((entry) => `${entry.company} (${entry.addresses.join(", ")})`).join("; ");
+      if (state.view === "outreach") await loadOutreach();
+      announce(`Bounced: ${names}. Moved back to Drafted; pick another contact and send again.`);
+    } catch (_error) {
+      // A failed look is retried on the next load; it never blocks the page.
+    }
+  }
+
+  function watchForBounces() {
+    bounceTimers.forEach(clearTimeout);
+    bounceTimers = BOUNCE_LOOKS_MS.map((delay) => setTimeout(checkForBounces, delay));
   }
 
   // The approved draft can also be written into Gmail Drafts with the
@@ -2523,13 +2551,16 @@
   }
 
   function gmailConnectPanel(gmail) {
-    if (!gmail?.configured || gmail.connected) return null;
+    if (!gmail?.configured || (gmail.connected && gmail.bounce_check)) return null;
     const panel = element("div", "outreach-gmail-connect");
     const what = gmail.attachment ? ` with ${gmail.attachment} attached` : "";
-    panel.appendChild(element("p", "profile-help", gmail.needs_reconnect
-      ? "Gmail stopped accepting the connection. Reconnect it to keep creating drafts with attachments."
-      : `Connect Gmail to send approved emails${what} from here, or open them as drafts in Gmail first. Nothing sends until you press Send and confirm the recipient.`));
-    const connect = element("button", "secondary-button", gmail.needs_reconnect ? "Reconnect Gmail" : `Connect Gmail${gmail.account ? ` (${gmail.account})` : ""}`);
+    const reconnect = gmail.needs_reconnect || gmail.connected;
+    panel.appendChild(element("p", "profile-help", gmail.connected
+      ? "Reconnect Gmail once so the app can spot emails that bounce. It asks for one more permission, to read mail; the app reads only the delivery failure notices for emails it sent."
+      : gmail.needs_reconnect
+        ? "Gmail stopped accepting the connection. Reconnect it to keep creating drafts with attachments."
+        : `Connect Gmail to send approved emails${what} from here, or open them as drafts in Gmail first. Nothing sends until you press Send and confirm the recipient.`));
+    const connect = element("button", "secondary-button", reconnect ? "Reconnect Gmail" : `Connect Gmail${gmail.account ? ` (${gmail.account})` : ""}`);
     connect.type = "button";
     connect.addEventListener("click", async () => {
       connect.disabled = true;
@@ -2598,6 +2629,12 @@
           earlier.appendChild(element("summary", "", "The notes it replaced"));
           earlier.appendChild(element("pre", "outreach-event-detail outreach-prep-earlier", event.detail));
           row.appendChild(earlier);
+        } else if (["bounced", "partly_bounced"].includes(event.event_type) && event.detail) {
+          let bounce = {};
+          try { bounce = JSON.parse(event.detail); } catch (_error) { bounce = {}; }
+          const who = (bounce.addresses || []).join(", ");
+          const how = bounce.source === "gmail" ? "Gmail's delivery notice" : "You marked it";
+          row.appendChild(element("p", "outreach-event-detail", [who, bounce.reason, how].filter(Boolean).join(" · ")));
         } else if (event.detail && !["draft_generated", "gmail_draft_created", "gmail_sent", "call_prep_generated"].includes(event.event_type)) {
           row.appendChild(element("p", "outreach-event-detail", event.detail));
         }
@@ -3004,11 +3041,33 @@
       }
       log.disabled = true;
       try {
+        const pasted = text.value;
         const payload = await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/reply`, {
           method: "POST",
-          body: JSON.stringify({ text: text.value }),
+          body: JSON.stringify({ text: pasted }),
         });
         const suggested = payload.suggestion.status;
+        if (suggested === "bounced") {
+          result.replaceChildren(element("p", "form-status", `Not saved as a reply. ${payload.suggestion.reason}.`));
+          const mark = element("button", "primary-button", "Mark bounced");
+          mark.type = "button";
+          mark.addEventListener("click", async () => {
+            mark.disabled = true;
+            try {
+              await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/bounce`, { method: "POST", body: JSON.stringify({ text: pasted }) });
+              text.value = "";
+              state.outreachOpen = item.id;
+              state.outreachKeep.add(item.id);
+              await loadOutreach();
+              announce(`${item.company} marked bounced and moved back to Drafted. Pick another contact, then send again.`);
+            } catch (error) {
+              showError(error.message);
+              mark.disabled = false;
+            }
+          });
+          result.appendChild(mark);
+          return;
+        }
         text.value = "";
         const writing = CALL_PREP_ACTIVE.includes(payload.target?.call_prep_job?.state);
         const fellBack = payload.suggestion.fallback_reason ? ` (${payload.suggestion.fallback_reason}, so the keyword rules suggested this)` : "";
@@ -3052,9 +3111,10 @@
   // narrows that list here, so every count stays in step with the cards.
   const OUTREACH_TABS = [
     { id: "to-contact", label: "To contact", test: outreachToContact },
-    { id: "ready", label: "Ready to send", group: "Before sending", tone: "is-good", test: (item) => outreachToContact(item) && item.draft_status === "approved" && Boolean(item.contact_email) },
+    { id: "ready", label: "Ready to send", group: "Before sending", tone: "is-good", test: (item) => outreachToContact(item) && item.draft_status === "approved" && Boolean(item.contact_email) && !item.contact_bounced && !item.cc_bounced },
     { id: "needs-review", label: "Drafts to review", group: "Before sending", tone: "is-soon", test: (item) => outreachDraftNeedsReview(item, "initial") || outreachDraftNeedsReview(item, "follow_up") },
-    { id: "needs-contact", label: "Needs a contact", group: "Before sending", tone: "is-soon", test: (item) => outreachToContact(item) && !item.contact_email },
+    { id: "needs-contact", label: "Needs a contact", group: "Before sending", tone: "is-soon", test: (item) => outreachToContact(item) && (!item.contact_email || item.contact_bounced) },
+    { id: "bounced", label: "Bounced", group: "Before sending", tone: "is-alert", test: (item) => Boolean(item.bounced_at) },
     { id: "needs-location", label: "Needs a location", group: "Before sending", tone: "is-soon", test: (item) => outreachToContact(item) && !item.location_verified },
     { id: "from-search", label: "From deep search", group: "Before sending", test: (item) => item.origin === "discovery" && outreachToContact(item) },
     { id: "follow-ups-due", label: "Follow-ups due", group: "Contacted", tone: "is-alert", test: (item) => item.follow_up_due },
@@ -3570,7 +3630,7 @@
     if (["replied", "call_scheduled", "offer"].includes(item.status)) return OUTREACH_STEPS.length;
     if (item.sent_at || ["sent", "followed_up", "declined", "no_response"].includes(item.status)) return 5;
     if (item.research_confidence === "unverified") return 0;
-    if (!item.contact_email) return 1;
+    if (!item.contact_email || item.contact_bounced) return 1;
     if (!item.email_body) return 2;
     if (item.draft_status !== "approved") return 3;
     return 4;
@@ -3607,6 +3667,8 @@
     if (item.status === "sent" || item.status === "followed_up") {
       return { label: "Wait for a reply", hint: item.follow_up_at ? `Follow up on ${formatCalendarDate(item.follow_up_at)} if nothing arrives.` : "Log their reply here when it arrives.", tab: "history" };
     }
+    if (item.contact_bounced) return { label: "Find a new contact", hint: `Your email to ${item.contact_email} bounced, so it reached no one. Pick another address; the greeting updates to match.`, tab: "contact", tone: "is-warning" };
+    if (item.cc_bounced) return { label: "Fix the Cc", hint: `Email to ${item.contact_cc} bounced. Remove it or pick another before sending.`, tab: "contact", tone: "is-warning" };
     if (item.research_confidence === "unverified") return { label: "Confirm the research", hint: "The deep search summarized this company. Check the sources, then confirm.", tab: "research", tone: "is-soon" };
     if (!item.contact_email) return { label: "Find a contact", hint: "Search their site for a published address, or add one you found.", tab: "contact", tone: "is-soon" };
     if (!item.email_body) return { label: "Write the draft", hint: "Generate a draft from your confirmed profile and this research.", tab: "draft" };
@@ -4041,6 +4103,11 @@
     if (item.research_confidence === "unverified") {
       identity.appendChild(element("p", "outreach-research-warning", "Summarized by the deep search; check the linked sources, then confirm the research."));
     }
+    if (item.bounced_at) {
+      const failed = item.bounced_addresses.join(", ");
+      const why = item.bounce_reason ? ` Gmail said: "${item.bounce_reason}"` : "";
+      identity.appendChild(element("p", "outreach-research-warning", `Bounced ${formatDate(item.bounced_at)}: nothing reached ${failed}.${why}`));
+    }
     if (item.fit_rationale) {
       const fit = element("p", "outreach-fit");
       fit.appendChild(element("strong", "", "Fit: "));
@@ -4081,6 +4148,9 @@
       ));
     }
     if (item.sent_at) facts.appendChild(chip(`Sent ${formatCalendarDate(item.sent_at)}`));
+    if (item.bounced_at) facts.appendChild(chip("Bounced", "is-warning"));
+    // Part of the email still arrived, so the company stays where it was.
+    else if (item.contact_bounced || item.cc_bounced) facts.appendChild(chip(item.contact_bounced ? "Contact address bounced" : "Cc bounced", "is-warning"));
     if (item.draft_status === "approved") facts.appendChild(chip(...DRAFT_STATUS_LABELS.approved));
     else if (outreachDraftNeedsReview(item, "initial")) facts.appendChild(chip(...DRAFT_STATUS_LABELS.generated));
     if (outreachDraftNeedsReview(item, "follow_up")) facts.appendChild(chip("Follow-up needs review", "is-soon"));
@@ -4199,7 +4269,8 @@
       actions.appendChild(confirmResearch);
     }
     const awaitingReply = item.status === "sent" || item.status === "followed_up";
-    if (item.contact_email && item.draft_status === "approved" && !awaitingReply && !["replied", "call_scheduled", "offer", "declined", "no_response"].includes(item.status)) {
+    const deliverable = !item.contact_bounced && !item.cc_bounced;
+    if (item.contact_email && deliverable && item.draft_status === "approved" && !awaitingReply && !["replied", "call_scheduled", "offer", "declined", "no_response"].includes(item.status)) {
       actions.appendChild(composeControl(context, item, "initial"));
       const sent = element("button", "secondary-button", "I sent it");
       sent.type = "button";
@@ -4215,7 +4286,7 @@
       actions.appendChild(sent);
     }
     // One follow-up per company; after it, the card suggests No response in time.
-    if (item.contact_email && item.follow_up_status === "approved" && item.status === "sent") {
+    if (item.contact_email && deliverable && item.follow_up_status === "approved" && item.status === "sent") {
       actions.appendChild(composeControl(context, item, "follow_up"));
       const followedUp = element("button", "secondary-button", "I sent the follow-up");
       followedUp.type = "button";
@@ -4323,6 +4394,9 @@
         draft.appendChild(element("p", "outreach-note outreach-guess is-wide", item.contact_cc
           ? `${item.contact_email} is a guessed address, not confirmed. ${item.contact_cc} is in Cc, so a wrong guess still reaches the company.`
           : `${item.contact_email} is a guessed address, not confirmed. Check it before you send.`));
+      }
+      if (item.contact_bounced) {
+        draft.appendChild(element("p", "outreach-note outreach-guess is-wide", `Email to ${item.contact_email} bounced, so nothing more goes there. Pick another contact under Contact; the greeting updates to match.`));
       }
     }
     const subject = outreachField(draft, "Subject", "email_subject", item.email_subject, { wide: true });
@@ -4795,6 +4869,7 @@
       }
       els.pageStatus.textContent = "Nothing sends from here; approved drafts open in your own email";
       if (running) scheduleDeepSearchPoll();
+      if (payload.gmail_drafts?.bounce_check) checkForBounces();
       els.results.setAttribute("aria-busy", "false");
       focusRequestedOutreach();
     } catch (error) {

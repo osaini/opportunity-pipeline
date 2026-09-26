@@ -37,6 +37,17 @@ from helpers_platform import build_and_migrate
 AUTH = {"Authorization": "Bearer inbox-owner"}
 # The rules read this as declined; a reader sees the call it proposes.
 MIXED_REPLY = "We're not hiring interns right now, but I'd be glad to hop on a call next week."
+# A Google Groups rejection of a send to a company's info@ inbox, as Gmail showed it.
+GROUP_BOUNCE = """Delivery Status Notification (Failure)
+Mail Delivery Subsystem <mailer-daemon@googlemail.com>
+Hello student@school.example,
+
+We're writing to let you know that the group you tried to contact (info) may not exist, or you may not have
+permission to post messages to the group. A few more details on why you weren't able to post:
+
+ * You might have spelled or formatted the group name incorrectly.
+ * The owner of the group may have removed this group.
+"""
 
 
 class FakeJev:
@@ -66,6 +77,26 @@ class FakeJev:
             }},
             "usage": {"input_tokens": 1, "output_tokens": 0},
         }
+
+
+class BounceNoticeTests(unittest.TestCase):
+    def test_delivery_failures_suggest_bounced(self):
+        for text in (
+            GROUP_BOUNCE,
+            "Address not found\nYour message wasn't delivered to greg@bovi.example because the address couldn't be found.",
+            "Undeliverable: Internship question\nDelivery has failed to these recipients or groups: greg@bovi.example",
+            "Mail delivery failed: returning message to sender\n550 5.1.1 <greg@bovi.example>: Recipient address rejected: User unknown",
+        ):
+            with self.subTest(text=text[:40]):
+                self.assertEqual(suggest_reply_status(text)["status"], "bounced")
+
+    def test_a_delay_is_not_a_bounce(self):
+        delay = "Delivery Status Notification (Delay)\nThere was a temporary problem delivering your message. Gmail will retry for 46 more hours."
+        self.assertNotEqual(suggest_reply_status(delay)["status"], "bounced")
+
+    def test_an_ordinary_reply_is_not_a_bounce(self):
+        self.assertEqual(suggest_reply_status("Thanks for reaching out, we're not hiring interns this term.")["status"], "declined")
+        self.assertEqual(suggest_reply_status("Got it, I'll forward this to our CTO.")["status"], "replied")
 
 
 class ClassifyReplyTests(unittest.TestCase):
@@ -215,6 +246,28 @@ class InboxSuggestionApiTests(unittest.TestCase):
         suggestion = self.log_reply()
         self.assertEqual(suggestion["source"], "rules")
         self.assertIn("Could not reach TypeSafe", suggestion["fallback_reason"])
+
+    def test_a_pasted_bounce_is_not_a_reply_and_never_reaches_jev(self):
+        self.client.put("/api/v1/typesafe/inbox-suggestions", headers=AUTH, json={"enabled": True})
+        created = self.client.post("/api/v1/outreach", headers=AUTH, json={
+            "company": "Bovi", "status": "sent", "contact_email": "info@bovi.example",
+        }).json()
+        response = self.client.post(f"/api/v1/outreach/{created['id']}/reply", headers=AUTH, json={"text": GROUP_BOUNCE})
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual((body["suggestion"]["status"], body["suggestion"]["source"]), ("bounced", "rules"))
+        self.assertFalse(body["logged"])
+        self.assertEqual(self.jev.calls, [], "a bounce is settled by the rules; Jev has no bounced label")
+        self.assertEqual(body["target"]["reply_count"], 0)
+        self.assertEqual(body["target"]["status"], "sent", "the suggestion changes nothing until it is applied")
+
+        marked = self.client.post(f"/api/v1/outreach/{created['id']}/bounce", headers=AUTH, json={"text": GROUP_BOUNCE})
+        self.assertEqual(marked.status_code, 200, marked.text)
+        target = marked.json()
+        self.assertEqual((target["status"], target["sent_at"], target["follow_up_at"]), ("drafted", None, None))
+        self.assertEqual(target["bounced_addresses"], ["info@bovi.example"])
+        self.assertTrue(target["contact_bounced"])
+        self.assertEqual(target["bounce_reason"], "Delivery Status Notification (Failure)")
 
     def test_connector_email_records_how_it_was_classified(self):
         connector = self.client.post("/api/v1/connections", headers=AUTH, json={"provider": "sandbox"}).json()

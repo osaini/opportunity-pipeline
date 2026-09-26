@@ -1068,10 +1068,29 @@ time on its own:
 - Once an email was sent, or marked sent by hand, no new Gmail draft of it is
   made.
 
-The app requests only the `gmail.compose` scope, which covers both drafts and
-sending, and calls only `drafts.create`, `drafts.get`, `messages.send`, and
-`profile`. The connection is refused if Google signs in as
-an account other than `PIPELINE_OUTREACH_ACCOUNT`.
+Gmail accepting a send does not mean it arrived: a company's server can refuse
+it seconds later and send back a delivery failure notice. The app looks for
+one in the sent email's thread, and searches your inbox for notices a server
+sent outside the thread, each time the Outreach list loads and a few times in
+the minutes after a send, for three days. The notice's delivery report says
+exactly which recipient failed, so a bounced Cc alone leaves the email sent. When it finds one, the
+company goes back to **Drafted** under **Bounced**, with no follow-up
+scheduled, and the failed address is never sent to again. Pick another
+contact: the draft's greeting ("Hi Dana," or "Hi Acme team,") changes to match
+without a model call, you approve the draft again, and it can be sent once to
+the new address. A notice pasted into **Log a reply** is caught too, and is
+never logged as a reply.
+
+The app requests two scopes. `gmail.compose` covers drafts and sending.
+`gmail.readonly` covers the bounce check. With it the app reads the headers of
+its own sent threads and the full text of delivery failure notices, and nothing
+else. The app calls only `drafts.create`, `drafts.get`, `messages.send`,
+`threads.get` (metadata format), `messages.list` (a search for notices from
+`mailer-daemon` or `postmaster`), `messages.get` (for those notices), and
+`profile`. A connection made before the bounce check existed
+still sends; the tab asks you to reconnect once to turn the check on. The
+connection is refused if Google signs in as an account other than
+`PIPELINE_OUTREACH_ACCOUNT`.
 
 One-time setup:
 
