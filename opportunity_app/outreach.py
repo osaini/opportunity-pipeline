@@ -1309,13 +1309,16 @@ def suggest_reply_status(text: str) -> dict[str, str]:
 
 def log_reply(
     conn: sqlite3.Connection, target_id: str, text: str, *, user_id: str, decisions: DecisionClient | None = None,
+    as_reply: bool = False,
 ) -> dict[str, Any]:
     """Record a pasted reply and suggest a status. The status is not changed here.
 
     With a decisions client the suggestion comes from Jev when it is sure enough;
     without one, or when Jev cannot answer, it comes from REPLY_PATTERNS. A
     delivery failure notice is not a reply, so it is not logged as one: it
-    suggests "bounced", which the student applies to record the bounce.
+    suggests "bounced", which the student applies to record the bounce. A
+    person's reply can mention a failed delivery too, so the student can say
+    it is a reply after all (``as_reply``) and it is logged like any other.
     """
     body = str(text or "").replace("\r\n", "\n").strip()
     if not body:
@@ -1323,10 +1326,13 @@ def log_reply(
     if len(body) > 20_000:
         raise ValueError("Reply is too long")
     target = get_target(conn, target_id, user_id=user_id)
-    if bounce_notice(body):
+    if bounce_notice(body) and not as_reply:
         suggestion = {**suggest_reply_status(body), "source": "rules", "confidence": None, "model": "", "fallback_reason": ""}
         return {"suggestion": suggestion, "logged": False, "target": get_target(conn, target["id"], user_id=user_id, include_events=True)}
     suggestion = classify_reply(body, suggest_reply_status, decisions)
+    if suggestion["status"] == BOUNCED:
+        # The student said a person wrote it, whatever it says about a failed delivery.
+        suggestion = {**suggestion, "status": "replied", "reason": "They replied; you said this is a reply, not a failure notice"}
     with conn:
         _log(conn, target_id, user_id, "reply_logged", detail=body)
     return {"suggestion": suggestion, "logged": True, "target": get_target(conn, target["id"], user_id=user_id, include_events=True)}

@@ -236,6 +236,46 @@ class ReplyCaptureTests(unittest.TestCase):
         self.gmail.thread_status = 403
         self.assertEqual(self.check()["state"], "needs_reconnect")
 
+    def test_mail_from_just_before_the_send_is_not_a_reply(self):
+        target = self.sent_target()
+        self.arrive("early-1", mail("Re: our earlier chat"), received=now_ms(-timedelta(minutes=1)))
+        self.assertEqual(self.check()["replies"], [])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_anyone_at_the_companys_own_domain_counts_even_if_the_contact_is_elsewhere(self):
+        target = self.sent_target(contact_email="greg@bovi-mail.example")
+        self.arrive("ana-1", mail("Greg passed this on. Let's talk.", sender="Ana <ana@eng.bovi.example>"))
+        self.assertEqual(len(self.check()["replies"]), 1)
+        self.assertEqual(self.target(target)["status"], "replied")
+
+    def test_a_search_that_fails_is_reported_not_taken_as_nothing(self):
+        self.sent_target()
+        self.gmail.thread_status = 500
+        self.assertEqual(self.check()["state"], "unreachable")
+
+    def test_every_page_of_results_is_read(self):
+        target = self.sent_target()
+        self.gmail.page_size = 1
+        for number in range(3):
+            self.arrive(f"news-{number}", mail("Our update", subject="Bovi news", headers="List-Unsubscribe: <mailto:x@bovi.example>\n"))
+        self.arrive("reply-late", mail("Yes, let's talk."))
+        self.assertEqual(len(self.check()["replies"]), 1, "the reply on the last page is found")
+        self.assertEqual(self.target(target)["status"], "replied")
+
+    def test_two_checks_reading_the_same_reply_log_it_once(self):
+        from opportunity_app.outreach_inbox import _record_reply
+
+        target = self.sent_target()
+        with closing(connect_product(self.platform_path)) as conn:
+            current = self.target(target)
+            first = _record_reply(conn, current, user_id=USER, gmail_id="same-1", sender="greg@bovi.example",
+                                  received=utc_now(), text="Sure.", decisions=None)
+            second = _record_reply(conn, current, user_id=USER, gmail_id="same-1", sender="greg@bovi.example",
+                                   received=utc_now(), text="Sure.", decisions=None)
+        self.assertIsNotNone(first)
+        self.assertIsNone(second)
+        self.assertEqual(len(self.replies(target)), 1)
+
     def test_the_background_watcher_captures_replies(self):
         target = self.sent_target()
         self.arrive("reply-1", mail("Sure, let's talk."))

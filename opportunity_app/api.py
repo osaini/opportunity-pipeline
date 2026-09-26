@@ -464,6 +464,8 @@ class OutreachSendRequest(BaseModel):
 
 class OutreachReplyRequest(BaseModel):
     text: str = Field(min_length=1, max_length=20_000)
+    # The student says a text that reads like a bounce notice is a real reply.
+    as_reply: bool = False
 
 
 class OutreachBounceRequest(BaseModel):
@@ -2411,7 +2413,7 @@ def create_app(
         try:
             logged = log_outreach_reply(
                 conn, target_id, payload.text, user_id=user_id,
-                decisions=inbox_client_for(conn, resolved_inbox_client_factory, user_id=user_id),
+                decisions=inbox_client_for(conn, resolved_inbox_client_factory, user_id=user_id), as_reply=payload.as_reply,
             )
             # A reply logged on a company already at a reply status starts its call prep.
             # A bounce notice is not a reply, so it is not logged and starts nothing.

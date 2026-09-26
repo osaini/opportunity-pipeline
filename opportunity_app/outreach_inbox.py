@@ -182,16 +182,19 @@ def _watched(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict
         addresses = {str(row[field] or "").strip().casefold() for field in ("contact_email", "contact_cc")}
         addresses |= {str(detail.get(field) or "").strip().casefold() for _at, detail in own for field in ("to", "cc")}
         addresses -= {""}
+        # The app's own sends say to the second when the email went; a send marked
+        # by hand has only a date, so the day before it is the earliest a reply counts.
         starts = [at for at, _detail in own]
-        if row["sent_at"]:
+        if not starts and row["sent_at"]:
             starts.append(datetime.combine(date.fromisoformat(row["sent_at"]), datetime.min.time(), tzinfo=timezone.utc) - timedelta(days=1))
         if not addresses or not starts:
             continue
         since = min(starts)
         if now - since > REPLY_WINDOW:
             continue
+        # Anyone at the company's own domain may answer, whatever address the contact uses.
         site = website_domain(row["website"] or "")
-        domains = {_domain(address) for address in addresses if _domain(address) == site and site not in FREEMAIL} - {""}
+        domains = {site} if site and "." in site and site not in FREEMAIL else set()
         watched.append({
             "id": row["id"], "company": row["company"], "status": row["status"],
             "addresses": addresses, "domains": domains, "since": since,
@@ -206,7 +209,11 @@ def _owner(watched: list[dict[str, Any]], sender: str) -> dict[str, Any] | None:
         return by_address[0]
     if by_address:
         return None
-    by_domain = [target for target in watched if _domain(sender) in target["domains"]]
+    domain = _domain(sender)
+    by_domain = [
+        target for target in watched
+        if any(domain == own or domain.endswith(f".{own}") for own in target["domains"])
+    ]
     return {**by_domain[0], "by_domain": True} if len(by_domain) == 1 else None
 
 
@@ -218,6 +225,29 @@ def _query(chunk: list[dict[str, Any]]) -> str:
 
 # --- Capturing ------------------------------------------------------------------------
 
+# Pages of search results read per check. A backlog longer than this is read
+# over the next checks, since every message read is remembered.
+MAX_PAGES = 10
+
+
+def _search(gmail: _Gmail, query: str) -> tuple[list[dict[str, Any]], int]:
+    """Every message a search finds, following Gmail's pages, and the status of a failed page (0 if none)."""
+    found: list[dict[str, Any]] = []
+    token = ""
+    for _page in range(MAX_PAGES):
+        params: dict[str, Any] = {"q": query, "maxResults": 100}
+        if token:
+            params["pageToken"] = token
+        listing = gmail.request("GET", "/messages", params=params)
+        if listing.status_code != 200:
+            return found, listing.status_code
+        data = listing.json()
+        found.extend(data.get("messages") or [])
+        token = str(data.get("nextPageToken") or "")
+        if not token:
+            break
+    return found, 0
+
 
 def _seen(conn: sqlite3.Connection, user_id: str, gmail_id: str) -> bool:
     return conn.execute(
@@ -225,26 +255,29 @@ def _seen(conn: sqlite3.Connection, user_id: str, gmail_id: str) -> bool:
     ).fetchone() is not None
 
 
-def _remember(conn: sqlite3.Connection, user_id: str, gmail_id: str, target_id: str, kind: str, sender: str, received: str) -> None:
-    conn.execute(
+def _remember(conn: sqlite3.Connection, user_id: str, gmail_id: str, target_id: str, kind: str, sender: str, received: str) -> bool:
+    """Record a message as read. False when another check already recorded it."""
+    return bool(conn.execute(
         """
         INSERT INTO outreach_inbox_messages(user_id, gmail_id, target_id, kind, sender, received_at, recorded_at)
         VALUES(?, ?, ?, ?, ?, ?, ?) ON CONFLICT(user_id, gmail_id) DO NOTHING
         """,
         (user_id, gmail_id, target_id, kind, sender, received, utc_now()),
-    )
+    ).rowcount)
 
 
 def _record_reply(
     conn: sqlite3.Connection, target: dict[str, Any], *, user_id: str, gmail_id: str, sender: str,
     received: str, text: str, decisions: DecisionClient | None,
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
+    """Log one reply, or None when another check (the background one, say) got to it first."""
     suggestion = classify_reply(text, suggest_reply_status, decisions)
     if suggestion["status"] == BOUNCED:
         # A person wrote this, so it is a reply even if it talks about a failed delivery.
         suggestion = {**suggestion, "status": "replied"}
     with conn:
-        _remember(conn, user_id, gmail_id, target["id"], "reply", sender, received)
+        if not _remember(conn, user_id, gmail_id, target["id"], "reply", sender, received):
+            return None
         _log(conn, target["id"], user_id, "reply_logged", detail=text)
     if target["status"] in REOPENED_BY_REPLY:
         update_target(conn, target["id"], {"status": "replied"}, user_id=user_id)
@@ -295,17 +328,21 @@ def capture_replies(
             gmail = _Gmail(conn, client, user_id)
             for start in range(0, len(watched), 20):
                 chunk = watched[start:start + 20]
-                listing = gmail.request("GET", "/messages", params={"q": _query(chunk), "maxResults": 50})
-                if listing.status_code == 403:
+                references, failed = _search(gmail, _query(chunk))
+                if failed == 403:
                     return {**result, "state": "needs_reconnect"}
-                if listing.status_code != 200:
-                    continue
-                for reference in listing.json().get("messages") or []:
+                if failed:
+                    # A search that failed found nothing yet; say so, so a send waiting on it holds.
+                    result["state"] = "unreachable"
+                for reference in references:
                     gmail_id = str(reference.get("id", ""))
                     if not gmail_id or _seen(conn, user_id, gmail_id):
                         continue
                     fetched = gmail.request("GET", f"/messages/{quote(gmail_id, safe='')}", params={"format": "raw"})
+                    if fetched.status_code == 404:
+                        continue  # deleted since the search
                     if fetched.status_code != 200:
+                        result["state"] = "unreachable"
                         continue
                     data = fetched.json()
                     raw = str(data.get("raw", ""))
@@ -336,6 +373,8 @@ def capture_replies(
                         conn, get_target(conn, target["id"], user_id=user_id), user_id=user_id, gmail_id=gmail_id,
                         sender=sender, received=received, text=text, decisions=decisions,
                     )
+                    if captured is None:
+                        continue
                     result["replies"].append(captured)
                     for listed in chunk:
                         if listed["id"] == target["id"]:

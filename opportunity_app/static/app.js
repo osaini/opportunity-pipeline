@@ -3074,7 +3074,26 @@
               mark.disabled = false;
             }
           });
-          result.appendChild(mark);
+          // A person can write about a failed delivery too; the student decides.
+          const reply = element("button", "secondary-button", "It's a real reply, log it");
+          reply.type = "button";
+          reply.addEventListener("click", async () => {
+            reply.disabled = true;
+            try {
+              await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/reply`, {
+                method: "POST", body: JSON.stringify({ text: pasted, as_reply: true }),
+              });
+              text.value = "";
+              state.outreachOpen = item.id;
+              state.outreachKeep.add(item.id);
+              await loadOutreach();
+              announce(`Logged the reply from ${item.company}.`);
+            } catch (error) {
+              showError(error.message);
+              reply.disabled = false;
+            }
+          });
+          result.append(mark, reply);
           return;
         }
         text.value = "";
@@ -4337,6 +4356,7 @@
             await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/reply-suggestion`, { method: "DELETE" });
             state.outreachOpen = item.id;
             await loadOutreach();
+            announce(`Dropped the suggestion; ${item.company} stays ${OUTREACH_STATUS_LABELS[item.status] || item.status}.`);
           } catch (error) {
             showError(error.message);
             dismiss.disabled = false;
