@@ -76,6 +76,10 @@ class _NeedsReconnect(Exception):
     """Gmail refused a read: the connection predates the read scope."""
 
 
+class _Unreadable(Exception):
+    """Gmail answered a read with an error, so what it would have shown is unknown."""
+
+
 def _interval(age: timedelta) -> timedelta:
     """How long to wait between looks at one sent email: often while it is fresh."""
     if age < timedelta(minutes=15):
@@ -276,16 +280,20 @@ def _notice_in_thread(gmail: _Gmail, thread: dict[str, Any], message_id: str) ->
 # --- Watching recent sends ------------------------------------------------------
 
 
-def _watched(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict[str, Any]]:
-    """Recent sends from the app that have not bounced yet, oldest first."""
+def _watched(conn: sqlite3.Connection, user_id: str, now: datetime, every_send_of: str | None = None) -> list[dict[str, Any]]:
+    """Recent sends from the app that have not bounced yet, oldest first.
+
+    ``every_send_of`` adds that company's older sends too: a server can give up
+    after days, and a follow-up a week later must still see that bounce.
+    """
     cutoff = (now - WATCH_FOR).isoformat(timespec="microseconds")
     rows = conn.execute(
         """
         SELECT e.target_id, e.detail, e.created_at FROM outreach_events e
         JOIN outreach_targets t ON t.id=e.target_id AND t.user_id=e.user_id
-        WHERE e.user_id=? AND e.event_type=? AND e.created_at>=? ORDER BY e.created_at
+        WHERE e.user_id=? AND e.event_type=? AND (e.created_at>=? OR e.target_id=?) ORDER BY e.created_at
         """,
-        (user_id, SENT_EVENT, cutoff),
+        (user_id, SENT_EVENT, cutoff, every_send_of or ""),
     ).fetchall()
     watched = []
     for row in rows:
@@ -345,7 +353,7 @@ def _searched_notices(gmail: _Gmail, conn: sqlite3.Connection, user_id: str, wat
     if response.status_code == 403:
         raise _NeedsReconnect
     if response.status_code != 200:
-        return []
+        raise _Unreadable
     found = []
     for reference in response.json().get("messages") or []:
         notice_id = str(reference.get("id", ""))
@@ -358,7 +366,7 @@ def _searched_notices(gmail: _Gmail, conn: sqlite3.Connection, user_id: str, wat
         if fetched is None:
             with _LOOK_LOCK:
                 _READ_NOTICES.discard(key)
-            continue
+            raise _Unreadable
         read = read_notice(fetched[0])
         # Without a named address a notice outside the thread cannot be tied to a send.
         if not read or not read["failed"]:
@@ -375,8 +383,12 @@ def check_deliveries(
     user_id: str,
     client_factory: ClientFactory,
     now: datetime | None = None,
+    force_target: str | None = None,
 ) -> dict[str, Any]:
     """Look in Gmail for bounces of the app's recent sends, and record each one found.
+
+    ``force_target`` looks at that company's sends now, however recently they
+    were looked at: the check made just before an automatic send.
 
     ``state`` is "ok", "not_connected", "needs_reconnect" (the connection
     predates the read scope, or was revoked), or "unreachable". Nothing is
@@ -384,8 +396,9 @@ def check_deliveries(
     """
     now = now or datetime.now(timezone.utc)
     result: dict[str, Any] = {"state": "ok", "checked": 0, "bounced": []}
-    watched = _watched(conn, user_id, now)
-    due = _take_due(user_id, watched, now)
+    watched = _watched(conn, user_id, now, every_send_of=force_target)
+    due = _take_due(user_id, [item for item in watched if item["target_id"] != force_target], now)
+    due += [item for item in watched if item["target_id"] == force_target]
     if not due:
         return result
     row = _connector(conn, user_id)
@@ -420,14 +433,22 @@ def check_deliveries(
                 )
                 if response.status_code == 403:
                     raise _NeedsReconnect
+                if response.status_code == 404:
+                    continue  # the thread was deleted: nothing left to find in it
                 if response.status_code != 200:
+                    # Not read is not "no bounce": look again next time, and say so.
+                    _forget(user_id, [item])
+                    result["state"] = "unreachable"
                     continue
                 result["checked"] += 1
                 notice = _notice_in_thread(gmail, response.json(), str(detail["message_id"]))
                 if notice:
                     record(item, notice)
-            for item, notice in _searched_notices(gmail, conn, user_id, watched):
-                record(item, notice)
+            try:
+                for item, notice in _searched_notices(gmail, conn, user_id, watched):
+                    record(item, notice)
+            except _Unreadable:
+                result["state"] = "unreachable"
     except _NeedsReconnect:
         # Granted before the app asked to read mail: it can send but not see bounces.
         _forget(user_id, due)
