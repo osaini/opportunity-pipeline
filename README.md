@@ -1099,6 +1099,17 @@ it runs. Editing the draft or changing the recipient cancels it, and the card
 keeps **Cancel** and **Send now**. A send that could not go (Gmail unreachable
 three times, the draft sent some other way) is shown on the card with why.
 
+Just before any scheduled email goes out, the app reads Gmail again for a
+bounce or a reply about that company, instead of trusting the last background
+check. A follow-up is never sent to a company that replied or whose first email
+bounced, and if Gmail cannot be read the email waits. With **Have a second model
+check each follow-up** on, Codex reads each follow-up with the whole thread
+before it goes (set `PIPELINE_OUTREACH_REVIEW_PROVIDER=claude-code` to use Claude
+instead). It goes only on a clean pass; an out-of-office with a return date
+holds it until then, and anything else stops it with the reviewer's reasons on
+the card. If the reviewer cannot run, the follow-up waits rather than going
+unchecked.
+
 The app requests two scopes. `gmail.compose` covers drafts and sending.
 `gmail.readonly` covers bounces and replies. With it the app reads the headers
 of its own sent threads, delivery failure notices, and mail from the companies

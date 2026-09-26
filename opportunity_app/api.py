@@ -474,6 +474,7 @@ class OutreachAutomationRequest(BaseModel):
     auto_drafts: bool | None = None
     bounce_recovery: bool | None = None
     scheduled_sending: bool | None = None
+    follow_up_review: bool | None = None
 
 
 class OutreachScheduleRequest(BaseModel):

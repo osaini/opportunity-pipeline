@@ -38,6 +38,7 @@ SETTINGS = {
     "auto_drafts": "Write a draft for every company with a contact and a location",
     "bounce_recovery": "After a bounce, find another contact and fix the greeting",
     "scheduled_sending": "Send approved emails on the recipient's next weekday morning",
+    "follow_up_review": "Have a second model check each follow-up before it goes out",
 }
 RECOVERY_EVENT = "contact_recovery"
 AUTO_DRAFT_FAILED = "auto_draft_failed"
