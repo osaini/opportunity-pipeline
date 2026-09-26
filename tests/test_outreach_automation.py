@@ -72,7 +72,7 @@ class AutomationTests(unittest.TestCase):
         return httpx.Client(transport=transport), requested
 
     def test_switches_are_off_until_turned_on(self):
-        self.assertEqual(settings(self.conn, user_id=USER), {"auto_drafts": False, "bounce_recovery": False})
+        self.assertEqual(settings(self.conn, user_id=USER), {"auto_drafts": False, "bounce_recovery": False, "scheduled_sending": False})
         self.assertEqual(update_settings(self.conn, {"bounce_recovery": True}, user_id=USER)["bounce_recovery"], True)
         with self.assertRaises(ValueError):
             update_settings(self.conn, {"autopilot": True}, user_id=USER)
@@ -171,7 +171,7 @@ class AutomationTests(unittest.TestCase):
             return safe_fetcher(httpx.Client(transport=transport))
 
         worker = AutomationWorker(self.platform_path, fetcher_factory=fetcher_factory, contact_delay=0)
-        self.assertEqual(worker.run_once(), {"recovered": [], "drafted": []})
+        self.assertEqual(worker.run_once(), {"sent": [], "recovered": [], "drafted": []})
         self.assertEqual(requested, [], "off by default: nothing is fetched")
         update_settings(self.conn, {"bounce_recovery": True}, user_id=USER)
         report = worker.run_once()
@@ -186,10 +186,10 @@ class AutomationApiTests(unittest.TestCase):
             app = create_app(db_path=platform_path, access_token="automation-owner", static_dir=STATIC_DIR)
             with TestClient(app) as client:
                 self.assertEqual(client.get("/api/v1/outreach/automation", headers=AUTH).json(),
-                                 {"auto_drafts": False, "bounce_recovery": False})
+                                 {"auto_drafts": False, "bounce_recovery": False, "scheduled_sending": False})
                 saved = client.put("/api/v1/outreach/automation", headers=AUTH, json={"auto_drafts": True})
                 self.assertEqual(saved.status_code, 200, saved.text)
-                self.assertEqual(saved.json(), {"auto_drafts": True, "bounce_recovery": False})
+                self.assertEqual(saved.json(), {"auto_drafts": True, "bounce_recovery": False, "scheduled_sending": False})
                 self.assertEqual(client.get("/api/v1/outreach/automation").status_code, 401)
 
 
