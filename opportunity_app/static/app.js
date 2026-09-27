@@ -315,15 +315,21 @@
   const AUTOMATION_FOCUS_MS = 60_000;
   // ticket numbers every automation read and write in the order it started;
   // shown is the newest one whose answer is on screen, lastWrite the newest
-  // write, and writing how many writes are still waiting for their answer.
-  const automationStatus = { lastChecked: 0, timer: null, controller: null, banner: "", ticket: 0, shown: 0, lastWrite: 0, writing: 0 };
+  // write, writing how many writes are still waiting for their answer, and
+  // overlapped whether two writes were on their way at once since the last
+  // time none was.
+  const automationStatus = { lastChecked: 0, timer: null, controller: null, banner: "", ticket: 0, shown: 0, lastWrite: 0, writing: 0, overlapped: false };
 
   // The server answers in its own order, so an answer read before a Pause
   // committed can land after the Pause's own answer and put the old banner
-  // back. A read's answer counts only when no write was on its way while it
-  // ran (it may have read before that write committed) and nothing that
-  // started later is on screen. A write's answer always counts: the server
-  // reads it after its own commit.
+  // back. Nothing is shown over an answer that started later (shown). A
+  // read's answer counts only when, besides that, no write was on its way
+  // while it ran (it may have read before that write committed). A write's
+  // answer is read after its own commit, so it counts unless a later one is
+  // already on screen. Two writes at once are the one case tickets cannot
+  // settle: the server may commit them in either order, so each answer can
+  // miss the other's change. Once both have answered, one fresh read shows
+  // what the server settled on.
   function startAutomationRead() {
     return { ticket: ++automationStatus.ticket, clean: automationStatus.writing === 0 };
   }
@@ -334,19 +340,26 @@
 
   // Runs one write that changes automation state (a switch, the pause, a
   // decision, notices read). An answer that carries { settings, health } is
-  // shown at once, as the latest word.
+  // shown at once, unless the answer of a write that started later is
+  // already on screen. The caller still gets its own answer, for its own
+  // words ("Write drafts automatically: on.").
   async function automationWrite(send) {
     const ticket = ++automationStatus.ticket;
     automationStatus.lastWrite = ticket;
+    if (automationStatus.writing > 0) automationStatus.overlapped = true;
     automationStatus.writing += 1;
     // A background check already on its way would be dropped anyway.
     automationStatus.controller?.abort();
     try {
       const payload = await send();
-      if (payload?.settings || payload?.health) applyAutomationView(payload, ticket);
+      if ((payload?.settings || payload?.health) && ticket > automationStatus.shown) applyAutomationView(payload, ticket);
       return payload;
     } finally {
       automationStatus.writing -= 1;
+      if (automationStatus.writing === 0 && automationStatus.overlapped) {
+        automationStatus.overlapped = false;
+        refreshAutomationStatus();
+      }
     }
   }
 
@@ -6842,18 +6855,24 @@
       return [key, entry];
     }));
 
-    // Decisions still on their way, and actions already decided here. Every
-    // repaint, whichever reload drew it, draws their buttons disabled, so a
-    // row is never offered a second decision while its first is pending or
-    // after it has been made.
+    // Decisions still on their way (by action), and decisions already made
+    // here (by list and action). Every repaint, whichever reload drew it,
+    // draws their buttons disabled, so a row is never offered a second
+    // decision while its first is pending or after it has been made. A
+    // decision closes only the list it was made in: an action approved in
+    // Waiting lands in Recent as Applied, and its Undo there is a new
+    // decision the student can make at once.
     const deciding = new Set();
     const decided = new Set();
-    const busy = (id) => deciding.has(id) || decided.has(id);
+    const decidedIn = (listKey, id) => decided.has(`${listKey}:${id}`);
+    const busy = (listKey, id) => deciding.has(id) || decidedIn(listKey, id);
 
     function syncRowButtons() {
-      section.querySelectorAll(".automation-action[data-action-id]").forEach((row) => {
-        const disabled = busy(row.dataset.actionId);
-        row.querySelectorAll(".automation-action-buttons button").forEach((button) => { button.disabled = disabled; });
+      Object.entries(lists).forEach(([listKey, entry]) => {
+        entry.host.querySelectorAll(".automation-action[data-action-id]").forEach((row) => {
+          const disabled = busy(listKey, row.dataset.actionId);
+          row.querySelectorAll(".automation-action-buttons button").forEach((button) => { button.disabled = disabled; });
+        });
       });
     }
 
@@ -6889,7 +6908,7 @@
     }
 
     async function decide(listKey, action, verb, body = null) {
-      if (busy(action.id)) return;
+      if (busy(listKey, action.id)) return;
       const entry = lists[listKey];
       deciding.add(action.id);
       syncRowButtons();
@@ -6900,7 +6919,7 @@
           method: "POST",
           ...(body ? { body: JSON.stringify(body) } : {}),
         }));
-        decided.add(action.id);
+        decided.add(`${listKey}:${action.id}`);
         message = decisionMessage(verb, action, result, body);
       } catch (error) {
         if (error.message === "Authentication required") {
@@ -6911,7 +6930,7 @@
         // A 409 or 404 says the action is no longer open to this decision
         // (decided somewhere else, or superseded by a later change), so it
         // stays decided. Anything else (a lost connection) can be tried again.
-        if (error.status === 409 || error.status === 404) decided.add(action.id);
+        if (error.status === 409 || error.status === 404) decided.add(`${listKey}:${action.id}`);
         message = error.message;
       }
       deciding.delete(action.id);

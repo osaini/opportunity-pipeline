@@ -638,6 +638,116 @@ def test_an_older_automation_read_never_undoes_a_newer_resume(owner_page, live_s
     owner_page.unroute_all(behavior="ignoreErrors")
 
 
+def hold_first_settings_answer(page):
+    """Let the first settings PUT reach the server, and hold its answer until the test releases it."""
+    held = []
+
+    def handler(route):
+        if held:
+            route.continue_()
+        else:
+            held.append((route, route.fetch()))
+
+    page.route("**/api/v1/automation/settings", handler)
+    return held
+
+
+def test_an_older_switch_answer_never_undoes_a_newer_pause(owner_page, live_server, test_features):
+    """F24, F30: a switch's answer, read before Pause committed, lands after Pause's own answer, and is dropped."""
+    section = open_profile(owner_page)
+    held = hold_first_settings_answer(owner_page)
+    drafts = owner_page.locator("#automation-mode-auto_drafts")
+    drafts.check()
+    wait_until(owner_page, lambda: held, "the switch save to reach the server")
+    assert held[0][1].json()["health"]["paused"] is False, "the held answer is the pre-pause state"
+    owner_page.click("#automation-pause")
+    banner = owner_page.locator("#automation-banner")
+    expect(banner).to_contain_text("Automation is paused.")
+
+    # The fresh read that follows two writes at once is held too, so what is
+    # on screen until it lands is down to the older answer being dropped.
+    reads = []
+    owner_page.route(re.compile(r".*/api/v1/automation$"), lambda route: reads.append(route))
+    route, response = held[0]
+    route.fulfill(response=response)
+    # The switch's own words still come from its own answer.
+    drafts_status = section.locator(".automation-group", has=drafts).locator(".form-status")
+    expect(drafts_status).to_have_text("Write drafts automatically: on.")
+    wait_until(owner_page, lambda: reads, "the read after both writes")
+    with closing(connect_product(live_server.live_path)) as conn:
+        assert automation.paused(conn, USER) is True
+    expect(banner).to_contain_text("Automation is paused.")
+    expect(owner_page.locator("#automation-pause")).to_have_text("Resume automation")
+    expect(drafts).to_be_checked()
+
+    reads[0].continue_()
+    owner_page.wait_for_timeout(300)
+    expect(banner).to_contain_text("Automation is paused.")
+    expect(owner_page.locator("#automation-pause")).to_have_text("Resume automation")
+    expect(drafts).to_be_checked()
+    owner_page.unroute_all(behavior="ignoreErrors")
+
+
+def test_two_switch_answers_in_any_order_end_on_what_the_server_saved(owner_page, live_server, test_features):
+    """F24, F30: two switch saves at once; whichever answer lands last, both switches end as the server has them."""
+    section = open_profile(owner_page)
+    drafts = owner_page.locator("#automation-mode-auto_drafts")
+    mover = owner_page.locator(f"#automation-mode-{SWITCH.key}")
+
+    # 1. The first save commits first, but its answer lands last.
+    held = hold_first_settings_answer(owner_page)
+    drafts.check()
+    wait_until(owner_page, lambda: held, "the first save to reach the server")
+    mover.check()
+    expect(section.locator(".automation-group", has=mover).locator(".form-status")).to_have_text("Stage mover: on.")
+    route, response = held[0]
+    route.fulfill(response=response)
+    expect(section.locator(".automation-group", has=drafts).locator(".form-status")).to_have_text("Write drafts automatically: on.")
+    owner_page.wait_for_timeout(300)
+    expect(drafts).to_be_checked()
+    expect(mover).to_be_checked()
+    owner_page.unroute_all(behavior="ignoreErrors")
+
+    # 2. The first save is held before the server sees it, so the second
+    # commits first and its answer, which the page shows, still has the
+    # first switch on. The first's answer then lands; it started earlier, so
+    # it is dropped. Only the read after both is right about both.
+    reads = []
+    owner_page.route(re.compile(r".*/api/v1/automation$"), lambda route: (reads.append(route.request.url), route.continue_()))
+    unsent = []
+    owner_page.route("**/api/v1/automation/settings", lambda route: route.continue_() if unsent else unsent.append(route))
+    drafts.uncheck()
+    wait_until(owner_page, lambda: unsent, "the first save to be held")
+    mover.uncheck()
+    expect(section.locator(".automation-group", has=mover).locator(".form-status")).to_have_text("Stage mover: off.")
+    unsent[0].continue_()
+    expect(section.locator(".automation-group", has=drafts).locator(".form-status")).to_have_text("Write drafts automatically: off.")
+    wait_until(owner_page, lambda: reads, "the read after both saves")
+    with closing(connect_product(live_server.live_path)) as conn:
+        assert (automation.mode(conn, USER, "auto_drafts"), automation.mode(conn, USER, SWITCH.key)) == ("off", "off")
+    expect(drafts).not_to_be_checked()
+    expect(mover).not_to_be_checked()
+    owner_page.unroute_all(behavior="ignoreErrors")
+
+
+def test_a_proposal_approved_in_waiting_can_be_undone_in_recent_at_once(owner_page, live_server, test_features):
+    """F31: deciding in Waiting closes the Waiting row only; the Applied row's Undo is a new decision."""
+    perform(live_server, auto=False)
+    section = open_profile(owner_page)
+    waiting = section.locator(".automation-waiting")
+    waiting.get_by_role("button", name="Approve").click()
+    expect(waiting.locator(".form-status")).to_have_text("Approved: Moved Orbit Systems to interview.")
+    recent = section.locator(".automation-recent")
+    expect(recent.locator(".automation-action .chip")).to_have_text("Applied")
+    undo = recent.get_by_role("button", name="Undo: Moved Orbit Systems to interview")
+    expect(undo).to_be_enabled()
+    assert stage(live_server) == "interview"
+    undo.click()
+    expect(recent.locator(".form-status")).to_have_text("Undone: Moved Orbit Systems to interview.")
+    expect(recent.locator(".automation-action .chip")).to_have_text("Undone")
+    assert stage(live_server) == "applied"
+
+
 # The Outreach tab reads the pause and Gmail's expiry estimate too. The live
 # server has no Google client, so these patch the listing's gmail_drafts the
 # way tests/ui/test_outreach_journey.py does; the server side is covered by

@@ -1581,6 +1581,30 @@ class GmailConnectionNoticeTests(unittest.TestCase):
         self.assertEqual(outreach_gmail.gmail_notices(self.conn, USER, now=self.NOW), [])
         self.assertEqual(self.notices(), [])
 
+    def test_a_warning_left_after_the_estimated_date_names_no_past_date(self):
+        # Granted Sep 1, so the estimate was Sep 8. Gmail last answered Sep 7,
+        # before it, so the grant may still be asked for at any time: the
+        # warning stands, but "before Tue, Sep 8" would be a date behind us.
+        with self.conn:
+            self.conn.execute(
+                "UPDATE connector_accounts SET token_granted_at='2026-09-01T07:00:00+00:00', last_ok_at='2026-09-07T07:00:00+00:00'"
+            )
+        self.assertEqual(outreach_gmail.gmail_notices(self.conn, USER, now=self.NOW), ["gmail-expiring:2026-09-01T07:00:00+00:00"])
+        [notice] = self.notices()
+        self.assertEqual(notice["title"], "Gmail will likely need reconnecting soon")
+        self.assertEqual(notice["body"], "Open Outreach and click Reconnect Gmail soon so reply and bounce checks keep running.")
+        self.assertNotIn("Sep", notice["body"])
+
+    def test_no_warning_once_gmail_answered_past_the_estimated_date(self):
+        # Gmail kept working after Sep 8, so the estimate was wrong (a Google
+        # project in production has no 7-day limit) and nothing is said.
+        with self.conn:
+            self.conn.execute(
+                "UPDATE connector_accounts SET token_granted_at='2026-09-01T07:00:00+00:00', last_ok_at='2026-09-26T07:00:00+00:00'"
+            )
+        self.assertEqual(outreach_gmail.gmail_notices(self.conn, USER, now=self.NOW), [])
+        self.assertEqual(self.notices(), [])
+
     def test_a_broken_connection_gets_one_problem_notice_per_break(self):
         with self.conn:
             self.conn.execute("UPDATE connector_accounts SET status='error', updated_at='2026-09-27T10:00:00+00:00'")

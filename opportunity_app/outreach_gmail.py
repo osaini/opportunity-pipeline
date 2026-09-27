@@ -1055,17 +1055,23 @@ def gmail_notices(conn: sqlite3.Connection, user_id: str, *, now: datetime | Non
     once per time the connection broke. Returns the event keys of the notices
     that are new. automation.notice opens its own transaction, so this is never
     called inside one. The expiry is an estimate (automation.gmail_health), and
-    the notice says "likely".
+    the notice says "likely". Once the estimated date has passed
+    (``estimate_passed``) there is no date left to name: "before <that date>"
+    would point the student at a time already behind them, so the notice says
+    "soon" instead, as the banner does.
     """
     health = automation.gmail_health(conn, user_id, now=now)
     new = []
     if health["expiring_soon"]:
-        local = user_timezone(conn, user_id).to_local(datetime.fromisoformat(health["likely_expires_at"]))
-        when = f"{local:%a, %b} {local.day} at {f'{local:%I:%M %p}'.lstrip('0')}"
+        if health.get("estimate_passed"):
+            body = "Open Outreach and click Reconnect Gmail soon so reply and bounce checks keep running."
+        else:
+            local = user_timezone(conn, user_id).to_local(datetime.fromisoformat(health["likely_expires_at"]))
+            when = f"{local:%a, %b} {local.day} at {f'{local:%I:%M %p}'.lstrip('0')}"
+            body = f"Open Outreach and click Reconnect Gmail before {when} so reply and bounce checks keep running."
         key = f"gmail-expiring:{health['token_granted_at']}"
         if automation.notice(
-            conn, user_id, event_key=key, level="warning", title="Gmail will likely need reconnecting soon",
-            body=f"Open Outreach and click Reconnect Gmail before {when} so reply and bounce checks keep running.",
+            conn, user_id, event_key=key, level="warning", title="Gmail will likely need reconnecting soon", body=body,
         ):
             new.append(key)
     row = _connector(conn, user_id)
