@@ -162,7 +162,7 @@ def _watched(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict
     """Companies written to within the reply window, with every address that speaks for them."""
     rows = conn.execute(
         f"""
-        SELECT id, company, status, contact_email, contact_cc, website, sent_at FROM outreach_targets
+        SELECT id, company, status, contact_email, contact_cc, website, sent_at, mail_domains_json FROM outreach_targets
         WHERE user_id=? AND status IN ({', '.join('?' for _ in WATCHED_STATUSES)})
         """,
         (user_id, *WATCHED_STATUSES),
@@ -198,6 +198,12 @@ def _watched(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict
         # Anyone at the company's own domain may answer, whatever address the contact uses.
         site = website_domain(row["website"] or "")
         domains = {site} if site and "." in site and site not in FREEMAIL else set()
+        # And anyone at another domain the company's own site shows it mailing from (persona.ai, personainc.ai).
+        try:
+            mail_domains = json.loads(row["mail_domains_json"] or "[]")
+        except (TypeError, ValueError):
+            mail_domains = []
+        domains |= {str(other).casefold() for other in mail_domains if str(other).casefold() not in FREEMAIL}
         via_form = row["id"] in forms
         if not (addresses or (via_form and domains)) or not starts:
             continue
