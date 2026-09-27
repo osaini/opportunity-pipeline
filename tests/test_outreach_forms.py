@@ -212,7 +212,7 @@ class FakeSubmitter:
         outcome = self.outcomes.pop(0)
         return {"outcome": outcome, "note": "" if outcome == "submitted" else f"{outcome} for a reason",
                 "confirmation": "Thanks! Your message has been sent." if outcome == "submitted" else "",
-                "filled": ["Your name", "Email", "Message"], "screenshot": ""}
+                "filled": ["Your name", "Email", "Message"], "screenshot": "", "attached": getattr(self, "attached", "")}
 
 
 class FormSendTests(unittest.TestCase):
@@ -294,6 +294,26 @@ class FormSendTests(unittest.TestCase):
         again = self.send(target)
         self.assertEqual(again.status_code, 422)
         self.assertEqual(len(self.submitter.calls), 1, "a first message goes out once")
+
+    def test_the_history_names_a_resume_only_when_the_form_took_it(self):
+        # Orbital Arc: a resume was set to attach, the form had no file field, and the history said it went.
+        resume = Path(self.tempdir.name) / "Resume.pdf"
+        resume.write_bytes(b"%PDF-1.4 resume")
+        with mock.patch.dict("os.environ", {"PIPELINE_OUTREACH_ATTACHMENT": str(resume)}):
+            self.submitter.outcomes = ["submitted", "submitted"]
+            no_field = self.approved()
+            self.send(no_field)
+            self.submitter.attached = "Resume.pdf"
+            with_field = self.approved(company="Orbit")
+            self.send(with_field)
+
+        def recorded(target):
+            event = next(e for e in self.get(target)["events"] if e["event_type"] == "form_submitted")
+            return json.loads(event["detail"])["attachment"]
+
+        self.assertEqual(self.submitter.calls[0]["attachment"], str(resume), "the resume is offered to the form")
+        self.assertEqual(recorded(no_field), "", "a form with no file field took no resume")
+        self.assertEqual(recorded(with_field), "Resume.pdf")
 
     def test_an_unconfirmed_send_is_not_repeated_until_the_student_has_looked(self):
         self.submitter.outcomes = ["unconfirmed", "submitted"]
@@ -795,6 +815,18 @@ class RealWorldBrowserTests(unittest.TestCase):
         result = self.rehearse(page)
         self.assertEqual(result["outcome"], "rehearsed", result)
         self.assertIn("Inquiry type: General Inquiry", result["filled"])
+
+    def test_the_resume_counts_as_attached_only_when_the_form_has_a_file_field(self):
+        resume = Path(tempfile.mkdtemp()) / "Resume.pdf"
+        resume.write_bytes(b"%PDF-1.4 resume")
+        self.addCleanup(lambda: resume.unlink(missing_ok=True))
+        with_file = PLAIN_FORM.replace("<button", '<label>Resume <input type="file" name="cv" accept=".pdf"></label><button')
+        for page, expected in ((PLAIN_FORM, ""), (with_file, "Resume.pdf")):
+            site = Site({"/contact": page})
+            with tempfile.TemporaryDirectory() as shots, FormSubmitter(route_hook=site.route, screenshot_dir=Path(shots), rehearse=True) as submitter:
+                result = submitter.submit("https://bovi.test/contact", identity=IDENTITY, subject="s", body=LETTER,
+                                          attachment=str(resume), name="bovi")
+            self.assertEqual((result["outcome"], result["attached"]), ("rehearsed", expected))
 
     def test_a_demo_request_form_is_not_used_for_an_email(self):
         demo = PLAIN_FORM.replace("<form", "<h2>Request a demo</h2><form", 1)

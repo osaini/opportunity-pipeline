@@ -852,7 +852,8 @@ class FormSubmitter:
         self, page_url: str, *, identity: dict[str, str], subject: str, body: str, attachment: str = "", name: str = "form",
     ) -> dict[str, Any]:
         """Fill and send the form. Never raises: the outcome says whether anything left the page."""
-        result: dict[str, Any] = {"outcome": "failed", "note": "", "confirmation": "", "filled": [], "screenshot": "", "filled_screenshot": ""}
+        # "attached" names the file only once it is in the form's file field; most forms have none.
+        result: dict[str, Any] = {"outcome": "failed", "note": "", "confirmation": "", "filled": [], "screenshot": "", "filled_screenshot": "", "attached": ""}
         clicked = False
         page = None
         try:
@@ -949,6 +950,7 @@ class FormSubmitter:
                         control.select_option(fill["value"], timeout=FIELD_TIMEOUT_MS, force=True)
                     elif fill["action"] == "upload":
                         control.set_input_files(fill["value"], timeout=FIELD_TIMEOUT_MS)
+                        result["attached"] = Path(fill["value"]).name
                 except Exception:  # noqa: BLE001 - a field covered by another element, or read-only
                     result.update(outcome="needs_you", note=(
                         f"The field \"{fill['label']}\" did not take text (another element covers it, or it is read-only). Nothing was sent"
@@ -1261,7 +1263,8 @@ def submit_contact_form(
         detail = {
             "kind": "initial", "fingerprint": fresh["draft_fingerprint"], "page_url": page_url,
             "confirmation": result.get("confirmation", ""), "filled": result.get("filled", []),
-            "attachment": Path(attachment).name if attachment else "", "screenshot": result.get("screenshot", ""),
+            # The file that went in with the form, not merely the one on hand to attach.
+            "attachment": result.get("attached", ""), "screenshot": result.get("screenshot", ""),
             "filled_screenshot": result.get("filled_screenshot", ""),
             "note": result.get("note", ""), "in_browser": in_browser,
         }
