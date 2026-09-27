@@ -47,6 +47,8 @@
     programsFocus: null,
     outreachFocus: null,
     profileStatus: null,
+    // The last answer from /api/v1/automation: { settings, health }.
+    automation: null,
   };
 
   const els = {
@@ -81,6 +83,8 @@
     profileNav: document.getElementById("profile-nav"),
     urgentNav: document.getElementById("urgent-nav"),
     urgentBadge: document.getElementById("urgent-badge"),
+    profileBadge: document.getElementById("profile-badge"),
+    automationBanner: document.getElementById("automation-banner"),
     keyboardHint: document.getElementById("keyboard-hint"),
     userChip: document.getElementById("user-chip"),
     userName: document.getElementById("user-name"),
@@ -291,6 +295,133 @@
     setUrgentBadge(null);
   }
 
+  // What the app does on its own, app-wide: the banner above the page (a pause,
+  // or Gmail needing attention) and the Profile badge (automatic actions waiting
+  // for the student, else unread notices). Checked after sign-in, every five
+  // minutes, and when the window regains focus, at most once a minute. Like the
+  // Urgent badge, a check never opens the sign-in gate or shows an error.
+  const AUTOMATION_POLL_MS = 5 * 60_000;
+  const AUTOMATION_FOCUS_MS = 60_000;
+  const automationStatus = { lastChecked: 0, timer: null, controller: null, banner: "" };
+
+  function setProfileBadge(health) {
+    const waiting = (Number(health?.counts?.proposed) || 0) + (Number(health?.counts?.shadow_unreviewed) || 0);
+    const unread = Number(health?.unread_notices) || 0;
+    const count = waiting > 0 ? waiting : unread;
+    const show = Number.isInteger(count) && count > 0;
+    els.profileBadge.hidden = !show;
+    els.profileBadge.textContent = show ? (count > 99 ? "99+" : String(count)) : "";
+    if (!show) els.profileNav.setAttribute("aria-label", "Profile");
+    else if (waiting > 0) els.profileNav.setAttribute("aria-label", `Profile, ${count} waiting for you`);
+    else els.profileNav.setAttribute("aria-label", `Profile, ${count} unread notice${count === 1 ? "" : "s"}`);
+  }
+
+  const AUTOMATION_BANNER_LEVELS = new Set(["info", "warning", "problem"]);
+
+  function renderAutomationBanner(health) {
+    const items = Array.isArray(health?.banner) ? health.banner : [];
+    // Unchanged items are left alone, so a periodic check neither re-announces
+    // the live region nor pulls focus off its button.
+    const key = JSON.stringify(items.map((item) => [item.key, item.level, item.text]));
+    if (key === automationStatus.banner) return;
+    automationStatus.banner = key;
+    els.automationBanner.replaceChildren();
+    items.forEach((item) => {
+      const level = AUTOMATION_BANNER_LEVELS.has(item.level) ? item.level : "info";
+      const row = element("div", `automation-banner-item is-${level}`);
+      row.appendChild(element("p", "", String(item.text || "")));
+      if (item.key === "paused") {
+        const resume = element("button", "secondary-button", "Resume");
+        resume.type = "button";
+        resume.id = "automation-banner-resume";
+        resume.addEventListener("click", async () => {
+          resume.disabled = true;
+          try {
+            await setAutomationPaused(false);
+            announce("Automation resumed.");
+            // The banner and its button are gone; land on the page heading.
+            els.pageTitle.focus();
+          } catch (error) {
+            resume.disabled = false;
+            if (error.message !== "Authentication required") showError(error.message);
+          }
+        });
+        row.appendChild(resume);
+      } else if (item.key === "gmail_needs_reconnect" || item.key === "gmail_expiring") {
+        const open = element("button", "secondary-button", "Open Outreach");
+        open.type = "button";
+        open.addEventListener("click", () => setView("outreach"));
+        row.appendChild(open);
+      }
+      els.automationBanner.appendChild(row);
+    });
+    els.automationBanner.hidden = !items.length;
+  }
+
+  function applyAutomationStatus(health) {
+    if (!health) return;
+    state.automation = { ...(state.automation || {}), health };
+    renderAutomationBanner(health);
+    setProfileBadge(health);
+  }
+
+  // A PUT to /api/v1/automation/settings answers with { settings, health }.
+  // Every control bound to a feature, wherever it is on the page, follows it.
+  function applyAutomationSettings(payload) {
+    if (payload?.settings) {
+      state.automation = { ...(state.automation || {}), settings: payload.settings };
+      syncAutomationControls(payload.settings);
+    }
+    if (payload?.health) applyAutomationStatus(payload.health);
+  }
+
+  async function setAutomationPaused(paused) {
+    const payload = await api("/api/v1/automation/settings", { method: "PUT", body: JSON.stringify({ paused }) });
+    applyAutomationSettings(payload);
+    return payload;
+  }
+
+  async function refreshAutomationStatus() {
+    const userId = state.userId;
+    if (!userId) return;
+    automationStatus.controller?.abort();
+    const controller = new AbortController();
+    automationStatus.controller = controller;
+    automationStatus.lastChecked = Date.now();
+    try {
+      // Plain fetch: a background check must never open the sign-in gate or show an error.
+      const response = await fetch("/api/v1/automation", { credentials: "same-origin", signal: controller.signal });
+      if (!response.ok) throw new Error(`Automation check failed (${response.status})`);
+      const payload = await response.json();
+      if (userId !== state.userId) return;
+      if (payload.settings) state.automation = { ...(state.automation || {}), settings: payload.settings };
+      applyAutomationStatus(payload.health);
+    } catch (_) {
+      // The last answer stays up; the next check tries again.
+    } finally {
+      if (automationStatus.controller === controller) automationStatus.controller = null;
+    }
+  }
+
+  function startAutomationStatus() {
+    window.clearInterval(automationStatus.timer);
+    automationStatus.timer = window.setInterval(refreshAutomationStatus, AUTOMATION_POLL_MS);
+    refreshAutomationStatus();
+  }
+
+  function clearAutomationStatus() {
+    window.clearInterval(automationStatus.timer);
+    automationStatus.timer = null;
+    automationStatus.controller?.abort();
+    automationStatus.controller = null;
+    automationStatus.lastChecked = 0;
+    automationStatus.banner = "";
+    state.automation = null;
+    els.automationBanner.replaceChildren();
+    els.automationBanner.hidden = true;
+    setProfileBadge(null);
+  }
+
   function csrfHeaders(method = "POST") {
     const csrf = document.cookie.split("; ").find((entry) => entry.startsWith("pipeline_csrf="))?.split("=")[1];
     return csrf && !["GET", "HEAD", "OPTIONS"].includes(method.toUpperCase())
@@ -452,6 +583,7 @@
     state.selectedId = null;
     state.loadSequence += 1;
     clearUrgentBadge();
+    clearAutomationStatus();
     els.programsNavLabel.textContent = "Programs";
     els.results.replaceChildren();
     els.resultCount.textContent = "Loading opportunities…";
@@ -511,6 +643,7 @@
       loadSystemStatus();
     }
     invalidateUrgentBadge();
+    startAutomationStatus();
     refreshProgramsLabel();
   }
 
@@ -1878,16 +2011,25 @@
       const timeline = element("section", "tracker-subsection");
       timeline.appendChild(element("h4", "", "Activity timeline"));
       const eventList = element("ol", "timeline-list");
+      // Newest first, so the first event an automatic action wrote carries its Undo.
+      const automatic = new Map();
       (payload.events || []).forEach((event) => {
         const row = element("li", "");
         row.appendChild(element("strong", "", event.event_type.replaceAll("_", " ")));
         row.appendChild(element("span", "", formatDate(event.created_at)));
         if (event.from_stage || event.to_stage) row.appendChild(element("p", "", `${event.from_stage || "start"} → ${event.to_stage || "unchanged"}`));
+        const source = typeof event.detail?.source === "string" ? event.detail.source : "";
+        const who = element("p", "timeline-who");
+        who.appendChild(element("span", "timeline-author", changeAuthor(source)));
+        row.appendChild(who);
+        const actionId = /^automation:(.+)$/.exec(source)?.[1];
+        if (actionId && !automatic.has(actionId)) automatic.set(actionId, who);
         eventList.appendChild(row);
       });
       timeline.appendChild(eventList);
       container.append(tasks, contacts, timeline);
       owner.dataset.loaded = "true";
+      if (automatic.size) offerTimelineUndo(applicationId, automatic);
     } catch (error) {
       container.replaceChildren(element("p", "form-error", error.message));
     }
@@ -5687,7 +5829,7 @@
     return card;
   }
 
-  function notificationSettingsSection(connections, preferences, events, applications) {
+  function notificationSettingsSection(connections, preferences, events, applications, automation = null) {
     const section = element("section", "profile-card connection-section");
     section.appendChild(element("p", "eyebrow", "Connections and notifications"));
     section.appendChild(element("h3", "", "Monitoring controls"));
@@ -5782,6 +5924,21 @@
       }
     });
     section.appendChild(form);
+
+    // Saved at once through the automation switches, outside the form above,
+    // so it needs no Save press and Enter never submits the form for it.
+    const desktop = automationFeature(automation?.settings, "desktop_notifications");
+    if (desktop) {
+      const field = element("div", "settings-field automation-desktop-setting");
+      const status = element("p", "form-status");
+      status.setAttribute("aria-live", "polite");
+      const [label, box] = automationCheckbox(desktop, "notification-desktop-popups", "Show automation notices as desktop pop-ups", status);
+      const help = element("p", "profile-help", "Windows, macOS or Linux pop-ups for notices like 'Gmail needs reconnecting'. They never include email text or links. Quiet hours apply.");
+      help.id = "notification-desktop-popups-help";
+      box.setAttribute("aria-describedby", help.id);
+      field.append(label, help, status);
+      section.appendChild(field);
+    }
 
     const phoneForm = element("form", "phone-form");
     const phone = document.createElement("input");
@@ -6044,7 +6201,582 @@
     return section;
   }
 
-  function renderProfile(profilePayload, resumesPayload = null, connections = { items: [] }, preferences = {}, events = { items: [] }, applications = { items: [] }, dossier = {settings: {}, items: [], shares: []}, extensionDevices = {items: []}) {
+  // Automation on the Profile page: the switches, the master pause, health,
+  // notices, and the ledger of what the app did, proposed, or would have done.
+  // Every value that came from a record (summaries, evidence, notices, company
+  // names) is set as text, never as HTML.
+  const AUTOMATION_GROUPS = [
+    ["outreach", "Outreach"],
+    ["applications", "Applications"],
+    ["discovery", "Discovery"],
+    ["notifications", "Notifications"],
+  ];
+  const AUTOMATION_MODE_LABELS = { off: "Off", shadow: "Shadow (log what it would do)", on: "On" };
+  const AUTOMATION_MODE_WORDS = { off: "off", shadow: "shadow, logging what it would do", on: "on" };
+  // Action types whose change Undo can take back: every type the ledger has
+  // today. A sent email or a submitted application will never be one.
+  const UNDOABLE_ACTION_TYPES = new Set(["application.stage", "opportunity.intent", "application.task"]);
+  const AUTOMATION_STATUS_CHIPS = {
+    applied: ["Applied", "is-good"],
+    undone: ["Undone", ""],
+    superseded: ["Left as it was", "is-soon"],
+    rejected: ["Rejected", ""],
+    failed: ["Failed", "is-warning"],
+  };
+  // Undoing or rejecting this many of a feature's last actions turns it off (automation.py).
+  const AUTOMATION_BREAKER = "2 of its last 5 actions";
+  const AUTOMATION_PAUSE_TEXT = {
+    true: "Paused. Nothing is sent or changed on its own until you resume.",
+    false: "Running. Each switch below decides what the app does on its own.",
+  };
+  const GMAIL_STATE_WORDS = {
+    not_connected: "Not connected.",
+    connected: "Connected.",
+    needs_reconnect: "Needs reconnecting. Reply and bounce checks have stopped.",
+    disconnected: "Disconnected.",
+    throttled: "Gmail asked the app to slow down for a while.",
+  };
+
+  function automationFeature(settings, key) {
+    return (settings?.features || []).find((feature) => feature.key === key) || null;
+  }
+
+  function automationFeatureLabel(key) {
+    return automationFeature(state.automation?.settings, key)?.label || humanizeKey(key);
+  }
+
+  function savedAutomationMode(key, fallback = "off") {
+    return automationFeature(state.automation?.settings, key)?.mode ?? fallback;
+  }
+
+  function paintAutomationControl(control, feature) {
+    if (control.type === "checkbox") {
+      control.checked = feature.mode === "on";
+    } else if (control.tagName === "SELECT") {
+      const on = control.querySelector('option[value="on"]');
+      if (on) on.disabled = !feature.can_turn_on && feature.mode !== "on";
+      control.value = feature.mode;
+    }
+    const reason = control.closest(".automation-feature")?.querySelector(".automation-reason");
+    if (reason) {
+      const blocked = !feature.can_turn_on && feature.mode !== "on" && Boolean(feature.can_turn_on_reason);
+      reason.textContent = blocked ? `On is not available yet: ${feature.can_turn_on_reason}.` : "";
+      reason.hidden = !blocked;
+    }
+  }
+
+  function paintAutomationPause(paused, button = document.getElementById("automation-pause"), status = document.getElementById("automation-pause-status")) {
+    if (!button) return;
+    const value = String(Boolean(paused));
+    if (button.dataset.paused === value) return;
+    button.dataset.paused = value;
+    button.textContent = paused ? "Resume automation" : "Pause all automation";
+    if (status) status.textContent = AUTOMATION_PAUSE_TEXT[value];
+  }
+
+  function syncAutomationControls(settings) {
+    (settings?.features || []).forEach((feature) => {
+      document.querySelectorAll(`[data-automation-key="${CSS.escape(feature.key)}"]`).forEach((control) => paintAutomationControl(control, feature));
+    });
+    if (settings) paintAutomationPause(settings.paused);
+  }
+
+  async function saveAutomationMode(key, value) {
+    const payload = await api("/api/v1/automation/settings", { method: "PUT", body: JSON.stringify({ modes: { [key]: value } }) });
+    applyAutomationSettings(payload);
+    return automationFeature(payload.settings, key);
+  }
+
+  function automationBreakerMessage(featureKey, verb) {
+    return `Turned ${automationFeatureLabel(featureKey)} off: you ${verb} ${AUTOMATION_BREAKER}.`;
+  }
+
+  function timeAgo(stamp) {
+    const moment = new Date(stamp);
+    if (!stamp || Number.isNaN(moment.getTime())) return "";
+    const seconds = Math.round((moment.getTime() - Date.now()) / 1000);
+    const format = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+    for (const [unit, size] of [["year", 31_536_000], ["month", 2_592_000], ["week", 604_800], ["day", 86_400], ["hour", 3_600], ["minute", 60]]) {
+      if (Math.abs(seconds) >= size) return format.format(Math.round(seconds / size), unit);
+    }
+    return "just now";
+  }
+
+  // A time today reads as "9:12 AM"; any other day adds the date.
+  function automationWhen(stamp) {
+    const date = new Date(stamp);
+    if (!stamp || Number.isNaN(date.getTime())) return "";
+    if (date.toDateString() === new Date().toDateString()) {
+      return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date);
+    }
+    return formatDateTime(stamp);
+  }
+
+  function inFlightItem(item) {
+    const noun = item.action === "form" ? "contact form" : "email";
+    const how = item.source === "scheduled_send" ? "sent to Gmail" : item.action === "form" ? "submission started" : "sending started";
+    const when = automationWhen(item.at);
+    return { noun, text: `${noun}${item.company ? ` to ${item.company}` : ""}`, detail: when ? `${how} at ${when}` : how };
+  }
+
+  // What a pause could not stop, said plainly: an email Gmail already has goes.
+  function inFlightSentence(items) {
+    const described = (Array.isArray(items) ? items : []).map(inFlightItem);
+    if (!described.length) return "";
+    if (described.length === 1) {
+      return `1 ${described[0].text} was already on its way (${described[0].detail}) and can't be stopped.`;
+    }
+    const nouns = new Set(described.map((entry) => entry.noun));
+    const noun = nouns.size === 1 ? `${[...nouns][0]}s` : "messages";
+    return `${described.length} ${noun} were already on their way and can't be stopped: ${described.map((entry) => `${entry.text} (${entry.detail})`).join("; ")}.`;
+  }
+
+  function automationEvidence(evidence) {
+    const excerpt = typeof evidence?.excerpt === "string" ? evidence.excerpt.trim() : "";
+    const subject = typeof evidence?.subject === "string" ? evidence.subject.trim() : "";
+    return excerpt || subject;
+  }
+
+  // A checkbox for a two-mode feature. Saves at once; a refusal puts it back
+  // and shows the server's reason in the status line.
+  function automationCheckbox(feature, id, text, status) {
+    const label = element("label", "settings-checkbox");
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.id = id;
+    box.dataset.automationKey = feature.key;
+    label.append(box, document.createTextNode(` ${text}`));
+    paintAutomationControl(box, feature);
+    box.addEventListener("change", async () => {
+      const wanted = box.checked ? "on" : "off";
+      box.disabled = true;
+      status.textContent = "Saving…";
+      try {
+        const updated = await saveAutomationMode(feature.key, wanted);
+        status.textContent = `${feature.label}: ${AUTOMATION_MODE_WORDS[updated?.mode ?? wanted] || wanted}.`;
+      } catch (error) {
+        box.checked = savedAutomationMode(feature.key) === "on";
+        if (error.message !== "Authentication required") status.textContent = error.message;
+      } finally {
+        box.disabled = false;
+      }
+    });
+    return [label, box];
+  }
+
+  function automationFeatureField(feature, status) {
+    const field = element("div", "settings-field automation-feature");
+    field.dataset.automationFeature = feature.key;
+    const id = `automation-mode-${feature.key}`;
+    const head = element("div", "automation-feature-head");
+    const help = element("p", "profile-help", feature.description);
+    help.id = `${id}-help`;
+    const external = feature.risk === "external" ? chip("External", "is-soon") : null;
+    if ((feature.modes || []).includes("shadow")) {
+      const label = element("label", "", feature.label);
+      label.htmlFor = id;
+      head.appendChild(label);
+      if (external) head.appendChild(external);
+      const select = document.createElement("select");
+      select.id = id;
+      select.dataset.automationKey = feature.key;
+      feature.modes.forEach((mode) => {
+        const option = document.createElement("option");
+        option.value = mode;
+        option.textContent = AUTOMATION_MODE_LABELS[mode] || mode;
+        select.appendChild(option);
+      });
+      const reason = element("p", "profile-help automation-reason");
+      reason.id = `${id}-reason`;
+      select.setAttribute("aria-describedby", `${reason.id} ${help.id}`);
+      field.append(head, select, reason, help);
+      paintAutomationControl(select, feature);
+      autoSaveSelect(select, {
+        saved: () => savedAutomationMode(feature.key, feature.mode),
+        commit: async (value) => {
+          select.disabled = true;
+          status.textContent = "Saving…";
+          try {
+            const updated = await saveAutomationMode(feature.key, value);
+            status.textContent = `${feature.label}: ${AUTOMATION_MODE_WORDS[updated?.mode ?? value] || value}.`;
+          } catch (error) {
+            select.value = savedAutomationMode(feature.key, feature.mode);
+            if (error.message !== "Authentication required") status.textContent = error.message;
+          } finally {
+            select.disabled = false;
+          }
+        },
+      });
+    } else {
+      const [label, box] = automationCheckbox(feature, id, feature.label, status);
+      box.setAttribute("aria-describedby", help.id);
+      head.appendChild(label);
+      if (external) head.appendChild(external);
+      field.append(head, help);
+    }
+    return field;
+  }
+
+  function automationHealthList(health) {
+    const list = element("ul", "automation-health");
+    const gmail = health?.gmail || {};
+    const gmailWords = [GMAIL_STATE_WORDS[gmail.state] || "Not known yet."];
+    if (gmail.last_ok_at) gmailWords.push(`Last successful check ${timeAgo(gmail.last_ok_at)}.`);
+    if (gmail.state === "throttled" && gmail.backoff_until) gmailWords.push(`Checks resume after ${automationWhen(gmail.backoff_until)}.`);
+    if (gmail.likely_expires_at) gmailWords.push(`It will likely ask you to reconnect by ${formatDate(gmail.likely_expires_at)} (an estimate).`);
+    const gmailRow = element("li");
+    gmailRow.append(element("strong", "", "Gmail"), element("span", "", gmailWords.join(" ")));
+    list.appendChild(gmailRow);
+    (health?.components || []).forEach((component) => {
+      const failing = Boolean(component.last_error_at) && (!component.last_ok_at || String(component.last_error_at) > String(component.last_ok_at));
+      const row = element("li");
+      row.append(element("strong", "", humanizeKey(component.component)), chip(failing ? "Error" : "OK", failing ? "is-warning" : "is-good"));
+      const words = [];
+      if (component.last_ok_at) words.push(`Last worked ${timeAgo(component.last_ok_at)}.`);
+      if (component.last_error) words.push(`Last error${component.last_error_at ? ` (${timeAgo(component.last_error_at)})` : ""}: ${component.last_error}`);
+      if (words.length) row.appendChild(element("span", "", words.join(" ")));
+      list.appendChild(row);
+    });
+    (health?.in_flight || []).forEach((item) => {
+      const described = inFlightItem(item);
+      const row = element("li");
+      row.append(
+        element("strong", "", "On its way"),
+        element("span", "", `${described.text[0].toUpperCase()}${described.text.slice(1)}: ${described.detail}. It can't be stopped.`),
+      );
+      list.appendChild(row);
+    });
+    return list;
+  }
+
+  function automationSection(payload, actionsPayload) {
+    const section = element("section", "profile-card automation-section");
+    section.setAttribute("aria-labelledby", "automation-heading");
+    section.appendChild(element("p", "eyebrow", "Automation"));
+    const title = element("h3", "", "What the app does on its own");
+    title.id = "automation-heading";
+    section.append(title, element("p", "profile-help", "Nothing here is on until you turn it on."));
+    if (!payload?.settings) {
+      section.appendChild(element("p", "form-error", `Automation could not be loaded${payload?.error ? `: ${payload.error.message}` : "."}`));
+      return section;
+    }
+    let overview = payload;
+    let actions = Array.isArray(actionsPayload?.items) ? actionsPayload.items : [];
+    let actionsError = actionsPayload?.error ? actionsPayload.error.message : "";
+
+    function block(className, heading, id) {
+      const wrap = element("div", `automation-block ${className}`.trim());
+      const headingNode = element("h4", "", heading);
+      headingNode.id = id;
+      headingNode.tabIndex = -1;
+      wrap.appendChild(headingNode);
+      return [wrap, headingNode];
+    }
+
+    function liveStatus(className = "") {
+      const status = element("p", `form-status ${className}`.trim());
+      status.setAttribute("aria-live", "polite");
+      return status;
+    }
+
+    // The master pause.
+    const pauseRow = element("div", "automation-pause");
+    const pause = element("button", "secondary-button");
+    pause.type = "button";
+    pause.id = "automation-pause";
+    const pauseStatus = liveStatus("automation-pause-status");
+    pauseStatus.id = "automation-pause-status";
+    pauseRow.append(pause, pauseStatus);
+    paintAutomationPause(overview.settings.paused, pause, pauseStatus);
+    pause.addEventListener("click", async () => {
+      const wanted = pause.dataset.paused !== "true";
+      pause.disabled = true;
+      pauseStatus.textContent = wanted ? "Pausing…" : "Resuming…";
+      try {
+        const result = await setAutomationPaused(wanted);
+        overview = { ...overview, settings: result.settings, health: result.health };
+        paintHealth();
+        const flight = wanted ? inFlightSentence(result.in_flight) : "";
+        pauseStatus.textContent = wanted
+          ? `${AUTOMATION_PAUSE_TEXT.true}${flight ? ` ${flight}` : ""}`
+          : "Resumed. Each switch below decides what runs again.";
+      } catch (error) {
+        if (error.message !== "Authentication required") pauseStatus.textContent = error.message;
+      } finally {
+        pause.disabled = false;
+        if (!document.activeElement || document.activeElement === document.body) pause.focus();
+      }
+    });
+    section.appendChild(pauseRow);
+
+    // The switches, by group. A group with no features is left out.
+    const features = element("div", "automation-features");
+    AUTOMATION_GROUPS.forEach(([group, heading]) => {
+      const members = overview.settings.features.filter((feature) => feature.group === group);
+      if (!members.length) return;
+      const [wrap] = block("automation-group", heading, `automation-group-${group}`);
+      const status = liveStatus();
+      members.forEach((feature) => wrap.appendChild(automationFeatureField(feature, status)));
+      wrap.appendChild(status);
+      features.appendChild(wrap);
+    });
+    section.appendChild(features);
+
+    const [healthBlock] = block("", "Health", "automation-health-heading");
+    const healthHost = element("div");
+    healthBlock.appendChild(healthHost);
+    function paintHealth() {
+      healthHost.replaceChildren(automationHealthList(overview.health));
+    }
+
+    const [noticeBlock, noticeHeading] = block("", "Notices", "automation-notices-heading");
+    const noticeHost = element("div");
+    const markAll = element("button", "secondary-button", "Mark all read");
+    markAll.type = "button";
+    markAll.id = "automation-notices-read";
+    const noticeStatus = liveStatus();
+    noticeBlock.append(noticeHost, markAll, noticeStatus);
+    const unreadNotices = () => (overview.notices || []).filter((notice) => !notice.read_at);
+    function paintNotices() {
+      const notices = unreadNotices();
+      noticeHost.replaceChildren();
+      markAll.hidden = !notices.length;
+      if (!notices.length) {
+        noticeHost.appendChild(element("p", "empty-inline", "No unread notices."));
+        return;
+      }
+      const list = element("ul", "automation-notices");
+      notices.forEach((notice) => {
+        const level = AUTOMATION_BANNER_LEVELS.has(notice.level) ? notice.level : "info";
+        const row = element("li", `automation-notice is-${level}`);
+        row.appendChild(element("strong", "", notice.title || ""));
+        if (notice.body) row.appendChild(element("p", "", notice.body));
+        row.appendChild(element("span", "automation-meta", formatDateTime(notice.created_at)));
+        list.appendChild(row);
+      });
+      noticeHost.appendChild(list);
+    }
+    markAll.addEventListener("click", async () => {
+      const ids = unreadNotices().map((notice) => notice.id).slice(0, 100);
+      markAll.disabled = true;
+      noticeStatus.textContent = "Saving…";
+      try {
+        const result = await api("/api/v1/automation/notices/read", { method: "POST", body: JSON.stringify({ ids }) });
+        await reload();
+        noticeStatus.textContent = `Marked ${plural(result.marked, "notice", "notices")} read.`;
+        noticeHeading.focus();
+      } catch (error) {
+        if (error.message !== "Authentication required") noticeStatus.textContent = error.message;
+      } finally {
+        markAll.disabled = false;
+      }
+    });
+
+    const lists = {
+      waiting: { heading: "Waiting for you", empty: "Nothing is waiting for you.", test: (action) => action.status === "proposed" },
+      shadow: { heading: "Would have done", empty: "Nothing has run in shadow yet.", test: (action) => action.status === "shadow" },
+      recent: { heading: "Recent activity", empty: "Nothing has happened automatically yet.", test: (action) => Object.hasOwn(AUTOMATION_STATUS_CHIPS, action.status) },
+    };
+    Object.entries(lists).forEach(([key, entry]) => {
+      const [wrap, heading] = block(`automation-${key}`, entry.heading, `automation-${key}-heading`);
+      entry.wrap = wrap;
+      entry.headingNode = heading;
+      if (key === "shadow") wrap.appendChild(element("p", "profile-help", "A switch in shadow changes nothing; it logs what it would have done. Your calls here decide whether it can be turned on."));
+      entry.host = element("div");
+      entry.status = liveStatus();
+      wrap.append(entry.host, entry.status);
+    });
+
+    function actionButton(text, className, onClick) {
+      const button = element("button", className, text);
+      button.type = "button";
+      button.addEventListener("click", onClick);
+      return button;
+    }
+
+    function actionRow(action, metaParts) {
+      const row = element("li", "automation-action");
+      row.dataset.actionId = action.id;
+      row.appendChild(element("p", "automation-action-summary", action.summary || "An automatic change"));
+      const evidence = automationEvidence(action.evidence);
+      if (evidence) row.appendChild(element("p", "automation-evidence", `Evidence: ${evidence}`));
+      const meta = metaParts.filter(Boolean).join(" · ");
+      if (meta) row.appendChild(element("p", "automation-meta", meta));
+      return row;
+    }
+
+    function reasoning(action) {
+      const confidence = typeof action.confidence === "number" ? `${Math.round(action.confidence * 100)}% confidence` : "";
+      return [automationFeatureLabel(action.feature), action.basis ? `Basis: ${action.basis}` : "", confidence, formatDateTime(action.created_at)];
+    }
+
+    function decisionMessage(verb, action, result, body) {
+      const summary = String(action.summary || "the change").replace(/[.!?]+$/, "");
+      if (verb === "approve") return `Approved: ${summary}.`;
+      if (verb === "reject") return result.feature_paused ? automationBreakerMessage(action.feature, "rejected") : `Rejected: ${summary}. Nothing was changed.`;
+      if (verb === "undo") return result.feature_paused ? automationBreakerMessage(action.feature, "undid") : `Undone: ${summary}.`;
+      return `Marked as the ${body.verdict} call.`;
+    }
+
+    async function decide(listKey, action, verb, buttons, body = null) {
+      const entry = lists[listKey];
+      buttons.forEach((button) => { button.disabled = true; });
+      entry.status.textContent = "Saving…";
+      let message;
+      try {
+        const result = await api(`/api/v1/automation/actions/${encodeURIComponent(action.id)}/${verb}`, {
+          method: "POST",
+          ...(body ? { body: JSON.stringify(body) } : {}),
+        });
+        message = decisionMessage(verb, action, result, body);
+      } catch (error) {
+        if (error.message === "Authentication required") return;
+        // A 409 says why: already decided, or superseded by a later change.
+        message = error.message;
+      }
+      await reload();
+      entry.status.textContent = message;
+      const verdict = entry.host.querySelector(`[data-action-id="${CSS.escape(action.id)}"] .automation-verdict`);
+      if (!document.activeElement || document.activeElement === document.body || !document.activeElement.isConnected) {
+        (verdict || entry.headingNode).focus();
+      }
+    }
+
+    function paintLists() {
+      Object.entries(lists).forEach(([key, entry]) => {
+        entry.host.replaceChildren();
+        if (actionsError) {
+          entry.host.appendChild(element("p", "form-error", `Automatic actions could not be loaded: ${actionsError}`));
+          return;
+        }
+        const shown = actions.filter(entry.test);
+        if (!shown.length) {
+          entry.host.appendChild(element("p", "empty-inline", entry.empty));
+          return;
+        }
+        const list = element("ul", "automation-actions");
+        shown.forEach((action) => {
+          if (key === "waiting") {
+            const row = actionRow(action, reasoning(action));
+            const buttons = element("div", "automation-action-buttons");
+            const approve = actionButton("Approve", "secondary-button", () => decide("waiting", action, "approve", [approve, reject]));
+            const reject = actionButton("Reject", "danger-button", () => decide("waiting", action, "reject", [approve, reject]));
+            buttons.append(approve, reject);
+            row.appendChild(buttons);
+            list.appendChild(row);
+          } else if (key === "shadow") {
+            const row = actionRow(action, reasoning(action));
+            if (action.review) {
+              const verdict = element("p", "automation-verdict", `You marked this the ${action.review} call.`);
+              verdict.tabIndex = -1;
+              row.appendChild(verdict);
+            } else {
+              const buttons = element("div", "automation-action-buttons");
+              const right = actionButton("Right call", "secondary-button", () => decide("shadow", action, "review", [right, wrong], { verdict: "right" }));
+              const wrong = actionButton("Wrong call", "secondary-button", () => decide("shadow", action, "review", [right, wrong], { verdict: "wrong" }));
+              buttons.append(right, wrong);
+              row.appendChild(buttons);
+            }
+            list.appendChild(row);
+          } else {
+            const when = action.applied_at || action.decided_at || action.created_at;
+            const row = actionRow(action, [automationFeatureLabel(action.feature), formatDateTime(when)]);
+            const [text, tone] = AUTOMATION_STATUS_CHIPS[action.status];
+            const buttons = element("div", "automation-action-buttons");
+            buttons.appendChild(chip(text, tone));
+            if (action.status === "applied" && UNDOABLE_ACTION_TYPES.has(action.action_type)) {
+              const undo = actionButton("Undo", "secondary-button", () => decide("recent", action, "undo", [undo]));
+              undo.setAttribute("aria-label", `Undo: ${action.summary || "this automatic change"}`);
+              buttons.appendChild(undo);
+            }
+            row.appendChild(buttons);
+            if (action.note) row.appendChild(element("p", "automation-meta", action.note));
+            list.appendChild(row);
+          }
+        });
+        entry.host.appendChild(list);
+      });
+    }
+
+    async function reload() {
+      try {
+        const [nextOverview, nextActions] = await Promise.all([
+          api("/api/v1/automation"),
+          api("/api/v1/automation/actions?limit=50"),
+        ]);
+        overview = nextOverview;
+        actions = Array.isArray(nextActions.items) ? nextActions.items : [];
+        actionsError = "";
+        applyAutomationSettings(overview);
+        paintHealth();
+        paintNotices();
+        paintLists();
+      } catch (error) {
+        if (error.message !== "Authentication required") showError(error.message);
+      }
+    }
+
+    paintHealth();
+    paintNotices();
+    paintLists();
+    section.append(healthBlock, noticeBlock, lists.waiting.wrap, lists.shadow.wrap, lists.recent.wrap);
+    return section;
+  }
+
+  // Who made each change in an application's timeline, from the source its
+  // event recorded. Nothing automatic is ever labelled as the student's own.
+  function changeAuthor(source) {
+    const value = typeof source === "string" ? source : "";
+    if (!value || value === "user") return "You";
+    if (value.startsWith("automation-undo:")) return "Undone by you";
+    if (value.startsWith("automation:")) return "Automatic";
+    if (value === "extension_user_confirmed" || value === "explicit_user_confirmation") return "Extension (you confirmed)";
+    if (value.startsWith("monitored_event:")) return "From an email (you confirmed)";
+    if (value.startsWith("agent_proposal:")) return "Agent (you approved)";
+    if (value === "application_import") return "Imported";
+    return humanizeKey(value.split(":")[0]);
+  }
+
+  // An automatic change still in place gets an Undo beside it in the timeline.
+  // Each action is looked up only when the timeline shows one.
+  async function offerTimelineUndo(applicationId, automatic) {
+    await Promise.all([...automatic].map(async ([actionId, host]) => {
+      let action;
+      try {
+        action = await api(`/api/v1/automation/actions/${encodeURIComponent(actionId)}`);
+      } catch (_) {
+        return;
+      }
+      if (!host.isConnected || action.status !== "applied" || !UNDOABLE_ACTION_TYPES.has(action.action_type)) return;
+      const undo = element("button", "text-button timeline-undo", "Undo");
+      undo.type = "button";
+      undo.setAttribute("aria-label", `Undo this automatic change: ${action.summary || action.action_type}`);
+      undo.addEventListener("click", async () => {
+        undo.disabled = true;
+        let message;
+        try {
+          const result = await api(`/api/v1/automation/actions/${encodeURIComponent(action.id)}/undo`, { method: "POST" });
+          message = result.feature_paused ? automationBreakerMessage(action.feature, "undid") : "Undid the automatic change.";
+        } catch (error) {
+          if (error.message === "Authentication required") return;
+          message = error.message;
+        }
+        announce(message);
+        refreshAutomationStatus();
+        if (state.view !== "applications") return;
+        state.trackerStatus = { id: applicationId, message };
+        state.applicationFocus = applicationId;
+        try {
+          await Promise.all([loadApplications(), loadStats()]);
+        } catch (error) {
+          showError(error.message);
+        }
+      });
+      host.append(" ", undo);
+    }));
+  }
+
+  function renderProfile(profilePayload, resumesPayload = null, connections = { items: [] }, preferences = {}, events = { items: [] }, applications = { items: [] }, dossier = {settings: {}, items: [], shares: []}, extensionDevices = {items: []}, automation = null, automationActions = null) {
     els.results.replaceChildren();
     els.results.removeAttribute("role");
     els.resultCount.textContent = "Your career profile";
@@ -6058,6 +6790,7 @@
     signOutRow.appendChild(signOut);
     els.results.appendChild(signOutRow);
     els.results.appendChild(tagSection(renderProfileEditor(profilePayload), "profile", "Career profile"));
+    els.results.appendChild(tagSection(automationSection(automation, automationActions), "automation", "Automation"));
 
     const resumeSection = element("section", "profile-card resume-section");
     resumeSection.appendChild(element("p", "eyebrow", "Private documents"));
@@ -6101,7 +6834,7 @@
       resumeSection.appendChild(list);
     }
     els.results.appendChild(tagSection(resumeSection, "resumes", "Resumes"));
-    els.results.appendChild(tagSection(notificationSettingsSection(connections, preferences, events, applications), "alerts", "Connections and alerts"));
+    els.results.appendChild(tagSection(notificationSettingsSection(connections, preferences, events, applications, automation), "alerts", "Connections and alerts"));
     els.results.appendChild(tagSection(dossierSection(dossier), "dossier", "Evidence dossier"));
     els.results.appendChild(tagSection(extensionSection(extensionDevices), "extension", "Browser extension"));
     els.results.appendChild(tagSection(accountSection(), "account", "Account"));
@@ -6115,7 +6848,7 @@
     els.results.setAttribute("aria-busy", "true");
     els.results.replaceChildren(element("p", "detail-loading", "Loading your private profile…"));
     try {
-      const [profile, resumes, connections, preferences, events, applications, dossier, extensionDevices] = await Promise.all([
+      const [profile, resumes, connections, preferences, events, applications, dossier, extensionDevices, automation, automationActions] = await Promise.all([
         api("/api/v1/profile"),
         api("/api/v1/resumes"),
         api("/api/v1/connections"),
@@ -6124,9 +6857,16 @@
         api("/api/v1/applications"),
         api("/api/v1/dossier"),
         api("/api/v1/extension/devices"),
+        // A failure here shows in the Automation section instead of blanking the page.
+        api("/api/v1/automation").catch((error) => ({ error })),
+        api("/api/v1/automation/actions?limit=50").catch((error) => ({ error })),
       ]);
       if (sequence !== state.loadSequence || state.view !== "profile") return;
-      renderProfile(profile, resumes, connections, preferences, events, applications, dossier, extensionDevices);
+      if (automation?.settings) {
+        state.automation = { ...(state.automation || {}), settings: automation.settings };
+        applyAutomationStatus(automation.health);
+      }
+      renderProfile(profile, resumes, connections, preferences, events, applications, dossier, extensionDevices, automation, automationActions);
     } catch (error) {
       showLoadError(error, sequence);
     }
@@ -8222,6 +8962,9 @@
     if (!state.userId) return;
     await flushOutbox();
     await loadCurrentView();
+  });
+  window.addEventListener("focus", () => {
+    if (state.userId && Date.now() - automationStatus.lastChecked >= AUTOMATION_FOCUS_MS) refreshAutomationStatus();
   });
 
   discardLegacyOutbox();
