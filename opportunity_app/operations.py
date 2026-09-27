@@ -21,6 +21,18 @@ class OperationsError(RuntimeError):
     pass
 
 
+class JobDeferred(Exception):
+    """A handler's job cannot run yet (for example, the student paused automation).
+
+    run_next_job puts it back in line at ``until``, as it was, without using
+    up a try or recording a failure, so it runs once whatever held it ends.
+    """
+
+    def __init__(self, reason: str, until: datetime) -> None:
+        super().__init__(reason)
+        self.until = until
+
+
 def enqueue_job(conn: sqlite3.Connection, job_type: str, payload: dict[str, Any], idempotency_key: str, *, max_attempts: int = 3) -> dict[str, Any]:
     if not job_type or not idempotency_key or not 1 <= max_attempts <= 20:
         raise ValueError("Valid job type, idempotency key, and attempt limit are required")
@@ -84,6 +96,14 @@ def run_next_job(
     try:
         handler = handlers[row["job_type"]]
         handler(payload)
+    except JobDeferred as deferred:
+        # Back to the state it was claimed from, attempts unchanged: nothing was tried.
+        with conn:
+            conn.execute(
+                "UPDATE job_queue SET state=?, next_attempt_at=?, last_error=?, locked_at=NULL, updated_at=? WHERE id=?",
+                (row["state"], deferred.until.astimezone(timezone.utc).isoformat(timespec="seconds"), str(deferred)[:2000],
+                 utc_now(), row["id"]),
+            )
     except Exception as exc:  # worker boundary intentionally catches and records failures
         attempts = int(row["attempts"]) + 1
         state = "dead" if attempts >= int(row["max_attempts"]) else "retry"
@@ -184,6 +204,10 @@ ACCOUNT_QUERIES = {
     "outreach_draft_versions": "SELECT * FROM outreach_draft_versions WHERE user_id=?",
     "outreach_send_claims": "SELECT * FROM outreach_send_claims WHERE user_id=?",
     "user_settings": "SELECT * FROM user_settings WHERE user_id=?",
+    # Everything automation did, proposed, or would have done, with the evidence it acted on; its notices; its health.
+    "automation_actions": "SELECT * FROM automation_actions WHERE user_id=?",
+    "automation_notices": "SELECT * FROM automation_notices WHERE user_id=?",
+    "automation_health": "SELECT * FROM automation_health WHERE user_id=?",
 }
 
 

@@ -15,7 +15,9 @@ Just before sending, Gmail is read again for a bounce or a reply
 (outreach_review.fresh_look), and a follow-up is not sent to a company that
 replied or whose first email bounced. With the follow_up_review switch on, a
 second model reads each follow-up first (outreach_review.review_follow_up).
-Both fail closed: a check that cannot be made holds the email.
+Both fail closed: a check that cannot be made holds the email. One that
+cannot be made because Gmail asked the app to slow down waits for that hold
+to end, without using up one of the email's tries.
 
 The recipient's timezone comes from the US state in the company's location;
 without one it is the student's own, and the label says so.
@@ -49,6 +51,7 @@ from .outreach_gmail import (
     SendNeedsCheckError,
     SendUnconfirmedError,
     _approved_for,
+    backoff_until,
     gmail_drafts_status,
     send_gmail_message,
 )
@@ -87,6 +90,12 @@ MAX_ATTEMPTS = 3
 STUCK_AFTER = timedelta(minutes=10)
 LIVE_STATES = ("scheduled", "sending", "transmitting", "failed")
 PAUSED_NOTE = "Paused: this goes out when automation is resumed"
+GMAIL_WAIT_NOTE = (
+    "Could not check Gmail for replies or bounces first: Gmail asked the app to slow down. "
+    "Waiting for Gmail's rate limit to pass; this does not use up a try"
+)
+# A send held by Gmail's rate limit is tried again this long after the hold ends.
+GMAIL_HOLD_MARGIN = timedelta(minutes=1)
 MISSED_NOTE = "Missed its morning while this computer was asleep or off"
 HELD_NOTE = "Held while automation was paused"
 # The row belongs to a student who paused automation (for the worker's SQL).
@@ -225,11 +234,16 @@ Reviewer = Callable[[], tuple[str, Callable[[str], str]]]
 
 def _gate(conn: sqlite3.Connection, row: sqlite3.Row, *, client_factory: ClientFactory, now: datetime, reviewer: Reviewer | None) -> str | None:
     """The checks just before an automatic send. None to send; otherwise the outcome it was stopped with."""
-    from .outreach_review import fresh_look, review_follow_up, review_runner
+    from .outreach_review import FRESH_LOOK_REASONS, fresh_look, review_follow_up, review_runner
 
     target_id, user_id = row["target_id"], row["user_id"]
     look = fresh_look(conn, target_id, user_id=user_id, client_factory=client_factory)
     if not look["ok"]:
+        hold = backoff_until(user_id)
+        if look["reason"] == FRESH_LOOK_REASONS["throttled"] and hold is not None:
+            # Gmail asked this student's reads to wait: the email waits with
+            # them, without using up a try. Any other failed check still counts.
+            return _wait_for_gmail(conn, row, hold + GMAIL_HOLD_MARGIN)
         return _hold_for_retry(conn, row, now, f"Could not check Gmail for replies or bounces first: {look['reason']}")
     if row["kind"] != "follow_up":
         return None
@@ -434,6 +448,22 @@ def _send_one(
         return "failed"
     _finish(conn, row, "sent")
     return "sent"
+
+
+def _wait_for_gmail(conn: sqlite3.Connection, row: sqlite3.Row, send_at: datetime) -> str:
+    """Put a send back in line for when Gmail's hold on this student's reads ends, without counting a try.
+
+    Gmail asked the app to slow down, perhaps after another thread's read (the
+    inbox check), so the check before sending could not run. That is not this
+    email failing, and must not use up its tries and fail it unasked.
+    """
+    with conn:
+        conn.execute(
+            "UPDATE outreach_scheduled_sends SET state='scheduled', send_at=?, error=?, updated_at=? "
+            "WHERE target_id=? AND kind=? AND state IN ('sending', 'transmitting')",
+            (send_at.astimezone(timezone.utc).isoformat(timespec="seconds"), GMAIL_WAIT_NOTE, utc_now(), row["target_id"], row["kind"]),
+        )
+    return "retrying"
 
 
 def _hold_for_retry(conn: sqlite3.Connection, row: sqlite3.Row, now: datetime, reason: str) -> str:

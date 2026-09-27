@@ -31,7 +31,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from pipeline import load_env_file
 from pipeline_core import MAX_PER_COMPANY, OpportunityFilters, OpportunityRepository
@@ -523,9 +523,18 @@ class AutomationReviewRequest(BaseModel):
 
 
 class AutomationNoticesReadRequest(BaseModel):
+    """Either the ids of the notices to mark read, or ``all`` for every unread notice; not both."""
+
     model_config = ConfigDict(extra="forbid")
 
-    ids: list[AutomationNoticeId] = Field(max_length=100)
+    ids: list[AutomationNoticeId] | None = Field(default=None, max_length=100)
+    all: bool = False
+
+    @model_validator(mode="after")
+    def ids_or_all(self) -> "AutomationNoticesReadRequest":
+        if self.all == (self.ids is not None):
+            raise ValueError("Send either ids or all: true")
+        return self
 
 
 class OutreachScheduleRequest(BaseModel):
@@ -2248,28 +2257,10 @@ def create_app(
         user_id: str = Depends(require_auth),
     ) -> dict[str, Any]:
         modes = payload.modes or {}
-        # Every switch is checked before anything is written, so a refused one
-        # leaves the pause and the other switches as they were.
-        for key, value in modes.items():
-            feature = automation_core.FEATURES.get(key)
-            if feature is None:
-                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"Unknown automation feature: {key}")
-            if value not in feature.modes:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    detail=f"{feature.label} can be {' or '.join(feature.modes)}, not {value}",
-                )
-            if value == "on" and feature.shadow_capable and automation_core.mode(conn, user_id, key) != "on":
-                allowed, reason = automation_core.can_turn_on(conn, user_id, key)
-                if not allowed:
-                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=reason)
-        in_flight = None
         try:
-            # The pause lands first, so pausing and switching on in one request never leaves a gap.
-            if payload.paused is not None:
-                in_flight = automation_core.set_paused(conn, user_id, payload.paused)["in_flight"]
-            for key, value in modes.items():
-                automation_core.set_mode(conn, user_id, key, value)
+            # One transaction checks and writes the pause and every switch, so a
+            # refused switch leaves the pause and the other switches as they were.
+            applied = automation_core.apply_settings(conn, user_id, modes=modes, paused=payload.paused)
         except automation_core.AutomationGateError as exc:
             # A subclass of ValueError, so it is caught first.
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
@@ -2278,28 +2269,26 @@ def create_app(
         if payload.paused is not None or modes:
             automation_worker.wake()
         response = automation_view(conn, user_id)
-        if in_flight is not None:
-            response["in_flight"] = in_flight
+        if applied["in_flight"] is not None:
+            response["in_flight"] = applied["in_flight"]
         return response
 
     @app.get("/api/v1/automation/actions")
     def get_automation_actions(
-        status_filter: Literal[automation_core.STATUSES] | None = Query(default=None, alias="status"),  # type: ignore[valid-type]
+        # One status or several, comma-separated ("applied,undone"); each must be one of automation.STATUSES.
+        status_filter: str | None = Query(default=None, alias="status", min_length=1, max_length=200),
         feature: str | None = Query(default=None, min_length=1, max_length=64),
         limit: int = Query(default=50, ge=1, le=200),
         conn: sqlite3.Connection = Depends(writable_connection),
         user_id: str = Depends(require_auth),
     ) -> dict[str, Any]:
-        items = automation_core.list_actions(conn, user_id, status=status_filter, feature=feature, limit=limit)
-        clauses, params = ["user_id=?"], [user_id]
-        if status_filter is not None:
-            clauses.append("status=?")
-            params.append(status_filter)
-        if feature is not None:
-            clauses.append("feature=?")
-            params.append(feature)
-        total = conn.execute(f"SELECT COUNT(*) FROM automation_actions WHERE {' AND '.join(clauses)}", tuple(params)).fetchone()[0]
-        return {"items": items, "total": int(total)}
+        try:
+            statuses = automation_core.parse_statuses(status_filter)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        items = automation_core.list_actions(conn, user_id, status=statuses, feature=feature, limit=limit)
+        total = automation_core.count_actions(conn, user_id, status=statuses, feature=feature)
+        return {"items": items, "total": total}
 
     @app.get("/api/v1/automation/actions/{action_id}")
     def get_automation_action(
@@ -2354,7 +2343,9 @@ def create_app(
         conn: sqlite3.Connection = Depends(writable_connection),
         user_id: str = Depends(require_auth),
     ) -> dict[str, Any]:
-        return {"marked": automation_core.mark_notices_read(conn, user_id, list(payload.ids))}
+        if payload.all:
+            return {"marked": automation_core.mark_notices_read(conn, user_id, all_unread=True)}
+        return {"marked": automation_core.mark_notices_read(conn, user_id, list(payload.ids or []))}
 
     @app.get("/api/v1/outreach/settings")
     def get_outreach_settings(

@@ -382,13 +382,15 @@ def add_application_task(
     timezone_name: str | None = None,
     origin: str = "user",
     origin_ref: str = "",
+    source: str = "user",
 ) -> dict[str, Any]:
     """Add a task; ``due_at`` is stored as an aware instant.
 
     A browser sends its own IANA zone. Callers without one (the agent's approved
     proposals) fall back to the student's resolved timezone, never UTC.
     ``origin`` and ``origin_ref`` say what made the task when the student did
-    not (an automation feature, and the evidence it acted on).
+    not (an automation feature, or the agent, and what it acted on);
+    ``source`` is recorded on the timeline event, as update_application's is.
     """
     application_detail(conn, application_id, user_id=user_id)
     if not title.strip():
@@ -398,6 +400,7 @@ def add_application_task(
     with conn:
         return _add_application_task_tx(
             conn, application_id, title=title, due_at=due_at, user_id=user_id, origin=origin, origin_ref=origin_ref,
+            source=source,
         )
 
 
@@ -564,8 +567,18 @@ def _update_application_tx(
     """update_application's writes, inside a transaction the caller owns.
 
     The row is read again here, so what is written follows what is stored
-    now, not what the caller saw before its transaction began.
+    now, not what the caller saw before its transaction began. The read comes
+    after a write that locks the row: Python's sqlite3 opens a transaction
+    only at the first write, so a read that came first would run on its own,
+    and an automatic change committed between it and the UPDATE below would
+    be overwritten with the stale stage it read. The no-op UPDATE takes
+    SQLite's write lock (and the row's lock on PostgreSQL), so nothing can
+    land between the read and the write.
     """
+    conn.execute(
+        "UPDATE applications SET updated_at=updated_at WHERE id=? AND user_id=?",
+        (application_id, user_id),
+    )
     existing = conn.execute(
         "SELECT * FROM applications WHERE id=? AND user_id=?",
         (application_id, user_id),
@@ -616,6 +629,10 @@ def _update_application_tx(
         changed_fields.append("notes")
     if follow_up_at is not None and next_follow_up != existing["follow_up_at"]:
         changed_fields.append("follow_up_at")
+    # A new applied date with the stage unchanged (an earlier date the evidence
+    # shows) is a change of its own; a stage change's event already covers it.
+    if next_stage == existing["stage"] and next_applied_at != existing["applied_at"]:
+        changed_fields.append("applied_at")
     if changed_fields:
         conn.execute(
             """

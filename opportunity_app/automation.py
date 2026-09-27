@@ -7,11 +7,17 @@ that can act on the student's records without asking may also run in
 turned on only after SHADOW_HOURS in shadow with at least SHADOW_MIN_ROWS
 shadow actions, every one reviewed and none marked wrong (can_turn_on).
 
-Pause. 'automation_paused' stops everything automatic at once: every
-feature, scheduled sends, and contact forms. It never stops something the
-student does themselves, such as Send now. An email already handed to Gmail
-cannot be stopped, so pausing reports it (in_flight) instead of promising
-that nothing will go.
+Pause. 'automation_paused' stops everything the app does on its own at
+once: every feature switch (Jev inbox suggestions included), scheduled sends,
+automatic contact-form submissions, and call prep the app starts without a
+click. It never stops something the student does themselves, such as Send
+now. It does not stop the app reading Gmail either: replies and bounces are
+facts that have already happened, so they are still recorded (and move a
+company to Replied or Bounced), and notices still appear, since they only
+inform. An email already handed to Gmail, or a contact form whose button is
+being pressed, cannot be stopped, so pausing reports it (in_flight) instead
+of promising that nothing will go. A Gmail draft being saved is not a send
+and is never reported.
 
 Ledger. perform() is the single way an automatic change is made. The change
 and its automation_actions row are written in one transaction, so neither
@@ -61,6 +67,9 @@ BREAKER_LIMIT = 2
 BREAKER_WINDOW = 5
 # A send claim older than this was left by a request that has ended; it is not in flight.
 IN_FLIGHT_CLAIM_AGE = timedelta(minutes=10)
+# The breaker's notices are keyed "breaker:<feature>:<action id>"; Health reads them back.
+BREAKER_NOTICE_PREFIX = "breaker:"
+BREAKER_OFF_DAYS = 30
 MAX_ERROR_LENGTH = 300
 DEFAULT_GMAIL_TOKEN_DAYS = 7
 
@@ -119,6 +128,8 @@ FEATURES: dict[str, Feature] = {
                 "Send approved emails on the recipient's next weekday morning", "outreach", "external"),
         Feature("follow_up_review", "Have a second model check each follow-up",
                 "Have a second model check each follow-up before it goes out", "outreach", "internal"),
+        # No shadow either: it pre-dates shadow, sends only a first message the student approved,
+        # and keeping it off/on leaves unchanged a switch the student already uses.
         Feature("form_submission", "Send through contact forms",
                 "Send approved first messages through the company's contact form when it has no email", "outreach", "external"),
         Feature("jev_inbox_suggestions", "Jev inbox suggestions",
@@ -245,8 +256,10 @@ def can_turn_on(conn: sqlite3.Connection, user_id: str, key: str, *, now: dateti
     return True, ""
 
 
-def _set_modes(conn: sqlite3.Connection, user_id: str, changes: dict[str, str], *, now: datetime | None = None) -> None:
-    """Validate every change, then write them all in one transaction."""
+def _plan_modes(
+    conn: sqlite3.Connection, user_id: str, changes: dict[str, str], *, now: datetime | None = None,
+) -> list[tuple[str, str, str]]:
+    """Check every change, gates included, and return (key, value, current) for each. Writes nothing."""
     plans = []
     for key, value in changes.items():
         feature = _feature(key)
@@ -258,19 +271,58 @@ def _set_modes(conn: sqlite3.Connection, user_id: str, changes: dict[str, str], 
             if not allowed:
                 raise AutomationGateError(reason)
         plans.append((key, value, current))
-    stamp = _stamp(now)
-    with conn:
-        for key, value, current in plans:
-            _put_setting(conn, user_id, key, value, stamp)
-            # The shadow clock starts when shadow starts, not on every save.
-            if value == "shadow" and current != "shadow":
-                _put_setting(conn, user_id, f"{key}.shadow_since", stamp, stamp)
+    return plans
+
+
+def _write_modes(conn: sqlite3.Connection, user_id: str, plans: list[tuple[str, str, str]], stamp: str) -> None:
+    """Write planned changes. Opens no transaction: the caller owns it."""
+    for key, value, current in plans:
+        _put_setting(conn, user_id, key, value, stamp)
+        # The shadow clock starts when shadow starts, not on every save.
+        if value == "shadow" and current != "shadow":
+            _put_setting(conn, user_id, f"{key}.shadow_since", stamp, stamp)
+
+
+def _set_modes(conn: sqlite3.Connection, user_id: str, changes: dict[str, str], *, now: datetime | None = None) -> None:
+    """Validate every change, then write them all in one transaction (the legacy outreach switches use this)."""
+    apply_settings(conn, user_id, modes=changes, paused=None, now=now)
 
 
 def set_mode(conn: sqlite3.Connection, user_id: str, key: str, value: str, *, now: datetime | None = None) -> str:
     """Switch one feature. Turning a shadow-capable feature on raises AutomationGateError until can_turn_on allows it."""
-    _set_modes(conn, user_id, {key: value}, now=now)
+    apply_settings(conn, user_id, modes={key: value}, paused=None, now=now)
     return mode(conn, user_id, key)
+
+
+def apply_settings(
+    conn: sqlite3.Connection, user_id: str, *, modes: dict[str, str] | None, paused: bool | None, now: datetime | None = None,
+) -> dict[str, Any]:
+    """Change the pause and any switches together: all of it, or none of it.
+
+    Everything is checked (unknown features, modes a feature does not take,
+    the shadow gates) inside the one transaction that then writes it all, so a
+    refused switch never leaves a pause behind, and no other request can
+    change what was checked before it is written: the transaction's first
+    write (pause_guard) takes SQLite's write lock, and on PostgreSQL holds the
+    pause row. Raises ValueError, or AutomationGateError for a gate.
+
+    Returns the pause as it now stands and, when the pause was part of the
+    request, what was already too far along to stop (in_flight, read after
+    the commit, so a hand-over that won the race is in it); otherwise None.
+    """
+    changes = dict(modes or {})
+    stamp = _stamp(now)
+    with conn:
+        pause_guard(conn, user_id)
+        plans = _plan_modes(conn, user_id, changes, now=now)
+        if paused is not None:
+            _write_pause(conn, user_id, paused, utc_now())
+        _write_modes(conn, user_id, plans, stamp)
+    return {
+        # ``paused`` is the request here, so the stored value is read directly.
+        "paused": _setting(conn, user_id, PAUSED_KEY) == "on",
+        "in_flight": in_flight(conn, user_id) if paused is not None else None,
+    }
 
 
 def pause_guard(conn: sqlite3.Connection, user_id: str) -> bool:
@@ -299,22 +351,36 @@ def set_paused(conn: sqlite3.Connection, user_id: str, on: bool) -> dict[str, An
     pause. So it moves only when the value flips, and a row made 'off' (here,
     by pause_guard, or by the 0037 seed) starts at PAUSE_NEVER_CHANGED.
     """
-    now = utc_now()
     with conn:
-        conn.execute(
-            """
-            INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, ?, ?, ?)
-            ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value, updated_at=?
-                WHERE user_settings.value <> excluded.value
-            """,
-            (user_id, PAUSED_KEY, "on" if on else "off", now if on else PAUSE_NEVER_CHANGED, now),
-        )
+        _write_pause(conn, user_id, on, utc_now())
     # Read after the commit: a hand-over that won the race is visible now.
     return {"paused": bool(on), "in_flight": in_flight(conn, user_id)}
 
 
+def _write_pause(conn: sqlite3.Connection, user_id: str, on: bool, now: str) -> None:
+    """Set the pause row, moving its updated_at only when the value flips (see set_paused). Opens no transaction."""
+    conn.execute(
+        """
+        INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, ?, ?, ?)
+        ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value, updated_at=?
+            WHERE user_settings.value <> excluded.value
+        """,
+        (user_id, PAUSED_KEY, "on" if on else "off", now if on else PAUSE_NEVER_CHANGED, now),
+    )
+
+
+# The claim state a contact form moves to as its send button is pressed
+# (outreach_forms.submit_contact_form); from then on a pause cannot stop it.
+FORM_HANDED_OVER = "clicking"
+
+
 def in_flight(conn: sqlite3.Connection, user_id: str, *, now: datetime | None = None) -> list[dict[str, Any]]:
-    """What is past stopping: scheduled emails already handed to Gmail, and sends or form submissions under way."""
+    """What is past stopping: emails handed to Gmail, and contact forms whose button is being pressed.
+
+    Each item's action is 'send' or 'form'. A Gmail draft being saved is not
+    a send, and a form still being filled in can still be stopped by a pause
+    (for an automatic one), so neither is listed.
+    """
     items = []
     for row in conn.execute(
         """
@@ -330,20 +396,56 @@ def in_flight(conn: sqlite3.Connection, user_id: str, *, now: datetime | None = 
         })
     listed = {(item["target_id"], item["kind"]) for item in items}
     cutoff = (_now(now) - IN_FLIGHT_CLAIM_AGE).isoformat(timespec="microseconds")
+    # Only a Gmail send ('sending', action 'send') or a form being clicked: a
+    # 'drafting' claim is a Gmail draft being saved, or a form still being filled in.
     for row in conn.execute(
         """
-        SELECT c.target_id, c.kind, c.action, c.claimed_at, t.company
+        SELECT c.target_id, c.kind, c.action, c.state, c.claimed_at, t.company
         FROM outreach_send_claims c LEFT JOIN outreach_targets t ON t.id=c.target_id
-        WHERE c.user_id=? AND c.state IN ('sending', 'drafting') AND c.claimed_at>=? ORDER BY c.claimed_at
+        WHERE c.user_id=? AND c.claimed_at>=?
+          AND ((c.state='sending' AND c.action='send') OR c.state=?)
+        ORDER BY c.claimed_at
         """,
-        (user_id, cutoff),
+        (user_id, cutoff, FORM_HANDED_OVER),
     ).fetchall():
         # A scheduled email being handed over holds a send claim too; it is one email, listed once.
         if (row["target_id"], row["kind"]) in listed:
             continue
+        form = row["state"] == FORM_HANDED_OVER
         items.append({
-            "source": "send_claim", "target_id": row["target_id"], "company": row["company"] or "",
-            "kind": row["kind"], "action": row["action"], "label": "", "at": row["claimed_at"],
+            "source": "form_claim" if form else "send_claim", "target_id": row["target_id"], "company": row["company"] or "",
+            "kind": row["kind"], "action": "form" if form else "send", "label": "", "at": row["claimed_at"],
+        })
+    return items
+
+
+def unconfirmed(conn: sqlite3.Connection, user_id: str, *, now: datetime | None = None) -> list[dict[str, Any]]:
+    """Sends and form submissions that may or may not have gone out, so the student must look.
+
+    An 'unconfirmed' claim, and a form claim left mid-click longer than
+    IN_FLIGHT_CLAIM_AGE (the app stopped while pressing the button). A first
+    email is left out once the company is recorded as sent ("I sent it"), and
+    a follow-up once the company has moved past Sent.
+    """
+    cutoff = (_now(now) - IN_FLIGHT_CLAIM_AGE).isoformat(timespec="microseconds")
+    rows = conn.execute(
+        """
+        SELECT c.target_id, c.kind, c.action, c.claimed_at, t.company, t.sent_at, t.status
+        FROM outreach_send_claims c LEFT JOIN outreach_targets t ON t.id=c.target_id
+        WHERE c.user_id=? AND (c.state='unconfirmed' OR (c.state=? AND c.claimed_at<?))
+        ORDER BY c.claimed_at
+        """,
+        (user_id, FORM_HANDED_OVER, cutoff),
+    ).fetchall()
+    items = []
+    for row in rows:
+        if row["kind"] == "initial" and row["sent_at"]:
+            continue
+        if row["kind"] == "follow_up" and row["status"] not in (None, "sent"):
+            continue
+        items.append({
+            "target_id": row["target_id"], "company": row["company"] or "", "kind": row["kind"],
+            "action": row["action"], "at": row["claimed_at"],
         })
     return items
 
@@ -378,6 +480,9 @@ class Handler(Protocol):
     ``after`` (a rule decides a value). perform() compares it with ``before``
     to skip a change that is already in place, and records it as what undo
     must find.
+
+    ``undo`` may return a dict of what else the student should know (such as
+    ``undo_note``, a plain sentence); undo() adds it to its result.
     """
 
     fields: tuple[str, ...]
@@ -391,7 +496,7 @@ class Handler(Protocol):
     def undo(
         self, conn: sqlite3.Connection, user_id: str, subject_id: str, before: dict[str, Any], after: dict[str, Any],
         *, source: str, timestamp: str,
-    ) -> None: ...
+    ) -> dict[str, Any] | None: ...
 
 
 def _for_update(conn: sqlite3.Connection) -> str:
@@ -427,9 +532,14 @@ def _capitalized(text: str) -> str:
 class ApplicationStage:
     """application.stage: an application's stage, and when the student applied.
 
-    Undo restores both, only while both are still what this action left. The
-    follow-up reminder that a move to a closed stage cancels is not restored:
-    the student sets it again if they want it.
+    Undo restores both, only while both are still what this action left.
+
+    A move to a closed stage also cancels the application's follow-up
+    reminder (actions._update_application_tx). apply records when it did, and
+    undo schedules that reminder again, but only while it is still the one
+    this move cancelled (unchanged since) and the follow-up date is still set
+    and still ahead. Otherwise undo says the reminder was not restored, so the
+    student is not left with a follow-up date that will never remind them.
     """
 
     fields = ("stage", "applied_at")
@@ -449,16 +559,65 @@ class ApplicationStage:
             raise ValueError(f"Unsupported application stage: {stage}")
         return {"stage": stage, "applied_at": actions._next_applied_at(before["applied_at"], stage, after.get("applied_at"), timestamp)}
 
+    @staticmethod
+    def _reminder(conn: sqlite3.Connection, user_id: str, subject_id: str) -> Any:
+        return conn.execute(
+            "SELECT status, updated_at FROM reminders WHERE application_id=? AND user_id=? AND reminder_type='follow_up'",
+            (subject_id, user_id),
+        ).fetchone()
+
     def apply(
         self, conn: sqlite3.Connection, user_id: str, subject_id: str, after: dict[str, Any], *, source: str, timestamp: str,
     ) -> dict[str, Any]:
+        reminder = self._reminder(conn, user_id, subject_id)
         actions._update_application_tx(
             conn, subject_id, stage=after["stage"], applied_at=after.get("applied_at"), user_id=user_id,
             source=source, timestamp=timestamp,
         )
+        now = self._reminder(conn, user_id, subject_id)
+        if reminder is not None and reminder["status"] == "scheduled" and now is not None and now["status"] == "cancelled":
+            # What undo needs to put it back, and to know it is still the one this move cancelled.
+            return {"reminder_cancelled_at": now["updated_at"]}
         return {}
 
     def undo(
+        self, conn: sqlite3.Connection, user_id: str, subject_id: str, before: dict[str, Any], after: dict[str, Any],
+        *, source: str, timestamp: str,
+    ) -> dict[str, Any]:
+        self._restore_stage(conn, user_id, subject_id, before, after, source=source, timestamp=timestamp)
+        cancelled_at = (after.get("_result") or {}).get("reminder_cancelled_at")
+        if not cancelled_at:
+            return {}
+        return self._restore_reminder(conn, user_id, subject_id, cancelled_at, timestamp)
+
+    def _restore_reminder(
+        self, conn: sqlite3.Connection, user_id: str, subject_id: str, cancelled_at: str, timestamp: str,
+    ) -> dict[str, Any]:
+        """Schedule again the follow-up reminder this move cancelled, or say why it stays cancelled."""
+        row = conn.execute(
+            f"SELECT follow_up_at FROM applications WHERE id=? AND user_id=?{_for_update(conn)}", (subject_id, user_id),
+        ).fetchone()
+        due = _parse(row["follow_up_at"]) if row is not None else None
+        if due is None:
+            return {"reminder_restored": False,
+                    "undo_note": "The follow-up reminder this change cancelled was not restored, because no follow-up date is set."}
+        if due <= _now(None):
+            return {"reminder_restored": False,
+                    "undo_note": "The follow-up reminder this change cancelled was not restored, because its date has passed. Set a new follow-up date if you want one."}
+        # Due on the follow-up date as it stands now: the student may have moved it while the stage was closed.
+        restored = conn.execute(
+            """
+            UPDATE reminders SET status='scheduled', due_at=?, updated_at=?
+            WHERE application_id=? AND user_id=? AND reminder_type='follow_up' AND status='cancelled' AND updated_at=?
+            """,
+            (row["follow_up_at"], timestamp, subject_id, user_id, cancelled_at),
+        ).rowcount
+        if not restored:
+            return {"reminder_restored": False,
+                    "undo_note": "The follow-up reminder this change cancelled was changed since, so it was left as it is. Set the follow-up date again if you want a reminder."}
+        return {"reminder_restored": True, "undo_note": "Your follow-up reminder is scheduled again."}
+
+    def _restore_stage(
         self, conn: sqlite3.Connection, user_id: str, subject_id: str, before: dict[str, Any], after: dict[str, Any],
         *, source: str, timestamp: str,
     ) -> None:
@@ -813,7 +972,11 @@ def approve(conn: sqlite3.Connection, action_id: str, user_id: str) -> dict[str,
 
 
 def reject(conn: sqlite3.Connection, action_id: str, user_id: str) -> dict[str, Any]:
-    """The student turned a proposal down. Returns the row, with feature_paused when that tripped the breaker."""
+    """The student turned a proposal down.
+
+    Returns the row, with feature_paused when that tripped the breaker and
+    breaker_notice, the notice it left ({title, body}, or None).
+    """
     timestamp = utc_now()
     with conn:
         row = _claim(conn, action_id, user_id, "proposed", "Only a proposed action can be rejected", timestamp)
@@ -821,27 +984,30 @@ def reject(conn: sqlite3.Connection, action_id: str, user_id: str) -> dict[str, 
             conn, "UPDATE automation_actions SET status='rejected', decided_at=?, decided_by='student' WHERE id=? AND user_id=? AND status='proposed'",
             (timestamp, action_id, user_id),
         )
-        tripped = _trip_breaker(conn, user_id, row["feature"], action_id, timestamp)
-    return {**_decode(_row(conn, action_id, user_id)), "feature_paused": tripped}
+        breaker = _trip_breaker(conn, user_id, row["feature"], action_id, timestamp)
+    return {**_decode(_row(conn, action_id, user_id)), "feature_paused": breaker is not None, "breaker_notice": breaker}
 
 
 def undo(conn: sqlite3.Connection, action_id: str, user_id: str) -> dict[str, Any]:
     """Take back an applied change, only while its fields still hold what it left.
 
     Raises Superseded, after recording the action as superseded, when a later
-    change touched them; the message names what changed.
+    change touched them; the message names what changed. Returns the row with
+    feature_paused and breaker_notice (as reject does), plus whatever the
+    handler adds, such as undo_note.
     """
     timestamp = utc_now()
     superseded: Superseded | None = None
-    tripped = False
+    breaker: dict[str, str] | None = None
+    extra: dict[str, Any] = {}
     with conn:
         action = _decode(_claim(conn, action_id, user_id, "applied", "Only an applied action can be undone", timestamp))
         handler = _handler(action["action_type"])
         try:
-            handler.undo(
+            extra = handler.undo(
                 conn, user_id, action["subject_id"], action["before"], action["after"],
                 source=f"automation-undo:{action_id}", timestamp=timestamp,
-            )
+            ) or {}
         except Superseded as exc:
             superseded = exc
             _settle(
@@ -853,10 +1019,10 @@ def undo(conn: sqlite3.Connection, action_id: str, user_id: str) -> dict[str, An
                 conn, "UPDATE automation_actions SET status='undone', decided_at=?, decided_by='student' WHERE id=? AND user_id=? AND status='applied'",
                 (timestamp, action_id, user_id),
             )
-            tripped = _trip_breaker(conn, user_id, action["feature"], action_id, timestamp)
+            breaker = _trip_breaker(conn, user_id, action["feature"], action_id, timestamp)
     if superseded is not None:
         raise superseded
-    return {**_decode(_row(conn, action_id, user_id)), "feature_paused": tripped}
+    return {**_decode(_row(conn, action_id, user_id)), **extra, "feature_paused": breaker is not None, "breaker_notice": breaker}
 
 
 def review(conn: sqlite3.Connection, action_id: str, user_id: str, verdict: str) -> dict[str, Any]:
@@ -874,34 +1040,69 @@ def review(conn: sqlite3.Connection, action_id: str, user_id: str, verdict: str)
     return _decode(_row(conn, action_id, user_id))
 
 
-def list_actions(
-    conn: sqlite3.Connection, user_id: str, *, status: str | None = None, feature: str | None = None, limit: int = 50,
-) -> list[dict[str, Any]]:
-    """Newest first."""
+StatusFilter = str | list[str] | tuple[str, ...] | None
+
+
+def parse_statuses(status: StatusFilter) -> list[str] | None:
+    """The statuses asked for: one, several, or a comma-separated list ("applied,undone"). None for any.
+
+    Raises ValueError naming an unknown status, or when nothing is left once blanks are dropped.
+    """
+    if status is None:
+        return None
+    given = [status] if isinstance(status, str) else list(status)
+    wanted: list[str] = []
+    for part in (piece.strip() for value in given for piece in str(value).split(",")):
+        if not part:
+            continue
+        if part not in STATUSES:
+            raise ValueError(f"Unknown automation status: {part}")
+        if part not in wanted:
+            wanted.append(part)
+    if not wanted:
+        raise ValueError("Name at least one automation status")
+    return wanted
+
+
+def _action_filter(user_id: str, status: StatusFilter, feature: str | None) -> tuple[str, list[Any]]:
     clauses, params = ["user_id=?"], [user_id]
-    if status is not None:
-        if status not in STATUSES:
-            raise ValueError(f"Unknown automation status: {status}")
-        clauses.append("status=?")
-        params.append(status)
+    statuses = parse_statuses(status)
+    if statuses is not None:
+        clauses.append(f"status IN ({', '.join('?' for _ in statuses)})")
+        params.extend(statuses)
     if feature is not None:
         clauses.append("feature=?")
         params.append(feature)
+    return " AND ".join(clauses), params
+
+
+def list_actions(
+    conn: sqlite3.Connection, user_id: str, *, status: StatusFilter = None, feature: str | None = None, limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Newest first. ``status`` takes one status or several (parse_statuses)."""
+    where, params = _action_filter(user_id, status, feature)
     rows = conn.execute(
-        f"SELECT * FROM automation_actions WHERE {' AND '.join(clauses)} ORDER BY created_at DESC, id DESC LIMIT ?",
+        f"SELECT * FROM automation_actions WHERE {where} ORDER BY created_at DESC, id DESC LIMIT ?",
         (*params, max(1, min(int(limit), 500))),
     ).fetchall()
     return [_decode(row) for row in rows]
 
 
-def _trip_breaker(conn: sqlite3.Connection, user_id: str, feature: str, action_id: str, timestamp: str) -> bool:
+def count_actions(conn: sqlite3.Connection, user_id: str, *, status: StatusFilter = None, feature: str | None = None) -> int:
+    """How many actions list_actions would find with no limit."""
+    where, params = _action_filter(user_id, status, feature)
+    return int(conn.execute(f"SELECT COUNT(*) FROM automation_actions WHERE {where}", tuple(params)).fetchone()[0])
+
+
+def _trip_breaker(conn: sqlite3.Connection, user_id: str, feature: str, action_id: str, timestamp: str) -> dict[str, str] | None:
     """After a student undo or reject: turn the feature off if they took back BREAKER_LIMIT of its last BREAKER_WINDOW actions.
 
-    Runs inside the caller's transaction. True when it turned the feature off just now.
+    Runs inside the caller's transaction. Returns the notice it left
+    ({title, body}) when it turned the feature off just now, else None.
     """
     definition = FEATURES.get(feature)
     if definition is None or mode(conn, user_id, feature) == "off":
-        return False
+        return None
     rows = conn.execute(
         """
         SELECT status, decided_by FROM automation_actions
@@ -912,14 +1113,15 @@ def _trip_breaker(conn: sqlite3.Connection, user_id: str, feature: str, action_i
     ).fetchall()
     taken_back = sum(1 for row in rows if row["status"] in {"undone", "rejected"} and row["decided_by"] == "student")
     if taken_back < BREAKER_LIMIT:
-        return False
+        return None
     _put_setting(conn, user_id, feature, "off", timestamp)
-    _insert_notice(
-        conn, user_id, event_key=f"breaker:{feature}:{action_id}", level="warning",
-        title=f"Turned off {definition.label}: you undid or rejected {taken_back} of its last {len(rows)} actions",
-        body="Turn it back on under Automation when you want it again.", timestamp=timestamp,
-    )
-    return True
+    notice = {
+        "title": f"Turned off {definition.label}: you undid or rejected {taken_back} of its last {len(rows)} actions",
+        "body": "Turn it back on under Automation when you want it again.",
+    }
+    _insert_notice(conn, user_id, event_key=f"{BREAKER_NOTICE_PREFIX}{feature}:{action_id}", level="warning",
+                   title=notice["title"], body=notice["body"], timestamp=timestamp)
+    return notice
 
 
 # --- Notices -----------------------------------------------------------------------------
@@ -956,8 +1158,17 @@ def list_notices(conn: sqlite3.Connection, user_id: str, *, unread_only: bool = 
     ).fetchall()]
 
 
-def mark_notices_read(conn: sqlite3.Connection, user_id: str, ids: list[str]) -> int:
-    ids = [str(notice_id) for notice_id in ids]
+def mark_notices_read(conn: sqlite3.Connection, user_id: str, ids: list[str] | None = None, *, all_unread: bool = False) -> int:
+    """Mark these notices read, or with ``all_unread`` every unread one (not only those a page happened to show).
+
+    Returns how many were unread and are now read.
+    """
+    if all_unread:
+        with conn:
+            return conn.execute(
+                "UPDATE automation_notices SET read_at=? WHERE user_id=? AND read_at IS NULL", (utc_now(), user_id),
+            ).rowcount
+    ids = [str(notice_id) for notice_id in ids or []]
     if not ids:
         return 0
     with conn:
@@ -1016,7 +1227,18 @@ def _token_days() -> int | None:
 
 
 def gmail_health(conn: sqlite3.Connection, user_id: str, *, now: datetime | None = None) -> dict[str, Any]:
-    """The Gmail connection's state as the banner and health panel show it. Expiry is an estimate, and labelled so."""
+    """The Gmail connection's state as the banner and health panel show it. Expiry is an estimate, and labelled so.
+
+    The estimate is token_granted_at plus PIPELINE_GMAIL_TOKEN_DAYS. Once that
+    date has passed, ``estimate_passed`` is True, and the date is no longer a
+    "by <date>" promise:
+
+    - if Gmail has answered since the date (last_ok_at is later), the estimate
+      was wrong (a Google project in production has no 7-day limit), so it is
+      retired: no date, and not expiring soon;
+    - if not, the connection may still be asked to reconnect at any time, so
+      it stays expiring soon, and the banner says "soon" without the old date.
+    """
     now = _now(now)
     row = conn.execute(
         "SELECT status, last_ok_at, last_error, token_granted_at, backoff_until FROM connector_accounts WHERE user_id=? AND provider='gmail_drafts'",
@@ -1024,7 +1246,7 @@ def gmail_health(conn: sqlite3.Connection, user_id: str, *, now: datetime | None
     ).fetchone()
     if row is None:
         return {"state": "not_connected", "last_ok_at": None, "last_error": "", "backoff_until": None,
-                "token_granted_at": None, "likely_expires_at": None, "expiring_soon": False}
+                "token_granted_at": None, "likely_expires_at": None, "expiring_soon": False, "estimate_passed": False}
     backoff = _parse(row["backoff_until"])
     if row["status"] == "error":
         state = "needs_reconnect"
@@ -1037,11 +1259,17 @@ def gmail_health(conn: sqlite3.Connection, user_id: str, *, now: datetime | None
     granted = _parse(row["token_granted_at"])
     days = _token_days()
     expires = granted + timedelta(days=days) if granted is not None and days is not None else None
+    estimate_passed = expires is not None and now >= expires
+    if estimate_passed:
+        last_ok = _parse(row["last_ok_at"])
+        if last_ok is not None and last_ok > expires:
+            expires = None  # Gmail kept answering past the date: the estimate was wrong
     return {
         "state": state, "last_ok_at": row["last_ok_at"], "last_error": row["last_error"] or "",
         "backoff_until": row["backoff_until"], "token_granted_at": row["token_granted_at"],
         "likely_expires_at": expires.isoformat(timespec="seconds") if expires else None,
         "expiring_soon": bool(expires is not None and state == "connected" and expires - now <= timedelta(hours=24)),
+        "estimate_passed": estimate_passed,
     }
 
 
@@ -1067,19 +1295,23 @@ def health_summary(conn: sqlite3.Connection, user_id: str, *, now: datetime | No
     ).fetchone()
     unread = conn.execute("SELECT COUNT(*) FROM automation_notices WHERE user_id=? AND read_at IS NULL", (user_id,)).fetchone()[0]
     zone = user_timezone(conn, user_id)
+    flights = in_flight(conn, user_id, now=now)
     banner = []
     if is_paused:
-        banner.append({"level": "warning", "key": "paused", "text": "Automation is paused. Nothing is sent or changed on its own."})
+        banner.append({"level": "warning", "key": "paused", "text": paused_text(flights)})
     if gmail["state"] == "needs_reconnect":
         banner.append({"level": "problem", "key": "gmail_needs_reconnect",
                        "text": "Gmail needs reconnecting. Reply and bounce checks have stopped."})
     if gmail["expiring_soon"]:
-        local = zone.to_local(datetime.fromisoformat(gmail["likely_expires_at"]))
-        days = _token_days() or DEFAULT_GMAIL_TOKEN_DAYS
-        banner.append({"level": "warning", "key": "gmail_expiring", "text": (
-            f"Gmail will likely ask you to reconnect by {local:%a, %b} {local.day}. "
-            f"Testing-mode connections last about {days} day{'s' if days != 1 else ''}."
-        )})
+        if gmail["estimate_passed"]:
+            # The estimated date is behind us: saying "by <that date>" would be false.
+            text = "Gmail may ask you to reconnect soon."
+        else:
+            local = zone.to_local(datetime.fromisoformat(gmail["likely_expires_at"]))
+            days = _token_days() or DEFAULT_GMAIL_TOKEN_DAYS
+            text = (f"Gmail will likely ask you to reconnect by {local:%a, %b} {local.day}. "
+                    f"Testing-mode connections last about {days} day{'s' if days != 1 else ''}.")
+        banner.append({"level": "warning", "key": "gmail_expiring", "text": text})
     if gmail["state"] == "throttled":
         local = zone.to_local(_parse(gmail["backoff_until"]))
         banner.append({"level": "info", "key": "gmail_throttled",
@@ -1088,8 +1320,62 @@ def health_summary(conn: sqlite3.Connection, user_id: str, *, now: datetime | No
         "paused": is_paused,
         "components": components,
         "gmail": gmail,
-        "in_flight": in_flight(conn, user_id, now=now),
+        "in_flight": flights,
+        "unconfirmed": unconfirmed(conn, user_id, now=now),
+        "breaker_off": breaker_off(conn, user_id, now=now),
         "unread_notices": int(unread),
         "counts": {key: int(counts[key]) for key in ("proposed", "shadow_unreviewed", "applied_last_24h")},
         "banner": banner,
     }
+
+
+PAUSED_BANNER = "Automation is paused. Nothing is sent and no switch acts on its own. Replies and bounces are still recorded."
+
+
+def _counted(count: int, noun: str) -> str:
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+def paused_text(flights: list[dict[str, Any]]) -> str:
+    """The pause banner, and a second sentence for whatever was already too far along to stop."""
+    emails = sum(1 for item in flights if item["action"] == "send")
+    forms = sum(1 for item in flights if item["action"] == "form")
+    parts = []
+    if emails:
+        parts.append(f"{_counted(emails, 'email')} {'was' if emails == 1 else 'were'} already handed to Gmail")
+    if forms:
+        parts.append(f"{_counted(forms, 'contact form')} {'was' if forms == 1 else 'were'} already being sent")
+    if not parts:
+        return PAUSED_BANNER
+    stop = "can't be stopped" if len(parts) == 1 else "neither can be stopped"
+    joined = parts[0] if len(parts) == 1 else f"{parts[0]} and {parts[1]}"
+    return f"{PAUSED_BANNER} {joined[:1].upper()}{joined[1:]}{' and ' if len(parts) == 1 else ', and '}{stop}."
+
+
+def breaker_off(conn: sqlite3.Connection, user_id: str, *, now: datetime | None = None) -> list[dict[str, Any]]:
+    """Features the circuit breaker turned off in the last BREAKER_OFF_DAYS that are still off since.
+
+    Read from the breaker's notices, so it holds after the student marks them
+    read. A feature switched since the breaker wrote (turned back on, or set
+    off again by the student) is no longer the breaker's doing, and is left out.
+    """
+    since = (_now(now) - timedelta(days=BREAKER_OFF_DAYS)).isoformat(timespec="microseconds")
+    latest: dict[str, str] = {}
+    for row in conn.execute(
+        "SELECT event_key, created_at FROM automation_notices WHERE user_id=? AND event_key LIKE ? AND created_at>=? ORDER BY created_at",
+        (user_id, f"{BREAKER_NOTICE_PREFIX}%", since),
+    ).fetchall():
+        feature = str(row["event_key"])[len(BREAKER_NOTICE_PREFIX):].split(":", 1)[0]
+        latest[feature] = row["created_at"]
+    items = []
+    for feature, at in latest.items():
+        definition = FEATURES.get(feature)
+        if definition is None:
+            continue
+        setting = conn.execute(
+            "SELECT value, updated_at FROM user_settings WHERE user_id=? AND key=?", (user_id, feature),
+        ).fetchone()
+        if setting is None or setting["value"] != "off" or setting["updated_at"] != at:
+            continue
+        items.append({"feature": feature, "label": definition.label, "at": at})
+    return sorted(items, key=lambda item: item["at"])

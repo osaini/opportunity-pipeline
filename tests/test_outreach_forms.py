@@ -198,6 +198,8 @@ class FakeSubmitter:
         self.calls = []
         self.in_browser = []
         self.before_button = lambda: None
+        # Runs as the button is pressed, once the check before it said go on.
+        self.at_click = lambda: None
 
     def factory(self, *, in_browser=False):
         self.in_browser.append(in_browser)
@@ -218,6 +220,7 @@ class FakeSubmitter:
             if should_continue is not None and not should_continue():
                 return {"outcome": "failed", "note": outreach_forms.PAUSED_BEFORE_SENDING, "confirmation": "", "filled": [],
                         "screenshot": "", "attached": "", "paused": True}
+            self.at_click()
             outcome = "submitted"
         return {"outcome": outcome, "note": "" if outcome == "submitted" else f"{outcome} for a reason",
                 "confirmation": "Thanks! Your message has been sent." if outcome == "submitted" else "",
@@ -427,6 +430,85 @@ class FormSendTests(unittest.TestCase):
         self.assertEqual((after["contact_form"]["state"], after["status"]), ("found", "drafted"))
         with closing(connect_product(self.platform_path)) as conn:
             self.assertIsNone(conn.execute("SELECT 1 FROM outreach_send_claims").fetchone())
+
+    def claim_state(self, conn):
+        row = conn.execute("SELECT state FROM outreach_send_claims").fetchone()
+        return None if row is None else row[0]
+
+    def test_a_pause_after_the_hand_over_reports_the_form_as_on_its_way(self):
+        self.submitter.outcomes = ["pause_at_button"]
+        target = self.approved()
+        seen = {}
+
+        def pause_as_it_clicks():
+            with closing(connect_product(self.platform_path)) as other:
+                seen["claim"] = self.claim_state(other)
+                seen["pause"] = automation.set_paused(other, USER, True)
+
+        self.submitter.at_click = pause_as_it_clicks
+        with closing(connect_product(self.platform_path)) as conn:
+            result = send_form(conn, target["id"], user_id=USER, submitter_factory=self.submitter.factory)
+        self.assertEqual(result["outcome"], "submitted", "handed over before the pause, so it went")
+        self.assertEqual(seen["claim"], "clicking", "the claim was handed over before the button was pressed")
+        [flight] = seen["pause"]["in_flight"]
+        self.assertEqual((flight["source"], flight["action"], flight["target_id"], flight["company"]),
+                         ("form_claim", "form", target["id"], "Bovi"))
+        with closing(connect_product(self.platform_path)) as conn:
+            self.assertEqual(self.claim_state(conn), "sent", "settled from the handed-over state")
+            self.assertEqual(automation.in_flight(conn, USER), [])
+
+    def test_a_pause_cannot_land_between_the_last_check_and_the_hand_over(self):
+        self.submitter.outcomes = ["pause_at_button"]
+        target = self.approved()
+        real = automation.pause_guard
+        calls, seen = [], {}
+
+        def guard(conn, user_id):
+            answer = real(conn, user_id)
+            calls.append(1)
+            if len(calls) == 2:  # the check just before the button (the first is the claim's)
+                with closing(connect_product(self.platform_path)) as other:
+                    other.execute("PRAGMA busy_timeout = 50")
+                    try:
+                        automation.set_paused(other, USER, True)
+                        seen["pause"] = "landed"
+                    except sqlite3.OperationalError as exc:
+                        seen["pause"] = str(exc)
+            return answer
+
+        with mock.patch.object(automation, "pause_guard", guard), closing(connect_product(self.platform_path)) as conn:
+            result = send_form(conn, target["id"], user_id=USER, submitter_factory=self.submitter.factory)
+        self.assertEqual(seen["pause"], "database is locked", "a pause waits for the hand-over instead of slipping in after the check")
+        self.assertEqual(result["outcome"], "submitted")
+
+    def test_a_claim_left_mid_click_is_treated_as_possibly_sent(self):
+        self.submitter.outcomes = ["submitted"]
+        target = self.approved()
+        long_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(timespec="microseconds")
+        with closing(connect_product(self.platform_path)) as conn:
+            conn.execute(
+                "INSERT INTO outreach_send_claims(target_id, user_id, kind, token, state, action, instance, claimed_at) "
+                "VALUES(?, ?, 'initial', 'dead', 'clicking', 'form', 'a-process-that-stopped', ?)",
+                (target["id"], USER, long_ago),
+            )
+            conn.commit()
+            self.assertEqual([item["target_id"] for item in automation.health_summary(conn, USER)["unconfirmed"]], [target["id"]])
+        blocked = self.send(target)
+        self.assertEqual(blocked.status_code, 428, "it may have gone: the student looks before it is sent again")
+        self.assertEqual(self.submitter.calls, [])
+        self.assertEqual(self.send(target, retry_unconfirmed=True).json()["outcome"], "submitted")
+
+    def test_a_claim_being_clicked_right_now_is_not_taken_over(self):
+        target = self.approved()
+        with closing(connect_product(self.platform_path)) as conn:
+            conn.execute(
+                "INSERT INTO outreach_send_claims(target_id, user_id, kind, token, state, action, instance, claimed_at) "
+                "VALUES(?, ?, 'initial', 'busy', 'clicking', 'form', 'another-process', ?)",
+                (target["id"], USER, utc_now()),
+            )
+            conn.commit()
+        self.assertEqual(self.send(target, retry_unconfirmed=True).status_code, 409)
+        self.assertEqual(self.submitter.calls, [])
 
     def test_the_students_own_form_send_is_not_paused(self):
         self.submitter.outcomes = ["submitted"]
@@ -721,6 +803,129 @@ class BrowserSubmitTests(unittest.TestCase):
         self.assertEqual(result["outcome"], "needs_you")
         self.assertIn("Finish in browser", result["note"])
         self.assertEqual([post for post in site.posts if post[0] == "/send"], [])
+
+
+class _StubLocator:
+    """One control on the stub page: remembers what was typed and records each action in the shared log."""
+
+    def __init__(self, page, selector):
+        self.page, self.selector, self.value = page, selector, ""
+
+    @property
+    def first(self):
+        return self
+
+    def count(self):
+        return 0  # no CAPTCHA widget on this page
+
+    def fill(self, value, timeout=None):
+        self.value = value
+        self.page.log.append(("fill", self.selector))
+
+    def dispatch_event(self, _name):
+        pass
+
+    def blur(self):
+        pass
+
+    def input_value(self):
+        return self.value
+
+    def screenshot(self, path=None):
+        pass
+
+    def is_visible(self):
+        return not self.page.clicked
+
+    def click(self, timeout=None):
+        self.page.log.append(("click", self.selector))
+        self.page.clicked = True
+
+
+class _StubPage:
+    """Just enough of a Playwright page and frame for FormSubmitter.submit, with no browser."""
+
+    url = "https://bovi.test/contact"
+
+    def __init__(self, read):
+        self.read, self.log, self.clicked, self.locators = read, [], False, {}
+        self.main_frame = self
+        self.frames = [self]
+
+    def locator(self, selector):
+        return self.locators.setdefault(selector, _StubLocator(self, selector))
+
+    def evaluate(self, script, *_args):
+        if script == outreach_forms.EXTRACT_SCRIPT:
+            return self.read
+        if "innerText" in script:
+            return "Thank you! Your message has been sent." if self.clicked else "Contact us"
+        raise AssertionError(f"unexpected script: {script[:60]}")
+
+    def goto(self, *_args, **_kwargs):
+        return type("Response", (), {"status": 200})()
+
+    def wait_for_load_state(self, *_args, **_kwargs):
+        pass
+
+    def wait_for_timeout(self, _ms):
+        pass
+
+    def on(self, *_args):
+        pass
+
+    def screenshot(self, **_kwargs):
+        pass
+
+    def close(self):
+        pass
+
+
+class FormSubmitterCheckTests(unittest.TestCase):
+    """The check just before the button, on a stub page, so it runs in every job, with or without Chromium."""
+
+    READ = {
+        "fields": [field(0, label="Your name", name="name", required=True),
+                   field(1, "email", label="Email", name="email", required=True),
+                   field(2, tag="textarea", label="Message", name="message", required=True)],
+        "submit": True, "submit_text": "Send", "is_form": False, "heading": "Contact us", "text": "", "hidden": False,
+    }
+
+    def submit(self, should_continue):
+        page = _StubPage(self.READ)
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        submitter = FormSubmitter(route_hook=lambda _route: None, resolve=lambda _host: ["93.184.216.34"],
+                                  screenshot_dir=Path(tempdir.name))
+        submitter._context = type("Context", (), {"new_page": lambda _self: page})()  # a started browser
+        asked = []
+
+        def ask():
+            asked.append(len(page.log))
+            page.log.append(("asked", ""))
+            return should_continue()
+
+        result = submitter.submit("https://bovi.test/contact", identity=IDENTITY, subject="s", body="Hi Bovi team,\n\nA note.", name="bovi",
+                                  should_continue=ask)
+        return result, page.log, asked
+
+    def test_a_no_or_a_failed_check_presses_nothing(self):
+        def broken():
+            raise sqlite3.OperationalError("database is locked")
+
+        for answer in (lambda: False, broken):
+            with self.subTest(answer=answer.__name__):
+                result, log, asked = self.submit(answer)
+                self.assertEqual((result["outcome"], result["note"], result.get("paused")),
+                                 ("failed", outreach_forms.PAUSED_BEFORE_SENDING, True), result)
+                self.assertEqual(len(asked), 1)
+                self.assertEqual([entry[0] for entry in log], ["fill", "fill", "fill", "asked"],
+                                 "asked once, after every field was filled, and the button was never pressed")
+
+    def test_a_yes_presses_the_button_right_after_the_check(self):
+        result, log, _asked = self.submit(lambda: True)
+        self.assertEqual(result["outcome"], "submitted", result)
+        self.assertEqual([entry[0] for entry in log], ["fill", "fill", "fill", "asked", "click"])
 
 
 class _Page:

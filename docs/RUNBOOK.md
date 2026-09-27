@@ -23,6 +23,13 @@
 - Suspected breach: rotate all three API tokens/provider secrets, disconnect provider accounts, preserve operational audit, and notify affected testers.
 - Data loss: restore the latest encrypted backup into an isolated destination, run integrity/parity tests, then switch traffic.
 
+## Gmail connection
+
+- Needs reconnecting: the banner and Automation → Health say so, and reply and bounce checks stop. The student clicks **Reconnect Gmail** under Outreach; nothing else is needed.
+- The expiry warning is an estimate. A Google Cloud project still in Testing loses its Gmail grant after about 7 days, so the app warns a day before `token_granted_at` plus `PIPELINE_GMAIL_TOKEN_DAYS` (7 by default). For a project published to production, set `PIPELINE_GMAIL_TOKEN_DAYS=0` in `.env` and the warning is never shown. Once the date has passed the warning says only "soon", and it retires itself when Gmail keeps answering past the date.
+- When Gmail asks the app to slow down, background reads are held back until the time Health shows; a scheduled email waits for the hold to end without using up its tries.
+- Pausing automation does not stop reading Gmail: replies and bounces are still recorded, and notices still appear.
+
 ## Backup commands
 
 Set `PIPELINE_BACKUP_KEY` to a Fernet key kept outside the repository.

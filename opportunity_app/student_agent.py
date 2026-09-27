@@ -754,12 +754,16 @@ def decide_proposal(conn: sqlite3.Connection, proposal_id: str, decision: str, *
                     source=f"agent_proposal:{proposal_id}",
                 )
             elif row["action_type"] == "add_application_task":
+                # Labelled like the agent's stage changes: the agent wrote it, and the student approved it.
                 result = add_application_task(
                     conn,
                     inputs["application_id"],
                     title=inputs["title"],
                     due_at=inputs.get("due_at"),
                     user_id=user_id,
+                    origin="agent",
+                    origin_ref=proposal_id,
+                    source=f"agent_proposal:{proposal_id}",
                 )
             elif row["action_type"] == "create_preparation_document":
                 result = create_document(

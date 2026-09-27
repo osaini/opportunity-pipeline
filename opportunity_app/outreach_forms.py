@@ -25,8 +25,13 @@ replies are read from Gmail by the company's domain (outreach_inbox.py).
 
 The worker's submissions are automatic, so the student's pause stops them: in
 the claim's own transaction, and once more just before the send button is
-pressed. A form stopped by a pause stays 'found' and goes when they resume. The
-student's own Send through the form is never stopped by a pause.
+pressed. That last check and moving the claim to 'clicking' are one
+transaction that starts with automation.pause_guard, so a pause either lands
+first and nothing is pressed, or lands after and reports the form as in flight
+(automation.in_flight). A claim left 'clicking' (the app stopped mid-press)
+may have sent the form, so it is treated like 'unconfirmed'. A form stopped by
+a pause stays 'found' and goes when they resume. The student's own Send
+through the form is never stopped by a pause.
 """
 
 from __future__ import annotations
@@ -1236,6 +1241,15 @@ def form_ready(target: dict[str, Any], *, fingerprint: str | None = None, retry:
         )
 
 
+def _click_held(row: Any) -> bool:
+    """Whether a request may still be pressing the button under this form claim ('clicking').
+
+    Held exactly as a claim still being worked on would be (_claim_held): by
+    this process while its request runs, or by another for a grace period.
+    """
+    return row["state"] == automation.FORM_HANDED_OVER and _claim_held({**dict(row), "state": "drafting"})
+
+
 def submit_contact_form(
     conn: sqlite3.Connection,
     target_id: str,
@@ -1260,11 +1274,12 @@ def submit_contact_form(
     stale_token = ""
     existing = _claim(conn, target_id, user_id, "initial")
     if existing is not None:
-        if _claim_held(existing):
+        if _claim_held(existing) or _click_held(existing):
             raise SendConflictError(IN_PROGRESS)
         if existing["state"] == "sent":
             raise ValueError("This first message was already sent")
-        if existing["state"] == "unconfirmed" and not retry_unconfirmed:
+        # A claim left mid-click (the app stopped as the button was pressed) may have sent the form.
+        if existing["state"] in {"unconfirmed", automation.FORM_HANDED_OVER} and not retry_unconfirmed:
             raise SendNeedsCheckError(
                 "An earlier send of this message may have gone out. Check before sending it again.", "form-unconfirmed",
             )
@@ -1280,13 +1295,24 @@ def submit_contact_form(
         form_ready(fresh, fingerprint=fingerprint or target["draft_fingerprint"], retry=retry_unconfirmed)
         return fresh
 
-    def not_paused() -> bool:
-        # A fresh read outside any transaction: the claim's has committed by the time this is asked.
-        return not automation.paused(conn, user_id)
-
-    submit_options: dict[str, Any] = {"should_continue": not_paused} if automatic else {}
-
     with _claimed(conn, target_id, user_id, "initial", "form", revalidate, stale_token=stale_token) as (token, fresh):
+        def hand_over() -> bool:
+            """Just before the button: hand the claim over, in one step with checking the pause.
+
+            The transaction starts with pause_guard, so a pause either lands
+            first (seen here: nothing is pressed) or waits until the claim is
+            'clicking', and then reports this form as in flight. False too if
+            the claim is no longer ours as it was: when unsure, nothing is sent.
+            """
+            with conn:
+                if automation.pause_guard(conn, user_id):
+                    return False
+                return bool(conn.execute(
+                    "UPDATE outreach_send_claims SET state=?, claimed_at=? WHERE target_id=? AND kind='initial' AND token=? AND state='drafting'",
+                    (automation.FORM_HANDED_OVER, utc_now(), target_id, token),
+                ).rowcount)
+
+        submit_options: dict[str, Any] = {"should_continue": hand_over} if automatic else {}
         page_url = fresh["contact_form"]["page_url"]
         try:
             with submitter_factory(in_browser=in_browser) as submitter:

@@ -303,6 +303,14 @@ themselves (rule 3). The details:
   `PIPELINE_OUTREACH_ACCOUNT` to their address and `PIPELINE_OUTREACH_COMPOSE=gmail`.
   `PIPELINE_CONNECTION_KEY` was already generated in step 2.
   Once Gmail is connected the app catches bounces and logs replies on its own.
+  Ask whether their Google Cloud project is still in **Testing** or was
+  **published to production**. Google ends a Testing project's Gmail grant
+  after about 7 days, so the app warns a day ahead that Gmail will likely ask
+  them to reconnect; that is `PIPELINE_GMAIL_TOKEN_DAYS`, 7 by default. For a
+  project published to production there is no such limit, so they set it to 0
+  and the warning never shows: `python -m opportunity_app.setup set-key
+  PIPELINE_GMAIL_TOKEN_DAYS`, then type `0`. The warning is only an estimate,
+  and it retires itself once Gmail keeps answering past the date.
   Ask whether they want the **Automation** switches under Outreach → Outreach
   settings: writing drafts automatically, finding a new contact after a bounce,
   sending on the recipient's weekday morning, having a second model check

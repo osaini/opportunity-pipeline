@@ -86,6 +86,7 @@ class SettingsTests(AutomationApiCase):
         self.assertEqual(payload["health"]["banner"], [])
         self.assertEqual(payload["health"]["unread_notices"], 1)
         self.assertEqual(payload["health"]["counts"], {"proposed": 0, "shadow_unreviewed": 0, "applied_last_24h": 0})
+        self.assertEqual((payload["health"]["unconfirmed"], payload["health"]["breaker_off"]), ([], []))
         self.assertEqual([notice["title"] for notice in payload["notices"]], ["Gmail needs reconnecting"])
 
     def test_modes_are_switched(self):
@@ -198,7 +199,13 @@ class ActionTests(AutomationApiCase):
         self.assertEqual([item["status"] for item in by_feature["items"]], ["shadow"])
         first = self.get("/api/v1/automation/actions", params={"limit": 1}).json()
         self.assertEqual((len(first["items"]), first["total"]), (1, 3))
-        for params in ({"status": "done"}, {"limit": 0}, {"limit": 201}, {"feature": "x" * 65}):
+        several = self.get("/api/v1/automation/actions", params={"status": "applied,shadow,undone"}).json()
+        self.assertEqual(([item["id"] for item in several["items"]], several["total"]), ([shadow["id"], applied["id"]], 2),
+                         "several statuses, comma-separated, each list fetched on its own")
+        one_of_two = self.get("/api/v1/automation/actions", params={"status": "applied,shadow", "limit": 1}).json()
+        self.assertEqual((len(one_of_two["items"]), one_of_two["total"]), (1, 2), "the total counts past the limit")
+        for params in ({"status": "done"}, {"status": "applied,done"}, {"status": ","}, {"status": ""},
+                       {"limit": 0}, {"limit": 201}, {"feature": "x" * 65}):
             with self.subTest(params=params):
                 self.assertEqual(self.get("/api/v1/automation/actions", params=params).status_code, 422)
 
@@ -239,6 +246,8 @@ class ActionTests(AutomationApiCase):
         overview = self.get("/api/v1/automation").json()
         self.assertEqual(self.feature(overview, SWITCH.key)["mode"], "off")
         self.assertIn("Turned off Test API switch", overview["notices"][0]["title"])
+        self.assertEqual(second["breaker_notice"], {"title": overview["notices"][0]["title"], "body": overview["notices"][0]["body"]})
+        self.assertEqual([item["feature"] for item in overview["health"]["breaker_off"]], [SWITCH.key])
 
     def test_approve(self):
         row = self.act(auto=False)
@@ -285,8 +294,11 @@ class ActionTests(AutomationApiCase):
 
     def test_two_rejects_turn_the_feature_off(self):
         rows = [self.act(after={"stage": stage}, auto=False) for stage in ("interview", "offer")]
-        self.post(f"/api/v1/automation/actions/{rows[0]['id']}/reject")
-        self.assertTrue(self.post(f"/api/v1/automation/actions/{rows[1]['id']}/reject").json()["feature_paused"])
+        first = self.post(f"/api/v1/automation/actions/{rows[0]['id']}/reject").json()
+        self.assertEqual((first["feature_paused"], first["breaker_notice"]), (False, None))
+        second = self.post(f"/api/v1/automation/actions/{rows[1]['id']}/reject").json()
+        self.assertTrue(second["feature_paused"])
+        self.assertEqual(second["breaker_notice"]["title"], "Turned off Test API switch: you undid or rejected 2 of its last 2 actions")
         self.assertEqual(self.mode(SWITCH.key), "off")
 
     def test_review(self):
@@ -322,6 +334,20 @@ class NoticeTests(AutomationApiCase):
         self.assertEqual(self.post("/api/v1/automation/notices/read", {}).status_code, 422)
         with closing(connect_product(self.platform_path)) as other:
             self.assertEqual(other.execute("SELECT COUNT(*) FROM automation_notices WHERE read_at IS NULL").fetchone()[0], 1)
+
+    def test_mark_all_read_marks_every_unread_notice_not_only_the_page(self):
+        for n in range(25):
+            automation.notice(self.conn, USER, event_key=f"many:{n}", level="info", title=f"Notice {n}")
+        overview = self.get("/api/v1/automation").json()
+        self.assertEqual((len(overview["notices"]), overview["health"]["unread_notices"]), (20, 25))
+        for body in ({"all": False}, {"ids": [overview["notices"][0]["id"]], "all": True}, {"all": "maybe"}):
+            with self.subTest(body=body):
+                self.assertEqual(self.post("/api/v1/automation/notices/read", body).status_code, 422)
+        response = self.post("/api/v1/automation/notices/read", {"all": True})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {"marked": 25})
+        after = self.get("/api/v1/automation").json()
+        self.assertEqual((after["notices"], after["health"]["unread_notices"]), ([], 0))
 
 
 if __name__ == "__main__":

@@ -13,13 +13,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR
+from opportunity_app import STATIC_DIR, automation
 from opportunity_app.api import create_app
 from opportunity_app.outreach import confirm_research, create_target, get_target, log_reply, update_target
 from opportunity_app.operations import enqueue_job, run_next_job
 from opportunity_app.outreach_call_prep import (
-    DURING_CALL, JOB_TYPE, CallPrepRejected, CallPrepWorker, ReplyRequired, auto_queue_call_prep,
-    generate_call_prep, queue_call_prep,
+    DURING_CALL, JOB_TYPE, PAUSED_WAIT, CallPrepRejected, CallPrepWorker, ReplyRequired, auto_queue_call_prep,
+    generate_call_prep, is_automatic, queue_call_prep,
 )
 from opportunity_app.schema import connect_product, ensure_product_schema
 from opportunity_app.worker import WEB_APP_JOB_TYPES
@@ -279,6 +279,64 @@ class CallPrepJobTests(unittest.TestCase):
         finally:
             worker.stop()
         self.assertIn("TALKING POINTS", self.target_now()["call_prep"])
+
+    def replied(self):
+        update_target(self.conn, self.target["id"], {"status": "replied"}, user_id=USER)
+        log_reply(self.conn, self.target["id"], REPLY, user_id=USER)
+
+    def job_row(self):
+        return self.conn.execute("SELECT state, attempts, last_error, payload_json FROM job_queue WHERE job_type=?", (JOB_TYPE,)).fetchone()
+
+    def a_minute_passes(self):
+        self.conn.execute("UPDATE job_queue SET next_attempt_at='2000-01-01T00:00:00+00:00' WHERE job_type=?", (JOB_TYPE,))
+        self.conn.commit()
+
+    def test_a_job_the_app_started_waits_while_paused_and_runs_after_resume(self):
+        self.replied()
+        automation.set_paused(self.conn, USER, True)
+        self.assertTrue(auto_queue_call_prep(self.conn, self.target["id"], user_id=USER, reason="Reply found in Gmail"),
+                        "queued even while paused, so it is not forgotten")
+        self.worker().run_pending()
+        self.assertEqual(self.provider.prompts, [], "nothing went to the model while paused")
+        job = self.job_row()
+        self.assertEqual((job["state"], job["attempts"], job["last_error"]), ("queued", 0, PAUSED_WAIT),
+                         "held in line: not failed, and no try used up")
+        self.assertEqual(self.target_now()["call_prep"], "")
+        self.a_minute_passes()
+        self.worker().run_pending()
+        self.assertEqual(self.provider.prompts, [], "still paused")
+        automation.set_paused(self.conn, USER, False)
+        self.a_minute_passes()
+        self.worker().run_pending()
+        target = self.target_now()
+        self.assertEqual(target["call_prep_job"]["state"], "succeeded")
+        self.assertIn("TALKING POINTS", target["call_prep"])
+
+    def test_call_prep_the_student_asked_for_runs_while_paused(self):
+        self.replied()
+        automation.set_paused(self.conn, USER, True)
+        queue_call_prep(self.conn, self.target["id"], user_id=USER, replace=True, reason="You asked for new call prep")
+        self.worker().run_pending()
+        self.assertEqual(self.target_now()["call_prep_job"]["state"], "succeeded", "a click is the student's own act")
+        self.assertEqual(len(self.provider.prompts), 1)
+
+    def test_asking_while_an_automatic_job_waits_makes_it_the_students(self):
+        self.replied()
+        automation.set_paused(self.conn, USER, True)
+        auto_queue_call_prep(self.conn, self.target["id"], user_id=USER, reason="Reply logged")
+        self.worker().run_pending()
+        self.assertEqual(self.job_row()["state"], "queued")
+        queue_call_prep(self.conn, self.target["id"], user_id=USER, replace=True, reason="You asked for new call prep")
+        self.assertEqual(json.loads(self.job_row()["payload_json"])["automatic"], False)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM job_queue WHERE job_type=?", (JOB_TYPE,)).fetchone()[0], 1, "one job")
+        self.worker().run_pending()
+        self.assertIn("TALKING POINTS", self.target_now()["call_prep"])
+
+    def test_jobs_queued_before_their_origin_was_recorded_are_told_apart_by_replace(self):
+        self.assertTrue(is_automatic({"replace": False}))
+        self.assertFalse(is_automatic({"replace": True}))
+        self.assertFalse(is_automatic({"replace": False, "automatic": False}))
+        self.assertTrue(is_automatic({"replace": True, "automatic": True}))
 
     def test_the_two_workers_never_take_each_others_jobs(self):
         enqueue_job(self.conn, "someone_elses_job", {}, "other-job")

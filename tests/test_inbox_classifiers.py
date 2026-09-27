@@ -16,11 +16,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR
+from opportunity_app import STATIC_DIR, automation, outreach_inbox
 from opportunity_app.api import create_app
 from opportunity_app.connections import classify_monitored_message
 from opportunity_app.inbox_classifiers import (
     MIN_CONFIDENCE,
+    PAUSED_REASON,
     build_client,
     classify_email,
     classify_reply,
@@ -29,10 +30,12 @@ from opportunity_app.inbox_classifiers import (
     set_enabled,
 )
 from opportunity_app.outreach import suggest_reply_status
+from opportunity_app.outreach_inbox import InboxWatcher
 from opportunity_app.schema import LOCAL_USER_ID, connect_product
 from opportunity_app.typesafe_decisions import TypeSafeNotConfigured, TypeSafeResponseError
 
 from helpers_platform import build_and_migrate
+from test_outreach_inbox import ReplyCaptureTests, mail as inbox_mail
 
 AUTH = {"Authorization": "Bearer inbox-owner"}
 # The rules read this as declined; a reader sees the call it proposes.
@@ -188,6 +191,30 @@ class SettingTests(unittest.TestCase):
 
         self.assertIsNone(client_for(self.conn, misconfigured, user_id=LOCAL_USER_ID))
 
+    def test_the_pause_stops_jev_and_says_so(self):
+        jev = FakeJev("call_scheduled", 0.95)
+        calls = []
+
+        def factory():
+            calls.append(1)
+            return jev
+
+        set_enabled(self.conn, True, user_id=LOCAL_USER_ID)
+        automation.set_paused(self.conn, LOCAL_USER_ID, True)
+        client = client_for(self.conn, factory, user_id=LOCAL_USER_ID)
+        self.assertIsNot(client, jev)
+        self.assertFalse(client.configured)
+        self.assertEqual(calls, [], "no client is even built while paused")
+        suggestion = classify_reply(MIXED_REPLY, suggest_reply_status, client)
+        self.assertEqual((suggestion["source"], suggestion["status"]), ("rules", suggest_reply_status(MIXED_REPLY)["status"]))
+        self.assertEqual(suggestion["fallback_reason"], PAUSED_REASON)
+        event_type, _confidence, how = classify_email("Next steps", "Can you interview Tuesday?", classify_monitored_message, client)
+        self.assertEqual((how["source"], how["fallback_reason"]), ("rules", PAUSED_REASON))
+        self.assertEqual(event_type, classify_monitored_message("Next steps", "Can you interview Tuesday?")[0])
+        self.assertEqual(jev.calls, [], "no text went to TypeSafe")
+        automation.set_paused(self.conn, LOCAL_USER_ID, False)
+        self.assertIs(client_for(self.conn, factory, user_id=LOCAL_USER_ID), jev, "resumed, Jev answers again")
+
     def test_build_client_without_a_key_is_none(self):
         with mock.patch.dict("os.environ", {"TYPESAFE_API_KEY": ""}):
             self.assertIsNone(build_client())
@@ -292,6 +319,19 @@ class InboxSuggestionApiTests(unittest.TestCase):
         self.assertEqual(second["payload"]["classified_by"]["source"], "jev")
         self.assertEqual(second["status"], "pending", "still a suggestion the student confirms")
 
+    def test_while_paused_a_pasted_reply_and_a_connector_email_never_reach_jev(self):
+        self.client.put("/api/v1/typesafe/inbox-suggestions", headers=AUTH, json={"enabled": True})
+        self.assertEqual(self.client.put("/api/v1/automation/settings", headers=AUTH, json={"paused": True}).status_code, 200)
+        suggestion = self.log_reply()
+        self.assertEqual((suggestion["source"], suggestion["fallback_reason"]), ("rules", PAUSED_REASON))
+        connector = self.client.post("/api/v1/connections", headers=AUTH, json={"provider": "sandbox"}).json()
+        event = self.client.post("/api/v1/monitored-events", headers=AUTH, json={
+            "connector_id": connector["id"], "subject": "Next steps", "body": "Can you interview Tuesday?",
+            "sender": "r@example.com", "external_id": "m1",
+        }).json()
+        self.assertEqual(event["payload"]["classified_by"], {"source": "rules", "model": "", "fallback_reason": PAUSED_REASON})
+        self.assertEqual(self.jev.calls, [], "the pause holds on every path, the student's own paste included")
+
     def test_the_setting_is_exported_with_the_account(self):
         self.client.put("/api/v1/typesafe/inbox-suggestions", headers=AUTH, json={"enabled": True})
         with closing(connect_product(self.platform_path)) as conn:
@@ -299,6 +339,39 @@ class InboxSuggestionApiTests(unittest.TestCase):
 
             exported = export_account(conn, user_id=LOCAL_USER_ID)
         self.assertEqual([row["key"] for row in exported["user_settings"]], ["jev_inbox_suggestions"])
+
+
+class PausedInboxWatcherTests(unittest.TestCase):
+    """The background inbox check still records a reply while paused, but never sends its text to Jev."""
+
+    setUp = ReplyCaptureTests.setUp
+    tearDown = ReplyCaptureTests.tearDown
+    connect = ReplyCaptureTests.connect
+    sent_target = ReplyCaptureTests.sent_target
+    arrive = ReplyCaptureTests.arrive
+    target = ReplyCaptureTests.target
+    replies = ReplyCaptureTests.replies
+
+    def test_a_paused_watcher_records_the_reply_with_the_rules(self):
+        target = self.sent_target()
+        jev = FakeJev("call_scheduled", 0.95)
+        with closing(connect_product(self.platform_path)) as conn:
+            set_enabled(conn, True, user_id=LOCAL_USER_ID)
+            automation.set_paused(conn, LOCAL_USER_ID, True)
+        self.arrive("reply-1", inbox_mail("Happy to hop on a call. When are you free next week?"))
+        outreach_inbox._LAST_CAPTURE.clear()
+        # The same wiring create_app gives the background watcher.
+        watcher = InboxWatcher(
+            self.platform_path, client_factory=self.factory,
+            decisions_for=lambda conn, user_id: client_for(conn, lambda: jev, user_id=user_id),
+        )
+        watcher.run_once()
+        self.assertEqual(jev.calls, [], "nothing went to TypeSafe while paused")
+        after = self.target(target)
+        self.assertEqual(self.replies(target), ["Happy to hop on a call. When are you free next week?"],
+                         "reading Gmail goes on: a reply is a fact that already happened")
+        self.assertEqual(after["status"], "replied")
+        self.assertEqual((after["reply_suggestion"]["source"], after["reply_suggestion"]["fallback_reason"]), ("rules", PAUSED_REASON))
 
 
 if __name__ == "__main__":
