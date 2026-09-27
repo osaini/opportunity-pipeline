@@ -1,5 +1,6 @@
 """Replies to outreach read from Gmail: logged once, a quiet company moved to Replied, the rest suggested."""
 
+import json
 import sys
 import tempfile
 import unittest
@@ -16,13 +17,13 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, automation, outreach_delivery, outreach_inbox
+from opportunity_app import STATIC_DIR, automation, outreach_delivery, outreach_gmail, outreach_inbox
 from opportunity_app.api import create_app
 from opportunity_app.outreach_inbox import InboxWatcher, reply_text, strip_quoted
 from opportunity_app.schema import connect_product, utc_now
 
 from helpers_platform import build_and_migrate
-from test_outreach_gmail import ACCOUNT, PDF, SCOPES, FakeGmail, forget_gmail_backoff, rate_limited
+from test_outreach_gmail import ACCOUNT, PDF, SCOPES, AlwaysInTransaction, FakeGmail, forget_gmail_backoff, rate_limited
 
 AUTH = {"Authorization": "Bearer inbox-owner"}
 USER = "local-user"
@@ -251,8 +252,12 @@ class ReplyCaptureTests(unittest.TestCase):
 
     def test_a_search_that_fails_is_reported_not_taken_as_nothing(self):
         self.sent_target()
-        self.gmail.thread_status = 500
+        self.gmail.thread_status = 400
         self.assertEqual(self.check()["state"], "unreachable")
+        # A Gmail server error is a passing fault: reads wait, as for a rate limit, and it is still not "nothing".
+        self.gmail.thread_status = 503
+        self.assertEqual(self.check()["state"], "throttled")
+        self.assertIsNotNone(outreach_gmail.backoff_until(USER))
 
     def test_every_page_of_results_is_read(self):
         target = self.sent_target()
@@ -324,15 +329,99 @@ class ReplyCaptureTests(unittest.TestCase):
             conn.execute("UPDATE connector_accounts SET status='error', updated_at='2026-09-27T10:00:00+00:00'")
             conn.commit()
         self.watcher().run_once()
+        first = self.health()["inbox.connection"]
         self.watcher().run_once()
         self.assertEqual(len(self.gmail.requests), asked, "nothing is asked of a connection that needs reconnecting")
         health = self.health()
-        self.assertEqual(health["inbox.connection"]["last_error"], "Gmail needs reconnecting")
+        self.assertTrue(health["inbox.connection"]["last_error"].startswith("Gmail needs reconnecting (since "),
+                        health["inbox.connection"]["last_error"])
+        self.assertEqual(json.loads(health["inbox.connection"]["detail_json"]),
+                         {"state": "error", "since": "2026-09-27T10:00:00+00:00"})
+        self.assertEqual(health["inbox.connection"]["last_error_at"], first["last_error_at"],
+                         "a later pass does not move when it broke")
         self.assertNotIn("inbox.replies", health)
         with closing(connect_product(self.platform_path)) as conn:
             notices = automation.list_notices(conn, USER)
         self.assertEqual([(n["event_key"], n["level"]) for n in notices], [("gmail-expired:2026-09-27T10:00:00+00:00", "problem")],
                          "one notice, however many passes")
+
+    def test_a_break_keeps_its_earliest_since_until_the_connection_works_again(self):
+        with closing(connect_product(self.platform_path)) as conn:
+            conn.execute("UPDATE connector_accounts SET status='error', updated_at='2026-09-27T10:00:00+00:00'")
+            conn.commit()
+        self.watcher().run_once()
+        with closing(connect_product(self.platform_path)) as conn:
+            # Something touched the row later while it stayed broken.
+            conn.execute("UPDATE connector_accounts SET updated_at='2026-09-27T11:30:00+00:00'")
+            conn.commit()
+        self.watcher().run_once()
+        self.assertEqual(json.loads(self.health()["inbox.connection"]["detail_json"])["since"], "2026-09-27T10:00:00+00:00")
+        # Reconnected, then broken again: a new break has its own since.
+        with closing(connect_product(self.platform_path)) as conn:
+            conn.execute("UPDATE connector_accounts SET status='connected'")
+            conn.commit()
+        self.watcher().run_once()
+        connected = self.health()["inbox.connection"]
+        self.assertEqual(json.loads(connected["detail_json"]), {"state": "connected"})
+        with closing(connect_product(self.platform_path)) as conn:
+            conn.execute("UPDATE connector_accounts SET status='error', updated_at='2026-09-28T09:00:00+00:00'")
+            conn.commit()
+        self.watcher().run_once()
+        self.assertEqual(json.loads(self.health()["inbox.connection"]["detail_json"]),
+                         {"state": "error", "since": "2026-09-28T09:00:00+00:00"})
+
+    def test_a_connection_the_student_disconnected_is_not_an_error(self):
+        self.sent_target()
+        with closing(connect_product(self.platform_path)) as conn:
+            disconnected = conn.execute("SELECT id FROM connector_accounts WHERE provider='gmail_drafts'").fetchone()[0]
+        self.assertEqual(self.client.delete(f"/api/v1/connections/{disconnected}", headers=AUTH).status_code, 200)
+        asked = len(self.gmail.requests)
+        self.watcher().run_once()
+        first = self.health()["inbox.connection"]
+        self.watcher().run_once()
+        self.assertEqual(len(self.gmail.requests), asked, "nothing is asked of Gmail")
+        row = self.health()["inbox.connection"]
+        self.assertEqual((row["last_error"], row["last_error_at"]), ("", None), "never 'needs reconnecting'")
+        self.assertIsNotNone(row["last_ok_at"])
+        self.assertEqual(json.loads(row["detail_json"]), {"state": "disconnected"})
+        self.assertEqual(row["updated_at"], first["updated_at"], "recorded once, not on every pass")
+        with closing(connect_product(self.platform_path)) as conn:
+            self.assertEqual(automation.list_notices(conn, USER), [], "and no notice")
+
+    def test_on_postgresql_the_watcher_saves_gmail_health_between_its_steps(self):
+        # On PostgreSQL every connection is "in a transaction" after its first read, so a
+        # rate limit seen inside a step cannot be written there; the watcher saves it after.
+        target = self.sent_target()
+        self.arrive("reply-1", mail("Sure, let's talk."))
+        with closing(connect_product(self.platform_path)) as conn:
+            conn.execute("UPDATE connector_accounts SET backoff_until=NULL, last_error='', last_ok_at=NULL")
+            conn.commit()
+        outreach_gmail._BACKOFF.clear()
+        outreach_gmail._HEALTH.clear()
+        self.gmail.read_response = rate_limited
+        outreach_inbox._LAST_CAPTURE.clear()
+        real_connect = outreach_inbox.connect_product
+        with mock.patch.object(outreach_inbox, "connect_product", lambda target: AlwaysInTransaction(real_connect(target))):
+            self.watcher().run_once()
+        with closing(connect_product(self.platform_path)) as conn:
+            row = dict(conn.execute("SELECT * FROM connector_accounts WHERE provider='gmail_drafts'").fetchone())
+            self.assertTrue(row["backoff_until"], "the hold survives a restart")
+            self.assertEqual(row["last_error"], "Gmail asked the app to slow down (HTTP 403)")
+            self.assertEqual(automation.gmail_health(conn, USER)["state"], "throttled")
+        # Gmail answers again: the next pass records it, and the reply is captured.
+        outreach_gmail._BACKOFF.clear()
+        with closing(connect_product(self.platform_path)) as conn:
+            conn.execute("UPDATE connector_accounts SET backoff_until=NULL")
+            conn.commit()
+        self.gmail.read_response = None
+        outreach_inbox._LAST_CAPTURE.clear()
+        with mock.patch.object(outreach_inbox, "connect_product", lambda target: AlwaysInTransaction(real_connect(target))):
+            self.watcher().run_once()
+        with closing(connect_product(self.platform_path)) as conn:
+            row = dict(conn.execute("SELECT * FROM connector_accounts WHERE provider='gmail_drafts'").fetchone())
+        self.assertIsNotNone(row["last_ok_at"])
+        self.assertEqual((row["last_error"], row["backoff_until"]), ("", None))
+        self.assertEqual(self.target(target)["status"], "replied")
 
     def test_a_gmail_slowdown_is_recorded_as_one_and_never_as_a_reconnect(self):
         target = self.sent_target()

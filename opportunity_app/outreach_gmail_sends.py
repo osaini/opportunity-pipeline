@@ -108,6 +108,7 @@ def _pending(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict
 
 
 def _take_due(user_id: str, pending: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
+    """The drafts due for a look, each marked looked at now. A look that fails is forgotten (_forget)."""
     due = []
     with _LOOK_LOCK:
         for item in pending:
@@ -117,6 +118,13 @@ def _take_due(user_id: str, pending: list[dict[str, Any]], now: datetime) -> lis
                 _LAST_LOOK[key] = now
                 due.append(item)
     return due
+
+
+def _forget(user_id: str, items: list[dict[str, Any]]) -> None:
+    """Not read is not "not sent": these drafts are looked at again on the next check, not an interval later."""
+    with _LOOK_LOCK:
+        for item in items:
+            _LAST_LOOK.pop((user_id, str(item["detail"]["draft_id"])), None)
 
 
 def _get(gmail: _Gmail, path: str, **params: Any) -> dict[str, Any] | None:
@@ -273,19 +281,22 @@ def capture_gmail_sends(
                         result["scheduled"].append({"target_id": target_id, "company": item["target"]["company"]})
                 except _Unreadable:
                     # Not read is not "not sent": look again next time.
-                    with _LOOK_LOCK:
-                        _LAST_LOOK.pop((user_id, str(detail["draft_id"])), None)
+                    _forget(user_id, [item])
                     result["state"] = "unreachable"
     except _NeedsReconnect:
+        _forget(user_id, due)
         return {**result, "state": "needs_reconnect"}
     except GmailAuthError:
+        _forget(user_id, due)
         return {**result, "state": "needs_reconnect"}
     except GmailThrottled:
         # Not read is not "not sent": look again as soon as Gmail allows.
-        with _LOOK_LOCK:
-            for item in due:
-                _LAST_LOOK.pop((user_id, str(item["detail"]["draft_id"])), None)
+        _forget(user_id, due)
         return {**result, "state": "throttled"}
     except (httpx.HTTPError, ValueError):
+        _forget(user_id, due)
         return {**result, "state": "unreachable"}
+    except BaseException:
+        _forget(user_id, due)
+        raise
     return result

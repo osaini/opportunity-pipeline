@@ -74,9 +74,35 @@ def rate_limited(reason="rateLimitExceeded", status=403, headers=None):
     }})
 
 
+class AlwaysInTransaction:
+    """A SQLite connection that says a transaction is open after any statement, as PostgresConnection does.
+
+    psycopg opens a transaction on the first query, a read included, so on
+    PostgreSQL in_transaction is True from a caller's first SELECT until it
+    commits. Everything else goes to the real connection.
+    """
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    @property
+    def in_transaction(self):
+        return True
+
+    def __enter__(self):
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        return self._conn.__exit__(*exc)
+
+
 def forget_gmail_backoff(test):
     """Start with no rate limit remembered for anyone, and leave none behind: the memory outlives a test."""
-    for state in (outreach_gmail._BACKOFF, outreach_gmail._OK_WRITTEN):
+    for state in (outreach_gmail._BACKOFF, outreach_gmail._HEALTH):
         state.clear()
         test.addCleanup(state.clear)
 
@@ -287,6 +313,7 @@ class GmailDraftTests(unittest.TestCase):
         self.assertEqual(listing["gmail_drafts"], {
             "configured": True, "connected": False, "needs_reconnect": False, "bounce_check": False,
             "account": ACCOUNT, "attachment": "Resume.pdf", "attachment_problem": "",
+            "expiring_soon": False, "likely_expires_at": None,
         })
         self.connect(scopes=SCOPES[:1])
         status = self.client.get("/api/v1/outreach", headers=AUTH).json()["gmail_drafts"]
@@ -1044,6 +1071,181 @@ class GmailDraftTests(unittest.TestCase):
         self.assertEqual((row["last_ok_at"], row["backoff_until"]), (None, None))
         self.assertIsNotNone(outreach_gmail.backoff_until(USER), "memory still holds reads back")
 
+    def test_on_postgresql_the_health_waits_mid_transaction_and_persisting_saves_it(self):
+        # On PostgreSQL every connection is "in a transaction" after its first read, so
+        # nothing can be written mid-call; persist_gmail_health writes it afterwards.
+        self.connect()
+        with closing(connect_product(self.platform_path)) as raw, self.gmail_client() as client:
+            conn = AlwaysInTransaction(raw)
+            gmail = outreach_gmail._Gmail(conn, client, USER)
+            self.assertEqual(gmail.request("GET", "/profile").status_code, 200)
+            self.gmail.read_response = lambda: rate_limited(status=429)
+            with self.assertRaises(outreach_gmail.GmailThrottled):
+                gmail.request("GET", "/messages")
+            row = self.connector()
+            self.assertEqual((row["last_ok_at"], row["backoff_until"], row["last_error"]), (None, None, ""),
+                             "the instrument: nothing is written while a transaction is open")
+            self.assertTrue(outreach_gmail.persist_gmail_health(conn, USER))
+            row = self.connector()
+            self.assertIsNotNone(row["last_ok_at"])
+            self.assertIsNotNone(row["backoff_until"])
+            self.assertEqual(row["last_error"], "Gmail asked the app to slow down (HTTP 429)")
+            self.assertEqual(automation.gmail_health(raw, USER)["state"], "throttled")
+            self.assertFalse(outreach_gmail.persist_gmail_health(conn, USER), "nothing new, nothing written")
+            # A restart forgets memory; the saved hold still keeps reads back.
+            outreach_gmail._BACKOFF.clear()
+            asked = len(self.gmail.requests)
+            with self.assertRaises(outreach_gmail.GmailThrottled):
+                outreach_gmail._Gmail(raw, client, USER).request("GET", "/profile")
+            self.assertEqual(len(self.gmail.requests), asked)
+            # Once Gmail answers again, the success clears the hold and the error, again on persisting.
+            outreach_gmail._BACKOFF.clear()
+            self.gmail.read_response = None
+            with closing(connect_product(self.platform_path)) as other:
+                other.execute("UPDATE connector_accounts SET backoff_until=NULL")
+                other.commit()
+            gmail = outreach_gmail._Gmail(conn, client, USER)
+            self.assertEqual(gmail.request("GET", "/profile").status_code, 200)
+            self.assertEqual(self.connector()["last_error"], "Gmail asked the app to slow down (HTTP 429)")
+            self.assertTrue(outreach_gmail.persist_gmail_health(conn, USER))
+            self.assertEqual((self.connector()["last_error"], self.connector()["backoff_until"]), ("", None))
+
+    def test_a_gmail_server_error_on_a_read_holds_reads_back_instead_of_failing_them(self):
+        self.connect()
+        self.gmail.read_response = lambda: httpx.Response(503)
+        with closing(connect_product(self.platform_path)) as conn, self.gmail_client() as client:
+            gmail = outreach_gmail._Gmail(conn, client, USER)
+            with self.assertRaises(outreach_gmail.GmailThrottled):
+                gmail.request("GET", "/messages")
+            asked = len(self.gmail.requests)
+            with self.assertRaises(outreach_gmail.GmailThrottled):
+                gmail.request("GET", "/messages")
+            self.assertEqual(len(self.gmail.requests), asked, "held back, as for a rate limit")
+            row = self.connector()
+            self.assertEqual(row["status"], "connected")
+            self.assertTrue(row["backoff_until"])
+            self.assertEqual(row["last_error"], "Gmail had a temporary problem (HTTP 503)")
+            # Gmail's wait is over and it answers: the error is cleared with the hold.
+            outreach_gmail._BACKOFF.clear()
+            self.gmail.read_response = None
+            self.assertEqual(outreach_gmail._Gmail(conn, client, USER, wait_out_backoff=False).request("GET", "/profile").status_code, 200)
+            row = self.connector()
+            self.assertEqual((row["last_error"], row["backoff_until"]), ("", None))
+            self.assertIsNotNone(row["last_ok_at"])
+
+    def test_a_gmail_server_error_on_a_send_is_still_uncertain_and_slows_reads(self):
+        self.connect()
+        target = self.approved_target()
+        self.gmail.send_status = 503
+        response = self.send(target)
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(self.claim(target), ("unconfirmed", "send"), "Gmail may have sent it, as before")
+        self.assertIsNotNone(outreach_gmail.backoff_until(USER), "reads slow down too")
+        row = self.connector()
+        self.assertTrue(row["backoff_until"])
+        self.assertEqual(row["last_error"], "Gmail had a temporary problem (HTTP 503)")
+
+    def test_a_server_error_renewing_the_token_is_not_a_broken_connection(self):
+        self.connect(access_token="stale-token")
+        self.gmail.expired_tokens.add("stale-token")
+        self.gmail.refresh_status = 503
+        target = self.approved_target()
+        response = self.draft(target)
+        self.assertEqual(response.status_code, 502, response.text)
+        row = self.connector()
+        self.assertEqual(row["status"], "connected", "no reconnect for a passing fault at Google")
+        self.assertTrue(row["backoff_until"])
+        self.assertEqual(row["last_error"], "Google could not renew the connection just now (HTTP 503)")
+        self.assertIsNotNone(outreach_gmail.backoff_until(USER))
+        self.assertEqual(self.gmail.drafts, {})
+        with closing(connect_product(self.platform_path)) as conn:
+            self.assertEqual(automation.gmail_health(conn, USER)["state"], "throttled")
+            self.assertEqual(automation.list_notices(conn, USER), [])
+        # A real refusal still asks for a reconnect, and says why.
+        outreach_gmail._BACKOFF.clear()
+        with closing(connect_product(self.platform_path)) as conn:
+            conn.execute("UPDATE connector_accounts SET backoff_until=NULL")
+            conn.commit()
+        self.gmail.refresh_status = None
+        self.gmail.refresh_ok = False
+        self.assertEqual(self.draft(target).status_code, 409)
+        row = self.connector()
+        self.assertEqual((row["status"], row["last_error"]), ("error", outreach_gmail.RENEW_REFUSED))
+
+    def test_gmail_that_cannot_be_reached_is_noted_until_a_call_works(self):
+        self.connect()
+        target = self.approved_target()
+        self.gmail.send_unreached = httpx.ConnectError("no route to Gmail")
+        self.assertEqual(self.send(target).status_code, 502)
+        self.assertEqual(self.connector()["last_error"], outreach_gmail.UNREACHABLE)
+        self.assertIsNone(outreach_gmail.backoff_until(USER), "not a reason to hold reads back")
+        self.gmail.send_unreached = None
+        self.assertEqual(self.send(target).status_code, 200)
+        self.assertEqual(self.connector()["last_error"], "")
+
+    # --- A bounce notice read while Gmail slows down ---------------------------
+
+    def notice_elsewhere(self):
+        """A sent email, and a failure notice for it that Gmail did not thread with it."""
+        self.connect(scopes=SCOPES)
+        target = self.approved_target()
+        self.assertEqual(self.send(target).status_code, 200)
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        self.gmail.inbox_notices = ["dsn-elsewhere"]
+        self.gmail.raw["dsn-elsewhere"] = (delivery_report(failed=["greg@bovi.example"]), now_ms)
+        return target
+
+    def gmail_waited(self):
+        """Gmail's wait is over: no hold in memory or on the row."""
+        outreach_gmail._BACKOFF.clear()
+        with closing(connect_product(self.platform_path)) as conn:
+            conn.execute("UPDATE connector_accounts SET backoff_until=NULL")
+            conn.commit()
+
+    def test_a_bounce_notice_rate_limited_on_its_read_is_read_again_and_recorded(self):
+        target = self.notice_elsewhere()
+        real, limited = self.gmail.handler, [1]
+
+        def handler(request):
+            if request.url.path.endswith("/messages/dsn-elsewhere") and limited[0]:
+                limited[0] -= 1
+                return rate_limited(status=429)
+            return real(request)
+
+        self.gmail.handler = handler
+        first = self.check()
+        self.assertEqual((first["state"], first["bounced"]), ("throttled", []))
+        self.assertEqual(limited, [0], "the instrument: the notice's own read was the one rate-limited")
+        self.gmail_waited()
+        second = self.check()
+        self.assertEqual([item["target_id"] for item in second["bounced"]], [target["id"]], "the bounce is not lost")
+        self.assertEqual(self.target(target)["status"], "drafted")
+
+    def test_a_bounce_notice_held_back_by_another_threads_slowdown_is_read_again(self):
+        target = self.notice_elsewhere()
+        real_raw = outreach_delivery._raw
+
+        def raw_after_a_hold(gmail, message_id):
+            # Another thread (the watcher, a page) was told to slow down between the search and this read.
+            outreach_gmail._BACKOFF[USER] = (datetime.now(timezone.utc) + timedelta(minutes=10), 1)
+            return real_raw(gmail, message_id)
+
+        with mock.patch.object(outreach_delivery, "_raw", raw_after_a_hold):
+            self.assertEqual(self.check()["state"], "throttled")
+        self.gmail_waited()
+        second = self.check()
+        self.assertEqual([item["target_id"] for item in second["bounced"]], [target["id"]])
+
+    def test_a_bounce_notice_whose_recording_failed_is_read_again(self):
+        target = self.notice_elsewhere()
+        real_record = outreach_delivery.record_bounce
+        with mock.patch.object(outreach_delivery, "record_bounce", side_effect=sqlite3.OperationalError("database is locked")), \
+                closing(connect_product(self.platform_path)) as conn, self.assertRaises(sqlite3.OperationalError):
+            outreach_delivery.check_deliveries(conn, user_id=USER, client_factory=self.gmail_client)
+        self.assertIs(outreach_delivery.record_bounce, real_record)
+        second = self.check()
+        self.assertEqual([item["target_id"] for item in second["bounced"]], [target["id"]])
+
     # --- Bounces --------------------------------------------------------------
 
     def check(self):
@@ -1358,6 +1560,20 @@ class GmailConnectionNoticeTests(unittest.TestCase):
         with self.conn:
             self.conn.execute("UPDATE connector_accounts SET token_granted_at=?", ((self.NOW - timedelta(days=6, hours=20)).isoformat(timespec="seconds"),))
         self.assertEqual(len(outreach_gmail.gmail_notices(self.conn, USER, now=self.NOW)), 1, "a new grant warns again")
+
+    def test_the_outreach_tab_is_told_to_offer_reconnect_before_the_grant_runs_out(self):
+        # The warning says to click Reconnect Gmail in Outreach, so the tab must know to show it while still connected.
+        with mock.patch.dict("os.environ", {
+            "GOOGLE_OAUTH_CLIENT_ID": "client-id", "GOOGLE_OAUTH_CLIENT_SECRET": "client-secret",
+            "PIPELINE_CONNECTION_KEY": Fernet.generate_key().decode(),
+        }):
+            status = outreach_gmail.gmail_drafts_status(self.conn, user_id=USER, now=self.NOW)
+            self.assertEqual((status["connected"], status["expiring_soon"]), (True, True))
+            self.assertEqual(status["likely_expires_at"], "2026-09-28T00:00:00+00:00")
+            with self.conn:
+                self.conn.execute("UPDATE connector_accounts SET token_granted_at=?", ((self.NOW - timedelta(days=1)).isoformat(timespec="seconds"),))
+            status = outreach_gmail.gmail_drafts_status(self.conn, user_id=USER, now=self.NOW)
+            self.assertEqual((status["expiring_soon"], status["likely_expires_at"]), (False, "2026-10-03T12:00:00+00:00"))
 
     def test_a_fresh_grant_gets_no_warning(self):
         with self.conn:

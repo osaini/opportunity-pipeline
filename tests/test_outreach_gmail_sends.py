@@ -147,10 +147,31 @@ class GmailSendsTests(unittest.TestCase):
         self.assertEqual([event["event_type"] for event in after["events"]].count("gmail_scheduled"), 1)
 
     def test_a_gmail_error_is_reported_not_taken_as_not_sent(self):
-        self.drafted_in_gmail()
+        target = self.drafted_in_gmail()
         del self.gmail.drafts["r-1"]
-        self.gmail.thread_status = 500  # the Sent search fails
+        self.gmail.thread_status = 400  # the Sent search fails
         self.assertEqual(self.check()["state"], "unreachable")
+        # A Gmail server error holds reads back as a rate limit does; the draft is still not taken as unsent.
+        self.gmail.thread_status = 503
+        self.assertEqual(self.check()["state"], "throttled")
+        self.assertEqual(self.target(target)["status"], "drafted")
+
+    def test_a_look_that_never_reached_gmail_is_taken_again_on_the_next_check(self):
+        self.drafted_in_gmail()
+        real, unreachable = self.gmail.handler, [True]
+
+        def handler(request):
+            if unreachable[0]:
+                raise httpx.ConnectError("no route to Gmail")
+            return real(request)
+
+        self.gmail.handler = handler
+        self.assertEqual(capture_gmail_sends(self.conn, user_id=USER, client_factory=self.factory)["state"], "unreachable")
+        unreachable[0] = False
+        asked = len(self.gmail.requests)
+        # Not self.check(): that forgets every look. The failed look must have been forgotten already.
+        self.assertEqual(capture_gmail_sends(self.conn, user_id=USER, client_factory=self.factory)["state"], "ok")
+        self.assertGreater(len(self.gmail.requests), asked, "looked again, not an interval later")
 
     def test_a_gmail_slowdown_is_reported_and_the_draft_looked_at_again_once_it_ends(self):
         self.drafted_in_gmail()

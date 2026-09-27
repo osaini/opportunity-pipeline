@@ -219,9 +219,13 @@ class SendGateTests(unittest.TestCase):
         from opportunity_app.outreach_delivery import check_deliveries
 
         target = self.scheduled_follow_up()
-        self.gmail.thread_status = 500
+        self.gmail.thread_status = 400
         result = check_deliveries(self.conn, user_id=USER, client_factory=self.factory, force_target=target["id"])
         self.assertEqual(result["state"], "unreachable")
+        # A Gmail server error is a passing fault: the check waits, as for a rate limit, and still says it did not read.
+        self.gmail.thread_status = 503
+        result = check_deliveries(self.conn, user_id=USER, client_factory=self.factory, force_target=target["id"])
+        self.assertEqual(result["state"], "throttled")
 
     def test_a_bounce_from_days_ago_still_stops_the_follow_up(self):
         target = self.scheduled_follow_up()

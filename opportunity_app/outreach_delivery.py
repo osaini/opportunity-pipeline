@@ -348,14 +348,31 @@ def _match(conn: sqlite3.Connection, user_id: str, watched: list[dict[str, Any]]
     return max(candidates, key=lambda item: item["sent_at"]) if candidates else None
 
 
+def _unread(user_id: str, notice_ids: Iterable[str]) -> None:
+    """Forget that these searched notices were read, so the next check reads them again."""
+    with _LOOK_LOCK:
+        for notice_id in notice_ids:
+            _READ_NOTICES.discard((user_id, notice_id))
+
+
 def _searched_notices(gmail: _Gmail, conn: sqlite3.Connection, user_id: str, watched: list[dict[str, Any]]) -> list[tuple[dict[str, Any], dict[str, Any]]]:
-    """Failure notices outside the sent threads, each with the send it is about."""
+    """Failure notices outside the sent threads, each with the send it is about.
+
+    Each notice is claimed in _READ_NOTICES before it is fetched, so two checks
+    running at once read it once. The claim stands only once the notice has
+    been read: any failure (a rate limit, a hold another thread set, Gmail
+    unreachable) gives back that claim and the claims of the notices found
+    before it, which the caller has not recorded yet. Otherwise a bounce read
+    during a slowdown would never be read again, and a follow-up could go to
+    the address that failed. The caller gives back the claims of the notices it
+    returns if recording them fails (check_deliveries).
+    """
     response = gmail.request("GET", "/messages", params={"q": NOTICE_SEARCH, "maxResults": 25})
     if response.status_code == 403:
         raise _NeedsReconnect
     if response.status_code != 200:
         raise _Unreadable
-    found = []
+    found: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for reference in response.json().get("messages") or []:
         notice_id = str(reference.get("id", ""))
         key = (user_id, notice_id)
@@ -363,16 +380,16 @@ def _searched_notices(gmail: _Gmail, conn: sqlite3.Connection, user_id: str, wat
             if not notice_id or key in _READ_NOTICES:
                 continue
             _READ_NOTICES.add(key)
-        fetched = _raw(gmail, notice_id)
-        if fetched is None:
-            with _LOOK_LOCK:
-                _READ_NOTICES.discard(key)
-            raise _Unreadable
-        read = read_notice(fetched[0])
-        # Without a named address a notice outside the thread cannot be tied to a send.
-        if not read or not read["failed"]:
-            continue
-        item = _match(conn, user_id, watched, read["failed"], fetched[1])
+        try:
+            fetched = _raw(gmail, notice_id)
+            if fetched is None:
+                raise _Unreadable
+            read = read_notice(fetched[0])
+            # Without a named address a notice outside the thread cannot be tied to a send.
+            item = _match(conn, user_id, watched, read["failed"], fetched[1]) if read and read["failed"] else None
+        except BaseException:
+            _unread(user_id, [notice_id, *(notice["notice_id"] for _item, notice in found)])
+            raise
         if item:
             found.append((item, {**read, "notice_id": notice_id}))
     return found
@@ -447,21 +464,33 @@ def check_deliveries(
                 if notice:
                     record(item, notice)
             try:
-                for item, notice in _searched_notices(gmail, conn, user_id, watched):
-                    record(item, notice)
+                searched = _searched_notices(gmail, conn, user_id, watched)
             except _Unreadable:
+                searched = []
                 result["state"] = "unreachable"
+            for index, (item, notice) in enumerate(searched):
+                try:
+                    record(item, notice)
+                except BaseException:
+                    # Read but not recorded: the next check reads these notices again.
+                    _unread(user_id, [later["notice_id"] for _item, later in searched[index:]])
+                    raise
     except _NeedsReconnect:
         # Granted before the app asked to read mail: it can send but not see bounces.
         _forget(user_id, due)
         return {**result, "state": "needs_reconnect"}
     except GmailAuthError:
+        _forget(user_id, due)
         return {**result, "state": "needs_reconnect"}
     except GmailThrottled:
         # Not read is not "no bounce": look again as soon as Gmail allows.
         _forget(user_id, due)
         return {**result, "state": "throttled"}
     except (httpx.HTTPError, ValueError):
-        # ValueError: an answer that was not JSON.
+        # ValueError: an answer that was not JSON. Not read is not "no bounce" either.
+        _forget(user_id, due)
         return {**result, "state": "unreachable"}
+    except BaseException:
+        _forget(user_id, due)
+        raise
     return result
