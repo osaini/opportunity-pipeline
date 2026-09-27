@@ -1110,6 +1110,16 @@ it runs. Editing the draft or changing the recipient cancels it, and the card
 keeps **Cancel** and **Send now**. A send that could not go (Gmail unreachable
 three times, the draft sent some other way) is shown on the card with why.
 
+The app sends scheduled email only while this computer is awake, and the Gmail
+API cannot schedule a send. A scheduled email that missed its morning by more
+than two hours (the computer was asleep or off) is never sent late: it moves to
+the recipient's next weekday morning, and the card and history say so. To send
+at a set time with the computer off, use **Open in Gmail** and Gmail's own
+**Schedule send** (the arrow next to Send). The app notices when Google sends
+it (the draft leaves Drafts and appears in Sent), marks the company sent with
+the real date, and watches for bounces and replies as for any other send. A
+draft waiting in Gmail's Scheduled folder is noted in the history.
+
 Just before any scheduled email goes out, the app reads Gmail again for a
 bounce or a reply about that company, instead of trusting the last background
 check. A follow-up is never sent to a company that replied or whose first email

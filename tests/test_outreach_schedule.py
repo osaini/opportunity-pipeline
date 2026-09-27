@@ -262,7 +262,10 @@ class ScheduledSendTests(unittest.TestCase):
                 raise TypeError("unexpected")
             return real_send(conn, target_id, **kwargs)
 
-        later = datetime.now(timezone.utc) + timedelta(days=9)
+        # Just after both slots (a send hours late would move to the next morning instead).
+        later = max(
+            datetime.fromisoformat(self.target(item)["scheduled"]["initial"]["send_at"]) for item in (first, second)
+        ) + timedelta(minutes=1)
         with mock.patch.object(outreach_schedule, "send_gmail_message", flaky):
             outcomes = {item["target_id"]: item["state"] for item in run_due_sends(self.conn, client_factory=self.factory, now=later)}
         self.assertEqual(outcomes, {first["id"]: "failed", second["id"]: "sent"})

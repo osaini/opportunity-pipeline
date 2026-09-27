@@ -71,6 +71,9 @@ MORNING = time(9, 0)
 # Spread across the first 40 minutes, so a batch does not all land at 9:00.
 SPREAD_MINUTES = 40
 RETRY_AFTER = timedelta(minutes=10)
+# Past this, a send has missed its morning (the computer was asleep or off) and
+# waits for the next one rather than landing at an odd hour.
+LATE_AFTER = timedelta(hours=2)
 MAX_ATTEMPTS = 3
 STUCK_AFTER = timedelta(minutes=10)
 LIVE_STATES = ("scheduled", "sending", "transmitting", "failed")
@@ -287,6 +290,9 @@ def run_due_sends(
     for row in conn.execute(
         "SELECT * FROM outreach_scheduled_sends WHERE state='scheduled' AND send_at<=? ORDER BY send_at", (stamp,),
     ).fetchall():
+        if now - datetime.fromisoformat(row["send_at"]) > LATE_AFTER:
+            results.append({"target_id": row["target_id"], "kind": row["kind"], "state": _move_to_next_morning(conn, row, now)})
+            continue
         with conn:
             claimed = conn.execute(
                 "UPDATE outreach_scheduled_sends SET state='sending', updated_at=? WHERE target_id=? AND kind=? AND state='scheduled'",
@@ -303,6 +309,25 @@ def run_due_sends(
             outcome["state"] = "failed"
         results.append(outcome)
     return results
+
+
+def _move_to_next_morning(conn: sqlite3.Connection, row: sqlite3.Row, now: datetime) -> str:
+    """Give a send that missed its morning the recipient's next one, and say so."""
+    target = get_target(conn, row["target_id"], user_id=row["user_id"])
+    zone, basis = recipient_zone(conn, target, user_id=row["user_id"])
+    send_at = next_morning(now, zone, f"{row['target_id']}:{row['kind']}")
+    label = _label(send_at, zone, basis)
+    with conn:
+        moved = conn.execute(
+            "UPDATE outreach_scheduled_sends SET send_at=?, label=?, error=?, updated_at=? "
+            "WHERE target_id=? AND kind=? AND state='scheduled'",
+            (send_at.isoformat(timespec="seconds"), label, "Missed its morning while this computer was asleep or off",
+             utc_now(), row["target_id"], row["kind"]),
+        ).rowcount
+        if moved:
+            _log(conn, row["target_id"], row["user_id"], "send_moved",
+                 detail=f"Missed its morning while this computer was asleep or off; now goes out {label}")
+    return "moved" if moved else "cancelled"
 
 
 def _still_held(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
