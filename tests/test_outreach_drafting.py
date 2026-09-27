@@ -156,6 +156,23 @@ class DraftingTests(unittest.TestCase):
         self.assertIn("rejected because", provider.prompts[1])
         self.assertEqual(get_target(self.conn, self.target["id"], user_id=USER)["email_body"], "")
 
+    def test_paragraphs_on_single_lines_are_spaced_without_changing_a_word(self):
+        # 3 of 67 real drafts came back with every paragraph on its own line and no blank line between them.
+        packed = json.loads(GOOD)
+        packed["body"] = "\n".join(line for line in packed["body"].split("\n") if line.strip())
+        self.assertNotIn("\n\n", packed["body"])
+        target = self.generate(ScriptedProvider([json.dumps(packed)]))
+        body = target["email_body"]
+        self.assertEqual(body.split(), packed["body"].split(), "only the spacing changes")
+        blocks = body.split("\n\n")
+        self.assertEqual(blocks[0], "Hi Greg,", "the greeting stands alone")
+        self.assertEqual(blocks[-1], "\n".join(json.loads(GOOD)["body"].split("\n\n")[-1].split("\n")),
+                         "the sign-off's lines stay together")
+
+    def test_the_example_the_model_copies_has_blank_lines(self):
+        example = INSTRUCTIONS.split("Subject: Battery pack", 1)[1].split("Rules:", 1)[0]
+        self.assertIn("Hi Dana,\n\nI'm an electrical", example)
+
     def test_a_dash_is_fixed_on_retry(self):
         dashed = GOOD.replace("caught my attention, and", "caught my attention — and")
         provider = ScriptedProvider([dashed, GOOD])
