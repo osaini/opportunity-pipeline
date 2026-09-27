@@ -34,7 +34,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field
 
 from pipeline import load_env_file
-from pipeline_core import OpportunityFilters, OpportunityRepository
+from pipeline_core import MAX_PER_COMPANY, OpportunityFilters, OpportunityRepository
 
 from . import DEFAULT_PLATFORM_DB, DEFAULT_PROFILE, STATIC_DIR
 from .actions import (
@@ -388,6 +388,8 @@ class OpportunityListResponse(BaseModel):
     limit: int
     offset: int
     sort: str
+    # The per-employer cap applied (0: none). Items carry `company_total` when set.
+    per_company: int = 0
     # False while the caller's profile has no scoring inputs, so every score is
     # the base score and no match reasons exist yet.
     personalized: bool = True
@@ -1624,6 +1626,8 @@ def create_app(
         posted_since: str = Query(default="", max_length=40),
         deadline_before: str = Query(default="", max_length=40),
         tag: str = Query(default="", max_length=25),
+        company: str = Query(default="", max_length=200),
+        per_company: int = Query(default=0, ge=0, le=MAX_PER_COMPANY),
         sort: Literal["score", "newest", "discovered", "company", "deadline"] = "score",
         limit: int = Query(default=50, ge=1, le=200),
         offset: int = Query(default=0, ge=0),
@@ -1645,6 +1649,8 @@ def create_app(
             posted_since=posted_since,
             deadline_before=deadline_before,
             tag=tag,
+            company=company,
+            per_company=per_company,
             sort=sort,
             active_only=not include_inactive,
             unique_only=not include_duplicates,
@@ -1665,6 +1671,7 @@ def create_app(
             limit=filters.limit,
             offset=filters.offset,
             sort=filters.sort,
+            per_company=0 if filters.company else filters.per_company,
             personalized=is_personalized(repo.connection, user_id=repo.user_id) if repo.user_id else True,
         )
 

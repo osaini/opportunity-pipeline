@@ -37,6 +37,24 @@ SORT_SQL = {
 }
 
 
+# Ranked views show each employer's top postings and a "+N more" link rather
+# than letting one large employer fill the page. A product default, not a
+# per-student setting: it shapes presentation only and nothing is dropped.
+RANKED_VIEW_PER_COMPANY = 5
+MAX_PER_COMPANY = 50
+
+
+def company_key(value: str) -> str:
+    """The fold `company_sort_key` is stored with.
+
+    Must stay identical to `opportunity_app.schema.sort_key`, which writes the
+    column; it is repeated here because pipeline_core may not import the web
+    package (tests/test_dependency_boundary.py).
+    """
+
+    return str(value or "").casefold()
+
+
 @dataclass(frozen=True)
 class OpportunityFilters:
     """Validated filters supported by the first API/read-model slice."""
@@ -55,6 +73,11 @@ class OpportunityFilters:
     posted_since: str = ""
     deadline_before: str = ""
     tag: str = ""
+    # One employer, matched on the stored fold (see `company_key`).
+    company: str = ""
+    # Show at most this many postings per employer; 0 shows every posting.
+    # Ignored while `company` is set, since that asks for one employer's all.
+    per_company: int = 0
     sort: str = "score"
     active_only: bool = True
     unique_only: bool = True
@@ -77,6 +100,10 @@ class OpportunityFilters:
             posted_since=self.posted_since.strip(),
             deadline_before=self.deadline_before.strip(),
             tag=self.tag.strip().lstrip("#").lower(),
+            # Not stripped: the value is an employer name as a card showed it,
+            # compared exactly (after the fold) against what was stored.
+            company=self.company if self.company.strip() else "",
+            per_company=max(0, min(int(self.per_company), MAX_PER_COMPANY)),
             sort=self.sort if self.sort in SORT_SQL else "score",
             active_only=bool(self.active_only),
             unique_only=bool(self.unique_only),
@@ -217,6 +244,14 @@ def _row_to_opportunity(row: sqlite3.Row) -> dict[str, Any]:
         "source_key": row["source_key"],
         "source_name": row["source_name"],
         "external_id": row["external_id"],
+        **(
+            # Present only on a per-employer capped list: this posting's place
+            # among its employer's, and how many that employer has under the
+            # same filters, shown or not.
+            {"company_rank": int(row["company_rank"]), "company_total": int(row["company_total"])}
+            if "company_total" in row.keys()
+            else {}
+        ),
     }
 
 
@@ -257,6 +292,9 @@ def _where(
         escaped = filters.query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         term = f"%{escaped}%"
         params.extend([term, term, term, term])
+    if filters.company:
+        clauses.append(f"{alias}.company_sort_key = ?")
+        params.append(company_key(filters.company))
     for column, value in (
         (f"{alias}.role_type", filters.role_type),
         (f"{alias}.region", filters.region),
@@ -439,6 +477,7 @@ class OpportunityRepository:
         *,
         opportunity_id: str | None = None,
         suffix: str = "",
+        per_company: int = 0,
     ) -> tuple[str, list[Any]]:
         cte, params = self._tenant_cte()
         where_sql, where_params = _where(filters, alias="tenant", user_id=self.user_id)
@@ -451,9 +490,29 @@ class OpportunityRepository:
         joiner = " AND " if where_sql else " WHERE "
         where_sql += f"{joiner}{capture_visible_sql('tenant')}"
         where_params = [*where_params, self.user_id]
+        if per_company:
+            # Ranked after filtering, so the cap counts only postings the
+            # filters kept, and aliased back to `tenant` so the caller's
+            # ORDER BY still reads.
+            return (
+                f"{cte}, capped AS ({self._capped_select('tenant', filters.sort)} "
+                f"FROM tenant{where_sql}) "
+                f"SELECT {projection} FROM capped tenant WHERE tenant.company_rank <= ?{suffix}",
+                [*params, *where_params, per_company],
+            )
         return (
             f"{cte}SELECT {projection} FROM tenant{where_sql}{suffix}",
             [*params, *where_params],
+        )
+
+    def _capped_select(self, alias: str, sort: str) -> str:
+        """Rows ranked within their employer by the list's own order."""
+
+        partition = f"PARTITION BY {alias}.company_sort_key"
+        return (
+            f"SELECT {alias}.*, "
+            f"ROW_NUMBER() OVER ({partition} ORDER BY {self._order_by(sort, alias)}) AS company_rank, "
+            f"COUNT(*) OVER ({partition}) AS company_total"
         )
 
     def _order_by(self, sort: str, alias: str = "o") -> str:
@@ -477,32 +536,46 @@ class OpportunityRepository:
         return clause
 
     def list(self, filters: OpportunityFilters) -> tuple[list[dict[str, Any]], int]:
+        """One page of opportunities and the total the filters match.
+
+        With `per_company`, each employer contributes at most that many rows
+        (its best by the list's own sort), `total` counts the capped list, and
+        every item carries `company_rank` and `company_total` so a view can say
+        how many more that employer has. A `company` filter lifts the cap.
+        """
+
         filters = filters.normalized()
+        per_company = 0 if filters.company else filters.per_company
         if self.user_id is not None:
             total = int(
                 self.connection.execute(
-                    *self._tenant_sql(filters, "COUNT(*)")
+                    *self._tenant_sql(filters, "COUNT(*)", per_company=per_company)
                 ).fetchone()[0]
             )
             sql, params = self._tenant_sql(
                 filters,
                 "*",
                 suffix=" ORDER BY " + self._order_by(filters.sort, "tenant") + " LIMIT ? OFFSET ?",
+                per_company=per_company,
             )
             rows = self.connection.execute(
                 sql, [*params, filters.limit, filters.offset]
             ).fetchall()
             return [_row_to_opportunity(row) for row in rows], total
         where_sql, params = _where(filters)
+        source = "opportunity_read_model o" + where_sql
+        if per_company:
+            source = (
+                f"({self._capped_select('o', filters.sort)} FROM {source}) o "
+                "WHERE o.company_rank <= ?"
+            )
+            params = [*params, per_company]
         total = int(
-            self.connection.execute(
-                "SELECT COUNT(*) FROM opportunity_read_model o" + where_sql,
-                params,
-            ).fetchone()[0]
+            self.connection.execute("SELECT COUNT(*) FROM " + source, params).fetchone()[0]
         )
         rows = self.connection.execute(
-            "SELECT o.* FROM opportunity_read_model o"
-            + where_sql
+            "SELECT o.* FROM "
+            + source
             + " ORDER BY "
             + self._order_by(filters.sort)
             + " LIMIT ? OFFSET ?",
