@@ -757,8 +757,11 @@ def find_contacts(
         _log(conn, target_id, user_id, "contacts_searched",
              detail=f"{len(result['candidates'])} candidates from {len(result['pages_checked'])} pages"
              + (" (rendered in a browser)" if result["rendered"] else ""))
+    from .outreach_forms import record_contact_form
     from .outreach_profile import record_site_location
 
+    # The contact page read for addresses may hold a form to write through instead.
+    contact_form = record_contact_form(conn, target_id, user_id=user_id, pages=result["pages"], fetcher=fetcher, renderer=renderer)
     # The pages already read for people often state where the company is.
     location = record_site_location(conn, target_id, user_id=user_id, pages=result["pages"])
     if result["rendered"]:
@@ -771,6 +774,7 @@ def find_contacts(
         "mail_domain_ok": result["mail_domain_ok"],
         "rendered": result["rendered"],
         "location": location,
+        "contact_form": contact_form["page_url"] if contact_form else "",
     }
 
 

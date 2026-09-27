@@ -305,11 +305,23 @@ themselves (rule 3). The details:
   Once Gmail is connected the app catches bounces and logs replies on its own.
   Ask whether they want the **Automation** switches under Outreach → Outreach
   settings: writing drafts automatically, finding a new contact after a bounce,
-  sending on the recipient's weekday morning, and having a second model check
+  sending on the recipient's weekday morning, having a second model check
   each follow-up (any model set up here works; with only one, it says the
-  reviewer is from the same company as the writer).
-  All are off until they turn them on. Every email still waits for their approval; the last switch only
+  reviewer is from the same company as the writer), and sending through
+  contact forms.
+  All are off until they turn them on. Every email still waits for their approval; the scheduling switch only
   changes when an approved, confirmed email goes out.
+  **Contact forms** reach companies that publish no email: the crawl notes the
+  form on the company's contact page, and the approved first email goes in
+  through it as the student, filled only from their confirmed profile (name,
+  and `PIPELINE_OUTREACH_ACCOUNT` as the reply address; school, phone, and a
+  link only when a form insists). It runs in Playwright's Chromium, so install
+  it if this computer does not have it yet: `pip install -r requirements-optional.txt`
+  then `python -m playwright install chromium`. Tell them it is their name on every
+  form it sends, and that it sends only a draft they approved: the switch sends
+  approved ones on its own; without it, the card's **Send through contact form**
+  asks them to confirm first. A form wanting a picture CAPTCHA waits for them
+  under **Finish in browser**.
 
 ## 7. Resume (optional, recommended)
 

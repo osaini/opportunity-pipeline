@@ -867,8 +867,8 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 .outreach-draft-version-comments { color: var(--ink-soft); font-size: 11px; font-style: italic; }
 .outreach-draft-version-subject { color: var(--ink); font-size: 12px; font-weight: 750; }
 .outreach-draft-version-body { max-height: 320px; overflow: auto; color: var(--ink); font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
-.outreach-contacts, .outreach-reply { display: grid; gap: 10px; margin-top: var(--space-5); justify-items: start; }
-.outreach-contacts .form-status, .outreach-reply .form-status { margin: 0; }
+.outreach-contacts, .outreach-contact-form, .outreach-reply { display: grid; gap: 10px; margin-top: var(--space-5); justify-items: start; }
+.outreach-contacts .form-status, .outreach-contact-form .form-status, .outreach-reply .form-status { margin: 0; }
 .outreach-candidates { display: grid; gap: 8px; width: 100%; margin: 0; padding: 0; list-style: none; }
 .outreach-candidate { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px 12px; align-items: center; padding: var(--space-3) var(--field-pad-x); border: 1px solid var(--line); border-radius: var(--radius-md); }
 .outreach-candidate > div:first-child { display: grid; gap: 2px; min-width: 0; font-size: 12px; overflow-wrap: anywhere; }
@@ -1076,7 +1076,7 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 .outreach-aside-card .outreach-aside-tag.is-confirmed { color: var(--accent-strong); }
 .outreach-aside-card .outreach-aside-tag.is-unverified { color: var(--warn-ink); }
 .outreach-aside-card .outreach-aside-tag.is-unknown { color: var(--danger); }
-.outreach-pane .outreach-contacts, .outreach-pane .outreach-reply { margin-top: 0; }
+.outreach-pane .outreach-contacts, .outreach-pane .outreach-contact-form, .outreach-pane .outreach-reply { margin-top: 0; }
 .outreach-pane .outreach-form-actions { margin: 20px -24px 0; padding: var(--space-4) var(--space-6); border-top: 1px solid var(--line); background: var(--surface-sunken); }
 
 @media (max-width: 1180px) {

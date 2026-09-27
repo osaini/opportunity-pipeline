@@ -57,6 +57,7 @@ from .outreach_gmail import (
     _Gmail,
 )
 from .outreach_drafting import sender_account
+from .outreach_forms import SUBMITTED_EVENT as FORM_SUBMITTED, UNCONFIRMED_EVENT as FORM_UNCONFIRMED, is_acknowledgement
 from .schema import connect_product, utc_now
 from .typesafe_decisions import DecisionClient
 
@@ -176,6 +177,13 @@ def _watched(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict
             continue
         if isinstance(detail, dict):
             sends.setdefault(event["target_id"], []).append((datetime.fromisoformat(event["created_at"]), detail))
+    # A message sent through a contact form has no address to watch, only the company's domain.
+    forms: dict[str, list[datetime]] = {}
+    for event in conn.execute(
+        "SELECT target_id, created_at FROM outreach_events WHERE user_id=? AND event_type IN (?, ?)",
+        (user_id, FORM_SUBMITTED, FORM_UNCONFIRMED),
+    ).fetchall():
+        forms.setdefault(event["target_id"], []).append(datetime.fromisoformat(event["created_at"]))
     watched = []
     for row in rows:
         own = sends.get(row["id"], [])
@@ -184,20 +192,21 @@ def _watched(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict
         addresses -= {""}
         # The app's own sends say to the second when the email went; a send marked
         # by hand has only a date, so the day before it is the earliest a reply counts.
-        starts = [at for at, _detail in own]
+        starts = [at for at, _detail in own] + forms.get(row["id"], [])
         if not starts and row["sent_at"]:
             starts.append(datetime.combine(date.fromisoformat(row["sent_at"]), datetime.min.time(), tzinfo=timezone.utc) - timedelta(days=1))
-        if not addresses or not starts:
+        # Anyone at the company's own domain may answer, whatever address the contact uses.
+        site = website_domain(row["website"] or "")
+        domains = {site} if site and "." in site and site not in FREEMAIL else set()
+        via_form = row["id"] in forms
+        if not (addresses or (via_form and domains)) or not starts:
             continue
         since = min(starts)
         if now - since > REPLY_WINDOW:
             continue
-        # Anyone at the company's own domain may answer, whatever address the contact uses.
-        site = website_domain(row["website"] or "")
-        domains = {site} if site and "." in site and site not in FREEMAIL else set()
         watched.append({
             "id": row["id"], "company": row["company"], "status": row["status"],
-            "addresses": addresses, "domains": domains, "since": since,
+            "addresses": addresses, "domains": domains, "since": since, "via_form": via_form,
         })
     return watched
 
@@ -353,15 +362,21 @@ def capture_replies(
                     target = _owner(chunk, sender)
                     text = reply_text(message)
                     # A colleague at the company counts only when answering, never a newsletter.
+                    # After a contact form nothing can be answered, so a fresh email counts.
                     if (
                         target is None or sender == account or sender.split("@", 1)[0] in _DAEMONS
                         or received_at < target["since"] or "SENT" in (data.get("labelIds") or [])
-                        or is_bulk(message) or (target.get("by_domain") and not answers_something(message))
+                        or is_bulk(message)
+                        or (target.get("by_domain") and not target.get("via_form") and not answers_something(message))
                     ):
                         with conn:
                             _remember(conn, user_id, gmail_id, target["id"] if target else "", "ignored", sender, received)
                         continue
-                    if is_automatic(message):
+                    if is_automatic(message) or (
+                        target.get("via_form") and is_acknowledgement(
+                            sender, str(message.get("Subject", "")), text, (received_at - target["since"]).total_seconds() / 60,
+                        )
+                    ):
                         with conn:
                             _remember(conn, user_id, gmail_id, target["id"], "automatic", sender, received)
                             _log(conn, target["id"], user_id, "auto_reply", detail=f"{sender}: {' '.join(text.split())[:300]}")

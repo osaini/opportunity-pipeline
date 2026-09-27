@@ -62,6 +62,12 @@ EXCLUDED = {
         "domains. tests/test_outreach_drafting.py, tests/test_outreach_call_prep.py, and "
         "tests/test_outreach_discovery.py cover them against fakes."
     ),
+    "/api/v1/outreach/[^/]+/form-submit$": (
+        "Sending a contact form opens a browser on a company's site and sends a message "
+        "as the student. The sandbox has no browser wired up and answers 503, which "
+        "schemathesis would count as a crash. tests/test_outreach_forms.py covers it "
+        "against a fake submitter and fixture pages."
+    ),
 }
 EXCLUDED_PATTERN = "|".join(f"({pattern})" for pattern in EXCLUDED)
 

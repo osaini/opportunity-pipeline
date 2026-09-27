@@ -2486,6 +2486,173 @@
     return button;
   }
 
+  // A company that publishes no email may still have a contact form on its
+  // site. The approved first email goes in through it, as the student, once.
+  // Like Send, the first click only asks and a second click sends. Finish in
+  // browser opens a window on this computer with the form filled in, for a
+  // CAPTCHA that asks a person; the app sends the form once it is solved.
+  const FORM_STATE_NOTES = {
+    unconfirmed: "The form was sent, but their page did not say it arrived.",
+    needs_you: "Nothing was sent.",
+    failed: "Nothing was sent.",
+  };
+
+  function formHost(item) {
+    try {
+      return new URL(item.contact_form.page_url).hostname.replace(/^www\./, "");
+    } catch (_error) {
+      return item.company;
+    }
+  }
+
+  function outreachReachable(item) {
+    return item.contact_email ? !item.contact_bounced : Boolean(item.contact_form);
+  }
+
+  function formSendControls(item) {
+    const form = item.contact_form;
+    const controls = element("div", "outreach-send-controls");
+    if (form.note && FORM_STATE_NOTES[form.state]) {
+      controls.appendChild(element("p", "outreach-note is-wide", `${FORM_STATE_NOTES[form.state]} ${form.note}`));
+    }
+    const retry = form.state === "unconfirmed";
+    controls.appendChild(formSendButton(item, { retry, inBrowser: false }));
+    if (form.state === "needs_you" || form.captcha) controls.appendChild(formSendButton(item, { retry, inBrowser: true }));
+    return controls;
+  }
+
+  function formOutcomeMessage(item, result) {
+    if (result.outcome === "submitted") {
+      if (result.marked === false) return `Sent through ${item.company}'s contact form, but it could not be marked sent. Press "It arrived" to catch it up.`;
+      const said = result.confirmation ? ` Their page said: "${result.confirmation}"` : "";
+      return `Sent through ${item.company}'s contact form.${said} ${item.company} is marked sent; replies are read from Gmail.`;
+    }
+    if (result.outcome === "unconfirmed") {
+      return `The form was sent, but ${item.company}'s page did not say it arrived. Look for a confirmation email from them; if it came, press "It arrived".`;
+    }
+    return `Nothing was sent to ${item.company}. ${result.note}`;
+  }
+
+  function formSendButton(item, { retry, inBrowser }) {
+    const label = inBrowser ? "Finish in browser" : retry ? "Checked — send the form again" : "Send through contact form";
+    const button = element("button", inBrowser ? "secondary-button outreach-compose" : "primary-button outreach-compose outreach-send", label);
+    button.type = "button";
+    if (inBrowser) button.title = "Opens a browser window on this computer with the form filled in. Solve the CAPTCHA there; the app sends the form once it is solved.";
+    let timer = null;
+    const reset = () => {
+      clearTimeout(timer);
+      timer = null;
+      delete button.dataset.confirming;
+      button.textContent = label;
+    };
+    button.addEventListener("blur", () => { if (button.dataset.confirming) reset(); });
+    button.addEventListener("keydown", (event) => { if (event.key === "Escape" && button.dataset.confirming) reset(); });
+    button.addEventListener("click", async () => {
+      if (refuseUnsavedHandOff(button, "initial")) return;
+      if (!button.dataset.confirming) {
+        button.dataset.confirming = "true";
+        button.textContent = `Send through ${formHost(item)}'s form?`;
+        announce(`Press again to send the approved email through ${item.company}'s contact form as you, from ${item.contact_form.page_url}.`);
+        timer = setTimeout(reset, SEND_CONFIRM_MS);
+        return;
+      }
+      clearTimeout(timer);
+      button.disabled = true;
+      button.textContent = inBrowser ? "Waiting for you in the browser…" : "Sending…";
+      if (inBrowser) announce("A browser window is opening with the form filled in. Solve the CAPTCHA there; the app sends the form once it is solved.");
+      try {
+        const result = await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/form-submit`, {
+          method: "POST",
+          body: JSON.stringify({ fingerprint: item.draft_fingerprint, retry_unconfirmed: retry, in_browser: inBrowser }),
+        });
+        state.outreachOpen = item.id;
+        if (result.outcome === "submitted" || result.outcome === "unconfirmed") watchForBounces();
+        announce(formOutcomeMessage(item, result));
+        await loadOutreach();
+      } catch (error) {
+        reset();
+        button.disabled = false;
+        if ([409, 422, 428].includes(error.status)) {
+          state.outreachOpen = item.id;
+          await loadOutreach();
+        }
+        showError(error.message);
+      }
+    });
+    return button;
+  }
+
+  // Where the contact form is, for a company with no email. The URL field has
+  // no name attribute, so the pane's Save never sends it.
+  function outreachContactFormSection(item) {
+    const form = item.contact_form;
+    const section = element("section", "tracker-subsection outreach-contact-form");
+    section.appendChild(element("h4", "", "Contact form"));
+    if (form) {
+      const where = element("p", "outreach-note");
+      const link = element("a", "", form.page_url);
+      link.href = form.page_url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      where.append(document.createTextNode("On their site at "), link, document.createTextNode("."));
+      section.appendChild(where);
+      if (form.captcha) {
+        section.appendChild(element("p", "outreach-note",
+          `It has a ${form.captcha === "recaptcha" ? "reCAPTCHA" : form.captcha === "hcaptcha" ? "hCaptcha" : "Cloudflare Turnstile"}. A checkbox is ticked for you; a picture challenge waits for you under Finish in browser.`));
+      }
+      if (form.state === "submitted") section.appendChild(element("p", "outreach-note", `Your first email went through this form${form.attempted_at ? ` on ${formatCalendarDate(form.attempted_at.slice(0, 10))}` : ""}.`));
+      else if (form.note && FORM_STATE_NOTES[form.state]) section.appendChild(element("p", "outreach-note outreach-guess", `${FORM_STATE_NOTES[form.state]} ${form.note}`));
+    }
+    if (item.contact_email) {
+      section.appendChild(element("p", "outreach-note", "This company has an email contact, so the draft goes by email, not through a form."));
+      return section;
+    }
+    if (form && ["submitted", "unconfirmed"].includes(form.state)) return section;
+    section.appendChild(element("p", "outreach-note", form
+      ? "With no email, the approved draft goes through this form: send it from the Draft tab, or turn on sending through contact forms in Settings."
+      : "No email anywhere? Paste the page with their contact form, and the approved draft can go through it."));
+    const label = element("label", "profile-field");
+    label.appendChild(element("span", "", form ? "Use a different page" : "Contact form page"));
+    const input = document.createElement("input");
+    input.type = "url";
+    input.placeholder = "https://company.com/contact";
+    input.autocomplete = "off";
+    label.appendChild(input);
+    const save = element("button", "secondary-button", "Use this page");
+    save.type = "button";
+    const status = element("p", "form-status");
+    status.setAttribute("aria-live", "polite");
+    section.append(label, save, status);
+    const submit = async () => {
+      if (!input.value.trim() || !input.checkValidity()) {
+        status.textContent = "Enter the page's web address first.";
+        input.focus();
+        return;
+      }
+      save.disabled = true;
+      try {
+        await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/contact-form`, {
+          method: "PUT",
+          body: JSON.stringify({ page_url: input.value.trim() }),
+        });
+        state.outreachOpen = item.id;
+        announce(`${item.company}'s contact form is set. Approve the draft to send it through the form.`);
+        await loadOutreach();
+        refocusOutreach(item.id, ".outreach-contact-form input");
+      } catch (error) {
+        status.textContent = error.message;
+        save.disabled = false;
+      }
+    };
+    save.addEventListener("click", submit);
+    input.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      submit();
+    });
+    return section;
+  }
+
   // A bounce usually lands in Gmail within seconds of a send; a reply can come
   // any time. The app also checks in the background every few minutes; this
   // asks for a look on each load of the list and a few times right after a
@@ -3322,10 +3489,10 @@
   // narrows that list here, so every count stays in step with the cards.
   const OUTREACH_TABS = [
     { id: "to-contact", label: "To contact", test: outreachToContact },
-    { id: "ready", label: "Ready to send", group: "Before sending", tone: "is-good", test: (item) => outreachToContact(item) && item.draft_status === "approved" && Boolean(item.contact_email) && !item.contact_bounced && !item.cc_bounced && item.scheduled?.initial?.state !== "scheduled" },
+    { id: "ready", label: "Ready to send", group: "Before sending", tone: "is-good", test: (item) => outreachToContact(item) && item.draft_status === "approved" && outreachReachable(item) && !item.cc_bounced && item.scheduled?.initial?.state !== "scheduled" },
     { id: "scheduled", label: "Scheduled", group: "Before sending", tone: "is-region", test: (item) => ["initial", "follow_up"].some((kind) => ["scheduled", "sending", "transmitting", "failed"].includes(item.scheduled?.[kind]?.state)) },
     { id: "needs-review", label: "Drafts to review", group: "Before sending", tone: "is-soon", test: (item) => outreachDraftNeedsReview(item, "initial") || outreachDraftNeedsReview(item, "follow_up") },
-    { id: "needs-contact", label: "Needs a contact", group: "Before sending", tone: "is-soon", test: (item) => outreachToContact(item) && (!item.contact_email || item.contact_bounced) },
+    { id: "needs-contact", label: "Needs a contact", group: "Before sending", tone: "is-soon", test: (item) => outreachToContact(item) && !outreachReachable(item) },
     { id: "bounced", label: "Bounced", group: "Before sending", tone: "is-alert", test: (item) => Boolean(item.bounced_at) },
     { id: "needs-location", label: "Needs a location", group: "Before sending", tone: "is-soon", test: (item) => outreachToContact(item) && !item.location_verified },
     { id: "from-search", label: "From deep search", group: "Before sending", test: (item) => item.origin === "discovery" && outreachToContact(item) },
@@ -3598,11 +3765,13 @@
   }
 
   // Work the app does on its own. Each switch is the student's, stored in the
-  // database, and off until they turn it on. None of them sends mail.
+  // database, and off until they turn it on. Only scheduled sending and
+  // contact forms send anything, and only a draft the student approved.
   const AUTOMATION_SWITCHES = [
     ["auto_drafts", "Write drafts automatically", "Every company with a contact and a location gets a draft written, whether a deep search found it, you added it, or a contact turned up later. Each one waits for your approval."],
     ["bounce_recovery", "Find a new contact after a bounce", "When an email bounces, the app searches the company's site again, picks the best address that has not bounced, and updates the greeting. You review the draft and send it again."],
     ["scheduled_sending", "Send on their weekday morning", "Your confirmed Send queues the approved email for 9 to 9:40 AM on the recipient's next weekday, in their timezone (from the company's US state, or yours when it names none). Editing the draft cancels it; Send now and Cancel stay on the card. Turning this off does not cancel emails already scheduled; cancel them on their cards. Needs Gmail connected. Just before it goes, Gmail is checked again for a reply or a bounce; a follow-up never goes to a company that replied."],
+    ["form_submission", "Send through contact forms", "For a company that publishes no email but has a contact form on its site, the approved first email goes in through the form as you, once, with replies going to your outreach Gmail. Only what your confirmed profile says is filled in; a form that asks something else, or a CAPTCHA that wants a picture challenge, waits for you on the card (Finish in browser). The app says Sent only when their page confirms it; otherwise it asks you to check. Needs Playwright's Chromium on this computer."],
     ["follow_up_review", "Have a second model check each follow-up", "Before a scheduled follow-up goes out, a second model reads it with the whole thread: your first email, every reply and out-of-office, and your facts. Pick it under \"Who reviews follow-ups\" below; on Automatic it is a model from a different company than the follow-up writer when one is set up. It goes only on a clean pass. An out-of-office with a return date holds it until then; any other problem stops it and shows the reason here. If the reviewer cannot run, the follow-up waits."],
   ];
 
@@ -3950,7 +4119,7 @@
     if (["replied", "call_scheduled", "offer"].includes(item.status)) return OUTREACH_STEPS.length;
     if (item.sent_at || ["sent", "followed_up", "declined", "no_response"].includes(item.status)) return 5;
     if (item.research_confidence === "unverified") return 0;
-    if (!item.contact_email || item.contact_bounced) return 1;
+    if (!outreachReachable(item)) return 1;
     if (!item.email_body) return 2;
     if (item.draft_status !== "approved") return 3;
     return 4;
@@ -3990,12 +4159,19 @@
     if (item.contact_bounced) return { label: "Find a new contact", hint: `Your email to ${item.contact_email} bounced, so it reached no one. Pick another address; the greeting updates to match.`, tab: "contact", tone: "is-warning" };
     if (item.cc_bounced) return { label: "Fix the Cc", hint: `Email to ${item.contact_cc} bounced. Remove it or pick another before sending.`, tab: "contact", tone: "is-warning" };
     if (item.research_confidence === "unverified") return { label: "Confirm the research", hint: "The deep search summarized this company. Check the sources, then confirm.", tab: "research", tone: "is-soon" };
-    if (!item.contact_email) return { label: "Find a contact", hint: "Search their site for a published address, or add one you found.", tab: "contact", tone: "is-soon" };
+    if (!item.contact_email && !item.contact_form) return { label: "Find a contact", hint: "Search their site for a published address or a contact form, or add one you found.", tab: "contact", tone: "is-soon" };
     if (!item.email_body) return { label: "Write the draft", hint: "Generate a draft from your confirmed profile and this research.", tab: "draft" };
     if (outreachDraftNeedsReview(item, "initial") || item.draft_status !== "approved") return { label: "Review the draft", hint: "Read it, fix anything, then approve it. Approving unlocks the email hand-off.", tab: "draft", tone: "is-soon" };
     const scheduled = item.scheduled?.initial;
     if (scheduled?.state === "scheduled") return { label: "Scheduled", hint: `Goes out ${scheduled.label}. Cancel it or send it now below.`, tab: null, tone: "is-region" };
     if (scheduled?.state === "failed") return { label: "Scheduled send stopped", hint: `${scheduled.error}.`, tab: null, tone: "is-warning" };
+    if (!item.contact_email && item.contact_form) {
+      const form = item.contact_form;
+      if (form.state === "needs_you") return { label: "Finish the contact form", hint: form.note || "The form needs you before it can go.", tab: null, tone: "is-warning" };
+      if (form.state === "failed") return { label: "Contact form did not send", hint: form.note || "Nothing was sent. Try again.", tab: null, tone: "is-warning" };
+      if (form.state === "unconfirmed") return { label: "Check the form arrived", hint: "It was sent, but their page did not confirm it. Look for a confirmation email.", tab: null, tone: "is-warning" };
+      return { label: "Send through their contact form", hint: "They publish no email. The approved draft goes in through the form on their site, as you.", tab: null, tone: "is-region" };
+    }
     return { label: "Send it from your email", hint: "Open the approved draft in your email, send it, then mark it sent here.", tab: null, tone: "is-region" };
   }
 
@@ -4020,7 +4196,7 @@
     const remembered = state.outreachTabs[item.id];
     if (remembered && tabs.includes(remembered)) return remembered;
     if (tabs.includes("prep")) return "prep";
-    return item.contact_email ? "draft" : "contact";
+    return item.contact_email || item.contact_form ? "draft" : "contact";
   }
 
   // Moving a company to a reply status opens its call prep, the next thing to do.
@@ -4121,12 +4297,12 @@
       element("span", "outreach-row-meta", [item.location_region || item.location, item.priority].filter(Boolean).join(" · "))
     );
     const contact = element("span", "outreach-row-contact");
-    const health = item.contact_email ? (item.contact_confidence === "confirmed" ? "is-good" : "is-soon") : "is-bad";
+    const health = item.contact_email ? (item.contact_confidence === "confirmed" ? "is-good" : "is-soon") : item.contact_form ? "is-soon" : "is-bad";
     contact.append(
       element("span", `outreach-dot ${health}`),
       document.createTextNode(item.contact_email
         ? `${item.contact_name || item.contact_email} · ${item.contact_confidence === "confirmed" ? "confirmed" : "unverified"}`
-        : "No contact yet")
+        : item.contact_form ? "Contact form only" : "No contact yet")
     );
     const next = outreachNextStep(item);
     const bottom = element("span", "outreach-row-bottom");
@@ -4460,7 +4636,7 @@
     if (contactText) facts.appendChild(chip(contactText));
     facts.appendChild(chip(
       item.contact_confidence === "unknown" && !item.contact_email && !item.contact_name
-        ? "No contact yet"
+        ? (item.contact_form ? "Contact form only" : "No contact yet")
         : CONTACT_CONFIDENCE_LABELS[item.contact_confidence],
       item.contact_confidence === "confirmed" ? "is-region" : item.contact_confidence === "unverified" ? "is-soon" : "is-warning"
     ));
@@ -4613,6 +4789,24 @@
       });
       actions.appendChild(sent);
     }
+    // With no email, the approved draft goes through the company's contact form.
+    if (!item.contact_email && item.contact_form && item.draft_status === "approved" && !item.sent_at && ["not_started", "drafted", "paused"].includes(item.status)) {
+      actions.appendChild(formSendControls(item));
+      if (item.contact_form.state === "unconfirmed") {
+        const arrived = element("button", "secondary-button", "It arrived");
+        arrived.type = "button";
+        arrived.addEventListener("click", async () => {
+          arrived.disabled = true;
+          try {
+            await patchOutreach(item, { status: "sent" }, `${item.company} marked sent. A follow-up is set for a week from today.`);
+          } catch (error) {
+            showError(error.message);
+            arrived.disabled = false;
+          }
+        });
+        actions.appendChild(arrived);
+      }
+    }
     // One follow-up per company; after it, the card suggests No response in time.
     if (item.contact_email && deliverable && item.follow_up_status === "approved" && item.status === "sent") {
       actions.appendChild(composeControl(context, item, "follow_up"));
@@ -4727,6 +4921,11 @@
 
     const draft = element("fieldset", "outreach-group is-draft");
     draft.appendChild(element("legend", "", "Cold email draft"));
+    if (!item.contact_email && item.contact_form) {
+      const to = element("p", "outreach-to is-wide");
+      to.append(element("strong", "", "To "), document.createTextNode(`${item.company}'s contact form (${formHost(item)})`));
+      draft.appendChild(to);
+    }
     if (item.contact_email) {
       const to = element("p", "outreach-to is-wide");
       to.append(element("strong", "", "To "), document.createTextNode(item.contact_name ? `${item.contact_name} <${item.contact_email}>` : item.contact_email));
@@ -4756,7 +4955,9 @@
     refreshChecks();
     draft.appendChild(checks);
     draftAssistant(draft, item, "initial", subject, body);
-    draft.appendChild(element("p", "outreach-note", context.gmail?.connected
+    draft.appendChild(element("p", "outreach-note", !item.contact_email && item.contact_form
+      ? `They publish no email, so this goes through the contact form on their site, as you. Approving it unlocks Send through contact form, which asks you to confirm first${context.automation?.form_submission ? "; with sending through contact forms on in Settings, an approved draft goes on its own" : ""}.`
+      : context.gmail?.connected
       ? "Nothing sends on its own. Approving a draft unlocks Send, which asks you to confirm the recipient before the email goes out from your Gmail. To send at a set time with this computer off, use Open in Gmail and Gmail's Schedule send; the app marks it sent when Google sends it."
       : "Nothing sends from here. Approving a draft unlocks a link that opens it in your own email, where you press Send."));
 
@@ -4794,7 +4995,7 @@
         item.contact_role ? [item.contact_role] : null,
         item.contact_name && item.contact_email ? [item.contact_email] : null,
         [CONTACT_CONFIDENCE_LABELS[item.contact_confidence], `outreach-aside-tag is-${item.contact_confidence}`],
-      ] : [["No contact yet. Find one under Contact."]]),
+      ] : item.contact_form ? [["Contact form", "outreach-aside-strong"], [formHost(item)]] : [["No contact yet. Find one under Contact."]]),
       outreachSummaryCard("Timing", [
         [`Deadline: ${item.deadline_date ? formatCalendarDate(item.deadline_date) : item.deadline_label || "none recorded"}`],
         [item.sent_at ? `Sent ${formatCalendarDate(item.sent_at)}` : "Not sent yet"],
@@ -4809,7 +5010,7 @@
     researchPanel.append(research, notesGroup);
     const contactsSection = outreachContactsSection(item);
     const contactPanel = panel("contact");
-    contactPanel.append(contact, outreachManualContactSection(item), contactsSection.element);
+    contactPanel.append(contact, outreachManualContactSection(item), outreachContactFormSection(item), contactsSection.element);
     const timingPanel = panel("timing");
     timingPanel.appendChild(timing);
     const historyPanel = panel("history");
