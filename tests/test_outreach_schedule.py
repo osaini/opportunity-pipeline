@@ -17,13 +17,13 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
-from opportunity_app import automation, outreach_schedule
+from opportunity_app import automation, outreach_gmail, outreach_schedule
 from opportunity_app.outreach_automation import AutomationWorker, update_settings
 from opportunity_app.outreach_schedule import next_morning, recipient_zone, run_due_sends
 from opportunity_app.schema import connect_product, ensure_product_schema, utc_now
 
 from helpers_platform import build_and_migrate
-from test_outreach_gmail import ACCOUNT, PDF, SCOPES, FakeGmail
+from test_outreach_gmail import ACCOUNT, PDF, SCOPES, FakeGmail, forget_gmail_backoff
 
 AUTH = {"Authorization": "Bearer schedule-owner"}
 USER = "local-user"
@@ -409,6 +409,69 @@ class ScheduledSendTests(unittest.TestCase):
         self.make_due(timedelta(minutes=1))
         self.assertEqual([item["state"] for item in run_due_sends(self.conn, client_factory=self.factory)], ["sent"])
         self.assertEqual(len(self.gmail.sent), 1)
+
+    def test_a_pause_that_lands_during_the_checks_stops_the_email_at_the_hand_over(self):
+        # The checks (a Gmail read, a model review) are the slow part, so a pause most often lands during them.
+        self.connect()
+        target = self.approved()
+        self.schedule(target)
+        row = self.conn.execute("SELECT * FROM outreach_scheduled_sends").fetchone()
+        self.hold_it_mid_send()
+
+        def checks_pass_while_the_student_pauses(conn, row, **_kwargs):
+            with closing(connect_product(self.platform_path)) as other:
+                automation.set_paused(other, USER, True)
+            return None
+
+        with mock.patch.object(outreach_schedule, "_gate", checks_pass_while_the_student_pauses), \
+                mock.patch.object(outreach_schedule, "send_gmail_message", side_effect=AssertionError("sending was attempted")) as send:
+            outcome = outreach_schedule._send_one(self.conn, row, client_factory=self.factory, now=datetime.now(timezone.utc))
+        self.assertEqual(outcome, "paused")
+        send.assert_not_called()
+        self.assertEqual(self.gmail.sent, [])
+        self.assertEqual(tuple(self.stored()), ("scheduled", 0, outreach_schedule.PAUSED_NOTE), "back in line, no try counted")
+
+    def test_a_gmail_hold_waits_it_out_without_using_up_tries(self):
+        # One company sent and awaiting a reply, so the check before sending reads Gmail.
+        self.connect()
+        first = self.approved()
+        self.assertEqual(self.client.post(f"/api/v1/outreach/{first['id']}/gmail-send", headers=AUTH, json={
+            "kind": "initial", "fingerprint": first["draft_fingerprint"],
+        }).status_code, 200)
+        second = self.client.post("/api/v1/outreach", headers=AUTH, json={
+            "company": "Kiva", "contact_email": "ana@kiva.example", "location": "Austin, TX",
+            "email_subject": "Hello", "email_body": "Hi Ana,\n\nA note.\n\nSam",
+        }).json()
+        second = self.client.post(f"/api/v1/outreach/{second['id']}/approve", headers=AUTH, json={
+            "kind": "initial", "fingerprint": second["draft_fingerprint"], "acknowledge_warnings": True,
+        }).json()
+        self.assertEqual(self.schedule(second).status_code, 200)
+        now = datetime.fromisoformat(self.target(second)["scheduled"]["initial"]["send_at"]) + timedelta(minutes=1)
+        # The inbox check was told to wait 25 minutes: longer than two retries would span.
+        hold = now + timedelta(minutes=25)
+        forget_gmail_backoff(self)
+        outreach_gmail._BACKOFF[USER] = (hold, 5)
+        clock = {"now": now}
+        with mock.patch.object(outreach_gmail, "_now", side_effect=lambda: clock["now"]):
+            self.assertEqual([item["state"] for item in run_due_sends(self.conn, client_factory=self.factory, now=now)], ["retrying"])
+            waiting = self.target(second)["scheduled"]["initial"]
+            stored = self.conn.execute("SELECT attempts FROM outreach_scheduled_sends WHERE target_id=?", (second["id"],)).fetchone()
+            self.assertEqual((waiting["state"], waiting["error"], stored["attempts"]), ("scheduled", outreach_schedule.GMAIL_WAIT_NOTE, 0))
+            self.assertEqual(datetime.fromisoformat(waiting["send_at"]), hold + outreach_schedule.GMAIL_HOLD_MARGIN, "goes when the hold ends")
+            for minutes in (11, 22):  # when the old retries came, each counting a try
+                clock["now"] = now + timedelta(minutes=minutes)
+                self.assertEqual(run_due_sends(self.conn, client_factory=self.factory, now=clock["now"]), [], "not due yet")
+            clock["now"] = hold + timedelta(minutes=2)
+            self.assertEqual([item["state"] for item in run_due_sends(self.conn, client_factory=self.factory, now=clock["now"])], ["sent"])
+        self.assertEqual(len(self.gmail.sent), 2, "the first email, then the one that waited")
+
+    def test_another_failed_check_still_counts_a_try(self):
+        self.connect()
+        target = self.approved()
+        self.schedule(target)
+        with mock.patch("opportunity_app.outreach_review.fresh_look", return_value={"ok": False, "reason": "Gmail could not be reached"}):
+            self.assertEqual([item["state"] for item in self.due(target)], ["retrying"])
+        self.assertEqual(tuple(self.stored())[:2], ("scheduled", 1))
 
     def test_a_cancel_still_wins_over_a_pause_at_the_hand_over(self):
         self.connect()

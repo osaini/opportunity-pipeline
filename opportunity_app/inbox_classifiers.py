@@ -10,6 +10,10 @@ result names which one did:
 
 - the student turned Jev inbox suggestions on. It is a per-student setting,
   off by default, because it sends the message text to TypeSafe;
+- the student has not paused automation. The switch is an automation feature,
+  and the pause stops every one of them, so while paused no text goes to
+  TypeSafe from any path (the background inbox check, a connector's webhook,
+  or a reply the student pastes), and the result says the pause is why;
 - TYPESAFE_API_KEY is set, so a copy without Jev access loses nothing;
 - the request succeeds. A timeout, a rate limit, or a malformed answer falls
   back rather than failing the student's action;
@@ -28,6 +32,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any, Callable
 
+from . import automation
 from .schema import utc_now
 from .typesafe_decisions import DecisionClient, TypeSafeClient, TypeSafeError
 
@@ -112,10 +117,38 @@ def build_client() -> DecisionClient | None:
     return client if client.configured else None
 
 
+PAUSED_REASON = "Automation is paused, so Jev was not asked"
+
+
+class _Paused:
+    """Stands in for Jev while the student has paused automation: the rules answer, and nothing is sent.
+
+    It is never configured and has no way to send, so a caller that ignored
+    it would still send nothing; classify_reply and classify_email record
+    PAUSED_REASON as why the rules answered.
+    """
+
+    model = ""
+    configured = False
+
+    def evaluate(self, **_kwargs: Any) -> dict[str, Any]:
+        raise TypeSafeError("Automation is paused")
+
+
+PAUSED = _Paused()
+
+
 def client_for(conn: sqlite3.Connection, factory: ClientFactory, *, user_id: str) -> DecisionClient | None:
-    """The client to classify with for this student, or None to use the rules."""
+    """The client to classify with for this student, or None to use the rules.
+
+    While automation is paused this is PAUSED, which sends nothing and makes
+    the rules answer with the pause named as the reason; the factory is not
+    even called.
+    """
     if not enabled(conn, user_id=user_id):
         return None
+    if automation.paused(conn, user_id):
+        return PAUSED  # type: ignore[return-value]
     try:
         client = factory()
     except TypeSafeError:
@@ -127,6 +160,8 @@ def _ask(
     client: DecisionClient | None, state: dict[str, Any], question: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, str]:
     """Jev's choice and confidence, or None and why the rules answer instead."""
+    if client is PAUSED:
+        return None, PAUSED_REASON
     if client is None:
         return None, ""
     try:

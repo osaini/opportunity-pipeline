@@ -21,6 +21,12 @@ queues it on its own. A thread inside the web app runs the jobs. Because the
 job's state is in the database, a server that stops mid-generation picks the
 job back up when it starts, and a model call cut off by a sleeping laptop is
 retried with backoff.
+
+A job the app started on its own is automatic: it sends the reply, the
+research, and profile highlights to a model provider without a click. While
+the student has paused automation, the worker holds such a job in line (not
+failed, no try used) and runs it after they resume. A job the student asked
+for with Write call prep is their own act and runs whatever the pause.
 """
 
 from __future__ import annotations
@@ -31,12 +37,14 @@ import re
 import sqlite3
 import threading
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from . import automation
 from .agent_providers import CliAgentProvider, complete_text
-from .operations import enqueue_job, recover_stale_jobs, run_next_job
+from .operations import JobDeferred, enqueue_job, recover_stale_jobs, run_next_job
 from .outreach import CALL_PREP_STATUSES, OutreachNotFoundError, _log, get_target
 from .outreach_drafting import (
     DRAFT_FACT_FIELDS, INFERENCE_BASIS, RESEARCH_FIELDS, ProviderFactory, _entry_name, _field_basis,
@@ -52,6 +60,9 @@ JOB_TYPE = "outreach_call_prep"
 MAX_ATTEMPTS = 4
 ACTIVE_JOB_STATES = {"queued", "running", "retry"}
 REPLY_REQUIRED = "Paste their reply under Replies and history first. Call prep is written from it."
+# How often a job held by the student's pause is looked at again, so it starts about this soon after they resume.
+PAUSE_RECHECK = timedelta(minutes=1)
+PAUSED_WAIT = "Waiting: automation is paused, so call prep starts after you resume"
 
 # Sections the model writes, in the order they print, with their headings.
 MODEL_SECTIONS = (
@@ -331,22 +342,44 @@ def generate_call_prep(
     return get_target(conn, target_id, user_id=user_id)
 
 
+def is_automatic(payload: dict[str, Any]) -> bool:
+    """Whether a job was started by the app rather than by the student's click.
+
+    Jobs queued before this was recorded say so by ``replace``: only the
+    student's Write call prep replaces notes.
+    """
+    return bool(payload.get("automatic", not payload.get("replace")))
+
+
 def queue_call_prep(
-    conn: sqlite3.Connection, target_id: str, *, user_id: str, replace: bool, reason: str,
+    conn: sqlite3.Connection, target_id: str, *, user_id: str, replace: bool, reason: str, automatic: bool = False,
 ) -> dict[str, Any]:
     """Queue a background job to write call prep, unless one is already on its way.
 
     ``replace`` is the student asking for new notes; without it the job leaves
     any notes already there alone, which is what an automatic start wants.
+    ``automatic`` marks a job the app started on its own, which a pause holds.
+    The student asking while an automatic job still waits in line makes it
+    theirs, so a pause no longer holds it.
     """
     target = get_target(conn, target_id, user_id=user_id, include_events=True)
     check_can_prep(target)
     job = target.get("call_prep_job")
+    payload = {"target_id": target_id, "user_id": user_id, "replace": replace, "automatic": automatic}
     if job and job["state"] in ACTIVE_JOB_STATES:
+        waiting = conn.execute(
+            "SELECT payload_json FROM job_queue WHERE id=? AND state IN ('queued', 'retry')", (target["call_prep_job_id"],),
+        ).fetchone()
+        if not automatic and waiting is not None and is_automatic(json.loads(waiting[0])):
+            with conn:
+                if conn.execute(
+                    "UPDATE job_queue SET payload_json=?, next_attempt_at=?, updated_at=? WHERE id=? AND state IN ('queued', 'retry')",
+                    (json.dumps(payload), utc_now(), utc_now(), target["call_prep_job_id"]),
+                ).rowcount:
+                    _log(conn, target_id, user_id, "call_prep_queued", detail=reason)
         return get_target(conn, target_id, user_id=user_id)
     queued = enqueue_job(
-        conn, JOB_TYPE, {"target_id": target_id, "user_id": user_id, "replace": replace},
-        f"call-prep:{target_id}:{uuid4().hex}", max_attempts=MAX_ATTEMPTS,
+        conn, JOB_TYPE, payload, f"call-prep:{target_id}:{uuid4().hex}", max_attempts=MAX_ATTEMPTS,
     )
     with conn:
         conn.execute(
@@ -366,7 +399,8 @@ def auto_queue_call_prep(conn: sqlite3.Connection, target_id: str, *, user_id: s
         check_can_prep(target)
     except (OutreachNotFoundError, ValueError):
         return False
-    queue_call_prep(conn, target_id, user_id=user_id, replace=False, reason=reason)
+    # Queued even while paused: the worker holds it until the student resumes.
+    queue_call_prep(conn, target_id, user_id=user_id, replace=False, reason=reason, automatic=True)
     return True
 
 
@@ -405,6 +439,9 @@ class CallPrepWorker:
 
     def _run(self, payload: dict[str, Any]) -> None:
         with closing(connect_product(self.platform_target)) as conn:
+            if is_automatic(payload) and automation.paused(conn, payload["user_id"]):
+                # Asked before anything leaves for the model; the job waits, as it was, for the student to resume.
+                raise JobDeferred(PAUSED_WAIT, datetime.now(timezone.utc) + PAUSE_RECHECK)
             try:
                 generate_call_prep(
                     conn, payload["target_id"], user_id=payload["user_id"],
