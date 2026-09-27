@@ -17,10 +17,10 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
-from opportunity_app import outreach_schedule
+from opportunity_app import automation, outreach_schedule
 from opportunity_app.outreach_automation import AutomationWorker, update_settings
 from opportunity_app.outreach_schedule import next_morning, recipient_zone, run_due_sends
-from opportunity_app.schema import connect_product, utc_now
+from opportunity_app.schema import connect_product, ensure_product_schema, utc_now
 
 from helpers_platform import build_and_migrate
 from test_outreach_gmail import ACCOUNT, PDF, SCOPES, FakeGmail
@@ -330,6 +330,122 @@ class ScheduledSendTests(unittest.TestCase):
         self.assertFalse(seen["response"]["cancelled"], "it was already on its way")
         self.assertEqual(len(self.gmail.sent), 1)
         self.assertEqual(self.target(target)["status"], "sent")
+
+    # --- The student's pause ------------------------------------------------------------
+
+    def make_due(self, ago):
+        with self.conn:
+            self.conn.execute("UPDATE outreach_scheduled_sends SET send_at=?", ((datetime.now(timezone.utc) - ago).isoformat(timespec="seconds"),))
+
+    def stored(self):
+        return self.conn.execute("SELECT state, attempts, error FROM outreach_scheduled_sends").fetchone()
+
+    def test_a_paused_students_email_is_held_then_moves_with_the_reason_when_they_resume_late(self):
+        self.connect()
+        target = self.approved()
+        self.schedule(target)
+        automation.set_paused(self.conn, USER, True)
+        self.make_due(timedelta(hours=3))
+        self.assertEqual(run_due_sends(self.conn, client_factory=self.factory), [], "neither claimed nor moved while paused")
+        self.assertEqual(self.target(target)["scheduled"]["initial"]["state"], "scheduled")
+        worker = AutomationWorker(self.platform_path, fetcher_factory=lambda: None, gmail_client_factory=self.factory)
+        self.assertEqual(worker.run_once()["sent"], [])
+        automation.set_paused(self.conn, USER, False)
+        self.assertEqual([item["state"] for item in run_due_sends(self.conn, client_factory=self.factory)], ["moved"])
+        moved = self.target(target)["scheduled"]["initial"]
+        self.assertEqual((moved["state"], moved["error"]), ("scheduled", outreach_schedule.HELD_NOTE))
+        self.assertGreater(datetime.fromisoformat(moved["send_at"]), datetime.now(timezone.utc), "the recipient's next morning")
+        self.assertEqual(self.gmail.sent, [])
+
+    def test_a_late_email_with_no_pause_says_it_missed_its_morning(self):
+        self.connect()
+        target = self.approved()
+        self.schedule(target)
+        self.make_due(timedelta(hours=3))
+        self.assertEqual([item["state"] for item in run_due_sends(self.conn, client_factory=self.factory)], ["moved"])
+        self.assertEqual(self.target(target)["scheduled"]["initial"]["error"], outreach_schedule.MISSED_NOTE)
+
+    def pause_row(self):
+        return self.conn.execute("SELECT value, updated_at FROM user_settings WHERE user_id=? AND key='automation_paused'", (USER,)).fetchone()
+
+    def test_upgrading_after_an_email_missed_its_morning_does_not_blame_a_pause(self):
+        self.connect()
+        target = self.approved()
+        self.schedule(target)
+        self.make_due(timedelta(hours=3))  # the computer was off
+        # A database from before 0036 has no pause row; starting the upgraded app runs the step, which seeds one.
+        with self.conn:
+            self.conn.execute("DELETE FROM user_settings WHERE key='automation_paused'")
+            self.conn.execute("DELETE FROM schema_migrations WHERE name='0036_automation.sql'")
+        ensure_product_schema(self.conn)
+        self.assertEqual(self.pause_row()["value"], "off", "the instrument: the seed ran for this student")
+        self.assertEqual([item["state"] for item in run_due_sends(self.conn, client_factory=self.factory)], ["moved"])
+        self.assertEqual(self.target(target)["scheduled"]["initial"]["error"], outreach_schedule.MISSED_NOTE, "nobody paused")
+
+    def test_a_row_made_by_another_hand_over_does_not_blame_a_pause(self):
+        self.connect()
+        target = self.approved()
+        self.schedule(target)
+        self.make_due(timedelta(hours=3))
+        with self.conn:
+            self.conn.execute("DELETE FROM user_settings WHERE key='automation_paused'")
+            automation.pause_guard(self.conn, USER)  # what a hand-over or a form claim does for a student with no row
+        self.assertEqual(self.pause_row()["value"], "off")
+        self.assertEqual([item["state"] for item in run_due_sends(self.conn, client_factory=self.factory)], ["moved"])
+        self.assertEqual(self.target(target)["scheduled"]["initial"]["error"], outreach_schedule.MISSED_NOTE)
+
+    def test_a_pause_between_the_claim_and_the_hand_over_sends_nothing(self):
+        self.connect()
+        target = self.approved()
+        self.schedule(target)
+        row = self.conn.execute("SELECT * FROM outreach_scheduled_sends").fetchone()
+        self.hold_it_mid_send()  # the worker has claimed it and is running its checks
+        automation.set_paused(self.conn, USER, True)
+        self.assertEqual(outreach_schedule._send_one(self.conn, row, client_factory=self.factory, now=datetime.now(timezone.utc)), "paused")
+        self.assertEqual(self.gmail.sent, [])
+        self.assertEqual(tuple(self.stored()), ("scheduled", 0, outreach_schedule.PAUSED_NOTE), "back in line, no try counted")
+        # Resumed in time, it goes out as scheduled.
+        automation.set_paused(self.conn, USER, False)
+        self.make_due(timedelta(minutes=1))
+        self.assertEqual([item["state"] for item in run_due_sends(self.conn, client_factory=self.factory)], ["sent"])
+        self.assertEqual(len(self.gmail.sent), 1)
+
+    def test_a_cancel_still_wins_over_a_pause_at_the_hand_over(self):
+        self.connect()
+        target = self.approved()
+        self.schedule(target)
+        row = self.conn.execute("SELECT * FROM outreach_scheduled_sends").fetchone()
+        self.hold_it_mid_send()
+        automation.set_paused(self.conn, USER, True)
+        self.client.delete(f"/api/v1/outreach/{target['id']}/schedule", headers=AUTH)
+        self.assertEqual(outreach_schedule._hand_over(self.conn, row), "cancelled")
+        self.assertEqual(self.stored()[0], "cancelled")
+
+    def test_a_pause_after_the_hand_over_reports_the_email_as_on_its_way(self):
+        self.connect()
+        target = self.approved()
+        self.schedule(target)
+        seen = {}
+
+        def pause_mid_send():
+            with closing(connect_product(self.platform_path)) as other:
+                seen["pause"] = automation.set_paused(other, USER, True)
+
+        self.gmail.hooks["send"] = pause_mid_send
+        self.assertEqual([item["state"] for item in self.due(target)], ["sent"], "already handed to Gmail, so it went")
+        [flight] = seen["pause"]["in_flight"]
+        self.assertEqual((flight["source"], flight["target_id"], flight["company"]), ("scheduled_send", target["id"], "Bovi"))
+        self.assertTrue(flight["label"] and flight["at"])
+
+    def test_send_now_works_while_paused(self):
+        self.connect()
+        target = self.approved()
+        automation.set_paused(self.conn, USER, True)
+        sent = self.client.post(f"/api/v1/outreach/{target['id']}/gmail-send", headers=AUTH, json={
+            "kind": "initial", "fingerprint": target["draft_fingerprint"],
+        })
+        self.assertEqual(sent.status_code, 200, sent.text)
+        self.assertEqual(len(self.gmail.sent), 1, "pause is for what the app does on its own")
 
     def test_the_worker_sends_what_is_due_even_with_the_switch_off(self):
         self.connect()

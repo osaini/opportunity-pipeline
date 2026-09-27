@@ -20,12 +20,13 @@ import re
 import sqlite3
 import unicodedata
 from datetime import date, datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit
 from uuid import uuid4
 
 from pipeline import PROFILE_PATH
 
+from .database import is_unique_violation as _is_unique_violation
 from .inbox_classifiers import classify_reply
 from .schema import LOCAL_USER_ID, utc_now
 from .typesafe_decisions import DecisionClient
@@ -1072,7 +1073,11 @@ def _confirming(payload: dict[str, Any], previous: dict[str, Any], values: dict[
     return not previous["location_verified"]
 
 
-def update_target(conn: sqlite3.Connection, target_id: str, payload: dict[str, Any], *, user_id: str, today: date | None = None) -> dict[str, Any]:
+def update_target(
+    conn: sqlite3.Connection, target_id: str, payload: dict[str, Any], *, user_id: str, today: date | None = None,
+    before_write: Callable[[], None] | None = None,
+) -> dict[str, Any]:
+    """Change a target. ``before_write`` runs first inside the transaction that writes the change; raising there writes nothing."""
     today = today or local_today(conn, user_id)
     previous = get_target(conn, target_id, user_id=user_id, today=today)
     # A confirmation is a compare-and-swap, so it may have to be recomputed once
@@ -1115,6 +1120,8 @@ def update_target(conn: sqlite3.Connection, target_id: str, payload: dict[str, A
             ]
         try:
             with conn:
+                if before_write is not None:
+                    before_write()
                 cursor = conn.execute(
                     f"UPDATE outreach_targets SET {assignments}, updated_at=? WHERE id=? AND user_id=?{guard}",
                     [*values.values(), utc_now(), target_id, user_id, *guarded],
@@ -1164,14 +1171,6 @@ def update_target(conn: sqlite3.Connection, target_id: str, payload: dict[str, A
     raise LocationConflictError(
         "This target's location kept changing while you confirmed it. Have another look."
     )
-
-
-def _is_unique_violation(exc: Exception) -> bool:
-    if isinstance(exc, sqlite3.IntegrityError) and "UNIQUE" in str(exc).upper():
-        return True
-    if getattr(exc, "sqlstate", None) == "23505" or getattr(exc, "pgcode", None) == "23505":
-        return True
-    return type(exc).__name__ == "UniqueViolation"
 
 
 def delete_target(conn: sqlite3.Connection, target_id: str, *, user_id: str) -> bool:

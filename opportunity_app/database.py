@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 from collections.abc import Iterator, Mapping
 from typing import Any
 
 
 def is_postgres_target(target: Any) -> bool:
     return str(target).startswith(("postgresql://", "postgres://"))
+
+
+def is_unique_violation(exc: BaseException) -> bool:
+    """A duplicate key, as SQLite or PostgreSQL reports it."""
+    if isinstance(exc, sqlite3.IntegrityError) and "UNIQUE" in str(exc).upper():
+        return True
+    if getattr(exc, "sqlstate", None) == "23505" or getattr(exc, "pgcode", None) == "23505":
+        return True
+    return type(exc).__name__ == "UniqueViolation"
 
 
 class HybridRow(dict):
@@ -91,6 +101,17 @@ class PostgresConnection:
 
     def executescript(self, sql: str) -> None:
         self._conn.execute(_postgres_schema(sql), prepare=False)
+
+    @property
+    def in_transaction(self) -> bool:
+        """Like sqlite3.Connection.in_transaction: a transaction is open and not yet committed.
+
+        psycopg opens one on the first statement, a read included, so this is
+        true after any query until commit or rollback.
+        """
+        from psycopg.pq import TransactionStatus
+
+        return self._conn.info.transaction_status != TransactionStatus.IDLE
 
     def commit(self) -> None:
         self._conn.commit()

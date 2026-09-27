@@ -22,6 +22,11 @@ the form was sent but the page did not say so, which is never sent again
 without the student saying so; 'needs_you' and 'failed' when nothing was sent.
 A submitted form moves the company to Sent exactly as an email would, and its
 replies are read from Gmail by the company's domain (outreach_inbox.py).
+
+The worker's submissions are automatic, so the student's pause stops them: in
+the claim's own transaction, and once more just before the send button is
+pressed. A form stopped by a pause stays 'found' and goes when they resume. The
+student's own Send through the form is never stopped by a pause.
 """
 
 from __future__ import annotations
@@ -34,7 +39,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable
 
-from . import ROOT
+from . import ROOT, automation
 from .outreach import (
     UNSENT_STATUSES,
     DraftChangedError,
@@ -111,6 +116,7 @@ ACKNOWLEDGEMENT = re.compile(
 ALWAYS_AUTOMATIC = re.compile(r"copy of your (submission|message)|this is an automated|do not reply to this", re.IGNORECASE)
 NO_REPLY_SENDER = re.compile(r"^(no-?reply|do-?not-?reply|notifications?|mailer|forms?)[@+._-]", re.IGNORECASE)
 ACKNOWLEDGEMENT_WINDOW_MINUTES = 15
+PAUSED_BEFORE_SENDING = "Paused before sending; nothing was sent"
 
 
 # --- Finding the form in a crawled page ----------------------------------------------
@@ -850,8 +856,14 @@ class FormSubmitter:
 
     def submit(
         self, page_url: str, *, identity: dict[str, str], subject: str, body: str, attachment: str = "", name: str = "form",
+        should_continue: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
-        """Fill and send the form. Never raises: the outcome says whether anything left the page."""
+        """Fill and send the form. Never raises: the outcome says whether anything left the page.
+
+        ``should_continue`` is asked just before the send button is pressed;
+        False (or failing to answer) stops there, with nothing sent and
+        ``paused`` set on the result. Automatic sends pass it to honour a pause.
+        """
         # "attached" names the file only once it is in the form's file field; most forms have none.
         result: dict[str, Any] = {"outcome": "failed", "note": "", "confirmation": "", "filled": [], "screenshot": "", "filled_screenshot": "", "attached": ""}
         clicked = False
@@ -984,6 +996,9 @@ class FormSubmitter:
                 return result
             if self.rehearse:
                 result.update(outcome="rehearsed", note=f"Ready to send; the button reads \"{read.get('submit_text', '')}\"")
+                return result
+            if should_continue is not None and not _answers_yes(should_continue):
+                result.update(outcome="failed", note=PAUSED_BEFORE_SENDING, paused=True)
                 return result
             before = self._visible_text(frame)
             sent: list[Any] = []
@@ -1126,6 +1141,14 @@ class FormSubmitter:
             return ""
 
 
+def _answers_yes(question: Callable[[], bool]) -> bool:
+    """A question that cannot be answered counts as no: when unsure, nothing is sent."""
+    try:
+        return bool(question())
+    except Exception:  # noqa: BLE001 - a failed check stops the send
+        return False
+
+
 def formatting_problem(expected: str, held: str) -> str:
     """How the text a field holds differs from what was typed, in words, or "" when it is the same.
 
@@ -1222,8 +1245,15 @@ def submit_contact_form(
     fingerprint: str | None = None,
     retry_unconfirmed: bool = False,
     in_browser: bool = False,
+    automatic: bool = False,
 ) -> dict[str, Any]:
-    """Send the approved first email through the company's contact form, once."""
+    """Send the approved first email through the company's contact form, once.
+
+    ``automatic`` is the worker sending on the student's behalf: a pause then
+    raises automation.AutomationPaused before the claim is kept, and is checked
+    again just before the send button. Either way nothing is sent and the form
+    stays 'found' for when they resume.
+    """
     target = get_target(conn, target_id, user_id=user_id)
     form_ready(target, fingerprint=fingerprint, retry=retry_unconfirmed)
     identity = identity_for(conn, user_id)
@@ -1243,9 +1273,18 @@ def submit_contact_form(
     attachment = str(path) if path and not attachment_problem(path) else ""
 
     def revalidate() -> dict[str, Any]:
+        # Inside the claim's transaction, after the claim insert, so a pause either lands first or waits for it.
+        if automatic and automation.pause_guard(conn, user_id):
+            raise automation.AutomationPaused()
         fresh = get_target(conn, target_id, user_id=user_id)
         form_ready(fresh, fingerprint=fingerprint or target["draft_fingerprint"], retry=retry_unconfirmed)
         return fresh
+
+    def not_paused() -> bool:
+        # A fresh read outside any transaction: the claim's has committed by the time this is asked.
+        return not automation.paused(conn, user_id)
+
+    submit_options: dict[str, Any] = {"should_continue": not_paused} if automatic else {}
 
     with _claimed(conn, target_id, user_id, "initial", "form", revalidate, stale_token=stale_token) as (token, fresh):
         page_url = fresh["contact_form"]["page_url"]
@@ -1253,12 +1292,14 @@ def submit_contact_form(
             with submitter_factory(in_browser=in_browser) as submitter:
                 result = submitter.submit(
                     page_url, identity=identity, subject=fresh["email_subject"], body=fresh["email_body"],
-                    attachment=attachment, name=target_id,
+                    attachment=attachment, name=target_id, **submit_options,
                 )
         except BaseException:
             _settle_claim(conn, target_id, "initial", token, "unconfirmed")
             raise
         outcome = result["outcome"]
+        # Stopped by a pause just before the button: nothing went, and the form waits as it was.
+        held = bool(result.get("paused")) and outcome not in {"submitted", "unconfirmed"}
         timestamp = utc_now()
         detail = {
             "kind": "initial", "fingerprint": fresh["draft_fingerprint"], "page_url": page_url,
@@ -1278,7 +1319,7 @@ def submit_contact_form(
                     conn.execute("DELETE FROM outreach_send_claims WHERE target_id=? AND kind='initial' AND token=?", (target_id, token))
                 conn.execute(
                     "UPDATE outreach_contact_forms SET state=?, note=?, attempted_at=?, updated_at=? WHERE target_id=? AND user_id=?",
-                    (outcome, result.get("note", "")[:500], timestamp, timestamp, target_id, user_id),
+                    ("found" if held else outcome, result.get("note", "")[:500], timestamp, timestamp, target_id, user_id),
                 )
                 event = {"submitted": SUBMITTED_EVENT, "unconfirmed": UNCONFIRMED_EVENT}.get(outcome, NOT_SENT_EVENT)
                 _log(conn, target_id, user_id, event, detail=json.dumps(detail, sort_keys=True))

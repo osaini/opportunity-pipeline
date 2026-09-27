@@ -816,8 +816,12 @@ def apply_candidate(
     *,
     user_id: str,
     cc_candidate_id: str | None = None,
+    before_write: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
-    """Make one candidate the contact. A Cc is set only when named; applying by hand clears it."""
+    """Make one candidate the contact. A Cc is set only when named; applying by hand clears it.
+
+    ``before_write`` runs first inside the transaction that changes the contact (update_target).
+    """
     target = get_target(conn, target_id, user_id=user_id)
     conn.row_factory = sqlite3.Row
 
@@ -858,7 +862,7 @@ def apply_candidate(
         changes["source_urls"] = [*target["source_urls"], row["evidence_url"]]
     # A draft not yet sent greets whoever it now goes to; update_target swaps
     # the greeting in the student's own style (outreach._readdress_drafts).
-    update_target(conn, target_id, changes, user_id=user_id)
+    update_target(conn, target_id, changes, user_id=user_id, before_write=before_write)
     with conn:
         _log(conn, target_id, user_id, "contact_applied",
              detail=f"{row['email']} ({row['confidence']}, {row['method'].replace('_', ' ')})" + (f", cc {cc}" if cc else ""))
@@ -981,8 +985,11 @@ def choose_contact(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
     return None
 
 
-def apply_choice(conn: sqlite3.Connection, target_id: str, choice: dict[str, Any], *, user_id: str) -> dict[str, Any]:
+def apply_choice(
+    conn: sqlite3.Connection, target_id: str, choice: dict[str, Any], *, user_id: str,
+    before_write: Callable[[], None] | None = None,
+) -> dict[str, Any]:
     return apply_candidate(
         conn, target_id, choice["to"]["id"], user_id=user_id,
-        cc_candidate_id=choice["cc"]["id"] if choice.get("cc") else None,
+        cc_candidate_id=choice["cc"]["id"] if choice.get("cc") else None, before_write=before_write,
     )

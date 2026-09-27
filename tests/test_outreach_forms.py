@@ -1,6 +1,7 @@
 """Contact forms for companies with no email: found by the crawl, filled truthfully, sent once."""
 
 import json
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -15,10 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import httpx
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, outreach_forms
+from opportunity_app import STATIC_DIR, automation, outreach_forms
 from opportunity_app.api import create_app
 from opportunity_app.outreach import create_target, get_target
-from opportunity_app.outreach_automation import AutomationWorker, draft_due, update_settings
+from opportunity_app.outreach_automation import AutomationWorker, draft_due, send_form, update_settings
 from opportunity_app.outreach_contacts import find_contacts
 from opportunity_app.outreach_forms import (
     FormSubmitter,
@@ -196,6 +197,7 @@ class FakeSubmitter:
         self.outcomes = list(outcomes)
         self.calls = []
         self.in_browser = []
+        self.before_button = lambda: None
 
     def factory(self, *, in_browser=False):
         self.in_browser.append(in_browser)
@@ -207,9 +209,16 @@ class FakeSubmitter:
     def __exit__(self, *_exc):
         return False
 
-    def submit(self, page_url, **kwargs):
-        self.calls.append({"page_url": page_url, **kwargs})
+    def submit(self, page_url, *, should_continue=None, **kwargs):
+        self.calls.append({"page_url": page_url, "should_continue": should_continue, **kwargs})
         outcome = self.outcomes.pop(0)
+        if outcome == "pause_at_button":
+            # As FormSubmitter does: asked just before the button, and stopped there.
+            self.before_button()
+            if should_continue is not None and not should_continue():
+                return {"outcome": "failed", "note": outreach_forms.PAUSED_BEFORE_SENDING, "confirmation": "", "filled": [],
+                        "screenshot": "", "attached": "", "paused": True}
+            outcome = "submitted"
         return {"outcome": outcome, "note": "" if outcome == "submitted" else f"{outcome} for a reason",
                 "confirmation": "Thanks! Your message has been sent." if outcome == "submitted" else "",
                 "filled": ["Your name", "Email", "Message"], "screenshot": "", "attached": getattr(self, "attached", "")}
@@ -381,6 +390,51 @@ class FormSendTests(unittest.TestCase):
         self.assertEqual(worker.run_once()["forms"][0]["outcome"], "refused")
         self.assertEqual(self.get(other)["contact_form"]["state"], "needs_you")
         self.assertEqual(worker.run_once()["forms"], [])
+
+    def form_state(self, target):
+        return self.get(target)["contact_form"]["state"]
+
+    def test_an_automatic_submit_while_paused_leaves_the_form_waiting(self):
+        self.submitter.outcomes = ["submitted"]
+        target = self.approved()
+        worker = AutomationWorker(self.platform_path, fetcher_factory=lambda: None, form_submitter_factory=self.submitter.factory)
+        with closing(connect_product(self.platform_path)) as conn:
+            update_settings(conn, {"form_submission": True}, user_id=USER)
+            automation.set_paused(conn, USER, True)
+            self.assertEqual(worker.run_once()["forms"], [], "a paused student's forms are not tried")
+            # Paused by the time the worker's claim is taken: refused there, and not parked.
+            self.assertEqual(send_form(conn, target["id"], user_id=USER, submitter_factory=self.submitter.factory)["outcome"], "paused")
+            self.assertIsNone(conn.execute("SELECT 1 FROM outreach_send_claims").fetchone(), "the claim went back with the refusal")
+        self.assertEqual(self.submitter.calls, [])
+        self.assertEqual(self.form_state(target), "found")
+        with closing(connect_product(self.platform_path)) as conn:
+            automation.set_paused(conn, USER, False)
+        self.assertEqual(worker.run_once()["forms"][0]["outcome"], "submitted", "it goes once they resume")
+
+    def test_a_pause_just_before_the_button_sends_nothing_and_keeps_the_form_waiting(self):
+        self.submitter.outcomes = ["pause_at_button"]
+        target = self.approved()
+
+        def pause():
+            with closing(connect_product(self.platform_path)) as conn:
+                automation.set_paused(conn, USER, True)
+
+        self.submitter.before_button = pause
+        with closing(connect_product(self.platform_path)) as conn:
+            result = send_form(conn, target["id"], user_id=USER, submitter_factory=self.submitter.factory)
+        self.assertEqual((result["outcome"], result["note"]), ("failed", outreach_forms.PAUSED_BEFORE_SENDING))
+        after = self.get(target)
+        self.assertEqual((after["contact_form"]["state"], after["status"]), ("found", "drafted"))
+        with closing(connect_product(self.platform_path)) as conn:
+            self.assertIsNone(conn.execute("SELECT 1 FROM outreach_send_claims").fetchone())
+
+    def test_the_students_own_form_send_is_not_paused(self):
+        self.submitter.outcomes = ["submitted"]
+        target = self.approved()
+        with closing(connect_product(self.platform_path)) as conn:
+            automation.set_paused(conn, USER, True)
+        self.assertEqual(self.send(target).json()["outcome"], "submitted")
+        self.assertIsNone(self.submitter.calls[0]["should_continue"], "only the automatic path asks about the pause")
 
     def test_a_company_with_only_a_form_gets_an_automatic_draft(self):
         target = self.target(email_body="", email_subject="", location="Austin, TX")
@@ -574,6 +628,26 @@ class BrowserSubmitTests(unittest.TestCase):
         self.assertTrue(Path(result["filled_screenshot"]).exists())
         self.assertEqual(site.posts, [], "nothing left the page, not even the keystroke capture")
         self.assertTrue(any("/partial" in refused for refused in submitter.refused))
+
+    def test_a_pause_just_before_the_button_presses_nothing(self):
+        def broken():
+            raise sqlite3.OperationalError("database is locked")
+
+        for answer in (lambda: False, broken):
+            with self.subTest(answer=answer.__name__):
+                site = Site({"/contact": PLAIN_FORM})
+                asked = []
+                tempdir = tempfile.TemporaryDirectory()
+                self.addCleanup(tempdir.cleanup)
+                with FormSubmitter(route_hook=site.route, screenshot_dir=Path(tempdir.name)) as submitter:
+                    result = submitter.submit(
+                        "https://bovi.test/contact", identity=IDENTITY, subject="s", body=LETTER, name="bovi",
+                        should_continue=lambda: asked.append(1) or answer(),
+                    )
+                self.assertEqual((result["outcome"], result["note"], result.get("paused")),
+                                 ("failed", outreach_forms.PAUSED_BEFORE_SENDING, True), result)
+                self.assertEqual(asked, [1], "asked once, after filling, before the button")
+                self.assertEqual(site.posts, [], "a check that fails counts as paused: nothing is sent")
 
     def test_a_single_line_message_box_is_refused(self):
         single = PLAIN_FORM.replace('<textarea name="message" required></textarea>', '<input name="message" placeholder="Your message" required>')

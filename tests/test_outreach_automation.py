@@ -6,13 +6,14 @@ import unittest
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import httpx
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR
+from opportunity_app import STATIC_DIR, automation, outreach_drafting
 from opportunity_app.api import create_app
 from opportunity_app.outreach import create_target, get_target, update_target
 from opportunity_app.outreach_automation import (
@@ -63,8 +64,8 @@ class AutomationTests(unittest.TestCase):
             "contact_email": "info@bovi.test", **values,
         }, user_id=USER)
 
-    def bounced(self):
-        target = self.target(email_subject="Internship question", email_body="Hi Bovi team,\n\nA short note.\n\nSam", status="sent")
+    def bounced(self, **values):
+        target = self.target(email_subject="Internship question", email_body="Hi Bovi team,\n\nA short note.\n\nSam", status="sent", **values)
         return record_bounce(self.conn, target["id"], user_id=USER, reason="Address not found", source="gmail")
 
     def fetch(self):
@@ -177,6 +178,104 @@ class AutomationTests(unittest.TestCase):
         report = worker.run_once()
         self.assertEqual([item["to"] for item in report["recovered"]], ["dana.ruiz@bovi.test"])
         self.assertEqual(get_target(self.conn, target["id"], user_id=USER)["contact_email"], "dana.ruiz@bovi.test")
+
+    def test_a_paused_student_gets_no_recovery_and_no_draft(self):
+        bounced = self.bounced()
+        ready = self.target(company="Kiva", website="https://kiva.test", contact_email="hi@kiva.test")
+        update_settings(self.conn, {"bounce_recovery": True, "auto_drafts": True}, user_id=USER)
+        self.assertEqual((recovery_due(self.conn, user_id=USER), draft_due(self.conn, user_id=USER)), ([bounced["id"]], [ready["id"]]))
+        fetchers = []
+
+        def fetcher_factory():
+            fetchers.append(True)
+            transport, _ = site_transport(SITE, mx=False)
+            return safe_fetcher(httpx.Client(transport=transport))
+
+        worker = AutomationWorker(self.platform_path, fetcher_factory=fetcher_factory, provider_factory=legacy,
+                                  draft_provider="legacy", contact_delay=0)
+        automation.set_paused(self.conn, USER, True)
+        self.assertEqual(worker.run_once(), {"sent": [], "recovered": [], "drafted": [], "forms": []})
+        self.assertEqual(fetchers, [], "no site is searched while paused")
+        self.assertEqual(get_target(self.conn, bounced["id"], user_id=USER)["contact_email"], "info@bovi.test")
+        self.assertEqual(get_target(self.conn, ready["id"], user_id=USER)["email_body"], "", "no draft is written while paused")
+        automation.set_paused(self.conn, USER, False)
+        report = worker.run_once()
+        self.assertEqual(([item["to"] for item in report["recovered"]], [item["target_id"] for item in report["drafted"]]),
+                         (["dana.ruiz@bovi.test"], [ready["id"]]), "both run once resumed")
+
+    def test_a_pause_during_a_recovery_pass_changes_no_contact(self):
+        first = self.bounced()
+        second = self.bounced(company="Bovi Two")
+        update_settings(self.conn, {"bounce_recovery": True}, user_id=USER)
+        seen = {}
+
+        def fetcher_factory():
+            transport, _ = site_transport(SITE, mx=False)
+
+            def handler(request):
+                # The student presses Pause while the first company's site is being read.
+                if "pause" not in seen:
+                    with closing(connect_product(self.platform_path)) as other:
+                        seen["pause"] = automation.set_paused(other, USER, True)
+                return transport.handle_request(request)
+
+            return safe_fetcher(httpx.Client(transport=httpx.MockTransport(handler)))
+
+        report = AutomationWorker(self.platform_path, fetcher_factory=fetcher_factory, contact_delay=0).run_once()
+        self.assertEqual(seen["pause"], {"paused": True, "in_flight": []}, "the instrument: the pause landed mid-pass")
+        self.assertEqual(report["recovered"], [])
+        for target in (first, second):
+            after = get_target(self.conn, target["id"], user_id=USER)
+            self.assertEqual((after["contact_email"], after["contact_bounced"]), ("info@bovi.test", True), after["company"])
+        self.assertEqual(sorted(recovery_due(self.conn, user_id=USER)), sorted([first["id"], second["id"]]),
+                         "neither counts as searched, so both are searched again on resume")
+
+    def test_a_pause_during_a_recovery_pass_stops_it_before_the_next_company(self):
+        anvil = self.bounced(company="Anvil", website="https://anvil.test", contact_email="info@anvil.test")
+        bovi = self.bounced()
+        update_settings(self.conn, {"bounce_recovery": True}, user_id=USER)
+        self.assertEqual(recovery_due(self.conn, user_id=USER), [anvil["id"], bovi["id"]], "the instrument: Anvil is searched first")
+        # Anvil's site names nobody else, so its search ends without a contact to apply.
+        sites = {**SITE, "anvil.test": {"/robots.txt": "", "/": '<a href="mailto:info@anvil.test">info@anvil.test</a>'}}
+        hosts = []
+
+        def fetcher_factory():
+            transport, _ = site_transport(sites, mx=False)
+
+            def handler(request):
+                hosts.append(request.url.host)
+                if len(hosts) == 1:
+                    with closing(connect_product(self.platform_path)) as other:
+                        automation.set_paused(other, USER, True)
+                return transport.handle_request(request)
+
+            return safe_fetcher(httpx.Client(transport=httpx.MockTransport(handler)))
+
+        report = AutomationWorker(self.platform_path, fetcher_factory=fetcher_factory, contact_delay=0).run_once()
+        self.assertEqual({host for host in hosts if host.endswith(".test")}, {"anvil.test"}, "Bovi's site is never read")
+        self.assertEqual([item["company"] for item in report["recovered"]], ["Anvil"], "the search under way finishes and is recorded")
+        self.assertEqual(get_target(self.conn, bovi["id"], user_id=USER)["contact_email"], "info@bovi.test")
+        self.assertEqual(recovery_due(self.conn, user_id=USER), [bovi["id"]], "Bovi is searched once resumed")
+
+    def test_a_pause_while_a_draft_is_being_written_saves_nothing(self):
+        ready = self.target()
+        update_settings(self.conn, {"auto_drafts": True}, user_id=USER)
+        real = outreach_drafting.template_draft
+
+        def pause_then_write(*args):
+            # Stands in for a model call the student pauses during.
+            with closing(connect_product(self.platform_path)) as other:
+                automation.set_paused(other, USER, True)
+            return real(*args)
+
+        with mock.patch.object(outreach_drafting, "template_draft", pause_then_write):
+            result = auto_draft(self.conn, ready["id"], user_id=USER, provider_factory=legacy, draft_provider="legacy", automatic=True)
+        self.assertEqual((result["drafted"], result["paused"]), (False, True))
+        after = get_target(self.conn, ready["id"], user_id=USER, include_events=True)
+        self.assertEqual((after["email_body"], after["status"]), ("", "not_started"))
+        self.assertNotIn(AUTO_DRAFT_FAILED, [event["event_type"] for event in after["events"]], "a pause is not a failure")
+        automation.set_paused(self.conn, USER, False)
+        self.assertEqual(draft_due(self.conn, user_id=USER), [ready["id"]], "so it is written once resumed, not six hours later")
 
 
 class AutomationApiTests(unittest.TestCase):
