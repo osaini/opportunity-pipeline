@@ -18,6 +18,7 @@ from opportunity_app.api import create_app
 from opportunity_app.outreach import create_target, get_target, update_target
 from opportunity_app.outreach_automation import (
     AUTO_DRAFT_FAILED,
+    WORKER_COMPONENT,
     AutomationWorker,
     auto_draft,
     draft_due,
@@ -276,6 +277,68 @@ class AutomationTests(unittest.TestCase):
         self.assertNotIn(AUTO_DRAFT_FAILED, [event["event_type"] for event in after["events"]], "a pause is not a failure")
         automation.set_paused(self.conn, USER, False)
         self.assertEqual(draft_due(self.conn, user_id=USER), [ready["id"]], "so it is written once resumed, not six hours later")
+
+
+class WorkerHealthTests(unittest.TestCase):
+    """Each worker pass records automation.worker, so a step that keeps failing is visible, not silent."""
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        _, self.platform_path = build_and_migrate(Path(self.tempdir.name))
+        self.conn = connect_product(self.platform_path)
+
+    def tearDown(self):
+        self.conn.close()
+        self.tempdir.cleanup()
+
+    def worker_health(self):
+        return {row["user_id"]: dict(row) for row in self.conn.execute(
+            "SELECT * FROM automation_health WHERE component=?", (WORKER_COMPONENT,),
+        ).fetchall()}
+
+    def test_a_pass_records_ok_only_for_students_with_something_on(self):
+        worker = AutomationWorker(self.platform_path, fetcher_factory=lambda: None)
+        worker.run_once()
+        self.assertEqual(self.worker_health(), {}, "nothing on, nothing due: no row")
+        update_settings(self.conn, {"bounce_recovery": True}, user_id=USER)
+        worker.run_once()
+        row = self.worker_health()[USER]
+        self.assertIsNotNone(row["last_ok_at"])
+        self.assertEqual((row["last_error"], row["last_error_at"]), ("", None))
+        # Paused, the worker still ran for them (and held everything back), so it is still ok.
+        automation.set_paused(self.conn, USER, True)
+        worker.run_once()
+        self.assertEqual(self.worker_health()[USER]["last_error"], "")
+
+    def test_a_step_that_raises_is_recorded_without_addresses_and_the_pass_goes_on(self):
+        update_settings(self.conn, {"bounce_recovery": True}, user_id=USER)
+        worker = AutomationWorker(self.platform_path, fetcher_factory=lambda: None)
+        with mock.patch("opportunity_app.outreach_automation.recovery_due",
+                        side_effect=RuntimeError("could not search again for dana@bovi.test")), \
+                self.assertLogs("opportunity_app.outreach_automation", "ERROR"):
+            self.assertEqual(worker.run_once(), {"sent": [], "recovered": [], "drafted": [], "forms": []}, "the pass returns")
+        row = self.worker_health()[USER]
+        self.assertEqual(row["last_error"], "RuntimeError: could not search again for [address]")
+        self.assertIsNone(row["last_ok_at"])
+        worker.run_once()
+        self.assertIsNotNone(self.worker_health()[USER]["last_ok_at"], "the next good pass says so")
+
+    def test_a_student_with_an_email_due_is_recorded_when_the_send_step_fails(self):
+        target = create_target(self.conn, {"company": "Bovi", "contact_email": "greg@bovi.test"}, user_id=USER)
+        stamp = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(timespec="seconds")
+        with self.conn:
+            self.conn.execute(
+                """INSERT INTO outreach_scheduled_sends(target_id, user_id, kind, fingerprint, send_at, timezone, label, state, created_at, updated_at)
+                   VALUES(?, ?, 'initial', 'f', ?, 'UTC', 'now', 'scheduled', ?, ?)""",
+                (target["id"], USER, stamp, stamp, stamp),
+            )
+        worker = AutomationWorker(self.platform_path, fetcher_factory=lambda: None, gmail_client_factory=lambda: None)
+        with mock.patch("opportunity_app.outreach_schedule.run_due_sends",
+                        side_effect=RuntimeError("the send path broke for greg@bovi.test")), \
+                self.assertLogs("opportunity_app.outreach_automation", "ERROR"):
+            worker.run_once()
+        self.assertEqual(self.worker_health()[USER]["last_error"], "RuntimeError: the send path broke for [address]",
+                         "every switch is off, but an email was due, so the failure shows")
 
 
 class AutomationApiTests(unittest.TestCase):

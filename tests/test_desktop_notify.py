@@ -129,18 +129,59 @@ class DeliveryTests(unittest.TestCase):
     def deliver(self, notifier, now=None):
         return desktop_notify.deliver_desktop_notices(self.conn, notifier=notifier, now=now or self.RUN_AT)
 
-    def turn_on(self):
+    def turn_on(self, *, ago=timedelta(days=3)):
+        """Turn pop-ups on, as if the student did it ``ago`` before RUN_AT: notices made before then never pop up."""
         automation.set_mode(self.conn, USER, "desktop_notifications", "on")
+        with self.conn:
+            self.conn.execute(
+                "UPDATE user_settings SET updated_at=? WHERE user_id=? AND key='desktop_notifications'",
+                ((self.RUN_AT - ago).isoformat(timespec="microseconds"), USER),
+            )
 
-    def test_nothing_pops_up_while_the_switch_is_off_or_automation_is_paused(self):
+    def test_nothing_pops_up_while_the_switch_is_off(self):
         self.notice("one")
         notifier = Notifier()
         self.assertEqual(self.deliver(notifier), 0)
-        self.turn_on()
-        automation.set_paused(self.conn, USER, True)
+        automation.set_mode(self.conn, USER, "desktop_notifications", "off")
         self.assertEqual(self.deliver(notifier), 0)
         self.assertEqual(notifier.calls, [])
         self.assertIsNone(self.shown_at("one"))
+
+    def test_a_pause_does_not_hold_pop_ups_back(self):
+        # Pause stops what the app does on its own; a notice such as this one only informs.
+        self.turn_on()
+        automation.set_paused(self.conn, USER, True)
+        self.notice("gmail", title="Gmail needs reconnecting", body="Reply and bounce checks have stopped.")
+        notifier = Notifier()
+        self.assertEqual(self.deliver(notifier), 1)
+        self.assertEqual(notifier.calls, [("Gmail needs reconnecting", "Reply and bounce checks have stopped.")])
+        self.assertIsNotNone(self.shown_at("gmail"))
+
+    def test_a_notice_already_read_in_the_app_never_pops_up(self):
+        self.turn_on()
+        self.notice("read")
+        self.notice("unread", title="Unread")
+        read_id = self.conn.execute("SELECT id FROM automation_notices WHERE event_key='read'").fetchone()[0]
+        self.assertEqual(automation.mark_notices_read(self.conn, USER, [read_id]), 1)
+        notifier = Notifier()
+        self.assertEqual(self.deliver(notifier), 1)
+        self.assertEqual([title for title, _body in notifier.calls], ["Unread"])
+        self.assertIsNone(self.shown_at("read"), "left as it is, in the app only")
+
+    def test_turning_pop_ups_on_brings_back_no_backlog(self):
+        self.notice("before", title="Before", age=timedelta(hours=5))
+        self.turn_on(ago=timedelta(hours=3))
+        self.notice("after", title="After", age=timedelta(hours=1))
+        notifier = Notifier()
+        self.assertEqual(self.deliver(notifier), 1)
+        self.assertEqual([title for title, _body in notifier.calls], ["After"])
+        self.assertIsNone(self.shown_at("before"), "made before the switch was turned on, so it stays in the app only")
+        # Off and on again later: what came in while it was off stays in the app too.
+        automation.set_mode(self.conn, USER, "desktop_notifications", "off")
+        self.notice("while-off", title="While off", age=timedelta(minutes=30))
+        self.turn_on(ago=timedelta(minutes=10))
+        self.assertEqual(self.deliver(notifier), 0)
+        self.assertEqual(len(notifier.calls), 1)
 
     def test_each_notice_pops_up_once_with_its_title_and_body(self):
         self.turn_on()
