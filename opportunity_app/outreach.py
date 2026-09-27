@@ -102,9 +102,17 @@ SELECT_TARGETS = """
         (SELECT j.state FROM job_queue j WHERE j.id=t.call_prep_job_id) AS call_prep_job_state,
         (SELECT j.last_error FROM job_queue j WHERE j.id=t.call_prep_job_id) AS call_prep_job_error,
         (SELECT j.next_attempt_at FROM job_queue j WHERE j.id=t.call_prep_job_id) AS call_prep_job_next_attempt_at,
-        (SELECT j.attempts FROM job_queue j WHERE j.id=t.call_prep_job_id) AS call_prep_job_attempts
+        (SELECT j.attempts FROM job_queue j WHERE j.id=t.call_prep_job_id) AS call_prep_job_attempts,
+        (SELECT f.page_url FROM outreach_contact_forms f WHERE f.target_id=t.id) AS contact_form_page_url,
+        (SELECT f.captcha FROM outreach_contact_forms f WHERE f.target_id=t.id) AS contact_form_captcha,
+        (SELECT f.accepts_file FROM outreach_contact_forms f WHERE f.target_id=t.id) AS contact_form_accepts_file,
+        (SELECT f.state FROM outreach_contact_forms f WHERE f.target_id=t.id) AS contact_form_state,
+        (SELECT f.note FROM outreach_contact_forms f WHERE f.target_id=t.id) AS contact_form_note,
+        (SELECT f.found_at FROM outreach_contact_forms f WHERE f.target_id=t.id) AS contact_form_found_at,
+        (SELECT f.attempted_at FROM outreach_contact_forms f WHERE f.target_id=t.id) AS contact_form_attempted_at
     FROM outreach_targets t
 """
+CONTACT_FORM_COLUMNS = ("page_url", "captcha", "accepts_file", "state", "note", "found_at", "attempted_at")
 TEXT_FIELDS = (
     "company", "channel", "website", "location", "summary", "fit_rationale", "activity_signal",
     "contact_name", "contact_role", "contact_email", "contact_cc", "contact_linkedin", "contact_route",
@@ -562,6 +570,9 @@ def _record(
     }
     item["call_prep_job"] = job if job_state else None
     item["reply_count"] = int(item.get("reply_count") or 0)
+    # The contact form on the company's site, for a company with no email (outreach_forms.py).
+    form = {column: item.pop(f"contact_form_{column}", None) for column in CONTACT_FORM_COLUMNS}
+    item["contact_form"] = {**form, "accepts_file": bool(form["accepts_file"])} if form["page_url"] else None
     if item.get("research_confidence") == "confirmed":
         item["draft_claims"] = _confirmed_claims(item["draft_claims"])
         item["follow_up_claims"] = _confirmed_claims(item["follow_up_claims"])
@@ -1315,7 +1326,8 @@ def approve_draft(
         raise DraftChangedError("This draft changed since you opened it. Reload and review it again.")
     if not target[body_field] or not target[subject_field]:
         raise ValueError("Write or generate a subject and body before approving")
-    if not target["contact_email"]:
+    # With no email, a first message can still go through the company's contact form.
+    if not target["contact_email"] and not (kind == "initial" and target["contact_form"]):
         raise ValueError("Add a contact email before approving; the draft has no recipient")
     checks = target["draft_checks"] if kind == "initial" else target["follow_up_checks"]
     if checks["placeholders"]:

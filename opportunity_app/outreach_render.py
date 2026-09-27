@@ -12,7 +12,8 @@ including its scripts, frames, and redirects, must be http(s) to a host that
 resolves only to public addresses; anything else is aborted, so a page cannot
 reach the dashboard or another service on this machine or network. WebSockets,
 service workers, and downloads are refused, and images, media, fonts, and styles
-are never loaded. The browser starts on the first page that needs it.
+are not loaded (stylesheets only when a render asks for them). The browser
+starts on the first page that needs it.
 """
 
 from __future__ import annotations
@@ -55,6 +56,9 @@ class PlaywrightRenderer:
         self._context: Any = None
         self.unavailable = ""
         self.blocked: list[str] = []
+        # Stylesheets load only for a render that asks: some site builders
+        # (Squarespace) build their contact forms only once styles arrive.
+        self._styles = False
 
     def __enter__(self) -> "PlaywrightRenderer":
         return self
@@ -95,7 +99,7 @@ class PlaywrightRenderer:
 
     def _guard(self, route: Any) -> None:
         request = route.request
-        if request.resource_type in SKIPPED_RESOURCES:
+        if request.resource_type in SKIPPED_RESOURCES and not (self._styles and request.resource_type == "stylesheet"):
             route.abort()
             return
         if not request_allowed(request.url, self._resolve, self._allowed):
@@ -104,10 +108,14 @@ class PlaywrightRenderer:
             return
         route.continue_()
 
-    def render(self, url: str) -> tuple[str, str] | None:
-        """The final URL and the HTML after scripts ran, or None when the page did not load."""
+    def render(self, url: str, *, styles: bool = False) -> tuple[str, str] | None:
+        """The final URL and the HTML after scripts ran, or None when the page did not load.
+
+        ``styles`` loads the page's stylesheets too, for pages that build a form only once they arrive.
+        """
         if not request_allowed(url, self._resolve, self._allowed) or not self._start():
             return None
+        self._styles = styles
         page = self._context.new_page()
         try:
             response = page.goto(url, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
@@ -121,6 +129,7 @@ class PlaywrightRenderer:
         except Exception:  # noqa: BLE001 - timeouts and aborted navigations count as not loaded
             return None
         finally:
+            self._styles = False
             page.close()
 
 

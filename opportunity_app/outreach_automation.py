@@ -9,9 +9,13 @@
   goes back for approval.
 - scheduled_sending: the student's confirmed Send queues the approved email
   for the recipient's next weekday morning (outreach_schedule.py).
+- form_submission: a company with no email but a contact form on its site
+  gets its approved first message sent through that form (outreach_forms.py),
+  once. A form that asks for a picture CAPTCHA or a field the app cannot
+  answer waits for the student.
 
-Only scheduled_sending leads to mail going out, and only an email the student
-approved and scheduled. Every switch is off until the student turns it on
+Only scheduled_sending and form_submission lead to anything going out, and
+only a first message the student approved. Every switch is off until the student turns it on
 (user_settings). ``AutomationWorker`` runs the work on a background thread.
 """
 
@@ -29,6 +33,7 @@ import httpx
 
 from .outreach import _log, get_target, list_targets
 from .outreach_contacts import SafeFetcher, apply_choice, choose_contact, find_contacts, list_candidates
+from .outreach_forms import form_due
 from .outreach_gmail import last_bounce
 from .schema import connect_product, utc_now
 
@@ -39,6 +44,7 @@ SETTINGS = {
     "bounce_recovery": "After a bounce, find another contact and fix the greeting",
     "scheduled_sending": "Send approved emails on the recipient's next weekday morning",
     "follow_up_review": "Have a second model check each follow-up before it goes out",
+    "form_submission": "Send approved first messages through the company's contact form when it has no email",
 }
 RECOVERY_EVENT = "contact_recovery"
 AUTO_DRAFT_FAILED = "auto_draft_failed"
@@ -142,13 +148,14 @@ def recover_contact(
 
 
 def draft_due(conn: sqlite3.Connection, *, user_id: str, now: datetime | None = None) -> list[str]:
-    """Companies ready for a first draft: a contact that has not bounced, a location, no draft, nothing sent."""
+    """Companies ready for a first draft: a contact (an address that has not bounced, or a contact form), a location, no draft, nothing sent."""
     now = now or datetime.now(timezone.utc)
     due = []
     for item in list_targets(conn, user_id=user_id):
         if item["email_body"] or item["sent_at"] or item["status"] not in {"not_started", "drafted"}:
             continue
-        if not item["contact_email"] or item["contact_bounced"] or item["cc_bounced"] or not item["location_verified"]:
+        reachable = item["contact_email"] or item["contact_form"]
+        if not reachable or item["contact_bounced"] or item["cc_bounced"] or not item["location_verified"]:
             continue
         failed = _latest(conn, item["id"], user_id, AUTO_DRAFT_FAILED)
         if failed is not None and now - failed < DRAFT_RETRY_AFTER:
@@ -176,6 +183,27 @@ def auto_draft(
     return {"target_id": target_id, "company": target["company"], "drafted": True}
 
 
+# --- Contact forms ---------------------------------------------------------------------
+
+
+def send_form(conn: sqlite3.Connection, target_id: str, *, user_id: str, submitter_factory: Callable[..., Any]) -> dict[str, Any]:
+    """Send one approved first message through its contact form; a refusal is reported, not raised."""
+    from .outreach_forms import submit_contact_form
+
+    try:
+        result = submit_contact_form(conn, target_id, user_id=user_id, submitter_factory=submitter_factory)
+    except Exception as exc:  # noqa: BLE001 - the next pass tries the next company
+        LOGGER.warning("Contact form for %s was not sent: %s", target_id, exc)
+        # Parked for the student, so the same refusal is not tried every pass.
+        with conn:
+            conn.execute(
+                "UPDATE outreach_contact_forms SET state='needs_you', note=?, updated_at=? WHERE target_id=? AND user_id=? AND state='found'",
+                (str(exc)[:500], utc_now(), target_id, user_id),
+            )
+        return {"target_id": target_id, "outcome": "refused", "note": str(exc)[:300]}
+    return {"target_id": target_id, "company": result["target"]["company"], "outcome": result["outcome"], "note": result["note"]}
+
+
 # --- In the background ---------------------------------------------------------------------
 
 
@@ -184,8 +212,9 @@ class AutomationWorker:
 
     A pass first sends every scheduled email that is due (for any student:
     turning the switch off does not strand one already scheduled), then
-    recovers every bounced contact that is due, then writes at most one draft,
-    so a slow model call never holds the others up for long.
+    recovers every bounced contact that is due, then writes at most one draft
+    and sends at most one contact form, so a slow model call or page never
+    holds the others up for long.
     """
 
     def __init__(
@@ -199,10 +228,12 @@ class AutomationWorker:
         draft_provider: str | None = None,
         contact_delay: float = 1.0,
         gmail_client_factory: Callable[[], Any] | None = None,
+        form_submitter_factory: Callable[..., Any] | None = None,
         interval_seconds: float = 60.0,
     ) -> None:
         self.platform_target = platform_target
         self._gmail_client_factory = gmail_client_factory
+        self._form_submitter_factory = form_submitter_factory
         self._fetcher_factory = fetcher_factory
         self._renderer_factory = renderer_factory
         self._verifier_factory = verifier_factory
@@ -215,7 +246,7 @@ class AutomationWorker:
         self._thread: threading.Thread | None = None
 
     def run_once(self) -> dict[str, Any]:
-        report: dict[str, Any] = {"sent": [], "recovered": [], "drafted": []}
+        report: dict[str, Any] = {"sent": [], "recovered": [], "drafted": [], "forms": []}
         with closing(connect_product(self.platform_target)) as conn:
             if self._gmail_client_factory is not None:
                 from .outreach_schedule import run_due_sends  # imported here: it pulls in the Gmail send path
@@ -247,6 +278,10 @@ class AutomationWorker:
                         report["drafted"].append(auto_draft(
                             conn, due[0], user_id=user_id, provider_factory=self._provider_factory, draft_provider=self._draft_provider,
                         ))
+                if switched["form_submission"] and self._form_submitter_factory is not None and not report["forms"]:
+                    due = form_due(conn, user_id=user_id)
+                    if due:
+                        report["forms"].append(send_form(conn, due[0], user_id=user_id, submitter_factory=self._form_submitter_factory))
         return report
 
     def wake(self) -> None:

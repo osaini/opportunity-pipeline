@@ -289,6 +289,7 @@ from .outreach_drafting import (
 )
 from .outreach_delivery import bounce_from_text, check_deliveries
 from .outreach_inbox import InboxWatcher, capture_replies
+from .outreach_forms import default_submitter_factory as default_form_submitter_factory, set_contact_form, submit_contact_form
 from .outreach_automation import AutomationWorker, settings as automation_settings, update_settings as update_automation_settings
 from .outreach_schedule import cancel_send, schedule_send
 from .outreach_gmail import (
@@ -465,6 +466,19 @@ class OutreachSendRequest(BaseModel):
     sent_folder_check: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
 
 
+class OutreachFormSubmitRequest(BaseModel):
+    # The approved draft the student confirmed; a draft changed since is not sent.
+    fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # The student looked and the earlier, unconfirmed send did not arrive.
+    retry_unconfirmed: bool = False
+    # Open a browser window the student can see, to solve a CAPTCHA themselves.
+    in_browser: bool = False
+
+
+class OutreachContactFormRequest(BaseModel):
+    page_url: str = Field(min_length=8, max_length=2_000)
+
+
 class OutreachManualContactRequest(BaseModel):
     email: str = Field(min_length=3, max_length=320)
     name: str = Field(default="", max_length=200)
@@ -484,6 +498,7 @@ class OutreachAutomationRequest(BaseModel):
     bounce_recovery: bool | None = None
     scheduled_sending: bool | None = None
     follow_up_review: bool | None = None
+    form_submission: bool | None = None
 
 
 class OutreachScheduleRequest(BaseModel):
@@ -882,6 +897,7 @@ def create_app(
     outreach_draft_provider: str | None = None,
     outreach_provider_factory: Callable[[str, str], AgentProvider] | None = None,
     outreach_gmail_client_factory: Callable[[], httpx.Client] | None = None,
+    outreach_form_submitter_factory: Callable[..., Any] | None = None,
     call_prep_worker: CallPrepWorker | None = None,
     start_call_prep_worker: bool | None = None,
     start_inbox_watcher: bool | None = None,
@@ -964,6 +980,8 @@ def create_app(
     real_product_db = not is_postgres_target(database_target) and database_target == DEFAULT_PLATFORM_DB.resolve()
     resolved_smtp_verifier_factory = outreach_smtp_verifier_factory or (default_smtp_verifier if real_product_db else (lambda: None))
     resolved_renderer_factory = outreach_renderer_factory or (default_renderer if real_product_db else (lambda: None))
+    # Contact forms are sent from a real browser, so only the real app opens one.
+    resolved_form_submitter_factory = outreach_form_submitter_factory or (default_form_submitter_factory if real_product_db else None)
     # The status panel reads this machine's scheduler, daily-run state and
     # data/pipeline.db, which only describe the real product database.
     if system_status is None and real_product_db:
@@ -1017,7 +1035,7 @@ def create_app(
         database_target, fetcher_factory=resolved_contact_client_factory, renderer_factory=resolved_renderer_factory,
         verifier_factory=resolved_smtp_verifier_factory, provider_factory=resolved_outreach_provider_factory,
         draft_provider=outreach_draft_provider, contact_delay=outreach_contact_delay,
-        gmail_client_factory=resolved_gmail_client_factory,
+        gmail_client_factory=resolved_gmail_client_factory, form_submitter_factory=resolved_form_submitter_factory,
     )
     if start_automation_worker is None:
         start_automation_worker = real_product_db
@@ -2357,6 +2375,47 @@ def create_app(
         except (RuntimeError, httpx.HTTPError) as exc:
             detail = str(exc) if isinstance(exc, RuntimeError) else "Could not reach Gmail. Nothing was sent"
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail) from exc
+
+    @app.post("/api/v1/outreach/{target_id}/form-submit")
+    def form_submit_for_outreach(
+        target_id: str,
+        payload: OutreachFormSubmitRequest,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """Send the approved first message the student confirmed through the company's contact form."""
+        if resolved_form_submitter_factory is None:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="This copy of the app does not open a browser to send contact forms")
+        try:
+            return submit_contact_form(
+                conn, target_id, user_id=user_id, submitter_factory=resolved_form_submitter_factory,
+                fingerprint=payload.fingerprint, retry_unconfirmed=payload.retry_unconfirmed, in_browser=payload.in_browser,
+            )
+        except OutreachNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        except SendNeedsCheckError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_428_PRECONDITION_REQUIRED, detail={"msg": str(exc), "check": exc.check},
+            ) from exc
+        except (DraftChangedError, SendConflictError) as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+
+    @app.put("/api/v1/outreach/{target_id}/contact-form")
+    def set_outreach_contact_form(
+        target_id: str,
+        payload: OutreachContactFormRequest,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """The student names the page holding the company's contact form."""
+        try:
+            return set_contact_form(conn, target_id, payload.page_url, user_id=user_id)
+        except OutreachNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
     @app.post("/api/v1/outreach/{target_id}/bounce")
     def mark_outreach_bounced(

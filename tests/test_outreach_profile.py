@@ -452,7 +452,7 @@ class FakeRenderer:
         self.unavailable = unavailable
         self.rendered = []
 
-    def render(self, url):
+    def render(self, url, *, styles=False):
         self.rendered.append(url)
         html = self.pages.get(url.rstrip("/"))
         return None if html is None else (url, html)
