@@ -15,7 +15,7 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, outreach_delivery, outreach_inbox
+from opportunity_app import STATIC_DIR, outreach_delivery, outreach_gmail, outreach_inbox
 from opportunity_app.api import create_app
 from opportunity_app.outreach_automation import update_settings
 from opportunity_app.outreach_review import review_runner
@@ -23,7 +23,7 @@ from opportunity_app.outreach_schedule import run_due_sends
 from opportunity_app.schema import connect_product, utc_now
 
 from helpers_platform import build_and_migrate
-from test_outreach_gmail import ACCOUNT, PDF, SCOPES, FakeGmail, failure_notice
+from test_outreach_gmail import ACCOUNT, PDF, SCOPES, FakeGmail, failure_notice, forget_gmail_backoff, rate_limited
 
 AUTH = {"Authorization": "Bearer review-owner"}
 USER = "local-user"
@@ -83,6 +83,8 @@ class SendGateTests(unittest.TestCase):
         outreach_delivery._LAST_LOOK.clear()
         outreach_delivery._READ_NOTICES.clear()
         outreach_inbox._LAST_CAPTURE.clear()
+        # A 429 below leaves a rate limit in memory, which must not follow into the next test.
+        forget_gmail_backoff(self)
         update_settings(self.conn, {"scheduled_sending": True}, user_id=USER)
         fernet = Fernet(self.key.encode())
         with self.conn:
@@ -191,6 +193,27 @@ class SendGateTests(unittest.TestCase):
                 self.assertEqual([item["state"] for item in self.due(target)], ["retrying"])
                 self.assertIn("Could not check Gmail", self.target(target)["scheduled"]["follow_up"]["error"])
                 self.assertEqual(len(self.gmail.sent), 1, "sending still works, but nothing goes unchecked")
+
+    def test_a_gmail_slowdown_during_the_fresh_look_retries_rather_than_fails(self):
+        target = self.scheduled_follow_up()
+        self.gmail.read_response = rate_limited
+        self.assertEqual([item["state"] for item in self.due(target)], ["retrying"])
+        held = self.target(target)["scheduled"]["follow_up"]
+        self.assertIn("Gmail asked the app to slow down", held["error"])
+        self.assertEqual(len(self.gmail.sent), 1)
+        # While Gmail's wait lasts, the next try asks Gmail nothing and waits again.
+        asked = len(self.gmail.requests)
+        self.assertEqual([item["state"] for item in self.due(target)], ["retrying"])
+        self.assertEqual(len(self.gmail.requests), asked)
+
+    def test_a_slowdown_that_escapes_a_check_still_only_holds_the_email(self):
+        from opportunity_app.outreach_review import fresh_look
+
+        target = self.scheduled_follow_up()
+        with mock.patch("opportunity_app.outreach_review.check_deliveries",
+                        side_effect=outreach_gmail.GmailThrottled("Gmail asked the app to slow down")):
+            look = fresh_look(self.conn, target["id"], user_id=USER, client_factory=self.factory)
+        self.assertEqual(look, {"ok": False, "reason": "Gmail asked the app to slow down"})
 
     def test_a_failed_bounce_read_is_not_taken_as_no_bounce(self):
         from opportunity_app.outreach_delivery import check_deliveries

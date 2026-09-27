@@ -38,6 +38,7 @@ from .outreach_gmail import (
     SENT_EVENT,
     ClientFactory,
     GmailAuthError,
+    GmailThrottled,
     _connector,
     _Gmail,
     last_bounce,
@@ -391,8 +392,9 @@ def check_deliveries(
     were looked at: the check made just before an automatic send.
 
     ``state`` is "ok", "not_connected", "needs_reconnect" (the connection
-    predates the read scope, or was revoked), or "unreachable". Nothing is
-    asked of Gmail when no send is due for a look.
+    predates the read scope, or was revoked), "throttled" (Gmail asked the app
+    to slow down), or "unreachable". Nothing is asked of Gmail when no send is
+    due for a look.
     """
     now = now or datetime.now(timezone.utc)
     result: dict[str, Any] = {"state": "ok", "checked": 0, "bounced": []}
@@ -455,6 +457,10 @@ def check_deliveries(
         return {**result, "state": "needs_reconnect"}
     except GmailAuthError:
         return {**result, "state": "needs_reconnect"}
+    except GmailThrottled:
+        # Not read is not "no bounce": look again as soon as Gmail allows.
+        _forget(user_id, due)
+        return {**result, "state": "throttled"}
     except (httpx.HTTPError, ValueError):
         # ValueError: an answer that was not JSON.
         return {**result, "state": "unreachable"}

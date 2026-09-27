@@ -175,6 +175,37 @@ class OAuthLifecycleTests(unittest.TestCase):
             self.assertEqual(fernet.decrypt(row["encrypted_access_token"].encode()).decode(), "second-access")
             self.assertEqual(fernet.decrypt(row["encrypted_refresh_token"].encode()).decode(), "durable-refresh")
 
+    def complete(self, conn, provider, payload, code):
+        FakeAsyncClient.response = _fake_response(payload=payload)
+        begin = connections.begin_oauth(conn, provider, "https://localhost:8765/callback", user_id=LOCAL_USER_ID)
+        with mock.patch.object(connections.httpx, "AsyncClient", FakeAsyncClient):
+            return asyncio.run(connections.complete_oauth(
+                conn, provider, state_from_url(begin["authorization_url"]), code, self.encryption_key, user_id=LOCAL_USER_ID,
+            ))
+
+    def test_the_grant_time_follows_the_refresh_token(self):
+        with closing(connect_product(self.platform_path)) as conn:
+            def granted():
+                return conn.execute(
+                    "SELECT token_granted_at FROM connector_accounts WHERE user_id=? AND provider='gmail_drafts'", (LOCAL_USER_ID,),
+                ).fetchone()[0]
+
+            record = self.complete(conn, "gmail_drafts", {"access_token": "a1", "refresh_token": "r1"}, "code-1")
+            self.assertTrue(granted(), "a new refresh token is a new grant")
+            with conn:
+                conn.execute(
+                    "UPDATE connector_accounts SET token_granted_at='2026-09-01T00:00:00+00:00', status='error', "
+                    "last_error='Google refused to renew the connection'"
+                )
+            self.complete(conn, "gmail_drafts", {"access_token": "a2"}, "code-2")
+            self.assertEqual(granted(), "2026-09-01T00:00:00+00:00", "the refresh token was kept, so its grant time is too")
+            row = conn.execute("SELECT status, last_error FROM connector_accounts WHERE id=?", (record["id"],)).fetchone()
+            self.assertEqual((row["status"], row["last_error"]), ("connected", ""), "reconnecting clears the old error")
+            self.complete(conn, "gmail_drafts", {"access_token": "a3", "refresh_token": "r2"}, "code-3")
+            self.assertNotEqual(granted(), "2026-09-01T00:00:00+00:00")
+            connections.disconnect_provider(conn, record["id"], user_id=LOCAL_USER_ID)
+            self.assertIsNone(granted())
+
     def test_complete_oauth_rejects_malformed_encryption_key_before_writes(self):
         FakeAsyncClient.response = _fake_response(payload={"access_token": "at-secret"})
         with closing(connect_product(self.platform_path)) as conn:
