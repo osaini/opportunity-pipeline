@@ -602,6 +602,7 @@ def _record(
     item["revisit_due"] = bool(
         due and item["status"] in REVISIT_STATUSES and date.fromisoformat(due) <= today
     )
+    item["mail_domains"] = json.loads(item.pop("mail_domains_json", None) or "[]")
     bounced = json.loads(item.pop("bounced_addresses_json", None) or "[]")
     item["bounced_addresses"] = bounced
     item["contact_bounced"] = bool(item.get("contact_email")) and item["contact_email"].casefold() in bounced

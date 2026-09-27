@@ -486,6 +486,43 @@ class FormReplyTests(unittest.TestCase):
         self.assertEqual(self.target(target)["status"], "replied")
 
 
+    def test_a_reply_from_another_domain_the_company_mails_from_is_captured(self):
+        # Persona AI: website persona.ai, email addresses at personainc.ai.
+        target = self.form_target()
+        with closing(connect_product(self.platform_path)) as conn:
+            conn.execute("UPDATE outreach_targets SET mail_domains_json=? WHERE id=?", ('["boviinc.example"]', target["id"]))
+            conn.commit()
+        self.arrive("ana-2", mail("Thanks for writing. Could you talk Thursday?", sender="Ana <ana@boviinc.example>",
+                                  subject="Your note"), received=now_ms(timedelta(hours=2)))
+        self.arrive("other-1", mail("Unrelated", sender="Sam <sam@unrelated.example>", subject="Hi"), received=now_ms(timedelta(hours=2)))
+        replies = self.check()["replies"]
+        self.assertEqual([(item["company"], item["from"]) for item in replies], [("Bovi", "ana@boviinc.example")])
+        self.assertEqual(self.target(target)["status"], "replied")
+
+
+class CompanyMailDomainTests(unittest.TestCase):
+    def test_only_domains_sharing_the_company_name_count(self):
+        footer = _Page("https://persona.test/", (
+            '<footer><a href="mailto:investors@personainc.test">investors@personainc.test</a> '
+            "PR@personainc.test hello@persona.test jobs@careers.persona.test "
+            "support@webflow.test someone@gmail.com</footer>"
+        )).record
+        from opportunity_app.outreach_contacts import company_mail_domains
+
+        self.assertEqual(company_mail_domains([footer], "persona.test"), ["personainc.test"])
+
+    def test_the_contact_search_keeps_them_on_the_company(self):
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        _, platform = build_and_migrate(Path(tempdir.name))
+        site = {"persona.test": {"/robots.txt": "", "/": "<footer>investors@personainc.test</footer>"}}
+        transport, _requested = site_transport(site)
+        with closing(connect_product(platform)) as conn, httpx.Client(transport=transport) as client:
+            target = create_target(conn, {"company": "Persona", "website": "https://persona.test"}, user_id=USER)
+            find_contacts(conn, target["id"], user_id=USER, fetcher=safe_fetcher(client), delay=0)
+            self.assertEqual(get_target(conn, target["id"], user_id=USER)["mail_domains"], ["personainc.test"])
+
+
 AUTH_INBOX = {"Authorization": "Bearer inbox-owner"}
 
 

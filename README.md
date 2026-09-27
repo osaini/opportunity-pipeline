@@ -822,7 +822,12 @@ JS-rendered portal or a non-standard slug lands there too.
 ## Checking whether a posting is still open
 
 Postings fetched from an ATS board retire themselves: whatever is missing from a
-source's latest batch is marked inactive on the next `fetch`. Rows that arrive
+source's latest batch is marked inactive on the next `fetch`, but only when that
+fetch proved it read the board. An answer listing nothing retires nothing until
+the board has answered empty three fetches running, and a listing that was cut
+short (a page cap, Workday's search stopping early) or shrank to under half of
+the previous fetch's retires only postings unseen for 48 hours. `fetch` prints
+a "Kept N unlisted posting(s) open" line whenever it holds rows back. Rows that arrive
 without a batch behind them have no such mechanism — `import-discovered` and
 `import-emails` only run when you invoke them, and neither is part of `run` — so
 those go stale silently.

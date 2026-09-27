@@ -414,6 +414,30 @@ def _emails_from_page(parser: _PageParser) -> set[str]:
     return {email.strip(".").lower() for email in found if not email.lower().endswith(IMAGE_SUFFIXES)}
 
 
+def company_mail_domains(pages: list[dict[str, Any]], domain: str) -> list[str]:
+    """Other domains the company's own site shows it sending email from (persona.ai prints @personainc.ai).
+
+    Only a domain that shares the website's own name counts, so a vendor's or a
+    partner's address in a footer never does; the website's domain and its
+    subdomains are left out, being watched already.
+    """
+    stem = domain.split(".")[0]
+    if len(stem) < 4:
+        return []
+    found = set()
+    for page in pages:
+        parser = page.get("parser")
+        if parser is None:
+            continue
+        for email in _emails_from_page(parser):
+            other = email.rsplit("@", 1)[-1]
+            if other == domain or other.endswith(f".{domain}"):
+                continue
+            if stem in other.split(".")[0]:
+                found.add(other)
+    return sorted(found)
+
+
 def _name_parts(name: str) -> tuple[str, str]:
     parts = [re.sub(r"[^a-z]", "", part.lower()) for part in name.split() if not part.endswith(".")]
     parts = [part for part in parts if part]
@@ -751,8 +775,9 @@ def find_contacts(
         for candidate in result["candidates"]:
             store_candidate(conn, target_id, user_id, candidate, timestamp)
         conn.execute(
-            "UPDATE outreach_targets SET mail_domain_ok=?, updated_at=? WHERE id=? AND user_id=?",
-            (None if result["mail_domain_ok"] is None else int(result["mail_domain_ok"]), timestamp, target_id, user_id),
+            "UPDATE outreach_targets SET mail_domain_ok=?, mail_domains_json=?, updated_at=? WHERE id=? AND user_id=?",
+            (None if result["mail_domain_ok"] is None else int(result["mail_domain_ok"]),
+             json.dumps(company_mail_domains(result["pages"], result["domain"])), timestamp, target_id, user_id),
         )
         _log(conn, target_id, user_id, "contacts_searched",
              detail=f"{len(result['candidates'])} candidates from {len(result['pages_checked'])} pages"

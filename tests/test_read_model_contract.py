@@ -448,6 +448,88 @@ class ReadModelContractTests(unittest.TestCase):
         self.assertEqual(OpportunityRepository(self.conn, user_id=OWNER).get("scored")["score"], 99)
         self.assertEqual(OpportunityRepository(self.conn, user_id=OTHER).get("scored")["score"], 0)
 
+    # --- per-employer cap ---------------------------------------------------
+
+    def add_employers(self):
+        """Acme posts seven roles (90 down to 84), Borealis two (70, 60)."""
+
+        for rank in range(7):
+            self.add(f"acme-{rank}", company="Acme", score=90 - rank,
+                     role_type="co-op" if rank % 2 else "internship")
+        self.add("bor-0", company="Borealis", score=70)
+        self.add("bor-1", company="Borealis", score=60)
+
+    def listed(self, user_id, **filters):
+        return OpportunityRepository(self.conn, user_id=user_id).list(
+            OpportunityFilters(**{"sort": "score", "limit": 200, **filters})
+        )
+
+    def test_per_company_keeps_each_employers_best_and_counts_the_rest(self):
+        self.add_employers()
+        for user_id in (None, OTHER):
+            with self.subTest(user_id=user_id):
+                items, total = self.listed(user_id, per_company=5)
+                self.assertEqual(
+                    [item["id"] for item in items],
+                    ["acme-0", "acme-1", "acme-2", "acme-3", "acme-4", "bor-0", "bor-1"],
+                )
+                self.assertEqual(total, 7)
+                self.assertEqual(
+                    {item["company"]: item["company_total"] for item in items},
+                    {"Acme": 7, "Borealis": 2},
+                )
+                self.assertEqual([item["company_rank"] for item in items], [1, 2, 3, 4, 5, 1, 2])
+
+    def test_per_company_pages_through_the_capped_list(self):
+        self.add_employers()
+        for user_id in (None, OTHER):
+            with self.subTest(user_id=user_id):
+                items, total = self.listed(user_id, per_company=5, limit=3, offset=3)
+                self.assertEqual([item["id"] for item in items], ["acme-3", "acme-4", "bor-0"])
+                self.assertEqual(total, 7)
+
+    def test_per_company_ranks_within_the_filtered_set(self):
+        """A filter first, then the cap: co-ops are not crowded out by internships."""
+
+        self.add_employers()
+        for user_id in (None, OTHER):
+            with self.subTest(user_id=user_id):
+                items, total = self.listed(user_id, per_company=2, role_type="co-op")
+                self.assertEqual([item["id"] for item in items], ["acme-1", "acme-3"])
+                self.assertEqual(items[0]["company_total"], 3)
+                self.assertEqual(total, 2)
+
+    def test_per_company_follows_the_lists_own_sort(self):
+        self.add_employers()
+        cli, tenant = self.both_paths("company", per_company=1)
+        # Company order ties on title "Intern", so id breaks it within Acme.
+        self.assertEqual(cli, ["acme-0", "bor-0"])
+        self.assertEqual(cli, tenant)
+
+    def test_company_filter_matches_the_stored_fold_and_lifts_the_cap(self):
+        self.add_employers()
+        self.add("strasse", company="Straße")
+        for user_id in (None, OTHER):
+            with self.subTest(user_id=user_id):
+                items, total = self.listed(user_id, company="ACME", per_company=5)
+                self.assertEqual(total, 7)
+                self.assertEqual(len(items), 7)
+                self.assertNotIn("company_total", items[0])
+                folded, _ = self.listed(user_id, company="STRASSE")
+                self.assertEqual([item["id"] for item in folded], ["strasse"])
+
+    def test_an_uncapped_list_is_unchanged(self):
+        self.add_employers()
+        for user_id in (None, OTHER):
+            with self.subTest(user_id=user_id):
+                items, total = self.listed(user_id)
+                self.assertEqual(total, 9)
+                self.assertNotIn("company_total", items[0])
+
+    def test_per_company_is_bounded(self):
+        self.assertEqual(OpportunityFilters(per_company=-3).normalized().per_company, 0)
+        self.assertEqual(OpportunityFilters(per_company=10_000).normalized().per_company, 50)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -351,6 +351,12 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 .card-actions { display: grid; grid-template-columns: 1fr 1fr 1fr; border-top: 1px solid var(--line); }
 .card-action { min-height: var(--control-md); border: 0; border-right: 1px solid var(--line); background: var(--surface-sunken); color: var(--ink-soft); display: grid; place-items: center; text-decoration: none; cursor: pointer; font-size: 10px; font-weight: 750; }
 .card-action:last-child { border-right: 0; }
+.company-more { width: 100%; min-height: var(--control-md); border: 0; border-top: 1px solid var(--line); background: var(--surface); color: var(--accent-strong); cursor: pointer; font-size: 11px; font-weight: 750; }
+.company-more:hover { background: var(--accent-soft); }
+.company-filter { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--accent-soft); color: var(--ink); font-size: 12px; }
+.company-filter[hidden] { display: none; }
+.company-filter-clear { min-height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius-pill); background: var(--surface); color: var(--ink-soft); cursor: pointer; font-size: 11px; font-weight: 700; }
+.company-filter-clear:hover { color: var(--ink); background: var(--hover); }
 .card-action:hover { background: var(--hover); color: var(--ink); }
 .card-action.is-active { background: var(--accent-soft); color: var(--accent-strong); }
 .card-action.is-active.is-pass { background: var(--hover); color: var(--ink-soft); }
