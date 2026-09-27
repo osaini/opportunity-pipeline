@@ -46,7 +46,7 @@
           <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4.5 5.5h15v10.2H10l-4.2 3.6v-3.6H4.5z"/><path d="M9 10.6h.01M12 10.6h.01M15 10.6h.01"/></svg><span>Agent</span>
         </button>
         <button id="profile-nav" class="nav-item" type="button">
-          <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="8.6" r="3.6"/><path d="M5.2 19.8c.9-3.5 3.6-5.3 6.8-5.3s5.9 1.8 6.8 5.3"/></svg><span>Profile</span>
+          <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="8.6" r="3.6"/><path d="M5.2 19.8c.9-3.5 3.6-5.3 6.8-5.3s5.9 1.8 6.8 5.3"/></svg><span>Profile</span><span id="profile-badge" class="nav-badge" aria-hidden="true" hidden></span>
         </button>
       </nav>
 
@@ -180,6 +180,7 @@
           </div>
         </div>
 
+        <div id="automation-banner" class="automation-banner" role="status" hidden></div>
         <div id="error-banner" class="error-banner" role="alert" hidden></div>
         <p id="action-status" class="page-status" role="status" aria-live="polite" hidden></p>
         <div id="personalize-prompt" class="personalize-prompt" role="status" hidden>

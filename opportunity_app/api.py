@@ -31,12 +31,13 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from pipeline import load_env_file
 from pipeline_core import OpportunityFilters, OpportunityRepository
 
 from . import DEFAULT_PLATFORM_DB, DEFAULT_PROFILE, STATIC_DIR
+from . import automation as automation_core
 from .actions import (
     APPLICATION_STAGES,
     ApplicationNotFoundError,
@@ -499,6 +500,30 @@ class OutreachAutomationRequest(BaseModel):
     scheduled_sending: bool | None = None
     follow_up_review: bool | None = None
     form_submission: bool | None = None
+
+
+AutomationFeatureKey = Annotated[str, Field(min_length=1, max_length=64)]
+AutomationNoticeId = Annotated[str, Field(min_length=1, max_length=100)]
+
+
+class AutomationSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Each key is an automation feature; an unknown key is refused with 422.
+    modes: dict[AutomationFeatureKey, Literal["off", "shadow", "on"]] | None = Field(default=None, max_length=50)
+    paused: bool | None = None
+
+
+class AutomationReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    verdict: Literal["right", "wrong"]
+
+
+class AutomationNoticesReadRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ids: list[AutomationNoticeId] = Field(max_length=100)
 
 
 class OutreachScheduleRequest(BaseModel):
@@ -2175,6 +2200,154 @@ def create_app(
         updated = update_automation_settings(conn, changes, user_id=user_id)
         automation_worker.wake()
         return updated
+
+    # Everything the app does on its own (automation.py): the switches, the
+    # master pause, the ledger of what it did, its notices, and its health.
+    def automation_view(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
+        return {
+            "settings": automation_core.settings_payload(conn, user_id),
+            "health": automation_core.health_summary(conn, user_id),
+        }
+
+    def automation_decision(decide: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+        """Run a student's decision on one action and map what it refuses to an HTTP status."""
+        try:
+            return decide()
+        except automation_core.Superseded as exc:
+            # Recorded as superseded before this was raised; the message names what changed.
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        except LookupError as exc:
+            if isinstance(exc, KeyError):
+                raise  # a bug, not a missing action
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such automation action") from exc
+        except ValueError as exc:
+            # The wrong status, or decided somewhere else at the same time.
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    @app.get("/api/v1/automation")
+    def get_automation(
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        return {
+            **automation_view(conn, user_id),
+            "notices": automation_core.list_notices(conn, user_id, unread_only=True, limit=20),
+        }
+
+    @app.put("/api/v1/automation/settings")
+    def put_automation_settings(
+        payload: AutomationSettingsRequest,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        modes = payload.modes or {}
+        # Every switch is checked before anything is written, so a refused one
+        # leaves the pause and the other switches as they were.
+        for key, value in modes.items():
+            feature = automation_core.FEATURES.get(key)
+            if feature is None:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"Unknown automation feature: {key}")
+            if value not in feature.modes:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail=f"{feature.label} can be {' or '.join(feature.modes)}, not {value}",
+                )
+            if value == "on" and feature.shadow_capable and automation_core.mode(conn, user_id, key) != "on":
+                allowed, reason = automation_core.can_turn_on(conn, user_id, key)
+                if not allowed:
+                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=reason)
+        in_flight = None
+        try:
+            # The pause lands first, so pausing and switching on in one request never leaves a gap.
+            if payload.paused is not None:
+                in_flight = automation_core.set_paused(conn, user_id, payload.paused)["in_flight"]
+            for key, value in modes.items():
+                automation_core.set_mode(conn, user_id, key, value)
+        except automation_core.AutomationGateError as exc:
+            # A subclass of ValueError, so it is caught first.
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        if payload.paused is not None or modes:
+            automation_worker.wake()
+        response = automation_view(conn, user_id)
+        if in_flight is not None:
+            response["in_flight"] = in_flight
+        return response
+
+    @app.get("/api/v1/automation/actions")
+    def get_automation_actions(
+        status_filter: Literal[automation_core.STATUSES] | None = Query(default=None, alias="status"),  # type: ignore[valid-type]
+        feature: str | None = Query(default=None, min_length=1, max_length=64),
+        limit: int = Query(default=50, ge=1, le=200),
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        items = automation_core.list_actions(conn, user_id, status=status_filter, feature=feature, limit=limit)
+        clauses, params = ["user_id=?"], [user_id]
+        if status_filter is not None:
+            clauses.append("status=?")
+            params.append(status_filter)
+        if feature is not None:
+            clauses.append("feature=?")
+            params.append(feature)
+        total = conn.execute(f"SELECT COUNT(*) FROM automation_actions WHERE {' AND '.join(clauses)}", tuple(params)).fetchone()[0]
+        return {"items": items, "total": int(total)}
+
+    @app.get("/api/v1/automation/actions/{action_id}")
+    def get_automation_action(
+        action_id: str,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        # One action, for the application timeline's Undo on an automatic change.
+        try:
+            row = automation_core._row(conn, action_id, user_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such automation action") from exc
+        return automation_core._decode(row)
+
+    @app.post("/api/v1/automation/actions/{action_id}/undo")
+    def undo_automation_action(
+        action_id: str,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        return automation_decision(lambda: automation_core.undo(conn, action_id, user_id))
+
+    @app.post("/api/v1/automation/actions/{action_id}/approve")
+    def approve_automation_action(
+        action_id: str,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        return automation_decision(lambda: automation_core.approve(conn, action_id, user_id))
+
+    @app.post("/api/v1/automation/actions/{action_id}/reject")
+    def reject_automation_action(
+        action_id: str,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        return automation_decision(lambda: automation_core.reject(conn, action_id, user_id))
+
+    @app.post("/api/v1/automation/actions/{action_id}/review")
+    def review_automation_action(
+        action_id: str,
+        payload: AutomationReviewRequest,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        # The verdict is checked by the request model (422); a ValueError here is the wrong status (409).
+        return automation_decision(lambda: automation_core.review(conn, action_id, user_id, payload.verdict))
+
+    @app.post("/api/v1/automation/notices/read")
+    def read_automation_notices(
+        payload: AutomationNoticesReadRequest,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        return {"marked": automation_core.mark_notices_read(conn, user_id, list(payload.ids))}
 
     @app.get("/api/v1/outreach/settings")
     def get_outreach_settings(
