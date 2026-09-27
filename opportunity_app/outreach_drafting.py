@@ -107,15 +107,20 @@ Follow this formula, in this order:
 An example of the shape, for a different, invented student and company whose field is unrelated to this student's. Match its length and directness, not its content, its field, its verbs, or its phrasing:
 Subject: Battery pack builder at Georgia Tech, interested in interning at Voltworks
 Hi Dana,
+
 I'm an electrical engineering student at Georgia Tech (live in the Seattle area) and battery lead on our Formula SAE team, where I designed and built the car's pack. I cut pack mass from 42 kg to 31 kg, kept the cells under 45 C through a full endurance run, and brought charge time from 90 min to 40 min.
+
 I've built a pack that only had to last one endurance run, and Voltworks is sealing packs inside boat hulls for years at a time. I'd bring the thermal work from our Formula SAE pack to your hull packs, wiring in thermocouples and bench testing cooling layouts alongside your engineers.
+
 Would you consider me as an intern for summer 2027? I'm open to part-time work too. If you have 15 minutes, I'd like to hear how you get the heat out through the hull.
+
 Sam Rivera
 sam@gatech.edu | https://samrivera.dev
 
 Rules:
 - Use only facts in the JSON input. Never invent achievements, numbers, dates, mutual connections, deadlines, or anything about the company that the research does not say.
 - Plain text. No markdown, no em dashes or en dashes, no [placeholders].
+- Put one blank line after the greeting, between paragraphs, and before the sign-off, as in the example; the sign-off's own lines stay together.
 - Stay near max_words. Confident and direct, never gushing or apologetic.
 - Sound like a student writing to a person, not a cover letter: use contractions (I'm, I've), mix short and longer sentences, and use plain verbs (is, has, built, cut). Write at the reading level of a plain text message, not a punchy, dramatic pitch.
 - Never write "I would love to learn", "I am especially interested", "passionate", "I read that", "I came across", "I'm writing to", "I'm reaching out", "excited", "innovative", "cutting-edge", "leverage", "aligns with", or "valuable".
@@ -297,6 +302,39 @@ def _allowed_bases(inputs: dict[str, Any]) -> set[str]:
     return bases
 
 
+_SENTENCE_END = (".", "?", "!", ":")
+
+
+def _sign_off_start(lines: list[str]) -> int:
+    """Where the sign-off begins: the student's name (after an optional "Thanks,"), then the address and links."""
+    start = len(lines)
+    while start > 1:
+        line = lines[start - 1].strip()
+        contact = "@" in line or " | " in line or "http" in line
+        short = len(line) <= 40 and not line.endswith(_SENTENCE_END)
+        if not (contact or short):
+            break
+        start -= 1
+    return start
+
+
+def space_paragraphs(body: str) -> str:
+    """The email as it should read: a blank line after the greeting, between paragraphs, and before the sign-off.
+
+    A model sometimes returns every paragraph on its own line with no blank line
+    between them, which reads as one block in an email or a website's message box.
+    Only that case is changed, and only the spacing: the words stay exactly as written,
+    and the sign-off's lines stay together.
+    """
+    if "\n\n" in body or "\n" not in body:
+        return body
+    lines = [line.rstrip() for line in body.split("\n") if line.strip()]
+    start = _sign_off_start(lines)
+    if start <= 1:
+        return body
+    return "\n\n".join(lines[:start]) + "\n\n" + "\n".join(lines[start:])
+
+
 def _opening(body: str) -> str:
     """The email's introduction, where the student says who they are.
 
@@ -391,7 +429,7 @@ def validate_draft(
     except ValueError as exc:
         raise DraftRejected("The model did not return a draft") from exc
     subject = str(parsed.get("subject") or "").strip()
-    body = str(parsed.get("body") or "").replace("\r\n", "\n").strip()
+    body = space_paragraphs(str(parsed.get("body") or "").replace("\r\n", "\n").strip())
     claims = parsed.get("claims") if isinstance(parsed.get("claims"), list) else []
     problems: list[str] = []
     if not subject or not body:
