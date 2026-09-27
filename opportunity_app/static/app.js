@@ -313,7 +313,49 @@
   // Urgent badge, a check never opens the sign-in gate or shows an error.
   const AUTOMATION_POLL_MS = 5 * 60_000;
   const AUTOMATION_FOCUS_MS = 60_000;
-  const automationStatus = { lastChecked: 0, timer: null, controller: null, banner: "" };
+  // ticket numbers every automation read and write in the order it started;
+  // shown is the newest one whose answer is on screen, lastWrite the newest
+  // write, and writing how many writes are still waiting for their answer.
+  const automationStatus = { lastChecked: 0, timer: null, controller: null, banner: "", ticket: 0, shown: 0, lastWrite: 0, writing: 0 };
+
+  // The server answers in its own order, so an answer read before a Pause
+  // committed can land after the Pause's own answer and put the old banner
+  // back. A read's answer counts only when no write was on its way while it
+  // ran (it may have read before that write committed) and nothing that
+  // started later is on screen. A write's answer always counts: the server
+  // reads it after its own commit.
+  function startAutomationRead() {
+    return { ticket: ++automationStatus.ticket, clean: automationStatus.writing === 0 };
+  }
+
+  function automationReadIsCurrent(read) {
+    return Boolean(read?.clean) && read.ticket > automationStatus.lastWrite && read.ticket > automationStatus.shown;
+  }
+
+  // Runs one write that changes automation state (a switch, the pause, a
+  // decision, notices read). An answer that carries { settings, health } is
+  // shown at once, as the latest word.
+  async function automationWrite(send) {
+    const ticket = ++automationStatus.ticket;
+    automationStatus.lastWrite = ticket;
+    automationStatus.writing += 1;
+    // A background check already on its way would be dropped anyway.
+    automationStatus.controller?.abort();
+    try {
+      const payload = await send();
+      if (payload?.settings || payload?.health) applyAutomationView(payload, ticket);
+      return payload;
+    } finally {
+      automationStatus.writing -= 1;
+    }
+  }
+
+  // Shows a read's answer when it is still the latest word. False when it was dropped.
+  function applyAutomationRead(read, payload) {
+    if (!automationReadIsCurrent(read)) return false;
+    applyAutomationView(payload, read.ticket);
+    return true;
+  }
 
   function setProfileBadge(health) {
     const waiting = (Number(health?.counts?.proposed) || 0) + (Number(health?.counts?.shadow_unreviewed) || 0);
@@ -369,16 +411,28 @@
     els.automationBanner.hidden = !items.length;
   }
 
+  // Whether automation is paused, by the latest answer shown.
+  function automationPaused() {
+    return Boolean(state.automation?.health?.paused ?? state.automation?.settings?.paused);
+  }
+
+  // The banner, the badge, and everything on the page that reads the pause or
+  // health: the Profile section's Health list and each scheduled send's words.
   function applyAutomationStatus(health) {
     if (!health) return;
+    const wasPaused = automationPaused();
     state.automation = { ...(state.automation || {}), health };
     renderAutomationBanner(health);
     setProfileBadge(health);
+    document.getElementById("automation-health-host")?.replaceChildren(automationHealthList(health));
+    if (wasPaused !== automationPaused()) repaintPauseWords();
   }
 
-  // A PUT to /api/v1/automation/settings answers with { settings, health }.
-  // Every control bound to a feature, wherever it is on the page, follows it.
-  function applyAutomationSettings(payload) {
+  // { settings, health } from GET /api/v1/automation or a settings PUT. Every
+  // control bound to a feature, wherever it is on the page, follows it.
+  // Callers go through applyAutomationRead or automationWrite, never here.
+  function applyAutomationView(payload, ticket) {
+    automationStatus.shown = Math.max(automationStatus.shown, ticket);
     if (payload?.settings) {
       state.automation = { ...(state.automation || {}), settings: payload.settings };
       syncAutomationControls(payload.settings);
@@ -387,9 +441,7 @@
   }
 
   async function setAutomationPaused(paused) {
-    const payload = await api("/api/v1/automation/settings", { method: "PUT", body: JSON.stringify({ paused }) });
-    applyAutomationSettings(payload);
-    return payload;
+    return automationWrite(() => api("/api/v1/automation/settings", { method: "PUT", body: JSON.stringify({ paused }) }));
   }
 
   async function refreshAutomationStatus() {
@@ -399,14 +451,14 @@
     const controller = new AbortController();
     automationStatus.controller = controller;
     automationStatus.lastChecked = Date.now();
+    const read = startAutomationRead();
     try {
       // Plain fetch: a background check must never open the sign-in gate or show an error.
       const response = await fetch("/api/v1/automation", { credentials: "same-origin", signal: controller.signal });
       if (!response.ok) throw new Error(`Automation check failed (${response.status})`);
       const payload = await response.json();
       if (userId !== state.userId) return;
-      if (payload.settings) state.automation = { ...(state.automation || {}), settings: payload.settings };
-      applyAutomationStatus(payload.health);
+      applyAutomationRead(read, payload);
     } catch (_) {
       // The last answer stays up; the next check tries again.
     } finally {
@@ -2054,6 +2106,7 @@
       timeline.appendChild(element("h4", "", "Activity timeline"));
       const eventList = element("ol", "timeline-list");
       // Newest first, so the first event an automatic action wrote carries its Undo.
+      // Each action id maps to the author line of every event it wrote.
       const automatic = new Map();
       (payload.events || []).forEach((event) => {
         const row = element("li", "");
@@ -2065,13 +2118,13 @@
         who.appendChild(element("span", "timeline-author", changeAuthor(source)));
         row.appendChild(who);
         const actionId = /^automation:(.+)$/.exec(source)?.[1];
-        if (actionId && !automatic.has(actionId)) automatic.set(actionId, who);
+        if (actionId) automatic.set(actionId, [...(automatic.get(actionId) || []), who]);
         eventList.appendChild(row);
       });
       timeline.appendChild(eventList);
       container.append(tasks, contacts, timeline);
       owner.dataset.loaded = "true";
-      if (automatic.size) offerTimelineUndo(applicationId, automatic);
+      if (automatic.size) labelAutomaticChanges(applicationId, automatic);
     } catch (error) {
       container.replaceChildren(element("p", "form-error", error.message));
     }
@@ -2951,7 +3004,9 @@
         state.outreachOpen = item.id;
         state.outreachKeep.add(item.id);
         await loadOutreach();
-        announce(`Scheduled: goes out ${scheduled.label}.`);
+        announce(automationPaused()
+          ? `Scheduled for ${scheduled.label}. Automation is paused, so it goes out after you resume.`
+          : `Scheduled: goes out ${scheduled.label}.`);
       } catch (error) {
         reset();
         button.disabled = false;
@@ -2982,6 +3037,38 @@
     return button;
   }
 
+  // Words that depend on the pause. The node keeps both versions, so a pause or
+  // resume rewrites it in place (repaintPauseWords) without reloading the
+  // cards, which would drop focus and unsaved edits.
+  function pauseWords(node, running, paused) {
+    Object.assign(node.dataset, { whileRunning: running, whilePaused: paused });
+    node.textContent = automationPaused() ? paused : running;
+    return node;
+  }
+
+  function repaintPauseWords() {
+    const paused = automationPaused();
+    document.querySelectorAll("[data-while-paused]").forEach((node) => {
+      node.textContent = paused ? node.dataset.whilePaused : node.dataset.whileRunning;
+    });
+  }
+
+  // When a scheduled send goes, in words. The worker holds every send while
+  // automation is paused, so then it goes after the student resumes, not at
+  // its time; the time it had is kept in brackets.
+  function scheduleWords(label, { reconnect = false, paused = automationPaused() } = {}) {
+    if (paused) {
+      return reconnect
+        ? `Paused. Goes out after you resume and Gmail is reconnected (was ${label})`
+        : `Paused. Goes out after you resume (was ${label})`;
+    }
+    return reconnect ? `Goes out ${label} once Gmail is reconnected` : `Goes out ${label}`;
+  }
+
+  function scheduleText(node, label, { reconnect = false, suffix = "" } = {}) {
+    return pauseWords(node, `${scheduleWords(label, { reconnect, paused: false })}${suffix}`, `${scheduleWords(label, { reconnect, paused: true })}${suffix}`);
+  }
+
   function composeControl(context, item, kind) {
     const controls = document.createDocumentFragment();
     const schedule = item.scheduled?.[kind];
@@ -2993,7 +3080,7 @@
     }
     if (!context.gmail?.connected) {
       if (schedule?.state === "scheduled" || schedule?.state === "sending") {
-        controls.append(chip(`Goes out ${schedule.label} once Gmail is reconnected`, "is-warning"), cancelScheduleButton(item, kind));
+        controls.append(scheduleText(chip("", "is-warning"), schedule.label, { reconnect: true }), cancelScheduleButton(item, kind));
         return controls;
       }
       return composeLink(context.compose, item, kind);
@@ -3001,7 +3088,7 @@
     if (schedule?.state === "scheduled" || schedule?.state === "sending") {
       // A Gmail draft made now would stop the scheduled send, so it is not offered.
       controls.append(
-        chip(schedule.state === "sending" ? "Sending…" : `Goes out ${schedule.label}`, "is-region"),
+        schedule.state === "sending" ? chip("Sending…", "is-region") : scheduleText(chip("", "is-region"), schedule.label),
         cancelScheduleButton(item, kind),
         gmailSendButton(context.gmail, item, kind, { now: true }),
       );
@@ -3023,12 +3110,29 @@
     return controls;
   }
 
+  // When Google will likely ask for the Gmail grant again, as the Outreach tab says it.
+  // The date is gmail_health's estimate; once it has passed there is no date left to give.
+  function gmailExpiryLine(likelyExpiresAt) {
+    const when = new Date(likelyExpiresAt);
+    if (!likelyExpiresAt || Number.isNaN(when.getTime()) || when.getTime() <= Date.now()) {
+      return "Google may ask again soon; reconnecting now avoids a gap.";
+    }
+    const day = new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric" }).format(when);
+    return `Google will likely ask again by ${day}; reconnecting now avoids a gap.`;
+  }
+
   function gmailConnectPanel(gmail) {
-    if (!gmail?.configured || (gmail.connected && gmail.bounce_check)) return null;
+    if (!gmail?.configured) return null;
+    // A working connection is offered Reconnect Gmail early when Google is
+    // about to ask for it again, so reply and bounce checks never stop.
+    const expiring = Boolean(gmail.connected && gmail.bounce_check && gmail.expiring_soon);
+    if (gmail.connected && gmail.bounce_check && !expiring) return null;
     const panel = element("div", "outreach-gmail-connect");
     const what = gmail.attachment ? ` with ${gmail.attachment} attached` : "";
     const reconnect = gmail.needs_reconnect || gmail.connected;
-    panel.appendChild(element("p", "profile-help", gmail.connected
+    panel.appendChild(element("p", "profile-help", expiring
+      ? gmailExpiryLine(gmail.likely_expires_at)
+      : gmail.connected
       ? "Reconnect Gmail once so the app can catch bounces and log replies for you. It asks for one more permission, to read mail; the app reads only delivery failure notices and mail from the companies you wrote to."
       : gmail.needs_reconnect
         ? "Gmail stopped accepting the connection. Reconnect it to keep creating drafts with attachments."
@@ -3937,7 +4041,9 @@
       select.disabled = true;
       status.textContent = "Saving…";
       try {
-        show(await api("/api/v1/typesafe/inbox-suggestions", { method: "PUT", body: JSON.stringify({ enabled: wanted }) }));
+        // jev_inbox_suggestions is an automation switch, so the app-wide state is read again after.
+        show(await automationWrite(() => api("/api/v1/typesafe/inbox-suggestions", { method: "PUT", body: JSON.stringify({ enabled: wanted }) })));
+        refreshAutomationStatus();
         status.textContent = wanted ? "Jev inbox suggestions on." : "Jev inbox suggestions off.";
       } catch (error) {
         select.value = wanted ? "rules" : "jev";
@@ -3954,10 +4060,13 @@
   const AUTOMATION_SWITCHES = [
     ["auto_drafts", "Write drafts automatically", "Every company with a contact and a location gets a draft written, whether a deep search found it, you added it, or a contact turned up later. Each one waits for your approval."],
     ["bounce_recovery", "Find a new contact after a bounce", "When an email bounces, the app searches the company's site again, picks the best address that has not bounced, and updates the greeting. You review the draft and send it again."],
-    ["scheduled_sending", "Send on their weekday morning", "Your confirmed Send queues the approved email for 9 to 9:40 AM on the recipient's next weekday, in their timezone (from the company's US state, or yours when it names none). Editing the draft cancels it; Send now and Cancel stay on the card. Turning this off does not cancel emails already scheduled; cancel them on their cards. Needs Gmail connected. Just before it goes, Gmail is checked again for a reply or a bounce; a follow-up never goes to a company that replied."],
+    ["scheduled_sending", "Send on their weekday morning", "Your confirmed Send queues the approved email for 9 to 9:40 AM on the recipient's next weekday, in their timezone (from the company's US state, or yours when it names none). Editing the draft cancels it; Send now and Cancel stay on the card. Turning this off does not cancel emails already scheduled; cancel them on their cards, or pause automation to hold them. Needs Gmail connected. Just before it goes, Gmail is checked again for a reply or a bounce; a follow-up never goes to a company that replied."],
     ["form_submission", "Send through contact forms", "For a company that publishes no email but has a contact form on its site, the approved first email goes in through the form as you, once, with replies going to your outreach Gmail. Only what your confirmed profile says is filled in; a form that asks something else, or a CAPTCHA that wants a picture challenge, waits for you on the card (Finish in browser). The app says Sent only when their page confirms it; otherwise it asks you to check. Needs Playwright's Chromium on this computer."],
     ["follow_up_review", "Have a second model check each follow-up", "Before a scheduled follow-up goes out, a second model reads it with the whole thread: your first email, every reply and out-of-office, and your facts. Pick it under \"Who reviews follow-ups\" below; on Automatic it is a model from a different company than the follow-up writer when one is set up. It goes only on a clean pass. An out-of-office with a return date holds it until then; any other problem stops it and shows the reason here. If the reviewer cannot run, the follow-up waits."],
   ];
+  // The Automation section on the Profile page shows the same help for these
+  // switches, so neither place leaves out what turning one off does not stop.
+  const AUTOMATION_SWITCH_HELP = Object.fromEntries(AUTOMATION_SWITCHES.map(([key, , help]) => [key, help]));
 
   async function automationFields() {
     const field = element("div", "settings-field automation-settings");
@@ -3982,7 +4091,9 @@
         box.disabled = true;
         status.textContent = "Saving…";
         try {
-          current = await api("/api/v1/outreach/automation", { method: "PUT", body: JSON.stringify({ [key]: box.checked }) });
+          // The same switches as the Automation section's, so the app-wide state is read again after.
+          current = await automationWrite(() => api("/api/v1/outreach/automation", { method: "PUT", body: JSON.stringify({ [key]: box.checked }) }));
+          refreshAutomationStatus();
           box.checked = Boolean(current[key]);
           status.textContent = `${text}: ${box.checked ? "on" : "off"}.`;
         } catch (error) {
@@ -4347,7 +4458,11 @@
     if (!item.email_body) return { label: "Write the draft", hint: "Generate a draft from your confirmed profile and this research.", tab: "draft" };
     if (outreachDraftNeedsReview(item, "initial") || item.draft_status !== "approved") return { label: "Review the draft", hint: "Read it, fix anything, then approve it. Approving unlocks the email hand-off.", tab: "draft", tone: "is-soon" };
     const scheduled = item.scheduled?.initial;
-    if (scheduled?.state === "scheduled") return { label: "Scheduled", hint: `Goes out ${scheduled.label}. Cancel it or send it now below.`, tab: null, tone: "is-region" };
+    if (scheduled?.state === "scheduled") {
+      // schedule lets the hint follow a pause or resume in place (scheduleText).
+      const suffix = ". Cancel it or send it now below.";
+      return { label: "Scheduled", hint: `${scheduleWords(scheduled.label)}${suffix}`, schedule: { label: scheduled.label, suffix }, tab: null, tone: "is-region" };
+    }
     if (scheduled?.state === "failed") return { label: "Scheduled send stopped", hint: `${scheduled.error}.`, tab: null, tone: "is-warning" };
     if (!item.contact_email && item.contact_form) {
       const form = item.contact_form;
@@ -4864,7 +4979,9 @@
     const next = outreachNextStep(item);
     const controls = element("div", `application-controls outreach-next${next.tone ? ` ${next.tone}` : ""}`);
     const nextText = element("div", "outreach-next-text");
-    nextText.append(element("strong", "", `Next: ${next.label}`), element("span", "", next.hint));
+    const hint = element("span", "", next.hint);
+    if (next.schedule) scheduleText(hint, next.schedule.label, { suffix: next.schedule.suffix });
+    nextText.append(element("strong", "", `Next: ${next.label}`), hint);
     const label = element("label", "");
     label.appendChild(element("span", "", "Status"));
     const select = document.createElement("select");
@@ -5139,11 +5256,21 @@
     refreshChecks();
     draft.appendChild(checks);
     draftAssistant(draft, item, "initial", subject, body);
-    draft.appendChild(element("p", "outreach-note", !item.contact_email && item.contact_form
-      ? `They publish no email, so this goes through the contact form on their site, as you. Approving it unlocks Send through contact form, which asks you to confirm first${context.automation?.form_submission ? "; with sending through contact forms on in Settings, an approved draft goes on its own" : ""}.`
-      : context.gmail?.connected
-      ? "Nothing sends on its own. Approving a draft unlocks Send, which asks you to confirm the recipient before the email goes out from your Gmail. To send at a set time with this computer off, use Open in Gmail and Gmail's Schedule send; the app marks it sent when Google sends it."
-      : "Nothing sends from here. Approving a draft unlocks a link that opens it in your own email, where you press Send."));
+    const formNote = (automatic) => `They publish no email, so this goes through the contact form on their site, as you. Approving it unlocks Send through contact form, which asks you to confirm first${automatic}.`;
+    const sendNote = element("p", "outreach-note");
+    if (!item.contact_email && item.contact_form && context.automation?.form_submission) {
+      // A pause holds automatic form submissions too (automation.py).
+      pauseWords(sendNote,
+        formNote("; with sending through contact forms on in Settings, an approved draft goes on its own"),
+        formNote("; with sending through contact forms on in Settings, an approved draft goes on its own once you resume automation"));
+    } else {
+      sendNote.textContent = !item.contact_email && item.contact_form
+        ? formNote("")
+        : context.gmail?.connected
+        ? "Nothing sends on its own. Approving a draft unlocks Send, which asks you to confirm the recipient before the email goes out from your Gmail. To send at a set time with this computer off, use Open in Gmail and Gmail's Schedule send; the app marks it sent when Google sends it."
+        : "Nothing sends from here. Approving a draft unlocks a link that opens it in your own email, where you press Send.";
+    }
+    draft.appendChild(sendNote);
 
     let followUpGroup = null;
     if (item.status === "sent" || item.status === "followed_up" || item.follow_up_body) {
@@ -6264,11 +6391,21 @@
     superseded: ["Left as it was", "is-soon"],
     rejected: ["Rejected", ""],
     failed: ["Failed", "is-warning"],
+    expired: ["Expired", ""],
   };
-  // Undoing or rejecting this many of a feature's last actions turns it off (automation.py).
-  const AUTOMATION_BREAKER = "2 of its last 5 actions";
+  // Each list is its own request with its own status filter, so a queue is
+  // never crowded out of view by newer rows of another status: the badge and
+  // the shadow gate count every row, so every row must be reachable here.
+  const AUTOMATION_LISTS = {
+    waiting: { query: "status=proposed&limit=200", heading: "Waiting for you", empty: "Nothing is waiting for you." },
+    shadow: { query: "status=shadow&limit=200", heading: "Would have done", empty: "Nothing has run in shadow yet." },
+    recent: { query: `status=${Object.keys(AUTOMATION_STATUS_CHIPS).join(",")}&limit=50`, heading: "Recent activity", empty: "Nothing has happened automatically yet." },
+  };
+  const AUTOMATION_LIST_KEYS = Object.keys(AUTOMATION_LISTS);
+  // What Pause does, in the words of automation.py's pause.
+  const AUTOMATION_PAUSE_HELP = "Stops everything the app does on its own. Replies and bounces are still recorded, and notices still appear.";
   const AUTOMATION_PAUSE_TEXT = {
-    true: "Paused. Nothing is sent or changed on its own until you resume.",
+    true: "Paused. Nothing is sent and no switch acts on its own until you resume. Replies and bounces are still recorded.",
     false: "Running. Each switch below decides what the app does on its own.",
   };
   const GMAIL_STATE_WORDS = {
@@ -6324,13 +6461,23 @@
   }
 
   async function saveAutomationMode(key, value) {
-    const payload = await api("/api/v1/automation/settings", { method: "PUT", body: JSON.stringify({ modes: { [key]: value } }) });
-    applyAutomationSettings(payload);
+    const payload = await automationWrite(() => api("/api/v1/automation/settings", { method: "PUT", body: JSON.stringify({ modes: { [key]: value } }) }));
     return automationFeature(payload.settings, key);
   }
 
-  function automationBreakerMessage(featureKey, verb) {
-    return `Turned ${automationFeatureLabel(featureKey)} off: you ${verb} ${AUTOMATION_BREAKER}.`;
+  // What the circuit breaker did, in the notice the server wrote when it
+  // fired (breaker_notice), so the counts are the ones it actually used.
+  function automationBreakerMessage(featureKey, notice) {
+    const title = typeof notice?.title === "string" ? notice.title.trim().replace(/[.!?]+$/, "") : "";
+    const body = typeof notice?.body === "string" ? notice.body.trim() : "";
+    if (title) return `${title}.${body ? ` ${body}` : ""}`;
+    return `Turned off ${automationFeatureLabel(featureKey)}: you undid or rejected too many of its recent actions.`;
+  }
+
+  // An undo's own words (undo_note), such as whether a follow-up reminder came back.
+  function withUndoNote(message, result) {
+    const note = typeof result?.undo_note === "string" ? result.undo_note.trim() : "";
+    return note ? `${message} ${note}` : message;
   }
 
   function timeAgo(stamp) {
@@ -6354,23 +6501,51 @@
     return formatDateTime(stamp);
   }
 
+  // One thing a pause could not stop, by its action: a 'send' is an email
+  // Gmail already has, and a 'form' a contact form whose button is being
+  // pressed. Nothing else is past stopping (a Gmail draft being saved sends
+  // nothing), so any other action is left out rather than called an email.
   function inFlightItem(item) {
-    const noun = item.action === "form" ? "contact form" : "email";
-    const how = item.source === "scheduled_send" ? "sent to Gmail" : item.action === "form" ? "submission started" : "sending started";
+    if (item?.action !== "send" && item?.action !== "form") return null;
+    const form = item.action === "form";
+    const how = form ? "submission started" : item.source === "scheduled_send" ? "handed to Gmail" : "sending started";
     const when = automationWhen(item.at);
-    return { noun, text: `${noun}${item.company ? ` to ${item.company}` : ""}`, detail: when ? `${how} at ${when}` : how };
+    const to = item.company ? ` to ${item.company}` : "";
+    return {
+      noun: form ? "contact form" : "email",
+      article: form ? "a contact form" : "an email",
+      to,
+      detail: when ? `${how} at ${when}` : how,
+    };
   }
 
   // What a pause could not stop, said plainly: an email Gmail already has goes.
   function inFlightSentence(items) {
-    const described = (Array.isArray(items) ? items : []).map(inFlightItem);
+    const described = (Array.isArray(items) ? items : []).map(inFlightItem).filter(Boolean);
     if (!described.length) return "";
     if (described.length === 1) {
-      return `1 ${described[0].text} was already on its way (${described[0].detail}) and can't be stopped.`;
+      const [only] = described;
+      return `1 ${only.noun}${only.to} was already on its way (${only.detail}) and can't be stopped.`;
     }
-    const nouns = new Set(described.map((entry) => entry.noun));
-    const noun = nouns.size === 1 ? `${[...nouns][0]}s` : "messages";
-    return `${described.length} ${noun} were already on their way and can't be stopped: ${described.map((entry) => `${entry.text} (${entry.detail})`).join("; ")}.`;
+    const emails = described.filter((entry) => entry.noun === "email").length;
+    const forms = described.length - emails;
+    const counted = [emails ? plural(emails, "email", "emails") : "", forms ? plural(forms, "contact form", "contact forms") : ""].filter(Boolean).join(" and ");
+    return `${counted} were already on their way and can't be stopped: ${described.map((entry) => `${entry.article}${entry.to} (${entry.detail})`).join("; ")}.`;
+  }
+
+  // A send or form submission whose outcome is unknown, and where to look.
+  // A Gmail draft can be left unconfirmed too (made, but not recorded); it sent nothing.
+  function unconfirmedSentence(item) {
+    const to = item.company ? ` to ${item.company}` : "";
+    const when = automationWhen(item.at);
+    const started = when ? ` (started ${when})` : "";
+    if (item.action === "draft") {
+      return `A Gmail draft${item.company ? ` for ${item.company}` : ""} may have been saved without the app recording it${started}. Check your Gmail Drafts; a draft sends nothing.`;
+    }
+    const form = item.action === "form";
+    const what = form ? "The contact form message" : item.kind === "follow_up" ? "The follow-up" : "The email";
+    const look = form ? "Check the company's page." : item.action === "send" ? "Check your Gmail Sent folder." : "Check your Gmail Sent folder or the company's page.";
+    return `${what}${to} may or may not have gone out${started}. ${look}`;
   }
 
   function automationEvidence(evidence) {
@@ -6411,7 +6586,7 @@
     field.dataset.automationFeature = feature.key;
     const id = `automation-mode-${feature.key}`;
     const head = element("div", "automation-feature-head");
-    const help = element("p", "profile-help", feature.description);
+    const help = element("p", "profile-help", AUTOMATION_SWITCH_HELP[feature.key] || feature.description);
     help.id = `${id}-help`;
     const external = feature.risk === "external" ? chip("External", "is-soon") : null;
     if ((feature.modes || []).includes("shadow")) {
@@ -6465,7 +6640,16 @@
     const gmailWords = [GMAIL_STATE_WORDS[gmail.state] || "Not known yet."];
     if (gmail.last_ok_at) gmailWords.push(`Last successful check ${timeAgo(gmail.last_ok_at)}.`);
     if (gmail.state === "throttled" && gmail.backoff_until) gmailWords.push(`Checks resume after ${automationWhen(gmail.backoff_until)}.`);
-    if (gmail.likely_expires_at) gmailWords.push(`It will likely ask you to reconnect by ${formatDate(gmail.likely_expires_at)} (an estimate).`);
+    // A success clears last_error on the server, so one that is still there
+    // came after the last successful check. A connection that is off has none worth showing.
+    const lastError = typeof gmail.last_error === "string" ? gmail.last_error.trim().replace(/[.]+$/, "") : "";
+    if (lastError && !["not_connected", "disconnected"].includes(gmail.state)) gmailWords.push(`Last problem: ${lastError}.`);
+    if (gmail.likely_expires_at) {
+      // Once the estimated date has passed there is no "by" date left to promise.
+      gmailWords.push(gmail.estimate_passed
+        ? "It may ask you to reconnect soon (an estimate)."
+        : `It will likely ask you to reconnect by ${formatDate(gmail.likely_expires_at)} (an estimate).`);
+    }
     const gmailRow = element("li");
     gmailRow.append(element("strong", "", "Gmail"), element("span", "", gmailWords.join(" ")));
     list.appendChild(gmailRow);
@@ -6481,14 +6665,44 @@
     });
     (health?.in_flight || []).forEach((item) => {
       const described = inFlightItem(item);
+      if (!described) return;
       const row = element("li");
       row.append(
         element("strong", "", "On its way"),
-        element("span", "", `${described.text[0].toUpperCase()}${described.text.slice(1)}: ${described.detail}. It can't be stopped.`),
+        element("span", "", `${described.article[0].toUpperCase()}${described.article.slice(1)}${described.to}: ${described.detail}. It can't be stopped.`),
+      );
+      list.appendChild(row);
+    });
+    (health?.unconfirmed || []).forEach((item) => {
+      const row = element("li");
+      row.append(element("strong", "", "Not confirmed"), chip("Check", "is-warning"), element("span", "", unconfirmedSentence(item)));
+      list.appendChild(row);
+    });
+    // Told apart from a switch that was simply never turned on, even after its notice is read.
+    (health?.breaker_off || []).forEach((item) => {
+      const row = element("li");
+      const when = automationWhen(item.at);
+      row.append(
+        element("strong", "", "Turned off"),
+        element("span", "", `${item.label || automationFeatureLabel(item.feature)} was turned off by the app${when ? ` (${when})` : ""} after you undid or rejected its actions. Turn it back on above when you want it.`),
       );
       list.appendChild(row);
     });
     return list;
+  }
+
+  // One list's answer from /api/v1/automation/actions: its rows, how many the
+  // server holds in all, and the error when it could not be loaded.
+  function automationList(payload) {
+    return {
+      items: Array.isArray(payload?.items) ? payload.items : [],
+      total: Number(payload?.total) || 0,
+      error: payload?.error ? payload.error.message : "",
+    };
+  }
+
+  function automationListRequests() {
+    return AUTOMATION_LIST_KEYS.map((key) => api(`/api/v1/automation/actions?${AUTOMATION_LISTS[key].query}`));
   }
 
   function automationSection(payload, actionsPayload) {
@@ -6502,9 +6716,9 @@
       section.appendChild(element("p", "form-error", `Automation could not be loaded${payload?.error ? `: ${payload.error.message}` : "."}`));
       return section;
     }
-    let overview = payload;
-    let actions = Array.isArray(actionsPayload?.items) ? actionsPayload.items : [];
-    let actionsError = actionsPayload?.error ? actionsPayload.error.message : "";
+    const overview = payload;
+    let notices = Array.isArray(payload.notices) ? payload.notices : [];
+    const data = Object.fromEntries(AUTOMATION_LIST_KEYS.map((key) => [key, automationList(actionsPayload?.[key])]));
 
     function block(className, heading, id) {
       const wrap = element("div", `automation-block ${className}`.trim());
@@ -6526,18 +6740,20 @@
     const pause = element("button", "secondary-button");
     pause.type = "button";
     pause.id = "automation-pause";
+    const pauseHelp = element("p", "profile-help automation-pause-help", AUTOMATION_PAUSE_HELP);
+    pauseHelp.id = "automation-pause-help";
+    pause.setAttribute("aria-describedby", pauseHelp.id);
     const pauseStatus = liveStatus("automation-pause-status");
     pauseStatus.id = "automation-pause-status";
-    pauseRow.append(pause, pauseStatus);
+    pauseRow.append(pause, pauseStatus, pauseHelp);
     paintAutomationPause(overview.settings.paused, pause, pauseStatus);
     pause.addEventListener("click", async () => {
       const wanted = pause.dataset.paused !== "true";
       pause.disabled = true;
       pauseStatus.textContent = wanted ? "Pausing…" : "Resuming…";
       try {
+        // The answer repaints the pause, the switches, Health, and the banner (automationWrite).
         const result = await setAutomationPaused(wanted);
-        overview = { ...overview, settings: result.settings, health: result.health };
-        paintHealth();
         const flight = wanted ? inFlightSentence(result.in_flight) : "";
         pauseStatus.textContent = wanted
           ? `${AUTOMATION_PAUSE_TEXT.true}${flight ? ` ${flight}` : ""}`
@@ -6564,12 +6780,12 @@
     });
     section.appendChild(features);
 
+    // Every newer answer repaints this host by its id (applyAutomationStatus).
     const [healthBlock] = block("", "Health", "automation-health-heading");
     const healthHost = element("div");
+    healthHost.id = "automation-health-host";
     healthBlock.appendChild(healthHost);
-    function paintHealth() {
-      healthHost.replaceChildren(automationHealthList(overview.health));
-    }
+    healthHost.appendChild(automationHealthList(state.automation?.health || overview.health));
 
     const [noticeBlock, noticeHeading] = block("", "Notices", "automation-notices-heading");
     const noticeHost = element("div");
@@ -6578,17 +6794,17 @@
     markAll.id = "automation-notices-read";
     const noticeStatus = liveStatus();
     noticeBlock.append(noticeHost, markAll, noticeStatus);
-    const unreadNotices = () => (overview.notices || []).filter((notice) => !notice.read_at);
+    const unreadNotices = () => notices.filter((notice) => !notice.read_at);
     function paintNotices() {
-      const notices = unreadNotices();
+      const unread = unreadNotices();
       noticeHost.replaceChildren();
-      markAll.hidden = !notices.length;
-      if (!notices.length) {
+      markAll.hidden = !unread.length;
+      if (!unread.length) {
         noticeHost.appendChild(element("p", "empty-inline", "No unread notices."));
         return;
       }
       const list = element("ul", "automation-notices");
-      notices.forEach((notice) => {
+      unread.forEach((notice) => {
         const level = AUTOMATION_BANNER_LEVELS.has(notice.level) ? notice.level : "info";
         const row = element("li", `automation-notice is-${level}`);
         row.appendChild(element("strong", "", notice.title || ""));
@@ -6599,11 +6815,11 @@
       noticeHost.appendChild(list);
     }
     markAll.addEventListener("click", async () => {
-      const ids = unreadNotices().map((notice) => notice.id).slice(0, 100);
       markAll.disabled = true;
       noticeStatus.textContent = "Saving…";
       try {
-        const result = await api("/api/v1/automation/notices/read", { method: "POST", body: JSON.stringify({ ids }) });
+        // Every unread notice, not only the ones this page was sent (the overview holds at most 20).
+        const result = await automationWrite(() => api("/api/v1/automation/notices/read", { method: "POST", body: JSON.stringify({ all: true }) }));
         await reload();
         noticeStatus.textContent = `Marked ${plural(result.marked, "notice", "notices")} read.`;
         noticeHeading.focus();
@@ -6614,12 +6830,8 @@
       }
     });
 
-    const lists = {
-      waiting: { heading: "Waiting for you", empty: "Nothing is waiting for you.", test: (action) => action.status === "proposed" },
-      shadow: { heading: "Would have done", empty: "Nothing has run in shadow yet.", test: (action) => action.status === "shadow" },
-      recent: { heading: "Recent activity", empty: "Nothing has happened automatically yet.", test: (action) => Object.hasOwn(AUTOMATION_STATUS_CHIPS, action.status) },
-    };
-    Object.entries(lists).forEach(([key, entry]) => {
+    const lists = Object.fromEntries(AUTOMATION_LIST_KEYS.map((key) => {
+      const entry = { ...AUTOMATION_LISTS[key] };
       const [wrap, heading] = block(`automation-${key}`, entry.heading, `automation-${key}-heading`);
       entry.wrap = wrap;
       entry.headingNode = heading;
@@ -6627,7 +6839,23 @@
       entry.host = element("div");
       entry.status = liveStatus();
       wrap.append(entry.host, entry.status);
-    });
+      return [key, entry];
+    }));
+
+    // Decisions still on their way, and actions already decided here. Every
+    // repaint, whichever reload drew it, draws their buttons disabled, so a
+    // row is never offered a second decision while its first is pending or
+    // after it has been made.
+    const deciding = new Set();
+    const decided = new Set();
+    const busy = (id) => deciding.has(id) || decided.has(id);
+
+    function syncRowButtons() {
+      section.querySelectorAll(".automation-action[data-action-id]").forEach((row) => {
+        const disabled = busy(row.dataset.actionId);
+        row.querySelectorAll(".automation-action-buttons button").forEach((button) => { button.disabled = disabled; });
+      });
+    }
 
     function actionButton(text, className, onClick) {
       const button = element("button", className, text);
@@ -6655,55 +6883,77 @@
     function decisionMessage(verb, action, result, body) {
       const summary = String(action.summary || "the change").replace(/[.!?]+$/, "");
       if (verb === "approve") return `Approved: ${summary}.`;
-      if (verb === "reject") return result.feature_paused ? automationBreakerMessage(action.feature, "rejected") : `Rejected: ${summary}. Nothing was changed.`;
-      if (verb === "undo") return result.feature_paused ? automationBreakerMessage(action.feature, "undid") : `Undone: ${summary}.`;
+      if (verb === "reject") return result.feature_paused ? automationBreakerMessage(action.feature, result.breaker_notice) : `Rejected: ${summary}. Nothing was changed.`;
+      if (verb === "undo") return withUndoNote(result.feature_paused ? automationBreakerMessage(action.feature, result.breaker_notice) : `Undone: ${summary}.`, result);
       return `Marked as the ${body.verdict} call.`;
     }
 
-    async function decide(listKey, action, verb, buttons, body = null) {
+    async function decide(listKey, action, verb, body = null) {
+      if (busy(action.id)) return;
       const entry = lists[listKey];
-      buttons.forEach((button) => { button.disabled = true; });
+      deciding.add(action.id);
+      syncRowButtons();
       entry.status.textContent = "Saving…";
       let message;
       try {
-        const result = await api(`/api/v1/automation/actions/${encodeURIComponent(action.id)}/${verb}`, {
+        const result = await automationWrite(() => api(`/api/v1/automation/actions/${encodeURIComponent(action.id)}/${verb}`, {
           method: "POST",
           ...(body ? { body: JSON.stringify(body) } : {}),
-        });
+        }));
+        decided.add(action.id);
         message = decisionMessage(verb, action, result, body);
       } catch (error) {
-        if (error.message === "Authentication required") return;
-        // A 409 says why: already decided, or superseded by a later change.
+        if (error.message === "Authentication required") {
+          deciding.delete(action.id);
+          syncRowButtons();
+          return;
+        }
+        // A 409 or 404 says the action is no longer open to this decision
+        // (decided somewhere else, or superseded by a later change), so it
+        // stays decided. Anything else (a lost connection) can be tried again.
+        if (error.status === 409 || error.status === 404) decided.add(action.id);
         message = error.message;
       }
-      await reload();
-      entry.status.textContent = message;
+      deciding.delete(action.id);
+      const refreshed = await reload();
+      // Whether or not the lists were redrawn, the buttons follow what is known.
+      syncRowButtons();
+      entry.status.textContent = refreshed ? message : `${message} The lists could not be refreshed, so they may be out of date.`;
       const verdict = entry.host.querySelector(`[data-action-id="${CSS.escape(action.id)}"] .automation-verdict`);
       if (!document.activeElement || document.activeElement === document.body || !document.activeElement.isConnected) {
         (verdict || entry.headingNode).focus();
       }
     }
 
+    // Unreviewed shadow actions first, since each one stands between the
+    // switch and On (can_turn_on); newest first within each.
+    function ordered(key, items) {
+      if (key !== "shadow") return items;
+      return [...items.filter((action) => !action.review), ...items.filter((action) => action.review)];
+    }
+
     function paintLists() {
       Object.entries(lists).forEach(([key, entry]) => {
+        const { items, total, error } = data[key];
+        entry.headingNode.textContent = total ? `${entry.heading} (${total.toLocaleString()})` : entry.heading;
         entry.host.replaceChildren();
-        if (actionsError) {
-          entry.host.appendChild(element("p", "form-error", `Automatic actions could not be loaded: ${actionsError}`));
+        if (error) {
+          entry.host.appendChild(element("p", "form-error", `Automatic actions could not be loaded: ${error}`));
           return;
         }
-        const shown = actions.filter(entry.test);
-        if (!shown.length) {
+        if (!items.length) {
           entry.host.appendChild(element("p", "empty-inline", entry.empty));
           return;
         }
         const list = element("ul", "automation-actions");
-        shown.forEach((action) => {
+        ordered(key, items).forEach((action) => {
           if (key === "waiting") {
             const row = actionRow(action, reasoning(action));
             const buttons = element("div", "automation-action-buttons");
-            const approve = actionButton("Approve", "secondary-button", () => decide("waiting", action, "approve", [approve, reject]));
-            const reject = actionButton("Reject", "danger-button", () => decide("waiting", action, "reject", [approve, reject]));
-            buttons.append(approve, reject);
+            buttons.append(
+              actionButton("Approve", "secondary-button", () => decide("waiting", action, "approve")),
+              actionButton("Reject", "danger-button", () => decide("waiting", action, "reject")),
+            );
             row.appendChild(buttons);
             list.appendChild(row);
           } else if (key === "shadow") {
@@ -6714,20 +6964,21 @@
               row.appendChild(verdict);
             } else {
               const buttons = element("div", "automation-action-buttons");
-              const right = actionButton("Right call", "secondary-button", () => decide("shadow", action, "review", [right, wrong], { verdict: "right" }));
-              const wrong = actionButton("Wrong call", "secondary-button", () => decide("shadow", action, "review", [right, wrong], { verdict: "wrong" }));
-              buttons.append(right, wrong);
+              buttons.append(
+                actionButton("Right call", "secondary-button", () => decide("shadow", action, "review", { verdict: "right" })),
+                actionButton("Wrong call", "secondary-button", () => decide("shadow", action, "review", { verdict: "wrong" })),
+              );
               row.appendChild(buttons);
             }
             list.appendChild(row);
           } else {
             const when = action.applied_at || action.decided_at || action.created_at;
             const row = actionRow(action, [automationFeatureLabel(action.feature), formatDateTime(when)]);
-            const [text, tone] = AUTOMATION_STATUS_CHIPS[action.status];
+            const [text, tone] = AUTOMATION_STATUS_CHIPS[action.status] || [humanizeKey(action.status), ""];
             const buttons = element("div", "automation-action-buttons");
             buttons.appendChild(chip(text, tone));
             if (action.status === "applied" && UNDOABLE_ACTION_TYPES.has(action.action_type)) {
-              const undo = actionButton("Undo", "secondary-button", () => decide("recent", action, "undo", [undo]));
+              const undo = actionButton("Undo", "secondary-button", () => decide("recent", action, "undo"));
               undo.setAttribute("aria-label", `Undo: ${action.summary || "this automatic change"}`);
               buttons.appendChild(undo);
             }
@@ -6737,28 +6988,36 @@
           }
         });
         entry.host.appendChild(list);
+        if (items.length < total) {
+          entry.host.appendChild(element("p", "automation-meta automation-more", `Showing the newest ${items.length.toLocaleString()} of ${total.toLocaleString()}.`));
+        }
       });
+      syncRowButtons();
     }
 
+    // Reads everything again. Only the newest reload paints, whichever answer
+    // arrives first. True when the section shows the server's answer.
+    let reloads = 0;
     async function reload() {
+      const ticket = ++reloads;
+      const read = startAutomationRead();
       try {
-        const [nextOverview, nextActions] = await Promise.all([
-          api("/api/v1/automation"),
-          api("/api/v1/automation/actions?limit=50"),
-        ]);
-        overview = nextOverview;
-        actions = Array.isArray(nextActions.items) ? nextActions.items : [];
-        actionsError = "";
-        applyAutomationSettings(overview);
-        paintHealth();
+        const [nextOverview, ...nextLists] = await Promise.all([api("/api/v1/automation"), ...automationListRequests()]);
+        if (ticket !== reloads) return true;
+        // A pause or switch saved while this was on its way is newer than this
+        // answer, and has already been shown (applyAutomationRead drops it).
+        applyAutomationRead(read, nextOverview);
+        notices = Array.isArray(nextOverview.notices) ? nextOverview.notices : [];
+        AUTOMATION_LIST_KEYS.forEach((key, index) => { data[key] = automationList(nextLists[index]); });
         paintNotices();
         paintLists();
+        return true;
       } catch (error) {
-        if (error.message !== "Authentication required") showError(error.message);
+        if (ticket === reloads && error.message !== "Authentication required") showError(error.message);
+        return false;
       }
     }
 
-    paintHealth();
     paintNotices();
     paintLists();
     section.append(healthBlock, noticeBlock, lists.waiting.wrap, lists.shadow.wrap, lists.recent.wrap);
@@ -6767,6 +7026,8 @@
 
   // Who made each change in an application's timeline, from the source its
   // event recorded. Nothing automatic is ever labelled as the student's own.
+  // An automatic change reads "Automatic" until its action is looked up
+  // (labelAutomaticChanges), which can tell one the student approved.
   function changeAuthor(source) {
     const value = typeof source === "string" ? source : "";
     if (!value || value === "user") return "You";
@@ -6779,16 +7040,51 @@
     return humanizeKey(value.split(":")[0]);
   }
 
-  // An automatic change still in place gets an Undo beside it in the timeline.
-  // Each action is looked up only when the timeline shows one.
-  async function offerTimelineUndo(applicationId, automatic) {
-    await Promise.all([...automatic].map(async ([actionId, host]) => {
-      let action;
+  // Whether the student approved this action before it was applied. decided_by
+  // alone cannot say: an undo records decided_by 'student' too, and would
+  // credit the student with approving a change they only took back. A change
+  // the app made itself is applied the moment it is recorded (perform writes
+  // created_at and applied_at from one timestamp); an approved one later.
+  function approvedByStudent(action) {
+    return action?.decided_by === "student" && Boolean(action.applied_at) && action.applied_at !== action.created_at;
+  }
+
+  // The actions behind a timeline's automatic changes. One is looked up on its
+  // own; several come from one list of the actions that can have written an
+  // event, and only those not in it are looked up one by one.
+  async function automationActionsById(ids) {
+    const found = new Map();
+    if (ids.length > 1) {
       try {
-        action = await api(`/api/v1/automation/actions/${encodeURIComponent(actionId)}`);
+        const payload = await api("/api/v1/automation/actions?status=applied,undone,superseded&limit=200");
+        (payload.items || []).forEach((action) => { if (ids.includes(action.id)) found.set(action.id, action); });
       } catch (_) {
-        return;
+        // Each is looked up on its own below.
       }
+    }
+    await Promise.all(ids.filter((id) => !found.has(id)).map(async (id) => {
+      try {
+        found.set(id, await api(`/api/v1/automation/actions/${encodeURIComponent(id)}`));
+      } catch (_) {
+        // Left as "Automatic", with no Undo.
+      }
+    }));
+    return found;
+  }
+
+  // Labels each automatic change by its action, and gives one still in place
+  // an Undo beside its newest event. ``automatic`` maps an action id to the
+  // author lines of its events, newest first.
+  async function labelAutomaticChanges(applicationId, automatic) {
+    const actions = await automationActionsById([...automatic.keys()]);
+    automatic.forEach((hosts, actionId) => {
+      const action = actions.get(actionId);
+      if (!action) return;
+      hosts.forEach((host) => {
+        const author = host.querySelector(".timeline-author");
+        if (author) author.textContent = approvedByStudent(action) ? "Automatic, approved by you" : "Automatic";
+      });
+      const [host] = hosts;
       if (!host.isConnected || action.status !== "applied" || !UNDOABLE_ACTION_TYPES.has(action.action_type)) return;
       const undo = element("button", "text-button timeline-undo", "Undo");
       undo.type = "button";
@@ -6797,8 +7093,8 @@
         undo.disabled = true;
         let message;
         try {
-          const result = await api(`/api/v1/automation/actions/${encodeURIComponent(action.id)}/undo`, { method: "POST" });
-          message = result.feature_paused ? automationBreakerMessage(action.feature, "undid") : "Undid the automatic change.";
+          const result = await automationWrite(() => api(`/api/v1/automation/actions/${encodeURIComponent(action.id)}/undo`, { method: "POST" }));
+          message = withUndoNote(result.feature_paused ? automationBreakerMessage(action.feature, result.breaker_notice) : "Undid the automatic change.", result);
         } catch (error) {
           if (error.message === "Authentication required") return;
           message = error.message;
@@ -6815,7 +7111,7 @@
         }
       });
       host.append(" ", undo);
-    }));
+    });
   }
 
   function renderProfile(profilePayload, resumesPayload = null, connections = { items: [] }, preferences = {}, events = { items: [] }, applications = { items: [] }, dossier = {settings: {}, items: [], shares: []}, extensionDevices = {items: []}, automation = null, automationActions = null) {
@@ -6889,8 +7185,9 @@
     clearError();
     els.results.setAttribute("aria-busy", "true");
     els.results.replaceChildren(element("p", "detail-loading", "Loading your private profile…"));
+    const automationRead = startAutomationRead();
     try {
-      const [profile, resumes, connections, preferences, events, applications, dossier, extensionDevices, automation, automationActions] = await Promise.all([
+      const [profile, resumes, connections, preferences, events, applications, dossier, extensionDevices, automation, ...automationLists] = await Promise.all([
         api("/api/v1/profile"),
         api("/api/v1/resumes"),
         api("/api/v1/connections"),
@@ -6901,14 +7198,21 @@
         api("/api/v1/extension/devices"),
         // A failure here shows in the Automation section instead of blanking the page.
         api("/api/v1/automation").catch((error) => ({ error })),
-        api("/api/v1/automation/actions?limit=50").catch((error) => ({ error })),
+        ...automationListRequests().map((request) => request.catch((error) => ({ error }))),
       ]);
       if (sequence !== state.loadSequence || state.view !== "profile") return;
-      if (automation?.settings) {
-        state.automation = { ...(state.automation || {}), settings: automation.settings };
-        applyAutomationStatus(automation.health);
+      let overview = automation;
+      if (automation?.settings && !applyAutomationRead(automationRead, automation)) {
+        // A pause or switch saved while this page loaded is newer than this
+        // answer: draw the section from what is on screen, not from this.
+        overview = {
+          ...automation,
+          settings: state.automation?.settings || automation.settings,
+          health: state.automation?.health || automation.health,
+        };
       }
-      renderProfile(profile, resumes, connections, preferences, events, applications, dossier, extensionDevices, automation, automationActions);
+      const automationActions = Object.fromEntries(AUTOMATION_LIST_KEYS.map((key, index) => [key, automationLists[index]]));
+      renderProfile(profile, resumes, connections, preferences, events, applications, dossier, extensionDevices, overview, automationActions);
     } catch (error) {
       showLoadError(error, sequence);
     }

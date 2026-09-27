@@ -1201,6 +1201,10 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 .chip.is-good { background: var(--accent-soft); border-color: transparent; color: var(--accent-strong); }
 .automation-pause { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4); margin-top: var(--space-5); }
 .automation-pause .form-status { flex: 1 1 260px; margin: 0; }
+/* What Pause does, on its own line under the button and its status. */
+.automation-pause .automation-pause-help { flex: 1 1 100%; margin: 0; }
+/* "Showing the newest 200 of 260" under a list the server holds more of. */
+.automation-more { margin: var(--space-2) 0 0; }
 .automation-block { margin-top: var(--space-6); padding-top: var(--space-5); border-top: 1px solid var(--line); }
 .automation-block > h4 { margin: 0 0 var(--space-2); font-size: 14px; }
 .automation-block > .profile-help { margin: 0 0 var(--space-3); }
