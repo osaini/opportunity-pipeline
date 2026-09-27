@@ -2,6 +2,10 @@
   "use strict";
 
   const PAGE_SIZE = 24;
+  // Best fit shows each employer's top postings and a "+N more" button, so one
+  // large employer cannot fill the deck. The same default as
+  // RANKED_VIEW_PER_COMPANY in pipeline_core/read_model.py.
+  const RANKED_VIEW_PER_COMPANY = 5;
   // One threshold for "closes soon" on cards and the Urgent queue's window.
   const SOON_DAYS = 14;
   const state = {
@@ -18,6 +22,10 @@
     loadSequence: 0,
     activeRecordingStop: null,
     personalized: true,
+    // One employer picked from a "+N more" button; empty shows them all.
+    company: "",
+    // The per-employer cap the last list was served with (0: none).
+    perCompany: 0,
     userId: null,
     refresh: null,
     refreshTimer: null,
@@ -98,6 +106,9 @@
     posted: document.getElementById("posted-filter"),
     deadline: document.getElementById("deadline-filter"),
     sort: document.getElementById("sort-filter"),
+    companyFilter: document.getElementById("company-filter"),
+    companyFilterName: document.getElementById("company-filter-name"),
+    companyFilterClear: document.getElementById("company-filter-clear"),
     results: document.getElementById("results"),
     resultCount: document.getElementById("result-count"),
     resultsEyebrow: document.getElementById("results-eyebrow"),
@@ -459,6 +470,8 @@
     [els.statActive, els.statTotal, els.statTracked, els.statScore].forEach((stat) => { stat.textContent = "—"; });
     [els.role, els.region, els.source, els.term].forEach((select) => { select.options.length = 1; });
     discoverTagPicker.reset();
+    state.company = "";
+    renderCompanyFilter();
     els.userName.textContent = "";
     els.userChip.hidden = true;
     els.personalizePrompt.hidden = true;
@@ -1092,7 +1105,29 @@
     actions.append(save, pass, apply);
     // Outside the card button: a button may not contain other controls.
     article.append(button, createTagList(item), actions);
+    // On the employer's last card under the cap, say how many it has beyond it.
+    const beyondCap = (item.company_total || 0) - state.perCompany;
+    if (state.perCompany && item.company_rank === state.perCompany && beyondCap > 0) {
+      const more = element("button", "company-more", `+${beyondCap} more from ${item.company}`);
+      more.type = "button";
+      more.addEventListener("click", () => showCompany(item.company));
+      article.appendChild(more);
+    }
     return article;
+  }
+
+  function renderCompanyFilter() {
+    els.companyFilter.hidden = !state.company;
+    els.companyFilterName.textContent = state.company;
+  }
+
+  function showCompany(company) {
+    state.company = company;
+    state.offset = 0;
+    renderCompanyFilter();
+    // The button is about to be replaced; the filter note names what changed.
+    els.companyFilter.focus();
+    loadCurrentView();
   }
 
   async function runIntent(item, action, control) {
@@ -1145,6 +1180,7 @@
 
   function renderResults(payload) {
     state.total = payload.total;
+    state.perCompany = payload.per_company || 0;
     state.personalized = payload.personalized !== false;
     els.personalizePrompt.hidden = state.personalized || state.view !== "discover";
     els.results.replaceChildren();
@@ -1236,6 +1272,12 @@
     if (els.deadline.value) params.set("deadline_before", els.deadline.value);
     params.set("intent_state", state.view === "saved" ? "saved" : "undecided");
     DECK_TABS.find((tab) => tab.id === state.subtabs[state.view])?.apply?.(params);
+    // Only the ranked Discover deck is capped: Saved holds the student's own
+    // picks, and other sorts are read in order rather than by fit.
+    if (state.company) params.set("company", state.company);
+    else if (state.view === "discover" && params.get("sort") === "score") {
+      params.set("per_company", String(RANKED_VIEW_PER_COMPANY));
+    }
     return params;
   }
 
@@ -8079,6 +8121,14 @@
       state.offset = 0;
       loadCurrentView();
     });
+  });
+
+  els.companyFilterClear.addEventListener("click", () => {
+    state.company = "";
+    state.offset = 0;
+    renderCompanyFilter();
+    els.search.focus();
+    loadCurrentView();
   });
 
   els.search.addEventListener("input", () => {

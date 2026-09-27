@@ -30,6 +30,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable
 
+from pipeline_core.read_model import RANKED_VIEW_PER_COMPANY, company_key
+
 
 ROOT = Path(__file__).resolve().parent
 # PIPELINE_DB lets tests and the web worker target a hermetic database copy;
@@ -3253,17 +3255,52 @@ def display_reasons(reasons: list[str], limit: int = 5) -> list[str]:
     return [reason for reason in reasons if reason != "35 base"][:limit]
 
 
+def cap_per_company(
+    ranked: list[sqlite3.Row], limit: int, per_company: int = RANKED_VIEW_PER_COMPANY
+) -> tuple[list[sqlite3.Row], dict[str, int]]:
+    """The first `limit` of `ranked`, keeping each employer's top `per_company`.
+
+    Also returns, per employer that reached the cap, how many of its postings
+    were left out, keyed by `company_key`. An employer cut short by `limit`
+    rather than the cap is not in it: those postings did not rank high enough,
+    which the shortlist's length already says.
+    """
+
+    totals: dict[str, int] = {}
+    for job in ranked:
+        key = company_key(job["company"])
+        totals[key] = totals.get(key, 0) + 1
+    shown: dict[str, int] = {}
+    kept: list[sqlite3.Row] = []
+    for job in ranked:
+        if len(kept) >= limit:
+            break
+        key = company_key(job["company"])
+        if shown.get(key, 0) >= per_company:
+            continue
+        shown[key] = shown.get(key, 0) + 1
+        kept.append(job)
+    hidden = {
+        key: totals[key] - count
+        for key, count in shown.items()
+        if count >= per_company and totals[key] > count
+    }
+    return kept, hidden
+
+
 def report(conn: sqlite3.Connection, sources_config: dict[str, Any], limit: int) -> int:
     stale_days = int(sources_config.get("stale_after_days", 7))
-    jobs = conn.execute(
+    ranked = conn.execute(
         """
         SELECT * FROM jobs
         WHERE active=1 AND duplicate_of IS NULL AND status NOT IN ('rejected', 'withdrawn')
         ORDER BY score DESC, COALESCE(posted_at, last_seen_at) DESC
-        LIMIT ?
-        """,
-        (limit,),
+        """
     ).fetchall()
+    # The CSV is the uncapped export; the Markdown shortlist is read top to
+    # bottom, so one employer may fill at most its per-employer share of it.
+    jobs = ranked[:limit]
+    shortlist, hidden = cap_per_company(ranked, limit)
     generated = now_iso()
     lines = [
         "# Opportunity shortlist",
@@ -3273,9 +3310,10 @@ def report(conn: sqlite3.Connection, sources_config: dict[str, Any], limit: int)
         "## Top matches",
         "",
     ]
-    if not jobs:
+    if not shortlist:
         lines.append("No active postings yet. Run `python3 pipeline.py run` or import login-only results.")
-    for index, job in enumerate(jobs, start=1):
+    shown: dict[str, int] = {}
+    for index, job in enumerate(shortlist, start=1):
         reasons = json.loads(job["score_explanation"])
         reasons_for_display = display_reasons(reasons)
         lines.extend(
@@ -3290,6 +3328,18 @@ def report(conn: sqlite3.Connection, sources_config: dict[str, Any], limit: int)
                 "",
             ]
         )
+        key = company_key(job["company"])
+        shown[key] = shown.get(key, 0) + 1
+        if key in hidden and shown[key] == RANKED_VIEW_PER_COMPANY:
+            # Said at the employer's last listed posting, never left silent.
+            lines.extend(
+                [
+                    f"*+{hidden[key]} more from {job['company']}, not listed here: the shortlist "
+                    f"shows each employer's top {RANKED_VIEW_PER_COMPANY}. The web dashboard's "
+                    f"\"+{hidden[key]} more\" button on this employer lists them all.*",
+                    "",
+                ]
+            )
     lines.extend(["## Manual check queue", ""])
     for item in sources_config.get("manual_check_sources", []):
         cadence = item.get("cadence", "weekly")
@@ -3329,7 +3379,10 @@ def report(conn: sqlite3.Connection, sources_config: dict[str, Any], limit: int)
                     job["last_seen_at"],
                 ]
             )
-    print(f"Wrote {len(jobs)} matches to {OUTPUT_MD.relative_to(ROOT)} and {OUTPUT_CSV.relative_to(ROOT)}")
+    print(
+        f"Wrote {len(shortlist)} matches to {OUTPUT_MD.relative_to(ROOT)} "
+        f"(top {RANKED_VIEW_PER_COMPANY} per employer) and {len(jobs)} to {OUTPUT_CSV.relative_to(ROOT)}"
+    )
     return len(jobs)
 
 

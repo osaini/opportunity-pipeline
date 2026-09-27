@@ -132,6 +132,16 @@ class PostgresContractTests(unittest.TestCase):
                             pages[label] = (collected, total)
                     self.assertEqual(pages["postgres"], pages["sqlite"])
                     self.assertEqual(pages["sqlite"][1], 11)
+                with self.subTest(path="tenant" if user_id else "cli", per_company=5):
+                    capped = {}
+                    for label, target in (("sqlite", sqlite_target), ("postgres", POSTGRES_TEST_URL)):
+                        with closing(connect_product(target, read_only=(label == "sqlite"))) as conn:
+                            items, total = OpportunityRepository(conn, user_id=user_id).list(
+                                OpportunityFilters(per_company=5, limit=4, offset=4)
+                            )
+                            capped[label] = ([(item["id"], item["company_total"]) for item in items], total)
+                    self.assertEqual(capped["postgres"], capped["sqlite"])
+                    self.assertEqual(capped["sqlite"], ([("row-04", 11)], 5))
 
     def test_migration_read_model_and_authenticated_api(self):
         with tempfile.TemporaryDirectory() as directory:
