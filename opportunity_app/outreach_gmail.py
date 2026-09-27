@@ -617,6 +617,8 @@ def create_gmail_draft(
                     "kind": kind, "fingerprint": approved.fingerprint, "attachment": approved.attachment,
                     "attachment_sha256": approved.attachment_sha256,
                     "draft_id": str(created["id"]), "message_id": str(created["message"]["id"]),
+                    # Lets a send made in Gmail itself be matched to this draft (outreach_gmail_sends).
+                    "thread_id": str(created["message"].get("threadId", "")),
                 }
                 with conn:
                     _log(conn, target_id, user_id, DRAFT_EVENT, detail=json.dumps(detail, sort_keys=True))

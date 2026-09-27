@@ -417,6 +417,10 @@ class InboxWatcher:
                 "SELECT user_id FROM connector_accounts WHERE provider=? AND status='connected'", (PROVIDER,)
             ).fetchall()]
             for user_id in users:
+                from .outreach_gmail_sends import capture_gmail_sends  # imported here: it imports the scheduler
+
+                # A draft sent from Gmail first, so its bounce and replies are watched in the same pass.
+                capture_gmail_sends(conn, user_id=user_id, client_factory=self._client_factory)
                 check_deliveries(conn, user_id=user_id, client_factory=self._client_factory)
                 capture_replies(
                     conn, user_id=user_id, client_factory=self._client_factory,

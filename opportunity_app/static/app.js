@@ -2300,6 +2300,8 @@
     send_cancelled: "Scheduled send cancelled",
     scheduled_send_failed: "Scheduled send stopped",
     follow_up_reviewed: "Follow-up reviewed",
+    gmail_scheduled: "Scheduled in Gmail",
+    send_moved: "Scheduled send moved to the next morning",
     follow_up_held: "Follow-up held",
     auto_draft_failed: "Automatic draft failed",
     draft_restored: "Earlier draft restored",
@@ -2499,6 +2501,12 @@
         const names = result.bounced.map((entry) => `${entry.company} (${entry.addresses.join(", ")})`).join("; ");
         news.push(`Bounced: ${names}. Moved back to Drafted; pick another contact and send again.`);
       }
+      if (result.sent_in_gmail?.length) {
+        news.push(`Sent from Gmail: ${result.sent_in_gmail.map((entry) => entry.company).join(", ")}. Marked sent; watching for bounces and replies.`);
+      }
+      if (result.scheduled_in_gmail?.length) {
+        news.push(`Scheduled in Gmail: ${result.scheduled_in_gmail.map((entry) => entry.company).join(", ")}. It is marked sent when Gmail sends it.`);
+      }
       if (result.replies?.length) {
         const names = result.replies.map((entry) => `${entry.company} (${entry.from})`).join("; ");
         news.push(`New ${result.replies.length === 1 ? "reply" : "replies"} from ${names}, logged from Gmail.`);
@@ -2547,7 +2555,7 @@
         }
         announce(draft.reused
           ? `Reopened the Gmail draft for ${item.company}.`
-          : `Created the Gmail draft for ${item.company}${attachment}. Review it in Gmail and press Send there.`);
+          : `Created the Gmail draft for ${item.company}${attachment}. Send it in Gmail, or use the arrow next to Send, then Schedule send, to have Google send it later even with this computer off. The app marks it sent when it goes.`);
       } catch (error) {
         if (tab) tab.close();
         showError(error.message);
@@ -4749,7 +4757,7 @@
     draft.appendChild(checks);
     draftAssistant(draft, item, "initial", subject, body);
     draft.appendChild(element("p", "outreach-note", context.gmail?.connected
-      ? "Nothing sends on its own. Approving a draft unlocks Send, which asks you to confirm the recipient before the email goes out from your Gmail."
+      ? "Nothing sends on its own. Approving a draft unlocks Send, which asks you to confirm the recipient before the email goes out from your Gmail. To send at a set time with this computer off, use Open in Gmail and Gmail's Schedule send; the app marks it sent when Google sends it."
       : "Nothing sends from here. Approving a draft unlocks a link that opens it in your own email, where you press Send."));
 
     let followUpGroup = null;

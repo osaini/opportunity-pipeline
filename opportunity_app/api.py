@@ -2388,7 +2388,10 @@ def create_app(
         conn: sqlite3.Connection = Depends(writable_connection),
         user_id: str = Depends(require_auth),
     ) -> dict[str, Any]:
-        """Look in Gmail for bounces of recent sends and for replies. Never raises for Gmail trouble."""
+        """Look in Gmail for drafts sent or scheduled there, bounces, and replies. Never raises for Gmail trouble."""
+        from .outreach_gmail_sends import capture_gmail_sends
+
+        gmail_sends = capture_gmail_sends(conn, user_id=user_id, client_factory=resolved_gmail_client_factory)
         delivery = check_deliveries(conn, user_id=user_id, client_factory=resolved_gmail_client_factory)
         replies = capture_replies(
             conn, user_id=user_id, client_factory=resolved_gmail_client_factory,
@@ -2396,8 +2399,11 @@ def create_app(
         )
         if delivery["bounced"]:
             automation_worker.wake()  # a bounced contact may be recovered right away
-        state = next((value for value in (delivery["state"], replies["state"]) if value != "ok"), "ok")
-        return {"state": state, "bounced": delivery["bounced"], "replies": replies["replies"], "automatic": replies["automatic"]}
+        state = next((value for value in (gmail_sends["state"], delivery["state"], replies["state"]) if value != "ok"), "ok")
+        return {
+            "state": state, "bounced": delivery["bounced"], "replies": replies["replies"], "automatic": replies["automatic"],
+            "sent_in_gmail": gmail_sends["sent"], "scheduled_in_gmail": gmail_sends["scheduled"],
+        }
 
     @app.delete("/api/v1/outreach/{target_id}/reply-suggestion")
     def dismiss_outreach_reply_suggestion(

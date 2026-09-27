@@ -109,6 +109,9 @@ class FakeGmail:
         self.searches = []
         # Results per page of a search, or None for one page.
         self.page_size = None
+        # Messages Gmail reads back in the metadata format, and what a search of Sent finds.
+        self.metadata = {}
+        self.sent_search = []
 
     def run_hook(self, name):
         hook = self.hooks.pop(name, None)
@@ -164,7 +167,7 @@ class FakeGmail:
                 return httpx.Response(self.thread_status)
             query = request.url.params.get("q", "")
             self.searches.append(query)
-            found = self.inbox_notices if "mailer-daemon" in query else self.inbox_replies
+            found = self.inbox_notices if "mailer-daemon" in query else self.sent_search if query.startswith("in:sent") else self.inbox_replies
             if self.page_size:
                 start = int(request.url.params.get("pageToken") or 0)
                 page = found[start:start + self.page_size]
@@ -176,6 +179,8 @@ class FakeGmail:
             return httpx.Response(200, json={"messages": [{"id": message_id} for message_id in found]})
         if request.method == "GET" and "/messages/" in path:
             message_id = path.rsplit("/", 1)[1]
+            if request.url.params.get("format") == "metadata":
+                return httpx.Response(200, json=self.metadata[message_id]) if message_id in self.metadata else httpx.Response(404)
             if message_id not in self.raw:
                 return httpx.Response(404)
             raw, received = self.raw[message_id]
