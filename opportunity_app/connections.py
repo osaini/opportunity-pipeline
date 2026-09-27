@@ -106,23 +106,31 @@ async def complete_oauth(conn: sqlite3.Connection, provider: str, state: str, co
     connector_id = f"connector-{provider}-{user_id}"
     timestamp = utc_now()
     existing_connector = conn.execute(
-        "SELECT encrypted_refresh_token FROM connector_accounts WHERE user_id=? AND provider=?",
+        "SELECT encrypted_refresh_token, token_granted_at FROM connector_accounts WHERE user_id=? AND provider=?",
         (user_id, provider),
     ).fetchone()
     refresh_token = tokens.get("refresh_token")
+    # token_granted_at is when the refresh token in use was granted, from which
+    # a Testing-mode Gmail grant's likely expiry is estimated. A reconnect that
+    # kept the old refresh token keeps its grant time.
     if refresh_token:
         encrypted_refresh_token = fernet.encrypt(str(refresh_token).encode()).decode()
+        token_granted_at = timestamp
     elif existing_connector:
         encrypted_refresh_token = str(existing_connector["encrypted_refresh_token"] or "")
+        token_granted_at = existing_connector["token_granted_at"]
     else:
         encrypted_refresh_token = fernet.encrypt(b"").decode()
+        token_granted_at = None
     with conn:
-        conn.execute("""INSERT INTO connector_accounts(id, user_id, provider, scopes_json, encrypted_access_token, encrypted_refresh_token, status, created_at, updated_at)
-            VALUES(?, ?, ?, ?, ?, ?, 'connected', ?, ?) ON CONFLICT(user_id, provider) DO UPDATE SET scopes_json=excluded.scopes_json,
+        # A fresh connection clears the error that asked for it.
+        conn.execute("""INSERT INTO connector_accounts(id, user_id, provider, scopes_json, encrypted_access_token, encrypted_refresh_token, status, created_at, updated_at, token_granted_at, last_error)
+            VALUES(?, ?, ?, ?, ?, ?, 'connected', ?, ?, ?, '') ON CONFLICT(user_id, provider) DO UPDATE SET scopes_json=excluded.scopes_json,
             encrypted_access_token=excluded.encrypted_access_token, encrypted_refresh_token=excluded.encrypted_refresh_token,
-            status='connected', updated_at=excluded.updated_at, disconnected_at=NULL""",
+            status='connected', updated_at=excluded.updated_at, disconnected_at=NULL,
+            token_granted_at=excluded.token_granted_at, last_error=''""",
             (connector_id, user_id, provider, json.dumps(config["scopes"]), fernet.encrypt(tokens["access_token"].encode()).decode(),
-             encrypted_refresh_token, timestamp, timestamp))
+             encrypted_refresh_token, timestamp, timestamp, token_granted_at))
         conn.execute("UPDATE oauth_states SET consumed_at=? WHERE state_hash=?", (timestamp, state_hash))
     return connector_record(conn, connector_id, user_id=user_id)
 
@@ -215,7 +223,7 @@ def disconnect_provider(conn: sqlite3.Connection, connector_id: str, *, user_id:
         cursor = conn.execute(
             """
             UPDATE connector_accounts SET status='disconnected', encrypted_access_token='',
-                encrypted_refresh_token='', updated_at=?, disconnected_at=?
+                encrypted_refresh_token='', token_granted_at=NULL, updated_at=?, disconnected_at=?
             WHERE id=? AND user_id=?
             """,
             (timestamp, timestamp, connector_id, user_id),

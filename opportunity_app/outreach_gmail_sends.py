@@ -36,6 +36,7 @@ from .outreach_gmail import (
     SERVER_INSTANCE,
     ClientFactory,
     GmailAuthError,
+    GmailThrottled,
     _already_sent,
     _connector,
     _Gmail,
@@ -279,6 +280,12 @@ def capture_gmail_sends(
         return {**result, "state": "needs_reconnect"}
     except GmailAuthError:
         return {**result, "state": "needs_reconnect"}
+    except GmailThrottled:
+        # Not read is not "not sent": look again as soon as Gmail allows.
+        with _LOOK_LOCK:
+            for item in due:
+                _LAST_LOOK.pop((user_id, str(item["detail"]["draft_id"])), None)
+        return {**result, "state": "throttled"}
     except (httpx.HTTPError, ValueError):
         return {**result, "state": "unreachable"}
     return result

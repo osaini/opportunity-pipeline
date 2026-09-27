@@ -14,7 +14,8 @@ the company's own domain. Each new message is read once
 - A delivery failure notice is left to outreach_delivery.
 
 ``InboxWatcher`` runs both checks on a background thread, so a reply or a
-bounce is caught even when the page is closed.
+bounce is caught even when the page is closed. Each of its steps stands alone:
+one that fails is recorded in automation_health and the next still runs.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ from urllib.parse import quote
 
 import httpx
 
+from . import automation
 from .inbox_classifiers import classify_reply
 from .outreach import (
     BOUNCED,
@@ -53,8 +55,10 @@ from .outreach_gmail import (
     SENT_EVENT,
     ClientFactory,
     GmailAuthError,
+    GmailThrottled,
     _connector,
     _Gmail,
+    gmail_notices,
 )
 from .outreach_drafting import sender_account
 from .outreach_forms import SUBMITTED_EVENT as FORM_SUBMITTED, UNCONFIRMED_EVENT as FORM_UNCONFIRMED, is_acknowledgement
@@ -398,12 +402,47 @@ def capture_replies(
                         on_reply(conn, target["id"], user_id)
     except GmailAuthError:
         return {**result, "state": "needs_reconnect"}
+    except GmailThrottled:
+        # Gmail asked to slow down: nothing was searched, so a send waiting on it holds.
+        return {**result, "state": "throttled"}
     except (httpx.HTTPError, ValueError):
         return {**result, "state": "unreachable"}
     return result
 
 
 # --- In the background ----------------------------------------------------------------
+
+# What a check's state means, as automation_health records it. Never an address or a message's words.
+STEP_ERRORS = {
+    "needs_reconnect": "Gmail needs reconnecting",
+    "not_connected": "Gmail is not connected",
+    "unreachable": "Gmail could not be reached",
+    "throttled": "Gmail asked the app to slow down",
+}
+RECONNECT_ERROR = "Gmail needs reconnecting"
+_ADDRESS = re.compile(r"""[^\s@<>"'(),;:]+@[^\s@<>"'(),;:]+""")
+
+
+def _step_error(exc: BaseException) -> str:
+    """An exception as a health error: its type and message, with any address taken out."""
+    return f"{type(exc).__name__}: {_ADDRESS.sub('[address]', str(exc))[:200]}"
+
+
+def _record(conn: sqlite3.Connection, user_id: str, component: str, *, ok: bool, error: str = "") -> None:
+    """automation.record_health, which opens its own transaction; a failure to record is logged, never raised."""
+    try:
+        automation.record_health(conn, user_id, component, ok=ok, error=error)
+    except Exception:  # noqa: BLE001 - the pass goes on to the next step and the next student
+        LOGGER.warning("Could not record the health of %s", component, exc_info=True)
+
+
+def _discard_open_transaction(conn: sqlite3.Connection) -> None:
+    """After a step failed: roll back what it left uncommitted, so recording its health does not commit it."""
+    try:
+        if getattr(conn, "in_transaction", False):
+            conn.rollback()
+    except Exception:  # noqa: BLE001
+        LOGGER.warning("Could not roll back after an inbox step failed", exc_info=True)
 
 
 class InboxWatcher:
@@ -427,20 +466,61 @@ class InboxWatcher:
         self._thread: threading.Thread | None = None
 
     def run_once(self) -> None:
-        with closing(connect_product(self.platform_target)) as conn:
-            users = [row[0] for row in conn.execute(
-                "SELECT user_id FROM connector_accounts WHERE provider=? AND status='connected'", (PROVIDER,)
-            ).fetchall()]
-            for user_id in users:
-                from .outreach_gmail_sends import capture_gmail_sends  # imported here: it imports the scheduler
+        """One pass over every student's Gmail connection, whatever its state.
 
-                # A draft sent from Gmail first, so its bounce and replies are watched in the same pass.
-                capture_gmail_sends(conn, user_id=user_id, client_factory=self._client_factory)
-                check_deliveries(conn, user_id=user_id, client_factory=self._client_factory)
-                capture_replies(
-                    conn, user_id=user_id, client_factory=self._client_factory,
-                    decisions=self._decisions_for(conn, user_id), on_reply=self._on_reply,
-                )
+        A broken or disconnected connection is only noted (a notice and a health
+        row); nothing is asked of Gmail. A connected one runs each check on its
+        own: a check that fails or raises is recorded and the next one runs.
+        """
+        with closing(connect_product(self.platform_target)) as conn:
+            rows = [(row[0], row[1]) for row in conn.execute(
+                "SELECT user_id, status FROM connector_accounts WHERE provider=? ORDER BY user_id", (PROVIDER,)
+            ).fetchall()]
+            for user_id, status in rows:
+                if status == "connected":
+                    self._check(conn, user_id)
+                else:
+                    _record(conn, user_id, "inbox.connection", ok=False, error=RECONNECT_ERROR)
+                self._notices(conn, user_id)
+
+    def _check(self, conn: sqlite3.Connection, user_id: str) -> None:
+        from .outreach_gmail_sends import capture_gmail_sends  # imported here: it imports the scheduler
+
+        factory = self._client_factory
+        steps: tuple[tuple[str, Callable[[], dict[str, Any]]], ...] = (
+            # A draft sent from Gmail first, so its bounce and replies are watched in the same pass.
+            ("inbox.sends", lambda: capture_gmail_sends(conn, user_id=user_id, client_factory=factory)),
+            ("inbox.deliveries", lambda: check_deliveries(conn, user_id=user_id, client_factory=factory)),
+            ("inbox.replies", lambda: capture_replies(
+                conn, user_id=user_id, client_factory=factory,
+                decisions=self._decisions_for(conn, user_id), on_reply=self._on_reply,
+            )),
+        )
+        for component, step in steps:
+            try:
+                state = str((step() or {}).get("state", "ok"))
+            except Exception as exc:  # noqa: BLE001 - one step failing never stops the others
+                LOGGER.warning("Inbox step %s failed", component, exc_info=True)
+                _discard_open_transaction(conn)
+                _record(conn, user_id, component, ok=False, error=_step_error(exc))
+                continue
+            if state == "ok":
+                _record(conn, user_id, component, ok=True)
+            else:
+                _record(conn, user_id, component, ok=False, error=STEP_ERRORS.get(state, f"Gmail check stopped: {state}"))
+        # A 401 during the checks can leave the connection broken.
+        row = _connector(conn, user_id)
+        if row is not None and row["status"] == "connected":
+            _record(conn, user_id, "inbox.connection", ok=True)
+        else:
+            _record(conn, user_id, "inbox.connection", ok=False, error=RECONNECT_ERROR)
+
+    def _notices(self, conn: sqlite3.Connection, user_id: str) -> None:
+        try:
+            gmail_notices(conn, user_id)
+        except Exception:  # noqa: BLE001 - the next student is still checked
+            _discard_open_transaction(conn)
+            LOGGER.warning("Could not leave Gmail connection notices", exc_info=True)
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():

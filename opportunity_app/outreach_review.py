@@ -30,11 +30,13 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Callable
 
+import httpx
+
 from .agent_providers import _cli_binary
 from .outreach import get_target
 from .outreach_delivery import check_deliveries
 from .outreach_inbox import capture_replies
-from .outreach_gmail import ClientFactory
+from .outreach_gmail import ClientFactory, GmailThrottled
 from .preparation import confirmed_facts
 
 Runner = Callable[[str], str]
@@ -60,17 +62,30 @@ Reply with exactly one JSON object and nothing else:
 {"send": true, "away_until": null, "problems": []}"""
 
 
+FRESH_LOOK_REASONS = {
+    "not_connected": "Gmail is not connected",
+    "needs_reconnect": "Gmail needs to be reconnected",
+    "unreachable": "Gmail could not be reached",
+    "throttled": "Gmail asked the app to slow down",
+}
+
+
 def fresh_look(conn: sqlite3.Connection, target_id: str, *, user_id: str, client_factory: ClientFactory) -> dict[str, Any]:
-    """Read Gmail again for this company's bounces and replies. ``ok`` is False when Gmail could not be read."""
-    delivery = check_deliveries(conn, user_id=user_id, client_factory=client_factory, force_target=target_id)
-    replies = capture_replies(conn, user_id=user_id, client_factory=client_factory, force=True)
+    """Read Gmail again for this company's bounces and replies. ``ok`` is False when Gmail could not be read.
+
+    Both checks report Gmail trouble as a state rather than raising. Should one
+    raise anyway, the email still only waits: a slowdown or an unreachable
+    Gmail never reaches the send as a failure.
+    """
+    try:
+        delivery = check_deliveries(conn, user_id=user_id, client_factory=client_factory, force_target=target_id)
+        replies = capture_replies(conn, user_id=user_id, client_factory=client_factory, force=True)
+    except GmailThrottled:
+        return {"ok": False, "reason": FRESH_LOOK_REASONS["throttled"]}
+    except httpx.HTTPError:
+        return {"ok": False, "reason": FRESH_LOOK_REASONS["unreachable"]}
     failed = next((state for state in (delivery["state"], replies["state"]) if state != "ok"), "")
-    reasons = {
-        "not_connected": "Gmail is not connected",
-        "needs_reconnect": "Gmail needs to be reconnected",
-        "unreachable": "Gmail could not be reached",
-    }
-    return {"ok": not failed, "reason": reasons.get(failed, failed)}
+    return {"ok": not failed, "reason": FRESH_LOOK_REASONS.get(failed, failed)}
 
 
 REVIEW_ENV = "PIPELINE_OUTREACH_REVIEW_PROVIDER"

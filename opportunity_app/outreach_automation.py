@@ -242,12 +242,14 @@ def send_form(conn: sqlite3.Connection, target_id: str, *, user_id: str, submitt
 class AutomationWorker:
     """Runs each student's switched-on automation on one background thread.
 
-    A pass first sends every scheduled email that is due (for any student:
-    turning the switch off does not strand one already scheduled, and a
-    student who paused automation has theirs held), then recovers every
-    bounced contact that is due, then writes at most one draft and sends at
-    most one contact form, so a slow model call or page never holds the others
-    up for long. Nothing but the scheduled sends runs for a paused student.
+    A pass first shows waiting automation notices as desktop pop-ups (for
+    students who turned them on; desktop_notify), then sends every scheduled
+    email that is due (for any student: turning the switch off does not
+    strand one already scheduled, and a student who paused automation has
+    theirs held), then recovers every bounced contact that is due, then
+    writes at most one draft and sends at most one contact form, so a slow
+    model call or page never holds the others up for long. Nothing but the
+    scheduled sends runs for a paused student.
     """
 
     def __init__(
@@ -281,6 +283,12 @@ class AutomationWorker:
     def run_once(self) -> dict[str, Any]:
         report: dict[str, Any] = {"sent": [], "recovered": [], "drafted": [], "forms": []}
         with closing(connect_product(self.platform_target)) as conn:
+            try:
+                from .desktop_notify import deliver_desktop_notices  # imported here: only the worker shows pop-ups
+
+                deliver_desktop_notices(conn)
+            except Exception:  # noqa: BLE001 - a pop-up never holds up a send
+                LOGGER.exception("Desktop notices were not shown")
             if self._gmail_client_factory is not None:
                 from .outreach_schedule import run_due_sends  # imported here: it pulls in the Gmail send path
 

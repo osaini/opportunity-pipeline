@@ -16,13 +16,13 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, outreach_delivery, outreach_inbox
+from opportunity_app import STATIC_DIR, automation, outreach_delivery, outreach_inbox
 from opportunity_app.api import create_app
 from opportunity_app.outreach_inbox import InboxWatcher, reply_text, strip_quoted
 from opportunity_app.schema import connect_product, utc_now
 
 from helpers_platform import build_and_migrate
-from test_outreach_gmail import ACCOUNT, PDF, SCOPES, FakeGmail
+from test_outreach_gmail import ACCOUNT, PDF, SCOPES, FakeGmail, forget_gmail_backoff, rate_limited
 
 AUTH = {"Authorization": "Bearer inbox-owner"}
 USER = "local-user"
@@ -83,6 +83,7 @@ class ReplyCaptureTests(unittest.TestCase):
         outreach_delivery._LAST_LOOK.clear()
         outreach_delivery._READ_NOTICES.clear()
         outreach_inbox._LAST_CAPTURE.clear()
+        forget_gmail_backoff(self)
         self.connect()
 
     def tearDown(self):
@@ -283,6 +284,70 @@ class ReplyCaptureTests(unittest.TestCase):
         watcher = InboxWatcher(self.platform_path, client_factory=self.factory, decisions_for=lambda conn, user_id: None)
         watcher.run_once()
         self.assertEqual(self.target(target)["status"], "replied")
+        health = self.health()
+        for component in ("inbox.sends", "inbox.deliveries", "inbox.replies", "inbox.connection"):
+            self.assertIsNotNone(health[component]["last_ok_at"], component)
+            self.assertEqual(health[component]["last_error"], "", component)
+
+    # --- The background watcher, one step at a time ----------------------------------
+
+    def watcher(self):
+        return InboxWatcher(self.platform_path, client_factory=self.factory, decisions_for=lambda conn, user_id: None)
+
+    def health(self):
+        with closing(connect_product(self.platform_path)) as conn:
+            return {row["component"]: dict(row) for row in conn.execute(
+                "SELECT * FROM automation_health WHERE user_id=?", (USER,),
+            ).fetchall()}
+
+    def test_a_step_that_raises_does_not_stop_the_others(self):
+        deliveries = mock.Mock(return_value={"state": "ok", "checked": 0, "bounced": []})
+        replies = mock.Mock(return_value={"state": "unreachable", "replies": [], "automatic": []})
+        with mock.patch("opportunity_app.outreach_gmail_sends.capture_gmail_sends",
+                        side_effect=RuntimeError("could not read the draft to greg@bovi.example")),                 mock.patch.object(outreach_inbox, "check_deliveries", deliveries),                 mock.patch.object(outreach_inbox, "capture_replies", replies):
+            self.watcher().run_once()
+        deliveries.assert_called_once()
+        replies.assert_called_once()
+        health = self.health()
+        self.assertEqual(health["inbox.sends"]["last_error"], "RuntimeError: could not read the draft to [address]",
+                         "the error names the failure, never an address")
+        self.assertIsNone(health["inbox.sends"]["last_ok_at"])
+        self.assertIsNotNone(health["inbox.deliveries"]["last_ok_at"])
+        self.assertEqual(health["inbox.deliveries"]["last_error"], "")
+        self.assertEqual(health["inbox.replies"]["last_error"], "Gmail could not be reached")
+        self.assertIsNotNone(health["inbox.connection"]["last_ok_at"])
+
+    def test_a_broken_connection_gets_a_notice_and_gmail_is_not_asked(self):
+        self.sent_target()
+        asked = len(self.gmail.requests)
+        with closing(connect_product(self.platform_path)) as conn:
+            conn.execute("UPDATE connector_accounts SET status='error', updated_at='2026-09-27T10:00:00+00:00'")
+            conn.commit()
+        self.watcher().run_once()
+        self.watcher().run_once()
+        self.assertEqual(len(self.gmail.requests), asked, "nothing is asked of a connection that needs reconnecting")
+        health = self.health()
+        self.assertEqual(health["inbox.connection"]["last_error"], "Gmail needs reconnecting")
+        self.assertNotIn("inbox.replies", health)
+        with closing(connect_product(self.platform_path)) as conn:
+            notices = automation.list_notices(conn, USER)
+        self.assertEqual([(n["event_key"], n["level"]) for n in notices], [("gmail-expired:2026-09-27T10:00:00+00:00", "problem")],
+                         "one notice, however many passes")
+
+    def test_a_gmail_slowdown_is_recorded_as_one_and_never_as_a_reconnect(self):
+        target = self.sent_target()
+        self.arrive("reply-1", mail("Sure, let's talk."))
+        self.gmail.read_response = rate_limited
+        outreach_inbox._LAST_CAPTURE.clear()
+        self.watcher().run_once()
+        health = self.health()
+        self.assertEqual(health["inbox.deliveries"]["last_error"], "Gmail asked the app to slow down")
+        self.assertEqual(health["inbox.replies"]["last_error"], "Gmail asked the app to slow down")
+        self.assertIsNotNone(health["inbox.connection"]["last_ok_at"])
+        self.assertEqual(self.target(target)["status"], "sent", "the reply waits for the next look")
+        with closing(connect_product(self.platform_path)) as conn:
+            self.assertEqual(conn.execute("SELECT status FROM connector_accounts").fetchone()[0], "connected")
+            self.assertEqual(automation.list_notices(conn, USER), [])
 
 
 if __name__ == "__main__":
