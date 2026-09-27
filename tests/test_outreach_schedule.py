@@ -373,10 +373,10 @@ class ScheduledSendTests(unittest.TestCase):
         target = self.approved()
         self.schedule(target)
         self.make_due(timedelta(hours=3))  # the computer was off
-        # A database from before 0036 has no pause row; starting the upgraded app runs the step, which seeds one.
+        # A database from before 0037 has no pause row; starting the upgraded app runs the step, which seeds one.
         with self.conn:
             self.conn.execute("DELETE FROM user_settings WHERE key='automation_paused'")
-            self.conn.execute("DELETE FROM schema_migrations WHERE name='0036_automation.sql'")
+            self.conn.execute("DELETE FROM schema_migrations WHERE name='0037_automation.sql'")
         ensure_product_schema(self.conn)
         self.assertEqual(self.pause_row()["value"], "off", "the instrument: the seed ran for this student")
         self.assertEqual([item["state"] for item in run_due_sends(self.conn, client_factory=self.factory)], ["moved"])

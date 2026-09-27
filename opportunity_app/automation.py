@@ -297,7 +297,7 @@ def set_paused(conn: sqlite3.Connection, user_id: str, on: bool) -> dict[str, An
     The pause row's updated_at is when the pause last started or ended, and
     nothing else: outreach_schedule reads it to say a late send was held by a
     pause. So it moves only when the value flips, and a row made 'off' (here,
-    by pause_guard, or by the 0036 seed) starts at PAUSE_NEVER_CHANGED.
+    by pause_guard, or by the 0037 seed) starts at PAUSE_NEVER_CHANGED.
     """
     now = utc_now()
     with conn:

@@ -948,12 +948,12 @@ NEW_COLUMNS = [
 ]
 
 
-def schema_before_0036(path):
+def schema_before_0037(path):
     """A database as it stood before this migration, built the way ensure_product_schema builds one."""
     conn = connect_product(path)
     conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)")
     for migration in sorted(MIGRATIONS.glob("[0-9][0-9][0-9][0-9]_*.sql")):
-        if migration.name >= "0036":
+        if migration.name >= "0037":
             break
         sql = migration.read_text(encoding="utf-8")
         step = schema._MIGRATION_STEPS.get(migration.name)
@@ -977,11 +977,11 @@ class MigrationTests(unittest.TestCase):
             self.assertTrue(schema._has_column(conn, table, column), f"{table}.{column}")
         for table in ("automation_actions", "automation_health", "automation_notices"):
             conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
-        self.assertIn("0036_automation.sql", {row[0] for row in conn.execute("SELECT name FROM schema_migrations")})
+        self.assertIn("0037_automation.sql", {row[0] for row in conn.execute("SELECT name FROM schema_migrations")})
         return conn.execute("SELECT value FROM user_settings WHERE user_id=? AND key='automation_paused'", (user_id,)).fetchone()[0]
 
     def test_a_crash_after_some_columns_were_added_still_upgrades(self):
-        conn = schema_before_0036(Path(self.tempdir.name) / "platform.db")
+        conn = schema_before_0037(Path(self.tempdir.name) / "platform.db")
         self.addCleanup(conn.close)
         # What a crash between ALTERs and the marker leaves behind.
         for table, column in NEW_COLUMNS[::2]:
@@ -998,10 +998,10 @@ class MigrationTests(unittest.TestCase):
         self.addCleanup(conn.close)
         automation.set_paused(conn, USER, True)
         with conn:
-            conn.execute("DELETE FROM schema_migrations WHERE name='0036_automation.sql'")
+            conn.execute("DELETE FROM schema_migrations WHERE name='0037_automation.sql'")
         ensure_product_schema(conn)
         self.assertEqual(self.assert_migrated(conn, USER), "on", "the seed never overwrites a student's pause")
-        schema._apply_automation(conn, (MIGRATIONS / "0036_automation.sql").read_text(encoding="utf-8"))
+        schema._apply_automation(conn, (MIGRATIONS / "0037_automation.sql").read_text(encoding="utf-8"))
         conn.commit()
 
 

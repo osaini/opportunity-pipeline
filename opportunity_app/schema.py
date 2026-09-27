@@ -264,7 +264,7 @@ def _apply_automation(conn: sqlite3.Connection, sql: str) -> None:
 _MIGRATION_STEPS: dict[str, Callable[[Any, str], None]] = {
     "0020_posted_at_utc.sql": _apply_posted_at_utc,
     "0021_company_sort_keys.sql": _apply_company_sort_keys,
-    "0036_automation.sql": _apply_automation,
+    "0037_automation.sql": _apply_automation,
 }
 
 
