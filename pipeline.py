@@ -323,6 +323,11 @@ def connect() -> sqlite3.Connection:
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
     if "content_fingerprint" not in columns:
         conn.execute("ALTER TABLE jobs ADD COLUMN content_fingerprint TEXT NOT NULL DEFAULT ''")
+    # How many postings a board listed before the discovery filter; NULL for
+    # runs from before it was recorded. Retirement reads it (_retirement_hold).
+    run_columns = {row["name"] for row in conn.execute("PRAGMA table_info(fetch_runs)")}
+    if "listed_count" not in run_columns:
+        conn.execute("ALTER TABLE fetch_runs ADD COLUMN listed_count INTEGER")
     return conn
 
 
@@ -343,6 +348,23 @@ class FatalDatabaseError(RuntimeError):
     connection. Unlike a source failing, this cannot be isolated to one source
     and recorded: the row recording it would fail too. The run stops rather
     than reporting a day that looks complete."""
+
+
+class Listing(list):
+    """The records one source kept, plus what its fetch proved about the listing.
+
+    `listed` counts every posting the source returned before the discovery
+    filter, and `complete` is False when a page cap cut the listing short. A
+    plain list carries neither, so `upsert_jobs` keeps retiring absent rows
+    unconditionally for the callers that pass one (CSV, email, agent imports).
+    Board fetches return a Listing, and absence from one retires a posting only
+    when the fetch proved it read the whole board -- see `_retirable`.
+    """
+
+    def __init__(self, records: Iterable[dict[str, Any]] = (), *, listed: int, complete: bool = True):
+        super().__init__(records)
+        self.listed = listed
+        self.complete = complete
 
 
 def _is_transient(error: Exception | None) -> bool:
@@ -800,7 +822,7 @@ def is_discovery_candidate(title: str, terms: Iterable[str]) -> bool:
     return False
 
 
-def greenhouse_jobs(source: dict[str, Any], discovery_terms: list[str]) -> list[dict[str, Any]]:
+def greenhouse_jobs(source: dict[str, Any], discovery_terms: list[str]) -> Listing:
     token = source["token"]
     base = f"https://boards-api.greenhouse.io/v1/boards/{urllib.parse.quote(token)}"
     # `content=true` returns every job's description in the listing itself.
@@ -830,10 +852,10 @@ def greenhouse_jobs(source: dict[str, Any], discovery_terms: list[str]) -> list[
                 "posted_at": detail.get("updated_at") or item.get("updated_at"),
             }
         )
-    return jobs
+    return Listing(jobs, listed=len(listing.get("jobs", [])))
 
 
-def lever_jobs(source: dict[str, Any], discovery_terms: list[str]) -> list[dict[str, Any]]:
+def lever_jobs(source: dict[str, Any], discovery_terms: list[str]) -> Listing:
     site = source["site"]
     region = source.get("region", "global")
     host = "api.eu.lever.co" if region == "eu" else "api.lever.co"
@@ -860,10 +882,10 @@ def lever_jobs(source: dict[str, Any], discovery_terms: list[str]) -> list[dict[
                 "posted_at": None,
             }
         )
-    return jobs
+    return Listing(jobs, listed=len(listing))
 
 
-def ashby_jobs(source: dict[str, Any], discovery_terms: list[str]) -> list[dict[str, Any]]:
+def ashby_jobs(source: dict[str, Any], discovery_terms: list[str]) -> Listing:
     board = source["board"]
     listing = request_json(
         f"https://api.ashbyhq.com/posting-api/job-board/{urllib.parse.quote(board)}?includeCompensation=true"
@@ -884,14 +906,15 @@ def ashby_jobs(source: dict[str, Any], discovery_terms: list[str]) -> list[dict[
                 "posted_at": item.get("publishedAt"),
             }
         )
-    return jobs
+    return Listing(jobs, listed=len(listing.get("jobs", [])))
 
 
-def smartrecruiters_jobs(source: dict[str, Any], discovery_terms: list[str]) -> list[dict[str, Any]]:
+def smartrecruiters_jobs(source: dict[str, Any], discovery_terms: list[str]) -> Listing:
     company_id = source["company_id"]
     base = f"https://api.smartrecruiters.com/v1/companies/{urllib.parse.quote(company_id)}/postings"
     candidates: list[dict[str, Any]] = []
     offset = 0
+    complete = True
     for _ in range(20):  # safety cap: 20 pages * 100 = 2000 postings max
         listing = request_json(f"{base}?limit=100&offset={offset}")
         content = listing.get("content", [])
@@ -901,6 +924,9 @@ def smartrecruiters_jobs(source: dict[str, Any], discovery_terms: list[str]) -> 
         offset += len(content)
         if offset >= listing.get("totalFound", 0):
             break
+    else:
+        # The cap cut the board short, so a posting past it only looks absent.
+        complete = False
     jobs: list[dict[str, Any]] = []
     for item in candidates:
         title = item.get("name", "")
@@ -925,10 +951,21 @@ def smartrecruiters_jobs(source: dict[str, Any], discovery_terms: list[str]) -> 
                 "posted_at": item.get("releasedDate"),
             }
         )
-    return jobs
+    return Listing(jobs, listed=len(candidates), complete=complete)
 
 
-def workday_jobs(source: dict[str, Any], discovery_terms: list[str]) -> list[dict[str, Any]]:
+# Pages read per discovery term. A Workday search is full-text, so "intern"
+# matches every posting whose description mentions interns and "co-op" matched
+# 2,000+ at several tenants (2026-09-27). Results are mostly relevance-ordered
+# -- NVIDIA's "intern" search held 109 intern titles across its first six
+# pages, then none -- so a term stops after this many pages in a row without a
+# discovery match, and in any case at the cap. Either way the listing is
+# incomplete, and absence from it retires only a posting unseen for the grace.
+WORKDAY_MAX_PAGES_PER_TERM = 10
+WORKDAY_MISS_PAGES = 2
+
+
+def workday_jobs(source: dict[str, Any], discovery_terms: list[str]) -> Listing:
     # Workday tenants can list thousands of postings with no relevance/date
     # ordering guarantee, so a blank/paginated listing call can bury intern
     # roles far past any sane page cap. Workday's own searchText performs a
@@ -940,21 +977,33 @@ def workday_jobs(source: dict[str, Any], discovery_terms: list[str]) -> list[dic
     jobs: list[dict[str, Any]] = []
     seen_paths: set[str] = set()
     limit = 20
+    listed = 0
+    complete = True
     for term in discovery_terms:
         offset = 0
-        for _ in range(10):  # safety cap per term: 10 pages * 20 = 200 postings
+        total = 0
+        misses = 0
+        for _ in range(WORKDAY_MAX_PAGES_PER_TERM):
             data = request_json_post(
                 endpoint, {"appliedFacets": {}, "limit": limit, "offset": offset, "searchText": term}
             )
+            # Workday reports `total` on the first page only and 0 on every later
+            # page (seen on NVIDIA, GDIT and NXP, 2026-09-27). Reading it per page
+            # ended every search after 20 results.
+            if offset == 0:
+                total = int(data.get("total") or 0)
             postings = data.get("jobPostings", [])
             if not postings:
                 break
+            listed += len(postings)
+            matched = False
             for item in postings:
                 external_path = item.get("externalPath", "")
-                if external_path in seen_paths:
-                    continue
                 title = item.get("title", "")
                 if not is_discovery_candidate(title, discovery_terms):
+                    continue
+                matched = True
+                if external_path in seen_paths:
                     continue
                 seen_paths.add(external_path)
                 bullets = " ".join(item.get("bulletFields") or [])
@@ -974,9 +1023,15 @@ def workday_jobs(source: dict[str, Any], discovery_terms: list[str]) -> list[dic
                     }
                 )
             offset += limit
-            if offset >= data.get("total", 0):
+            if offset >= total:
                 break
-    return jobs
+            misses = 0 if matched else misses + 1
+            if misses >= WORKDAY_MISS_PAGES:
+                complete = False
+                break
+        else:
+            complete = False
+    return Listing(jobs, listed=listed, complete=complete)
 
 
 # Documented USAJOBS search limits: 500 rows per page, 10,000 rows per query.
@@ -1067,7 +1122,7 @@ def _usajobs_location(descriptor: dict[str, Any]) -> str:
     return "; ".join(unique)
 
 
-def usajobs_jobs(source: dict[str, Any], discovery_terms: list[str]) -> list[dict[str, Any]]:
+def usajobs_jobs(source: dict[str, Any], discovery_terms: list[str]) -> Listing:
     api_key = os.environ.get("USAJOBS_API_KEY")
     if not api_key:
         raise ValueError(
@@ -1083,6 +1138,7 @@ def usajobs_jobs(source: dict[str, Any], discovery_terms: list[str]) -> list[dic
     headers = {"Host": "data.usajobs.gov", "User-Agent": contact_email, "Authorization-Key": api_key}
     default_fields = source.get("fields", "Full")
     jobs: dict[str, dict[str, Any]] = {}
+    listed = 0
 
     # Each query stands alone rather than sharing one filter set, because the
     # API ANDs its filters and some combinations annihilate each other:
@@ -1113,8 +1169,8 @@ def usajobs_jobs(source: dict[str, Any], discovery_terms: list[str]) -> list[dic
         # sweep reaches postings whose titles never say "intern".
         for keyword in keywords or [None]:
             query = dict(params, Keyword=str(keyword)) if keyword else dict(params)
-            _usajobs_collect(headers, query, source, discovery_terms, jobs)
-    return list(jobs.values())
+            listed += _usajobs_collect(headers, query, source, discovery_terms, jobs)
+    return Listing(jobs.values(), listed=listed)
 
 
 def _usajobs_collect(
@@ -1123,13 +1179,16 @@ def _usajobs_collect(
     source: dict[str, Any],
     discovery_terms: list[str],
     jobs: dict[str, dict[str, Any]],
-) -> None:
+) -> int:
     """Normalize one query's results into `jobs`, keyed by announcement id.
 
     Queries overlap by design, so the shared dict is what keeps an announcement
-    matched by several of them from being stored several times.
+    matched by several of them from being stored several times. Returns how
+    many results the query answered with, before any filtering.
     """
+    answered = 0
     for item in _usajobs_search(headers, query):
+        answered += 1
         descriptor = item.get("MatchedObjectDescriptor", {})
         title = descriptor.get("PositionTitle", "")
         if not is_discovery_candidate(title, discovery_terms):
@@ -1148,6 +1207,7 @@ def _usajobs_collect(
             "description": _usajobs_description(descriptor),
             "posted_at": descriptor.get("PublicationStartDate"),
         }
+    return answered
 
 
 # Adzuna aggregates postings from employers this pipeline has no direct feed
@@ -1165,7 +1225,7 @@ ADZUNA_MAX_PAGES = 5
 ADZUNA_RESULTS_PER_PAGE = 50
 
 
-def adzuna_jobs(source: dict[str, Any], discovery_terms: list[str]) -> list[dict[str, Any]]:
+def adzuna_jobs(source: dict[str, Any], discovery_terms: list[str]) -> Listing:
     app_id = os.environ.get("ADZUNA_APP_ID")
     app_key = os.environ.get("ADZUNA_APP_KEY")
     if not app_id or not app_key:
@@ -1175,6 +1235,8 @@ def adzuna_jobs(source: dict[str, Any], discovery_terms: list[str]) -> list[dict
         )
     country = source.get("country", "us")
     jobs: dict[str, dict[str, Any]] = {}
+    listed = 0
+    complete = True
     # Queries overlap on purpose -- "mechanical intern" near Austin and
     # "manufacturing co-op" near Austin return an intersecting set -- so results
     # are keyed by Adzuna's id and the first sighting wins.
@@ -1210,6 +1272,7 @@ def adzuna_jobs(source: dict[str, Any], discovery_terms: list[str]) -> list[dict
             results = data.get("results", [])
             if not results:
                 break
+            listed += len(results)
             for item in results:
                 title = item.get("title", "")
                 if not is_discovery_candidate(title, discovery_terms):
@@ -1232,7 +1295,10 @@ def adzuna_jobs(source: dict[str, Any], discovery_terms: list[str]) -> list[dict
                 }
             if len(results) < ADZUNA_RESULTS_PER_PAGE:
                 break
-    return list(jobs.values())
+        else:
+            # The page cap ended this query while results were still coming.
+            complete = False
+    return Listing(jobs.values(), listed=listed, complete=complete)
 
 
 # A description this short carries no scoring signal beyond the title, so it is
@@ -1328,16 +1394,97 @@ def upsert_jobs(
                 content_fp,
             ),
         )
-    if ids:
-        placeholders = ",".join("?" for _ in ids)
-        conn.execute(
-            f"UPDATE jobs SET active=0 WHERE source_key=? AND id NOT IN ({placeholders})",
-            [source_key, *ids],
-        )
-    else:
-        conn.execute("UPDATE jobs SET active=0 WHERE source_key=?", (source_key,))
+    _retire_absent(conn, source_key, records, set(ids), seen)
     deduplicate(conn)
     return len(records)
+
+
+# Guards on retiring a posting because a board fetch no longer lists it. The
+# rule is the one jobleft's crawler states (packages/crawler/src/lifecycle.ts
+# in github.com/blueturboguy07/jobleft; the idea, not its code): absence is
+# evidence only when the fetch proved it read the whole board. Retirement
+# matters because purge-expired deletes retired rows the same day, so one odd
+# answer -- a 200 with `"jobs": []`, or a changed shape that parses as empty --
+# used to delete every posting the board had.
+#
+# An empty listing proves nothing on its own: it looks exactly like a broken
+# crawl. A board that really emptied out is retired once it has answered empty
+# this many fetches in a row and its postings have gone unseen for the grace.
+EMPTY_LISTING_MIN_STREAK = 3
+# A listing that shrank to under half of the previous fetch's (from at least
+# this many postings) may be a partial answer, so only postings already unseen
+# for the grace are retired. A real mass closure retires on the next fetch,
+# once the smaller listing is itself the baseline.
+LISTING_SHRINK_MIN_PRIOR = 10
+RETIRE_GRACE = timedelta(hours=48)
+
+
+def _retirement_hold(conn: sqlite3.Connection, source_key: str, listing: Listing) -> tuple[str, str] | None:
+    """Why absence from this listing cannot retire everything, or None.
+
+    Returns `(mode, reason)`: mode `none` retires nothing, `stale` retires only
+    postings unseen for RETIRE_GRACE.
+    """
+    prior = [
+        row["listed_count"]
+        for row in conn.execute(
+            "SELECT listed_count FROM fetch_runs WHERE source_key=? AND outcome='success' "
+            "ORDER BY id DESC LIMIT ?",
+            (source_key, EMPTY_LISTING_MIN_STREAK),
+        )
+    ]
+    if listing.listed == 0:
+        streak = 1
+        for count in prior:
+            if count != 0:
+                break
+            streak += 1
+        if streak < EMPTY_LISTING_MIN_STREAK:
+            return "none", f"the board listed nothing ({streak} of {EMPTY_LISTING_MIN_STREAK} empty answers)"
+        return "stale", f"the board has listed nothing {streak} times running"
+    if not listing.complete:
+        return "stale", "the fetch read only part of the listing"
+    previous = prior[0] if prior else None
+    if previous is not None and previous >= LISTING_SHRINK_MIN_PRIOR and listing.listed * 2 < previous:
+        return "stale", f"the listing shrank from {previous} to {listing.listed} postings"
+    return None
+
+
+def _retire_absent(
+    conn: sqlite3.Connection,
+    source_key: str,
+    records: list[dict[str, Any]],
+    present: set[str],
+    seen: str,
+) -> None:
+    absent = [
+        row
+        for row in conn.execute(
+            "SELECT id, last_seen_at FROM jobs WHERE source_key=? AND active=1", (source_key,)
+        )
+        if row["id"] not in present
+    ]
+    doomed = [row["id"] for row in absent]
+    # A plain list is a whole batch its caller vouches for (CSV, email, agent
+    # imports), so only a board Listing is second-guessed.
+    hold = _retirement_hold(conn, source_key, records) if absent and isinstance(records, Listing) else None
+    if hold:
+        mode, reason = hold
+        cutoff = (parse_datetime(seen) or datetime.now(timezone.utc)) - RETIRE_GRACE
+        doomed = [
+            row["id"]
+            for row in absent
+            if mode == "stale" and (parse_datetime(row["last_seen_at"]) or cutoff) <= cutoff
+        ]
+        if len(doomed) < len(absent):
+            print(
+                f"  Kept {len(absent) - len(doomed)} unlisted posting(s) open for {source_key}: {reason}",
+                flush=True,
+            )
+    for start in range(0, len(doomed), 500):
+        chunk = doomed[start : start + 500]
+        placeholders = ",".join("?" for _ in chunk)
+        conn.execute(f"UPDATE jobs SET active=0 WHERE id IN ({placeholders})", chunk)
 
 
 STATUS_PRIORITY = {
@@ -2318,7 +2465,7 @@ _SOURCE_FETCHERS = {
 }
 
 
-def _fetch_source(source: dict[str, Any], terms: list[str]) -> list[dict[str, Any]]:
+def _fetch_source(source: dict[str, Any], terms: list[str]) -> Listing:
     """Fetch one source. Runs on a worker thread and touches no database."""
 
     kind = source["kind"]
@@ -2371,7 +2518,9 @@ def fetch_all(
     host_active: dict[str, int] = {}
     in_flight: dict[Any, tuple[dict[str, Any], str, int, str]] = {}
 
-    def record_outcome(run_id: int, outcome: str, *, count: int = 0, error: str = "") -> None:
+    def record_outcome(
+        run_id: int, outcome: str, *, count: int = 0, listed: int | None = None, error: str = ""
+    ) -> None:
         """Write a source's terminal state.
 
         Raises FatalDatabaseError if even this cannot be written: at that point
@@ -2381,8 +2530,9 @@ def fetch_all(
         try:
             if outcome == "success":
                 conn.execute(
-                    "UPDATE fetch_runs SET finished_at=?, outcome='success', fetched_count=? WHERE id=?",
-                    (now_iso(), count, run_id),
+                    "UPDATE fetch_runs SET finished_at=?, outcome='success', fetched_count=?, "
+                    "listed_count=? WHERE id=?",
+                    (now_iso(), count, listed, run_id),
                 )
             else:
                 conn.execute(
@@ -2463,7 +2613,7 @@ def fetch_all(
                         print(f"  ERROR {label}: {exc}", file=sys.stderr, flush=True)
                         print(f"  Done {label}: failed", flush=True)
                         continue
-                    record_outcome(run_id, "success", count=count)
+                    record_outcome(run_id, "success", count=count, listed=getattr(records, "listed", None))
                     print(f"  Done {label}: {count} candidate postings saved", flush=True)
 
     finally:
