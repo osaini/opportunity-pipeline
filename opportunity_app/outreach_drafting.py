@@ -683,7 +683,13 @@ def generate_draft(
     kind: str = "initial",
     provider: str | None = None,
     comments: str = "",
+    before_write: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
+    """Write a draft and save it for the student to approve.
+
+    ``before_write`` runs first inside the transaction that saves it, after
+    the model call; raising there saves nothing.
+    """
     if kind not in DRAFT_KINDS:
         raise ValueError("kind must be initial or follow_up")
     comments = comments.replace("\r\n", "\n").strip()
@@ -736,6 +742,8 @@ def generate_draft(
         if target["status"] == "not_started":
             assignments["status"] = "drafted"
     with conn:
+        if before_write is not None:
+            before_write()
         _keep_current_draft(conn, target_id, user_id, kind)
         _insert_version(
             conn, target_id, user_id, kind, source="generated", subject=draft["subject"], body=draft["body"],

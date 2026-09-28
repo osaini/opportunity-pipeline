@@ -1185,3 +1185,54 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
   .tag-picker-label { max-width: 9ch; }
   .tag-picker-panel { width: 100%; }
 }
+
+/* What the app does on its own. The banner sits in the page's flow only while
+   it has something to say; [hidden] removes it, so an empty one moves nothing. */
+.automation-banner { display: grid; gap: var(--space-2); margin-bottom: var(--space-4); }
+.automation-banner-item {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2) var(--space-4);
+  padding: var(--space-2) var(--space-4); border: 1px solid var(--line); border-left: 4px solid var(--line-strong);
+  border-radius: var(--radius-md); background: var(--surface-sunken); color: var(--ink); font-size: 13px;
+}
+.automation-banner-item p { flex: 1 1 240px; min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.automation-banner-item.is-warning { border-color: var(--warn-line); border-left-color: var(--gold); background: var(--warn-panel); }
+.automation-banner-item.is-problem { border-color: var(--danger-line); border-left-color: var(--danger); background: var(--danger-soft); }
+
+.chip.is-good { background: var(--accent-soft); border-color: transparent; color: var(--accent-strong); }
+.automation-pause { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4); margin-top: var(--space-5); }
+.automation-pause .form-status { flex: 1 1 260px; margin: 0; }
+/* What Pause does, on its own line under the button and its status. */
+.automation-pause .automation-pause-help { flex: 1 1 100%; margin: 0; }
+/* "Showing the newest 200 of 260" under a list the server holds more of. */
+.automation-more { margin: var(--space-2) 0 0; }
+.automation-block { margin-top: var(--space-6); padding-top: var(--space-5); border-top: 1px solid var(--line); }
+.automation-block > h4 { margin: 0 0 var(--space-2); font-size: 14px; }
+.automation-block > .profile-help { margin: 0 0 var(--space-3); }
+.automation-block > .form-status { margin: var(--space-2) 0 0; }
+.automation-block > .secondary-button { margin-top: var(--space-3); }
+/* An empty status line stays in place for screen readers but takes no room. */
+.automation-section .form-status:empty, .automation-desktop-setting .form-status:empty { min-height: 0; margin: 0; }
+.settings-field.automation-feature { width: min(100%, 620px); margin-top: var(--space-4); }
+.automation-feature-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; }
+.automation-feature .settings-checkbox, .automation-desktop-setting .settings-checkbox { min-height: 24px; }
+.automation-reason { color: var(--warn-ink); }
+.automation-desktop-setting { margin-top: var(--space-5); }
+.automation-desktop-setting .form-status { margin: 0; }
+.automation-health, .automation-notices, .automation-actions { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.automation-health li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; color: var(--ink-soft); font-size: 12px; line-height: 1.5; }
+.automation-health strong { color: var(--ink); }
+.automation-health span:not(.chip) { min-width: 0; overflow-wrap: anywhere; }
+.automation-notice, .automation-action { display: grid; gap: 4px; padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); font-size: 12px; }
+.automation-notice { border-left: 4px solid var(--line-strong); }
+.automation-notice.is-warning { border-color: var(--warn-line); border-left-color: var(--gold); background: var(--warn-panel); }
+.automation-notice.is-problem { border-color: var(--danger-line); border-left-color: var(--danger); background: var(--danger-soft); }
+.automation-notice p, .automation-action p { margin: 0; overflow-wrap: anywhere; }
+.automation-notice p { color: var(--ink-soft); }
+.automation-meta { color: var(--ink-muted); font-size: 11px; }
+.automation-action-summary { font-weight: 700; }
+.automation-evidence { color: var(--ink-soft); font-style: italic; }
+.automation-action-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-top: 4px; }
+.automation-verdict { color: var(--accent-strong); font-weight: 700; }
+.timeline-list .timeline-who { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; }
+.timeline-list .timeline-author { color: var(--ink-soft); font-weight: 700; }
+.timeline-list .timeline-undo { min-height: 24px; color: var(--accent-strong); font-weight: 700; text-decoration: underline; }

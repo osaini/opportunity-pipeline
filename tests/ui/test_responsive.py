@@ -79,8 +79,14 @@ def test_workspace_never_scrolls_sideways(sized: SizedPage):
 def test_primary_navigation_keeps_accessible_names(sized: SizedPage):
     """The icon rail hides the text labels; screen readers must still hear them."""
     for label in ("Discover", "Urgent", "Saved", "Applications", "Outreach", "Prepare", "Agent", "Profile"):
-        # Urgent's name carries its count ("Urgent, 2 need attention") but must start with the label.
-        name = re.compile(rf"^{label}(, \d+ needs? attention)?$") if label == "Urgent" else label
+        # Urgent's and Profile's names carry their counts ("Urgent, 2 need attention",
+        # "Profile, 1 waiting for you") but must start with the label.
+        if label == "Urgent":
+            name = re.compile(rf"^{label}(, \d+ needs? attention)?$")
+        elif label == "Profile":
+            name = re.compile(rf"^{label}(, \d+ (waiting for you|unread notices?))?$")
+        else:
+            name = label
         button = sized.page.get_by_role("navigation").get_by_role("button", name=name, exact=True)
         assert button.count() == 1, f"no nav button named {label!r} at {sized.label}"
     # Programs is named from the student's own list (tests/fixtures/early_programs.json).

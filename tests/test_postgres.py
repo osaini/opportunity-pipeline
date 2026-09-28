@@ -8,18 +8,31 @@ import sqlite3
 import tempfile
 import unittest
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR
+from opportunity_app import STATIC_DIR, automation, outreach_schedule, schema
+from opportunity_app.actions import record_intent, update_application
 from opportunity_app.api import create_app
-from opportunity_app.schema import connect_product, migrate_legacy_database
+from opportunity_app.automation import Feature
+from opportunity_app.schema import MIGRATIONS_DIR, connect_product, ensure_product_schema, migrate_legacy_database, utc_now
 from pipeline_core import OpportunityFilters, OpportunityRepository
-from helpers_platform import LEGACY_SCHEMA
+from helpers_platform import JOBS, LEGACY_SCHEMA, build_profile
+
+AUTOMATION_USER = "local-user"
+AUTOMATION_SWITCH = Feature("test_pg_switch", "Test PostgreSQL switch", "Moves an application on its own", "applications", "internal")
+# The columns 0037 adds to existing tables, each by a guarded Python step.
+AUTOMATION_COLUMNS = [
+    ("opportunity_interactions", "source"), ("application_tasks", "origin"), ("application_tasks", "origin_ref"),
+    ("connector_accounts", "last_ok_at"), ("connector_accounts", "last_error"), ("connector_accounts", "token_granted_at"),
+    ("connector_accounts", "backoff_until"),
+]
 
 
 POSTGRES_TEST_URL = os.environ.get("POSTGRES_TEST_URL", "")
@@ -251,3 +264,218 @@ class PostgresContractTests(unittest.TestCase):
                 conn.execute("DELETE FROM opportunities WHERE id='pg-job'")
             remaining = conn.execute("SELECT COUNT(*) AS n FROM opportunity_deadlines").fetchone()["n"]
         self.assertEqual(remaining, 0, "deadlines cascade away with their posting")
+
+
+@unittest.skipUnless(POSTGRES_TEST_URL, "POSTGRES_TEST_URL is not configured")
+class PostgresAutomationContractTests(unittest.TestCase):
+    """The automation ledger, the pause, and Health on PostgreSQL (migration 0037, automation.py).
+
+    Their PostgreSQL-only paths (pause_guard's FOR SHARE, the handlers' FOR
+    UPDATE, IS NOT DISTINCT FROM, the Python migration step) run nowhere
+    else. Rows are read by column name: a PostgreSQL row is a mapping, so
+    tuple(row) would give its column names.
+    """
+
+    def setUp(self):
+        import psycopg
+
+        # A fresh schema per test, as PostgresContractTests does, for the same reason.
+        with psycopg.connect(POSTGRES_TEST_URL, autocommit=True) as conn:
+            conn.execute("DROP SCHEMA public CASCADE")
+            conn.execute("CREATE SCHEMA public")
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        root = Path(tempdir.name)
+        legacy = root / "pipeline.db"
+        with closing(sqlite3.connect(legacy)) as conn:
+            conn.executescript(LEGACY_SCHEMA)
+            conn.executemany("INSERT INTO jobs VALUES(" + ",".join("?" * 23) + ")", JOBS)
+            conn.commit()
+        migrate_legacy_database(legacy, POSTGRES_TEST_URL, build_profile(root))
+        self.conn = connect_product(POSTGRES_TEST_URL)
+        self.addCleanup(self.conn.close)
+        automation.register(AUTOMATION_SWITCH)
+        self.addCleanup(automation.FEATURES.pop, AUTOMATION_SWITCH.key, None)
+
+    def other_connection(self, *, lock_timeout_ms=None):
+        conn = connect_product(POSTGRES_TEST_URL)
+        self.addCleanup(conn.close)
+        if lock_timeout_ms is not None:
+            # A session setting, so it outlives the transaction this statement opens.
+            conn.execute(f"SET lock_timeout = '{int(lock_timeout_ms)}ms'")
+            conn.commit()
+        return conn
+
+    def stage_change(self, application_id, stage, *, key, conn=None):
+        return automation.perform(
+            conn or self.conn, user_id=AUTOMATION_USER, feature=AUTOMATION_SWITCH.key, action_type="application.stage",
+            subject_kind="application", subject_id=application_id, after={"stage": stage}, evidence={"subject": "Interview"},
+            summary="Moved the application", basis="rule:test", confidence=0.9, idempotency_key=key, auto=True,
+        )
+
+    def application(self, application_id):
+        row = self.conn.execute("SELECT stage, applied_at FROM applications WHERE id=?", (application_id,)).fetchone()
+        self.conn.commit()
+        return row["stage"], row["applied_at"]
+
+    def outreach_target(self, target_id, company):
+        now = utc_now()
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO outreach_targets(id, user_id, company, created_at, updated_at) VALUES(?, ?, ?, ?, ?)",
+                (target_id, AUTOMATION_USER, company, now, now),
+            )
+
+    def claim(self, target_id, state, action, claimed_at=None):
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO outreach_send_claims(target_id, user_id, kind, token, state, action, instance, claimed_at) "
+                "VALUES(?, ?, 'initial', 'tok', ?, ?, 'i', ?)", (target_id, AUTOMATION_USER, state, action, claimed_at or utc_now()),
+            )
+
+    def test_migration_0037_applies_and_a_rerun_repairs_a_half_applied_upgrade(self):
+        for table, column in AUTOMATION_COLUMNS:
+            self.assertTrue(schema._has_column(self.conn, table, column), f"{table}.{column}")
+        stamp = utc_now()
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO users(id, email, display_name, role, created_at, updated_at) VALUES('student-2', NULL, 'S', 'student', ?, ?)",
+                (stamp, stamp),
+            )
+        automation.set_paused(self.conn, AUTOMATION_USER, True)
+        # What a crash between the ALTERs and the marker leaves: some columns gone, and no marker.
+        with self.conn:
+            self.conn.execute("ALTER TABLE connector_accounts DROP COLUMN backoff_until")
+            self.conn.execute("ALTER TABLE application_tasks DROP COLUMN origin_ref")
+            self.conn.execute("DELETE FROM schema_migrations WHERE name='0037_automation.sql'")
+        ensure_product_schema(self.conn)
+        for table, column in AUTOMATION_COLUMNS:
+            self.assertTrue(schema._has_column(self.conn, table, column), f"{table}.{column} after the rerun")
+        marker = self.conn.execute("SELECT 1 FROM schema_migrations WHERE name='0037_automation.sql'").fetchone()
+        self.assertIsNotNone(marker)
+        seeded = self.conn.execute("SELECT value, updated_at FROM user_settings WHERE user_id='student-2' AND key='automation_paused'").fetchone()
+        self.conn.commit()
+        self.assertEqual((seeded["value"], seeded["updated_at"]), ("off", schema.PAUSE_NEVER_CHANGED), "an existing student starts unpaused")
+        self.assertTrue(automation.paused(self.conn, AUTOMATION_USER), "the seed never overwrites a student's pause")
+        # Running the step itself again is harmless.
+        schema._apply_automation(self.conn, (MIGRATIONS_DIR / "0037_automation.sql").read_text(encoding="utf-8"))
+        self.conn.commit()
+
+    def test_perform_undo_and_superseded_on_an_application(self):
+        automation.set_mode(self.conn, AUTOMATION_USER, AUTOMATION_SWITCH.key, "on")
+        row = self.stage_change("app-job-b", "interview", key="pg-1")
+        self.assertEqual((row["status"], row["before"]["stage"], row["decided_by"]), ("applied", "applied", "system"))
+        self.assertEqual(self.application("app-job-b")[0], "interview")
+        undone = automation.undo(self.conn, row["id"], AUTOMATION_USER)
+        self.assertEqual((undone["status"], undone["feature_paused"], undone["breaker_notice"]), ("undone", False, None))
+        self.assertEqual(self.application("app-job-b")[0], "applied")
+        again = self.stage_change("app-job-b", "interview", key="pg-2")
+        update_application(self.conn, "app-job-b", stage="offer", user_id=AUTOMATION_USER)
+        with self.assertRaises(automation.Superseded):
+            automation.undo(self.conn, again["id"], AUTOMATION_USER)
+        self.assertEqual(self.application("app-job-b")[0], "offer")
+        self.assertEqual(automation.list_actions(self.conn, AUTOMATION_USER, status="superseded")[0]["id"], again["id"])
+        # A NULL applied date is compared as equal to NULL (IS NOT DISTINCT FROM), so this undo is not refused.
+        applying = record_intent(self.conn, "job-a", "apply_opened", user_id=AUTOMATION_USER)["application_id"]
+        self.assertEqual(self.application(applying), ("applying", None))
+        moved = self.stage_change(applying, "interview", key="pg-3")
+        self.assertEqual(self.application(applying), ("interview", None))
+        self.assertEqual(automation.undo(self.conn, moved["id"], AUTOMATION_USER)["status"], "undone")
+        self.assertEqual(self.application(applying), ("applying", None))
+
+    def test_the_ledger_row_and_the_change_roll_back_together(self):
+        automation.set_mode(self.conn, AUTOMATION_USER, AUTOMATION_SWITCH.key, "on")
+        before = self.application("app-job-b")
+        events = self.conn.execute("SELECT COUNT(*) AS n FROM application_events WHERE application_id='app-job-b'").fetchone()["n"]
+        seen = {}
+
+        def fail(conn, values):
+            seen["during"] = conn.execute("SELECT stage FROM applications WHERE id='app-job-b'").fetchone()["stage"]
+            raise RuntimeError("disk full")
+
+        with mock.patch.object(automation, "_insert_action", fail), self.assertRaisesRegex(RuntimeError, "disk full"):
+            self.stage_change("app-job-b", "interview", key="pg-rollback")
+        self.assertEqual(seen["during"], "interview", "the instrument saw the change inside the transaction")
+        self.assertEqual(self.application("app-job-b"), before)
+        after = self.conn.execute("SELECT COUNT(*) AS n FROM application_events WHERE application_id='app-job-b'").fetchone()["n"]
+        self.assertEqual(after, events)
+        self.assertEqual(automation.list_actions(self.conn, AUTOMATION_USER), [])
+
+    def test_pause_guard_and_the_hand_over_see_the_pause(self):
+        with self.conn:
+            self.assertFalse(automation.pause_guard(self.conn, AUTOMATION_USER))
+        automation.set_paused(self.conn, AUTOMATION_USER, True)
+        with self.conn:
+            self.assertTrue(automation.pause_guard(self.conn, AUTOMATION_USER))
+        self.outreach_target("t-1", "Bovi")
+        now = utc_now()
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO outreach_scheduled_sends(target_id, user_id, kind, fingerprint, send_at, timezone, label, state, created_at, updated_at) "
+                "VALUES('t-1', ?, 'initial', 'f', ?, 'UTC', 'Mon, Sep 28, 9:12 AM CDT', 'sending', ?, ?)",
+                (AUTOMATION_USER, now, now, now),
+            )
+        row = self.conn.execute("SELECT * FROM outreach_scheduled_sends WHERE target_id='t-1'").fetchone()
+        self.conn.commit()
+        self.assertEqual(outreach_schedule._hand_over(self.conn, row), "paused")
+        stored = self.conn.execute("SELECT state, attempts, error FROM outreach_scheduled_sends WHERE target_id='t-1'").fetchone()
+        self.conn.commit()
+        self.assertEqual((stored["state"], stored["attempts"], stored["error"]), ("scheduled", 0, outreach_schedule.PAUSED_NOTE))
+        automation.set_paused(self.conn, AUTOMATION_USER, False)
+        with self.conn:
+            self.conn.execute("UPDATE outreach_scheduled_sends SET state='sending' WHERE target_id='t-1'")
+        self.assertEqual(outreach_schedule._hand_over(self.conn, row), "handed_over")
+        [flight] = automation.set_paused(self.conn, AUTOMATION_USER, True)["in_flight"]
+        self.assertEqual((flight["source"], flight["company"], flight["action"]), ("scheduled_send", "Bovi", "send"))
+
+    def test_a_pause_waits_for_a_hand_over_that_holds_the_pause_row(self):
+        import psycopg
+
+        # The hand-over's transaction has taken the pause row (FOR SHARE) and not yet committed.
+        automation.pause_guard(self.conn, AUTOMATION_USER)
+        other = self.other_connection(lock_timeout_ms=200)
+        with self.assertRaises(psycopg.errors.LockNotAvailable):
+            automation.set_paused(other, AUTOMATION_USER, True)
+        self.conn.commit()
+        self.assertTrue(automation.set_paused(other, AUTOMATION_USER, True)["paused"], "once the hand-over commits, the pause lands")
+
+    def test_in_flight_lists_sends_and_forms_being_clicked_but_not_drafts(self):
+        old = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat(timespec="microseconds")
+        for number, company in enumerate(("Bovi", "Kiva", "Orbit", "Acme"), start=1):
+            self.outreach_target(f"t-{number}", company)
+        self.claim("t-1", "sending", "send")
+        self.claim("t-2", "clicking", "form")
+        self.claim("t-3", "drafting", "draft")
+        self.claim("t-4", "sending", "send", old)
+        flights = automation.in_flight(self.conn, AUTOMATION_USER)
+        self.conn.commit()
+        self.assertEqual([(item["source"], item["company"], item["action"]) for item in flights],
+                         [("send_claim", "Bovi", "send"), ("form_claim", "Kiva", "form")])
+
+    def test_health_summary(self):
+        automation.set_mode(self.conn, AUTOMATION_USER, AUTOMATION_SWITCH.key, "on")
+        rows = [self.stage_change("app-job-b", stage, key=f"pg-h-{stage}") for stage in ("interview", "offer")]
+        automation.undo(self.conn, rows[1]["id"], AUTOMATION_USER)
+        self.assertTrue(automation.undo(self.conn, rows[0]["id"], AUTOMATION_USER)["feature_paused"])
+        self.outreach_target("t-1", "Bovi")
+        self.claim("t-1", "unconfirmed", "send")
+        automation.record_health(self.conn, AUTOMATION_USER, "inbox.replies", ok=True, detail={"read": 2})
+        stamp = utc_now()
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO connector_accounts(id, user_id, provider, status, token_granted_at, created_at, updated_at) "
+                "VALUES('connector-gmail', ?, 'gmail_drafts', 'connected', '2026-09-20T12:00:00+00:00', ?, ?)",
+                (AUTOMATION_USER, stamp, stamp),
+            )
+        automation.set_paused(self.conn, AUTOMATION_USER, True)
+        with mock.patch.dict("os.environ", {"PIPELINE_TIMEZONE": "America/Chicago", "PIPELINE_GMAIL_TOKEN_DAYS": "7"}):
+            summary = automation.health_summary(self.conn, AUTOMATION_USER, now=datetime(2026, 9, 27, 0, 0, tzinfo=timezone.utc))
+        self.conn.commit()
+        self.assertEqual([item["key"] for item in summary["banner"]], ["paused", "gmail_expiring"])
+        self.assertEqual(summary["banner"][0]["text"], automation.PAUSED_BANNER)
+        self.assertEqual([(item["target_id"], item["company"]) for item in summary["unconfirmed"]], [("t-1", "Bovi")])
+        self.assertEqual([item["feature"] for item in summary["breaker_off"]], [AUTOMATION_SWITCH.key])
+        self.assertEqual(summary["counts"], {"proposed": 0, "shadow_unreviewed": 0, "applied_last_24h": 2})
+        self.assertEqual(summary["unread_notices"], 1)
+        [component] = summary["components"]
+        self.assertEqual((component["component"], component["detail"]), ("inbox.replies", {"read": 2}))

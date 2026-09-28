@@ -14,7 +14,7 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, outreach_delivery, outreach_gmail_sends, outreach_inbox
+from opportunity_app import STATIC_DIR, outreach_delivery, outreach_gmail, outreach_gmail_sends, outreach_inbox
 from opportunity_app.api import create_app
 from opportunity_app.outreach_automation import update_settings
 from opportunity_app.outreach_gmail_sends import capture_gmail_sends
@@ -22,7 +22,7 @@ from opportunity_app.outreach_schedule import run_due_sends
 from opportunity_app.schema import connect_product, utc_now
 
 from helpers_platform import build_and_migrate
-from test_outreach_gmail import ACCOUNT, PDF, SCOPES, FakeGmail
+from test_outreach_gmail import ACCOUNT, PDF, SCOPES, FakeGmail, forget_gmail_backoff, rate_limited
 
 AUTH = {"Authorization": "Bearer gmail-sends-owner"}
 USER = "local-user"
@@ -60,6 +60,7 @@ class GmailSendsTests(unittest.TestCase):
         self.conn = connect_product(self.platform_path)
         for cache in (outreach_gmail_sends._LAST_LOOK, outreach_delivery._LAST_LOOK, outreach_delivery._READ_NOTICES, outreach_inbox._LAST_CAPTURE):
             cache.clear()
+        forget_gmail_backoff(self)
         fernet = Fernet(self.key.encode())
         with self.conn:
             self.conn.execute(
@@ -146,10 +147,44 @@ class GmailSendsTests(unittest.TestCase):
         self.assertEqual([event["event_type"] for event in after["events"]].count("gmail_scheduled"), 1)
 
     def test_a_gmail_error_is_reported_not_taken_as_not_sent(self):
-        self.drafted_in_gmail()
+        target = self.drafted_in_gmail()
         del self.gmail.drafts["r-1"]
-        self.gmail.thread_status = 500  # the Sent search fails
+        self.gmail.thread_status = 400  # the Sent search fails
         self.assertEqual(self.check()["state"], "unreachable")
+        # A Gmail server error holds reads back as a rate limit does; the draft is still not taken as unsent.
+        self.gmail.thread_status = 503
+        self.assertEqual(self.check()["state"], "throttled")
+        self.assertEqual(self.target(target)["status"], "drafted")
+
+    def test_a_look_that_never_reached_gmail_is_taken_again_on_the_next_check(self):
+        self.drafted_in_gmail()
+        real, unreachable = self.gmail.handler, [True]
+
+        def handler(request):
+            if unreachable[0]:
+                raise httpx.ConnectError("no route to Gmail")
+            return real(request)
+
+        self.gmail.handler = handler
+        self.assertEqual(capture_gmail_sends(self.conn, user_id=USER, client_factory=self.factory)["state"], "unreachable")
+        unreachable[0] = False
+        asked = len(self.gmail.requests)
+        # Not self.check(): that forgets every look. The failed look must have been forgotten already.
+        self.assertEqual(capture_gmail_sends(self.conn, user_id=USER, client_factory=self.factory)["state"], "ok")
+        self.assertGreater(len(self.gmail.requests), asked, "looked again, not an interval later")
+
+    def test_a_gmail_slowdown_is_reported_and_the_draft_looked_at_again_once_it_ends(self):
+        self.drafted_in_gmail()
+        self.gmail.read_response = rate_limited
+        self.assertEqual(capture_gmail_sends(self.conn, user_id=USER, client_factory=self.factory)["state"], "throttled")
+        outreach_gmail._BACKOFF.clear()  # Gmail's wait is over
+        with self.conn:
+            self.conn.execute("UPDATE connector_accounts SET backoff_until=NULL")
+        self.gmail.read_response = None
+        asked = len(self.gmail.requests)
+        # Not self.check(): that forgets every look. The throttled look must have been forgotten already.
+        self.assertEqual(capture_gmail_sends(self.conn, user_id=USER, client_factory=self.factory)["state"], "ok")
+        self.assertTrue(any("/drafts/" in r.url.path for r in self.gmail.requests[asked:]), "looked at again straight away")
 
     def test_the_page_check_reports_a_send_made_in_gmail(self):
         target = self.drafted_in_gmail()

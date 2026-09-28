@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from contextlib import closing
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -29,10 +30,34 @@ SCHEMA_PATH = MIGRATIONS_DIR / "0001_platform_sqlite.sql"
 LOCAL_USER_ID = "local-user"
 RULESET_VERSION = "legacy-v1"
 APPLICATION_STATUSES = {"applying", "applied", "interview", "offer", "rejected", "withdrawn"}
+# The updated_at of an 'automation_paused' row that was made 'off' and never
+# flipped. That timestamp means "when the pause last started or ended", so a
+# row that merely came into being must not look like a resume that happened
+# just now (outreach_schedule would then say a late send was held by a pause).
+PAUSE_NEVER_CHANGED = "1970-01-01T00:00:00+00:00"
+
+
+# The last stamp utc_now handed out in this process, so the next is always later.
+_LAST_NOW = datetime.min.replace(tzinfo=timezone.utc)
+_NOW_LOCK = threading.Lock()
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    """Now, in UTC to the microsecond, and always later than the last call in this process.
+
+    Rows are ordered by these stamps (the automation ledger, notices, events),
+    and application_events is unique on one. Some clocks tick only every 15 ms
+    or so (Windows before Python 3.13), which would hand two writes in a row
+    the same stamp and leave their order to chance. A tie moves on by a
+    microsecond instead.
+    """
+    global _LAST_NOW
+    with _NOW_LOCK:
+        now = datetime.now(timezone.utc)
+        if now <= _LAST_NOW:
+            now = _LAST_NOW + timedelta(microseconds=1)
+        _LAST_NOW = now
+    return now.isoformat(timespec="microseconds")
 
 
 # Every request opens its own connection, so anything done per connection is
@@ -220,11 +245,46 @@ def _apply_company_sort_keys(conn: sqlite3.Connection, sql: str) -> None:
     backfill_sort_keys(conn)
 
 
+# Columns the automation ledger needs on existing tables: who made an
+# interaction or a task, and how the Gmail connection is doing.
+_AUTOMATION_COLUMNS = (
+    ("opportunity_interactions", "source", "TEXT NOT NULL DEFAULT 'user'"),
+    ("application_tasks", "origin", "TEXT NOT NULL DEFAULT 'user'"),
+    ("application_tasks", "origin_ref", "TEXT NOT NULL DEFAULT ''"),
+    ("connector_accounts", "last_ok_at", "TEXT"),
+    ("connector_accounts", "last_error", "TEXT NOT NULL DEFAULT ''"),
+    ("connector_accounts", "token_granted_at", "TEXT"),
+    ("connector_accounts", "backoff_until", "TEXT"),
+)
+
+
+def _apply_automation(conn: sqlite3.Connection, sql: str) -> None:
+    # The same reasoning as _apply_posted_at_utc: every column is guarded, the
+    # tables are IF NOT EXISTS, and the seed skips rows that exist, so a crash
+    # anywhere before the migration marker is repaired by running it again.
+    for table, column, definition in _AUTOMATION_COLUMNS:
+        if not _has_column(conn, table, column):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    conn.executescript(sql)
+    # Every student starts unpaused, with the row in place: pausing is then an
+    # UPDATE that takes the row's lock, which the hand-over to Gmail waits on.
+    # Nobody paused, so the row carries no pause time (PAUSE_NEVER_CHANGED).
+    users = [(str(row[0]), PAUSE_NEVER_CHANGED) for row in conn.execute("SELECT id FROM users").fetchall()]
+    if users:
+        conn.executemany(
+            "INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, 'automation_paused', 'off', ?) "
+            "ON CONFLICT(user_id, key) DO NOTHING",
+            users,
+        )
+
+
 # Migrations whose SQL alone cannot express the change: parsing timestamps is
-# not portable across SQLite and PostgreSQL, so a Python step owns it.
+# not portable across SQLite and PostgreSQL, so a Python step owns it. Adding a
+# column is not repeatable, so a step owns that too.
 _MIGRATION_STEPS: dict[str, Callable[[Any, str], None]] = {
     "0020_posted_at_utc.sql": _apply_posted_at_utc,
     "0021_company_sort_keys.sql": _apply_company_sort_keys,
+    "0037_automation.sql": _apply_automation,
 }
 
 

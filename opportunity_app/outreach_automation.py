@@ -16,7 +16,12 @@
 
 Only scheduled_sending and form_submission lead to anything going out, and
 only a first message the student approved. Every switch is off until the student turns it on
-(user_settings). ``AutomationWorker`` runs the work on a background thread.
+(user_settings). The switches are features in automation.FEATURES, and the
+student's pause stops all of them (automation.is_enabled). A pause that
+lands while a step is running (a site search or a model call can take
+minutes) stops it too: the write that would finish it checks again first
+(_unless_stopped), and the worker checks before each company.
+``AutomationWorker`` runs the work on a background thread.
 """
 
 from __future__ import annotations
@@ -31,20 +36,23 @@ from typing import Any, Callable
 
 import httpx
 
+from . import automation
 from .outreach import _log, get_target, list_targets
 from .outreach_contacts import SafeFetcher, apply_choice, choose_contact, find_contacts, list_candidates
 from .outreach_forms import form_due
 from .outreach_gmail import last_bounce
+from .outreach_inbox import _discard_open_transaction, _record, _step_error
 from .schema import connect_product, utc_now
 
 LOGGER = logging.getLogger(__name__)
 
+# The automation_health component each worker pass records for every student it worked for.
+WORKER_COMPONENT = "automation.worker"
+
+# The outreach switches, as they have always been shown here: a view of the registry.
 SETTINGS = {
-    "auto_drafts": "Write a draft for every company with a contact and a location",
-    "bounce_recovery": "After a bounce, find another contact and fix the greeting",
-    "scheduled_sending": "Send approved emails on the recipient's next weekday morning",
-    "follow_up_review": "Have a second model check each follow-up before it goes out",
-    "form_submission": "Send approved first messages through the company's contact form when it has no email",
+    key: automation.FEATURES[key].description
+    for key in ("auto_drafts", "bounce_recovery", "scheduled_sending", "follow_up_review", "form_submission")
 }
 RECOVERY_EVENT = "contact_recovery"
 AUTO_DRAFT_FAILED = "auto_draft_failed"
@@ -53,27 +61,30 @@ AUTO_DRAFT_FAILED = "auto_draft_failed"
 DRAFT_RETRY_AFTER = timedelta(hours=6)
 
 
+def _unless_stopped(conn: sqlite3.Connection, user_id: str, key: str) -> Callable[[], None]:
+    """What an automatic step's final write runs first, inside its transaction.
+
+    It raises AutomationPaused, so nothing is written, when the student paused
+    automation or turned the feature off while the step ran.
+    """
+    def check() -> None:
+        if not automation.still_enabled(conn, user_id, key):
+            raise automation.AutomationPaused("Automation was paused, or this switch turned off, before it finished, so nothing was changed")
+
+    return check
+
+
 def settings(conn: sqlite3.Connection, *, user_id: str) -> dict[str, bool]:
-    rows = dict(conn.execute(
-        f"SELECT key, value FROM user_settings WHERE user_id=? AND key IN ({', '.join('?' for _ in SETTINGS)})",
-        (user_id, *SETTINGS),
-    ).fetchall())
-    return {key: rows.get(key) == "on" for key in SETTINGS}
+    """Each outreach switch as the student set it. Pause is not folded in: the worker checks it where it acts."""
+    current = automation.modes(conn, user_id, list(SETTINGS))
+    return {key: current[key] == "on" for key in SETTINGS}
 
 
 def update_settings(conn: sqlite3.Connection, changes: dict[str, Any], *, user_id: str) -> dict[str, bool]:
     unknown = set(changes) - set(SETTINGS)
     if unknown:
         raise ValueError(f"Unknown automation settings: {', '.join(sorted(unknown))}")
-    with conn:
-        for key, value in changes.items():
-            conn.execute(
-                """
-                INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, ?, ?, ?)
-                ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-                """,
-                (user_id, key, "on" if value else "off", utc_now()),
-            )
+    automation._set_modes(conn, user_id, {key: "on" if value else "off" for key, value in changes.items()})
     return settings(conn, user_id=user_id)
 
 
@@ -110,10 +121,14 @@ def recover_contact(
     renderer: Any = None,
     verifier: Any = None,
     contact_delay: float = 1.0,
+    automatic: bool = False,
 ) -> dict[str, Any]:
     """Search the company's site again and apply the best contact that has not bounced.
 
     Recorded as a contact_recovery event either way, so each bounce is searched once.
+    ``automatic`` (the worker) applies nothing, and records nothing, when the
+    student paused automation or turned bounce recovery off during the
+    search: the result says paused, and the bounce is searched again on resume.
     """
     target = get_target(conn, target_id, user_id=user_id)
     failed = set(target["bounced_addresses"])
@@ -132,7 +147,13 @@ def recover_contact(
         detail = "You chose a new contact while the app was looking."
         choice = None
     elif choice:
-        apply_choice(conn, target_id, choice, user_id=user_id)
+        try:
+            apply_choice(
+                conn, target_id, choice, user_id=user_id,
+                before_write=_unless_stopped(conn, user_id, "bounce_recovery") if automatic else None,
+            )
+        except automation.AutomationPaused as exc:
+            return {"target_id": target_id, "company": target["company"], "to": None, "detail": str(exc), "paused": True}
         cc = f", Cc {choice['cc']['email']}" if choice.get("cc") else ""
         detail = f"Chose {choice['to']['email']}{cc} ({choice['basis'].replace('_', ' ')}). Review the draft, then send it again."
     elif not target["website"]:
@@ -171,11 +192,20 @@ def auto_draft(
     user_id: str,
     provider_factory: Callable[[str, str], Any],
     draft_provider: str | None = None,
+    automatic: bool = False,
 ) -> dict[str, Any]:
+    """Write a first draft for one company. ``automatic`` (the worker) saves nothing when the student
+    paused automation or turned automatic drafts off during the model call; it is tried again on resume."""
     from .outreach_drafting import generate_draft  # imported here: drafting pulls in the model providers
 
     try:
-        target = generate_draft(conn, target_id, user_id=user_id, provider_factory=provider_factory, provider=draft_provider)
+        target = generate_draft(
+            conn, target_id, user_id=user_id, provider_factory=provider_factory, provider=draft_provider,
+            before_write=_unless_stopped(conn, user_id, "auto_drafts") if automatic else None,
+        )
+    except automation.AutomationPaused as exc:
+        # Not a failure: nothing is recorded, so it is not held back DRAFT_RETRY_AFTER.
+        return {"target_id": target_id, "drafted": False, "paused": True, "error": str(exc)}
     except (ValueError, RuntimeError) as exc:
         with conn:
             _log(conn, target_id, user_id, AUTO_DRAFT_FAILED, detail=f"{exc}"[:500])
@@ -187,11 +217,17 @@ def auto_draft(
 
 
 def send_form(conn: sqlite3.Connection, target_id: str, *, user_id: str, submitter_factory: Callable[..., Any]) -> dict[str, Any]:
-    """Send one approved first message through its contact form; a refusal is reported, not raised."""
+    """Send one approved first message through its contact form; a refusal is reported, not raised.
+
+    A pause that lands first leaves the form waiting (found), so it goes once
+    the student resumes; it is not parked as a refusal.
+    """
     from .outreach_forms import submit_contact_form
 
     try:
-        result = submit_contact_form(conn, target_id, user_id=user_id, submitter_factory=submitter_factory)
+        result = submit_contact_form(conn, target_id, user_id=user_id, submitter_factory=submitter_factory, automatic=True)
+    except automation.AutomationPaused as exc:
+        return {"target_id": target_id, "outcome": "paused", "note": str(exc)}
     except Exception as exc:  # noqa: BLE001 - the next pass tries the next company
         LOGGER.warning("Contact form for %s was not sent: %s", target_id, exc)
         # Parked for the student, so the same refusal is not tried every pass.
@@ -210,11 +246,15 @@ def send_form(conn: sqlite3.Connection, target_id: str, *, user_id: str, submitt
 class AutomationWorker:
     """Runs each student's switched-on automation on one background thread.
 
-    A pass first sends every scheduled email that is due (for any student:
-    turning the switch off does not strand one already scheduled), then
-    recovers every bounced contact that is due, then writes at most one draft
-    and sends at most one contact form, so a slow model call or page never
-    holds the others up for long.
+    A pass first shows waiting automation notices as desktop pop-ups (for
+    students who turned them on, paused or not: a notice only informs;
+    desktop_notify), then sends every scheduled email that is due (for any
+    student: turning the switch off does not strand one already scheduled,
+    and a student who paused automation has theirs held), then recovers
+    every bounced contact that is due, then writes at most one draft and
+    sends at most one contact form, so a slow model call or page never holds
+    the others up for long. Nothing that acts runs for a paused student.
+    Each pass records how it went in automation_health (automation.worker).
     """
 
     def __init__(
@@ -246,43 +286,104 @@ class AutomationWorker:
         self._thread: threading.Thread | None = None
 
     def run_once(self) -> dict[str, Any]:
+        """One pass. Each step stands alone: one that raises is logged and recorded, and the next still runs.
+
+        The pass records its outcome as the automation.worker health component,
+        once for every student it worked for: those with an outreach switch or
+        desktop pop-ups on, and those with a scheduled email due. That is ok,
+        or the first error of the pass with any address taken out. A student
+        with nothing on and nothing due gets no row.
+        """
         report: dict[str, Any] = {"sent": [], "recovered": [], "drafted": [], "forms": []}
         with closing(connect_product(self.platform_target)) as conn:
+            errors: dict[str, str] = {}
+            desktop_users = self._users_with(conn, ("desktop_notifications",))
+            try:
+                from .desktop_notify import deliver_desktop_notices  # imported here: only the worker shows pop-ups
+
+                deliver_desktop_notices(conn)
+            except Exception as exc:  # noqa: BLE001 - a pop-up never holds up a send
+                LOGGER.exception("Desktop notices were not shown")
+                _discard_open_transaction(conn)
+                for user_id in desktop_users:
+                    errors.setdefault(user_id, _step_error(exc))
+            due_users: list[str] = []
             if self._gmail_client_factory is not None:
                 from .outreach_schedule import run_due_sends  # imported here: it pulls in the Gmail send path
 
-                report["sent"] = run_due_sends(conn, client_factory=self._gmail_client_factory)
-            users = [row[0] for row in conn.execute(
-                f"SELECT DISTINCT user_id FROM user_settings WHERE value='on' AND key IN ({', '.join('?' for _ in SETTINGS)})",
-                tuple(SETTINGS),
-            ).fetchall()]
+                due_users = self._users_with_due_sends(conn)
+                try:
+                    report["sent"] = run_due_sends(conn, client_factory=self._gmail_client_factory)
+                except Exception as exc:  # noqa: BLE001 - the other steps still run, and the failure is recorded
+                    LOGGER.exception("Scheduled emails were not sent")
+                    _discard_open_transaction(conn)
+                    for user_id in due_users:
+                        errors.setdefault(user_id, _step_error(exc))
+            users = self._users_with(conn, tuple(SETTINGS))
             for user_id in users:
-                switched = settings(conn, user_id=user_id)
-                if switched["bounce_recovery"]:
-                    due = recovery_due(conn, user_id=user_id)
-                    if due:
-                        with ExitStack() as stack:
-                            fetcher = stack.enter_context(self._fetcher_factory())
-                            renderer = self._renderer_factory()
-                            renderer = stack.enter_context(renderer) if renderer is not None else None
-                            verifier = self._verifier_factory()
-                            verifier = stack.enter_context(verifier) if verifier is not None else None
-                            for target_id in due:
-                                report["recovered"].append(recover_contact(
-                                    conn, target_id, user_id=user_id, fetcher=fetcher, renderer=renderer,
-                                    verifier=verifier, contact_delay=self._contact_delay,
-                                ))
-                if switched["auto_drafts"] and self._provider_factory is not None and not report["drafted"]:
-                    due = draft_due(conn, user_id=user_id)
-                    if due:
-                        report["drafted"].append(auto_draft(
-                            conn, due[0], user_id=user_id, provider_factory=self._provider_factory, draft_provider=self._draft_provider,
-                        ))
-                if switched["form_submission"] and self._form_submitter_factory is not None and not report["forms"]:
-                    due = form_due(conn, user_id=user_id)
-                    if due:
-                        report["forms"].append(send_form(conn, due[0], user_id=user_id, submitter_factory=self._form_submitter_factory))
+                try:
+                    self._run_for(conn, user_id, report)
+                except Exception as exc:  # noqa: BLE001 - one student's failure never stops the next student
+                    LOGGER.exception("Outreach automation failed for one student")
+                    _discard_open_transaction(conn)
+                    errors.setdefault(user_id, _step_error(exc))
+            for user_id in sorted({*desktop_users, *due_users, *users}):
+                _record(conn, user_id, WORKER_COMPONENT, ok=user_id not in errors, error=errors.get(user_id, ""))
         return report
+
+    @staticmethod
+    def _users_with(conn: sqlite3.Connection, keys: tuple[str, ...]) -> list[str]:
+        """Students with any of these switches on, whether or not automation is paused."""
+        return [row[0] for row in conn.execute(
+            f"SELECT DISTINCT user_id FROM user_settings WHERE value='on' AND key IN ({', '.join('?' for _ in keys)}) ORDER BY user_id",
+            keys,
+        ).fetchall()]
+
+    @staticmethod
+    def _users_with_due_sends(conn: sqlite3.Connection) -> list[str]:
+        """Students with a scheduled email this pass works on: one that is due, or one cut off mid-send."""
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        return [row[0] for row in conn.execute(
+            "SELECT DISTINCT user_id FROM outreach_scheduled_sends "
+            "WHERE (state='scheduled' AND send_at<=?) OR state IN ('sending', 'transmitting') ORDER BY user_id",
+            (now,),
+        ).fetchall()]
+
+    def _run_for(self, conn: sqlite3.Connection, user_id: str, report: dict[str, Any]) -> None:
+        """One student's switched-on steps: bounce recovery, then at most one draft and one contact form per pass."""
+        if automation.is_enabled(conn, user_id, "bounce_recovery"):
+            due = recovery_due(conn, user_id=user_id)
+            if due:
+                with ExitStack() as stack:
+                    fetcher = stack.enter_context(self._fetcher_factory())
+                    renderer = self._renderer_factory()
+                    renderer = stack.enter_context(renderer) if renderer is not None else None
+                    verifier = self._verifier_factory()
+                    verifier = stack.enter_context(verifier) if verifier is not None else None
+                    for target_id in due:
+                        # Each company can take minutes, so a pause stops the pass before the next one.
+                        if not automation.is_enabled(conn, user_id, "bounce_recovery"):
+                            break
+                        recovered = recover_contact(
+                            conn, target_id, user_id=user_id, fetcher=fetcher, renderer=renderer,
+                            verifier=verifier, contact_delay=self._contact_delay, automatic=True,
+                        )
+                        if recovered.get("paused"):
+                            break
+                        report["recovered"].append(recovered)
+        if self._provider_factory is not None and not report["drafted"] and automation.is_enabled(conn, user_id, "auto_drafts"):
+            due = draft_due(conn, user_id=user_id)
+            if due:
+                drafted = auto_draft(
+                    conn, due[0], user_id=user_id, provider_factory=self._provider_factory, draft_provider=self._draft_provider,
+                    automatic=True,
+                )
+                if not drafted.get("paused"):
+                    report["drafted"].append(drafted)
+        if self._form_submitter_factory is not None and not report["forms"] and automation.is_enabled(conn, user_id, "form_submission"):
+            due = form_due(conn, user_id=user_id)
+            if due:
+                report["forms"].append(send_form(conn, due[0], user_id=user_id, submitter_factory=self._form_submitter_factory))
 
     def wake(self) -> None:
         self._wake.set()

@@ -17,13 +17,13 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
-from opportunity_app import outreach_schedule
+from opportunity_app import automation, outreach_gmail, outreach_schedule
 from opportunity_app.outreach_automation import AutomationWorker, update_settings
 from opportunity_app.outreach_schedule import next_morning, recipient_zone, run_due_sends
-from opportunity_app.schema import connect_product, utc_now
+from opportunity_app.schema import connect_product, ensure_product_schema, utc_now
 
 from helpers_platform import build_and_migrate
-from test_outreach_gmail import ACCOUNT, PDF, SCOPES, FakeGmail
+from test_outreach_gmail import ACCOUNT, PDF, SCOPES, FakeGmail, forget_gmail_backoff
 
 AUTH = {"Authorization": "Bearer schedule-owner"}
 USER = "local-user"
@@ -330,6 +330,185 @@ class ScheduledSendTests(unittest.TestCase):
         self.assertFalse(seen["response"]["cancelled"], "it was already on its way")
         self.assertEqual(len(self.gmail.sent), 1)
         self.assertEqual(self.target(target)["status"], "sent")
+
+    # --- The student's pause ------------------------------------------------------------
+
+    def make_due(self, ago):
+        with self.conn:
+            self.conn.execute("UPDATE outreach_scheduled_sends SET send_at=?", ((datetime.now(timezone.utc) - ago).isoformat(timespec="seconds"),))
+
+    def stored(self):
+        return self.conn.execute("SELECT state, attempts, error FROM outreach_scheduled_sends").fetchone()
+
+    def test_a_paused_students_email_is_held_then_moves_with_the_reason_when_they_resume_late(self):
+        self.connect()
+        target = self.approved()
+        self.schedule(target)
+        automation.set_paused(self.conn, USER, True)
+        self.make_due(timedelta(hours=3))
+        self.assertEqual(run_due_sends(self.conn, client_factory=self.factory), [], "neither claimed nor moved while paused")
+        self.assertEqual(self.target(target)["scheduled"]["initial"]["state"], "scheduled")
+        worker = AutomationWorker(self.platform_path, fetcher_factory=lambda: None, gmail_client_factory=self.factory)
+        self.assertEqual(worker.run_once()["sent"], [])
+        automation.set_paused(self.conn, USER, False)
+        self.assertEqual([item["state"] for item in run_due_sends(self.conn, client_factory=self.factory)], ["moved"])
+        moved = self.target(target)["scheduled"]["initial"]
+        self.assertEqual((moved["state"], moved["error"]), ("scheduled", outreach_schedule.HELD_NOTE))
+        self.assertGreater(datetime.fromisoformat(moved["send_at"]), datetime.now(timezone.utc), "the recipient's next morning")
+        self.assertEqual(self.gmail.sent, [])
+
+    def test_a_late_email_with_no_pause_says_it_missed_its_morning(self):
+        self.connect()
+        target = self.approved()
+        self.schedule(target)
+        self.make_due(timedelta(hours=3))
+        self.assertEqual([item["state"] for item in run_due_sends(self.conn, client_factory=self.factory)], ["moved"])
+        self.assertEqual(self.target(target)["scheduled"]["initial"]["error"], outreach_schedule.MISSED_NOTE)
+
+    def pause_row(self):
+        return self.conn.execute("SELECT value, updated_at FROM user_settings WHERE user_id=? AND key='automation_paused'", (USER,)).fetchone()
+
+    def test_upgrading_after_an_email_missed_its_morning_does_not_blame_a_pause(self):
+        self.connect()
+        target = self.approved()
+        self.schedule(target)
+        self.make_due(timedelta(hours=3))  # the computer was off
+        # A database from before 0037 has no pause row; starting the upgraded app runs the step, which seeds one.
+        with self.conn:
+            self.conn.execute("DELETE FROM user_settings WHERE key='automation_paused'")
+            self.conn.execute("DELETE FROM schema_migrations WHERE name='0037_automation.sql'")
+        ensure_product_schema(self.conn)
+        self.assertEqual(self.pause_row()["value"], "off", "the instrument: the seed ran for this student")
+        self.assertEqual([item["state"] for item in run_due_sends(self.conn, client_factory=self.factory)], ["moved"])
+        self.assertEqual(self.target(target)["scheduled"]["initial"]["error"], outreach_schedule.MISSED_NOTE, "nobody paused")
+
+    def test_a_row_made_by_another_hand_over_does_not_blame_a_pause(self):
+        self.connect()
+        target = self.approved()
+        self.schedule(target)
+        self.make_due(timedelta(hours=3))
+        with self.conn:
+            self.conn.execute("DELETE FROM user_settings WHERE key='automation_paused'")
+            automation.pause_guard(self.conn, USER)  # what a hand-over or a form claim does for a student with no row
+        self.assertEqual(self.pause_row()["value"], "off")
+        self.assertEqual([item["state"] for item in run_due_sends(self.conn, client_factory=self.factory)], ["moved"])
+        self.assertEqual(self.target(target)["scheduled"]["initial"]["error"], outreach_schedule.MISSED_NOTE)
+
+    def test_a_pause_between_the_claim_and_the_hand_over_sends_nothing(self):
+        self.connect()
+        target = self.approved()
+        self.schedule(target)
+        row = self.conn.execute("SELECT * FROM outreach_scheduled_sends").fetchone()
+        self.hold_it_mid_send()  # the worker has claimed it and is running its checks
+        automation.set_paused(self.conn, USER, True)
+        self.assertEqual(outreach_schedule._send_one(self.conn, row, client_factory=self.factory, now=datetime.now(timezone.utc)), "paused")
+        self.assertEqual(self.gmail.sent, [])
+        self.assertEqual(tuple(self.stored()), ("scheduled", 0, outreach_schedule.PAUSED_NOTE), "back in line, no try counted")
+        # Resumed in time, it goes out as scheduled.
+        automation.set_paused(self.conn, USER, False)
+        self.make_due(timedelta(minutes=1))
+        self.assertEqual([item["state"] for item in run_due_sends(self.conn, client_factory=self.factory)], ["sent"])
+        self.assertEqual(len(self.gmail.sent), 1)
+
+    def test_a_pause_that_lands_during_the_checks_stops_the_email_at_the_hand_over(self):
+        # The checks (a Gmail read, a model review) are the slow part, so a pause most often lands during them.
+        self.connect()
+        target = self.approved()
+        self.schedule(target)
+        row = self.conn.execute("SELECT * FROM outreach_scheduled_sends").fetchone()
+        self.hold_it_mid_send()
+
+        def checks_pass_while_the_student_pauses(conn, row, **_kwargs):
+            with closing(connect_product(self.platform_path)) as other:
+                automation.set_paused(other, USER, True)
+            return None
+
+        with mock.patch.object(outreach_schedule, "_gate", checks_pass_while_the_student_pauses), \
+                mock.patch.object(outreach_schedule, "send_gmail_message", side_effect=AssertionError("sending was attempted")) as send:
+            outcome = outreach_schedule._send_one(self.conn, row, client_factory=self.factory, now=datetime.now(timezone.utc))
+        self.assertEqual(outcome, "paused")
+        send.assert_not_called()
+        self.assertEqual(self.gmail.sent, [])
+        self.assertEqual(tuple(self.stored()), ("scheduled", 0, outreach_schedule.PAUSED_NOTE), "back in line, no try counted")
+
+    def test_a_gmail_hold_waits_it_out_without_using_up_tries(self):
+        # One company sent and awaiting a reply, so the check before sending reads Gmail.
+        self.connect()
+        first = self.approved()
+        self.assertEqual(self.client.post(f"/api/v1/outreach/{first['id']}/gmail-send", headers=AUTH, json={
+            "kind": "initial", "fingerprint": first["draft_fingerprint"],
+        }).status_code, 200)
+        second = self.client.post("/api/v1/outreach", headers=AUTH, json={
+            "company": "Kiva", "contact_email": "ana@kiva.example", "location": "Austin, TX",
+            "email_subject": "Hello", "email_body": "Hi Ana,\n\nA note.\n\nSam",
+        }).json()
+        second = self.client.post(f"/api/v1/outreach/{second['id']}/approve", headers=AUTH, json={
+            "kind": "initial", "fingerprint": second["draft_fingerprint"], "acknowledge_warnings": True,
+        }).json()
+        self.assertEqual(self.schedule(second).status_code, 200)
+        now = datetime.fromisoformat(self.target(second)["scheduled"]["initial"]["send_at"]) + timedelta(minutes=1)
+        # The inbox check was told to wait 25 minutes: longer than two retries would span.
+        hold = now + timedelta(minutes=25)
+        forget_gmail_backoff(self)
+        outreach_gmail._BACKOFF[USER] = (hold, 5)
+        clock = {"now": now}
+        with mock.patch.object(outreach_gmail, "_now", side_effect=lambda: clock["now"]):
+            self.assertEqual([item["state"] for item in run_due_sends(self.conn, client_factory=self.factory, now=now)], ["retrying"])
+            waiting = self.target(second)["scheduled"]["initial"]
+            stored = self.conn.execute("SELECT attempts FROM outreach_scheduled_sends WHERE target_id=?", (second["id"],)).fetchone()
+            self.assertEqual((waiting["state"], waiting["error"], stored["attempts"]), ("scheduled", outreach_schedule.GMAIL_WAIT_NOTE, 0))
+            self.assertEqual(datetime.fromisoformat(waiting["send_at"]), hold + outreach_schedule.GMAIL_HOLD_MARGIN, "goes when the hold ends")
+            for minutes in (11, 22):  # when the old retries came, each counting a try
+                clock["now"] = now + timedelta(minutes=minutes)
+                self.assertEqual(run_due_sends(self.conn, client_factory=self.factory, now=clock["now"]), [], "not due yet")
+            clock["now"] = hold + timedelta(minutes=2)
+            self.assertEqual([item["state"] for item in run_due_sends(self.conn, client_factory=self.factory, now=clock["now"])], ["sent"])
+        self.assertEqual(len(self.gmail.sent), 2, "the first email, then the one that waited")
+
+    def test_another_failed_check_still_counts_a_try(self):
+        self.connect()
+        target = self.approved()
+        self.schedule(target)
+        with mock.patch("opportunity_app.outreach_review.fresh_look", return_value={"ok": False, "reason": "Gmail could not be reached"}):
+            self.assertEqual([item["state"] for item in self.due(target)], ["retrying"])
+        self.assertEqual(tuple(self.stored())[:2], ("scheduled", 1))
+
+    def test_a_cancel_still_wins_over_a_pause_at_the_hand_over(self):
+        self.connect()
+        target = self.approved()
+        self.schedule(target)
+        row = self.conn.execute("SELECT * FROM outreach_scheduled_sends").fetchone()
+        self.hold_it_mid_send()
+        automation.set_paused(self.conn, USER, True)
+        self.client.delete(f"/api/v1/outreach/{target['id']}/schedule", headers=AUTH)
+        self.assertEqual(outreach_schedule._hand_over(self.conn, row), "cancelled")
+        self.assertEqual(self.stored()[0], "cancelled")
+
+    def test_a_pause_after_the_hand_over_reports_the_email_as_on_its_way(self):
+        self.connect()
+        target = self.approved()
+        self.schedule(target)
+        seen = {}
+
+        def pause_mid_send():
+            with closing(connect_product(self.platform_path)) as other:
+                seen["pause"] = automation.set_paused(other, USER, True)
+
+        self.gmail.hooks["send"] = pause_mid_send
+        self.assertEqual([item["state"] for item in self.due(target)], ["sent"], "already handed to Gmail, so it went")
+        [flight] = seen["pause"]["in_flight"]
+        self.assertEqual((flight["source"], flight["target_id"], flight["company"]), ("scheduled_send", target["id"], "Bovi"))
+        self.assertTrue(flight["label"] and flight["at"])
+
+    def test_send_now_works_while_paused(self):
+        self.connect()
+        target = self.approved()
+        automation.set_paused(self.conn, USER, True)
+        sent = self.client.post(f"/api/v1/outreach/{target['id']}/gmail-send", headers=AUTH, json={
+            "kind": "initial", "fingerprint": target["draft_fingerprint"],
+        })
+        self.assertEqual(sent.status_code, 200, sent.text)
+        self.assertEqual(len(self.gmail.sent), 1, "pause is for what the app does on its own")
 
     def test_the_worker_sends_what_is_due_even_with_the_switch_off(self):
         self.connect()
