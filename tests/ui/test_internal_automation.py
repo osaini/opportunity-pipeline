@@ -250,6 +250,23 @@ def test_undo_in_recent_activity_also_leaves_auto_passed_this_week(owner_page, l
     expect(block).to_contain_text("Nothing was passed on automatically in the last 7 days.")
 
 
+def test_undo_from_the_announcement_also_leaves_auto_passed_this_week(owner_page, live_server):
+    # The page announces each new automatic change once, with Undo (application mail's announceWithUndo);
+    # taking an auto-pass back from there refreshes Auto-passed this week too, not only the ledger lists.
+    open_profile(owner_page)  # the page has seen what there was when the student signed in
+    seed_auto_pass(live_server)
+    owner_page.click("#discover-nav")
+    wait_for_results(owner_page)
+    open_profile(owner_page)
+    block = owner_page.locator(".automation-auto-passed")
+    expect(block.locator(".automation-action", has_text="Sales Intern at Quill Works")).to_be_visible()
+    status = owner_page.locator("#action-status")
+    expect(status).to_contain_text("Automatic: Passed on Sales Intern")
+    status.get_by_role("button", name="Undo").click()
+    expect(status).to_have_text("Undid the automatic change.")
+    expect(block).to_contain_text("Nothing was passed on automatically in the last 7 days.")
+
+
 @pytest.mark.allow_page_errors  # the 500 below is the point
 def test_a_restore_that_failed_can_be_tried_again(owner_page, live_server):
     seed_auto_pass(live_server)

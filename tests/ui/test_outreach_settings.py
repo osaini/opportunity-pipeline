@@ -82,7 +82,9 @@ def test_jev_inbox_suggestions_are_off_until_the_student_turns_them_on(owner_pag
     choice = panel.get_by_label("Who suggests reply and email outcomes")
     expect(choice).to_be_enabled()
     expect(choice).to_have_value("rules")
-    expect(panel.locator(".jev-inbox-setting")).to_contain_text("both go to TypeSafe")
+    expect(panel.locator(".jev-inbox-setting")).to_contain_text("With Jev, these go to TypeSafe")
+    # Application emails the app reads count too, and the one switch that may act on a Jev answer says when.
+    expect(panel.locator(".jev-inbox-setting")).to_contain_text("when Jev and the keyword rules agree")
 
     def log_reply():
         open_outreach(owner_page, "awaiting")

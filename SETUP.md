@@ -330,6 +330,43 @@ themselves (rule 3). The details:
   approved ones on its own; without it, the card's **Send through contact form**
   asks them to confirm first. A form wanting a picture CAPTCHA waits for them
   under **Finish in browser**.
+- **Update applications from job emails** (optional). Ask whether they want the
+  app to read job-system and assessment emails (Greenhouse, Lever, Workday,
+  HackerRank and the like) and keep their applications up to date from them. It
+  needs Gmail connected as above, with the read permission Connect Gmail asks for;
+  a connection made before the app asked to read mail must be reconnected first.
+  The switch is under Profile → Automation, and it is off until they choose.
+  Walk them through it:
+  - They start it in **Shadow**. For at least 48 hours it only logs what it
+    would have done, under **Would have done**, and changes nothing. They mark
+    each entry right or wrong. **On** unlocks only after 48 hours and at least
+    five entries, every one reviewed and none marked wrong; a wrong mark means
+    switching it off and back to shadow to start the 48 hours again.
+  - When on, an email that clearly confirms an application, rejects it, or
+    invites them to interview moves the application forward on its own (never
+    backward, and never over a change they made after the email), and adds a
+    task or a deadline. Each change shows on the application's timeline with
+    Undo, and the email is listed on the application. An application they
+    archived stays archived; one the app archived itself after no reply
+    (**Archive applications that never answered**) is reopened by a later
+    email about it.
+  - Anything unclear waits under **Waiting for you**, with the reason and a
+    picker to choose the right application: an offer (always), an email that
+    could be about two applications, a forwarded email, a newsletter, or an
+    email from a company's own domain until they trust that domain under
+    **Trusted company mail domains** (suggested from their job links and
+    outreach records; nothing is trusted without their click). **Stop
+    trusting** puts a domain back to a suggestion, so its mail still only
+    proposes; **Dismiss** stops the app reading that domain's mail at all.
+  - The first time it runs it also looks back 60 days. What it finds there
+    only ever waits for them ("Found 14 updates from the last 60 days").
+    **Approve all** approves only those that waited just because they arrived
+    before the switch was on; an offer, a sender Gmail could not verify, a
+    guessed application, or a role not in their tracker stays for one by one.
+  - Email excerpts kept as evidence are dropped after 180 days
+    (`PIPELINE_MAIL_EVIDENCE_DAYS`). With Jev inbox suggestions on, the text of
+    these emails goes to TypeSafe too, and Jev's answer acts on its own only
+    when the keyword rules agree with it.
 
 ## 7. Resume (optional, recommended)
 
@@ -379,6 +416,14 @@ settings from `config/profile.json`; ask before setting them:
 | After how many days with no reply should an application show up in Urgent? | `application_follow_up_days` | default 21; used by **Flag applications with no reply** |
 | After how many days should a silent application be archived? | `archive_after_days` | default 60; used by **Archive applications that never answered** |
 | From what score should new roles be saved for you? Below what score passed? | `automation.auto_save_at`, `automation.auto_pass_below` | scores from 0 to 100, with no defaults: left out, the switch can't be turned on. Keep `auto_pass_below` at or under `auto_save_at`. |
+
+With **Update applications from job emails** on, a job email linked to an
+application counts as a reply: both day counts above start again from the
+latest one. An application the app archived after no reply is reopened when a
+job email about it arrives later: an interview invite moves it to Interview, a
+rejection to Rejected, and a confirmation, assessment or scheduling email back
+to Applied. One the student archived is never reopened, and one with a job
+email's change waiting for their approval is not archived at all.
 
 Auto-save and auto-pass run after each daily sync, only on roles first seen
 since the switch was turned on, and never pass a posting that has no

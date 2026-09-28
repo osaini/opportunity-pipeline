@@ -361,6 +361,80 @@ class PostgresAutomationContractTests(unittest.TestCase):
         schema._apply_automation(self.conn, (MIGRATIONS_DIR / "0037_automation.sql").read_text(encoding="utf-8"))
         self.conn.commit()
 
+    def test_migration_0038_repairs_a_half_applied_upgrade_and_application_mail_runs(self):
+        from opportunity_app import application_inbox
+
+        for table, column in (("application_tasks", "link"), ("monitored_events", "decided_by")):
+            self.assertTrue(schema._has_column(self.conn, table, column), f"{table}.{column}")
+        with self.conn:
+            self.conn.execute("ALTER TABLE monitored_events DROP COLUMN decided_by")
+            self.conn.execute("DELETE FROM schema_migrations WHERE name='0038_application_mail.sql'")
+        ensure_product_schema(self.conn)
+        self.assertTrue(schema._has_column(self.conn, "monitored_events", "decided_by"))
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, 'application_mail', 'on', ?) "
+                "ON CONFLICT(user_id, key) DO UPDATE SET value='on'",
+                (AUTOMATION_USER, utc_now()),
+            )
+        row = automation.perform(
+            self.conn, user_id=AUTOMATION_USER, feature="application_mail", action_type="application.deadline", subject_kind="application",
+            subject_id="app-job-b", after={"deadline": {"deadline_on": "2026-10-10", "quote": "by October 10", "sender_domain": "lever.co",
+                                                        "gmail_id": "pg-1", "received_at": utc_now()}},
+            evidence={"gmail_id": "pg-1"}, summary="A deadline from an email", basis="rule:test", confidence=0.9,
+            idempotency_key="gmail:pg-1:app-job-b:application.deadline", auto=True,
+        )
+        self.assertEqual(row["status"], "applied")
+        # An email's actions are found by their key's prefix (LIKE with an escape, portable to both backends).
+        self.assertEqual([action["id"] for action in application_inbox._message_actions(self.conn, AUTOMATION_USER, "pg-1")], [row["id"]])
+        automation.undo(self.conn, row["id"], AUTOMATION_USER)
+        remaining = self.conn.execute("SELECT COUNT(*) AS n FROM email_deadlines").fetchone()["n"]
+        self.conn.commit()
+        self.assertEqual(remaining, 0)
+
+    def test_a_job_email_reopens_only_the_automatic_archive(self):
+        from opportunity_app import application_inbox, internal_automation
+
+        with self.conn:
+            for key in ("application_mail", "archive_silent_applications"):
+                self.conn.execute(
+                    "INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, ?, 'on', ?) "
+                    "ON CONFLICT(user_id, key) DO UPDATE SET value='on'",
+                    (AUTOMATION_USER, key, utc_now()),
+                )
+        email = {"feature": "application_mail", "action_type": "application.stage", "subject_kind": "application",
+                 "subject_id": "app-job-b", "evidence": {"gmail_id": "pg-2"}, "summary": "From an email", "basis": "rule:test",
+                 "confidence": 0.9, "auto": True}
+        proposal = automation.perform(self.conn, user_id=AUTOMATION_USER, **{**email, "auto": False}, after={"stage": "interview"},
+                                      idempotency_key="gmail:pg-2:app-job-b:application.stage")
+        self.assertTrue(internal_automation.pending_email_news(self.conn, AUTOMATION_USER, "app-job-b"))
+        self.conn.commit()
+        automation.reject(self.conn, proposal["id"], AUTOMATION_USER)
+        archive = automation.perform(
+            self.conn, user_id=AUTOMATION_USER, feature="archive_silent_applications", action_type="application.stage",
+            subject_kind="application", subject_id="app-job-b", after={"stage": "archived", "only_from": "applied"}, evidence={},
+            summary="Archived", basis="silence:60d", confidence=None, idempotency_key="archive-silent:pg", auto=True,
+            guard=lambda conn, _before: not internal_automation.pending_email_news(conn, AUTOMATION_USER, "app-job-b"),
+        )
+        self.assertEqual(archive["status"], "applied")
+        self.assertEqual(internal_automation.automatic_archive(self.conn, "app-job-b")["from_stage"], "applied")
+        self.conn.commit()
+        reopened = automation.perform(self.conn, user_id=AUTOMATION_USER, **email, after={"stage": "interview"},
+                                      idempotency_key="gmail:pg-3:app-job-b:application.stage",
+                                      guard=application_inbox._reopen_guard("app-job-b"))
+        self.assertEqual((reopened["status"], self.application("app-job-b")[0]), ("applied", "interview"))
+        self.assertFalse(internal_automation.automation_archived(self.conn, "app-job-b"))
+        self.conn.commit()
+        # The student archives it: an email's reopen is refused inside the transaction.
+        from opportunity_app.actions import update_application
+
+        update_application(self.conn, "app-job-b", stage="archived", user_id=AUTOMATION_USER)
+        refused = automation.perform(self.conn, user_id=AUTOMATION_USER, **email, after={"stage": "rejected"},
+                                     idempotency_key="gmail:pg-4:app-job-b:application.stage",
+                                     guard=application_inbox._reopen_guard("app-job-b"))
+        self.assertIsNone(refused)
+        self.assertEqual(self.application("app-job-b")[0], "archived")
+
     def test_perform_undo_and_superseded_on_an_application(self):
         automation.set_mode(self.conn, AUTOMATION_USER, AUTOMATION_SWITCH.key, "on")
         row = self.stage_change("app-job-b", "interview", key="pg-1")

@@ -3,11 +3,12 @@
 Postings almost never state a deadline, so Urgent is built from every dated
 record that really exists: deadlines stated in posting text, deadlines the
 student entered, deadlines from their own program research, outreach
-deadlines, open application tasks, and follow-up dates. Each row keeps a label saying where its date came from. Nothing is
+deadlines, deadlines a job email stated, open application tasks, and follow-up dates. Each row keeps a label saying where its date came from. Nothing is
 estimated; a posting's age is never turned into a closing date. With the
 application_silence switch on, an application still at Applied a set number of
 days after the student applied adds a "No reply yet" row, dated that many days
-after the applied date the tracker recorded.
+after the applied date the tracker recorded, or after the latest job email
+linked to it when one came later (internal_automation.silence_rows).
 
 "Overdue" and "today" are calendar dates in the student's timezone
 (``user_time.user_timezone``), the same rule Outreach and the application
@@ -51,6 +52,8 @@ DATE_SOURCE_LABELS = {
     # label; the entry's deadline_note travels with the row as `date_note`.
     "program_deadline": "From your program research",
     "outreach_deadline": "Outreach record deadline",
+    # A date an email stated (application_inbox): the row's date_note quotes it.
+    "email_deadline": "From an email",
     "task": "Task due",
     "application_follow_up": "Follow-up date",
     "outreach_follow_up": "Follow-up scheduled",
@@ -64,6 +67,7 @@ KIND_PRIORITY = {
     "your_deadline": 0,
     "program_deadline": 0,
     "outreach_deadline": 0,
+    "email_deadline": 0,
     "task": 1,
     "application_follow_up": 2,
     "outreach_follow_up": 2,
@@ -314,12 +318,60 @@ def _program_rows(
     ]
 
 
+# Where a task came from, when not from the student: shown beside "Task due".
+TASK_ORIGIN_LABELS = {
+    "email": "From an email",
+    "monitored_event": "From an email you confirmed",
+    "agent": "From the agent, you approved",
+    "automation": "Added automatically",
+}
+
+
+def _task_origin(origin: Any) -> str | None:
+    """None for the student's own task, and for any origin without a label here."""
+    return TASK_ORIGIN_LABELS.get(str(origin or "user"))
+
+
+def _email_deadline_rows(conn: sqlite3.Connection, user_id: str) -> list[dict[str, Any]]:
+    """Deadlines emails stated for open applications, each with where and when it said so."""
+    closed = _in_clause(CLOSED_APPLICATION_STAGES)
+    rows = []
+    for row in conn.execute(
+        f"""
+        SELECT d.id, d.deadline_on, d.quote, d.sender_domain, d.received_at, a.id AS application_id, a.stage,
+               o.id AS opportunity_id, o.company, o.title
+        FROM email_deadlines d
+        JOIN applications a ON a.id = d.application_id AND a.user_id = d.user_id
+        JOIN opportunities o ON o.id = a.opportunity_id
+        WHERE d.user_id = ? AND a.stage NOT IN ({closed})
+        """,
+        (user_id,),
+    ).fetchall():
+        received = str(row["received_at"] or "")[:10]
+        quote = str(row["quote"] or "")[:160]
+        note = f"From {row['sender_domain'] or 'an email'}, received {received}: '{quote}'" if quote else None
+        rows.append({
+            "kind": "email_deadline",
+            "record_id": str(row["id"]),
+            "raw_date": row["deadline_on"],
+            "date_only": True,
+            "title": row["title"],
+            "company": row["company"],
+            "date_note": note,
+            "opportunity_id": str(row["opportunity_id"]),
+            "application_id": row["application_id"],
+            "stage": row["stage"],
+            "origin_label": "From an email",
+        })
+    return rows
+
+
 def _application_rows(conn: sqlite3.Connection, user_id: str) -> list[dict[str, Any]]:
     closed = _in_clause(CLOSED_APPLICATION_STAGES)
     rows = []
     tasks = conn.execute(
         f"""
-        SELECT t.id AS task_id, t.title AS task_title, t.due_at, a.id AS application_id,
+        SELECT t.id AS task_id, t.title AS task_title, t.due_at, t.origin, a.id AS application_id,
                a.stage, o.id AS opportunity_id, o.company, o.title
         FROM application_tasks t
         JOIN applications a ON a.id = t.application_id AND a.user_id = t.user_id
@@ -342,6 +394,7 @@ def _application_rows(conn: sqlite3.Connection, user_id: str) -> list[dict[str, 
             "application_id": row["application_id"],
             "task_id": row["task_id"],
             "stage": row["stage"],
+            "origin_label": _task_origin(row["origin"]),
         })
     follow_ups = conn.execute(
         f"""
@@ -440,7 +493,7 @@ def urgent_queue(
 
     candidates = [
         *_posting_rows(conn, user_id), *_program_rows(conn, user_id, programs_path, now),
-        *_application_rows(conn, user_id), *_outreach_rows(conn, user_id),
+        *_application_rows(conn, user_id), *_email_deadline_rows(conn, user_id), *_outreach_rows(conn, user_id),
         *silence_rows(conn, user_id, now=now),
     ]
     items: list[dict[str, Any]] = []
@@ -486,6 +539,7 @@ def urgent_queue(
             "task_id": row.get("task_id"),
             "saved": bool(row.get("saved")),
             "stage": row.get("stage"),
+            "origin_label": row.get("origin_label"),
         })
     items.sort(key=lambda item: (
         not item["overdue"],

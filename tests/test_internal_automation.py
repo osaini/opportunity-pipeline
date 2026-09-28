@@ -501,6 +501,18 @@ class KeywordCheckTests(Case):
         self.assertIn("no confirmed skills", resume_variants.resume_check(self.conn, USER, "job-a")["note"])
 
 
+def job_email(conn, days_ago, *, application_id="app-job-b", gmail_id=None, kind="assessment", state="done"):
+    """A job email "Update applications from job emails" read and linked to the application, received ``days_ago``."""
+    received = (datetime.now(timezone.utc) - timedelta(days=days_ago)).replace(microsecond=0).isoformat()
+    with conn:
+        conn.execute(
+            "INSERT INTO application_mail_messages(user_id, gmail_id, thread_id, application_id, kind, matched_by, state, origin, "
+            "subject, sender_domain, received_at, recorded_at) VALUES(?, ?, 't', ?, ?, 'company_title', ?, 'live', 'An update', "
+            "'hire.lever.co', ?, ?)",
+            (USER, gmail_id or f"m-{uuid4().hex}", application_id, kind, state, received, utc_now()),
+        )
+
+
 # --- Application silence and archive --------------------------------------------------------
 
 
@@ -540,6 +552,25 @@ class SilenceTests(Case):
         automation.set_paused(self.conn, USER, False)
         update_application(self.conn, "app-job-b", stage="interview", user_id=USER)
         self.assertEqual(self.silence(), [])
+
+    def test_a_job_email_is_a_reply_so_silence_counts_from_the_latest_one(self):
+        self.on("application_silence")
+        self.applied(30)
+        job_email(self.conn, 5)
+        self.assertEqual(self.silence(), [], "the company wrote 5 days ago: not silent")
+        job_email(self.conn, 40, gmail_id="m-before")  # before the student applied: silence still counts from applying
+        self.assertEqual(self.silence(), [])
+        with self.conn:
+            self.conn.execute("DELETE FROM application_mail_messages WHERE gmail_id<>'m-before'")
+        [row] = self.silence()
+        self.assertEqual((row["days_until"], row["subtitle"]), (-9, "No reply 21 days after you applied"))
+        job_email(self.conn, 25)
+        [row] = self.silence()
+        self.assertEqual((row["days_until"], row["subtitle"]), (-4, "No reply 21 days after their last email"))
+        job_email(self.conn, 1, application_id="app-other", gmail_id="m-other")
+        self.assertEqual(len(self.silence()), 1, "an email about another application is not a reply to this one")
+        job_email(self.conn, 1, state="skipped", gmail_id="m-skipped")
+        self.assertEqual(len(self.silence()), 1, "only emails linked and kept, as the application's Emails list shows them")
 
     def test_a_bad_setting_falls_back_to_21(self):
         self.set_profile(application_follow_up_days="soon")
@@ -606,6 +637,63 @@ class ArchiveTests(Case):
         report = worker.run_once()
         self.assertEqual([item["application_id"] for item in report["archived"]], ["app-job-b"])
         self.assertEqual(self.stage(), "archived")
+
+    def test_an_application_with_a_job_email_waiting_for_the_student_is_not_archived(self):
+        self.applied(61)
+        self.on("archive_silent_applications")
+        with self.conn:  # application_mail runs in shadow before on; set directly, as its own tests do
+            self.conn.execute(
+                "INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, 'application_mail', 'on', ?) "
+                "ON CONFLICT(user_id, key) DO UPDATE SET value='on'",
+                (USER, utc_now()),
+            )
+        proposal = automation.perform(
+            self.conn, user_id=USER, feature="application_mail", action_type="application.stage", subject_kind="application",
+            subject_id="app-job-b", after={"stage": "interview"}, evidence={"gmail_id": "m-1"}, summary="Orbit Systems: move to interview",
+            basis="test", confidence=0.9, idempotency_key="gmail:m-1:app-job-b:application.stage", auto=False,
+        )
+        self.assertEqual(internal_automation.archive_silent_applications(self.conn, USER, force=True), [],
+                         "an email came, so it was not silent, and archiving would leave the approval nothing to apply to")
+        self.assertEqual(self.stage(), "applied")
+        self.assertEqual(automation.list_actions(self.conn, USER, feature="archive_silent_applications"), [])
+        approved = automation.approve(self.conn, proposal["id"], USER)
+        self.assertEqual((approved["status"], self.stage()), ("applied", "interview"))
+
+    def test_once_the_waiting_email_is_turned_down_the_archive_goes_ahead(self):
+        self.applied(61)
+        self.on("archive_silent_applications")
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, 'application_mail', 'on', ?) "
+                "ON CONFLICT(user_id, key) DO UPDATE SET value='on'",
+                (USER, utc_now()),
+            )
+        proposal = automation.perform(
+            self.conn, user_id=USER, feature="application_mail", action_type="application.stage", subject_kind="application",
+            subject_id="app-job-b", after={"stage": "interview"}, evidence={"gmail_id": "m-2"}, summary="Orbit Systems: move to interview",
+            basis="test", confidence=0.9, idempotency_key="gmail:m-2:app-job-b:application.stage", auto=False,
+        )
+        self.assertEqual(internal_automation.archive_silent_applications(self.conn, USER, force=True), [])
+        automation.reject(self.conn, proposal["id"], USER)
+        [done] = internal_automation.archive_silent_applications(self.conn, USER, force=True)
+        self.assertEqual((done["application_id"], self.stage()), ("app-job-b", "archived"))
+
+    def test_a_job_email_since_applying_restarts_the_archive_clock(self):
+        self.applied(90)
+        self.on("archive_silent_applications")
+        # An assessment 30 days ago left a task open at Applied: archiving now would hide it.
+        job_email(self.conn, 30)
+        self.assertEqual(internal_automation.archive_silent_applications(self.conn, USER, force=True), [])
+        self.assertEqual(self.stage(), "applied")
+        job_email(self.conn, 61, gmail_id="m-older")
+        with self.conn:
+            self.conn.execute("DELETE FROM application_mail_messages WHERE gmail_id<>'m-older'")
+        [done] = internal_automation.archive_silent_applications(self.conn, USER, force=True)
+        [action] = automation.list_actions(self.conn, USER, feature="archive_silent_applications")
+        self.assertEqual(action["id"], done["action_id"])
+        self.assertIn("no reply 61 days after their last email", action["summary"])
+        self.assertEqual(action["evidence"]["days"], 61)
+        self.assertTrue(action["evidence"]["last_email_on"])
 
     def test_a_student_archive_is_not_the_automations(self):
         update_application(self.conn, "app-job-b", stage="archived", user_id=USER)

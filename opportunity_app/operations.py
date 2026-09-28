@@ -209,6 +209,11 @@ ACCOUNT_QUERIES = {
     "automation_actions": "SELECT * FROM automation_actions WHERE user_id=?",
     "automation_notices": "SELECT * FROM automation_notices WHERE user_id=?",
     "automation_health": "SELECT * FROM automation_health WHERE user_id=?",
+    # Application mail: how far reading has got, what was read (no bodies), deadlines emails stated, trusted domains.
+    "application_mail_sync": "SELECT * FROM application_mail_sync WHERE user_id=?",
+    "application_mail_messages": "SELECT * FROM application_mail_messages WHERE user_id=?",
+    "email_deadlines": "SELECT * FROM email_deadlines WHERE user_id=?",
+    "employer_domains": "SELECT * FROM employer_domains WHERE user_id=?",
 }
 
 
@@ -279,7 +284,10 @@ def run_retention(conn: sqlite3.Connection, *, now: datetime | None = None) -> d
                 "UPDATE dossier_items SET status='deleted', updated_at=? WHERE user_id=? AND status='active' AND created_at<?",
                 (expired, setting["user_id"], cutoff),
             ).rowcount
-    return {"expired_grants": grants, "retired_dossier_items": stale}
+    # Email excerpts kept as evidence go after PIPELINE_MAIL_EVIDENCE_DAYS; the ledger rows stay, with their hashes.
+    from .application_inbox import purge_excerpts
+
+    return {"expired_grants": grants, "retired_dossier_items": stale, **purge_excerpts(conn, now=now)}
 
 
 def encrypted_backup(source: Path, destination: Path, key: bytes) -> dict[str, Any]:
