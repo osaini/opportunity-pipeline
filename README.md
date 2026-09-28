@@ -975,7 +975,8 @@ PIPELINE_OUTREACH_ACCOUNT=you@school.edu   # the Google account compose opens in
 PIPELINE_OUTREACH_PROVIDER=claude-code     # optional first-email writer; default is the first model set up
 PIPELINE_OUTREACH_FOLLOW_UP_PROVIDER=      # optional follow-up writer; empty = same as first emails
 PIPELINE_OUTREACH_CALL_PREP_PROVIDER=      # optional call prep writer; empty = same as first emails
-PIPELINE_OUTREACH_REVIEW_PROVIDER=         # optional follow-up reviewer; empty = automatic
+PIPELINE_OUTREACH_THANK_YOU_PROVIDER=      # optional writer of the thank-you after a decline; empty = same as first emails
+PIPELINE_OUTREACH_REVIEW_PROVIDER=         # optional reviewer of follow-ups and thank-yous; empty = automatic
 PIPELINE_OUTREACH_DISCOVERY_PROVIDER=claude-code  # or codex-cli: deep search, locating, Find people
 PIPELINE_OUTREACH_ATTACHMENT=data/outreach-attachments/resume.pdf  # attached to Gmail drafts
 PIPELINE_SEC_USER_AGENT="Your Name you@example.com"  # enables SEC Form D lookups

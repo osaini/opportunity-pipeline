@@ -165,7 +165,8 @@ class RegistryTests(AutomationCase):
         for key in LEGACY_OUTREACH_SETTINGS:
             feature = automation.FEATURES[key]
             self.assertEqual((feature.group, feature.modes), ("outreach", ("off", "on")))
-        self.assertEqual({key for key, f in automation.FEATURES.items() if f.risk == "external"}, {"scheduled_sending", "form_submission"})
+        self.assertEqual({key for key, f in automation.FEATURES.items() if f.risk == "external"},
+                         {"scheduled_sending", "form_submission", "decline_thank_you"})
         self.assertEqual(automation.FEATURES["jev_inbox_suggestions"].group, "applications")
         self.assertEqual(automation.FEATURES["desktop_notifications"].group, "notifications")
         with self.assertRaises(ValueError):

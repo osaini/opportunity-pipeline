@@ -294,6 +294,8 @@ themselves (rule 3). The details:
   use. One is enough. Show them Outreach → Settings, where each AI feature has
   its own choice listing only what is set up; with two (say Claude Code and
   Codex), the follow-up reviewer picks the one that did not write the email.
+  **Who writes thank-yous after a decline** (`PIPELINE_OUTREACH_THANK_YOU_PROVIDER`)
+  is there too; left on "Same as first-email drafts", the draft writer writes them.
 - **Jev** (`TYPESAFE_API_KEY`): optional and waitlisted; skip it freely. If they
   set it, tell them Jev inbox suggestions are a separate switch under Outreach →
   Outreach settings, off until they turn it on, because it sends reply and email
@@ -367,6 +369,28 @@ themselves (rule 3). The details:
     (`PIPELINE_MAIL_EVIDENCE_DAYS`). With Jev inbox suggestions on, the text of
     these emails goes to TypeSafe too, and Jev's answer acts on its own only
     when the keyword rules agree with it.
+- **Send a thank-you when someone declines** (optional; needs Jev). Ask whether
+  they want the app to answer a plain "no" to their cold outreach with a short
+  thank-you, sent on its own in the same thread. It is the one email the app
+  sends without their approval, so explain it before they choose:
+  - It needs Jev inbox suggestions on (and so `TYPESAFE_API_KEY`), and Gmail
+    connected with read access. It acts only when both the keyword rules and
+    Jev read the reply as a plain decline; with Jev off, paused, or unavailable
+    nothing goes. A reply about a call, an offer, a question, a referral, or
+    "maybe later" is always left for them, and so is a rejection from a job
+    system (those come from no-reply addresses).
+  - A decline that arrives before 5 PM on a weekday in the recipient's time
+    zone is answered after a normal delay the same day; otherwise the next
+    weekday morning. There is no shadow period: the switch under Profile →
+    Automation is off until they turn it on, and it cannot be turned on while
+    Jev is off.
+  - The words are theirs: it greets the person who wrote with the greeting from
+    step 3 (`greeting_word`, `unnamed_greeting`) and signs with their confirmed
+    name. Plain rules refuse anything but thanks (no question, no ask, no
+    number, no dash), and a second model reads it just before it goes; anything
+    unclear holds it on the card with **Send it anyway** and **Dismiss**. While
+    it waits the card offers **Cancel** and **Edit** (which puts it in their
+    Gmail Drafts instead). Pausing automation holds it.
 
 ## 7. Resume (optional, recommended)
 

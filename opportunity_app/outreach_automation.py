@@ -36,7 +36,7 @@ from typing import Any, Callable
 
 import httpx
 
-from . import automation, internal_automation
+from . import automation, internal_automation, outreach_thank_you
 from .outreach import _log, get_target, list_targets
 from .outreach_contacts import SafeFetcher, apply_choice, choose_contact, find_contacts, list_candidates
 from .outreach_forms import form_due
@@ -255,7 +255,9 @@ class AutomationWorker:
     sends at most one contact form, so a slow model call or page never holds
     the others up for long. Then the changes that stay inside the app
     (internal_automation): up to five unanswered companies closed, at most
-    one follow-up draft, and the daily archive of silent applications.
+    one follow-up draft, and the daily archive of silent applications. Then
+    the thank-yous after a plain decline (outreach_thank_you): up to three
+    written and scheduled; the scheduled sends above send them when due.
     Nothing that acts runs for a paused student.
     Each pass records how it went in automation_health (automation.worker).
     """
@@ -328,7 +330,7 @@ class AutomationWorker:
                     _discard_open_transaction(conn)
                     for user_id in due_users:
                         errors.setdefault(user_id, _step_error(exc))
-            users = self._users_with(conn, (*SETTINGS, *internal_automation.WORKER_FEATURES))
+            users = self._users_with(conn, (*SETTINGS, *internal_automation.WORKER_FEATURES, *outreach_thank_you.WORKER_FEATURES))
             for user_id in users:
                 try:
                     self._run_for(conn, user_id, report)
@@ -343,6 +345,12 @@ class AutomationWorker:
                         provider_factory=self._provider_factory, draft_provider=self._draft_provider,
                         decisions_for=self._decisions_for, on_reply=self._on_reply,
                     )
+                except Exception as exc:  # noqa: BLE001 - recorded like any other step's failure
+                    _discard_open_transaction(conn)
+                    errors.setdefault(user_id, _step_error(exc))
+                try:
+                    # A thank-you after a plain decline, written and scheduled; sent above when due.
+                    outreach_thank_you.run_for_user(conn, user_id, report, provider_factory=self._provider_factory)
                 except Exception as exc:  # noqa: BLE001 - recorded like any other step's failure
                     _discard_open_transaction(conn)
                     errors.setdefault(user_id, _step_error(exc))

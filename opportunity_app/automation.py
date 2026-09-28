@@ -160,6 +160,13 @@ FEATURES: dict[str, Feature] = {
         # and keeping it off/on leaves unchanged a switch the student already uses.
         Feature("form_submission", "Send through contact forms",
                 "Send approved first messages through the company's contact form when it has no email", "outreach", "external"),
+        # Phase 6 (preliminary): the one email the app writes and sends on its own. No shadow, as the
+        # student chose: it is off until they turn it on, and needs Jev (REQUIREMENTS). outreach_thank_you.py.
+        Feature("decline_thank_you", "Send a thank-you when someone declines",
+                "When a contact replies with a plain no, and both the rules and Jev read it that way, send a short "
+                "thank-you in the same thread. It goes out after a normal delay before 5pm their time, otherwise the "
+                "next weekday morning. Anything about a call, a question, a referral or 'maybe later' is left for you",
+                "outreach", "external"),
         Feature("jev_inbox_suggestions", "Jev inbox suggestions",
                 "Suggest what a pasted reply or an application email means with Jev, which sends the message text to TypeSafe. "
                 "You still confirm each change", "applications", "internal"),
@@ -219,6 +226,13 @@ def _resume_variant_requirement(conn: Any, user_id: str) -> str:
     return setup_requirement(conn, user_id)
 
 
+def _jev_requirement(conn: Any, user_id: str) -> str:
+    """decline_thank_you acts only on a reply both the rules and Jev read as a decline, so Jev must be on."""
+    if mode(conn, user_id, "jev_inbox_suggestions") == "on":
+        return ""
+    return "it needs Jev inbox suggestions on, since a thank-you goes only when both the rules and Jev read a reply as a decline"
+
+
 # What a feature needs before it can act, beyond its switch: a function that
 # returns "" when the need is met, or a plain sentence saying what is missing.
 # A feature whose need is not met cannot be turned on (can_turn_on), and the
@@ -227,6 +241,7 @@ REQUIREMENTS: dict[str, Callable[[Any, str], str]] = {
     "auto_save": _triage_requirement("auto_save"),
     "auto_pass": _triage_requirement("auto_pass"),
     "resume_variant_pick": _resume_variant_requirement,
+    "decline_thank_you": _jev_requirement,
 }
 
 
@@ -639,6 +654,7 @@ FIELD_NAMES = {
     "stage": "the stage", "applied_at": "the applied date", "intent": "the saved or passed choice", "task": "the task",
     "deadline": "the deadline", "capture": "the capture draft",
     "status": "the status", "follow_up": "the follow-up draft", "resume_pick": "the résumé choice",
+    "thank_you": "the thank-you",
 }
 
 
@@ -1195,6 +1211,80 @@ class ResumePick:
             raise Superseded("The résumé choice changed since, so it was left as it is")
 
 
+class OutreachThankYou:
+    """outreach.thank_you: a thank-you after a decline, written and scheduled (decline_thank_you).
+
+    ``after['thank_you']`` is the thank-you outreach_thank_you.plan wrote: its
+    recipient, words, thread, fingerprint, and when it goes. apply stores it
+    (outreach_thank_yous, state 'scheduled') and queues it
+    (outreach_scheduled_sends, kind 'thank_you'), only while the company has
+    none: one per company, ever. An email cannot be taken back once it goes, so
+    the action has no Undo; the card's Cancel stops it while it waits, and
+    undoing the status change made with it leaves it scheduled.
+    """
+
+    fields = ("thank_you",)
+    undoable = False
+    _COLUMNS = ("reply_gmail_id", "reply_message_id", "thread_id", "to_email", "to_name", "subject", "body",
+                "generated_by", "fingerprint", "send_at", "label")
+
+    def read(self, conn: sqlite3.Connection, user_id: str, subject_id: str) -> dict[str, Any]:
+        if conn.execute(
+            f"SELECT 1 FROM outreach_targets WHERE id=? AND user_id=?{_for_update(conn)}", (subject_id, user_id),
+        ).fetchone() is None:
+            from .outreach import OutreachNotFoundError
+
+            raise OutreachNotFoundError(subject_id)
+        row = conn.execute("SELECT state FROM outreach_thank_yous WHERE target_id=? AND user_id=?", (subject_id, user_id)).fetchone()
+        return {"thank_you": None if row is None else str(row["state"])}
+
+    def effective(self, before: dict[str, Any], after: dict[str, Any], timestamp: str) -> dict[str, Any]:
+        planned = after.get("thank_you")
+        if not isinstance(planned, dict) or not str(planned.get("body") or "").strip() or not planned.get("send_at"):
+            raise ValueError("A thank-you needs its words and a time to go")
+        if before.get("thank_you") is not None:
+            return dict(before)  # one per company: whatever became of the first, there is no second
+        return {"thank_you": "scheduled"}
+
+    def ledger(self, after: dict[str, Any]) -> dict[str, Any]:
+        """The words stay on the thank-you itself; the ledger keeps who it went to, when, and its fingerprint."""
+        planned = after.get("thank_you")
+        if not isinstance(planned, dict):
+            return after
+        kept = {key: planned.get(key) for key in ("to_name", "fingerprint", "send_at", "label", "generated_by")}
+        return {**after, "thank_you": kept}
+
+    def apply(
+        self, conn: sqlite3.Connection, user_id: str, subject_id: str, after: dict[str, Any], *, source: str, timestamp: str,
+    ) -> dict[str, Any]:
+        planned = after["thank_you"]
+        values = [str(planned.get(column) or "") for column in self._COLUMNS]
+        conn.execute(
+            f"""
+            INSERT INTO outreach_thank_yous(target_id, user_id, {', '.join(self._COLUMNS)}, state, note, created_at, updated_at)
+            VALUES(?, ?, {', '.join('?' for _ in self._COLUMNS)}, 'scheduled', '', ?, ?)
+            """,
+            (subject_id, user_id, *values, timestamp, timestamp),
+        )
+        conn.execute(
+            """
+            INSERT INTO outreach_scheduled_sends(target_id, user_id, kind, fingerprint, send_at, timezone, label, state, error, attempts, created_at, updated_at)
+            VALUES(?, ?, 'thank_you', ?, ?, ?, ?, 'scheduled', '', 0, ?, ?)
+            ON CONFLICT(target_id, kind) DO UPDATE SET fingerprint=excluded.fingerprint, send_at=excluded.send_at,
+                timezone=excluded.timezone, label=excluded.label, state='scheduled', error='', attempts=0, updated_at=excluded.updated_at
+            """,
+            (subject_id, user_id, planned["fingerprint"], planned["send_at"], str(planned.get("timezone") or ""),
+             planned["label"], timestamp, timestamp),
+        )
+        return {"send_at": planned["send_at"]}
+
+    def undo(
+        self, conn: sqlite3.Connection, user_id: str, subject_id: str, before: dict[str, Any], after: dict[str, Any],
+        *, source: str, timestamp: str,
+    ) -> None:
+        raise ValueError("This action can't be undone")
+
+
 HANDLERS: dict[str, Handler] = {
     "application.stage": ApplicationStage(),
     "opportunity.intent": OpportunityIntent(),
@@ -1202,6 +1292,7 @@ HANDLERS: dict[str, Handler] = {
     "outreach.status": OutreachStatus(),
     "outreach.follow_up_draft": OutreachFollowUpDraft(),
     "resume.pick": ResumePick(),
+    "outreach.thank_you": OutreachThankYou(),
 }
 
 
@@ -1349,62 +1440,13 @@ def perform(
     "only ever forward" is checked against what the change will really
     replace, not against a read taken before the transaction began.
     """
-    definition = _feature(feature)
-    handler = _handler(action_type)
-    if not idempotency_key:
-        raise ValueError("An automatic action needs an idempotency key")
-    # Made first, so the change itself can name the action that made it.
-    action_id = f"auto-{uuid4().hex}"
-    timestamp = utc_now()
     try:
         with conn:
-            # Written first (see the module docstring): a pause either lands before this and is
-            # seen here, or waits until the change and its row are in.
-            is_paused = pause_guard(conn, user_id)
-            existing = _by_key(conn, user_id, idempotency_key)
-            if existing is not None:
-                return _decode(existing)
-            current_mode = mode(conn, user_id, definition.key)
-            if current_mode == "off" or is_paused:
-                return None
-            current = handler.read(conn, user_id, subject_id)
-            before = {name: current.get(name) for name in handler.fields}
-            if guard is not None and not guard(conn, before):
-                return None
-            target = _effective(handler, before, after, timestamp)
-            if target == before:
-                return None
-            # The ledger keeps only _kept, a proposal included. What approving it needs beyond that
-            # (a task's link) waits in automation_held until the student decides (_with_held).
-            recorded_after: dict[str, Any] = _kept(handler, dict(after))
-            held = None
-            applied_at = None
-            decided_by = ""
-            if not auto:
-                status = "proposed"
-                held = dict(after) if recorded_after != after else None
-            elif current_mode == "shadow":
-                status = "shadow"
-            else:
-                result = handler.apply(conn, user_id, subject_id, after, source=f"automation:{action_id}", timestamp=timestamp)
-                status, applied_at, decided_by = "applied", timestamp, "system"
-                # What the fields now hold, so undo compares against exactly that.
-                recorded_after = {**_kept(handler, target), "_result": result or {}}
-            _insert_action(conn, {
-                "id": action_id, "user_id": user_id, "feature": definition.key, "action_type": action_type,
-                "subject_kind": subject_kind, "subject_id": subject_id, "status": status,
-                "fields_json": _dumps(list(handler.fields)), "before_json": _dumps(before),
-                "after_json": _dumps(recorded_after), "evidence_json": _dumps(evidence or {}),
-                "summary": summary, "basis": basis, "confidence": confidence, "policy_version": policy_version,
-                "idempotency_key": idempotency_key, "created_at": timestamp, "applied_at": applied_at,
-                "decided_by": decided_by,
-            })
-            if held is not None:
-                conn.execute(
-                    "INSERT INTO automation_held(action_id, user_id, after_json, created_at) VALUES(?, ?, ?, ?)",
-                    (action_id, user_id, _dumps(held), timestamp),
-                )
-            return _decode(_row(conn, action_id, user_id))
+            return perform_in(
+                conn, user_id=user_id, feature=feature, action_type=action_type, subject_kind=subject_kind,
+                subject_id=subject_id, after=after, evidence=evidence, summary=summary, basis=basis,
+                confidence=confidence, idempotency_key=idempotency_key, auto=auto, policy_version=policy_version, guard=guard,
+            )
     except Exception as exc:
         # Two passes raced on the same evidence: the other one's row stands.
         if not is_unique_violation(exc):
@@ -1413,6 +1455,90 @@ def perform(
         if existing is None:
             raise
         return _decode(existing)
+
+
+def perform_in(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+    feature: str,
+    action_type: str,
+    subject_kind: str,
+    subject_id: str,
+    after: dict[str, Any],
+    evidence: dict[str, Any],
+    summary: str,
+    basis: str,
+    confidence: float | None,
+    idempotency_key: str,
+    auto: bool,
+    policy_version: str = "",
+    guard: Callable[[sqlite3.Connection, dict[str, Any]], bool] | None = None,
+) -> dict[str, Any] | None:
+    """perform()'s writes, inside a transaction the caller owns. Opens none.
+
+    For an automatic step whose one decision makes several changes that must
+    land together or not at all (a thank-you scheduled with the status change
+    it goes with): the caller starts the transaction, and each change is
+    performed in it. The pause is checked (and held) here as in perform(); a
+    caller that has already written in this transaction has checked it first.
+    A second pass that raced on the same key makes this raise a unique
+    violation, which rolls the caller's whole transaction back.
+    """
+    definition = _feature(feature)
+    handler = _handler(action_type)
+    if not idempotency_key:
+        raise ValueError("An automatic action needs an idempotency key")
+    # Made first, so the change itself can name the action that made it.
+    action_id = f"auto-{uuid4().hex}"
+    timestamp = utc_now()
+    # Written first (see the module docstring): a pause either lands before this and is
+    # seen here, or waits until the change and its row are in.
+    is_paused = pause_guard(conn, user_id)
+    existing = _by_key(conn, user_id, idempotency_key)
+    if existing is not None:
+        return _decode(existing)
+    current_mode = mode(conn, user_id, definition.key)
+    if current_mode == "off" or is_paused:
+        return None
+    current = handler.read(conn, user_id, subject_id)
+    before = {name: current.get(name) for name in handler.fields}
+    if guard is not None and not guard(conn, before):
+        return None
+    target = _effective(handler, before, after, timestamp)
+    if target == before:
+        return None
+    # The ledger keeps only _kept, a proposal included. What approving it needs beyond that
+    # (a task's link) waits in automation_held until the student decides (_with_held).
+    recorded_after: dict[str, Any] = _kept(handler, dict(after))
+    held = None
+    applied_at = None
+    decided_by = ""
+    if not auto:
+        status = "proposed"
+        held = dict(after) if recorded_after != after else None
+    elif current_mode == "shadow":
+        status = "shadow"
+    else:
+        result = handler.apply(conn, user_id, subject_id, after, source=f"automation:{action_id}", timestamp=timestamp)
+        status, applied_at, decided_by = "applied", timestamp, "system"
+        # What the fields now hold, so undo compares against exactly that.
+        recorded_after = {**_kept(handler, target), "_result": result or {}}
+    _insert_action(conn, {
+        "id": action_id, "user_id": user_id, "feature": definition.key, "action_type": action_type,
+        "subject_kind": subject_kind, "subject_id": subject_id, "status": status,
+        "fields_json": _dumps(list(handler.fields)), "before_json": _dumps(before),
+        "after_json": _dumps(recorded_after), "evidence_json": _dumps(evidence or {}),
+        "summary": summary, "basis": basis, "confidence": confidence, "policy_version": policy_version,
+        "idempotency_key": idempotency_key, "created_at": timestamp, "applied_at": applied_at,
+        "decided_by": decided_by,
+    })
+    if held is not None:
+        conn.execute(
+            "INSERT INTO automation_held(action_id, user_id, after_json, created_at) VALUES(?, ?, ?, ?)",
+            (action_id, user_id, _dumps(held), timestamp),
+        )
+    return _decode(_row(conn, action_id, user_id))
 
 
 CORRECTABLE_SUBJECTS = ("application",)

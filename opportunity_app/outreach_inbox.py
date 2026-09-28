@@ -40,7 +40,7 @@ from urllib.parse import quote
 import httpx
 
 from . import automation
-from .inbox_classifiers import classify_reply
+from .inbox_classifiers import read_reply
 from .outreach import (
     BOUNCED,
     _log,
@@ -299,17 +299,28 @@ def _remember(conn: sqlite3.Connection, user_id: str, gmail_id: str, target_id: 
 
 def _record_reply(
     conn: sqlite3.Connection, target: dict[str, Any], *, user_id: str, gmail_id: str, sender: str,
-    received: str, text: str, decisions: DecisionClient | None,
+    received: str, text: str, decisions: DecisionClient | None, meta: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Log one reply, or None when another check (the background one, say) got to it first."""
-    suggestion = classify_reply(text, suggest_reply_status, decisions)
+    """Log one reply, or None when another check (the background one, say) got to it first.
+
+    The reply_logged event keeps, beside the reply's text, where it came from
+    (its Gmail and RFC ids, its thread, its subject, who wrote it and when) and
+    both readings of it: Jev's answer or why there was none, and the rules'
+    status, worked out apart (inbox_classifiers.read_reply, one Jev call). A
+    thank-you after a decline reads them (outreach_thank_you).
+    """
+    suggestion, readings = read_reply(text, suggest_reply_status, decisions)
     if suggestion["status"] == BOUNCED:
         # A person wrote this, so it is a reply even if it talks about a failed delivery.
         suggestion = {**suggestion, "status": "replied"}
+    data = {
+        "source": "gmail", "gmail_id": gmail_id, "from": sender, "received_at": received, "readings": readings,
+        **{key: str(value) for key, value in (meta or {}).items() if key in {"thread_id", "message_id", "subject", "from_name"}},
+    }
     with conn:
         if not _remember(conn, user_id, gmail_id, target["id"], "reply", sender, received):
             return None
-        _log(conn, target["id"], user_id, "reply_logged", detail=text)
+        _log(conn, target["id"], user_id, "reply_logged", detail=text, data=data)
     if target["status"] in REOPENED_BY_REPLY:
         update_target(conn, target["id"], {"status": "replied"}, user_id=user_id)
     current = get_target(conn, target["id"], user_id=user_id)
@@ -380,7 +391,8 @@ def capture_replies(
                     message = email.message_from_bytes(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)), policy=policy.default)
                     received_at = datetime.fromtimestamp(int(data.get("internalDate") or 0) / 1000, tz=timezone.utc)
                     received = received_at.isoformat(timespec="seconds")
-                    sender = parseaddr(str(message.get("From", "")))[1].casefold()
+                    sender_name, sender = parseaddr(str(message.get("From", "")))
+                    sender = sender.casefold()
                     target = _owner(chunk, sender)
                     text = reply_text(message)
                     # A colleague at the company counts only when answering, never a newsletter.
@@ -409,6 +421,12 @@ def capture_replies(
                     captured = _record_reply(
                         conn, get_target(conn, target["id"], user_id=user_id), user_id=user_id, gmail_id=gmail_id,
                         sender=sender, received=received, text=text, decisions=decisions,
+                        meta={
+                            "thread_id": str(data.get("threadId") or ""),
+                            "message_id": " ".join(str(message.get("Message-ID", "")).split()),
+                            "subject": " ".join(str(message.get("Subject", "")).split())[:300],
+                            "from_name": " ".join(str(sender_name or "").split())[:120],
+                        },
                     )
                     if captured is None:
                         continue

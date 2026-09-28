@@ -3,8 +3,9 @@
 None of these values is secret:
 
 - PIPELINE_OUTREACH_PROVIDER: who writes first-email drafts.
-- PIPELINE_OUTREACH_FOLLOW_UP_PROVIDER and PIPELINE_OUTREACH_CALL_PREP_PROVIDER:
-  who writes follow-ups and call prep; empty means the same as first emails.
+- PIPELINE_OUTREACH_FOLLOW_UP_PROVIDER, PIPELINE_OUTREACH_CALL_PREP_PROVIDER and
+  PIPELINE_OUTREACH_THANK_YOU_PROVIDER: who writes follow-ups, call prep, and
+  the thank-you after a decline; empty means the same as first emails.
 - PIPELINE_OUTREACH_REVIEW_PROVIDER: who reviews a follow-up before it goes;
   empty means automatic (outreach_review.review_choice).
 - PIPELINE_OUTREACH_DISCOVERY_PROVIDER: which CLI does the web research (the
@@ -37,8 +38,9 @@ RESEARCH_ENV = "PIPELINE_OUTREACH_DISCOVERY_PROVIDER"
 FOLLOW_UP_ENV = "PIPELINE_OUTREACH_FOLLOW_UP_PROVIDER"
 CALL_PREP_ENV = "PIPELINE_OUTREACH_CALL_PREP_PROVIDER"
 REVIEW_ENV = "PIPELINE_OUTREACH_REVIEW_PROVIDER"
+THANK_YOU_ENV = "PIPELINE_OUTREACH_THANK_YOU_PROVIDER"
 # Writers that fall back to the first-email setting when left empty.
-FOLLOWING_DRAFTS = {"follow_up_provider": FOLLOW_UP_ENV, "call_prep_provider": CALL_PREP_ENV}
+FOLLOWING_DRAFTS = {"follow_up_provider": FOLLOW_UP_ENV, "call_prep_provider": CALL_PREP_ENV, "thank_you_provider": THANK_YOU_ENV}
 ATTACHMENT_ENV = "PIPELINE_OUTREACH_ATTACHMENT"
 RESEARCH_AGENTS = ("claude-code", "codex-cli")
 LEGACY_OPTION = {

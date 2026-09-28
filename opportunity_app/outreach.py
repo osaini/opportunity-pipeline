@@ -16,18 +16,19 @@ import csv
 import hashlib
 import io
 import json
+import os
 import re
 import sqlite3
 import unicodedata
 from datetime import date, datetime, timedelta
 from typing import Any, Callable
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
 from pipeline import PROFILE_PATH
 
 from .database import is_unique_violation as _is_unique_violation
-from .inbox_classifiers import classify_reply
+from .inbox_classifiers import read_reply
 from .schema import LOCAL_USER_ID, utc_now
 from .typesafe_decisions import DecisionClient
 from .user_time import user_timezone
@@ -633,13 +634,18 @@ def _event_time(conn: sqlite3.Connection, target_id: str) -> str:
     return now
 
 
-def _log(conn: sqlite3.Connection, target_id: str, user_id: str, event_type: str, *, from_status: str | None = None, to_status: str | None = None, detail: str = "") -> None:
+def _log(
+    conn: sqlite3.Connection, target_id: str, user_id: str, event_type: str, *, from_status: str | None = None,
+    to_status: str | None = None, detail: str = "", data: dict[str, Any] | None = None,
+) -> None:
+    """Record one event. ``data`` is what it keeps beside its text (detail_json): a reply's ids and readings."""
     conn.execute(
         """
-        INSERT INTO outreach_events(id, target_id, user_id, event_type, from_status, to_status, detail, created_at)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO outreach_events(id, target_id, user_id, event_type, from_status, to_status, detail, detail_json, created_at)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (f"outreach-event-{uuid4().hex}", target_id, user_id, event_type, from_status, to_status, detail, _event_time(conn, target_id)),
+        (f"outreach-event-{uuid4().hex}", target_id, user_id, event_type, from_status, to_status, detail,
+         json.dumps(data or {}, sort_keys=True), _event_time(conn, target_id)),
     )
 
 
@@ -684,6 +690,60 @@ def _schedules(conn: sqlite3.Connection, user_id: str, target_id: str | None = N
         found.setdefault(row["target_id"], {})[row["kind"]] = {
             "send_at": row["send_at"], "label": row["label"], "state": row["state"], "error": row["error"],
         }
+    return found
+
+
+def _gmail_link(fragment: str) -> str:
+    """A link into the student's Gmail (the outreach account), to a thread or a draft."""
+    account = os.environ.get("PIPELINE_OUTREACH_ACCOUNT", "").strip()
+    return f"https://mail.google.com/mail/?authuser={quote(account) if account else '0'}#{fragment}"
+
+
+def _thank_yous(conn: sqlite3.Connection, user_id: str, target_id: str | None = None) -> dict[str, dict[str, Any]]:
+    """The thank-you after a decline each company has (outreach_thank_you.py), as its card shows it.
+
+    While it waits, when it goes and why it moved come from its scheduled send,
+    which a pause, a missed morning, or a Gmail hold can move. Once sent, its
+    time and a link to the thread; once moved to Gmail Drafts, a link to the draft.
+    """
+    sql = (
+        "SELECT y.target_id, y.state, y.to_email, y.to_name, y.subject, y.body, y.generated_by, y.fingerprint, y.note, "
+        "y.send_at, y.label, y.thread_id, y.created_at, y.updated_at, s.state AS send_state, s.send_at AS send_send_at, "
+        "s.label AS send_label, s.error AS send_error "
+        "FROM outreach_thank_yous y LEFT JOIN outreach_scheduled_sends s ON s.target_id=y.target_id AND s.kind='thank_you' "
+        "WHERE y.user_id=?"
+    )
+    params: list[Any] = [user_id]
+    if target_id:
+        sql += " AND y.target_id=?"
+        params.append(target_id)
+    found: dict[str, dict[str, Any]] = {}
+    for row in conn.execute(sql, params).fetchall():
+        item = {key: row[key] for key in (
+            "state", "to_email", "to_name", "subject", "body", "generated_by", "fingerprint", "note", "send_at", "label",
+            "created_at", "updated_at",
+        )}
+        item["send_state"] = None
+        if row["state"] in {"scheduled", "transmitting"} and row["send_state"] in {"scheduled", "sending", "transmitting"}:
+            item.update(send_state=row["send_state"], send_at=row["send_send_at"], label=row["send_label"], note=row["send_error"] or "")
+        item["sent_at"] = row["updated_at"] if row["state"] == "sent" else None
+        item["thread_url"] = _gmail_link(f"all/{quote(row['thread_id'])}") if row["thread_id"] else ""
+        item["draft_url"] = ""
+        found[row["target_id"]] = item
+    if found:
+        drafts = conn.execute(
+            "SELECT target_id, detail FROM outreach_events WHERE user_id=? AND event_type='thank_you_draft_created' ORDER BY created_at",
+            (user_id,),
+        ).fetchall()
+        for draft in drafts:
+            if draft["target_id"] not in found:
+                continue
+            try:
+                message_id = str(json.loads(draft["detail"] or "{}").get("message_id") or "")
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if message_id:
+                found[draft["target_id"]]["draft_url"] = _gmail_link(f"drafts?compose={quote(message_id)}")
     return found
 
 
@@ -925,7 +985,11 @@ def list_targets(
     regions = user_regions(conn, user_id)
     home = user_home(conn, user_id, regions)
     schedules = _schedules(conn, user_id)
-    return [{**_record(row, today, regions, home), "scheduled": schedules.get(row["id"], {})} for row in rows]
+    thank_yous = _thank_yous(conn, user_id)
+    return [
+        {**_record(row, today, regions, home), "scheduled": schedules.get(row["id"], {}), "thank_you": thank_yous.get(row["id"])}
+        for row in rows
+    ]
 
 
 def is_new_from_search(item: dict[str, Any]) -> bool:
@@ -978,6 +1042,7 @@ def get_target(
     regions = user_regions(conn, user_id)
     item = _record(row, today or local_today(conn, user_id), regions, user_home(conn, user_id, regions))
     item["scheduled"] = _schedules(conn, user_id, target_id).get(target_id, {})
+    item["thank_you"] = _thank_yous(conn, user_id, target_id).get(target_id)
     if include_events:
         item["events"] = [
             dict(event)
@@ -1507,12 +1572,13 @@ def log_reply(
     if bounce_notice(body) and not as_reply:
         suggestion = {**suggest_reply_status(body), "source": "rules", "confidence": None, "model": "", "fallback_reason": ""}
         return {"suggestion": suggestion, "logged": False, "target": get_target(conn, target["id"], user_id=user_id, include_events=True)}
-    suggestion = classify_reply(body, suggest_reply_status, decisions)
+    suggestion, readings = read_reply(body, suggest_reply_status, decisions)
     if suggestion["status"] == BOUNCED:
         # The student said a person wrote it, whatever it says about a failed delivery.
         suggestion = {**suggestion, "status": "replied", "reason": "They replied; you said this is a reply, not a failure notice"}
     with conn:
-        _log(conn, target_id, user_id, "reply_logged", detail=body)
+        # A pasted reply has no Gmail thread, so nothing automatic ever answers it.
+        _log(conn, target_id, user_id, "reply_logged", detail=body, data={"source": "pasted", "readings": readings})
     return {"suggestion": suggestion, "logged": True, "target": get_target(conn, target["id"], user_id=user_id, include_events=True)}
 
 

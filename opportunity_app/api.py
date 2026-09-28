@@ -296,10 +296,12 @@ from .outreach_inbox import InboxWatcher, capture_replies
 from .outreach_forms import default_submitter_factory as default_form_submitter_factory, set_contact_form, submit_contact_form
 from .outreach_automation import AutomationWorker, settings as automation_settings, update_settings as update_automation_settings
 from .outreach_schedule import cancel_send, schedule_send
+from . import outreach_thank_you
 from .outreach_gmail import (
     GmailAuthError,
     SendConflictError,
     SendNeedsCheckError,
+    ThankYouChanged,
     create_gmail_draft,
     default_client_factory as default_gmail_client_factory,
     gmail_drafts_status,
@@ -463,6 +465,13 @@ class OutreachApprovalRequest(BaseModel):
     fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class OutreachThankYouSendRequest(BaseModel):
+    # The thank-you the card showed; one changed since is not sent.
+    fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # As for OutreachSendRequest: the check a 428 answer named, once the student has looked in Gmail.
+    sent_folder_check: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
+
+
 class OutreachSendRequest(BaseModel):
     kind: Literal["initial", "follow_up"] = "initial"
     # The approved draft the student confirmed; a draft changed since is not sent.
@@ -570,6 +579,7 @@ class OutreachSettingsRequest(BaseModel):
     draft_provider: str | None = Field(default=None, max_length=40)
     follow_up_provider: str | None = Field(default=None, max_length=40)
     call_prep_provider: str | None = Field(default=None, max_length=40)
+    thank_you_provider: str | None = Field(default=None, max_length=40)
     review_provider: str | None = Field(default=None, max_length=40)
     research_agent: str | None = Field(default=None, max_length=40)
     attachment_resume_id: str | None = Field(default=None, max_length=100)
@@ -2854,6 +2864,65 @@ def create_app(
             return {**get_outreach_target(conn, target_id, user_id=user_id), "cancelled": cancelled}
         except OutreachNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+
+    @app.delete("/api/v1/outreach/{target_id}/thank-you")
+    def cancel_outreach_thank_you(
+        target_id: str,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """Cancel the thank-you waiting to go, or dismiss one that was held. False when nothing was left to stop."""
+        try:
+            cancelled = outreach_thank_you.cancel(conn, target_id, user_id=user_id)
+            return {**get_outreach_target(conn, target_id, user_id=user_id), "cancelled": cancelled}
+        except OutreachNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+
+    @app.post("/api/v1/outreach/{target_id}/thank-you/edit")
+    def edit_outreach_thank_you(
+        target_id: str,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """Stop the automatic thank-you and put it in the student's Gmail Drafts, in the thread, to edit and send."""
+        try:
+            draft = outreach_thank_you.edit_in_gmail(conn, target_id, user_id=user_id, client_factory=resolved_gmail_client_factory)
+        except OutreachNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        except (ThankYouChanged, SendConflictError, GmailAuthError) as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        except (RuntimeError, httpx.HTTPError) as exc:
+            detail = str(exc) if isinstance(exc, RuntimeError) else "Could not reach Gmail. Nothing was sent"
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail) from exc
+        return {"draft": draft, "target": get_outreach_target(conn, target_id, user_id=user_id)}
+
+    @app.post("/api/v1/outreach/{target_id}/thank-you/send")
+    def send_outreach_thank_you(
+        target_id: str,
+        payload: OutreachThankYouSendRequest,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """Send it anyway: the student's own confirmed send of a thank-you that was held or stopped."""
+        try:
+            sent = outreach_thank_you.send_anyway(
+                conn, target_id, user_id=user_id, fingerprint=payload.fingerprint,
+                sent_folder_check=payload.sent_folder_check, client_factory=resolved_gmail_client_factory,
+            )
+        except OutreachNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        except SendNeedsCheckError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_428_PRECONDITION_REQUIRED, detail={"msg": str(exc), "check": exc.check},
+            ) from exc
+        except (ThankYouChanged, SendConflictError, GmailAuthError) as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        except (RuntimeError, httpx.HTTPError) as exc:
+            detail = str(exc) if isinstance(exc, RuntimeError) else "Could not reach Gmail. Nothing was sent"
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail) from exc
+        return {**sent, "target": get_outreach_target(conn, target_id, user_id=user_id)}
 
     @app.post("/api/v1/outreach/{target_id}/confirm-research")
     def confirm_research_for_outreach(

@@ -309,6 +309,21 @@ def _apply_internal_automation(conn: sqlite3.Connection, sql: str) -> None:
     conn.executescript(sql)
 
 
+# What an outreach event records beside its text (outreach._log's ``data``): a
+# reply read from Gmail keeps its ids, its sender, and both readings of it.
+_DECLINE_THANK_YOU_COLUMNS = (
+    ("outreach_events", "detail_json", "TEXT NOT NULL DEFAULT '{}'"),
+)
+
+
+def _apply_decline_thank_you(conn: sqlite3.Connection, sql: str) -> None:
+    # Guarded like _apply_automation: running it again after a crash repairs it.
+    for table, column, definition in _DECLINE_THANK_YOU_COLUMNS:
+        if not _has_column(conn, table, column):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    conn.executescript(sql)
+
+
 # Migrations whose SQL alone cannot express the change: parsing timestamps is
 # not portable across SQLite and PostgreSQL, so a Python step owns it. Adding a
 # column is not repeatable, so a step owns that too.
@@ -318,6 +333,7 @@ _MIGRATION_STEPS: dict[str, Callable[[Any, str], None]] = {
     "0037_automation.sql": _apply_automation,
     "0038_application_mail.sql": _apply_application_mail,
     "0039_internal_automation.sql": _apply_internal_automation,
+    "0040_decline_thank_you.sql": _apply_decline_thank_you,
 }
 
 

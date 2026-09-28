@@ -107,11 +107,12 @@ FAMILY = {"claude-code": "anthropic", "anthropic": "anthropic", "codex-cli": "op
 AUTOMATIC_ORDER = ("codex-cli", "claude-code", "openai", "anthropic")
 
 
-def review_choice() -> tuple[str, str]:
-    """The provider that reviews follow-ups, and a note when it is a compromise.
+def review_choice(purpose: str = "follow_up") -> tuple[str, str]:
+    """The provider that reviews an automatic email, and a note when it is a compromise.
 
     The student's pick when it is set up; otherwise a set-up provider from a
-    different family than the follow-up writer, else the best one there is.
+    different family than the writer of that ``purpose`` (a follow-up, or the
+    thank-you after a decline), else the best one there is.
     """
     from .agent_providers import provider_catalog
     from .outreach_drafting import resolve_provider
@@ -128,18 +129,19 @@ def review_choice() -> tuple[str, str]:
     if not ready:
         raise ValueError("No model is set up on this computer to review follow-ups")
     try:
-        drafter = resolve_provider(None, purpose="follow_up")[0]
+        drafter = resolve_provider(None, purpose=purpose)[0]
     except ValueError:
         drafter = ""
     other = [provider for provider in ready if FAMILY.get(provider) != FAMILY.get(drafter)]
     if other:
         return other[0], ""
-    return ready[0], "same family as the follow-up writer; no other model is set up"
+    writer = "thank-you writer" if purpose == "thank_you" else "follow-up writer"
+    return ready[0], f"same family as the {writer}; no other model is set up"
 
 
-def review_runner() -> tuple[str, Runner]:
+def review_runner(purpose: str = "follow_up") -> tuple[str, Runner]:
     """The reviewer's name and a function that sends it a prompt. CLIs run with no tools and no web."""
-    provider, note = review_choice()
+    provider, note = review_choice(purpose)
     name = f"{provider} ({note})" if note else provider
     if provider not in {"codex-cli", "claude-code"}:
         from .agent_providers import build_provider, complete_text, provider_catalog
