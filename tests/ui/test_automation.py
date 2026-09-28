@@ -84,8 +84,8 @@ def test_the_profile_page_shows_what_the_app_does_on_its_own(owner_page):
     section = open_profile(owner_page)
     expect(section.get_by_role("heading", name="What the app does on its own")).to_be_visible()
     expect(section).to_contain_text("Nothing here is on until you turn it on.")
-    assert section.locator(".automation-group > h4").all_inner_texts() == ["Outreach", "Applications", "Notifications"], \
-        "a group with no features (Discovery) is left out"
+    assert section.locator(".automation-group > h4").all_inner_texts() == ["Outreach", "Applications", "Discovery", "Notifications"], \
+        "every group with a feature, in order"
     expect(section.locator("#automation-mode-auto_drafts")).not_to_be_checked()
     expect(section.locator('[data-automation-feature="scheduled_sending"] .chip')).to_have_text("External")
     expect(section.locator('[data-automation-feature="auto_drafts"] .chip')).to_have_count(0)

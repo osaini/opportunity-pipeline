@@ -79,7 +79,8 @@ class SettingsTests(AutomationApiCase):
         self.assertEqual(payload["settings"]["paused"], False)
         feature = self.feature(payload, "auto_drafts")
         self.assertEqual(set(feature), {"key", "label", "description", "group", "risk", "modes", "mode", "shadow_since",
-                                        "can_turn_on", "can_turn_on_reason"})
+                                        "can_turn_on", "can_turn_on_reason", "requirement"})
+        self.assertEqual(feature["requirement"], "", "nothing beyond the switch is needed")
         self.assertEqual((feature["mode"], feature["modes"], feature["group"]), ("off", ["off", "on"], "outreach"))
         self.assertFalse(self.feature(payload, SHADOWED.key)["can_turn_on"])
         self.assertIn("shadow first", self.feature(payload, SHADOWED.key)["can_turn_on_reason"])

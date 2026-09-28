@@ -36,7 +36,7 @@ from typing import Any, Callable
 
 import httpx
 
-from . import automation
+from . import automation, internal_automation
 from .outreach import _log, get_target, list_targets
 from .outreach_contacts import SafeFetcher, apply_choice, choose_contact, find_contacts, list_candidates
 from .outreach_forms import form_due
@@ -253,7 +253,10 @@ class AutomationWorker:
     and a student who paused automation has theirs held), then recovers
     every bounced contact that is due, then writes at most one draft and
     sends at most one contact form, so a slow model call or page never holds
-    the others up for long. Nothing that acts runs for a paused student.
+    the others up for long. Then the changes that stay inside the app
+    (internal_automation): up to five unanswered companies closed, at most
+    one follow-up draft, and the daily archive of silent applications.
+    Nothing that acts runs for a paused student.
     Each pass records how it went in automation_health (automation.worker).
     """
 
@@ -294,6 +297,7 @@ class AutomationWorker:
         or the first error of the pass with any address taken out. A student
         with nothing on and nothing due gets no row.
         """
+        # internal_automation adds "closed", "follow_up_drafts", and "archived" when those switches ran.
         report: dict[str, Any] = {"sent": [], "recovered": [], "drafted": [], "forms": []}
         with closing(connect_product(self.platform_target)) as conn:
             errors: dict[str, str] = {}
@@ -319,12 +323,21 @@ class AutomationWorker:
                     _discard_open_transaction(conn)
                     for user_id in due_users:
                         errors.setdefault(user_id, _step_error(exc))
-            users = self._users_with(conn, tuple(SETTINGS))
+            users = self._users_with(conn, (*SETTINGS, *internal_automation.WORKER_FEATURES))
             for user_id in users:
                 try:
                     self._run_for(conn, user_id, report)
                 except Exception as exc:  # noqa: BLE001 - one student's failure never stops the next student
                     LOGGER.exception("Outreach automation failed for one student")
+                    _discard_open_transaction(conn)
+                    errors.setdefault(user_id, _step_error(exc))
+                try:
+                    # Changes that stay inside the app: auto-close, follow-up drafts, the daily archive.
+                    internal_automation.run_for_user(
+                        conn, user_id, report, gmail_client_factory=self._gmail_client_factory,
+                        provider_factory=self._provider_factory, draft_provider=self._draft_provider,
+                    )
+                except Exception as exc:  # noqa: BLE001 - recorded like any other step's failure
                     _discard_open_transaction(conn)
                     errors.setdefault(user_id, _step_error(exc))
             for user_id in sorted({*desktop_users, *due_users, *users}):

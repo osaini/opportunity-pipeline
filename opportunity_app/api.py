@@ -38,6 +38,7 @@ from pipeline_core import MAX_PER_COMPANY, OpportunityFilters, OpportunityReposi
 
 from . import DEFAULT_PLATFORM_DB, DEFAULT_PROFILE, STATIC_DIR
 from . import automation as automation_core
+from . import auto_triage, resume_variants
 from .actions import (
     APPLICATION_STAGES,
     ApplicationNotFoundError,
@@ -205,6 +206,7 @@ from .resumes import (
     ResumeNotFoundError,
     ResumeValidationError,
     confirm_resume,
+    confirm_variant,
     delete_resume,
     list_resumes,
     resume_file_path,
@@ -627,6 +629,15 @@ class ResumeConfirmRequest(BaseModel):
     confirmed_data: dict[str, Any] = Field(default_factory=dict)
     profile_updates: dict[str, Any] = Field(default_factory=dict)
     confirmed_profile_fields: list[str] = Field(default_factory=list, max_length=100)
+
+
+class ResumeVariantRequest(BaseModel):
+    # The student's own name for this résumé's kind of role; empty stops it being a variant.
+    variant_label: str = Field(default="", max_length=60)
+
+
+class ResumePickRequest(BaseModel):
+    resume_file_id: str = Field(min_length=1, max_length=200)
 
 
 class CaptureUrlRequest(BaseModel):
@@ -1697,7 +1708,11 @@ def create_app(
             deadlines = user_deadlines_for(
                 repo.connection, [item["id"] for item in items], user_id=repo.user_id
             )
-            items = [{**item, "user_deadline_on": deadlines.get(item["id"])} for item in items]
+            picks = resume_variants.picks_for(repo.connection, [item["id"] for item in items], user_id=repo.user_id)
+            items = [
+                {**item, "user_deadline_on": deadlines.get(item["id"]), "resume_pick": picks.get(item["id"])}
+                for item in items
+            ]
             items = decorate_with_tags(repo.connection, items, user_id=repo.user_id)
         return OpportunityListResponse(
             items=items,
@@ -1722,6 +1737,7 @@ def create_app(
                 **item,
                 "user_deadline": user_deadline(repo.connection, opportunity_id, user_id=repo.user_id),
                 "can_set_user_deadline": visible_opportunity(repo.connection, repo.user_id, opportunity_id),
+                "resume_pick": resume_variants.stored_pick(repo.connection, repo.user_id, opportunity_id),
             }
             item = decorate_with_tags(repo.connection, [item], user_id=repo.user_id)[0]
         return item
@@ -1765,6 +1781,45 @@ def create_app(
     ) -> Response:
         clear_user_deadline(conn, opportunity_id, user_id=user_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @app.get("/api/v1/opportunities/{opportunity_id}/resume-pick")
+    def get_resume_pick(
+        opportunity_id: str,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """The résumé variant for this role: the pick in force, what the words suggest, and the résumés to choose from."""
+        try:
+            return resume_variants.pick_view(conn, user_id, opportunity_id)
+        except OpportunityNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Opportunity not found") from exc
+
+    @app.put("/api/v1/opportunities/{opportunity_id}/resume-pick")
+    def put_resume_pick(
+        opportunity_id: str,
+        payload: ResumePickRequest,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """The student's own pick for this role. It wins, and automation never overwrites it."""
+        try:
+            return resume_variants.set_student_pick(conn, user_id, opportunity_id, payload.resume_file_id)
+        except OpportunityNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Opportunity not found") from exc
+        except resume_variants.ResumePickError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+
+    @app.get("/api/v1/opportunities/{opportunity_id}/resume-check")
+    def get_resume_check(
+        opportunity_id: str,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """Confirmed profile skills this posting names that the chosen résumé never mentions. Informational only."""
+        try:
+            return resume_variants.resume_check(conn, user_id, opportunity_id)
+        except OpportunityNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Opportunity not found") from exc
 
     @app.get("/api/v1/urgent")
     def get_urgent(
@@ -2336,6 +2391,15 @@ def create_app(
     ) -> dict[str, Any]:
         # The verdict is checked by the request model (422); a ValueError here is the wrong status (409).
         return automation_decision(lambda: automation_core.review(conn, action_id, user_id, payload.verdict))
+
+    @app.get("/api/v1/automation/auto-passed")
+    def get_auto_passed(
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """Roles auto_pass passed on in the last 7 days that still stand; Restore on each is the ledger's undo."""
+        items = auto_triage.auto_passed_this_week(conn, user_id)
+        return {"items": items, "total": len(items), "days": auto_triage.REVIEW_DAYS}
 
     @app.post("/api/v1/automation/notices/read")
     def read_automation_notices(
@@ -2935,6 +2999,21 @@ def create_app(
         except ResumeNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resume not found") from exc
         except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+
+    @app.post("/api/v1/resumes/{version_id}/variant")
+    def confirm_resume_variant(
+        version_id: str,
+        payload: ResumeVariantRequest,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """Use as a variant: confirm the résumé as a document to send, with a label, without changing profile facts."""
+        try:
+            return confirm_variant(conn, version_id, payload.variant_label, user_id=user_id)
+        except ResumeNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Resume not found") from exc
+        except ResumeValidationError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
     @app.get("/api/v1/resumes/{version_id}/file")

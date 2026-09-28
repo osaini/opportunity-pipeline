@@ -337,6 +337,62 @@ Copy `config/resume.example.json` to `config/resume.json` and fill it in from
 the student's resume, if they share one. Copy facts exactly; never embellish.
 The resume and cover-letter commands only reformulate what is in that file.
 
+**Résumé variants (optional).** Ask: *"Which kinds of roles do you apply to?
+Do you keep a different résumé for each?"* Many students keep two or three
+they designed themselves, one per field (for example one for hardware roles
+and one for software roles). If they do:
+
+1. They upload each one on the Profile page, under Resume versions, then type
+   a label for it and press **Use as a variant**. That confirms it as a
+   document to send without copying anything into the profile; profile facts
+   still come from the one résumé confirmed normally.
+2. Ask for the words that mark each kind of posting, and write them into
+   `config/profile.json` with the same labels:
+
+```json
+"resume_variants": [
+  {"label": "Hardware", "keywords": ["CAD", "PCB", "embedded", "mechanical"]},
+  {"label": "Software", "keywords": ["Python", "React", "backend", "APIs"]}
+],
+"default_variant": "Software"
+```
+
+Labels match the ones typed in the app, ignoring case and spaces at the ends.
+With the **Pick the résumé variant for each saved role** switch on (Profile ›
+Automation), every role they save gets the variant whose words the posting
+names most: a word in the title counts three times, one in the description
+once, and the winner needs at least 2 points and 1.5 times the next variant.
+Otherwise the pick is marked unsure and `default_variant` is used. The role
+shows the pick, which they can change with one click, and the browser
+extension preselects it. Nothing is rewritten. Leave `resume_variants` empty
+(the default) if they keep one résumé; the app then uses the confirmed résumé,
+as before.
+
+**What the app may do on its own.** Every switch under Profile › Automation is
+off until the student turns it on, and each change can be undone. A few read
+settings from `config/profile.json`; ask before setting them:
+
+| Ask | Field | Notes |
+| --- | --- | --- |
+| After how many days with no reply should an application show up in Urgent? | `application_follow_up_days` | default 21; used by **Flag applications with no reply** |
+| After how many days should a silent application be archived? | `archive_after_days` | default 60; used by **Archive applications that never answered** |
+| From what score should new roles be saved for you? Below what score passed? | `automation.auto_save_at`, `automation.auto_pass_below` | scores from 0 to 100, with no defaults: left out, the switch can't be turned on. Keep `auto_pass_below` at or under `auto_save_at`. |
+
+Auto-save and auto-pass run after each daily sync, only on roles first seen
+since the switch was turned on, and never pass a posting that has no
+description. Known limit: the daily sync keeps scores only for the main account
+on the computer, so these two switches work only for that account. Roles passed
+this way are listed for a week under Auto-passed this week, each with Restore.
+
+```json
+"application_follow_up_days": 21,
+"archive_after_days": 60,
+"automation": {"auto_save_at": 85, "auto_pass_below": 30}
+```
+
+Run `python -m opportunity_app.setup validate` again after editing; it checks
+these fields too.
+
 ## 8. First run and daily use
 
 ```bash
