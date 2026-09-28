@@ -156,12 +156,12 @@ class SettingsTests(AutomationApiCase):
     def test_the_legacy_outreach_route_still_reads_and_writes_the_same_switches(self):
         legacy = self.client.put("/api/v1/outreach/automation", headers=AUTH, json={"auto_drafts": True})
         self.assertEqual(legacy.status_code, 200, legacy.text)
-        self.assertEqual(legacy.json(), {"auto_drafts": True, "bounce_recovery": False, "scheduled_sending": False,
+        self.assertEqual(legacy.json(), {"auto_drafts": True, "bounce_recovery": False, "bounce_auto_resend": False, "scheduled_sending": False,
                                          "follow_up_review": False, "form_submission": False})
         self.assertEqual(self.feature(self.get("/api/v1/automation").json(), "auto_drafts")["mode"], "on")
         self.put("/api/v1/automation/settings", {"modes": {"auto_drafts": "off", "bounce_recovery": "on"}})
         self.assertEqual(self.get("/api/v1/outreach/automation").json(), {
-            "auto_drafts": False, "bounce_recovery": True, "scheduled_sending": False, "follow_up_review": False, "form_submission": False,
+            "auto_drafts": False, "bounce_recovery": True, "bounce_auto_resend": False, "scheduled_sending": False, "follow_up_review": False, "form_submission": False,
         })
 
     def test_every_route_needs_a_signed_in_student(self):

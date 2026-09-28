@@ -11,6 +11,11 @@ scheduled is sent, and only the words they scheduled. Editing the draft or
 changing the recipient cancels the schedule (outreach._cancel_schedules), as
 does Send now or Cancel. Anything that stops the send is shown on the card.
 
+One email is queued without the student's click: a first email that bounced,
+resent to the new contact with only its greeting changed (send_soon, from
+outreach_automation with the bounce_auto_resend switch on). It is due at once
+rather than on a weekday morning, and goes the same way from there.
+
 Just before sending, Gmail is read again for a bounce or a reply
 (outreach_review.fresh_look), and a follow-up is not sent to a company that
 replied or whose first email bounced. With the follow_up_review switch on, a
@@ -167,6 +172,37 @@ def schedule_send(
     now = now or datetime.now(timezone.utc)
     if not automation_settings(conn, user_id=user_id)["scheduled_sending"]:
         raise ValueError("Turn on Send on their weekday morning under Outreach settings first")
+    approved = _ready_to_queue(conn, target_id, user_id=user_id, kind=kind, fingerprint=fingerprint)
+    zone, basis = recipient_zone(conn, approved.target, user_id=user_id)
+    send_at = next_morning(now, zone, f"{target_id}:{kind}")
+    label = _label(send_at, zone, basis)
+    what = "follow-up" if kind == "follow_up" else "email"
+    _queue(conn, target_id, user_id=user_id, kind=kind, fingerprint=fingerprint, send_at=send_at,
+           zone_key=getattr(zone, "key", "system-local"), label=label,
+           detail=f"The {what} to {approved.target['contact_email']} goes out {label}")
+    return {"kind": kind, "send_at": send_at.isoformat(timespec="seconds"), "label": label, "state": "scheduled"}
+
+
+RESEND_LABEL = "Right away, to the new contact after the bounce"
+
+
+def send_soon(
+    conn: sqlite3.Connection, target_id: str, *, user_id: str, fingerprint: str, detail: str, now: datetime | None = None,
+) -> dict[str, Any]:
+    """Queue an approved first email for the worker's next pass, not a weekday morning (outreach_automation's resend).
+
+    It takes the same path as a scheduled send, so the check for a reply or a
+    bounce, the pause, Cancel, and the once-only send all apply to it.
+    """
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    _ready_to_queue(conn, target_id, user_id=user_id, kind="initial", fingerprint=fingerprint)
+    _queue(conn, target_id, user_id=user_id, kind="initial", fingerprint=fingerprint, send_at=now,
+           zone_key="UTC", label=RESEND_LABEL, detail=detail)
+    return {"kind": "initial", "send_at": now.isoformat(timespec="seconds"), "label": RESEND_LABEL, "state": "scheduled"}
+
+
+def _ready_to_queue(conn: sqlite3.Connection, target_id: str, *, user_id: str, kind: str, fingerprint: str) -> Any:
+    """Every check Send makes, made at queueing time as well as at send time. Returns the approved draft."""
     current = conn.execute(
         "SELECT state FROM outreach_scheduled_sends WHERE target_id=? AND user_id=? AND kind=?", (target_id, user_id, kind),
     ).fetchone()
@@ -179,9 +215,13 @@ def schedule_send(
     if not gmail["bounce_check"]:
         # The check just before sending reads Gmail for replies and bounces.
         raise ValueError("Reconnect Gmail once before scheduling, so the app can check for replies and bounces before it sends")
-    zone, basis = recipient_zone(conn, approved.target, user_id=user_id)
-    send_at = next_morning(now, zone, f"{target_id}:{kind}")
-    label = _label(send_at, zone, basis)
+    return approved
+
+
+def _queue(
+    conn: sqlite3.Connection, target_id: str, *, user_id: str, kind: str, fingerprint: str, send_at: datetime,
+    zone_key: str, label: str, detail: str,
+) -> None:
     stamp = utc_now()
     with conn:
         conn.execute(
@@ -192,12 +232,9 @@ def schedule_send(
                 timezone=excluded.timezone, label=excluded.label, state='scheduled', error='', attempts=0, updated_at=excluded.updated_at
                 WHERE outreach_scheduled_sends.state NOT IN ('sending', 'transmitting')
             """,
-            (target_id, user_id, kind, fingerprint, send_at.isoformat(timespec="seconds"), getattr(zone, "key", "system-local"),
-             label, stamp, stamp),
+            (target_id, user_id, kind, fingerprint, send_at.isoformat(timespec="seconds"), zone_key, label, stamp, stamp),
         )
-        what = "follow-up" if kind == "follow_up" else "email"
-        _log(conn, target_id, user_id, "send_scheduled", detail=f"The {what} to {approved.target['contact_email']} goes out {label}")
-    return {"kind": kind, "send_at": send_at.isoformat(timespec="seconds"), "label": label, "state": "scheduled"}
+        _log(conn, target_id, user_id, "send_scheduled", detail=detail)
 
 
 def cancel_send(conn: sqlite3.Connection, target_id: str, *, user_id: str, kind: str, reason: str = "You cancelled it") -> bool:

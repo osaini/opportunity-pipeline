@@ -913,6 +913,40 @@ def readdress_greeting(body: str, old_names: set[str], new_name: str, company: s
     return "\n".join(lines), old_greeting, new_greeting.strip()
 
 
+def without_greeting(body: str) -> list[str]:
+    """The body's lines with the greeting taken out: the first line when it is only a
+    greeting, or its start when the first sentence follows on the same line."""
+    lines = (body or "").split("\n")
+    index = next((number for number, line in enumerate(lines) if line.strip()), None)
+    if index is None:
+        return lines
+    line = lines[index].strip()
+    leading = _LEADING_GREETING.fullmatch(line)
+    if leading:
+        return [*lines[:index], leading["rest"].strip(), *lines[index + 1:]]
+    if _GREETING.fullmatch(line):
+        return [*lines[:index], *lines[index + 1:]]
+    return lines
+
+
+def greets_contact(body: str, contact_name: str, company: str, style: dict[str, str]) -> bool:
+    """Whether the body opens with a greeting that fits this contact.
+
+    That is their first name, or a greeting to nobody in particular (the
+    company's team, "there"). False for a greeting to anyone else, and for a
+    body with no greeting line: the student looks before it goes on its own.
+    """
+    line = next((line.strip() for line in (body or "").split("\n") if line.strip()), "")
+    match = _GREETING.fullmatch(line) or _LEADING_GREETING.fullmatch(line)
+    if not match:
+        return False
+    greeted = " ".join(match["name"].split()).casefold()
+    if greeted in _GENERIC_GREETINGS or _own_team(greeted, company) or greeted == unnamed_greeting(company, style).casefold():
+        return True
+    first = contact_first_name(contact_name)
+    return bool(first) and greeted == first.casefold()
+
+
 def _readdress_drafts(values: dict[str, Any], previous: dict[str, Any], style: dict[str, str]) -> list[tuple[str, str, str]]:
     """Point unsent drafts' greetings at a changed contact. Returns (kind, old line, new line) per draft."""
     name_changed = "contact_name" in values and values["contact_name"] != previous["contact_name"]

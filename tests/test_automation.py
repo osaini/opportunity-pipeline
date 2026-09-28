@@ -38,6 +38,7 @@ MIGRATIONS = Path(__file__).resolve().parent.parent / "migrations"
 LEGACY_OUTREACH_SETTINGS = {
     "auto_drafts": "Write a draft for every company with a contact and a location",
     "bounce_recovery": "After a bounce, find another contact and fix the greeting",
+    "bounce_auto_resend": "After a bounce, send the approved email again to the new contact when only the greeting changed",
     "scheduled_sending": "Send approved emails on the recipient's next weekday morning",
     "follow_up_review": "Have a second model check each follow-up before it goes out",
     "form_submission": "Send approved first messages through the company's contact form when it has no email",
@@ -166,7 +167,7 @@ class RegistryTests(AutomationCase):
             feature = automation.FEATURES[key]
             self.assertEqual((feature.group, feature.modes), ("outreach", ("off", "on")))
         self.assertEqual({key for key, f in automation.FEATURES.items() if f.risk == "external"},
-                         {"scheduled_sending", "form_submission", "decline_thank_you"})
+                         {"scheduled_sending", "bounce_auto_resend", "form_submission", "decline_thank_you"})
         self.assertEqual(automation.FEATURES["jev_inbox_suggestions"].group, "applications")
         self.assertEqual(automation.FEATURES["desktop_notifications"].group, "notifications")
         with self.assertRaises(ValueError):

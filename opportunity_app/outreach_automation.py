@@ -7,6 +7,10 @@
   again and the best other contact applied (choose_contact, never an address
   that bounced). The greeting follows (outreach._readdress_drafts) and the draft
   goes back for approval.
+- bounce_auto_resend: with bounce_recovery, the bounced first email goes again
+  at once to the new contact, without a click, when only its greeting changed
+  and a guessed address has an inbox from the company's site in Cc
+  (resend_refusal). Once per company.
 - scheduled_sending: the student's confirmed Send queues the approved email
   for the recipient's next weekday morning (outreach_schedule.py).
 - form_submission: a company with no email but a contact form on its site
@@ -14,9 +18,10 @@
   once. A form that asks for a picture CAPTCHA or a field the app cannot
   answer waits for the student.
 
-Only scheduled_sending and form_submission lead to anything going out, and
-only a first message the student approved. Every switch is off until the student turns it on
-(user_settings). The switches are features in automation.FEATURES, and the
+Only scheduled_sending, bounce_auto_resend and form_submission lead to
+anything going out, and only a first message the student approved (for a
+resend, approved before the bounce, with only the greeting changed since).
+Every switch is off until the student turns it on (user_settings). The switches are features in automation.FEATURES, and the
 student's pause stops all of them (automation.is_enabled). A pause that
 lands while a step is running (a site search or a model call can take
 minutes) stops it too: the write that would finish it checks again first
@@ -37,7 +42,7 @@ from typing import Any, Callable
 import httpx
 
 from . import automation, internal_automation, outreach_thank_you
-from .outreach import _log, get_target, list_targets
+from .outreach import _log, get_target, greeting_style, greets_contact, list_targets, without_greeting
 from .outreach_contacts import SafeFetcher, apply_choice, choose_contact, find_contacts, list_candidates
 from .outreach_forms import form_due
 from .outreach_gmail import last_bounce
@@ -52,9 +57,10 @@ WORKER_COMPONENT = "automation.worker"
 # The outreach switches, as they have always been shown here: a view of the registry.
 SETTINGS = {
     key: automation.FEATURES[key].description
-    for key in ("auto_drafts", "bounce_recovery", "scheduled_sending", "follow_up_review", "form_submission")
+    for key in ("auto_drafts", "bounce_recovery", "bounce_auto_resend", "scheduled_sending", "follow_up_review", "form_submission")
 }
 RECOVERY_EVENT = "contact_recovery"
+RESEND_EVENT = "resent_after_bounce"
 AUTO_DRAFT_FAILED = "auto_draft_failed"
 # A draft that failed (the model was down, the profile was missing a fact) is
 # tried again after this, not on every pass.
@@ -142,6 +148,7 @@ def recover_contact(
                   if candidate.get("email") and candidate["email"].casefold() not in failed]
     choice = choose_contact(candidates)
     current = get_target(conn, target_id, user_id=user_id)
+    resend = None
     if not current["contact_bounced"]:
         # The student picked someone while the search ran; theirs stands.
         detail = "You chose a new contact while the app was looking."
@@ -155,14 +162,92 @@ def recover_contact(
         except automation.AutomationPaused as exc:
             return {"target_id": target_id, "company": target["company"], "to": None, "detail": str(exc), "paused": True}
         cc = f", Cc {choice['cc']['email']}" if choice.get("cc") else ""
-        detail = f"Chose {choice['to']['email']}{cc} ({choice['basis'].replace('_', ' ')}). Review the draft, then send it again."
+        detail = f"Chose {choice['to']['email']}{cc} ({choice['basis'].replace('_', ' ')})."
+        if automatic and automation.is_enabled(conn, user_id, "bounce_auto_resend"):
+            resend = resend_after_bounce(conn, target_id, user_id=user_id, before=current, choice=choice)
+        detail += f" {resend['detail']}" if resend else " Review the draft, then send it again."
     elif not target["website"]:
         detail = "No website on record, so there was nowhere to look. Add another contact by hand."
     else:
         detail = f"Found no other address on the company's site. Add one by hand, or try Find people.{note}"
     with conn:
         _log(conn, target_id, user_id, RECOVERY_EVENT, detail=detail)
-    return {"target_id": target_id, "company": target["company"], "to": choice["to"]["email"] if choice else None, "detail": detail}
+    return {
+        "target_id": target_id, "company": target["company"], "to": choice["to"]["email"] if choice else None, "detail": detail,
+        "resent": bool(resend and resend["queued"]),
+    }
+
+
+# --- Resend after a bounce ---------------------------------------------------------------
+
+
+def resend_refusal(
+    before: dict[str, Any], after: dict[str, Any], choice: dict[str, Any], *, resent_before: bool, style: dict[str, str],
+) -> str:
+    """Why the bounced first email may not go again to the new contact on its own, or "" when it may.
+
+    ``before`` is the target just before the new contact was applied, ``after``
+    just after. The rules are the student's (2026-09-28): the words are the
+    ones they approved, with only the greeting changed for the new contact; a
+    guessed address goes only with an inbox their site lists in Cc, so a wrong
+    guess still reaches the company; and it happens once per company. The
+    greeting must fit the new contact (outreach.greets_contact): one the
+    student wrote to someone else is left as it was when the contact changes.
+    ``style`` is the student's greeting style (outreach.greeting_style).
+    """
+    if resent_before:
+        return "It was already resent once automatically, so this time it waits for you"
+    if before["draft_status"] != "approved":
+        return "The email that bounced was not an approved draft"
+    if choice["basis"] in {"strong_guess", "weak_guess"} and not choice.get("cc"):
+        return f"{choice['to']['email']} is a guess and their site lists no inbox to Cc"
+    if choice["basis"] not in {"confirmed", "strong_guess", "weak_guess", "shared_inbox"}:
+        return "The new contact's basis is not one that may be sent to automatically"
+    if after["contact_bounced"] or after["cc_bounced"]:
+        return "An address on it bounced before"
+    if after["email_subject"] != before["email_subject"] or without_greeting(after["email_body"]) != without_greeting(before["email_body"]):
+        return "More than the greeting changed"
+    if not greets_contact(after["email_body"], after["contact_name"], after["company"], style):
+        return "Its greeting is not to the new contact"
+    return ""
+
+
+def resend_after_bounce(
+    conn: sqlite3.Connection, target_id: str, *, user_id: str, before: dict[str, Any], choice: dict[str, Any],
+) -> dict[str, Any]:
+    """Approve the readdressed first email again and queue it to go at once, when resend_refusal allows it.
+
+    The approval is recorded as automatic (RESEND_EVENT). If it cannot be
+    queued, the approval is taken back, so nothing stays approved that the
+    student did not approve. Returns {"queued", "detail"}.
+    """
+    from .outreach import approve_draft
+    from .outreach_schedule import send_soon  # imported here: it imports this module
+
+    after = get_target(conn, target_id, user_id=user_id)
+    resent_before = _latest(conn, target_id, user_id, RESEND_EVENT) is not None
+    refusal = resend_refusal(before, after, choice, resent_before=resent_before, style=greeting_style(conn, user_id))
+    if refusal:
+        return {"queued": False, "detail": f"Not resent automatically: {refusal}. Review the draft, then send it again."}
+    to = after["contact_email"] + (f" (Cc {after['contact_cc']})" if after["contact_cc"] else "")
+    try:
+        approved = approve_draft(conn, target_id, user_id=user_id, fingerprint=after["draft_fingerprint"], acknowledge_warnings=True)
+        send_soon(conn, target_id, user_id=user_id, fingerprint=approved["draft_fingerprint"],
+                  detail=f"The email to {to} goes out again now, after the bounce")
+        with conn:
+            _log(conn, target_id, user_id, RESEND_EVENT, detail=(
+                f"Approved again automatically for {to}: only the greeting changed from the email you approved"
+            ))
+    except Exception as exc:  # noqa: BLE001 - whatever stopped it, the student reviews the draft instead
+        LOGGER.warning("The resend after a bounce was not queued: %s", exc)
+        with conn:
+            if conn.execute(
+                "UPDATE outreach_targets SET draft_status='generated', updated_at=? WHERE id=? AND user_id=? AND draft_status='approved'",
+                (utc_now(), target_id, user_id),
+            ).rowcount:
+                _log(conn, target_id, user_id, "approval_withdrawn", detail="The automatic resend could not be queued")
+        return {"queued": False, "detail": f"Not resent automatically: {exc}. Review the draft, then send it again."[:500]}
+    return {"queued": True, "detail": f"Sending it again now to {to} (Resend after a bounce is on)."}
 
 
 # --- Automatic drafts --------------------------------------------------------------------
@@ -251,7 +336,8 @@ class AutomationWorker:
     desktop_notify), then sends every scheduled email that is due (for any
     student: turning the switch off does not strand one already scheduled,
     and a student who paused automation has theirs held), then recovers
-    every bounced contact that is due, then writes at most one draft and
+    every bounced contact that is due (sending at once, in the same pass, any
+    bounced email bounce_auto_resend may send again), then writes at most one draft and
     sends at most one contact form, so a slow model call or page never holds
     the others up for long. Then the changes that stay inside the app
     (internal_automation): up to five unanswered companies closed, at most
@@ -398,6 +484,11 @@ class AutomationWorker:
                         if recovered.get("paused"):
                             break
                         report["recovered"].append(recovered)
+                if self._gmail_client_factory is not None and any(item.get("resent") for item in report["recovered"]):
+                    from .outreach_schedule import run_due_sends  # imported here: it pulls in the Gmail send path
+
+                    # Right away, as the student asked: not on the next pass, after drafts and forms.
+                    report["sent"].extend(run_due_sends(conn, client_factory=self._gmail_client_factory))
         if self._provider_factory is not None and not report["drafted"] and automation.is_enabled(conn, user_id, "auto_drafts"):
             due = draft_due(conn, user_id=user_id)
             if due:
