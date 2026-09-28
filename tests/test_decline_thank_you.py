@@ -364,6 +364,11 @@ class DeclineCase(unittest.TestCase):
         outreach_thank_you._NOTED.clear()
         forget_gmail_backoff(self)
         self.conn = connect_product(self.platform_path)
+        # The reply rules started a week ago: the fixture's replies arrive minutes before the clock, and mail from
+        # before the rules is never counted without the student (outreach_inbox._activated_at).
+        with self.conn:
+            self.conn.execute("UPDATE schema_migrations SET applied_at=? WHERE name=?",
+                              ((datetime.now(timezone.utc) - timedelta(days=7)).isoformat(), outreach_inbox.MIGRATION))
         self.connect()
         automation.set_mode(self.conn, USER, "jev_inbox_suggestions", "on")
         automation.set_mode(self.conn, USER, "decline_thank_you", "on")
@@ -468,7 +473,20 @@ class DeclineCase(unittest.TestCase):
         ).fetchall()]
 
     def notices(self):
-        return [notice["title"] for notice in automation.list_notices(self.conn, USER)]
+        # Reply capture's own "<company> replied" notice is outreach_inbox's, and tested there.
+        return [notice["title"] for notice in automation.list_notices(self.conn, USER)
+                if not str(notice["event_key"]).startswith("outreach-reply:")]
+
+    def inbox_row(self, gmail_id):
+        """How reply capture filed a message: (kind, reason)."""
+        row = self.conn.execute("SELECT kind, reason FROM outreach_inbox_messages WHERE gmail_id=?", (gmail_id,)).fetchone()
+        return (row["kind"], row["reason"]) if row else None
+
+    def confirm(self, target_id, gmail_id):
+        """The student says an email kept as a possible reply is their reply (It's a reply, log it)."""
+        response = self.client.post(f"/api/v1/outreach/{target_id}/possible-replies/{gmail_id}", headers=AUTH,
+                                    json={"decision": "reply"})
+        self.assertEqual(response.status_code, 200, response.text)
 
     def log_after_the_reply(self, target_id, event_type, *, received, to_status=None, detail=""):
         """An event the app logged after the reply arrived (the fixture's reply arrives minutes ahead of the clock)."""
@@ -861,13 +879,21 @@ class ThankYouRulesTests(DeclineCase):
         raw = raw_reply(GREENHOUSE_REJECTION, sender="Greg Lee <greg@bovi.com>", delivered=relayed, html=GREENHOUSE_HTML,
                         gmail_id="gh-1")
         self.deliver(raw, message_id="gh-1", thread="t-gh")
+        # From the address written to, but relayed by a job system: reply capture keeps it for the student to settle.
+        self.assertEqual(self.inbox_row("gh-1"), ("possible", "job_mail"))
+        self.assertEqual(self.events(greg["id"], "reply_logged"), [])
+        self.assert_not_thanked(greg["id"], "the company is marked sent")
+        # Once the student says it is their reply, it is logged whole, as a reply found in Gmail is.
+        self.confirm(greg["id"], "gh-1")
         data = json.loads(self.conn.execute(
             "SELECT detail_json FROM outreach_events WHERE target_id=? AND event_type='reply_logged'", (greg["id"],),
         ).fetchone()[0])
         self.assertEqual((data["readings"]["rules"]["status"], data["readings"]["jev"]["label"]), ("declined", "declined"))
         self.assertIn("boards.greenhouse.io", data["link_hosts"])
-        # Signed and sent as Greg, from the address written to, and Gmail vouches for it: only R5 sees the job system.
-        self.assert_not_thanked(greg["id"], "Not thanked automatically: sent through a job application system", "(failed: R5)")
+        self.assertEqual((data["via"], data["reason"]), ("address", "confirmed"))
+        # Signed and sent as Greg, from the address written to, and Gmail vouches for it: R5 sees the job system,
+        # and R1 a reply the student confirmed, which is never one the app answers on its own.
+        self.assert_not_thanked(greg["id"], "(failed: R1, R5)")
         # Either sign alone is enough: the relay's envelope, or the job board's link in the HTML.
         target = outreach.get_target(self.conn, greg["id"], user_id=USER)
         envelope = raw_reply(GREENHOUSE_REJECTION, sender="Greg Lee <greg@bovi.com>", delivered=relayed)
@@ -881,8 +907,47 @@ class ThankYouRulesTests(DeclineCase):
         raw = raw_reply(BLAST, to="undisclosed-recipients:;", subject=BLAST_SUBJECT, gmail_id="blast-1")
         self.assertEqual(self.blockers(raw), ["R3"])
         self.deliver(raw, message_id="blast-1")
+        # Not addressed to the student: kept as a possible reply for them to settle, and nothing is planned meanwhile.
+        self.assertEqual(self.inbox_row("blast-1"), ("possible", "not_addressed"))
+        self.assert_not_thanked(self.acme["id"], "the company is marked sent")
+        self.confirm(self.acme["id"], "blast-1")
         self.assertEqual(len(self.events(self.acme["id"], "reply_logged")), 1, "a message from the contact is logged")
-        self.assert_not_thanked(self.acme["id"], "Not thanked automatically: it was not addressed to you", "(failed: R3)")
+        self.assert_not_thanked(self.acme["id"], "(failed: R1, R3)")
+
+    # Reply capture's own rules (outreach_inbox.py): how it matched a reply, and an email that may be one.
+
+    def test_r1_reads_how_reply_capture_matched_the_reply(self):
+        self.assertEqual(self.blockers(reason="thread", via="thread"), [])
+        self.assertEqual(self.blockers(reason="written_to", via="address"), [])
+        # A match on weaker evidence, or the student's own call on a possible reply, is never answered on its own,
+        # even when the thread and the address would pass.
+        for reason in ("domain_person", "confirmed", ""):
+            with self.subTest(reason=reason):
+                self.assertEqual(self.blockers(reason=reason), ["R1"])
+
+    def test_nothing_is_planned_while_an_email_that_may_be_a_reply_waits(self):
+        self.decline(thread=self.thread)
+        self.deliver(raw_reply(BLAST, to="undisclosed-recipients:;", subject=BLAST_SUBJECT, gmail_id="blast-2"), message_id="blast-2")
+        self.assertEqual(self.inbox_row("blast-2"), ("possible", "not_addressed"))
+        self.assert_not_thanked(self.acme["id"], "an email from them that may be a reply is waiting for you to check")
+        # Once the student says it is not a reply, their decline is thanked as before.
+        response = self.client.post(f"/api/v1/outreach/{self.acme['id']}/possible-replies/blast-2", headers=AUTH,
+                                    json={"decision": "not_reply"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(self.plan(self.acme["id"])["planned"])
+
+    def test_an_email_that_may_be_a_reply_holds_a_scheduled_thank_you(self):
+        self.decline(thread=self.thread)
+        self.assertTrue(self.plan(self.acme["id"])["planned"])
+        self.deliver(raw_reply(BLAST, to="undisclosed-recipients:;", subject=BLAST_SUBJECT, gmail_id="blast-3"), message_id="blast-3")
+        self.assertEqual(self.inbox_row("blast-3"), ("possible", "not_addressed"))
+        outcome = self.run_due(self.acme["id"])
+        self.assertEqual([item["state"] for item in outcome], ["held"])
+        row = thank_you_row(self.conn, self.acme["id"], USER)
+        self.assertEqual((row["state"], row["note"]), ("held", outreach_thank_you.MAY_HAVE_REPLIED))
+        self.assertEqual(len(self.gmail.sent), 1, "only the first email ever went")
+        self.assertEqual(self.notices(), ["Thank-you to Acme Robotics held: an email from them may be a reply",
+                                          "Acme Robotics, Inc. may have replied"])
 
     def test_a_genuine_plain_decline_in_the_thread_and_authenticated_is_still_thanked(self):
         self.decline(thread=self.thread)
@@ -1143,9 +1208,10 @@ class ThankYouRulesTests(DeclineCase):
 
     def test_the_debug_log_names_the_rule_and_nothing_is_written(self):
         self.deliver(raw_reply(BLAST, to="undisclosed-recipients:;", subject=BLAST_SUBJECT, gmail_id="blast-1"), message_id="blast-1")
+        self.confirm(self.acme["id"], "blast-1")
         with self.assertLogs("opportunity_app.outreach_thank_you", level="DEBUG") as logged:
-            self.assert_not_thanked(self.acme["id"], "(failed: R3)")
-        self.assertTrue(any("failed: R3" in line and self.acme["id"] in line for line in logged.output), logged.output)
+            self.assert_not_thanked(self.acme["id"], "(failed: R1, R3)")
+        self.assertTrue(any("failed: R1, R3" in line and self.acme["id"] in line for line in logged.output), logged.output)
 
     def test_the_rules_are_read_again_just_before_it_goes(self):
         self.decline()
@@ -1873,7 +1939,10 @@ class ReviewFindingEligibilityTests(DeclineCase):
     def test_a_no_reply_address_or_a_reply_to_elsewhere_is_never_answered(self):
         target = self.sent_target()
         self.decline(sender="Acme Robotics <no-reply@acme.com>", message_id="nr-1", thread=self.sent_thread(target["id"]))
-        self.assert_not_planned(target["id"], "(failed: R6)")
+        # A no-reply address's decline in the thread is noted as an automatic reply, never logged as one to answer
+        # (and were it logged, R6 would refuse it: test_r6).
+        self.assertEqual(self.inbox_row("nr-1"), ("automatic", "acknowledgement"))
+        self.assert_not_planned(target["id"], "the company is marked sent")
         other = self.sent_target(company="Bovi", contact_email="greg@bovi.com", website="https://bovi.com")
         self.decline(sender="Greg <greg@bovi.com>", message_id="rt-1", thread="t-rt",
                      headers="Reply-To: Bovi Jobs <jobs@bovi.com>\n")
