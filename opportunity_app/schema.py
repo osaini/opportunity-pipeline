@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from contextlib import closing
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -36,8 +37,27 @@ APPLICATION_STATUSES = {"applying", "applied", "interview", "offer", "rejected",
 PAUSE_NEVER_CHANGED = "1970-01-01T00:00:00+00:00"
 
 
+# The last stamp utc_now handed out in this process, so the next is always later.
+_LAST_NOW = datetime.min.replace(tzinfo=timezone.utc)
+_NOW_LOCK = threading.Lock()
+
+
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    """Now, in UTC to the microsecond, and always later than the last call in this process.
+
+    Rows are ordered by these stamps (the automation ledger, notices, events),
+    and application_events is unique on one. Some clocks tick only every 15 ms
+    or so (Windows before Python 3.13), which would hand two writes in a row
+    the same stamp and leave their order to chance. A tie moves on by a
+    microsecond instead.
+    """
+    global _LAST_NOW
+    with _NOW_LOCK:
+        now = datetime.now(timezone.utc)
+        if now <= _LAST_NOW:
+            now = _LAST_NOW + timedelta(microseconds=1)
+        _LAST_NOW = now
+    return now.isoformat(timespec="microseconds")
 
 
 # Every request opens its own connection, so anything done per connection is
