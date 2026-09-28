@@ -381,7 +381,11 @@ themselves (rule 3). The details:
     with Jev off, paused, or unavailable nothing goes, and turning Jev or the
     switch off holds one already scheduled for them to send or dismiss. A reply about a call, an offer, a question, a referral, or
     "maybe later" is always left for them, and so is a rejection from a job
-    system (those come from no-reply addresses).
+    system (those come from no-reply addresses). The check fails closed: a
+    reply that says anything beyond a stock "no" with thanks and good wishes,
+    a thread where anyone there said more than no, or an answer typed into
+    the quoted email is left for them too, so some plain declines will still
+    be theirs to answer.
   - A decline that arrives before 5 PM on a weekday in the recipient's time
     zone is answered after a normal delay the same day; otherwise the next
     weekday morning. There is no shadow period: the switch under Profile →

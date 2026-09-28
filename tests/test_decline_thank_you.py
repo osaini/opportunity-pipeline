@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+import textwrap
 import unittest
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -58,6 +59,8 @@ DECLINE = (
     "Best of luck with your search."
 )
 PASS = '{"send": true, "problems": []}'
+# The names in the thread a plain no may use: the student, the contact, the company.
+NAMES = ("Test Student", "Dana Lee", "Acme Robotics, Inc.", "Acme Robotics")
 CLEAN_PROVIDERS = {
     "PIPELINE_OUTREACH_PROVIDER": "", "PIPELINE_OUTREACH_THANK_YOU_PROVIDER": "", "PIPELINE_OUTREACH_REVIEW_PROVIDER": "",
 }
@@ -982,6 +985,21 @@ QUOTED = (
     "> Hi Dana,\n> Would you have 15 minutes for a call next week?\n"
 )
 CALL = "Happy to chat! When are you free for a call next week?"
+# The first email as an Outlook reply quotes it below its header (DeclineCase.outlook_target sends exactly this).
+FIRST_EMAIL = (
+    "Hi Dana,\n\nShort note about Acme. I built a small robot arm last spring and would love to learn how your team "
+    "approaches grasping. Would you have 15 minutes for a call next week?\n\nTest Student"
+)
+OUTLOOK_HEADER = (
+    "From: Test Student <student@example.com>\nSent: Monday, September 28, 2026 9:00 AM\n"
+    "To: Dana Lee <dana@acme.example>\nSubject: Robotics internship question\n\n"
+)
+# More than no, in words the rules' patterns and the open-door list both miss: each is left for the student.
+MORE_THAN_NO = (
+    "Maybe in a few months.", "We may have something in the summer.", "We might be hiring in January.",
+    "I've shared your resume with our CTO.", "Sam Chen on our team might be able to help: sam@acme.com.",
+    "Let's grab lunch when you're in town.", "Send me your resume and I'll keep it.",
+)
 
 
 class TextJev(FakeJev):
@@ -1002,7 +1020,46 @@ class QuotingTests(unittest.TestCase):
         self.assertEqual(outreach_inbox.written_between_quotes(QUOTED), "", "a quote with nothing typed in it, its attribution split over two lines")
         self.assertEqual(outreach_inbox.written_between_quotes(DECLINE), "")
         outlook = f"{DECLINE}\n\nFrom: Test Student <student@example.com>\nSent: Monday, September 28, 2026 9:00 AM\nWould you have time for a call?"
-        self.assertEqual(outreach_inbox.written_between_quotes(outlook), "", "an Outlook quote is unmarked, so nothing in it can be told apart")
+        self.assertEqual(outreach_inbox.written_between_quotes(outlook, ["Would you have time for a call?"]), "",
+                         "below an Outlook header, the student's own line is theirs")
+        self.assertEqual(outreach_inbox.written_between_quotes(outlook), "Would you have time for a call?",
+                         "with nothing sent to compare, nothing below an Outlook header is ruled out")
+
+    def test_an_answer_typed_inside_an_outlook_quote_is_found(self):
+        clean = f"{DECLINE}\n\n{OUTLOOK_HEADER}{FIRST_EMAIL}"
+        self.assertEqual(outreach_inbox.strip_quoted(clean), DECLINE)
+        self.assertEqual(outreach_inbox.written_between_quotes(clean, [FIRST_EMAIL]), "", "their header and the student's own email")
+        inline = clean.replace("next week?", "next week?\n\nSure, Thursday at 2 works for me.")
+        self.assertEqual(outreach_inbox.written_between_quotes(inline, [FIRST_EMAIL]), "Sure, Thursday at 2 works for me.")
+        joined = clean.replace("\nTest Student", "\nHappy to chat though.\nTest Student")
+        self.assertEqual(outreach_inbox.written_between_quotes(joined, [FIRST_EMAIL]), "Happy to chat though.")
+        short = clean.replace("Hi Dana,", "Hi Dana,\nSure")
+        self.assertEqual(outreach_inbox.written_between_quotes(short, [FIRST_EMAIL, "Please make sure to write."]), "Sure",
+                         "a short line counts as the student's only when it is one of their whole lines")
+        # Outlook's plain text re-wraps long lines at 76; a paragraph is the student's as a whole.
+        wrapped = "\n".join(textwrap.fill(line, 76) if line else "" for line in FIRST_EMAIL.split("\n"))
+        self.assertEqual(outreach_inbox.written_between_quotes(f"{DECLINE}\n\n{OUTLOOK_HEADER}{wrapped}", [FIRST_EMAIL]), "")
+        original = f"{DECLINE}\n\n-----Original Message-----\n{OUTLOOK_HEADER}{FIRST_EMAIL}"
+        self.assertEqual(outreach_inbox.written_between_quotes(original, [FIRST_EMAIL]), "")
+        # A follow-up quoted above the first email, with the first email's own header further down.
+        thread = f"{DECLINE}\n\n{OUTLOOK_HEADER}Just following up.\n\n{OUTLOOK_HEADER}{FIRST_EMAIL}"
+        self.assertEqual(outreach_inbox.written_between_quotes(thread, [FIRST_EMAIL, "Just following up."]), "")
+        self.assertEqual(outreach_inbox.written_between_quotes(thread, [FIRST_EMAIL]), "Just following up.",
+                         "a follow-up that is not on record is not the student's")
+
+    def test_an_html_outlook_reply_keeps_what_was_typed_into_the_quote(self):
+        quoted = FIRST_EMAIL.replace("\n", "<br>").replace(
+            "next week?", "next week?<br><span style='color:#1f497d'>Happy to chat Thursday.</span>")
+        raw = (
+            "From: Dana <dana@acme.example>\nTo: s@example.com\nSubject: Re: hi\nMIME-Version: 1.0\n"
+            "Content-Type: text/html; charset=UTF-8\n\n<div>We&#39;re not hiring interns right now.</div><hr>"
+            "<div><b>From:</b> Test Student &lt;student@example.com&gt;<br><b>Sent:</b> Monday, September 28, 2026 9:00 AM<br>"
+            f"<b>To:</b> Dana Lee<br><b>Subject:</b> Robotics internship question</div><div>{quoted}</div>\n"
+        ).encode()
+        message = self.parse(raw)
+        self.assertEqual(outreach_inbox.reply_text(message), "We're not hiring interns right now.")
+        self.assertEqual(outreach_inbox.written_between_quotes(outreach_inbox.full_reply_text(message), [FIRST_EMAIL]),
+                         "Happy to chat Thursday.")
 
     def test_an_html_reply_keeps_its_quote_marked_and_what_follows_it(self):
         raw = (
@@ -1033,6 +1090,46 @@ class StrictRulesTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(outreach.suggest_reply_status(text)["status"], "declined", "the rules alone read each as a no")
                 self.assertTrue(outreach_thank_you.plain_decline_problem(text))
+
+    def test_anything_the_list_does_not_know_is_more_than_no(self):
+        for more in MORE_THAN_NO:
+            text = f"Unfortunately we're not hiring interns right now. {more}"
+            with self.subTest(text=text):
+                self.assertEqual(outreach.suggest_reply_status(text)["status"], "declined", "the rules alone read each as a no")
+                self.assertIn("says more than no", outreach_thank_you.plain_decline_problem(text, NAMES))
+        for text in (
+            "We're not hiring interns yet.",
+            "We're not hiring interns until summer.",
+            "We're not hiring interns right now, only in summer.",
+            "We're not hiring interns right now, we have openings this fall.",
+            "We're not hiring interns this summer we have openings this fall",
+            "We're not hiring interns right now but maybe in spring.",
+            "We have decided not to move ahead, we're not hiring.",
+            "Not hiring now. Try Sam Chen.",
+            f"{DECLINE}\n\nBest,\nDana\n\nP.S. We may have something in May.",
+            f"{DECLINE}\n\nBest,\nTry Sam Chen\nsam@acme.example",
+            f"{DECLINE}\n\nThis email and its attachments are confidential.",
+            f"{DECLINE}\n\nBest,\nDana\nWe're Hiring Engineers",
+            f"{DECLINE}\n\nBest,\nDana\nJoin Our Team",
+        ):
+            with self.subTest(text=text):
+                self.assertIn("says more than no", outreach_thank_you.plain_decline_problem(text, NAMES))
+
+    def test_a_plain_no_with_a_greeting_pleasantries_and_a_signature_is_plain(self):
+        for text in (
+            f"{DECLINE}\n\nBest,\nDana Lee\nHead of Talent | Acme Robotics\ndana@acme.example | (555) 123-4567\nhttps://acme.example",
+            f"Hi Test,\n\n{DECLINE}\n\nSent from my iPhone",
+            "Hi Test,\n\nThanks so much for your interest in Acme Robotics, but we won't be able to take you on this summer. "
+            "Best of luck with your search!\n\nThanks,\nDana",
+            "Hello Test Student,\n\nThank you for reaching out and for your interest in our team. I'm afraid we're not in a "
+            "position to take on interns at this time. I wish you the best in your search.\n\nKind regards,\nDana Lee",
+            "Hi there, thanks for the note! Sadly there are no open positions right now. Good luck!\n-- \nDana Lee\nFounder, Acme Robotics",
+            "Sorry for the delay. It\u2019s not a fit for us right now. All the best, Dana",
+            "Unfortunately we are not currently hiring interns at this time.\n\nBest,\nDana Lee\nEarly Careers Recruiter\n"
+            "University Internships, Acme Robotics",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(outreach_thank_you.plain_decline_problem(text, NAMES), "")
 
     def test_a_plain_no_is_plain(self):
         self.assertEqual(outreach_thank_you.plain_decline_problem(DECLINE), "")
@@ -1066,6 +1163,24 @@ class ReviewFindingContentTests(unittest.TestCase):
                 self.assertEqual(greeting_line(target["company"], name, {"word": "Hi", "unnamed": "{company} team"}),
                                  f"Hi {expected.split()[0]},")
         self.assertEqual(recipient_name("The Acme Robotics Crew", "crew@acme.example", target), "", "the company's own name names nobody")
+
+    def test_a_title_a_company_or_an_unclear_order_after_the_comma_is_never_the_greeting(self):
+        target = {"company": "Acme Robotics, Inc.", "contact_email": "dana@acme.example", "contact_name": "Dana Lee"}
+        style = {"word": "Hi", "unnamed": "{company} team"}
+        for from_name, expected in (
+            # After a whole name, the rest is a title or the company: dropped, never swapped to the front.
+            ("Dana Lee, Founder", "Dana Lee"), ("Sam Park, Director", "Sam Park"), ("Tom Wu, Co-Founder", "Tom Wu"),
+            ("Jane Doe, Acme", "Jane Doe"), ("Dana Lee, Head of Talent", "Dana Lee"),
+            # Which part is the name is not plain: nobody is named, so the greeting falls back.
+            ("Lee, DANA", ""), ("Van Berg, Anna", ""), ("Lee, Founder", ""), ("Lee, Acme", ""),
+        ):
+            with self.subTest(from_name=from_name):
+                name = recipient_name(from_name, "someone@acme.example", target)
+                self.assertEqual(name, expected)
+                greeting = greeting_line(target["company"], name, style)
+                self.assertNotIn(greeting, {"Hi Founder,", "Hi Director,", "Hi Co-Founder,", "Hi Acme,", "Hi Lee,", "Hi Van,"})
+        self.assertEqual(recipient_name("Lee, DANA", "dana@acme.example", target), "Dana Lee",
+                         "from the contact's own address, the name on file stands in")
 
     def test_the_writer_selector_is_what_picks_the_thank_you_writer(self):
         called = []
@@ -1151,6 +1266,90 @@ class ReviewFindingEligibilityTests(DeclineCase):
         self.arrive(DECLINE, message_id="decline-1", received=now_ms(timedelta(minutes=5)))
         self.check()
         self.assert_not_planned(target["id"], "an earlier reply reads as call scheduled")
+
+    def test_an_answer_typed_inside_an_outlook_quote_is_left_for_the_student(self):
+        target = self.sent_target(email_body=FIRST_EMAIL)
+        typed = FIRST_EMAIL.replace("next week?", "next week?\n\nSure, Thursday at 2 works for me.")
+        self.decline(f"{DECLINE}\n\n{OUTLOOK_HEADER}{typed}")
+        data = json.loads(self.conn.execute(
+            "SELECT detail_json FROM outreach_events WHERE target_id=? AND event_type='reply_logged'", (target["id"],),
+        ).fetchone()[0])
+        self.assertEqual((data["readings"]["rules"]["status"], data["readings"]["jev"]["label"]), ("declined", "declined"),
+                         "the part above the Outlook header alone reads as a no to both")
+        self.assert_not_planned(target["id"], "between the lines")
+
+    def test_a_decline_that_quotes_the_email_outlook_style_is_still_thanked_and_reviewed_whole(self):
+        target = self.sent_target(email_body=FIRST_EMAIL)
+        self.decline(f"{DECLINE}\n\n{OUTLOOK_HEADER}{FIRST_EMAIL}")
+        self.assertTrue(self.plan(target["id"])["planned"])
+        prompts = []
+
+        def reviewer():
+            return "fake-reviewer", lambda prompt: prompts.append(prompt) or PASS
+
+        self.assertEqual([item["state"] for item in self.run_due(target["id"], reviewer=reviewer)], ["sent"])
+        whole = json.loads(prompts[0].split("JSON input:\n", 1)[1])["replies"][0]["whole_message"]
+        self.assertIn("Sent: Monday, September 28, 2026 9:00 AM", whole)
+        self.assertIn('"From:" and "Sent:" header', prompts[0])
+
+    def test_an_open_door_from_the_cc_that_both_readings_call_a_no_is_left_for_the_student(self):
+        from_the_cto = (
+            "We're not hiring interns, but happy to set up a call to chat about your project.",
+            "We're not hiring right now, but reach out next spring and we can talk.",
+            "We're not hiring interns right now. Talk to my colleague Sam, sam@acme.example.",
+            "Could you send me a short portfolio of your robotics work?",
+            *(f"Unfortunately we're not hiring interns right now. {more}" for more in MORE_THAN_NO),
+        )
+        for number, text in enumerate(from_the_cto):
+            with self.subTest(text=text):
+                domain = f"acme{number}.example"
+                target = self.sent_target(company=f"Acme {number}", contact_email=f"dana@{domain}", website=f"https://{domain}",
+                                          contact_cc=f"cto@{domain}")
+                self.arrive(text, message_id=f"cto-{number}", sender=f"Chris CTO <cto@{domain}>", thread=f"t-cc-{number}",
+                            received=now_ms(timedelta(minutes=2)))
+                self.arrive(DECLINE, message_id=f"no-{number}", sender=f"Dana Lee <dana@{domain}>", thread=f"t-cc-{number}",
+                            received=now_ms(timedelta(minutes=5)))
+                self.check()
+                labels = [json.loads(row[0])["readings"]["jev"]["label"] for row in self.conn.execute(
+                    "SELECT detail_json FROM outreach_events WHERE target_id=? AND event_type='reply_logged'", (target["id"],),
+                ).fetchall()]
+                self.assertEqual(labels, ["declined", "declined"], "Jev reads both as a no")
+                self.assert_not_planned(target["id"], "an earlier reply is not a plain no")
+
+    def test_an_earlier_plain_no_from_the_cc_still_lets_it_go(self):
+        target = self.sent_target(contact_cc="cto@acme.example")
+        self.arrive("Unfortunately we're not hiring interns right now.", message_id="cto-1", sender="Chris CTO <cto@acme.example>",
+                    received=now_ms(timedelta(minutes=2)))
+        self.arrive(DECLINE, message_id="decline-1", received=now_ms(timedelta(minutes=5)))
+        self.check()
+        self.assertTrue(self.plan(target["id"])["planned"])
+        self.assertEqual(thank_you_row(self.conn, target["id"], USER)["to_email"], "dana@acme.example", "to whoever wrote last")
+
+    def test_a_no_with_more_that_the_list_does_not_know_is_left_for_the_student(self):
+        for number, more in enumerate(MORE_THAN_NO):
+            with self.subTest(more=more):
+                domain = f"acme{number}.example"
+                target = self.sent_target(company=f"Acme {number}", contact_email=f"dana@{domain}", website=f"https://{domain}")
+                self.decline(f"Unfortunately we're not hiring interns right now. {more}", message_id=f"more-{number}",
+                             sender=f"Dana Lee <dana@{domain}>", thread=f"t-more-{number}")
+                self.assert_not_planned(target["id"], "rules read strictly")
+
+    def test_a_title_after_the_comma_is_never_the_greeting(self):
+        for number, (sender, to_name, greeting) in enumerate((
+            ('"Dana Lee, Founder" <dana@acme{n}.example>', "Dana Lee", "Hi Dana,"),
+            # An order that is not plain: from the contact's address, the name on file; from anyone else, nobody.
+            ('"Lee, DANA" <dana@acme{n}.example>', "Dana Lee", "Hi Dana,"),
+            ('"Park, SAM" <sam@acme{n}.example>', "", None),
+        )):
+            with self.subTest(sender=sender):
+                domain = f"acme{number}.example"
+                target = self.sent_target(company=f"Acme {number}", contact_email=f"dana@{domain}", website=f"https://{domain}")
+                greeting = greeting or greeting_line(target["company"], "", outreach.greeting_style(self.conn, USER))
+                self.decline(message_id=f"name-{number}", sender=sender.format(n=number), thread=f"t-name-{number}")
+                self.assertTrue(self.plan(target["id"])["planned"])
+                row = thank_you_row(self.conn, target["id"], USER)
+                self.assertEqual(row["to_name"], to_name)
+                self.assertTrue(row["body"].startswith(f"{greeting}\n"), row["body"])
 
     def test_a_suggestion_waiting_for_the_student_is_left_alone(self):
         target = self.sent_target()

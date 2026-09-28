@@ -34,7 +34,7 @@ from email import policy
 from email.message import EmailMessage
 from email.utils import getaddresses, parseaddr
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 from urllib.parse import quote
 
 import httpx
@@ -132,22 +132,87 @@ def strip_quoted(text: str) -> str:
     return "\n".join(lines).strip()
 
 
-def written_between_quotes(text: str) -> str:
+def written_between_quotes(text: str, sent: Iterable[str] = ()) -> str:
     """What the sender wrote after the email they quote begins: between its quoted lines, or below them.
 
     strip_quoted keeps only what is above the quote, so an answer typed inline
     ("> Would you have time for a call?" then "Sure, Thursday?") is lost there.
-    Only "> "-quoted email can be read this way: an Outlook-style quote (a
-    From:/Sent: block, or an Original Message line) carries the quoted email
-    unmarked, so nothing below it can be told apart from it.
+    A "> " quote marks its lines. An Outlook-style quote (a From:/Sent: block,
+    or an Original Message line) does not, so below it every line that is not
+    a header field and not the student's own words (``sent``: the emails they
+    sent, which it quotes) counts as written by the sender. With nothing in
+    ``sent``, every line below such a header counts: nothing is ruled out.
     """
     lines = text.replace("\r\n", "\n").split("\n")
     found = _quote_start(lines)
-    if found is None or found[1] == "header":
+    if found is None:
         return ""
     index, how = found
+    if how == "header":
+        return _written_below_header(lines[index:], sent)
     rest = lines[index + {"quote": 0, "wrote": 1, "wrote2": 2}[how]:]
     return "\n".join(line for line in rest if line.strip() and not line.lstrip().startswith(">")).strip()
+
+
+# The fields of an Outlook header block ("From:", "Sent:", "To:", "Subject:"), with or without bold marks.
+_HEADER_FIELD = re.compile(r"^\s*\**\s*(from|sent|date|to|cc|bcc|subject|importance|reply-to)\s*:", re.IGNORECASE)
+_QUOTE_MARKS = re.compile(r"^[\s>]+")
+_FLAT = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"', "\u00a0": " ", "\u200b": None, "\ufeff": None})
+
+
+def _flat(text: str) -> str:
+    """Text as compared with what the student sent: curly quotes straightened, spaces collapsed, case folded."""
+    return " ".join(str(text).translate(_FLAT).split()).casefold()
+
+
+def _header_starts(lines: list[str], index: int) -> bool:
+    line = lines[index]
+    return bool(_ORIGINAL.match(line)) or (
+        _HEADER_FIELD.match(line) is not None and line.lstrip(" *").casefold().startswith("from")
+        and any(_HEADER_FIELD.match(following) and following.lstrip(" *").casefold().startswith(("sent", "date"))
+                for following in [other for other in lines[index + 1:index + 6] if other.strip()][:2])
+    )
+
+
+def _written_below_header(lines: list[str], sent: Iterable[str]) -> str:
+    """The lines below an Outlook quote's header that are neither header fields nor the student's own words.
+
+    Words are the student's when they are a whole line of what they sent, or
+    four or more words that run on in it. A paragraph is tried whole first,
+    since a long line can come back re-wrapped into short pieces; a paragraph
+    that is not theirs as a whole is tried line by line. A header block quoted
+    further down (the thread's older email) is skipped the same way. What is
+    left, the sender wrote.
+    """
+    bodies = [str(body) for body in sent if str(body or "").strip()]
+    whole_lines = {_flat(line) for body in bodies for line in body.replace("\r\n", "\n").split("\n")} - {""}
+    running = " ".join(_flat(body) for body in bodies)
+
+    def theirs(words: str) -> bool:  # the student's own
+        return not words or words in whole_lines or (
+            len(words.split()) >= 4 and re.search(rf"(?<!\w){re.escape(words)}(?!\w)", running) is not None
+        )
+
+    paragraphs: list[list[str]] = [[]]
+    in_header = False
+    for index, line in enumerate(lines):
+        if not line.strip():
+            paragraphs.append([])
+            continue
+        if index == 0 or _header_starts(lines, index):
+            in_header = True
+            paragraphs.append([])
+            continue
+        if in_header and _HEADER_FIELD.match(line):
+            continue
+        in_header = False
+        paragraphs[-1].append(line.strip())
+    written: list[str] = []
+    for paragraph in paragraphs:
+        if theirs(_flat(" ".join(_QUOTE_MARKS.sub("", line) for line in paragraph))):
+            continue
+        written.extend(line for line in paragraph if not theirs(_flat(_QUOTE_MARKS.sub("", line))))
+    return "\n".join(written)
 
 
 def _html_full_text(markup: str) -> str:

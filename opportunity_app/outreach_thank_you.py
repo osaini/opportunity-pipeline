@@ -13,16 +13,22 @@ automation is not paused, and Jev inbox suggestions are on):
   contact, the Cc, or anyone at the company's domain (outreach_inbox's owner
   rules), and was not an automatic reply or a delivery failure. It came from
   an address that takes replies (no "no-reply"), with no Reply-To elsewhere,
-  and its whole message was kept (full_text), so nothing typed between the
-  lines of the email it quotes is missed: anything there leaves it to the student.
+  and its whole message was kept (full_text). Nothing may be typed into the
+  email it quotes: not between its "> " lines, and, below an Outlook
+  From:/Sent: header (which marks no line), no line that is not the
+  student's own first email or follow-up (outreach_inbox.written_between_quotes).
+  Anything there leaves it to the student.
 - Both readings say declined: the keyword rules and Jev, each kept on the
   reply_logged event (inbox_classifiers.read_reply), Jev at least
   MIN_CONFIDENCE sure. With Jev off, paused, or unavailable at capture there is
   no Jev reading, so nothing is sent. The rules are also read strictly
-  (``plain_decline_problem``): the no must be all it says, with no call, offer,
-  "later", referral or question anywhere in it.
-- No earlier reply keeps something open (a call, an offer, "later", by either
-  reading), and no suggestion other than declined is waiting for the student.
+  (``plain_decline_problem``): no call, offer, "later", referral or question
+  anywhere in it, and, failing closed on any wording not listed, every part of
+  it above the signature is the rules' own no, a stock pleasantry (thanks,
+  good luck), a greeting, or a name in the thread.
+- Every earlier reply, from anyone there, is a plain no by that same strict
+  reading, kept whole, and neither stored reading calls it a call, an offer or
+  "later"; no suggestion other than declined is waiting for the student.
 - It is the company's first thank-you (one per company, ever), the decline
   arrived after the switch was last turned on (turning it on never thanks an
   old one), nothing went to them after that reply, they were emailed first, the
@@ -80,7 +86,7 @@ import re
 import sqlite3
 import threading
 from datetime import datetime, time, timedelta, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 from urllib.parse import quote
 
 import httpx
@@ -402,16 +408,47 @@ def _given_name(part: str) -> bool:
     return all(word_ok(word, index == 0) for index, word in enumerate(words))
 
 
-def _display_name(name: str) -> str:
-    """A From display name in the order people say it: suffixes and credentials after a comma dropped, and
-    "Lee, Dana" turned into Dana Lee only when what follows the comma is plainly a given name."""
-    parts = [part.strip() for part in name.split(",")]
-    while len(parts) > 1 and _credential(parts[-1]):
-        parts.pop()
-    parts = [part for part in parts if part]
-    if len(parts) == 2 and _given_name(parts[1]):
-        return f"{parts[1]} {parts[0]}"
-    return parts[0] if parts else ""
+# A word that makes what follows a comma a job title, not a given name: "Dana Lee, Founder", "Sam Park, Head of Talent".
+_TITLE_WORDS = re.compile(
+    r"\b(founder|co-?founder|founding|ceo|cto|coo|cfo|cmo|cpo|chro|cso|vp|svp|evp|avp|president|chair\w*|director|manager|head"
+    r"|lead|principal|partner|owner|chief|officer|executive|engineer\w*|scientist|researcher|professor|recruit\w*|talent"
+    r"|coordinator|specialist|associate|analyst|advis[oe]r|consultant|assistant|administrator|admin|developer|architect"
+    r"|designer|intern|operations|sales|marketing|product|people|hr|research|design|senior|sr|staff|general|managing"
+    r"|technical|hiring|team|dr|mr|mrs|ms|mx|prof)\b",
+    re.IGNORECASE,
+)
+
+
+def _display_name(name: str, company: str = "") -> str:
+    """A From display name in the order people say it, or "" when which part is the name is not plain.
+
+    "Lee, Dana" is Dana Lee: one word before the comma, then a given name.
+    After a whole name, what follows the comma is a credential, a title or
+    the company ("Dana Lee, PhD", "Dana Lee, Founder", "Jane Doe, Acme") and
+    is dropped. Anything else ("Lee, DANA", "Van Berg, Anna", "Lee, Founder")
+    is left unnamed, so the greeting falls back rather than say "Hi Founder,".
+    """
+    parts = [part.strip() for part in name.split(",") if part.strip()]
+    if not parts:
+        return ""
+    head, rest = parts[0], parts[1:]
+    whole = len(head.split()) >= 2
+    # Suffixes and credentials at the end. Right after a lone surname, an all-capitals word may be the
+    # given name ("Lee, DANA"), so there only listed suffixes are dropped.
+    while rest and (_SUFFIXES.fullmatch(rest[-1]) or ((whole or len(rest) > 1) and _credential(rest[-1]))):
+        rest.pop()
+    if not rest:
+        return head
+    company_words = {word.casefold() for word in re.findall(r"[A-Za-z]+", spoken_company(company))} - {"the", "and", "of"}
+
+    def not_a_name(part: str) -> bool:
+        return bool(_TITLE_WORDS.search(part)) or any(word.casefold() in company_words for word in re.findall(r"[A-Za-z]+", part))
+
+    if whole:
+        return head if all(not_a_name(part) for part in rest) else ""
+    if len(rest) == 1 and _given_name(rest[0]) and not not_a_name(rest[0]):
+        return f"{rest[0]} {head}"
+    return ""
 
 
 def recipient_name(from_name: str, to_email: str, target: dict[str, Any]) -> str:
@@ -419,13 +456,15 @@ def recipient_name(from_name: str, to_email: str, target: dict[str, Any]) -> str
 
     A shared inbox ("Acme Careers", "Hiring Team") names nobody, so it is left
     out and the student's shared-inbox greeting is used. "Lee, Dana" is Dana
-    Lee, while "Dana Lee, PhD" is Dana Lee and never "PhD Dana Lee".
+    Lee, while "Dana Lee, PhD" and "Dana Lee, Founder" are Dana Lee, never
+    "PhD Dana Lee" or "Founder Dana Lee"; a From name whose order is not plain
+    names nobody (_display_name).
     """
     name = " ".join(str(from_name or "").replace('"', " ").split())
     if "@" in name:
         name = ""
     if "," in name:
-        name = _display_name(name)
+        name = _display_name(name, str(target.get("company") or ""))
     company = spoken_company(str(target.get("company") or ""))
     if name and (_TEAM_WORDS.search(name) or (company and (
         company_key(name) == company_key(company) or re.search(rf"\b{re.escape(company)}\b", name, re.IGNORECASE)
@@ -530,16 +569,20 @@ _OPEN_DOOR = re.compile(
 )
 
 
-def plain_decline_problem(text: str) -> str:
+def plain_decline_problem(text: str, names: Iterable[str] = ()) -> str:
     """Why the rules, read strictly, do not see a plain decline in ``text``; "" when they do.
 
     The rules' reading (suggest_reply_status) stops at its first match and
     looks for a decline before a call or a "later", so "We're not hiring, but
     happy to set up a call" reads as declined there. Here the decline must be
     there and nothing else may be: no offer, call, "later" or referral, by the
-    rules' patterns or in plainer words, and no question.
+    rules' patterns or in plainer words, and no question. And, failing closed
+    on any wording not listed here, every part of what they wrote (each clause,
+    above a signature) must be the rules' own no, a stock pleasantry such as
+    thanks or good luck, a greeting, or one of ``names`` (the people and the
+    company in the thread): anything else is more than no (_more_than_no).
     """
-    lowered = " ".join(str(text).lower().split())
+    lowered = " ".join(str(text).translate(_FLAT_QUOTES).lower().split())
     if not re.search(_pattern("declined"), lowered):
         return "the rules find no plain no in it"
     for status in ("offer", "paused", "call_scheduled"):
@@ -550,14 +593,188 @@ def plain_decline_problem(text: str) -> str:
     found = _OPEN_DOOR.search(lowered)
     if found:
         return f"it says more than no ({found.group(0)!r})"
+    more = _more_than_no(str(text), names)
+    if more:
+        return f"it says more than no ({more[:80]!r})"
     return ""
 
 
-def _unquoted(item: dict[str, Any]) -> str:
-    """A reply's own words: above the email it quotes, and anything typed between its quoted lines."""
+# --- The strict reading's list: the no, and nothing else ------------------------------------------
+
+_FLAT_QUOTES = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"', "\u00a0": " ", "\u200b": None})
+# Where one part of a reply ends and the next begins. Punctuation is dropped; a joining word stays at the start of
+# the part it opens, so a dangling "yet" or "until" is a part of its own and never silently lost.
+_CLAUSE_BREAK = re.compile(
+    r"[.!?;:,()\[\]{}\"]+|\s[-–—]+\s|[–—]"
+    r"|(?=\b(?:but|however|though|although|yet|so(?! much\b| very\b)|and|plus|also|except|unless|until|till|while"
+    r"|whereas|instead|otherwise|if|when|whenever|once|because|since)\b)",
+    re.IGNORECASE,
+)
+# A part may open with one of these and still be the no or a pleasantry: "but we're not hiring", "and good luck".
+_LEADING = {"and", "so", "but", "however"}
+_N = r"zzname(?: zzname)*"
+_US = rf"(?:us|me|{_N}|our (?:company|team|work|startup|lab|group|firm|organization|mission|product))"
+_ACTS = rf"(?:reaching out(?: to {_US})?|getting in touch|contacting {_US}|writing(?: to {_US})?|thinking of {_US}|considering {_US}|following up)"
+_THINGS = (
+    r"(?:(?:the|your) (?:kind |thoughtful |nice |lovely )?(?:note|email|e-mail|message|outreach|words|patience|time|interest)"
+    rf"(?: in (?:{_US}|working (?:with|at|for) {_US}))?)"
+)
+_SEARCH = r"(?:(?:with|in|on) (?:your|the) (?:job |internship )?(?:search|hunt|studies|career|applications|journey|endeavors|endeavours))"
+_SIGN_OFFS = (
+    r"best|best regards|kind regards|warm regards|warmest regards|regards|warmly|warm wishes|cheers|sincerely|thanks|thank you"
+    r"|many thanks|thanks again|thank you again|thanks so much|thank you so much|all the best|best wishes|best of luck|good luck"
+    r"|take care|respectfully|yours|yours truly|yours sincerely|with thanks"
+)
+# The pleasantries a plain no may carry, whole: a part must match one from start to end.
+_PLEASANTRY = re.compile(
+    r"(?:thanks|thank you|many thanks|much appreciated)(?: (?:so|very) much| a lot| a ton)?(?: again)?"
+    rf"(?: for (?:{_ACTS}|{_THINGS}))?"
+    rf"|for (?:{_ACTS}|{_THINGS})"
+    rf"|(?:(?:i|we) )?(?:really |truly |do |sincerely |greatly )?appreciate (?:it|you {_ACTS}|{_ACTS}|{_THINGS})"
+    r"|(?:it was |it's |it is )?(?:great|nice|good|lovely|a pleasure) (?:to hear|hearing) from you"
+    rf"|(?:best of luck|good luck|all the best|best wishes)(?: {_SEARCH})?(?: zzname)*"
+    rf"|(?:(?:i|we) )?wish(?:ing)? you (?:the best|all the best|the best of luck|good luck|luck|every success|success|well)(?: {_SEARCH})?"
+    r"|(?:(?:i|we) )?hope (?:you're|you are) (?:doing )?well|(?:(?:i|we) )?hope all is well"
+    r"|(?:(?:i|we) )?hope (?:this|this note|this email|my note|my email) finds you well"
+    r"|(?:(?:(?:i|we) )?hope you (?:have|are having|'re having)|have) a (?:great|good|nice|wonderful|lovely) (?:day|week|weekend|semester)"
+    r"|(?:i'm |i am |we're |we are )?(?:so |very |really )?(?:sorry|apologies)"
+    r"(?: for the (?:late|slow|delayed) (?:reply|response)| for the delay| to disappoint| about that)?"
+    rf"|(?:{_SIGN_OFFS})(?: zzname)*"
+)
+_GREETING = re.compile(r"(?i:hi|hello|hey|dear|greetings|good (?:morning|afternoon|evening))(?: (?:there|all|everyone|zzname|[A-Z][\w'.-]*)){0,3}")
+# Words around the no that add nothing to it: "Unfortunately", "I'm afraid", "right now", "this summer".
+_SOFTENERS = re.compile(r"\b(?:i'm afraid|i am afraid|unfortunately|sadly|regrettably|alas)\b")
+_NOW = re.compile(
+    r"\b(?:right now|at (?:this|the) (?:time|moment|point|stage)|at present|currently|presently"
+    r"|this (?:year|summer|spring|fall|autumn|winter|semester|term|cycle|season|round|quarter))\b"
+)
+# What else a part holding the no may say, word by word ("we're not hiring interns", "so we won't be able to
+# take you on"). No modal, no time but now, no "in", no "until", no verb of more: those are more than no.
+_DECLINE_FILLER = frozenset("""
+a an the this that it it's its there there's here we we're we've we'd we'll us our i i'm i've me my you you're your
+is are am be been was were have has do does don't doesn't not no any anyone anybody all or really just still actively
+right now for to on of with at take offer bring board onboard intern interns internship internships student students
+co-op co-ops coop coops people candidates applicants new more additional extra position positions role roles opening
+openings spot spots program programs team company startup side available open able as such therefore zzname
+""".split())
+# A part holding the no has one subject: "we're not hiring interns this summer we have openings this fall" has two.
+# ("you" and "it" are left out: "take you on" and "take it on" have them as objects.)
+_SUBJECTS = frozenset("we we're we've we'd we'll i i'm i've it's there there's you're".split())
+# Words that are names only when the names list says so, and never masked: they mean something in a reply.
+_NOT_NAMES = frozenset("""
+may will can hope summer spring fall winter june april august march soon later next again grant chase mark bill rich
+sunny joy faith grace art dean drew jack ray rose pat sue hi hello dear best thanks team the and of inc llc ltd co corp
+talk call chat meet connect reach touch future open apply hire hiring careers jobs
+""".split())
+_SENT_FROM = re.compile(r"(?:sent from|get outlook for) .{1,40}", re.IGNORECASE)
+# A signature line that says any of these is a message, not a signature ("We're Hiring", "Book a Call"). A title
+# such as "Early Careers Recruiter" or "University Internships" is still a signature.
+_NOT_SIGNATURE = re.compile(
+    r"\b(hiring|join|apply|calendly|book|schedule|meet|call|chat|coffee|lunch|contact|reach|try|talk|connect|refer\w*"
+    r"|colleague|cc|p\.?s)\b",
+    re.IGNORECASE,
+)
+_WEBLIKE = re.compile(r"(?:https?://|www\.)\S+|[\w-]+(?:\.[\w-]+)+(?:/\S*)?")
+_SIGNATURE_JOINERS = {"of", "and", "at", "the", "for", "in", "&", "de", "la", "van", "von", "der", "du", "le", "da", "di"}
+
+
+def _name_words(names: Iterable[str]) -> set[str]:
+    words: set[str] = set()
+    for name in names:
+        for word in re.findall(r"[A-Za-z][A-Za-z'.-]*", str(name or "")):
+            word = word.strip(".'-").casefold()
+            if len(word) >= 2 and word not in _NOT_NAMES:
+                words.add(word)
+    return words
+
+
+def _masked(part: str, words: set[str]) -> str:
+    """The part with each capitalised name word as "zzname"."""
+    return re.sub(r"[A-Za-z][A-Za-z'-]*", lambda found: "zzname" if found.group(0)[0].isupper() and found.group(0).casefold() in words
+                  else found.group(0), part)
+
+
+def _sign_off(line: str) -> bool:
+    """"Best,", "Thanks!", "Cheers, Dana": a line that closes the message."""
+    pieces = re.split(r"[,!.\-–—]", line, maxsplit=1)
+    first, rest = pieces[0], (pieces[1] if len(pieces) > 1 else "")
+    words = rest.strip(" ,!.-").split()
+    return bool(re.fullmatch(_SIGN_OFFS, first.strip().lower())) and len(words) <= 3 and all(word[:1].isupper() for word in words)
+
+
+def _signature_line(line: str) -> bool:
+    """A line of a signature: a name, a title, a company, an address, a number or a link, and no message."""
+    if len(line) > 120 or "?" in line or _NOT_SIGNATURE.search(line):
+        return False
+    if _SENT_FROM.fullmatch(line.strip()):
+        return True
+    for token in line.split():
+        word = token.strip("()[]{}|,;:·•*_\"'")
+        if not word or not any(character.isalpha() for character in word):
+            continue
+        if "@" in word or any(character.isdigit() for character in word) or _WEBLIKE.fullmatch(word.lower()):
+            continue
+        if word[0].isupper() or word.casefold() in _SIGNATURE_JOINERS:
+            continue
+        return False
+    return True
+
+
+def _without_signature(lines: list[str]) -> list[str]:
+    """The lines above the signature: what follows a sign-off line ("Best,") or a "--" line, when every line of it
+    reads as a signature, and a closing "Sent from my iPhone"."""
+    while lines and _SENT_FROM.fullmatch(lines[-1]):
+        lines = lines[:-1]
+    for index, line in enumerate(lines):
+        if line in {"--", "-- "} and all(_signature_line(rest) for rest in lines[index + 1:]):
+            return lines[:index]
+        if _sign_off(line) and all(_signature_line(rest) for rest in lines[index + 1:]):
+            return lines[:index + 1]
+    return lines
+
+
+def _part_is_no_or_pleasantry(part: str, words: set[str]) -> bool:
+    masked = _masked(part, words)
+    if _GREETING.fullmatch(masked):
+        return True
+    lowered = masked.lower()
+    tokens = lowered.split()
+    if len(tokens) > 1 and tokens[0] in _LEADING:
+        lowered = " ".join(tokens[1:])
+    if all(token == "zzname" for token in lowered.split()) or _PLEASANTRY.fullmatch(lowered):
+        return True
+    rest = " ".join(_NOW.sub(" ", _SOFTENERS.sub(" ", lowered)).split())
+    if not rest:
+        return True  # "Unfortunately", "I'm afraid", "at this time"
+    if not re.search(_pattern("declined"), rest):
+        return False
+    left = re.sub(_pattern("declined"), " ", rest).split()
+    return all(token in _DECLINE_FILLER for token in left) and sum(token in _SUBJECTS for token in left) <= 1
+
+
+def _more_than_no(text: str, names: Iterable[str]) -> str:
+    """The first part of what they wrote that is neither the rules' no nor on the list of pleasantries; "" when none is.
+
+    Fails closed: a wording the list does not know ("Maybe in a few months",
+    "I've shared your resume with our CTO", "We've decided not to move
+    forward") is more than no, so the student answers it.
+    """
+    lines = [" ".join(line.translate(_FLAT_QUOTES).split()) for line in str(text).replace("\r\n", "\n").split("\n")]
+    words = _name_words(names)
+    for line in _without_signature([line for line in lines if line]):
+        for part in _CLAUSE_BREAK.split(line):
+            part = (part or "").strip(" '*_-")
+            if part and not _part_is_no_or_pleasantry(part, words):
+                return part
+    return ""
+
+
+def _unquoted(item: dict[str, Any], sent: Iterable[str] = ()) -> str:
+    """A reply's own words: above the email it quotes, and anything typed into it (between its quoted lines, or
+    below an Outlook header in lines that are not the student's own, ``sent``)."""
     from .outreach_inbox import written_between_quotes
 
-    between = written_between_quotes(str(item["data"].get("full_text") or ""))
+    between = written_between_quotes(str(item["data"].get("full_text") or ""), sent)
     return f"{item['text']}\n{between}".strip()
 
 
@@ -566,16 +783,39 @@ _NO_REPLY = re.compile(r"^(no-?reply|do-?not-?reply|donotreply|no_reply|do_not_r
 _STUDENTS = ("call_scheduled", "offer", "paused")
 
 
-def _open_reply(item: dict[str, Any]) -> str:
+def _open_reply(item: dict[str, Any], sent: Iterable[str]) -> str:
     """Whether an earlier reply keeps something open (a call, an offer, "later"), by Jev, the rules, or the rules on its own words."""
     readings = item["data"].get("readings") if isinstance(item["data"].get("readings"), dict) else {}
     said = {
         (readings.get("rules") or {}).get("status"),
         (readings.get("jev") or {}).get("label") if isinstance(readings.get("jev"), dict) else None,
-        suggest_reply_status(_unquoted(item))["status"],
+        suggest_reply_status(_unquoted(item, sent))["status"],
     }
     found = sorted(status for status in said if status in _STUDENTS)
     return found[0].replace("_", " ") if found else ""
+
+
+def _sent_texts(conn: sqlite3.Connection, target: dict[str, Any], user_id: str) -> list[str]:
+    """What the student sent them, which a reply quotes: the first email, and the follow-up when one went."""
+    texts = [str(target.get("email_body") or "")]
+    if target.get("follow_up_body") and _followed_up(conn, target["id"], user_id):
+        texts.append(str(target["follow_up_body"]))
+    return [text for text in texts if text.strip()]
+
+
+def _names(conn: sqlite3.Connection, target: dict[str, Any], user_id: str, *more: str) -> list[str]:
+    """The names a plain no may use: the student's, the contact's, the company's, and whoever wrote."""
+    from .preparation import confirmed_facts
+
+    student = str(confirmed_facts(conn, user_id).get("name") or "")
+    company = str(target.get("company") or "")
+    return [student, str(target.get("contact_name") or ""), company, spoken_company(company), *more]
+
+
+def _whole_text_kept(item: dict[str, Any]) -> bool:
+    """A Gmail reply's whole message is on record (a pasted one is kept whole as its text)."""
+    data = item["data"]
+    return data.get("source") != "gmail" or ("full_text" in data and len(str(data["full_text"])) <= FULL_TEXT_LIMIT)
 
 
 def eligibility(conn: sqlite3.Connection, target: dict[str, Any], user_id: str) -> tuple[dict[str, Any] | None, str]:
@@ -614,17 +854,28 @@ def eligibility(conn: sqlite3.Connection, target: dict[str, Any], user_id: str) 
         return None, f"Jev was only {round(confidence * 100)}% sure"
     from .outreach_inbox import written_between_quotes
 
-    # The strict reading covers what they wrote: above the quote and between its lines. The quoted lines
-    # themselves are the student's own email, which often asks for a call, so they are not read as theirs.
-    if written_between_quotes(str(data["full_text"])):
-        return None, "they wrote between the lines of the email they quoted, so it is left for you"
-    problem = plain_decline_problem(_unquoted(reply))
+    # The strict reading covers what they wrote: above the quote, and anything typed into it. The quoted
+    # lines themselves are the student's own email, which often asks for a call, so they are not read as
+    # theirs; below an Outlook header, a line counts as the student's only when it is in what they sent.
+    sent = _sent_texts(conn, target, user_id)
+    if written_between_quotes(str(data["full_text"]), sent):
+        return None, "they wrote between the lines of the email they quoted (or below its header), so it is left for you"
+    problem = plain_decline_problem(_unquoted(reply, sent), _names(conn, target, user_id, str(data.get("from_name") or "")))
     if problem:
         return None, f"not a plain decline to the rules read strictly: {problem}"
+    # Every earlier reply, from anyone there, must be a plain no too, by the same strict reading: a call or a
+    # question from the Cc, which both readings may still call a decline, is the student's to answer.
     for earlier in found[:-1]:
-        kept = _open_reply(earlier)
+        kept = _open_reply(earlier, sent)
         if kept:
             return None, f"an earlier reply reads as {kept}, and that is left for you"
+        if not _whole_text_kept(earlier):
+            return None, "the whole of an earlier reply is not on record, so it is left for you"
+        problem = plain_decline_problem(
+            _unquoted(earlier, sent), _names(conn, target, user_id, str(earlier["data"].get("from_name") or "")),
+        )
+        if problem:
+            return None, f"an earlier reply is not a plain no ({problem}), and that is left for you"
     suggestion = target.get("reply_suggestion")
     if suggestion and suggestion.get("status") not in (None, "declined"):
         return None, f"a suggestion of {str(suggestion['status']).replace('_', ' ')} is waiting for you"
@@ -891,8 +1142,9 @@ Nobody else reads it first, so be strict: when unsure, do not send.
 The student cold-emailed a company about an internship, and someone there replied. The JSON input has the company, the
 student's first email (and follow-up, if one went), every reply that came back, who wrote the latest reply (from its
 own From and Reply-To headers), and the thank-you about to go out. Each reply's "whole_message" is the message as it
-arrived, including the parts of the student's email it quotes (lines starting with ">"). People sometimes answer
-between the quoted lines or below them, so read every line that is not quoted, wherever it is.
+arrived, including the parts of the student's email it quotes: lines starting with ">", or everything below a
+"From:" and "Sent:" header or an "Original Message" line, which marks no line. People sometimes answer
+between the quoted lines or below them, so read every line that is not the student's own words, wherever it is.
 
 Answer each question:
 1. Is every reply, not only the latest, free of anything the student should answer themselves: a question, a referral
@@ -940,7 +1192,8 @@ def review(conn: sqlite3.Connection, target_id: str, *, user_id: str, runner: Ca
             {"on": item["at"].date().isoformat(), "from": str(item["data"].get("from") or ""),
              "from_name": str(item["data"].get("from_name") or ""),
              # The whole message when it was kept (quoted lines and inline answers too), else its words above the quote.
-             "whole_message": str(item["data"].get("full_text") or item["text"])[:8_000]}
+             # A thank-you goes only when every reply was kept whole within FULL_TEXT_LIMIT, so none is cut here.
+             "whole_message": str(item["data"].get("full_text") or item["text"])[:FULL_TEXT_LIMIT]}
             for item in found
         ],
         # Read from the decline's own headers, not from the thank-you, so question 3 compares two things.
