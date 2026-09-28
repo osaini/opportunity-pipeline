@@ -32,7 +32,7 @@ from typing import Any
 from pipeline_core.visibility import capture_visible_sql
 
 from . import automation
-from .actions import OpportunityNotFoundError
+from .actions import OpportunityNotFoundError, _intent_state
 from .schema import utc_now
 
 LOGGER = logging.getLogger(__name__)
@@ -170,6 +170,33 @@ def variant_files(conn: sqlite3.Connection, user_id: str) -> dict[str, dict[str,
     }
 
 
+def variant_setup(conn: sqlite3.Connection, user_id: str) -> dict[str, list[str]]:
+    """How far the student's variants are set up, for the Profile page and the switch.
+
+    ``configured``: the labels the profile lists under resume_variants.
+    ``usable``: those a confirmed résumé carries, which are the only ones ever picked.
+    ``unlisted``: labels on confirmed résumés that the profile does not list, so they are never picked.
+    """
+    variants, _default = configured_variants(_profile(conn, user_id))
+    files = variant_files(conn, user_id)
+    listed = {label_key(variant["label"]) for variant in variants}
+    return {
+        "configured": [variant["label"] for variant in variants],
+        "usable": [variant["label"] for variant in variants if label_key(variant["label"]) in files],
+        "unlisted": sorted((entry["label"] for key, entry in files.items() if key not in listed), key=str.casefold),
+    }
+
+
+def setup_requirement(conn: sqlite3.Connection, user_id: str) -> str:
+    """What resume_variant_pick needs before it can pick anything, or "" (automation.REQUIREMENTS)."""
+    setup = variant_setup(conn, user_id)
+    if setup["usable"]:
+        return ""
+    if not setup["configured"]:
+        return "List your résumé variants and the words that mark each under resume_variants in your profile file first"
+    return "None of the variants your profile lists has a confirmed résumé with its label yet. Label one with Use as a variant first"
+
+
 def _posting(conn: sqlite3.Connection, opportunity_id: str, *, visible_to: str | None = None) -> Any:
     """The role's title and description. ``visible_to`` also requires the role be one that student may see."""
     if visible_to is None:
@@ -184,13 +211,15 @@ def _posting(conn: sqlite3.Connection, opportunity_id: str, *, visible_to: str |
     return row
 
 
-def pick_variant(conn: sqlite3.Connection, user_id: str, opportunity_id: str) -> dict[str, Any]:
+def pick_variant(conn: sqlite3.Connection, user_id: str, opportunity_id: str, *, visible_to: str | None = None) -> dict[str, Any]:
     """Which variant this role should get, from the profile's variants and the confirmed résumés that carry them.
 
     Only a variant with a confirmed résumé carrying its label is considered.
     Adds ``resume_file_id`` (None when there is nothing to use) to choose_variant's answer.
+    ``visible_to`` reads the posting only when that student may see the role
+    (OpportunityNotFoundError otherwise), as _posting does.
     """
-    posting = _posting(conn, opportunity_id)
+    posting = _posting(conn, opportunity_id, visible_to=visible_to)
     variants, default = configured_variants(_profile(conn, user_id))
     files = variant_files(conn, user_id)
     usable = [variant for variant in variants if label_key(variant["label"]) in files]
@@ -217,10 +246,14 @@ def pick_after_save(conn: sqlite3.Connection, user_id: str, opportunity_id: str)
     """
     if not automation.is_enabled(conn, user_id, FEATURE):
         return None
-    choice = pick_variant(conn, user_id, opportunity_id)
+    try:
+        # Only a role this student may see: another student's private capture is never read into their ledger.
+        posting = _posting(conn, opportunity_id, visible_to=user_id)
+        choice = pick_variant(conn, user_id, opportunity_id, visible_to=user_id)
+    except OpportunityNotFoundError:
+        return None
     if not choice["resume_file_id"]:
         return None
-    posting = _posting(conn, opportunity_id)
     latest = conn.execute(
         "SELECT id FROM opportunity_interactions WHERE opportunity_id=? AND user_id=? AND action='saved' ORDER BY id DESC LIMIT 1",
         (opportunity_id, user_id),
@@ -331,8 +364,11 @@ def pick_view(conn: sqlite3.Connection, user_id: str, opportunity_id: str) -> di
         "configured": bool(variants),
         "default_variant": default,
         "enabled": automation.mode(conn, user_id, FEATURE) == "on",
+        # A pick is made only when a save changes the role, and never while paused (pick_after_save).
+        "paused": automation.paused(conn, user_id),
+        "saved": _intent_state(conn, opportunity_id, user_id) == "saved",
         "pick": stored_pick(conn, user_id, opportunity_id),
-        "suggestion": pick_variant(conn, user_id, opportunity_id),
+        "suggestion": pick_variant(conn, user_id, opportunity_id, visible_to=user_id),
         "options": resume_options(conn, user_id),
     }
 

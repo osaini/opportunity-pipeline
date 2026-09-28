@@ -3,7 +3,7 @@
 Switches. FEATURES is the one list of automation features. Each is off until
 the student turns it on (a missing user_settings row means off). A feature
 that needs something besides its switch (a threshold in the student's
-profile) names it in REQUIREMENTS, and cannot be turned on without it. A feature
+profile, or a résumé variant set up) names it in REQUIREMENTS, and cannot be turned on without it. A feature
 that can act on the student's records without asking may also run in
 "shadow": it records what it would have done and changes nothing. It can be
 turned on only after SHADOW_HOURS in shadow with at least SHADOW_MIN_ROWS
@@ -151,13 +151,15 @@ FEATURES: dict[str, Feature] = {
         # internal_automation.py, auto_triage.py).
         Feature("outreach_auto_close", "Close companies that never answered",
                 "Mark a company No response once 14 days have passed since its follow-up with no reply, after checking "
-                "Gmail once more. You can undo it, and a later reply reopens it", "outreach", "internal"),
+                "Gmail once more. A company Gmail can't search for, such as one you messaged on LinkedIn, is left for "
+                "you. You can undo it, and a later reply reopens it", "outreach", "internal"),
         Feature("auto_follow_up_drafts", "Write follow-up drafts when they are due",
                 "When a company's follow-up date arrives and nobody has replied, write the follow-up draft. "
                 "It waits for your approval; nothing is sent", "outreach", "internal"),
         Feature("resume_variant_pick", "Pick the résumé variant for each saved role",
                 "When you save a role, choose which of your résumé variants fits it, from the words you listed for each "
-                "variant in your profile. The role shows the pick and you can change it", "applications", "internal"),
+                "variant in your profile. It picks only for roles you save while it is on. The role shows the pick "
+                "and you can change it", "applications", "internal"),
         Feature("application_silence", "Flag applications with no reply",
                 "Show an Urgent row when an application is still at Applied a set number of days after you applied "
                 "(21 days, unless your profile sets another number)", "applications", "internal"),
@@ -185,6 +187,12 @@ def _triage_requirement(key: str) -> Callable[[Any, str], str]:
     return check
 
 
+def _resume_variant_requirement(conn: Any, user_id: str) -> str:
+    from .resume_variants import setup_requirement  # imported here: resume_variants imports this module
+
+    return setup_requirement(conn, user_id)
+
+
 # What a feature needs before it can act, beyond its switch: a function that
 # returns "" when the need is met, or a plain sentence saying what is missing.
 # A feature whose need is not met cannot be turned on (can_turn_on), and the
@@ -192,6 +200,7 @@ def _triage_requirement(key: str) -> Callable[[Any, str], str]:
 REQUIREMENTS: dict[str, Callable[[Any, str], str]] = {
     "auto_save": _triage_requirement("auto_save"),
     "auto_pass": _triage_requirement("auto_pass"),
+    "resume_variant_pick": _resume_variant_requirement,
 }
 
 
@@ -1041,7 +1050,11 @@ class ResumePick:
     fields = ("resume_pick",)
 
     def read(self, conn: sqlite3.Connection, user_id: str, subject_id: str) -> dict[str, Any]:
-        if conn.execute(f"SELECT 1 FROM opportunities WHERE id=?{_for_update(conn)}", (subject_id,)).fetchone() is None:
+        # No row lock on the role: a save's pick runs in the web request, and on
+        # PostgreSQL FOR UPDATE here would wait for a running sync, which holds
+        # every role's row until it commits. The insert in apply is what guards
+        # against a student pick landing meanwhile.
+        if conn.execute("SELECT 1 FROM opportunities WHERE id=?", (subject_id,)).fetchone() is None:
             raise actions.OpportunityNotFoundError(subject_id)
         row = conn.execute(
             f"SELECT resume_file_id, picked_by FROM opportunity_resume_picks WHERE user_id=? AND opportunity_id=?{_for_update(conn)}",
@@ -1065,7 +1078,7 @@ class ResumePick:
             "SELECT 1 FROM resume_files WHERE id=? AND user_id=?", (after["resume_file_id"], user_id),
         ).fetchone() is None:
             raise NotApplicable("That résumé was deleted, so nothing was picked")
-        conn.execute(
+        written = conn.execute(
             """
             INSERT INTO opportunity_resume_picks(user_id, opportunity_id, resume_file_id, picked_by, matched_json, created_at, updated_at)
             VALUES(?, ?, ?, 'automatic', ?, ?, ?)
@@ -1074,7 +1087,10 @@ class ResumePick:
             WHERE opportunity_resume_picks.picked_by='automatic'
             """,
             (user_id, subject_id, after["resume_file_id"], _dumps(after.get("matched") or {}), timestamp, timestamp),
-        )
+        ).rowcount
+        if not written:
+            # The student picked one for this role after it was read: theirs sticks, and no row claims a pick.
+            raise NotApplicable("You picked a résumé for this role yourself, so it was left as it is")
         return {}
 
     def undo(

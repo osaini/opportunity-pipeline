@@ -11,7 +11,11 @@
 - outreach_auto_close: a company that never answered its follow-up
   (outreach.lifecycle_suggestion says no_response) is closed as No response,
   after outreach_review.fresh_look has read Gmail once more. It fails closed:
-  when Gmail cannot be read, the company is left for the next pass.
+  when Gmail cannot be read, the company is left for the next pass, and a
+  company Gmail is never searched for (outreach_inbox.watched_ids: no
+  address, or first written to too long ago) is left for the student. A
+  close tried once (undone, say) is not tried again for the same follow-up
+  date.
 - auto_follow_up_drafts: when a company's follow-up date arrives with no
   reply and no bounce, the follow-up draft is written (outreach_drafting). It
   waits for the student's approval; nothing is sent.
@@ -153,8 +157,13 @@ def automation_archived(conn: sqlite3.Connection, application_id: str) -> bool:
     action = conn.execute(
         "SELECT feature, status, action_type FROM automation_actions WHERE id=?", (source.split(":", 1)[1],),
     ).fetchone()
-    return bool(action) and action["feature"] == "archive_silent_applications" and action["status"] == "applied" \
-        and action["action_type"] == "application.stage"
+    if not (action and action["feature"] == "archive_silent_applications" and action["status"] == "applied"
+            and action["action_type"] == "application.stage"):
+        return False
+    # The daily sync can move an imported application back without a stage_changed
+    # event (schema._migrate_status), so the archive stands only while the stage is still archived.
+    stage = conn.execute("SELECT stage FROM applications WHERE id=?", (application_id,)).fetchone()
+    return stage is not None and stage["stage"] == "archived"
 
 
 def archive_due(conn: sqlite3.Connection, user_id: str, *, now: datetime | None = None) -> list[dict[str, Any]]:
@@ -218,11 +227,18 @@ def archive_silent_applications(conn: sqlite3.Connection, user_id: str, *, now: 
 # --- Outreach auto-close -------------------------------------------------------------------
 
 
+def _auto_close_key(target: dict[str, Any]) -> str:
+    return f"auto-close:{target['id']}:{target['follow_up_at']}"
+
+
 def auto_close_due(conn: sqlite3.Connection, user_id: str, *, today: date | None = None) -> list[dict[str, Any]]:
     """Companies whose follow-up went unanswered long enough that lifecycle_suggestion says no_response.
 
     A company with any reply on record (logged, or waiting as a suggestion) is
     left alone: someone wrote back, so closing it as No response would be wrong.
+    One tried before (its ledger row exists, whatever became of it, such as an
+    undo) is not tried again for the same follow-up date, so an undo sticks and
+    costs no Gmail read on later passes.
     """
     from .outreach import lifecycle_suggestion, list_targets, local_today
 
@@ -234,31 +250,74 @@ def auto_close_due(conn: sqlite3.Connection, user_id: str, *, today: date | None
             continue
         if item["reply_count"] or item["reply_suggestion"]:
             continue
+        if automation._by_key(conn, user_id, _auto_close_key(item)) is not None:
+            continue
         due.append(item)
     return due
 
 
 def auto_close(
     conn: sqlite3.Connection, user_id: str, *, client_factory: Callable[[], Any] | None, today: date | None = None,
-    limit: int = AUTO_CLOSE_PER_PASS,
+    limit: int = AUTO_CLOSE_PER_PASS, decisions_for: Callable[[Any, str], Any] | None = None,
+    on_reply: Callable[[Any, str, str], None] | None = None, now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """Close up to ``limit`` unanswered companies as No response. Each one Gmail is read for first; it fails closed.
+
+    Only a company whose replies Gmail is searched for (outreach_inbox.watched_ids),
+    with Gmail connected, is closed; any other is held and takes none of the
+    ``limit``. ``decisions_for`` and ``on_reply`` are the InboxWatcher's, so a
+    reply the fresh look finds is classified and starts call prep as it would there.
 
     Returns one entry per company it looked at: closed, or held with the reason.
     """
     from .outreach import NO_RESPONSE_AFTER_DAYS, get_target, lifecycle_suggestion, local_today
-    from .outreach_review import fresh_look
+    from .outreach_gmail import _connector
+    from .outreach_inbox import REPLY_WINDOW, watched_ids
+    from .outreach_review import FRESH_LOOK_REASONS, fresh_look
 
-    results = []
+    results: list[dict[str, Any]] = []
+    if not automation.is_enabled(conn, user_id, "outreach_auto_close"):
+        return results
     today = today or local_today(conn, user_id)
-    for item in auto_close_due(conn, user_id, today=today)[:limit]:
+    due = auto_close_due(conn, user_id, today=today)
+    if not due:
+        return results
+    searched = watched_ids(conn, user_id, now)
+    not_searched = (
+        f"Gmail is never searched for this company's replies (no email address, or it was first written to over "
+        f"{REPLY_WINDOW.days} days ago), so it is left for you to close"
+    )
+    checkable = []
+    for item in due:
+        if item["id"] in searched:
+            checkable.append(item)
+        else:
+            results.append({"target_id": item["id"], "company": item["company"], "closed": False, "reason": not_searched})
+    connector = _connector(conn, user_id)
+    if client_factory is None:
+        gmail_problem = "Gmail is not set up, so replies could not be checked"
+    elif connector is None or connector["status"] == "disconnected":
+        gmail_problem = FRESH_LOOK_REASONS["not_connected"]
+    elif connector["status"] != "connected":
+        gmail_problem = FRESH_LOOK_REASONS["needs_reconnect"]
+    else:
+        gmail_problem = ""
+    decisions: Any = None
+    asked_for_decisions = False
+    for item in checkable[:limit]:
         if not automation.is_enabled(conn, user_id, "outreach_auto_close"):
             break
         target_id = item["id"]
-        if client_factory is None:
-            results.append({"target_id": target_id, "closed": False, "reason": "Gmail is not set up, so replies could not be checked"})
+        if gmail_problem:
+            results.append({"target_id": target_id, "company": item["company"], "closed": False, "reason": gmail_problem})
             continue
-        look = fresh_look(conn, target_id, user_id=user_id, client_factory=client_factory)
+        if decisions_for is not None and not asked_for_decisions:
+            asked_for_decisions = True
+            try:
+                decisions = decisions_for(conn, user_id)
+            except Exception:  # noqa: BLE001 - a reply is then classified by its words alone
+                LOGGER.warning("The reply classifier could not be set up for auto-close", exc_info=True)
+        look = fresh_look(conn, target_id, user_id=user_id, client_factory=client_factory, decisions=decisions, on_reply=on_reply)
         if not look.get("ok"):
             results.append({"target_id": target_id, "closed": False, "reason": look.get("reason") or "Gmail could not be read"})
             continue
@@ -280,7 +339,7 @@ def auto_close(
             },
             summary=f"Closed {target['company']} as No response: no reply {days} days after the follow-up",
             basis=AUTO_CLOSE_BASIS, confidence=None,
-            idempotency_key=f"auto-close:{target_id}:{target['follow_up_at']}", auto=True,
+            idempotency_key=_auto_close_key(target), auto=True,
         )
         closed = row is not None and row.get("status") == "applied" and row.get("created_at") == row.get("applied_at")
         results.append({"target_id": target_id, "company": target["company"], "closed": closed,
@@ -387,15 +446,19 @@ def run_for_user(
     conn: sqlite3.Connection, user_id: str, report: dict[str, Any], *,
     gmail_client_factory: Callable[[], Any] | None, provider_factory: Callable[[str, str], Any] | None,
     draft_provider: str | None = None, now: datetime | None = None,
+    decisions_for: Callable[[Any, str], Any] | None = None, on_reply: Callable[[Any, str, str], None] | None = None,
 ) -> None:
     """One student's internal steps for one worker pass: auto-close, one follow-up draft, and the daily archive.
 
     Each step stands alone; the first error is raised after the others ran.
+    ``decisions_for`` and ``on_reply`` are the InboxWatcher's (auto_close).
     """
     first_error: Exception | None = None
     if automation.is_enabled(conn, user_id, "outreach_auto_close"):
         try:
-            report.setdefault("closed", []).extend(auto_close(conn, user_id, client_factory=gmail_client_factory))
+            report.setdefault("closed", []).extend(auto_close(
+                conn, user_id, client_factory=gmail_client_factory, decisions_for=decisions_for, on_reply=on_reply,
+            ))
         except Exception as exc:  # noqa: BLE001 - the next step still runs
             LOGGER.exception("Closing unanswered companies failed")
             _rollback(conn)

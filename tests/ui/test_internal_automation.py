@@ -12,6 +12,7 @@ from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
+import pytest
 from playwright.sync_api import expect
 
 from conftest import OWNER_TOKEN, wait_for_results
@@ -86,7 +87,14 @@ def test_a_resume_is_used_as_a_variant_without_touching_profile_facts(owner_page
     expect(card.locator(".chip", has_text="Confirmed")).to_be_visible()
     expect(card.get_by_role("button", name="Confirm selected facts")).to_have_count(0)
     expect(card.get_by_role("button", name="Save variant label")).to_be_visible()
-    expect(owner_page.locator(".resume-variant-summary")).to_contain_text("1 résumé variant set up")
+    # The profile lists no resume_variants, so the label is not counted as a variant that can be picked.
+    expect(owner_page.locator(".resume-variant-summary")).to_contain_text(
+        "1 résumé carries a variant label, but your profile file lists no resume_variants yet, so nothing is picked."
+    )
+    set_profile(live_server, resume_variants=VARIANTS)
+    owner_page.reload()
+    wait_for_results(owner_page)
+    expect(owner_page.locator(".resume-variant-summary")).to_contain_text("1 résumé variant ready: Hardware.")
     after = owner_page.request.get(f"{base_url}/api/v1/profile", headers=BEARER).json()["facts"]
     assert after == facts_before, "a variant confirms a document to send, never profile facts"
 
@@ -104,6 +112,8 @@ def test_the_role_shows_its_resume_pick_and_the_student_can_change_it(owner_page
     open_saved_role(owner_page)
     section = owner_page.locator(".resume-pick")
     expect(section.locator(".resume-pick-current")).to_have_text(re.compile(r"^Suggested: Hardware \(matched SolidWorks, mechanical\)\."))
+    # Acme Robotics was saved before any switch was on, so no pick is coming for it.
+    expect(section.locator(".resume-pick-current")).to_contain_text("Nothing was picked when this role was saved.")
     expect(section.locator(".resume-check li")).to_have_text(
         "This posting asks for SolidWorks. Your profile lists SolidWorks, but your Hardware résumé doesn't mention it."
     )
@@ -111,6 +121,8 @@ def test_the_role_shows_its_resume_pick_and_the_student_can_change_it(owner_page
     select.select_option(label="Software (software.pdf)")
     expect(section.locator(".form-status")).to_have_text("Using Software for this role. The app will not change it.")
     expect(section.locator(".resume-pick-current")).to_have_text("Résumé: Software (your choice)")
+    # The card behind the panel follows at once, without a reload.
+    expect(owner_page.locator(".opportunity-card", has_text="Acme Robotics").locator(".card-resume")).to_have_text("Résumé: Software (your choice)")
     view = owner_page.request.get(f"{base_url}/api/v1/opportunities/job-a/resume-pick", headers=BEARER).json()
     assert (view["pick"]["label"], view["pick"]["picked_by"]) == ("Software", "student")
     # The student's pick sticks: saving again with the switch on leaves it.
@@ -149,7 +161,7 @@ def test_with_no_variants_the_role_says_so_honestly(owner_page, live_server):
     add_resume(live_server, name="only-resume.pdf")
     open_saved_role(owner_page)
     expect(owner_page.locator(".resume-pick .resume-pick-current")).to_have_text(
-        "No résumé variants are set up, so the app uses your confirmed résumé, as before."
+        "No résumé variants are listed under resume_variants in your profile file, so the app uses your confirmed résumé, as before."
     )
     expect(owner_page.locator(".resume-pick").get_by_label("Change résumé")).to_be_visible()
 
@@ -187,7 +199,7 @@ def test_a_triage_switch_says_what_it_needs(owner_page):
     expect(owner_page.locator("#automation-mode-auto_save")).to_have_accessible_description(re.compile("auto_save_at"))
 
 
-def test_restore_puts_back_a_role_the_app_passed_on(owner_page, base_url, live_server):
+def seed_auto_pass(live_server):
     set_profile(live_server, automation={"auto_save_at": 90, "auto_pass_below": 40})
     first_seen = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(timespec="seconds")
     with db(live_server) as conn:
@@ -206,6 +218,10 @@ def test_restore_puts_back_a_role_the_app_passed_on(owner_page, base_url, live_s
             )
         report = auto_triage.run_auto_triage(conn, user_id=USER)
     assert [item["opportunity_id"] for item in report["passed"]] == ["job-low"]
+
+
+def test_restore_puts_back_a_role_the_app_passed_on(owner_page, base_url, live_server):
+    seed_auto_pass(live_server)
     open_profile(owner_page)
     block = owner_page.locator(".automation-auto-passed")
     expect(block.get_by_role("heading", name="Auto-passed this week")).to_be_visible()
@@ -221,3 +237,74 @@ def test_restore_puts_back_a_role_the_app_passed_on(owner_page, base_url, live_s
             "SELECT action FROM opportunity_interactions WHERE opportunity_id='job-low' ORDER BY id DESC LIMIT 1",
         ).fetchone()[0]
     assert latest == "undo", "back to neither saved nor passed"
+
+
+def test_undo_in_recent_activity_also_leaves_auto_passed_this_week(owner_page, live_server):
+    seed_auto_pass(live_server)
+    open_profile(owner_page)
+    block = owner_page.locator(".automation-auto-passed")
+    expect(block.locator(".automation-action", has_text="Sales Intern at Quill Works")).to_be_visible()
+    recent = owner_page.locator(".automation-recent .automation-action", has_text="Passed on Sales Intern")
+    recent.get_by_role("button", name=re.compile("^Undo: Passed on Sales Intern")).click()
+    expect(recent).to_contain_text("Undone")
+    expect(block).to_contain_text("Nothing was passed on automatically in the last 7 days.")
+
+
+@pytest.mark.allow_page_errors  # the 500 below is the point
+def test_a_restore_that_failed_can_be_tried_again(owner_page, live_server):
+    seed_auto_pass(live_server)
+    open_profile(owner_page)
+    owner_page.route("**/api/v1/automation/actions/*/undo", lambda route: route.fulfill(
+        status=500, content_type="application/json", body='{"detail": "The database was busy"}',
+    ))
+    block = owner_page.locator(".automation-auto-passed")
+    restore = block.get_by_role("button", name="Restore Sales Intern at Quill Works")
+    restore.click()
+    expect(block.locator(".form-status")).to_have_text("The database was busy")
+    expect(block.get_by_role("button", name="Restore Sales Intern at Quill Works")).to_be_enabled()
+    owner_page.unroute("**/api/v1/automation/actions/*/undo")
+    block.get_by_role("button", name="Restore Sales Intern at Quill Works").click()
+    expect(block.locator(".form-status")).to_have_text("Restored Sales Intern at Quill Works.")
+
+
+def test_leaving_the_resume_choice_by_keyboard_keeps_focus_where_the_student_went(owner_page, base_url, live_server):
+    add_resume(live_server, name="hardware.pdf", label="Hardware")
+    add_resume(live_server, name="software.pdf", label="Software")
+    set_profile(live_server, resume_variants=VARIANTS, default_variant="Hardware")
+    open_saved_role(owner_page)
+    select = owner_page.locator(".resume-pick").get_by_label("Change résumé")
+    select.focus()
+    owner_page.keyboard.press("ArrowDown")
+    owner_page.keyboard.press("Tab")
+    left_to = owner_page.evaluate("document.activeElement.outerHTML")
+    expect(owner_page.locator(".resume-pick .form-status")).to_contain_text("for this role. The app will not change it.")
+    assert owner_page.evaluate("document.activeElement.tagName") != "SELECT", "focus stays where the student tabbed to"
+    assert owner_page.evaluate("document.activeElement.outerHTML") == left_to
+    view = owner_page.request.get(f"{base_url}/api/v1/opportunities/job-a/resume-pick", headers=BEARER).json()
+    assert view["pick"]["picked_by"] == "student", "leaving the select saved the choice"
+
+
+def test_the_skills_check_says_when_it_cannot_run(owner_page, live_server):
+    add_resume(live_server, name="hardware.pdf", label="Hardware")
+    set_profile(live_server, resume_variants=VARIANTS, default_variant="Hardware")
+    with db(live_server) as conn, conn:
+        conn.execute("DELETE FROM profile_facts WHERE user_id=? AND field_path='skills'", (USER,))
+    open_saved_role(owner_page)
+    expect(owner_page.locator(".resume-pick .resume-check-note")).to_have_text(
+        "Your profile has no confirmed skills yet, so there is nothing to check."
+    )
+
+
+def test_the_variant_label_warning_is_announced_and_the_chips_sit_in_a_row(owner_page, live_server):
+    add_resume(live_server, name="plain-resume.pdf")
+    open_profile(owner_page)
+    card = owner_page.locator(".resume-section .resume-card", has_text="plain-resume.pdf")
+    chips = card.locator(".resume-chips")
+    assert chips.evaluate("node => getComputedStyle(node).display") == "flex"
+    field = card.get_by_label("Variant label")
+    card.get_by_role("button", name="Use as a variant").click()
+    expect(field).to_be_focused()
+    expect(field).to_have_attribute("aria-invalid", "true")
+    expect(field).to_have_accessible_description(re.compile("Type a label first"))
+    field.fill("Hardware")
+    expect(field).not_to_have_attribute("aria-invalid", "true")

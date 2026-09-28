@@ -6021,6 +6021,30 @@
   // "Use as a variant": a résumé kept for one kind of role, confirmed as a
   // document to send. Nothing from it is copied into the profile, so a second
   // variant never overwrites the facts the main résumé confirmed.
+  // What the résumé section says about variants. Only a label the profile lists
+  // under resume_variants, on a confirmed résumé, is ever picked (resume_variants.variant_setup).
+  function resumeVariantSummary(resumesPayload) {
+    const setup = resumesPayload?.variants || {};
+    const list = (value) => (Array.isArray(value) ? value : []);
+    const usable = list(setup.usable);
+    const configured = list(setup.configured);
+    const unlisted = list(setup.unlisted);
+    const where = "The words that mark each kind of role go under resume_variants in your profile file.";
+    const unlistedText = unlisted.length
+      ? ` ${unlisted.join(", ")} ${unlisted.length === 1 ? "is not listed there, so it is" : "are not listed there, so they are"} never picked.`
+      : "";
+    if (usable.length) {
+      return `${plural(usable.length, "résumé variant", "résumé variants")} ready: ${usable.join(", ")}. Roles you save from now on get the one that fits when the résumé variant switch is on under Automation. ${where}${unlistedText}`;
+    }
+    if (configured.length) {
+      return `Your profile lists ${configured.join(", ")}, but no confirmed résumé carries ${configured.length === 1 ? "that label" : "those labels"} yet, so nothing is picked. Label one below with Use as a variant.${unlistedText}`;
+    }
+    if (unlisted.length) {
+      return `${plural(unlisted.length, "résumé carries", "résumés carry")} a variant label, but your profile file lists no resume_variants yet, so nothing is picked. ${where}`;
+    }
+    return "No résumé variants yet. With one résumé, the app uses it for every role, as before.";
+  }
+
   function resumeVariantForm(record) {
     const form = element("form", "resume-variant");
     const id = `resume-variant-${record.id}`;
@@ -6042,16 +6066,30 @@
     const save = element("button", "secondary-button", record.variant_label ? "Save variant label" : "Use as a variant");
     save.type = "submit";
     const status = element("p", "form-status");
+    status.id = `${id}-status`;
     status.setAttribute("aria-live", "polite");
     form.append(label, help, save, status);
+    const settle = () => {
+      input.removeAttribute("aria-invalid");
+      input.setAttribute("aria-describedby", help.id);
+    };
+    input.addEventListener("input", () => {
+      if (input.getAttribute("aria-invalid") !== "true") return;
+      settle();
+      status.textContent = "";
+    });
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const wanted = input.value.trim();
       if (!wanted && !record.variant_label) {
         status.textContent = "Type a label first, such as the kind of role this résumé is for.";
+        // The input names the warning too, so moving focus to it reads the warning out.
+        input.setAttribute("aria-invalid", "true");
+        input.setAttribute("aria-describedby", `${help.id} ${status.id}`);
         input.focus();
         return;
       }
+      settle();
       save.disabled = true;
       status.textContent = "Saving…";
       try {
@@ -6917,6 +6955,8 @@
               restoring.delete(item.action_id);
               return;
             }
+            // As decide(): a 409 or 404 says it is no longer open to Restore; anything else can be tried again.
+            if (error.status !== 409 && error.status !== 404) restoring.delete(item.action_id);
             message = error.message;
           }
           await Promise.all([reload(), loadAutoPassed()]);
@@ -7085,7 +7125,8 @@
         message = error.message;
       }
       deciding.delete(action.id);
-      const refreshed = await reload();
+      // An auto-pass undone here also leaves Auto-passed this week, which has its own list.
+      const [refreshed] = await Promise.all([reload(), action.feature === "auto_pass" ? loadAutoPassed() : null]);
       // Whether or not the lists were redrawn, the buttons follow what is known.
       syncRowButtons();
       entry.status.textContent = refreshed ? message : `${message} The lists could not be refreshed, so they may be out of date.`;
@@ -7304,10 +7345,7 @@
     resumeSection.appendChild(element("p", "eyebrow", "Private documents"));
     resumeSection.appendChild(element("h3", "", "Resume versions"));
     resumeSection.appendChild(element("p", "profile-help", "PDF and DOCX only, up to 5 MB. Parsed suggestions remain drafts until you confirm each fact."));
-    const variantCount = (resumesPayload?.items || []).filter((record) => record.variant_label).length;
-    resumeSection.appendChild(element("p", "profile-help resume-variant-summary", variantCount
-      ? `${plural(variantCount, "résumé variant", "résumé variants")} set up. Saved roles show which one fits when the résumé variant switch is on under Automation.`
-      : "No résumé variants yet. With one résumé, the app uses it for every role, as before."));
+    resumeSection.appendChild(element("p", "profile-help resume-variant-summary", resumeVariantSummary(resumesPayload)));
     const upload = element("form", "upload-form");
     const file = document.createElement("input");
     file.type = "file";
@@ -9041,7 +9079,12 @@
     function paintCheck(result) {
       check.replaceChildren();
       const terms = Array.isArray(result?.terms) ? result.terms : [];
-      if (!terms.length) return;
+      if (!terms.length) {
+        // A check that could not run says so, so it is not mistaken for one that found nothing missing.
+        // With no confirmed résumé, the line above already says so.
+        if (result?.note && result.resume_file_id) check.appendChild(element("p", "resume-check-note", `${result.note}.`));
+        return;
+      }
       const list = element("ul", "reason-list is-gap");
       terms.forEach((term) => {
         list.appendChild(element("li", "", `This posting asks for ${term}. Your profile lists ${term}, but your ${result.label} résumé doesn't mention it.`));
@@ -9066,10 +9109,16 @@
       } else if (!view.options.length) {
         current.textContent = "No confirmed résumé yet. Confirm one on your Profile page to use it here.";
       } else if (!view.configured) {
-        current.textContent = "No résumé variants are set up, so the app uses your confirmed résumé, as before.";
+        current.textContent = "No résumé variants are listed under resume_variants in your profile file, so the app uses your confirmed résumé, as before.";
       } else if (suggestion.resume_file_id) {
         const suggested = resumePickText({ ...suggestion, picked_by: "automatic" }).replace(/^Résumé: /, "");
-        current.textContent = `Suggested: ${suggested}. ${view.enabled ? "It is picked when you save this role." : "Turn on the résumé variant switch under Automation to have it picked when you save."}`;
+        // A pick is made only when a save changes the role, with the switch on and automation not paused.
+        let next;
+        if (view.saved) next = "Nothing was picked when this role was saved. Choose a résumé below to set one.";
+        else if (!view.enabled) next = "Turn on the résumé variant switch under Automation to have it picked when you save.";
+        else if (view.paused) next = "Automation is paused, so nothing is picked when you save. Choose a résumé below to set one.";
+        else next = "It is picked when you save this role.";
+        current.textContent = `Suggested: ${suggested}. ${next}`;
       } else {
         current.textContent = suggestion.reason ? `${suggestion.reason}.` : "No variant fits this role yet.";
       }
@@ -9095,7 +9144,7 @@
       control.appendChild(label);
       autoSaveSelect(select, {
         saved: () => view.pick?.resume_file_id || "",
-        commit: async (value) => {
+        commit: async (value, trigger) => {
           if (!value) {
             select.value = view.pick?.resume_file_id || "";
             return;
@@ -9111,8 +9160,14 @@
             item.resume_pick = view.pick;
             paint();
             status.textContent = `Using ${view.pick?.label || "that résumé"} for this role. The app will not change it.`;
-            control.querySelector("select")?.focus();
+            // A save made by leaving the select leaves focus where the student went.
+            const focused = document.activeElement;
+            if (trigger !== "blur" || !focused || focused === document.body || !focused.isConnected) {
+              control.querySelector("select")?.focus();
+            }
             refreshCheck();
+            // The card behind the panel shows the pick too, so it is drawn again with the new one.
+            if (["discover", "saved", "urgent"].includes(state.view)) loadCurrentView();
           } catch (error) {
             if (stale()) return;
             select.value = view.pick?.resume_file_id || "";

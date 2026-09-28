@@ -273,8 +273,13 @@ class AutomationWorker:
         gmail_client_factory: Callable[[], Any] | None = None,
         form_submitter_factory: Callable[..., Any] | None = None,
         interval_seconds: float = 60.0,
+        decisions_for: Callable[[sqlite3.Connection, str], Any] | None = None,
+        on_reply: Callable[[sqlite3.Connection, str, str], None] | None = None,
     ) -> None:
         self.platform_target = platform_target
+        # The InboxWatcher's reply classifier and reply hook, for a reply auto-close's fresh look finds.
+        self._decisions_for = decisions_for
+        self._on_reply = on_reply
         self._gmail_client_factory = gmail_client_factory
         self._form_submitter_factory = form_submitter_factory
         self._fetcher_factory = fetcher_factory
@@ -336,6 +341,7 @@ class AutomationWorker:
                     internal_automation.run_for_user(
                         conn, user_id, report, gmail_client_factory=self._gmail_client_factory,
                         provider_factory=self._provider_factory, draft_provider=self._draft_provider,
+                        decisions_for=self._decisions_for, on_reply=self._on_reply,
                     )
                 except Exception as exc:  # noqa: BLE001 - recorded like any other step's failure
                     _discard_open_transaction(conn)

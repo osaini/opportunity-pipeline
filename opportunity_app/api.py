@@ -1068,12 +1068,14 @@ def create_app(
         if auto_queue_call_prep(conn, target_id, user_id=user_id, reason="Reply found in Gmail"):
             call_prep_worker.wake()
 
+    def inbox_decisions_for(conn: sqlite3.Connection, user_id: str) -> Any:
+        return inbox_client_for(conn, resolved_inbox_client_factory, user_id=user_id)
+
     # Bounces and replies are read from Gmail in the background, so they land
     # even while the page is closed. Tests and sandboxes run the checks themselves.
     inbox_watcher = InboxWatcher(
         database_target, client_factory=resolved_gmail_client_factory,
-        decisions_for=lambda conn, user_id: inbox_client_for(conn, resolved_inbox_client_factory, user_id=user_id),
-        on_reply=prep_after_reply,
+        decisions_for=inbox_decisions_for, on_reply=prep_after_reply,
     )
     if start_inbox_watcher is None:
         start_inbox_watcher = real_product_db
@@ -1083,6 +1085,8 @@ def create_app(
         verifier_factory=resolved_smtp_verifier_factory, provider_factory=resolved_outreach_provider_factory,
         draft_provider=outreach_draft_provider, contact_delay=outreach_contact_delay,
         gmail_client_factory=resolved_gmail_client_factory, form_submitter_factory=resolved_form_submitter_factory,
+        # A reply auto-close's fresh look finds is handled as the InboxWatcher handles one.
+        decisions_for=inbox_decisions_for, on_reply=prep_after_reply,
     )
     if start_automation_worker is None:
         start_automation_worker = real_product_db
@@ -2951,7 +2955,8 @@ def create_app(
         user_id: str = Depends(require_auth),
     ) -> dict[str, Any]:
         items = list_resumes(conn, user_id=user_id)
-        return {"items": items, "total": len(items)}
+        # Which labels the profile lists and which of them a confirmed résumé carries, so the page counts only those.
+        return {"items": items, "total": len(items), "variants": resume_variants.variant_setup(conn, user_id)}
 
     @app.post("/api/v1/resumes", status_code=status.HTTP_201_CREATED)
     async def upload_resume(

@@ -358,8 +358,10 @@ and one for software roles). If they do:
 ```
 
 Labels match the ones typed in the app, ignoring case and spaces at the ends.
-With the **Pick the résumé variant for each saved role** switch on (Profile ›
-Automation), every role they save gets the variant whose words the posting
+The switch can be turned on only once at least one listed label is on a
+confirmed résumé; the Profile page says which labels are ready and which are
+not listed. With the **Pick the résumé variant for each saved role** switch on
+(Profile › Automation), every role they save from then on gets the variant whose words the posting
 names most: a word in the title counts three times, one in the description
 once, and the winner needs at least 2 points and 1.5 times the next variant.
 Otherwise the pick is marked unsure and `default_variant` is used. The role

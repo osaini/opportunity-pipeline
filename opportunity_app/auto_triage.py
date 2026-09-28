@@ -36,6 +36,7 @@ from typing import Any
 from pipeline_core.visibility import capture_visible_sql
 
 from . import automation
+from .database import is_postgres_target
 from .schema import LOCAL_USER_ID, RULESET_VERSION, connect_product
 
 LOGGER = logging.getLogger(__name__)
@@ -204,30 +205,40 @@ def run_auto_triage(conn: sqlite3.Connection, *, user_id: str, now: datetime | N
 
 
 def triage_after_sync(target: Path | str, *, user_id: str = LOCAL_USER_ID) -> dict[str, Any] | None:
-    """run_auto_triage after a platform sync. Never raises: a failure is logged and recorded in Health, and the sync stands."""
+    """run_auto_triage after a platform sync. Never raises: a failure is logged and recorded in Health, and the sync stands.
+
+    ``target`` is a SQLite path, as a Path or as text (the migrate CLI passes
+    text), or a PostgreSQL URL.
+    """
     try:
-        with closing(connect_product(target)) as conn:
+        # As migrate_legacy_database reads its target: connect_product needs a Path for SQLite.
+        target = str(target) if is_postgres_target(target) else Path(target).expanduser().resolve()
+        conn = connect_product(target)
+    except Exception:  # noqa: BLE001 - no database, or it could not be opened: nothing to triage
+        LOGGER.exception("Saving and passing on new roles could not start")
+        return None
+    with closing(conn):
+        try:
             on = any(automation.mode(conn, user_id, feature) == "on" for feature in THRESHOLDS)
+            report = run_auto_triage(conn, user_id=user_id)
+        except Exception as exc:  # noqa: BLE001 - recorded, and the sync still succeeds
+            LOGGER.exception("Saving and passing on new roles failed")
             try:
-                report = run_auto_triage(conn, user_id=user_id)
-            except Exception as exc:  # noqa: BLE001 - recorded, and the sync still succeeds
-                LOGGER.exception("Saving and passing on new roles failed")
-                try:
-                    if getattr(conn, "in_transaction", False):
-                        conn.rollback()
-                    automation.record_health(conn, user_id, HEALTH_COMPONENT, ok=False, error=str(exc))
-                except Exception:  # noqa: BLE001
-                    LOGGER.warning("Could not record the auto-triage failure", exc_info=True)
-                return None
-            if on:
+                if getattr(conn, "in_transaction", False):
+                    conn.rollback()
+                automation.record_health(conn, user_id, HEALTH_COMPONENT, ok=False, error=str(exc))
+            except Exception:  # noqa: BLE001
+                LOGGER.warning("Could not record the auto-triage failure", exc_info=True)
+            return None
+        if on:
+            try:
                 automation.record_health(
                     conn, user_id, HEALTH_COMPONENT, ok=True,
                     detail={"saved": len(report["saved"]), "passed": len(report["passed"]), "considered": report["considered"]},
                 )
-            return report
-    except Exception:  # noqa: BLE001 - no database, or it could not be opened: nothing to triage
-        LOGGER.exception("Saving and passing on new roles could not start")
-        return None
+            except Exception:  # noqa: BLE001 - what was saved and passed stands
+                LOGGER.warning("Could not record how saving and passing on new roles went", exc_info=True)
+        return report
 
 
 def auto_passed_this_week(conn: sqlite3.Connection, user_id: str, *, now: datetime | None = None) -> list[dict[str, Any]]:

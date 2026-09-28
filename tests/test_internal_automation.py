@@ -1,11 +1,13 @@
 """Phase 2 automation that stays inside the app: résumé variants, silent applications, auto-close,
 follow-up drafts, and saving or passing on new roles by score. Every change has an Undo."""
 
+import io
 import json
+import sqlite3
 import sys
 import tempfile
 import unittest
-from contextlib import closing
+from contextlib import closing, redirect_stdout
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -15,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, auto_triage, automation, internal_automation, resume_variants, schema
+from opportunity_app import STATIC_DIR, auto_triage, automation, internal_automation, migrate, resume_variants, schema
 from opportunity_app.actions import record_intent, update_application
 from opportunity_app.api import create_app
 from opportunity_app.automation import Superseded
@@ -270,8 +272,10 @@ class ResumePickTests(Case):
         self.assertEqual(self.pick()["picked_by"], "student")
 
     def test_no_variants_falls_back_to_the_confirmed_resume(self):
-        self.set_profile(resume_variants=[], default_variant="")
         self.on("resume_variant_pick")
+        self.set_profile(resume_variants=[], default_variant="")
+        self.assertIn("resume_variants", automation.requirement(self.conn, USER, "resume_variant_pick"),
+                      "a switch left on says why it cannot pick")
         record_intent(self.conn, "job-a", "undo", user_id=USER)
         record_intent(self.conn, "job-a", "saved", user_id=USER)
         self.assertIsNone(self.pick())
@@ -296,6 +300,122 @@ class ResumePickTests(Case):
         self.assertEqual([item["artifact_id"] for item in after], [item["artifact_id"] for item in before], "the order is stable")
         self.assertEqual([item["artifact_id"] for item in after if item["preferred"]], [self.hardware["version_id"]])
         self.assertEqual({item["variant_label"] for item in after}, {"Hardware", "Software"})
+
+    def test_a_role_the_student_cannot_see_is_never_picked(self):
+        other = "student-b"
+        stamp = "2026-09-01T00:00:00+00:00"
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO users(id, email, display_name, role, created_at, updated_at) VALUES(?, 'b@example.com', 'B', 'student', ?, ?)",
+                (other, stamp, stamp),
+            )
+            self.conn.execute(
+                "INSERT INTO profiles(user_id, profile_json, created_at, updated_at) VALUES(?, ?, ?, ?)",
+                (other, json.dumps({"resume_variants": VARIANTS, "default_variant": "Hardware"}), stamp, stamp),
+            )
+            # The owner's private capture, which only the owner may see.
+            self.conn.execute(
+                "INSERT INTO opportunities(id, company, title, location, url, description, first_seen_at, last_seen_at, active, "
+                "fingerprint, created_at, updated_at) VALUES('manual-secret', 'Secret Startup', 'Private PCB Role', '', "
+                "'https://secret.test/job', 'CAD and PCB work.', ?, ?, 1, 'fp-secret', ?, ?)",
+                (stamp, stamp, stamp, stamp),
+            )
+            self.conn.execute(
+                "INSERT INTO opportunity_sources(opportunity_id, source_key, source_name, external_id, source_url, first_seen_at, last_seen_at) "
+                "VALUES('manual-secret', 'manual:capture', 'Manual capture', 'cap-secret', 'https://secret.test/job', ?, ?)",
+                (stamp, stamp),
+            )
+            self.conn.execute(
+                "INSERT INTO applications(id, opportunity_id, user_id, stage, created_at, updated_at) "
+                "VALUES('app-secret', 'manual-secret', ?, 'applying', ?, ?)",
+                (USER, stamp, stamp),
+            )
+            self.conn.execute(
+                "INSERT INTO opportunity_captures(id, user_id, source_type, source_url, status, application_id, created_at) "
+                "VALUES('cap-secret', ?, 'url', 'https://secret.test/job', 'confirmed', 'app-secret', ?)",
+                (USER, stamp),
+            )
+        file_id = f"resume-file-{uuid4().hex}"
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO resume_files(id, user_id, original_name, media_type, byte_size, sha256, storage_path, created_at, variant_label) "
+                "VALUES(?, ?, 'hw.pdf', 'application/pdf', 1000, ?, ?, ?, 'Hardware')",
+                (file_id, other, uuid4().hex, f"{file_id}.pdf", stamp),
+            )
+            self.conn.execute(
+                "INSERT INTO resume_versions(id, resume_file_id, user_id, extracted_text, parsed_json, confirmed_json, status, created_at, confirmed_at) "
+                "VALUES(?, ?, ?, 'CAD work.', '{}', '{}', 'confirmed', ?, ?)",
+                (f"resume-{uuid4().hex}", file_id, other, stamp, stamp),
+            )
+        automation.set_mode(self.conn, other, "resume_variant_pick", "on")
+        record_intent(self.conn, "manual-secret", "saved", user_id=other)
+        self.assertIsNone(resume_variants.pick_after_save(self.conn, other, "manual-secret"))
+        self.assertEqual(automation.list_actions(self.conn, other, feature="resume_variant_pick"), [],
+                         "nothing about another student's capture reaches this student's ledger")
+        self.assertIsNone(resume_variants.stored_pick(self.conn, other, "manual-secret"))
+
+    def test_a_student_pick_that_lands_after_the_read_stands_and_no_row_claims_a_pick(self):
+        self.on("resume_variant_pick")
+        record_intent(self.conn, "job-a", "undo", user_id=USER)
+        stamp = utc_now()
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO opportunity_interactions(opportunity_id, user_id, action, created_at, source) VALUES('job-a', ?, 'saved', ?, 'user')",
+                (USER, stamp),
+            )
+            self.conn.execute(
+                "INSERT INTO opportunity_resume_picks(user_id, opportunity_id, resume_file_id, picked_by, matched_json, created_at, updated_at) "
+                "VALUES(?, 'job-a', ?, 'student', '{}', ?, ?)",
+                (USER, self.software["file_id"], stamp, stamp),
+            )
+        # As if read before the student's pick committed (PostgreSQL takes no row lock on the role any more).
+        with mock.patch.object(automation.ResumePick, "read", return_value={"resume_pick": None}):
+            self.assertIsNone(resume_variants.pick_after_save(self.conn, USER, "job-a"))
+        self.assertEqual(automation.list_actions(self.conn, USER, feature="resume_variant_pick"), [])
+        self.assertEqual((self.pick()["resume_file_id"], self.pick()["picked_by"]), (self.software["file_id"], "student"))
+
+    def test_the_pick_takes_no_row_lock_on_the_role(self):
+        class Recorder:
+            backend = "postgresql"
+
+            def __init__(self):
+                self.statements = []
+
+            def execute(self, sql, _params=()):
+                self.statements.append(" ".join(sql.split()))
+                return mock.Mock(fetchone=lambda: (1,) if "FROM opportunities" in sql else None)
+
+        recorder = Recorder()
+        automation.ResumePick().read(recorder, USER, "job-a")
+        on_role = [sql for sql in recorder.statements if "FROM opportunities" in sql]
+        self.assertTrue(on_role)
+        self.assertFalse(any("FOR UPDATE" in sql for sql in on_role), "a running sync holds every role's row until it commits")
+
+    def test_the_pick_view_says_whether_the_role_is_saved_and_whether_automation_is_paused(self):
+        self.on("resume_variant_pick")
+        view = resume_variants.pick_view(self.conn, USER, "job-a")
+        self.assertEqual((view["saved"], view["paused"], view["pick"]), (True, False, None), "saved before the switch: no pick")
+        record_intent(self.conn, "job-a", "undo", user_id=USER)
+        automation.set_paused(self.conn, USER, True)
+        view = resume_variants.pick_view(self.conn, USER, "job-a")
+        self.assertEqual((view["saved"], view["paused"], view["enabled"]), (False, True, True))
+
+    def test_the_switch_needs_a_variant_with_a_confirmed_resume(self):
+        setup = resume_variants.variant_setup(self.conn, USER)
+        self.assertEqual((setup["usable"], setup["unlisted"]), (["Hardware", "Software"], []))
+        self.set_profile(resume_variants=[], default_variant="")
+        self.assertEqual(resume_variants.variant_setup(self.conn, USER)["unlisted"], ["Hardware", "Software"],
+                         "labelled résumés the profile does not list are never picked")
+        with self.assertRaisesRegex(automation.AutomationGateError, "resume_variants"):
+            automation.set_mode(self.conn, USER, "resume_variant_pick", "on")
+        self.set_profile(resume_variants=[{"label": "Firmware", "keywords": ["RTOS"]}])
+        with self.assertRaisesRegex(automation.AutomationGateError, "Use as a variant"):
+            automation.set_mode(self.conn, USER, "resume_variant_pick", "on")
+        self.set_profile(resume_variants=VARIANTS)
+        self.on("resume_variant_pick")
+        with self.client() as client:
+            listed = client.get("/api/v1/resumes", headers=AUTH).json()
+        self.assertEqual(listed["variants"]["usable"], ["Hardware", "Software"])
 
     def test_a_failed_pick_never_fails_the_save(self):
         self.on("resume_variant_pick")
@@ -430,7 +550,10 @@ class SilenceTests(Case):
 
 class ArchiveTests(Case):
     def applied(self, days_ago):
-        applied_at = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat(timespec="microseconds")
+        # Noon on the student's own calendar day, so a DST change inside the gap cannot shift the day count.
+        zone = user_timezone(self.conn, USER)
+        day = zone.today() - timedelta(days=days_ago)
+        applied_at = zone.localize(datetime(day.year, day.month, day.day, 12)).isoformat(timespec="microseconds")
         with self.conn:
             self.conn.execute("UPDATE applications SET stage='applied', applied_at=? WHERE id='app-job-b'", (applied_at,))
 
@@ -466,6 +589,24 @@ class ArchiveTests(Case):
         self.assertEqual(self.stage(), "interview")
         self.assertEqual(automation.list_actions(self.conn, USER, feature="archive_silent_applications"), [])
 
+    def test_an_archive_the_daily_sync_moved_back_no_longer_counts(self):
+        self.applied(61)
+        self.on("archive_silent_applications")
+        internal_automation.archive_silent_applications(self.conn, USER, force=True)
+        self.assertTrue(internal_automation.automation_archived(self.conn, "app-job-b"))
+        # The sync resets an imported application's stage with no stage_changed event (schema._migrate_status).
+        with self.conn:
+            self.conn.execute("UPDATE applications SET stage='applied' WHERE id='app-job-b'")
+        self.assertFalse(internal_automation.automation_archived(self.conn, "app-job-b"), "it sits at Applied, not archived")
+
+    def test_the_worker_runs_the_daily_archive(self):
+        self.applied(61)
+        self.on("archive_silent_applications")
+        worker = AutomationWorker(self.platform_path, fetcher_factory=lambda: None)
+        report = worker.run_once()
+        self.assertEqual([item["application_id"] for item in report["archived"]], ["app-job-b"])
+        self.assertEqual(self.stage(), "archived")
+
     def test_a_student_archive_is_not_the_automations(self):
         update_application(self.conn, "app-job-b", stage="archived", user_id=USER)
         self.assertFalse(internal_automation.automation_archived(self.conn, "app-job-b"))
@@ -494,6 +635,21 @@ class OutreachCase(Case):
 
 
 class AutoCloseTests(OutreachCase):
+    def setUp(self):
+        super().setUp()
+        self.connect_gmail()
+
+    def connect_gmail(self, status="connected"):
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO connector_accounts(id, user_id, provider, scopes_json, status, created_at, updated_at) "
+                "VALUES(?, ?, 'gmail_drafts', '[]', ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status=excluded.status",
+                (f"connector-gmail_drafts-{USER}", USER, status, utc_now(), utc_now()),
+            )
+
+    def status(self, target):
+        return get_target(self.conn, target["id"], user_id=USER)["status"]
+
     def quiet(self, days=20, **values):
         follow_up = (date.today() - timedelta(days=days)).isoformat()
         return self.target(status="followed_up", sent_at=(date.today() - timedelta(days=days + 7)).isoformat(),
@@ -552,6 +708,92 @@ class AutoCloseTests(OutreachCase):
         replied = self.quiet(company="Kiva", website="https://kiva.test", contact_email="hi@kiva.test")
         log_reply(self.conn, replied["id"], "Thanks, we will get back to you.", user_id=USER)
         self.assertEqual(internal_automation.auto_close_due(self.conn, USER), [])
+
+    def test_an_undone_close_is_not_tried_again_and_frees_its_slot(self):
+        quiet = [self.quiet(company=f"Quiet {index}", website=f"https://q{index}.test", contact_email=f"a@q{index}.test")
+                 for index in range(6)]
+        self.on("outreach_auto_close")
+        with mock.patch("opportunity_app.outreach_review.fresh_look", return_value={"ok": True, "reason": ""}):
+            first = internal_automation.auto_close(self.conn, USER, client_factory=lambda: None)
+        self.assertEqual(sum(1 for result in first if result["closed"]), 5)
+        for action in automation.list_actions(self.conn, USER, feature="outreach_auto_close"):
+            automation.undo(self.conn, action["id"], USER)
+        self.on("outreach_auto_close")  # the breaker turned it off; the student turns it back on
+        with mock.patch("opportunity_app.outreach_review.fresh_look", return_value={"ok": True, "reason": ""}) as look:
+            second = internal_automation.auto_close(self.conn, USER, client_factory=lambda: None)
+            self.assertEqual(look.call_count, 1, "Gmail is read only for the company never tried")
+            self.assertEqual([(result["company"], result["closed"]) for result in second], [("Quiet 5", True)])
+            look.reset_mock()
+            self.assertEqual(internal_automation.auto_close(self.conn, USER, client_factory=lambda: None), [])
+            look.assert_not_called()
+        self.assertEqual([self.status(target) for target in quiet], ["followed_up"] * 5 + ["no_response"])
+
+    def test_a_company_gmail_never_searches_is_left_for_the_student(self):
+        # A LinkedIn message has no address to search for, and an imported company has no record of when it was written to.
+        linkedin = self.quiet(company="Kiva", website="https://kiva.test", contact_email="", channel="LinkedIn")
+        imported = self.target(company="Mako", website="https://mako.test", contact_email="x@mako.test", status="followed_up",
+                               follow_up_at=(date.today() - timedelta(days=20)).isoformat())
+        self.assertEqual({item["id"] for item in internal_automation.auto_close_due(self.conn, USER)}, {linkedin["id"], imported["id"]})
+        self.on("outreach_auto_close")
+
+        def no_gmail():
+            raise AssertionError("nothing to search, so Gmail is not opened")
+
+        for connector in ("connected", None):
+            with self.subTest(connector=connector):
+                if connector is None:
+                    with self.conn:
+                        self.conn.execute("DELETE FROM connector_accounts WHERE user_id=?", (USER,))
+                results = internal_automation.auto_close(self.conn, USER, client_factory=no_gmail)
+                self.assertEqual({(result["target_id"], result["closed"]) for result in results},
+                                 {(linkedin["id"], False), (imported["id"], False)})
+                self.assertTrue(all("never searched" in result["reason"] for result in results))
+                self.assertEqual((self.status(linkedin), self.status(imported)), ("followed_up", "followed_up"))
+                self.assertEqual(automation.list_actions(self.conn, USER, feature="outreach_auto_close"), [])
+
+    def test_it_holds_without_reading_when_gmail_is_not_connected(self):
+        target = self.quiet()
+        self.on("outreach_auto_close")
+        for status, reason in (("error", "Gmail needs to be reconnected"), ("disconnected", "Gmail is not connected")):
+            with self.subTest(status=status):
+                self.connect_gmail(status)
+                with mock.patch("opportunity_app.outreach_review.fresh_look") as look:
+                    [result] = internal_automation.auto_close(self.conn, USER, client_factory=lambda: None)
+                look.assert_not_called()
+                self.assertEqual((result["closed"], result["reason"]), (False, reason))
+                self.assertEqual(self.status(target), "followed_up")
+
+    def test_a_close_records_that_gmail_was_searched_for_the_company(self):
+        target = self.quiet()
+        self.on("outreach_auto_close")
+        with mock.patch("opportunity_app.outreach_review.fresh_look", return_value={"ok": True, "reason": ""}) as look:
+            internal_automation.auto_close(self.conn, USER, client_factory=lambda: None)
+        self.assertEqual(look.call_args.args[1], target["id"])
+        [action] = automation.list_actions(self.conn, USER, feature="outreach_auto_close")
+        self.assertTrue(action["evidence"]["gmail_checked"])
+
+    def test_a_reply_the_fresh_look_finds_is_handled_as_the_inbox_watcher_would(self):
+        self.quiet()
+        self.on("outreach_auto_close")
+        classifier, hook = object(), mock.Mock()
+        report = {}
+        with mock.patch("opportunity_app.outreach_review.fresh_look", return_value={"ok": True, "reason": ""}) as look:
+            internal_automation.run_for_user(
+                self.conn, USER, report, gmail_client_factory=lambda: None, provider_factory=None,
+                decisions_for=lambda _conn, _user: classifier, on_reply=hook,
+            )
+        self.assertIs(look.call_args.kwargs["decisions"], classifier)
+        self.assertIs(look.call_args.kwargs["on_reply"], hook)
+        self.assertTrue(report["closed"][0]["closed"])
+
+    def test_the_worker_runs_auto_close(self):
+        target = self.quiet()
+        self.on("outreach_auto_close")
+        worker = AutomationWorker(self.platform_path, fetcher_factory=lambda: None, gmail_client_factory=lambda: None)
+        with mock.patch("opportunity_app.outreach_review.fresh_look", return_value={"ok": True, "reason": ""}):
+            report = worker.run_once()
+        self.assertEqual([(item["target_id"], item["closed"]) for item in report["closed"]], [(target["id"], True)])
+        self.assertEqual(self.status(target), "no_response")
 
     def test_at_most_five_per_pass_and_nothing_while_paused(self):
         for index in range(7):
@@ -679,11 +921,15 @@ class TriageTests(Case):
         self.add_opportunity("hi", score=80, reasons=["35 base", "+4 interests: data", "+18 preferred role type (internship)",
                                                       "+10 skills: Python", "+2 terms: summer"])
         self.add_opportunity("mid", score=60)
+        self.add_opportunity("just-under-save", score=79)
+        self.add_opportunity("at-pass", score=40, description="A full description of the role.")
         self.add_opportunity("lo", score=39, description="A full description of the role.")
         report = auto_triage.run_auto_triage(self.conn, user_id=USER)
         self.assertEqual([item["opportunity_id"] for item in report["saved"]], ["hi"])
         self.assertEqual([item["opportunity_id"] for item in report["passed"]], ["lo"])
         self.assertEqual((self.intent("hi"), self.intent("mid"), self.intent("lo")), ("saved", None, "passed"))
+        self.assertEqual((self.intent("just-under-save"), self.intent("at-pass")), (None, None),
+                         "79 is not at 80, and 40 is not below 40")
         [saved] = automation.list_actions(self.conn, USER, feature="auto_save")
         self.assertEqual(saved["evidence"]["score"], 80)
         self.assertEqual(saved["evidence"]["reasons"], ["+18 preferred role type (internship)", "+10 skills: Python", "+4 interests: data"])
@@ -783,6 +1029,27 @@ class TriageTests(Case):
         self.assertEqual(health["discovery.auto_triage"]["last_error"], "boom")
         with self.assertLogs("opportunity_app.auto_triage", level="ERROR"):
             self.assertIsNone(auto_triage.triage_after_sync(self.root / "missing" / "nowhere.db"))
+
+    def test_the_daily_platform_sync_triages(self):
+        self.on("auto_save")
+        first_seen = (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat(timespec="seconds")
+        with closing(sqlite3.connect(self.legacy_path)) as legacy, legacy:
+            legacy.execute(
+                "INSERT INTO jobs(id, source_key, source_name, external_id, company, title, location, role_type, url, description, "
+                "posted_at, first_seen_at, last_seen_at, active, fingerprint, content_fingerprint, score, score_explanation, status) "
+                "VALUES('job-new', 'greenhouse:acme', 'Acme Greenhouse', 'n-1', 'Nova Labs', 'Robotics Intern', 'Austin, TX', "
+                "'internship', 'https://example.com/jobs/new', 'Build robots.', ?, ?, ?, 1, 'fp-new', 'cfp-new', 95, "
+                "'[\"35 base\", \"+20 skills: robots\"]', 'discovered')",
+                (first_seen, first_seen, first_seen),
+            )
+        # As daily.py runs it: the target is text, as argparse gives it.
+        argv = ["migrate", "--source", str(self.legacy_path), "--target", str(self.platform_path),
+                "--profile", str(self.root / "profile.json")]
+        with mock.patch("sys.argv", argv), redirect_stdout(io.StringIO()) as out, \
+                self.assertNoLogs("opportunity_app.auto_triage", level="ERROR"):
+            migrate.main()
+        self.assertEqual(self.intent("job-new"), "saved")
+        self.assertIn("Automatically saved 1", out.getvalue())
 
     def test_the_web_refresh_sync_step_triages(self):
         manager = RefreshManager(self.platform_path, legacy_path=self.legacy_path, profile_path=self.root / "profile.json",
