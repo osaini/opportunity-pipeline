@@ -48,8 +48,9 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from . import automation
-from .outreach import DraftChangedError, UNSENT_STATUSES, _city_state, _log, get_target
+from .outreach import DraftChangedError, UNSENT_STATUSES, _city_state, _log, get_target, heard_back
 from .outreach_gmail import (
+    SENT_EVENT,
     THANK_YOU_KIND,
     ClientFactory,
     GmailAuthError,
@@ -303,6 +304,10 @@ def _gate(
     from .outreach_review import FRESH_LOOK_REASONS, fresh_look, review_follow_up, review_runner
 
     target_id, user_id = row["target_id"], row["user_id"]
+    if row["kind"] == "follow_up":
+        stopped = _answered(conn, row, get_target(conn, target_id, user_id=user_id), now)
+        if stopped:
+            return stopped
     look = fresh_look(conn, target_id, user_id=user_id, client_factory=client_factory, decisions=decisions, on_reply=on_reply)
     if not look["ok"]:
         hold = backoff_until(user_id)
@@ -315,12 +320,26 @@ def _gate(
         from .outreach_thank_you import gate  # imported here: it imports this module
 
         return gate(conn, row, client_factory=client_factory, now=now, reviewer=reviewer)
-    if row["kind"] != "follow_up":
-        return None
     target = get_target(conn, target_id, user_id=user_id)
-    if target["reply_count"] or target["status"] != "sent":
-        _finish(conn, row, "cancelled", "They replied, or the company moved on, so the follow-up was not sent")
-        return "cancelled"
+    if row["kind"] != "follow_up":
+        # A first email going out again (after a bounce) stops if anyone may have answered the earlier one.
+        if heard_back(target) and _sent_before(conn, target_id, user_id):
+            _finish(conn, row, "cancelled", "They may have answered your earlier email, so it was not sent again. "
+                                            "Check the company's card")
+            if row["label"] == RESEND_LABEL:
+                # The app approved it for the new contact on its own; nothing stays approved that the student did not.
+                with conn:
+                    if conn.execute(
+                        "UPDATE outreach_targets SET draft_status='generated', updated_at=? WHERE id=? AND user_id=? AND draft_status='approved'",
+                        (utc_now(), target_id, user_id),
+                    ).rowcount:
+                        _log(conn, target_id, user_id, "approval_withdrawn",
+                             detail="They may have answered the earlier email, so the automatic resend was not sent")
+            return "cancelled"
+        return None
+    stopped = _answered(conn, row, target, now)
+    if stopped:
+        return stopped
     if target["contact_bounced"]:
         _finish(conn, row, "cancelled", f"Email to {target['contact_email']} bounced, so the follow-up was not sent")
         return "cancelled"
@@ -342,7 +361,8 @@ def _gate(
             f"Passed by {name}" if verdict["send"] else f"Held by {name}: " + "; ".join(verdict["problems"])
         )[:1_000])
     if verdict["send"]:
-        return None
+        # The review can take minutes: a reply, or an email that may be one, found meanwhile still stops it.
+        return _answered(conn, row, get_target(conn, target_id, user_id=user_id), now)
     if verdict["away_until"]:
         back = datetime.combine(verdict["away_until"], time(0, 0))
         back = back.replace(tzinfo=zone) if zone else back.astimezone()
@@ -364,6 +384,39 @@ def _gate(
 def _clock() -> datetime:
     """The real time, to measure how long a pass has run (a model review can take minutes)."""
     return datetime.now(timezone.utc)
+
+
+def _sent_before(conn: sqlite3.Connection, target_id: str, user_id: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=? LIMIT 1", (target_id, user_id, SENT_EVENT),
+    ).fetchone() is not None
+
+
+def _answered(conn: sqlite3.Connection, row: sqlite3.Row, target: dict[str, Any], now: datetime) -> str | None:
+    """Stop a follow-up to a company that answered: cancelled for a reply, held (not a try) while an email may be one.
+
+    None when nothing from them is on record and it may go.
+    """
+    if target["reply_count"] or target["status"] != "sent":
+        _finish(conn, row, "cancelled", "They replied, or the company moved on, so the follow-up was not sent")
+        return "cancelled"
+    if not heard_back(target):
+        return None
+    # An email from them may be a reply: wait for the student to say, then go the next morning after.
+    zone, basis = recipient_zone(conn, target, user_id=row["user_id"])
+    send_at = next_morning(now, zone, f"{row['target_id']}:follow_up")
+    label = _label(send_at, zone, basis)
+    with conn:
+        if conn.execute(
+            "UPDATE outreach_scheduled_sends SET state='scheduled', send_at=?, label=?, error=?, attempts=0, updated_at=? "
+            "WHERE target_id=? AND kind=? AND state='sending'",
+            (send_at.isoformat(timespec="seconds"), label,
+             f"Held: {target['company']} may have replied. Say whether it is a reply on the company's card",
+             utc_now(), row["target_id"], row["kind"]),
+        ).rowcount:
+            _log(conn, row["target_id"], row["user_id"], "follow_up_held",
+                 detail=f"An email from them may be a reply; the follow-up waits for you, and is looked at again {label}")
+    return "held"
 
 
 def run_due_sends(
@@ -528,6 +581,14 @@ def _hand_over(conn: sqlite3.Connection, row: sqlite3.Row, *, now: datetime | No
     """
     stamp = utc_now()
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    unanswered, params = "", ()
+    if row["kind"] == "follow_up":
+        unanswered = (
+            " AND NOT EXISTS (SELECT 1 FROM outreach_events e WHERE e.target_id=? AND e.event_type='reply_logged')"
+            " AND NOT EXISTS (SELECT 1 FROM outreach_inbox_messages m WHERE m.user_id=? AND m.kind='possible'"
+            " AND (m.target_id=? OR m.candidates_json LIKE ?))"
+        )
+        params = (row["target_id"], row["user_id"], row["target_id"], f'%"{row["target_id"]}"%')
     with conn:
         is_paused = automation.pause_guard(conn, row["user_id"])
         if row["kind"] == THANK_YOU_KIND and not is_paused:
@@ -547,8 +608,8 @@ def _hand_over(conn: sqlite3.Connection, row: sqlite3.Row, *, now: datetime | No
                 return "cancelled"
         if conn.execute(
             "UPDATE outreach_scheduled_sends SET state='transmitting', updated_at=? WHERE target_id=? AND kind=? AND state='sending' "
-            "AND NOT EXISTS (SELECT 1 FROM user_settings WHERE user_id=? AND key='automation_paused' AND value='on')",
-            (stamp, row["target_id"], row["kind"], row["user_id"]),
+            f"AND NOT EXISTS (SELECT 1 FROM user_settings WHERE user_id=? AND key='automation_paused' AND value='on'){unanswered}",
+            (stamp, row["target_id"], row["kind"], row["user_id"], *params),
         ).rowcount:
             if row["kind"] == THANK_YOU_KIND:
                 conn.execute(
@@ -556,13 +617,16 @@ def _hand_over(conn: sqlite3.Connection, row: sqlite3.Row, *, now: datetime | No
                     (stamp, row["target_id"], row["user_id"]),
                 )
             return "handed_over"
-        if not is_paused or not _still_held(conn, row):
+        if not _still_held(conn, row):
             return "cancelled"
-        conn.execute(
-            "UPDATE outreach_scheduled_sends SET state='scheduled', error=?, updated_at=? WHERE target_id=? AND kind=? AND state='sending'",
-            (PAUSED_NOTE, stamp, row["target_id"], row["kind"]),
-        )
-        return "paused"
+        if is_paused:
+            conn.execute(
+                "UPDATE outreach_scheduled_sends SET state='scheduled', error=?, updated_at=? WHERE target_id=? AND kind=? AND state='sending'",
+                (PAUSED_NOTE, stamp, row["target_id"], row["kind"]),
+            )
+            return "paused"
+    # Still ours and not paused: they answered, or may have, while the checks ran.
+    return _answered(conn, row, get_target(conn, row["target_id"], user_id=row["user_id"]), now) or "cancelled"
 
 
 def _send_one(

@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -17,9 +18,10 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR, outreach_delivery, outreach_gmail, outreach_inbox
 from opportunity_app.api import create_app
+from opportunity_app.outreach import _log
 from opportunity_app.outreach_automation import update_settings
 from opportunity_app.outreach_review import review_runner
-from opportunity_app.outreach_schedule import run_due_sends
+from opportunity_app.outreach_schedule import MAX_ATTEMPTS, run_due_sends
 from opportunity_app.schema import connect_product, utc_now
 
 from helpers_platform import build_and_migrate
@@ -139,6 +141,83 @@ class SendGateTests(unittest.TestCase):
 
     def review_on(self):
         update_settings(self.conn, {"follow_up_review": True}, user_id=USER)
+
+    def careers_writes(self, gmail_id="careers-1"):
+        """The company's shared inbox writes back: not one person, so only a possible reply (outreach_inbox.py)."""
+        self.gmail.raw[gmail_id] = (
+            mail("Could you send over your availability?", sender="Bovi Careers <careers@bovi.example>", subject="Next steps"),
+            int(datetime.now(timezone.utc).timestamp() * 1000) + 60_000,
+        )
+        self.gmail.inbox_replies.append(gmail_id)
+
+    def waiting(self, conn, target_id, gmail_id="careers-9", candidates=(), reason="shared_address"):
+        """A possible reply on record, as outreach_inbox keeps one, for ``target_id`` and any ``candidates``."""
+        stamp = utc_now()
+        conn.execute(
+            "INSERT INTO outreach_inbox_messages(user_id, gmail_id, target_id, kind, sender, received_at, recorded_at, via, rules, "
+            "reason, subject, text, candidates_json) VALUES(?, ?, ?, 'possible', 'careers@bovi.example', ?, ?, 'domain', ?, ?, "
+            "'Next steps', 'Could you send over your availability?', ?)",
+            (USER, gmail_id, target_id, stamp, stamp, outreach_inbox.RULES, reason, json.dumps(list(candidates))),
+        )
+
+    def decide(self, target_id, gmail_id, decision):
+        return self.post(f"/api/v1/outreach/{target_id}/possible-replies/{gmail_id}", {"decision": decision})
+
+    def schedule_row(self, target, kind="follow_up"):
+        return dict(self.conn.execute(
+            "SELECT state, send_at, label, error, attempts FROM outreach_scheduled_sends WHERE target_id=? AND kind=?",
+            (target["id"], kind),
+        ).fetchone())
+
+    def event_details(self, target, event_type):
+        return [event["detail"] for event in self.target(target)["events"] if event["event_type"] == event_type]
+
+    def other_company(self):
+        """A second company the student wrote to, which an ambiguous email may also be from."""
+        created = self.client.post("/api/v1/outreach", headers=AUTH, json={
+            "company": "Kelo", "contact_name": "Ana Ruiz", "contact_email": "ana@kelo.example", "location": "Denver, CO",
+            "email_subject": "Sensor internship question", "email_body": "Hi Ana,\n\nShort note about Kelo.\n\nSam",
+        })
+        self.assertEqual(created.status_code, 201, created.text)
+        return created.json()
+
+    def passes_while(self, change):
+        """A reviewer that passes the follow-up, while ``change`` lands from another connection as it reads.
+
+        The review can take minutes, and the background inbox watcher writes on
+        its own connection meanwhile.
+        """
+        reviewer = Reviewer({"send": True, "away_until": None, "problems": []})
+        answer = reviewer.run
+
+        def run(prompt):
+            with closing(connect_product(self.platform_path)) as other:
+                with other:
+                    change(other)
+            return answer(prompt)
+
+        reviewer.run = run
+        return reviewer
+
+    def assert_held_for_a_possible_reply(self, target, before):
+        """Held for the student, not failed or used up: still scheduled, on the recipient's next weekday morning."""
+        held = self.schedule_row(target)
+        self.assertEqual(held["state"], "scheduled")
+        self.assertEqual(held["attempts"], before["attempts"], "a hold is not a try")
+        self.assertTrue(held["error"].startswith("Held:"), held["error"])
+        self.assertIn("Bovi may have replied", held["error"])
+        zone = ZoneInfo("America/Chicago")
+        was = datetime.fromisoformat(before["send_at"]).astimezone(zone)
+        now = datetime.fromisoformat(held["send_at"]).astimezone(zone)
+        morning = was.date() + timedelta(days=1)
+        while morning.weekday() >= 5:
+            morning += timedelta(days=1)
+        self.assertEqual((now.date(), now.hour, now.minute), (morning, 9, was.minute), "the next weekday morning where they are")
+        self.assertIn("their time, from Austin, TX", held["label"])
+        self.assertTrue(self.event_details(target, "follow_up_held"), "the hold is in the history")
+        self.assertEqual(self.event_details(target, "scheduled_send_failed"), [])
+        self.assertEqual(self.event_details(target, "send_cancelled"), [])
+        self.assertEqual(len(self.gmail.sent), 1, "only the first email ever went")
 
     # --- The fresh Gmail look --------------------------------------------------------
 
@@ -356,6 +435,128 @@ class SendGateTests(unittest.TestCase):
             with mock.patch.dict("os.environ", {**writer, "PIPELINE_OUTREACH_REVIEW_PROVIDER": "gpt"}):
                 with self.assertRaises(ValueError):
                     review_runner()
+
+    # --- An email from them that may be a reply (outreach_inbox.py) ---------------------
+
+    def test_a_possible_reply_found_just_before_holds_the_follow_up_for_the_student(self):
+        target = self.scheduled_follow_up()
+        before = self.schedule_row(target)
+        # careers@ answers in a new email: the fresh look finds it, and it may be their reply.
+        self.careers_writes()
+        self.assertEqual([item["state"] for item in self.due(target)], ["held"])
+        after = self.target(target)
+        self.assertEqual((after["status"], after["reply_count"], after["possible_reply_count"]), ("sent", 0, 1))
+        self.assertEqual([item["gmail_id"] for item in after["possible_replies"]], ["careers-1"])
+        self.assert_held_for_a_possible_reply(target, before)
+        self.assertIn("may be a reply", self.event_details(target, "follow_up_held")[0])
+
+    def test_a_held_follow_up_goes_once_the_student_says_it_is_not_a_reply(self):
+        target = self.scheduled_follow_up()
+        self.careers_writes()
+        self.assertEqual([item["state"] for item in self.due(target)], ["held"])
+        self.assertEqual(self.decide(target["id"], "careers-1", "not_reply")["possible_reply_count"], 0)
+        self.assertEqual([item["state"] for item in self.due(target)], ["sent"])
+        self.assertEqual(len(self.gmail.sent), 2)
+        self.assertEqual(self.target(target)["status"], "followed_up")
+
+    def test_a_held_follow_up_is_cancelled_once_the_student_says_it_is_a_reply(self):
+        target = self.scheduled_follow_up()
+        self.careers_writes()
+        self.assertEqual([item["state"] for item in self.due(target)], ["held"])
+        decided = self.decide(target["id"], "careers-1", "reply")
+        self.assertEqual((decided["status"], decided["reply_count"]), ("replied", 1))
+        self.assertEqual([item["state"] for item in self.due(target)], ["cancelled"])
+        self.assertEqual(len(self.gmail.sent), 1)
+        self.assertIn("They replied", self.event_details(target, "send_cancelled")[0])
+
+    def test_a_follow_up_stays_held_every_morning_until_the_student_says(self):
+        target = self.scheduled_follow_up()
+        with self.conn:
+            self.waiting(self.conn, target["id"])
+        attempts = self.schedule_row(target)["attempts"]
+        for run in range(MAX_ATTEMPTS + 1):
+            with self.subTest(run=run):
+                was = self.schedule_row(target)["send_at"]
+                self.assertEqual([item["state"] for item in self.due(target)], ["held"], "never failed for waiting on the student")
+                held = self.schedule_row(target)
+                self.assertEqual((held["state"], held["attempts"]), ("scheduled", attempts))
+                self.assertGreater(held["send_at"], was, "looked at again the next morning")
+        self.assertEqual(len(self.event_details(target, "follow_up_held")), MAX_ATTEMPTS + 1)
+        self.assertEqual(len(self.gmail.sent), 1)
+
+    def test_the_reviewer_is_not_asked_while_a_possible_reply_waits(self):
+        self.review_on()
+        target = self.scheduled_follow_up()
+        with self.conn:
+            self.waiting(self.conn, target["id"])
+        before = self.schedule_row(target)
+        # never() raises if asked, which would fail the follow-up instead of holding it.
+        self.assertEqual([item["state"] for item in self.due(target, reviewer=never)], ["held"])
+        self.assert_held_for_a_possible_reply(target, before)
+        self.assertEqual(self.event_details(target, "follow_up_reviewed"), [])
+
+    def test_an_email_that_may_be_from_this_company_or_another_holds_it_until_the_other_claims_it(self):
+        kelo = self.other_company()
+        target = self.scheduled_follow_up()
+        # Filed under Kelo, but Bovi could have sent it as well.
+        with self.conn:
+            self.waiting(self.conn, kelo["id"], gmail_id="either-1", candidates=[target["id"]], reason="ambiguous")
+        before = self.schedule_row(target)
+        self.assertEqual(self.target(target)["possible_reply_count"], 1, "a candidacy counts for every company it names")
+        self.assertEqual([item["state"] for item in self.due(target)], ["held"])
+        self.assert_held_for_a_possible_reply(target, before)
+        # The student says it is Kelo's reply: Bovi has still not answered, so its follow-up goes.
+        self.decide(kelo["id"], "either-1", "reply")
+        self.assertEqual((self.target(target)["reply_count"], self.target(target)["possible_reply_count"]), (0, 0))
+        self.assertEqual([item["state"] for item in self.due(target)], ["sent"])
+        self.assertEqual(len(self.gmail.sent), 2)
+
+    def test_an_email_filed_under_another_company_that_the_student_says_is_this_ones_reply_cancels_it(self):
+        kelo = self.other_company()
+        target = self.scheduled_follow_up()
+        with self.conn:
+            self.waiting(self.conn, kelo["id"], gmail_id="either-2", candidates=[target["id"]], reason="ambiguous")
+        self.assertEqual([item["state"] for item in self.due(target)], ["held"])
+        decided = self.decide(target["id"], "either-2", "reply")
+        self.assertEqual((decided["status"], decided["reply_count"]), ("replied", 1))
+        self.assertEqual([item["state"] for item in self.due(target)], ["cancelled"])
+        self.assertEqual(len(self.gmail.sent), 1)
+
+    def test_a_possible_reply_found_while_the_reviewer_reads_holds_the_follow_up(self):
+        self.review_on()
+        target = self.scheduled_follow_up()
+        before = self.schedule_row(target)
+        reviewer = self.passes_while(lambda other: self.waiting(other, target["id"]))
+        self.assertEqual([item["state"] for item in self.due(target, reviewer=reviewer)], ["held"])
+        self.assertEqual(len(reviewer.prompts), 1, "the reviewer read it and passed it")
+        self.assertIn("Passed by fake-reviewer", self.event_details(target, "follow_up_reviewed"))
+        self.assert_held_for_a_possible_reply(target, before)
+
+    def test_a_reply_logged_while_the_reviewer_reads_cancels_the_follow_up(self):
+        self.review_on()
+        target = self.scheduled_follow_up()
+        reviewer = self.passes_while(lambda other: _log(other, target["id"], USER, "reply_logged", detail="Thanks! Let's talk Tuesday."))
+        self.assertEqual([item["state"] for item in self.due(target, reviewer=reviewer)], ["cancelled"])
+        self.assertEqual(len(reviewer.prompts), 1)
+        self.assertEqual(len(self.gmail.sent), 1, "only the first email ever went")
+        self.assertIn("They replied", self.event_details(target, "send_cancelled")[0])
+
+    def test_a_bounce_found_while_the_reviewer_reads_stops_the_follow_up(self):
+        # Checked before the review too; the review can take minutes, and the background bounce check
+        # records one meanwhile. Here the email also reached a Cc, so the status stays sent and only
+        # the send itself (outreach_gmail) is left to refuse the bounced address.
+        self.review_on()
+        target = self.scheduled_follow_up()
+        reviewer = self.passes_while(lambda other: outreach_delivery.record_bounce(
+            other, target["id"], user_id=USER, reason="Address not found", source="gmail",
+            addresses=["greg@bovi.example"], sent={"to": "greg@bovi.example", "cc": "hr@bovi.example"},
+        ))
+        self.assertNotEqual([item["state"] for item in self.due(target, reviewer=reviewer)], ["sent"])
+        after = self.target(target)
+        self.assertEqual((after["status"], after["contact_bounced"]), ("sent", True))
+        self.assertIn("greg@bovi.example bounced", self.schedule_row(target)["error"])
+        self.assertEqual(len(self.gmail.sent), 1, "nothing to an address known to bounce")
+
 
 if __name__ == "__main__":
     unittest.main()

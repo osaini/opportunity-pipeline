@@ -203,6 +203,8 @@ def _record_sent(conn: sqlite3.Connection, item: dict[str, Any], message: dict[s
         "to": target["contact_email"], "cc": target["contact_cc"],
         "message_id": str(message.get("id", "")), "thread_id": str(message.get("threadId", "")),
         "sent_from": "gmail", "sent_to_header": headers.get("to", "")[:500],
+        # When Gmail sent it, which can be hours before the app noticed: replies count from then (outreach_inbox).
+        "sent_ms": int(message.get("internalDate") or 0),
     }
     stamp = utc_now()
     with conn:

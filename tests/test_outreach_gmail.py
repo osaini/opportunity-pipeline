@@ -3,6 +3,7 @@
 import base64
 import email
 import json
+import re
 import sqlite3
 import sys
 import tempfile
@@ -10,6 +11,7 @@ import unittest
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from email import policy
+from email.utils import parseaddr
 from pathlib import Path
 from unittest import mock
 from urllib.parse import parse_qs, urlparse
@@ -101,8 +103,13 @@ class AlwaysInTransaction:
 
 
 def forget_gmail_backoff(test):
-    """Start with no rate limit remembered for anyone, and leave none behind: the memory outlives a test."""
-    for state in (outreach_gmail._BACKOFF, outreach_gmail._HEALTH):
+    """Start with no rate limit, search position or mail listing remembered for anyone, and leave none behind.
+
+    The memory outlives a test, and every test's student is local-user with sends in thread-1, thread-2...
+    """
+    from opportunity_app import outreach_inbox
+
+    for state in (outreach_gmail._BACKOFF, outreach_gmail._HEALTH, outreach_inbox._RESUME, outreach_inbox._LAST_SWEEP):
         state.clear()
         test.addCleanup(state.clear)
 
@@ -159,6 +166,54 @@ class FakeGmail:
         # Messages Gmail reads back in the metadata format, and what a search of Sent finds.
         self.metadata = {}
         self.sent_search = []
+        # The Gmail thread and labels of a message, by id: one not listed is alone in its own thread, in the
+        # inbox. The same names and meaning as MailboxGmail's (test_application_inbox).
+        self.threads = {}
+        self.labels = {}
+        # Every messages.list request's parameters (includeSpamTrash, say), and every threads.get
+        # (thread id, format, headers asked for).
+        self.search_params = []
+        self.thread_gets = []
+        # Threads deleted for good (threads.get answers 404), and answers for the next threads.get calls.
+        self.gone_threads = set()
+        self.thread_answers = []
+
+    def thread_of(self, message_id):
+        for thread_id, items in self.replies.items():
+            if any(item.get("id") == message_id for item in items):
+                return thread_id
+        return self.threads.get(message_id, message_id)
+
+    def parsed(self, message_id):
+        return email.message_from_bytes(self.raw[message_id][0], policy=policy.default)
+
+    def listed(self, message_id, query, spam_and_trash):
+        """Whether a search lists a message: the folders it asked for, its from:(...) terms, its subject and phrase terms."""
+        labels = set(self.labels.get(message_id, ["INBOX"]))
+        if labels & {"SPAM", "TRASH"} and not spam_and_trash:
+            return False
+        if ("-in:trash" in query and "TRASH" in labels) or ("-in:sent" in query and "SENT" in labels):
+            return False
+        if message_id not in self.raw:
+            return True
+        message = self.parsed(message_id)
+        terms = re.search(r"\bfrom:\(([^)]*)\)", query)
+        if terms is not None:
+            wanted = {term.strip().casefold() for term in terms.group(1).split(" OR ") if term.strip()}
+            found = [str(address.addr_spec) for address in getattr(message.get("From"), "addresses", ()) if "@" in str(address.addr_spec)]
+            sender = (found[0] if found else parseaddr(str(message.get("From", "")))[1]).casefold()
+            domain = sender.rsplit("@", 1)[-1]
+            return sender in wanted or any(domain == term or domain.endswith("." + term) for term in wanted if "@" not in term)
+        either = re.match(r"^\{(.*)\}", query)
+        if either is not None:
+            subject = str(message.get("Subject", "")).casefold()
+            body = message.get_body(preferencelist=("plain",))
+            words = f"{subject} {body.get_content() if body else ''}".casefold()
+            for field, phrase in re.findall(r'(subject:)?"([^"]+)"', either.group(1)):
+                if (phrase.casefold() in subject) if field else (phrase.casefold() in words):
+                    return True
+            return False
+        return True
 
     def run_hook(self, name):
         hook = self.hooks.pop(name, None)
@@ -211,23 +266,55 @@ class FakeGmail:
             if self.thread_status:
                 return httpx.Response(self.thread_status, json={"error": {"message": "Request had insufficient authentication scopes."}})
             thread_id = path.rsplit("/", 1)[1]
-            sent = {"id": thread_id.replace("thread-", "sent-"), "labelIds": ["SENT"], "internalDate": "1000"}
-            return httpx.Response(200, json={"id": thread_id, "messages": [sent, *self.replies.get(thread_id, [])]})
+            form = request.url.params.get("format", "full")
+            asked = [name.casefold() for name in request.url.params.get_list("metadataHeaders")]
+            self.thread_gets.append((thread_id, form, asked))
+            if self.thread_answers:
+                return self.thread_answers.pop(0)()
+            if thread_id in self.gone_threads:
+                return httpx.Response(404, json={"error": {"code": 404, "message": "Requested entity was not found."}})
+            sent = {"id": thread_id.replace("thread-", "sent-"), "labelIds": ["SENT"], "internalDate": "1000",
+                    "payload": {"mimeType": "multipart/mixed", "headers": [{"name": "From", "value": ACCOUNT}]}}
+            placed = []
+            for message_id, home in self.threads.items():
+                if home == thread_id and message_id in self.raw:
+                    message = self.parsed(message_id)
+                    placed.append({"id": message_id, "labelIds": list(self.labels.get(message_id, ["INBOX"])),
+                                   "internalDate": str(self.raw[message_id][1]), "snippet": "",
+                                   "payload": {"mimeType": message.get_content_type(),
+                                               "headers": [{"name": key, "value": str(value)} for key, value in message.items()]}})
+            messages = []
+            for message in (sent, *self.replies.get(thread_id, []), *placed):
+                message = {**message, "threadId": thread_id}
+                if form == "metadata" and asked:
+                    payload = dict(message.get("payload") or {})
+                    payload["headers"] = [header for header in payload.get("headers", []) if header["name"].casefold() in asked]
+                    message["payload"] = payload
+                messages.append(message)
+            return httpx.Response(200, json={"id": thread_id, "historyId": "1", "messages": messages})
         if request.method == "GET" and path.endswith("/messages"):
             if self.thread_status:
                 return httpx.Response(self.thread_status)
-            query = request.url.params.get("q", "")
+            params = request.url.params
+            query = params.get("q", "")
             self.searches.append(query)
-            found = self.inbox_notices if "mailer-daemon" in query else self.sent_search if query.startswith("in:sent") else self.inbox_replies
+            self.search_params.append(dict(params))
+            if "mailer-daemon" in query:
+                found = self.inbox_notices
+            elif query.startswith("in:sent"):
+                found = self.sent_search
+            else:
+                found = [m for m in self.inbox_replies if self.listed(m, query, params.get("includeSpamTrash") == "true")]
+            listed = lambda ids: [{"id": message_id, "threadId": self.thread_of(message_id)} for message_id in ids]
             if self.page_size:
                 start = int(request.url.params.get("pageToken") or 0)
                 page = found[start:start + self.page_size]
                 more = start + self.page_size < len(found)
-                body = {"messages": [{"id": message_id} for message_id in page]}
+                body = {"messages": listed(page)}
                 if more:
                     body["nextPageToken"] = str(start + self.page_size)
                 return httpx.Response(200, json=body)
-            return httpx.Response(200, json={"messages": [{"id": message_id} for message_id in found]})
+            return httpx.Response(200, json={"messages": listed(found)})
         if request.method == "GET" and "/messages/" in path:
             message_id = path.rsplit("/", 1)[1]
             if request.url.params.get("format") == "metadata":
@@ -235,7 +322,11 @@ class FakeGmail:
             if message_id not in self.raw:
                 return httpx.Response(404)
             raw, received = self.raw[message_id]
-            return httpx.Response(200, json={"id": message_id, "internalDate": str(received), "raw": base64.urlsafe_b64encode(raw).decode()})
+            return httpx.Response(200, json={
+                "id": message_id, "threadId": self.thread_of(message_id),
+                "labelIds": list(self.labels.get(message_id, ["INBOX"])),
+                "internalDate": str(received), "raw": base64.urlsafe_b64encode(raw).decode(),
+            })
         if request.method == "GET" and "/drafts/" in path:
             self.run_hook("get_draft")
             if self.draft_get_status:

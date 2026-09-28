@@ -216,6 +216,8 @@ ACCOUNT_QUERIES = {
     "application_mail_messages": "SELECT * FROM application_mail_messages WHERE user_id=?",
     "email_deadlines": "SELECT * FROM email_deadlines WHERE user_id=?",
     "employer_domains": "SELECT * FROM employer_domains WHERE user_id=?",
+    # Every email outreach read for a reply, with why it was taken as it was; a possible reply's words while it waits.
+    "outreach_inbox_messages": "SELECT * FROM outreach_inbox_messages WHERE user_id=?",
 }
 
 
@@ -287,9 +289,18 @@ def run_retention(conn: sqlite3.Connection, *, now: datetime | None = None) -> d
                 (expired, setting["user_id"], cutoff),
             ).rowcount
     # Email excerpts kept as evidence go after PIPELINE_MAIL_EVIDENCE_DAYS; the ledger rows stay, with their hashes.
-    from .application_inbox import purge_excerpts
+    # So do the words of a possible reply left waiting that long; the card still links to it in Gmail.
+    from .application_inbox import evidence_days, purge_excerpts
 
-    return {"expired_grants": grants, "retired_dossier_items": stale, **purge_excerpts(conn, now=now)}
+    cutoff = (now - timedelta(days=evidence_days())).isoformat(timespec="seconds")
+    with conn:
+        waiting = conn.execute(
+            "UPDATE outreach_inbox_messages SET text='', meta_json='{}' WHERE kind='possible' "
+            "AND (text<>'' OR meta_json<>'{}') AND recorded_at<?",
+            (cutoff,),
+        ).rowcount
+    return {"expired_grants": grants, "retired_dossier_items": stale, "possible_reply_words": waiting,
+            **purge_excerpts(conn, now=now)}
 
 
 def encrypted_backup(source: Path, destination: Path, key: bytes) -> dict[str, Any]:

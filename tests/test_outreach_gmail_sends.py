@@ -22,7 +22,7 @@ from opportunity_app.outreach_schedule import run_due_sends
 from opportunity_app.schema import connect_product, utc_now
 
 from helpers_platform import build_and_migrate
-from test_outreach_gmail import ACCOUNT, PDF, SCOPES, FakeGmail, forget_gmail_backoff, rate_limited
+from test_outreach_gmail import ACCOUNT, PDF, SCOPES, FakeGmail, delivery_report, forget_gmail_backoff, rate_limited
 
 AUTH = {"Authorization": "Bearer gmail-sends-owner"}
 USER = "local-user"
@@ -119,6 +119,74 @@ class GmailSendsTests(unittest.TestCase):
         self.assertEqual(again.status_code, 422, "never sent a second time from the app")
         self.assertEqual(self.gmail.sent, [])
         self.assertEqual(self.check()["sent"], [], "recorded once")
+
+    def sent_events(self, target):
+        return [json.loads(event["detail"]) for event in self.target(target)["events"] if event["event_type"] == "gmail_sent"]
+
+    def test_a_send_made_in_gmail_records_when_gmail_sent_it(self):
+        target = self.drafted_in_gmail()
+        del self.gmail.drafts["r-1"]
+        sent = sent_message("ui-1", thread_id="18c1")
+        self.gmail.metadata["ui-1"] = sent
+        self.gmail.sent_search = ["ui-1"]
+        self.assertEqual(len(self.check()["sent"]), 1)
+        [event] = self.sent_events(target)
+        # Gmail's own time for the message (internalDate, in milliseconds), not when the app noticed it.
+        self.assertEqual(event["sent_ms"], int(sent["internalDate"]))
+        self.assertIsInstance(event["sent_ms"], int, "a number outreach_inbox compares, not Gmail's string")
+
+    def test_a_reply_that_came_before_the_app_noticed_a_send_made_in_gmail_is_still_a_reply(self):
+        target = self.drafted_in_gmail()
+        now = datetime.now(timezone.utc)
+        with self.conn:
+            # The draft was made three hours ago and sent from Gmail two hours ago, with the laptop closed since.
+            self.conn.execute("UPDATE outreach_events SET created_at=? WHERE target_id=? AND event_type='gmail_draft_created'",
+                              ((now - timedelta(hours=3)).isoformat(timespec="microseconds"), target["id"]))
+            # These reply rules started yesterday (mail from before them is never counted without the student).
+            self.conn.execute("UPDATE schema_migrations SET applied_at=? WHERE name=?",
+                              ((now - timedelta(days=1)).isoformat(), outreach_inbox.MIGRATION))
+        del self.gmail.drafts["r-1"]
+        sent = sent_message("18c1", thread_id="18c1", minutes_from_now=-120)
+        self.gmail.metadata["18c1"] = sent
+        self.assertEqual(len(self.check()["sent"]), 1, "the draft's own message, now labelled Sent")
+        [event] = self.sent_events(target)
+        self.assertEqual(event["sent_ms"], int(sent["internalDate"]))
+        recorded = self.conn.execute("SELECT created_at FROM outreach_events WHERE target_id=? AND event_type='gmail_sent'",
+                                     (target["id"],)).fetchone()[0]
+        self.assertGreater(datetime.fromisoformat(recorded), now - timedelta(minutes=5), "recorded when the app noticed, just now")
+        # Greg wrote back an hour ago, in a fresh email: after Gmail sent it, before the app noticed.
+        self.gmail.raw["greg-1"] = ((
+            f"From: Greg Lee <greg@bovi.example>\nTo: {ACCOUNT}\nSubject: Re: Robotics internship question\n"
+            "MIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\n\nHappy to talk next week. Does Tuesday work?\n"
+        ).encode(), int((now - timedelta(hours=1)).timestamp() * 1000))
+        self.gmail.inbox_replies.append("greg-1")
+        [watched] = [item for item in outreach_inbox._watched(self.conn, USER, now) if item["id"] == target["id"]]
+        self.assertEqual(round(watched["since"].timestamp() * 1000), int(sent["internalDate"]), "watched from when Gmail sent it")
+        outreach_inbox._LAST_CAPTURE.clear()
+        result = self.client.post("/api/v1/outreach/inbox-check", headers=AUTH).json()
+        self.assertEqual([item["target_id"] for item in result["replies"]], [target["id"]], "not set aside as mail from before the send")
+        self.assertEqual(self.target(target)["status"], "replied")
+
+    def test_a_bounce_that_came_before_the_app_noticed_a_send_made_in_gmail_is_still_found(self):
+        target = self.drafted_in_gmail()
+        now = datetime.now(timezone.utc)
+        with self.conn:
+            # Made three hours ago, sent by Gmail's Schedule send two hours ago while the laptop was closed.
+            self.conn.execute("UPDATE outreach_events SET created_at=? WHERE target_id=? AND event_type='gmail_draft_created'",
+                              ((now - timedelta(hours=3)).isoformat(timespec="microseconds"), target["id"]))
+        del self.gmail.drafts["r-1"]
+        sent = sent_message("18c1", thread_id="18c1", minutes_from_now=-120)
+        self.gmail.metadata["18c1"] = sent
+        self.assertEqual(len(self.check()["sent"]), 1)
+        # Greg's address failed a minute after Gmail sent it, and the server's notice is not in the email's thread.
+        self.gmail.inbox_notices = ["dsn-elsewhere"]
+        self.gmail.raw["dsn-elsewhere"] = (delivery_report(failed=["greg@bovi.example"]), int(sent["internalDate"]) + 60_000)
+        outreach_delivery._LAST_LOOK.clear()
+        outreach_delivery._READ_NOTICES.clear()
+        result = outreach_delivery.check_deliveries(self.conn, user_id=USER, client_factory=self.factory)
+        self.assertEqual(result["state"], "ok")
+        self.assertEqual([item["target_id"] for item in result["bounced"]], [target["id"]],
+                         "the notice came after Gmail sent the email, though before the app noticed the send")
 
     def test_a_sent_message_is_matched_by_its_own_id_or_by_subject(self):
         target = self.drafted_in_gmail()

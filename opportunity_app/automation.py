@@ -1142,12 +1142,12 @@ class OutreachFollowUpDraft:
     def apply(
         self, conn: sqlite3.Connection, user_id: str, subject_id: str, after: dict[str, Any], *, source: str, timestamp: str,
     ) -> dict[str, Any]:
-        from .outreach import get_target
+        from .outreach import get_target, heard_back
         from .outreach_drafting import save_draft_tx
 
         target = get_target(conn, subject_id, user_id=user_id)
         if (
-            target["status"] != "sent" or target["follow_up_body"] or target["reply_count"] or target["reply_suggestion"]
+            target["status"] != "sent" or target["follow_up_body"] or heard_back(target)
             or target["contact_bounced"] or target.get("bounced_at")
         ):
             raise NotApplicable("The company is no longer waiting on a follow-up, so no draft was saved")

@@ -17,6 +17,7 @@ analytics use.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import sqlite3
@@ -58,6 +59,8 @@ DATE_SOURCE_LABELS = {
     "application_follow_up": "Follow-up date",
     "outreach_follow_up": "Follow-up scheduled",
     "outreach_revisit": "Revisit date you set",
+    # When an email that may be a reply arrived (outreach_inbox): say whether it is one.
+    "outreach_possible_reply": "Possible reply found in Gmail",
     # Derived, never stored: applied_at plus the profile's application_follow_up_days
     # (internal_automation.silence_rows), shown only with application_silence on.
     "application_silence": "No reply yet",
@@ -72,6 +75,7 @@ KIND_PRIORITY = {
     "application_follow_up": 2,
     "outreach_follow_up": 2,
     "outreach_revisit": 2,
+    "outreach_possible_reply": 1,
     "application_silence": 2,
 }
 
@@ -436,6 +440,18 @@ def _outreach_rows(conn: sqlite3.Connection, user_id: str) -> list[dict[str, Any
         """,
         (user_id,),
     ).fetchall()
+    # An email that may be a reply waits for the student: that comes before any follow-up to the same company.
+    waiting: dict[str, str] = {}
+    for message in conn.execute(
+        "SELECT target_id, candidates_json, received_at FROM outreach_inbox_messages WHERE user_id=? AND kind='possible' "
+        "ORDER BY received_at", (user_id,),
+    ).fetchall():
+        try:
+            others = [str(other) for other in json.loads(message["candidates_json"] or "[]")]
+        except (TypeError, ValueError):
+            others = []
+        for owner in [str(message["target_id"]), *others]:
+            waiting.setdefault(owner, str(message["received_at"] or ""))
     for row in targets:
         base = {
             "record_id": str(row["id"]),
@@ -451,9 +467,19 @@ def _outreach_rows(conn: sqlite3.Connection, user_id: str) -> list[dict[str, Any
             continue
         if row["deadline_date"]:
             rows.append({**base, "kind": "outreach_deadline", "raw_date": row["deadline_date"]})
-        # Same rule as Outreach's own "follow-up due": only while awaiting a first reply.
-        if row["follow_up_at"] and row["status"] == "sent":
+        # Same rule as Outreach's own "follow-up due": only while awaiting a first reply, and not while
+        # an email from them may be one.
+        if row["follow_up_at"] and row["status"] == "sent" and str(row["id"]) not in waiting:
             rows.append({**base, "kind": "outreach_follow_up", "raw_date": row["follow_up_at"]})
+    # Whatever the company's status: a reply may change it.
+    for target_id, received in waiting.items():
+        target = conn.execute("SELECT id, company, status FROM outreach_targets WHERE id=? AND user_id=?", (target_id, user_id)).fetchone()
+        if target is not None:
+            rows.append({
+                "record_id": str(target["id"]), "date_only": False, "title": target["company"], "company": target["company"],
+                "outreach_target_id": str(target["id"]), "stage": target["status"],
+                "kind": "outreach_possible_reply", "raw_date": received,
+            })
     return rows
 
 
@@ -514,7 +540,8 @@ def urgent_queue(
                     "title": row.get("title") or "", "reason": reason,
                 })
             continue
-        if when < oldest_overdue:
+        # An email that may be a reply waits for the student however old it is.
+        if when < oldest_overdue and row["kind"] != "outreach_possible_reply":
             older_overdue += 1
             continue
         if when > last_upcoming:

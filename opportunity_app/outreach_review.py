@@ -89,7 +89,8 @@ def fresh_look(
     try:
         delivery = check_deliveries(conn, user_id=user_id, client_factory=client_factory, force_target=target_id)
         replies = capture_replies(
-            conn, user_id=user_id, client_factory=client_factory, force=True, decisions=decisions, on_reply=on_reply,
+            conn, user_id=user_id, client_factory=client_factory, force=True, force_target=target_id,
+            decisions=decisions, on_reply=on_reply,
         )
     except GmailThrottled:
         return {"ok": False, "reason": FRESH_LOOK_REASONS["throttled"]}

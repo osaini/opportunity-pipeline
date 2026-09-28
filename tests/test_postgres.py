@@ -6,6 +6,8 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
+import time
 import unittest
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -33,6 +35,11 @@ AUTOMATION_COLUMNS = [
     ("connector_accounts", "last_ok_at"), ("connector_accounts", "last_error"), ("connector_accounts", "token_granted_at"),
     ("connector_accounts", "backoff_until"),
 ]
+# The columns 0041 adds to outreach_inbox_messages, each by a guarded Python step, and its index.
+REPLY_RULES_COLUMNS = ("via", "rules", "candidates_json", "thread_id", "message_id", "from_name", "subject", "text", "reason", "in_spam",
+                       "decided_at")
+REPLY_RULES_INDEX = "idx_outreach_inbox_messages_target"
+RECEIVED = "2026-09-25T15:00:00+00:00"
 
 
 POSTGRES_TEST_URL = os.environ.get("POSTGRES_TEST_URL", "")
@@ -332,6 +339,33 @@ class PostgresAutomationContractTests(unittest.TestCase):
                 "INSERT INTO outreach_send_claims(target_id, user_id, kind, token, state, action, instance, claimed_at) "
                 "VALUES(?, ?, 'initial', 'tok', ?, ?, 'i', ?)", (target_id, AUTOMATION_USER, state, action, claimed_at or utc_now()),
             )
+
+    def student(self, user_id):
+        stamp = utc_now()
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO users(id, email, display_name, role, created_at, updated_at) VALUES(?, NULL, 'S', 'student', ?, ?)",
+                (user_id, stamp, stamp),
+            )
+
+    def inbox_message(self, gmail_id, kind, *, user_id=AUTOMATION_USER, target_id="t-1", **columns):
+        """A message outreach read. With no other columns, the row the old code wrote: its columns only, the rest defaulted."""
+        values = {"user_id": user_id, "gmail_id": gmail_id, "target_id": target_id, "kind": kind, "sender": "dana@bovi.example",
+                  "received_at": RECEIVED, "recorded_at": utc_now(), **columns}
+        with self.conn:
+            self.conn.execute(
+                f"INSERT INTO outreach_inbox_messages({', '.join(values)}) VALUES({', '.join('?' * len(values))})", tuple(values.values()),
+            )
+
+    def inbox_row(self, gmail_id, user_id=AUTOMATION_USER):
+        row = self.conn.execute("SELECT * FROM outreach_inbox_messages WHERE user_id=? AND gmail_id=?", (user_id, gmail_id)).fetchone()
+        self.conn.commit()
+        return None if row is None else dict(row)
+
+    def index_definition(self, name):
+        row = self.conn.execute("SELECT indexdef FROM pg_indexes WHERE schemaname=current_schema() AND indexname=?", (name,)).fetchone()
+        self.conn.commit()
+        return None if row is None else row["indexdef"]
 
     def test_migration_0037_applies_and_a_rerun_repairs_a_half_applied_upgrade(self):
         for table, column in AUTOMATION_COLUMNS:
@@ -679,3 +713,344 @@ class PostgresAutomationContractTests(unittest.TestCase):
         stored = self.conn.execute("SELECT state FROM outreach_thank_yous WHERE target_id='t-1'").fetchone()
         self.conn.commit()
         self.assertEqual(stored["state"], "cancelled")
+
+    # --- Replies from other addresses (migration 0041, outreach_inbox.py) -------------------------
+
+    def test_migration_0041_applies_and_a_rerun_repairs_a_half_applied_upgrade(self):
+        from opportunity_app import outreach_inbox
+
+        self.assertEqual({column for _table, column, _definition in schema._OUTREACH_REPLY_RULES_COLUMNS}, set(REPLY_RULES_COLUMNS),
+                         "the table as 0039 left it, below, lacks every column 0041 adds")
+        for column in REPLY_RULES_COLUMNS:
+            self.assertTrue(schema._has_column(self.conn, "outreach_inbox_messages", column), column)
+        self.assertIn("(user_id, target_id, kind)", self.index_definition(REPLY_RULES_INDEX) or "")
+        # The table as 0039 left it, holding what the old code read; then a crash after the first two
+        # ALTERs and before the marker. SQLite keeps ALTERs a crash interrupts and PostgreSQL rolls them
+        # back; the rerun must work either way.
+        with self.conn:
+            for column in REPLY_RULES_COLUMNS:
+                self.conn.execute(f"ALTER TABLE outreach_inbox_messages DROP COLUMN {column}")
+            self.conn.execute(f"DROP INDEX {REPLY_RULES_INDEX}")
+            self.conn.execute("DELETE FROM schema_migrations WHERE name=?", (outreach_inbox.MIGRATION,))
+        self.outreach_target("t-1", "Bovi")
+        self.inbox_message("old-ignored", "ignored", target_id="")
+        self.inbox_message("old-automatic", "automatic")
+        self.inbox_message("old-reply", "reply")
+        with self.conn:
+            self.conn.execute("ALTER TABLE outreach_inbox_messages ADD COLUMN via TEXT NOT NULL DEFAULT ''")
+            self.conn.execute("ALTER TABLE outreach_inbox_messages ADD COLUMN rules INTEGER NOT NULL DEFAULT 0")
+        ensure_product_schema(self.conn)
+        for column in REPLY_RULES_COLUMNS:
+            self.assertTrue(schema._has_column(self.conn, "outreach_inbox_messages", column), f"{column} after the rerun")
+        self.assertIn("(user_id, target_id, kind)", self.index_definition(REPLY_RULES_INDEX) or "")
+        markers = self.conn.execute("SELECT COUNT(*) AS n FROM schema_migrations WHERE name=?", (outreach_inbox.MIGRATION,)).fetchone()["n"]
+        types = {row["column_name"]: (row["data_type"], row["is_nullable"]) for row in self.conn.execute(
+            "SELECT column_name, data_type, is_nullable FROM information_schema.columns "
+            "WHERE table_schema=current_schema() AND table_name='outreach_inbox_messages'",
+        ).fetchall()}
+        self.conn.commit()
+        self.assertEqual(markers, 1)
+        self.assertEqual(types["rules"], ("integer", "NO"), "rules < RULES compares numbers")
+        self.assertEqual(types["in_spam"], ("integer", "NO"))
+        self.assertEqual(types["decided_at"], ("text", "YES"), "undecided until the student says")
+        # Nothing the old code read is lost, and each row reads as judged by the old rules (0).
+        old = self.inbox_row("old-ignored")
+        self.assertEqual({column: old[column] for column in REPLY_RULES_COLUMNS},
+                         {"via": "", "rules": 0, "candidates_json": "[]", "thread_id": "", "message_id": "", "from_name": "",
+                          "subject": "", "text": "", "reason": "", "in_spam": 0, "decided_at": None})
+        self.assertEqual((old["kind"], old["sender"], old["received_at"]), ("ignored", "dana@bovi.example", RECEIVED))
+        self.assertEqual((self.inbox_row("old-automatic")["kind"], self.inbox_row("old-reply")["kind"]), ("automatic", "reply"))
+        seen = {gmail_id: outreach_inbox._seen(self.conn, AUTOMATION_USER, gmail_id) for gmail_id in ("old-ignored", "old-automatic", "old-reply")}
+        self.conn.commit()
+        self.assertEqual(seen, {"old-ignored": False, "old-automatic": False, "old-reply": True},
+                         "what the old rules set aside or took as automatic is read again")
+        # Running the step itself again is harmless.
+        schema._apply_outreach_reply_rules(self.conn, (MIGRATIONS_DIR / outreach_inbox.MIGRATION).read_text(encoding="utf-8"))
+        self.conn.commit()
+
+    def test_migration_0041_looks_for_its_columns_in_this_schema_only(self):
+        """Another schema in the same database already has the columns (a copy, a second app): 0041 still adds them here.
+
+        information_schema.columns lists every schema the user can see. Asked
+        without table_schema=current_schema(), _has_column found the other
+        copy's column and the ALTER here was skipped, so every write of the new
+        columns failed.
+        """
+        import psycopg
+
+        from opportunity_app import outreach_inbox
+
+        copy = "reply_rules_copy"
+        with psycopg.connect(POSTGRES_TEST_URL, autocommit=True) as admin:
+            admin.execute(f"DROP SCHEMA IF EXISTS {copy} CASCADE")
+            admin.execute(f"CREATE SCHEMA {copy}")
+            admin.execute(f"CREATE TABLE {copy}.outreach_inbox_messages ({', '.join(f'{column} TEXT' for column in REPLY_RULES_COLUMNS)})")
+
+        def drop_copy():
+            with psycopg.connect(POSTGRES_TEST_URL, autocommit=True) as admin:
+                admin.execute(f"DROP SCHEMA IF EXISTS {copy} CASCADE")
+
+        self.addCleanup(drop_copy)
+        with self.conn:
+            for column in ("text", "decided_at"):
+                self.conn.execute(f"ALTER TABLE outreach_inbox_messages DROP COLUMN {column}")
+            self.conn.execute("DELETE FROM schema_migrations WHERE name=?", (outreach_inbox.MIGRATION,))
+        self.assertFalse(schema._has_column(self.conn, "outreach_inbox_messages", "text"), "the other schema's column is not this one's")
+        self.conn.commit()
+        ensure_product_schema(self.conn)
+        for column in REPLY_RULES_COLUMNS:
+            self.assertTrue(schema._has_column(self.conn, "outreach_inbox_messages", column), column)
+        self.conn.commit()
+        self.outreach_target("t-1", "Bovi")
+        with self.conn:
+            self.assertTrue(outreach_inbox._remember(self.conn, AUTOMATION_USER, "careers-1", "t-1", outreach_inbox.POSSIBLE,
+                                                     "careers@bovi.example", RECEIVED, via="domain", reason="shared_address",
+                                                     text="Could you send your availability?"))
+        self.assertEqual(self.inbox_row("careers-1")["text"], "Could you send your availability?")
+
+    def test_remember_takes_the_place_only_of_a_row_older_rules_set_aside_or_took_as_automatic(self):
+        """outreach_inbox._remember's INSERT ... ON CONFLICT DO UPDATE ... WHERE kind IN ('ignored', 'automatic') AND rules < RULES.
+
+        On PostgreSQL: the old code's verdict on an email a person may have
+        written is replaced once, returning True; a verdict under these rules,
+        or a reply the old code logged, never is, returning False.
+        """
+        from opportunity_app import outreach_inbox as inbox
+
+        self.outreach_target("t-1", "Bovi")
+        self.student("student-2")
+        self.inbox_message("careers-1", "ignored", target_id="")  # the old code set it aside: rules 0
+        self.inbox_message("careers-1", "ignored", target_id="", user_id="student-2")
+        self.inbox_message("rules-1", "ignored", target_id="", rules=1)
+        self.inbox_message("old-automatic", "automatic")  # the old code took a sales tool's email as automatic
+        self.inbox_message("old-reply", "reply")
+        self.inbox_message("news-1", "ignored", target_id="", via="domain", reason="list", rules=inbox.RULES)
+        self.inbox_message("away-1", "automatic", via="thread", reason="out_of_office", rules=inbox.RULES)
+        with self.conn:
+            took = inbox._remember(
+                self.conn, AUTOMATION_USER, "careers-1", "t-1", inbox.POSSIBLE, "careers@bovi.example", RECEIVED, via="domain",
+                reason="spam", thread_id="th-1", subject="Next steps", text="Could you send your availability?",
+                candidates=["t-2"], message_id="<m-1@bovi.example>", from_name="Bovi Careers", in_spam=True,
+            )
+        self.assertTrue(took, "a row the old rules set aside is judged again and replaced")
+        row = self.inbox_row("careers-1")
+        self.assertEqual(
+            {key: row[key] for key in ("target_id", "kind", "sender", "received_at", "via", "rules", "reason", "thread_id", "subject",
+                                       "text", "candidates_json", "message_id", "from_name", "in_spam", "decided_at")},
+            {"target_id": "t-1", "kind": "possible", "sender": "careers@bovi.example", "received_at": RECEIVED, "via": "domain",
+             "rules": inbox.RULES, "reason": "spam", "thread_id": "th-1", "subject": "Next steps",
+             "text": "Could you send your availability?", "candidates_json": '["t-2"]', "message_id": "<m-1@bovi.example>",
+             "from_name": "Bovi Careers", "in_spam": 1, "decided_at": None},
+        )
+        # Judged under these rules now: a second look at it records nothing and changes nothing.
+        with self.conn:
+            again = inbox._remember(self.conn, AUTOMATION_USER, "careers-1", "", inbox.IGNORED, "careers@bovi.example", RECEIVED,
+                                    reason="no_company")
+        self.assertFalse(again)
+        self.assertEqual(self.inbox_row("careers-1"), row)
+        with self.conn:
+            outcomes = {
+                "rules-1": inbox._remember(self.conn, AUTOMATION_USER, "rules-1", "", inbox.IGNORED, "news@bovi.example", RECEIVED,
+                                           via="domain", reason="list", subject="This week at Bovi", message_id="<m-3@bovi.example>"),
+                "old-automatic": inbox._remember(self.conn, AUTOMATION_USER, "old-automatic", "t-1", inbox.POSSIBLE, "lee@bovi.example",
+                                                 RECEIVED, via="domain", reason="mailing_tool", text="Would you have 15 minutes?"),
+                "old-reply": inbox._remember(self.conn, AUTOMATION_USER, "old-reply", "", inbox.IGNORED, "dana@bovi.example", RECEIVED,
+                                             reason="no_company"),
+                "fresh": inbox._remember(self.conn, AUTOMATION_USER, "fresh", "t-1", inbox.REPLY, "dana@bovi.example", RECEIVED,
+                                         via="address", reason="written_to", subject="Re: Hello", text="Sure, let's talk.",
+                                         message_id="<m-2@bovi.example>", from_name="Dana"),
+            }
+        current = {gmail_id: self.inbox_row(gmail_id) for gmail_id in ("news-1", "away-1")}
+        with self.conn:
+            outcomes["fresh, again"] = inbox._remember(self.conn, AUTOMATION_USER, "fresh", "", inbox.IGNORED, "dana@bovi.example",
+                                                       RECEIVED, reason="no_company")
+            # Set aside, or taken as automatic, under these rules, whether just now or earlier: never judged again.
+            outcomes["rules-1, again"] = inbox._remember(self.conn, AUTOMATION_USER, "rules-1", "t-1", inbox.POSSIBLE, "news@bovi.example",
+                                                         RECEIVED, via="domain", reason="mailing_tool", text="This week at Bovi")
+            outcomes["news-1"] = inbox._remember(self.conn, AUTOMATION_USER, "news-1", "t-1", inbox.REPLY, "news@bovi.example", RECEIVED,
+                                                 via="address", reason="written_to", subject="Hello")
+            outcomes["away-1"] = inbox._remember(self.conn, AUTOMATION_USER, "away-1", "t-1", inbox.REPLY, "dana@bovi.example", RECEIVED,
+                                                 via="thread", reason="thread", subject="Re: Hello")
+        self.assertEqual(outcomes, {"rules-1": True, "old-automatic": True, "old-reply": False, "fresh": True, "fresh, again": False,
+                                    "rules-1, again": False, "news-1": False, "away-1": False})
+        self.assertEqual({gmail_id: self.inbox_row(gmail_id) for gmail_id in current}, current)
+        set_aside = self.inbox_row("rules-1")
+        self.assertEqual((set_aside["kind"], set_aside["rules"], set_aside["reason"], set_aside["subject"], set_aside["message_id"]),
+                         ("ignored", inbox.RULES, "list", "", ""), "a set-aside email keeps no subject or Message-ID")
+        rejudged = self.inbox_row("old-automatic")
+        self.assertEqual((rejudged["kind"], rejudged["rules"], rejudged["reason"], rejudged["text"]),
+                         ("possible", inbox.RULES, "mailing_tool", "Would you have 15 minutes?"))
+        self.assertEqual(self.inbox_row("old-reply")["kind"], "reply", "a reply the old code logged is never replaced")
+        fresh = self.inbox_row("fresh")
+        self.assertEqual((fresh["kind"], fresh["subject"], fresh["message_id"], fresh["from_name"], fresh["text"], fresh["in_spam"]),
+                         ("reply", "Re: Hello", "<m-2@bovi.example>", "Dana", "", 0), "a reply's words are kept in its history, not here")
+        theirs = self.inbox_row("careers-1", "student-2")
+        self.assertEqual((theirs["kind"], theirs["rules"]), ("ignored", 0), "another student's email with the same id is theirs")
+        seen = {gmail_id: inbox._seen(self.conn, AUTOMATION_USER, gmail_id)
+                for gmail_id in ("careers-1", "rules-1", "old-automatic", "news-1", "away-1", "old-reply", "fresh", "unread")}
+        seen["student-2's"] = inbox._seen(self.conn, "student-2", "careers-1")
+        self.conn.commit()
+        self.assertEqual(seen, {"careers-1": True, "rules-1": True, "old-automatic": True, "news-1": True, "away-1": True,
+                                "old-reply": True, "fresh": True, "unread": False, "student-2's": False})
+
+    def test_two_checks_judging_one_old_row_record_it_once(self):
+        """The second check waits on the row the first is replacing, then finds it judged and records nothing.
+
+        PostgreSQL re-reads the row once the first commits and re-tests the
+        DO UPDATE's WHERE on it, so the second check's verdict never
+        overwrites the first's.
+        """
+        import psycopg
+
+        from opportunity_app import outreach_inbox as inbox
+
+        self.outreach_target("t-1", "Bovi")
+        self.inbox_message("careers-1", "ignored", target_id="")
+        other = self.other_connection()
+        other_pid = other.execute("SELECT pg_backend_pid() AS pid").fetchone()["pid"]
+        other.commit()
+        self.assertTrue(inbox._remember(self.conn, AUTOMATION_USER, "careers-1", "t-1", inbox.POSSIBLE, "careers@bovi.example", RECEIVED,
+                                        via="domain", reason="shared_address", text="Could you send your availability?"))
+        second = {}
+
+        def second_check():
+            try:
+                with other:
+                    second["took"] = inbox._remember(other, AUTOMATION_USER, "careers-1", "", inbox.IGNORED, "careers@bovi.example",
+                                                     RECEIVED, reason="no_company")
+            except Exception as exc:  # reported below rather than lost in the thread
+                second["error"] = exc
+
+        thread = threading.Thread(target=second_check, daemon=True)
+        thread.start()
+        waited = False
+        try:
+            # The instrument: the second check is waiting on the row, not merely not started yet.
+            with psycopg.connect(POSTGRES_TEST_URL, autocommit=True) as watcher:
+                deadline = time.monotonic() + 10
+                while not waited and time.monotonic() < deadline:
+                    waited = watcher.execute(
+                        "SELECT 1 FROM pg_stat_activity WHERE pid=%s AND wait_event_type='Lock'", (other_pid,),
+                    ).fetchone() is not None
+                    if not waited:
+                        time.sleep(0.02)
+        finally:
+            self.conn.commit()  # the first check's transaction ends whatever happened, so the thread can finish
+            thread.join(10)
+        self.assertTrue(waited, "the second check never waited on the row")
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(second, {"took": False}, "the second check found the row already judged")
+        row = self.inbox_row("careers-1")
+        self.assertEqual((row["kind"], row["target_id"], row["reason"], row["rules"], row["text"]),
+                         ("possible", "t-1", "shared_address", inbox.RULES, "Could you send your availability?"))
+
+    def test_the_job_mail_reader_leaves_to_outreach_only_what_outreach_holds(self):
+        """application_inbox._outreach_owns and _reclaim on PostgreSQL, through outreach_inbox.owned_sql (plain and aliased)."""
+        from opportunity_app import application_inbox
+
+        self.outreach_target("t-1", "Bovi")
+        self.student("student-2")
+        # gmail_id: (kind, via, reason, rules), and whether outreach holds it.
+        rows = {
+            "in-thread": (("reply", "thread", "thread", 2), True),
+            "written-to": (("reply", "address", "written_to", 2), True),
+            "out-of-office": (("automatic", "thread", "out_of_office", 2), True),
+            "may-be": (("possible", "domain", "shared_address", 2), True),
+            "job-mail": (("possible", "domain", "job_mail", 2), False),
+            "domain-reply": (("reply", "domain", "domain_person", 2), False),
+            "domain-auto": (("automatic", "domain", "out_of_office", 2), False),
+            "confirmed-name": (("reply", "name", "mentions_company", 2), False),
+            "set-aside": (("ignored", "domain", "automated_sender", 2), False),
+            "dismissed": (("dismissed", "domain", "shared_address", 2), False),
+            "old-reply": (("reply", "", "", 0), True),
+            "old-automatic": (("automatic", "", "", 0), False),
+            "old-ignored": (("ignored", "", "", 0), False),
+        }
+        for gmail_id, ((kind, via, reason, rules), _held) in rows.items():
+            self.inbox_message(gmail_id, kind, via=via, reason=reason, rules=rules)
+        self.inbox_message("theirs", "reply", user_id="student-2", target_id="t-9", via="thread", reason="thread", rules=2)
+        self.inbox_message("theirs-dismissed", "dismissed", user_id="student-2", target_id="t-9", via="domain", reason="shared_address", rules=2)
+        owns = {gmail_id: application_inbox._outreach_owns(self.conn, AUTOMATION_USER, gmail_id) for gmail_id in [*rows, "theirs", "unread"]}
+        owns["theirs, for them"] = application_inbox._outreach_owns(self.conn, "student-2", "theirs")
+        self.conn.commit()
+        self.assertEqual(owns, {**{gmail_id: held for gmail_id, (_row, held) in rows.items()},
+                                "theirs": False, "unread": False, "theirs, for them": True})
+        now = utc_now()
+        with self.conn:
+            for user_id, gmail_id in [*((AUTOMATION_USER, gmail_id) for gmail_id in rows), ("student-2", "theirs-dismissed")]:
+                self.conn.execute(
+                    "INSERT INTO application_mail_messages(user_id, gmail_id, state, recorded_at, received_at) VALUES(?, ?, 'outreach', ?, ?)",
+                    (user_id, gmail_id, now, now),
+                )
+            self.conn.execute(
+                "INSERT INTO application_mail_sync(user_id, history_id, pending_ids_json, enabled_at, updated_at) VALUES(?, 'h-1', '[]', 'e-1', ?)",
+                (AUTOMATION_USER, now),
+            )
+            self.conn.execute(
+                "INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, ?, 'on', ?) "
+                "ON CONFLICT(user_id, key) DO UPDATE SET value='on'",
+                (AUTOMATION_USER, application_inbox.FEATURE, now),
+            )
+        self.assertEqual(application_inbox._reclaim(self.conn, AUTOMATION_USER, expect="e-1"), 6,
+                         "not the rows the old rules left, until they are read again")
+        states = {(row["user_id"], row["gmail_id"]): (row["state"], row["origin"]) for row in self.conn.execute(
+            "SELECT user_id, gmail_id, state, origin FROM application_mail_messages",
+        ).fetchall()}
+        self.conn.commit()
+        reclaimed = ("job-mail", "domain-reply", "domain-auto", "confirmed-name", "set-aside", "dismissed")
+        self.assertEqual({key: state for key, (state, _origin) in states.items() if state != "outreach"},
+                         {(AUTOMATION_USER, gmail_id): "awaiting_resume" for gmail_id in reclaimed}, "decided again, as mail read while paused is")
+        self.assertEqual({states[(AUTOMATION_USER, gmail_id)][1] for gmail_id in reclaimed}, {application_inbox.RECLAIMED},
+                         "read late: only ever proposed")
+        self.assertEqual({key for key, (state, _origin) in states.items() if state == "outreach"},
+                         {(AUTOMATION_USER, gmail_id) for gmail_id in rows if gmail_id not in reclaimed} | {("student-2", "theirs-dismissed")},
+                         "what outreach still holds, the old rules' rows, and another student's mail stay")
+        self.assertEqual(application_inbox._reclaim(self.conn, AUTOMATION_USER, expect="e-1"), 0, "taken back once")
+
+    def test_a_follow_up_is_not_handed_to_gmail_while_a_possible_reply_waits(self):
+        """outreach_schedule._hand_over's follow-up check, inside its UPDATE, on PostgreSQL.
+
+        A possible reply waiting on the company, or naming it among the others
+        it could be from (candidates_json LIKE '%"<id>"%'), keeps the follow-up
+        from Gmail: it is held until the next morning without counting a try.
+        The id is matched whole, so t-10's possible reply never holds t-1's.
+        """
+        from opportunity_app import outreach_inbox as inbox
+
+        now = utc_now()
+        for target_id, company in (("t-1", "Bovi"), ("t-10", "Kiva"), ("t-3", "Orbit")):
+            self.outreach_target(target_id, company)
+        with self.conn:
+            self.conn.execute("UPDATE outreach_targets SET status='sent', sent_at=? WHERE user_id=?", (now[:10], AUTOMATION_USER))
+            for target_id in ("t-1", "t-10", "t-3"):
+                self.conn.execute(
+                    "INSERT INTO outreach_scheduled_sends(target_id, user_id, kind, fingerprint, send_at, timezone, label, state, created_at, "
+                    "updated_at) VALUES(?, ?, 'follow_up', 'f', ?, 'UTC', 'Mon, Sep 28, 9:12 AM CDT', 'sending', ?, ?)",
+                    (target_id, AUTOMATION_USER, now, now, now),
+                )
+            # From Orbit's domain or Kiva's, the student has not said which: it holds both.
+            self.assertTrue(inbox._remember(self.conn, AUTOMATION_USER, "g-1", "t-3", inbox.POSSIBLE, "jobs@orbit.example", RECEIVED,
+                                            via="domain", reason="ambiguous", candidates=["t-10"], text="Are you still interested?"))
+
+        def hand_over(target_id):
+            row = self.conn.execute("SELECT * FROM outreach_scheduled_sends WHERE target_id=? AND kind='follow_up'", (target_id,)).fetchone()
+            self.conn.commit()
+            return outreach_schedule._hand_over(self.conn, row)
+
+        outcomes = {target_id: hand_over(target_id) for target_id in ("t-1", "t-10", "t-3")}
+        stored = {row["target_id"]: (row["state"], row["attempts"], row["error"].split(" may have replied")[0]) for row in self.conn.execute(
+            "SELECT target_id, state, attempts, error FROM outreach_scheduled_sends WHERE user_id=?", (AUTOMATION_USER,),
+        ).fetchall()}
+        held = [row["target_id"] for row in self.conn.execute(
+            "SELECT target_id FROM outreach_events WHERE user_id=? AND event_type='follow_up_held' ORDER BY target_id", (AUTOMATION_USER,),
+        ).fetchall()]
+        self.conn.commit()
+        self.assertEqual(outcomes, {"t-1": "handed_over", "t-10": "held", "t-3": "held"})
+        self.assertEqual(stored, {"t-1": ("transmitting", 0, ""), "t-10": ("scheduled", 0, "Held: Kiva"), "t-3": ("scheduled", 0, "Held: Orbit")})
+        self.assertEqual(held, ["t-10", "t-3"])
+        # Once the student says it is not a reply, the follow-up may go.
+        inbox.decide_possible_reply(self.conn, "t-3", "g-1", "not_reply", user_id=AUTOMATION_USER)
+        with self.conn:
+            self.conn.execute("UPDATE outreach_scheduled_sends SET state='sending' WHERE user_id=? AND target_id IN ('t-10', 't-3')",
+                              (AUTOMATION_USER,))
+        self.assertEqual({target_id: hand_over(target_id) for target_id in ("t-10", "t-3")}, {"t-10": "handed_over", "t-3": "handed_over"})

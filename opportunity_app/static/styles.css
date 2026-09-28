@@ -842,6 +842,12 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 .outreach-thank-you-text pre { white-space: pre-wrap; }
 .outreach-thank-you-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .outreach-thank-you-actions:empty { display: none; }
+.outreach-possible-replies { display: grid; gap: 8px; max-width: 70ch; margin: 8px 0 0; }
+.outreach-possible-reply { padding: 8px 10px; border: 1px solid var(--warn-line); border-left: 3px solid var(--gold); border-radius: var(--radius-sm); background: var(--warn-panel); }
+.outreach-possible-reply-head { margin: 0; color: var(--ink); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.outreach-possible-reply-text { margin: 6px 0 0; padding-left: 8px; border-left: 2px solid var(--line-strong); color: var(--ink-soft); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.outreach-possible-reply-why { margin: 6px 0 0; color: var(--ink-muted); font-size: 11px; line-height: 1.45; }
+.outreach-possible-reply-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
 .outreach-toolbar, .outreach-toolbar .tracker-exports { flex-wrap: wrap; }
 .outreach-card, .outreach-add, .outreach-form, .outreach-group { min-width: 0; }
 .outreach-filter { display: flex; gap: 8px; align-items: center; color: var(--ink-muted); font-size: 10px; font-weight: 750; text-transform: uppercase; letter-spacing: .08em; }

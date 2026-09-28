@@ -5,6 +5,7 @@ import email
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from email import policy
 from pathlib import Path
 from unittest import mock
@@ -15,9 +16,9 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR
+from opportunity_app import STATIC_DIR, outreach_delivery, outreach_inbox
 from opportunity_app.api import create_app
-from opportunity_app.outreach import create_target, get_target
+from opportunity_app.outreach import _log, create_target, get_target
 from opportunity_app.outreach_automation import AutomationWorker, RESEND_EVENT, recover_contact, recovery_due, resend_refusal, update_settings
 from opportunity_app.outreach_delivery import record_bounce
 from opportunity_app.outreach_schedule import RESEND_LABEL, run_due_sends
@@ -48,6 +49,14 @@ GUESS_SITE = {
         "/team": '<div><h3>Dana Ruiz</h3><p>Co-Founder &amp; CTO</p></div>',
     },
 }
+
+
+def careers_mail():
+    """The site's careers@ inbox writing back: not one person, so only a possible reply (outreach_inbox.py)."""
+    return (
+        f"From: Bovi Careers <careers@bovi.test>\nTo: {ACCOUNT}\nSubject: Next steps\n"
+        "MIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\n\nCould you send over your availability?\n"
+    ).encode()
 
 
 class ResendRuleTests(unittest.TestCase):
@@ -100,6 +109,18 @@ class ResendRuleTests(unittest.TestCase):
 
     def test_never_to_an_address_that_bounced(self):
         self.assertIn("bounced", resend_refusal(self.before(), self.after(cc_bounced=True), self.choice("weak_guess"), resent_before=False, style=STYLE))
+
+    def test_never_when_they_may_have_answered_the_first_email(self):
+        # Otherwise a clean resend: a confirmed address, only the greeting changed.
+        self.assertEqual(resend_refusal(self.before(), self.after(), self.choice("confirmed"), resent_before=False, style=STYLE), "")
+        suggestion = {"status": "call_scheduled", "reason": "They offered a call"}
+        for answered in ({"reply_count": 1}, {"reply_suggestion": suggestion}, {"possible_reply_count": 1}):
+            for side in ("before", "after"):
+                with self.subTest(answered=answered, side=side):
+                    before = self.before(**answered) if side == "before" else self.before()
+                    after = self.after(**answered) if side == "after" else self.after()
+                    refusal = resend_refusal(before, after, self.choice("confirmed"), resent_before=False, style=STYLE)
+                    self.assertIn("may have answered", refusal)
 
 
 class ResendAfterBounceTests(unittest.TestCase):
@@ -179,6 +200,88 @@ class ResendAfterBounceTests(unittest.TestCase):
     def events(self, target, event_type):
         after = get_target(self.conn, target["id"], user_id=USER, include_events=True)
         return [event["detail"] for event in after["events"] if event["event_type"] == event_type]
+
+    def waiting(self, target, gmail_id="careers-9"):
+        """An email from the company's careers@ inbox kept as a possible reply, as outreach_inbox keeps one."""
+        stamp = utc_now()
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO outreach_inbox_messages(user_id, gmail_id, target_id, kind, sender, received_at, recorded_at, via, "
+                "rules, reason, subject, text) VALUES(?, ?, ?, 'possible', 'careers@bovi.test', ?, ?, 'domain', ?, "
+                "'shared_address', 'Next steps', 'Could you send over your availability?')",
+                (USER, gmail_id, target["id"], stamp, stamp, outreach_inbox.RULES),
+            )
+
+    def queued_resend(self):
+        """The bounced email readdressed to Dana and queued to go again at once."""
+        target = self.sent_and_bounced()
+        result = self.recover(target)
+        self.assertTrue(result["resent"], result["detail"])
+        self.assertEqual(get_target(self.conn, target["id"], user_id=USER)["scheduled"]["initial"]["label"], RESEND_LABEL)
+        outreach_delivery._LAST_LOOK.clear()
+        outreach_inbox._LAST_CAPTURE.clear()
+        return target
+
+    def cancelled_as_answered(self, target):
+        """Stopped as a first email someone may have answered, with nothing more sent."""
+        self.assertEqual(len(self.gmail.sent), 1, "only the email that bounced ever went")
+        row = self.conn.execute(
+            "SELECT state, error FROM outreach_scheduled_sends WHERE target_id=? AND kind='initial'", (target["id"],),
+        ).fetchone()
+        self.assertEqual(row["state"], "cancelled")
+        self.assertIn("may have answered your earlier email", row["error"])
+        self.assertIn("may have answered your earlier email", self.events(target, "send_cancelled")[-1])
+        self.assertEqual(get_target(self.conn, target["id"], user_id=USER)["scheduled"], {})
+
+    # --- They may have answered the first email (outreach_inbox.py) ----------------------------
+
+    def test_no_resend_while_an_email_from_them_may_be_a_reply(self):
+        target = self.sent_and_bounced()
+        self.waiting(target)
+        result = self.recover(target)
+        self.assertFalse(result["resent"], result["detail"])
+        self.assertIn("may have answered", result["detail"])
+        after = get_target(self.conn, target["id"], user_id=USER)
+        self.assertEqual((after["draft_status"], after["scheduled"]), ("generated", {}), "nothing approved that the student did not")
+        self.assertEqual(self.events(target, RESEND_EVENT), [])
+        self.assertEqual(run_due_sends(self.conn, client_factory=self.factory), [])
+        self.assertEqual(len(self.gmail.sent), 1)
+
+    def test_a_queued_resend_stops_when_their_careers_inbox_writes_back_first(self):
+        target = self.queued_resend()
+        # careers@ answers the first email (it reached them after all) before the worker's next pass:
+        # the check just before sending finds it.
+        self.gmail.raw["careers-1"] = (careers_mail(), int(datetime.now(timezone.utc).timestamp() * 1000) + 60_000)
+        self.gmail.inbox_replies.append("careers-1")
+        self.assertEqual([item["state"] for item in run_due_sends(self.conn, client_factory=self.factory)], ["cancelled"])
+        after = get_target(self.conn, target["id"], user_id=USER)
+        self.assertEqual([(item["gmail_id"], item["reason"]) for item in after["possible_replies"]], [("careers-1", "shared_address")])
+        self.cancelled_as_answered(target)
+
+    def test_a_queued_resend_stops_for_a_possible_reply_on_record(self):
+        target = self.queued_resend()
+        self.waiting(target)
+        self.assertEqual([item["state"] for item in run_due_sends(self.conn, client_factory=self.factory)], ["cancelled"])
+        self.cancelled_as_answered(target)
+
+    def test_a_queued_resend_stops_for_a_reply_logged_meanwhile(self):
+        target = self.queued_resend()
+        # Pasted by the student, or found by the background watcher, while it waited in line.
+        with self.conn:
+            _log(self.conn, target["id"], USER, "reply_logged", detail="Greg moved on; Dana will get back to you.")
+        self.assertEqual([item["state"] for item in run_due_sends(self.conn, client_factory=self.factory)], ["cancelled"])
+        self.cancelled_as_answered(target)
+
+    def test_the_contact_is_not_searched_again_while_an_email_from_them_may_be_a_reply(self):
+        # The design (outreach_inbox.py, holds): every automatic step waits for the student, the
+        # contact search after a bounce included; once they say it is not a reply, it runs.
+        target = self.sent_and_bounced()
+        self.waiting(target)
+        self.assertEqual(recovery_due(self.conn, user_id=USER), [])
+        decided = self.client.post(f"/api/v1/outreach/{target['id']}/possible-replies/careers-9", headers=AUTH,
+                                   json={"decision": "not_reply"})
+        self.assertEqual(decided.status_code, 200, decided.text)
+        self.assertEqual(recovery_due(self.conn, user_id=USER), [target["id"]])
 
     def test_the_bounced_email_goes_again_to_the_new_contact_on_the_next_pass(self):
         target = self.sent_and_bounced()

@@ -1,0 +1,36 @@
+-- Replies from someone other than the address the student wrote to
+-- (opportunity_app/outreach_inbox.py).
+--
+-- A fresh email from a person at the company's domain is now a reply, and one
+-- from a shared or automated address there (careers@, noreply@) is a possible
+-- reply the student confirms or dismisses; before, both were filed 'ignored'
+-- and never shown. outreach_inbox_messages.kind is now one of:
+--   'reply'      logged as a reply;
+--   'automatic'  an out-of-office or other automatic reply, noted;
+--   'possible'   may be a reply, waiting for the student to say;
+--   'dismissed'  a possible reply the student said is not one;
+--   'ignored'    set aside, with why in reason: the student's own mail, a
+--                delivery notice, mail from before the first email, a
+--                mailing-list email, an automated sender, or mail from no
+--                company the student wrote to.
+--
+-- The columns this migration adds (via, rules, candidates_json, thread_id,
+-- message_id, from_name, subject, text, reason, in_spam, decided_at, meta_json)
+-- are added by a Python step (schema._apply_outreach_reply_rules), guarded, so
+-- a crash before the migration is marked cannot make the next start fail on a
+-- duplicate column. text holds a possible reply's own words, and meta_json the
+-- rest a logged reply keeps (its whole message, headers and link hosts:
+-- outreach_inbox.REPLY_META), only while it waits for the student.
+--
+-- Every row this code writes says why (reason) and under which rules (rules,
+-- outreach_inbox.RULES). An 'ignored' row from older rules (rules 0, the old
+-- code's, whenever it was written: a server still running the old code can
+-- write one after this migration) is read again under the current rules
+-- instead of being trusted, and the job-mail reader
+-- (application_inbox._reclaim) takes back any message it had left to outreach
+-- that outreach no longer holds. Mail received before this migration was
+-- applied is never counted as a reply without the student (it can be a
+-- possible reply at most), except an answer in the thread of the student's
+-- own email from someone at the company.
+CREATE INDEX IF NOT EXISTS idx_outreach_inbox_messages_target
+    ON outreach_inbox_messages(user_id, target_id, kind);

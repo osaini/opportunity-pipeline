@@ -292,7 +292,7 @@ from .outreach_drafting import (
     sender_account,
 )
 from .outreach_delivery import bounce_from_text, check_deliveries
-from .outreach_inbox import InboxWatcher, capture_replies
+from .outreach_inbox import InboxWatcher, PossibleReplyNotFound, PossibleReplySettled, capture_replies, decide_possible_reply
 from .outreach_forms import default_submitter_factory as default_form_submitter_factory, set_contact_form, submit_contact_form
 from .outreach_automation import AutomationWorker, settings as automation_settings, update_settings as update_automation_settings
 from .outreach_schedule import cancel_send, schedule_send
@@ -506,6 +506,11 @@ class OutreachReplyRequest(BaseModel):
     text: str = Field(min_length=1, max_length=20_000)
     # The student says a text that reads like a bounce notice is a real reply.
     as_reply: bool = False
+
+
+class PossibleReplyDecisionRequest(BaseModel):
+    # Whether an email kept as a possible reply is one (outreach_inbox.decide_possible_reply).
+    decision: Literal["reply", "not_reply"]
 
 
 class OutreachAutomationRequest(BaseModel):
@@ -2226,7 +2231,7 @@ def create_app(
             for item in items:
                 for derived in (
                     "draft_checks", "follow_up_checks", "follow_up_due", "revisit_due", "suggestion",
-                    "draft_history_count", "follow_up_history_count",
+                    "draft_history_count", "follow_up_history_count", "possible_reply_count", "possible_replies", "gmail_reply",
                 ):
                     item.pop(derived, None)
             return Response(
@@ -2819,8 +2824,27 @@ def create_app(
         state = next((value for value in (gmail_sends["state"], delivery["state"], replies["state"]) if value != "ok"), "ok")
         return {
             "state": state, "bounced": delivery["bounced"], "replies": replies["replies"], "automatic": replies["automatic"],
-            "sent_in_gmail": gmail_sends["sent"], "scheduled_in_gmail": gmail_sends["scheduled"],
+            "possible": replies["possible"], "sent_in_gmail": gmail_sends["sent"], "scheduled_in_gmail": gmail_sends["scheduled"],
         }
+
+    @app.post("/api/v1/outreach/{target_id}/possible-replies/{gmail_id}")
+    def decide_outreach_possible_reply(
+        target_id: str,
+        gmail_id: str,
+        payload: PossibleReplyDecisionRequest,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """The student says whether an email from the company that may be a reply is one."""
+        try:
+            return decide_possible_reply(
+                conn, target_id, gmail_id, payload.decision, user_id=user_id,
+                decisions=inbox_client_for(conn, resolved_inbox_client_factory, user_id=user_id), on_reply=prep_after_reply,
+            )
+        except (OutreachNotFoundError, PossibleReplyNotFound) as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such possible reply") from exc
+        except PossibleReplySettled as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
     @app.delete("/api/v1/outreach/{target_id}/reply-suggestion")
     def dismiss_outreach_reply_suggestion(
