@@ -155,6 +155,16 @@ The unsaved text is carried across one reload only and stays unsaved: the word
 count still follows the box, and the hand-off to email still refuses, because it
 sends the approved draft rather than the text box.
 
+### Defect found 2026-09-28 (an intermittent suite failure)
+
+`test_a_board_is_tracked_at_once_only_when_it_names_the_company` failed in some
+full runs and passed alone. Holding the status request back reproduced it every
+time.
+
+| Severity | Original defect | Current guard |
+| --- | --- | --- |
+| P3 | Opening the Refresh dialog renders the status panel at once and again when a fresh `/api/v1/system/status` arrives. The second render rebuilt the "Track another company's job board" form, so a company already typed and a lookup result already shown were wiped when that status came back after the lookup. The form is now kept across renders. | `test_a_status_that_arrives_after_a_board_lookup_keeps_it` (holds the status request until the lookup is shown) |
+
 ## Exploratory testing with Playwright MCP
 
 The written suite checks what someone thought to assert. Playwright MCP is for

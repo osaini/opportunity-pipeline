@@ -998,9 +998,12 @@
     els.systemStatus.hidden = !payload?.available && !payload?.can_add_boards;
     if (els.systemStatus.hidden) return;
     const body = els.systemStatusBody;
+    // Opening the dialog renders at once and again when a fresh status arrives: the board form is
+    // kept across that, so a company typed or a lookup already shown is not wiped by the second render.
+    const tracker = body.querySelector(".board-tracker") || boardTrackerForm();
     body.replaceChildren();
     if (!payload.available) {
-      body.appendChild(boardTrackerForm());
+      body.appendChild(tracker);
       return;
     }
 
@@ -1091,7 +1094,7 @@
         body.appendChild(details);
       }
     }
-    if (payload.can_add_boards) body.appendChild(boardTrackerForm());
+    if (payload.can_add_boards) body.appendChild(tracker);
   }
 
   async function pollRefresh() {

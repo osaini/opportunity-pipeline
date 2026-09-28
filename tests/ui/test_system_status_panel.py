@@ -91,6 +91,26 @@ def test_a_board_is_tracked_at_once_only_when_it_names_the_company(owner_page):
     ]
 
 
+def test_a_status_that_arrives_after_a_board_lookup_keeps_it(owner_page):
+    # Opening the dialog renders the panel at once and again when a fresh status arrives.
+    held = []
+    owner_page.route("**/api/v1/system/status", lambda route: held.append(route))
+    owner_page.locator("#refresh-open").click()
+    tracker = owner_page.locator(".board-tracker")
+    company = tracker.get_by_label("Company name")
+    company.fill("Nowhere Labs")
+    tracker.get_by_role("button", name="Find board").click()
+    expect(tracker).to_contain_text("No Greenhouse, Ashby or Lever board with postings was found for Nowhere Labs")
+    assert held, "the dialog asked for a fresh status"
+    owner_page.locator("#system-status .system-status-jobs").evaluate("list => list.dataset.before = 'yes'")
+    for route in held:
+        route.continue_()
+    owner_page.unroute("**/api/v1/system/status")
+    expect(owner_page.locator("#system-status .system-status-jobs[data-before]")).to_have_count(0)  # rendered again
+    expect(tracker).to_contain_text("No Greenhouse, Ashby or Lever board with postings was found for Nowhere Labs")
+    expect(company).to_have_value("Nowhere Labs")
+
+
 def outreach_fakes_local_entries():
     import json
 
