@@ -1,0 +1,1009 @@
+"""Application mail: job-system emails read from Gmail, matched, then acted on or proposed (application_inbox.py).
+
+Every company, address and message here is invented. Gmail is FakeGmail from
+test_outreach_gmail, taught users.history.list and a historyId on the profile.
+"""
+
+import base64
+import json
+import sys
+import tempfile
+import unittest
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
+from pathlib import Path
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import httpx
+from cryptography.fernet import Fernet
+from fastapi.testclient import TestClient
+
+from opportunity_app import STATIC_DIR, application_inbox, automation, mail_trust, outreach_gmail
+from opportunity_app.actions import record_intent, update_application
+from opportunity_app.api import create_app
+from opportunity_app.application_inbox import match_application, parse_message
+from opportunity_app.schema import connect_product, utc_now
+from opportunity_app.urgent import urgent_queue
+
+from helpers_platform import build_and_migrate
+from test_outreach_gmail import ACCOUNT, FakeGmail, forget_gmail_backoff, rate_limited
+
+USER = "local-user"
+AUTH = {"Authorization": "Bearer mail-owner"}
+FEATURE = "application_mail"
+GREENHOUSE = "Acme Robotics Hiring Team <no-reply@us.greenhouse-mail.io>"
+
+
+def now_utc():
+    return datetime.now(timezone.utc).replace(microsecond=0)
+
+
+def arh(domain, *, kind="dmarc", server="mx.google.com", result="pass", signer=None):
+    """An Authentication-Results header line as Gmail's inbound servers write it."""
+    signer = signer or domain
+    if kind == "dmarc":
+        body = (f"dkim={result} header.i=@{signer} header.s=s1 header.b=abc; "
+                f"spf=pass (google.com: domain of bounce@{domain} designates 192.0.2.1 as permitted sender) smtp.mailfrom=bounce@{domain}; "
+                f"dmarc={result} (p=REJECT sp=REJECT dis=NONE) header.from={domain.split('.', 1)[-1] if domain.count('.') > 1 else domain}")
+    else:
+        body = f"dkim={result} header.i=@{signer} header.s=s1 header.b=abc; spf=neutral smtp.mailfrom=bounce@{domain}"
+    return f"Authentication-Results: {server};\n       {body}\n"
+
+
+def job_mail(*, sender=GREENHOUSE, subject="Thank you for applying to Acme Robotics", body="", headers=None, date=None, html=False):
+    """A message as the raw text Gmail stores, with Gmail's own sender check on top unless ``headers`` says otherwise."""
+    domain = sender.rsplit("@", 1)[1].rstrip(">").strip()
+    top = arh(domain) if headers is None else headers
+    date_line = f"Date: {format_datetime(date)}\n" if date else ""
+    content_type = "text/html" if html else "text/plain"
+    return (
+        f"{top}From: {sender}\nTo: {ACCOUNT}\nSubject: {subject}\n{date_line}"
+        f"MIME-Version: 1.0\nContent-Type: {content_type}; charset=UTF-8\n\n{body}\n"
+    ).encode()
+
+
+def mail_from(raw, *, received=None, gmail_id="m-1", thread_id="t-1"):
+    received = received or now_utc()
+    return parse_message({
+        "id": gmail_id, "threadId": thread_id, "labelIds": ["INBOX"], "internalDate": str(int(received.timestamp() * 1000)),
+        "raw": base64.urlsafe_b64encode(raw).decode(),
+    })
+
+
+class MailboxGmail(FakeGmail):
+    """FakeGmail with a mailbox history, a historyId on the profile, and searches by kind."""
+
+    def __init__(self):
+        super().__init__()
+        self.history_id = 100
+        self.history = []
+        self.history_expired = False
+        self.history_page_size = None
+        self.recovery_found = []
+        self.backfill_found = []
+        self.list_page_size = None
+        self.threads = {}
+        self.labels = {}
+        self.message_gets = 0
+        self.throttle_after = None
+
+    def deliver(self, gmail_id, raw, received, *, thread_id=None, labels=("INBOX",)):
+        self.raw[gmail_id] = (raw, int(received.timestamp() * 1000))
+        self.threads[gmail_id] = thread_id or f"thread-{gmail_id}"
+        self.labels[gmail_id] = list(labels)
+        self.history_id += 1
+        self.history.append({"id": str(self.history_id), "messagesAdded": [{"message": {"id": gmail_id, "labelIds": list(labels)}}]})
+
+    def store(self, gmail_id, raw, received):
+        """A message in the mailbox that no history record announces (found only by a search)."""
+        self.raw[gmail_id] = (raw, int(received.timestamp() * 1000))
+        self.threads[gmail_id] = f"thread-{gmail_id}"
+        self.labels[gmail_id] = ["INBOX"]
+
+    def _page(self, found, token, size):
+        start = int(token or 0)
+        page = found[start:start + size] if size else found[start:]
+        body = {"messages": [{"id": item} for item in page]}
+        if size and start + size < len(found):
+            body["nextPageToken"] = str(start + size)
+        return body
+
+    def handler(self, request):
+        path = request.url.path
+        if request.url.host == "gmail.googleapis.com" and request.method == "GET":
+            if request.headers.get("Authorization", "").removeprefix("Bearer ") not in self.expired_tokens and self.read_response is None:
+                if path.endswith("/profile"):
+                    self.requests.append(request)
+                    return httpx.Response(200, json={"emailAddress": self.profile_email, "historyId": str(self.history_id)})
+                if path.endswith("/history"):
+                    self.requests.append(request)
+                    if self.history_expired:
+                        return httpx.Response(404, json={"error": {"code": 404, "message": "Requested entity was not found."}})
+                    start = int(request.url.params.get("startHistoryId"))
+                    records = [record for record in self.history if int(record["id"]) > start]
+                    offset = int(request.url.params.get("pageToken") or 0)
+                    size = self.history_page_size or len(records) or 1
+                    page = records[offset:offset + size]
+                    body = {"history": page, "historyId": str(self.history_id)}
+                    if offset + size < len(records):
+                        body["nextPageToken"] = str(offset + size)
+                    return httpx.Response(200, json=body)
+                if path.endswith("/messages"):
+                    self.requests.append(request)
+                    query = request.url.params.get("q", "")
+                    self.searches.append(query)
+                    found = self.recovery_found if query.startswith("in:inbox after:") else self.backfill_found if "from:(" in query else []
+                    return httpx.Response(200, json=self._page(found, request.url.params.get("pageToken"), self.list_page_size))
+                if "/messages/" in path and request.url.params.get("format") == "raw":
+                    self.requests.append(request)
+                    self.message_gets += 1
+                    if self.throttle_after is not None and self.message_gets > self.throttle_after:
+                        return rate_limited()
+                    message_id = path.rsplit("/", 1)[1]
+                    if message_id not in self.raw:
+                        return httpx.Response(404)
+                    raw, received = self.raw[message_id]
+                    return httpx.Response(200, json={
+                        "id": message_id, "threadId": self.threads.get(message_id, message_id), "labelIds": self.labels.get(message_id, ["INBOX"]),
+                        "internalDate": str(received), "raw": base64.urlsafe_b64encode(raw).decode(),
+                    })
+        return super().handler(request)
+
+
+class MailCase(unittest.TestCase):
+    """A throwaway database with Gmail connected, the seeded Orbit application (applied), and Acme's (applying)."""
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tempdir.cleanup)
+        root = Path(self.tempdir.name)
+        _, self.platform_path = build_and_migrate(root)
+        self.key = Fernet.generate_key().decode()
+        env = mock.patch.dict("os.environ", {
+            "GOOGLE_OAUTH_CLIENT_ID": "client-id", "GOOGLE_OAUTH_CLIENT_SECRET": "client-secret",
+            "PIPELINE_CONNECTION_KEY": self.key, "PIPELINE_OUTREACH_ACCOUNT": ACCOUNT,
+        })
+        env.start()
+        self.addCleanup(env.stop)
+        forget_gmail_backoff(self)
+        self.gmail = MailboxGmail()
+        self.factory = lambda: httpx.Client(transport=httpx.MockTransport(self.gmail.handler))
+        self.conn = connect_product(self.platform_path)
+        self.addCleanup(self.conn.close)
+        fernet = Fernet(self.key.encode())
+        with self.conn:
+            self.conn.execute(
+                """INSERT INTO connector_accounts(id, user_id, provider, scopes_json, encrypted_access_token, encrypted_refresh_token, status, created_at, updated_at)
+                   VALUES(?, ?, 'gmail_drafts', '[]', ?, ?, 'connected', ?, ?)""",
+                (f"connector-gmail_drafts-{USER}", USER, fernet.encrypt(b"valid-token").decode(), fernet.encrypt(b"refresh").decode(), utc_now(), utc_now()),
+            )
+        self.acme = record_intent(self.conn, "job-a", "apply_opened", user_id=USER)["application_id"]
+        self.orbit = "app-job-b"
+        application_inbox._PASS_LOCKS.clear()
+
+    # --- helpers
+
+    def switch(self, mode, *, since=None):
+        """Set the switch directly (the 48-hour shadow gate is automation's, tested there), as turned on at ``since``."""
+        stamp = (since or now_utc() - timedelta(hours=1)).isoformat()
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, ?, ?, ?) "
+                "ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                (USER, FEATURE, mode, stamp),
+            )
+
+    def pass_once(self, **kwargs):
+        return application_inbox.run_pass(self.conn, user_id=USER, client_factory=self.factory, force=True, **kwargs)
+
+    def started(self, mode="on"):
+        """The switch on, and a first pass that took the cursor (and found no backfill)."""
+        self.switch(mode)
+        result = self.pass_once()
+        self.assertEqual(result["state"], "ok", result)
+        return result
+
+    def deliver(self, gmail_id, raw, *, minutes_ago=5, **kwargs):
+        received = now_utc() - timedelta(minutes=minutes_ago)
+        self.gmail.deliver(gmail_id, raw, received, **kwargs)
+        return received
+
+    def actions(self, **where):
+        clauses = " AND ".join(f"{key}=?" for key in where)
+        rows = self.conn.execute(
+            f"SELECT * FROM automation_actions WHERE user_id=?{' AND ' + clauses if clauses else ''} ORDER BY created_at, id",
+            (USER, *where.values()),
+        ).fetchall()
+        return [automation._decode(row) for row in rows]
+
+    def stage(self, application_id):
+        row = self.conn.execute("SELECT stage, applied_at FROM applications WHERE id=?", (application_id,)).fetchone()
+        return row["stage"], row["applied_at"]
+
+    def message_row(self, gmail_id):
+        return self.conn.execute("SELECT * FROM application_mail_messages WHERE user_id=? AND gmail_id=?", (USER, gmail_id)).fetchone()
+
+    def sync(self):
+        return dict(self.conn.execute("SELECT * FROM application_mail_sync WHERE user_id=?", (USER,)).fetchone())
+
+    def add_application(self, opportunity_id, company, title, *, stage="applied", url=None):
+        now = utc_now()
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO opportunities(id, company, title, url, first_seen_at, last_seen_at, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                (opportunity_id, company, title, url or f"https://jobs.example.org/{opportunity_id}", now, now, now, now),
+            )
+            self.conn.execute(
+                "INSERT INTO applications(id, opportunity_id, user_id, stage, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)",
+                (f"app-{opportunity_id}", opportunity_id, USER, stage, now, now),
+            )
+        return f"app-{opportunity_id}"
+
+
+def acme_confirmation(**overrides):
+    return job_mail(
+        subject="Thank you for applying to Acme Robotics",
+        body="Hi Sam,\n\nThank you for applying to the Mechanical Engineering Intern role at Acme Robotics. We have received your application.",
+        **overrides,
+    )
+
+
+def orbit_mail(subject, body, **overrides):
+    return job_mail(sender="Orbit Systems <no-reply@hire.lever.co>", subject=subject, body=body, **overrides)
+
+
+# --- Registry and domains ------------------------------------------------------------------------
+
+
+class RegistryTests(unittest.TestCase):
+    def test_the_switch_is_registered_off_by_default_and_needs_shadow_first(self):
+        feature = automation.FEATURES[FEATURE]
+        self.assertEqual((feature.label, feature.group, feature.risk, feature.modes),
+                         ("Update applications from job emails", "applications", "internal", ("off", "shadow", "on")))
+        self.assertIn("Anything unclear waits for you", feature.description)
+        self.assertEqual(application_inbox.HEALTH_COMPONENT, "inbox.applications")
+        self.assertFalse(automation.undoable("application.capture_proposal"))
+        self.assertTrue(automation.undoable("application.deadline"))
+
+
+class PublicSuffixTests(unittest.TestCase):
+    def test_registrable_domains_follow_the_public_suffix_list(self):
+        self.assertTrue(mail_trust.psl_available(), "publicsuffixlist is in requirements-web")
+        self.assertTrue(mail_trust.same_organization("careers.acme.com", "acme.com"))
+        self.assertFalse(mail_trust.same_organization("acme.co.uk", "evil.co.uk"))
+        self.assertFalse(mail_trust.same_organization("acme.github.io", "other.github.io"), "a private suffix: two tenants")
+        self.assertFalse(mail_trust.same_organization("acme-careers.com", "acme.com"))
+        self.assertFalse(mail_trust.same_organization("acme.com.evil.io", "acme.com"))
+        self.assertEqual(mail_trust.registrable_domain("mail.us.greenhouse-mail.io"), "greenhouse-mail.io")
+
+    def test_it_fails_closed(self):
+        for host in ("192.0.2.10", "[2001:db8::1]", "acme.unknowntld", "com", "github.io", "", "a..b.com", "localhost"):
+            with self.subTest(host=host):
+                self.assertIsNone(mail_trust.registrable_domain(host))
+        self.assertFalse(mail_trust.same_organization("acme.unknowntld", "acme.unknowntld"), "no suffix, no match, even with itself")
+
+    def test_without_the_package_nothing_matches(self):
+        with mock.patch.object(mail_trust, "_PSL", None), mock.patch.object(mail_trust, "_PSL_MISSING", True):
+            self.assertIsNone(mail_trust.registrable_domain("careers.acme.com"))
+            self.assertFalse(mail_trust.same_organization("careers.acme.com", "acme.com"))
+
+    def test_the_shipped_list_and_what_it_reads(self):
+        lists = mail_trust.sender_lists()
+        for domain in ("greenhouse-mail.io", "greenhouse.io", "hire.lever.co", "ashbyhq.com", "myworkday.com", "smartrecruiters.com",
+                       "icims.com", "workablemail.com"):
+            self.assertIn(domain, lists["ats"])
+        for domain in ("hackerrank.com", "codesignal.com", "codility.com", "hirevue.com"):
+            self.assertIn(domain, lists["assessment"])
+        for domain in ("calendly.com", "goodtime.io", "modernloop.io"):
+            self.assertIn(domain, lists["scheduling"])
+        self.assertEqual(mail_trust.listed("us.greenhouse-mail.io"), "ats")
+        self.assertIsNone(mail_trust.listed("greenhouse-mail.io.evil.com"))
+        self.assertIsNone(mail_trust.listed("calendly.com", mail_trust.AUTHORIZING_CATEGORIES), "a scheduling tool authorizes nothing")
+
+
+class AuthenticationTests(unittest.TestCase):
+    def check(self, raw):
+        return mail_trust.authenticate(mail_from(raw).message)
+
+    def test_gmails_dmarc_pass_counts(self):
+        result = self.check(acme_confirmation())
+        self.assertEqual((result.ok, result.method), (True, "dmarc"))
+
+    def test_aligned_dkim_counts_without_dmarc(self):
+        result = self.check(acme_confirmation(headers=arh("us.greenhouse-mail.io", kind="dkim")))
+        self.assertEqual((result.ok, result.method), (True, "dkim"))
+
+    def test_dkim_signed_by_another_domain_does_not(self):
+        result = self.check(acme_confirmation(headers=arh("us.greenhouse-mail.io", kind="dkim", signer="bulk-sender.com")))
+        self.assertFalse(result.ok)
+        self.assertEqual(result.reason, "the email is signed by another domain")
+
+    def test_a_missing_check_does_not(self):
+        result = self.check(acme_confirmation(headers=""))
+        self.assertEqual((result.ok, result.reason), (False, "Gmail's sender check is missing"))
+
+    def test_a_forged_result_lower_down_is_ignored(self):
+        # The topmost header is another server's; a forged Gmail pass sits below it.
+        forged = arh("us.greenhouse-mail.io", server="mx.other-relay.net", result="fail") + arh("us.greenhouse-mail.io")
+        result = self.check(acme_confirmation(headers=forged))
+        self.assertEqual((result.ok, result.reason), (False, "the sender check was not added by Gmail"))
+
+    def test_a_forged_gmail_result_below_the_real_one_is_ignored(self):
+        forged = arh("us.greenhouse-mail.io", result="fail") + arh("us.greenhouse-mail.io")
+        result = self.check(acme_confirmation(headers=forged))
+        self.assertFalse(result.ok, "only the topmost mx.google.com result counts")
+
+    def test_a_forged_from_without_dkim_or_dmarc_does_not(self):
+        headers = "Authentication-Results: mx.google.com;\n       spf=softfail smtp.mailfrom=someone@elsewhere.example\n"
+        result = self.check(acme_confirmation(headers=headers))
+        self.assertEqual((result.ok, result.reason), (False, "the sender did not pass Gmail's check"))
+
+    def test_conflicting_dmarc_results_are_ambiguous(self):
+        headers = "Authentication-Results: mx.google.com;\n       dmarc=pass header.from=greenhouse-mail.io;\n       dmarc=fail header.from=greenhouse-mail.io\n"
+        self.assertEqual(self.check(acme_confirmation(headers=headers)).reason, "Gmail's sender check is ambiguous")
+
+
+# --- Matching --------------------------------------------------------------------------------
+
+
+class MatchTests(MailCase):
+    def match(self, raw):
+        return match_application(self.conn, USER, mail_from(raw))
+
+    def test_a_job_id_in_a_link_matches_first(self):
+        with self.conn:
+            self.conn.execute(
+                "UPDATE opportunity_sources SET source_url='https://boards.greenhouse.io/acmerobotics/jobs/4455667', external_id='4455667' WHERE opportunity_id='job-a'",
+            )
+        raw = job_mail(sender="Careers <no-reply@us.greenhouse-mail.io>", subject="Your application",
+                       body="Thanks! View the posting: https://boards.greenhouse.io/acmerobotics/jobs/4455667?gh_src=abc")
+        found = self.match(raw)
+        self.assertEqual((found.tier, found.application_id), ("job_id", self.acme))
+
+    def test_company_and_role_match(self):
+        found = self.match(acme_confirmation())
+        self.assertEqual((found.tier, found.application_id), ("company_title", self.acme))
+
+    def test_the_company_alone_matches_its_one_open_application(self):
+        found = self.match(job_mail(subject="Update from Acme Robotics", body="Hi Sam, a quick update on your application."))
+        self.assertEqual((found.tier, found.application_id), ("company_single", self.acme))
+
+    def test_two_open_applications_at_one_company_are_ambiguous_and_ranked(self):
+        second = self.add_application("acme-2", "Acme Robotics", "Firmware Intern")
+        found = self.match(job_mail(subject="Update from Acme Robotics", body="Hi Sam, a quick update on your application."))
+        self.assertEqual(found.tier, "ambiguous")
+        self.assertEqual(set(found.candidates), {self.acme, second})
+        titled = self.match(acme_confirmation())
+        self.assertEqual((titled.tier, titled.application_id), ("company_title", self.acme), "the role tells them apart")
+        self.assertEqual(titled.candidates[0], self.acme)
+
+    def test_no_company_named_is_none(self):
+        self.assertEqual(self.match(job_mail(sender="Careers <no-reply@us.greenhouse-mail.io>", subject="Your application",
+                                             body="Thanks for applying.")).tier, "none")
+
+    def test_a_shared_ats_sender_is_told_apart_by_the_company_it_names(self):
+        orbit = self.match(orbit_mail("Your application to Orbit Systems", "Thanks for applying to Orbit Systems for the Controls Co-op role."))
+        acme = self.match(acme_confirmation())
+        self.assertEqual((orbit.application_id, acme.application_id), (self.orbit, self.acme))
+        both_greenhouse = self.match(job_mail(sender="Orbit Systems <no-reply@us.greenhouse-mail.io>", subject="Update from Orbit Systems", body="Hi."))
+        self.assertEqual(both_greenhouse.application_id, self.orbit, "the same no-reply address speaks for both")
+
+    def test_a_namesake_is_not_the_same_company(self):
+        plain_acme = self.add_application("acme-plain", "Acme", "Test Technician", stage="applied")
+        found = self.match(job_mail(subject="Update from Acme Robotics", body="Hi Sam, a quick update."))
+        self.assertEqual(found.application_id, self.acme)
+        self.assertNotIn(plain_acme, found.candidates, "Acme Robotics is not Acme")
+        only_acme = self.match(job_mail(sender="Acme Hiring Team <no-reply@us.greenhouse-mail.io>", subject="Update from Acme", body="Hi."))
+        self.assertEqual(only_acme.application_id, plain_acme)
+
+
+# --- Deciding and acting ---------------------------------------------------------------------------
+
+
+class LiveMailTests(MailCase):
+    def test_nothing_runs_while_off(self):
+        self.assertEqual(self.pass_once()["state"], "off")
+        self.assertEqual(self.gmail.requests, [])
+
+    def test_the_first_pass_takes_the_cursor_and_records_when_it_was_turned_on(self):
+        since = now_utc() - timedelta(hours=2)
+        self.switch("on", since=since)
+        self.pass_once()
+        sync = self.sync()
+        self.assertEqual(sync["history_id"], "100")
+        self.assertEqual(automation._parse(sync["enabled_at"]), since)
+        self.assertIn(sync["backfill_state"], ("running", "done"))
+
+    def test_a_confirmation_moves_applying_to_applied_with_gmails_received_time(self):
+        self.started()
+        received = self.deliver("m-1", acme_confirmation(date=now_utc() - timedelta(minutes=5)))
+        result = self.pass_once()
+        self.assertEqual(result["state"], "ok", result)
+        stage, applied_at = self.stage(self.acme)
+        self.assertEqual(stage, "applied")
+        self.assertEqual(datetime.fromisoformat(applied_at), received, "applied_at is internalDate, not now")
+        [action] = self.actions(action_type="application.stage")
+        self.assertEqual((action["status"], action["decided_by"], action["basis"].split(";")[1]), ("applied", "system", "match:company_title"))
+        self.assertEqual(action["evidence"]["why_proposal"], [])
+        event = self.conn.execute("SELECT status, decided_by, application_id FROM monitored_events WHERE external_id='gmail:m-1'").fetchone()
+        self.assertEqual(tuple(event), ("confirmed", "system", self.acme))
+        self.assertEqual(self.message_row("m-1")["state"], "done")
+        timeline = self.conn.execute("SELECT detail_json FROM application_events WHERE application_id=? AND event_type='stage_changed'", (self.acme,)).fetchall()
+        self.assertEqual(json.loads(timeline[-1]["detail_json"])["source"], f"automation:{action['id']}")
+
+    def test_one_email_makes_a_stage_change_and_a_task_each_exactly_once(self):
+        self.started()
+        invite = orbit_mail("Interview invitation: Orbit Systems",
+                            "Hi Sam,\n\nWe'd like to invite you to interview for the Controls Co-op role at Orbit Systems.")
+        self.deliver("m-2", invite)
+        self.pass_once()
+        self.assertEqual(self.stage(self.orbit)[0], "interview")
+        tasks = self.conn.execute("SELECT title, origin, origin_ref FROM application_tasks WHERE application_id=?", (self.orbit,)).fetchall()
+        self.assertEqual([tuple(row) for row in tasks], [("Schedule interview", "email", "m-2")])
+        # Read again (queued twice, and decided again after a pause): nothing more.
+        with self.conn:
+            self.conn.execute("UPDATE application_mail_messages SET state='awaiting_resume' WHERE gmail_id='m-2'")
+        self.pass_once()
+        self.assertEqual(len(self.actions()), 2)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM application_tasks WHERE application_id=?", (self.orbit,)).fetchone()[0], 1)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM monitored_events WHERE external_id='gmail:m-2'").fetchone()[0], 1)
+
+    def test_stages_only_move_forward(self):
+        self.started()
+        update_application(self.conn, self.orbit, stage="offer", user_id=USER)
+        with self.conn:  # the student's change is older than the email, so manual wins does not apply
+            self.conn.execute("UPDATE application_events SET created_at=? WHERE application_id=? AND event_type='stage_changed'",
+                              ((now_utc() - timedelta(days=1)).isoformat(), self.orbit))
+        self.deliver("m-3", orbit_mail("Update on your Orbit Systems application",
+                                       "We regret to inform you that we will not be moving forward with your application for Controls Co-op."))
+        self.pass_once()
+        self.assertEqual(self.stage(self.orbit)[0], "offer", "a rejection never overwrites an offer")
+        self.assertEqual(self.actions(action_type="application.stage"), [])
+
+    def test_manual_wins(self):
+        self.started()
+        received = self.deliver("m-4", orbit_mail("Interview invitation: Orbit Systems",
+                                                  "We'd like to invite you to interview for the Controls Co-op role at Orbit Systems."),
+                                minutes_ago=30)
+        update_application(self.conn, self.orbit, stage="applying", user_id=USER)  # the student, after the email arrived
+        self.pass_once()
+        [stage_action] = self.actions(action_type="application.stage")
+        self.assertEqual(stage_action["status"], "proposed")
+        self.assertIn("you changed this application's stage after the email arrived", stage_action["evidence"]["why_proposal"])
+        self.assertEqual(self.stage(self.orbit)[0], "applying")
+        self.assertLess(received, now_utc())
+
+    def test_a_date_line_far_from_gmails_time_only_proposes(self):
+        self.started()
+        self.deliver("m-5", acme_confirmation(date=now_utc() - timedelta(days=5)))
+        self.pass_once()
+        [action] = self.actions()
+        self.assertEqual(action["status"], "proposed")
+        self.assertIn("its Date line and when Gmail received it are more than 48 hours apart", action["evidence"]["why_proposal"])
+        self.assertEqual(self.stage(self.acme)[0], "applying")
+
+    def test_an_offer_is_only_ever_proposed_with_a_notice_that_carries_no_email_text(self):
+        self.started()
+        self.deliver("m-6", orbit_mail("Offer letter - Controls Co-op",
+                                       "Congratulations! We are pleased to offer you the Controls Co-op role. See https://offers.example.org/o/secret-token"))
+        self.pass_once()
+        [action] = self.actions()
+        self.assertEqual((action["status"], action["after"]["stage"]), ("proposed", "offer"))
+        self.assertIn("an offer is always yours to confirm", action["evidence"]["why_proposal"])
+        [notice] = automation.list_notices(self.conn, USER)
+        self.assertEqual((notice["title"], notice["body"]), ("Orbit Systems may have sent an offer", "Open Automation to review it."))
+        self.assertEqual(self.stage(self.orbit)[0], "applied")
+
+    def test_an_assessment_task_keeps_its_link_in_the_app_only(self):
+        self.started()
+        link = "https://www.hackerrank.com/test/abc123/login?token=very-secret-token"
+        raw = job_mail(sender="HackerRank <support@hackerrankforwork.com>", subject="Acme Robotics has invited you to take a test",
+                       body=f"Acme Robotics has invited you to take the Mechanical Engineering Intern Coding Test. Please complete the test by October 3, {now_utc().year + 1}.\n\n{link}")
+        self.deliver("m-7", raw)
+        self.pass_once()
+        [task] = self.conn.execute("SELECT title, link, due_at, origin FROM application_tasks WHERE application_id=?", (self.acme,)).fetchall()
+        self.assertEqual((task["title"], task["link"], task["origin"]), ("Complete the HackerRank assessment", link, "email"))
+        self.assertTrue(task["due_at"].startswith(f"{now_utc().year + 1}-10-03"))
+        for action in self.actions():
+            self.assertNotIn("very-secret-token", json.dumps(action["evidence"]))
+            self.assertNotIn("abc123", json.dumps(action["evidence"]))
+        self.assertIn("www.hackerrank.com", self.actions()[0]["evidence"]["excerpt"], "a link is cut to its host")
+        for notice in automation.list_notices(self.conn, USER):
+            self.assertNotIn("hackerrank.com/test", json.dumps(notice))
+        health = json.dumps(automation.health_summary(self.conn, USER))
+        self.assertNotIn("very-secret-token", health)
+        event = self.conn.execute("SELECT payload_json FROM monitored_events WHERE external_id='gmail:m-7'").fetchone()
+        self.assertNotIn("very-secret-token", event["payload_json"])
+
+    def test_a_stated_deadline_becomes_an_urgent_row_from_an_email(self):
+        self.started()
+        year = now_utc().year + 1
+        self.deliver("m-8", job_mail(
+            sender="Acme Robotics Hiring Team <no-reply@us.greenhouse-mail.io>", subject="Next step: online assessment",
+            body=f"Thanks for applying to the Mechanical Engineering Intern role at Acme Robotics. Please complete our online assessment by October 10, {year}.",
+        ))
+        self.pass_once()
+        [deadline] = self.conn.execute("SELECT deadline_on, quote, sender_domain FROM email_deadlines WHERE application_id=?", (self.acme,)).fetchall()
+        self.assertEqual((deadline["deadline_on"], deadline["sender_domain"]), (f"{year}-10-10", "greenhouse-mail.io"))
+        self.assertIn("by October 10", deadline["quote"])
+        queue = urgent_queue(self.conn, user_id=USER, days=60, now=datetime(year, 10, 1, 12, tzinfo=timezone.utc))
+        [item] = [item for item in queue["items"] if item["kind"] == "email_deadline"]
+        self.assertEqual((item["date"], item["date_source"], item["application_id"]), (f"{year}-10-10", "From an email", self.acme))
+        self.assertTrue(item["date_note"].startswith("From greenhouse-mail.io, received "))
+        self.assertIn("'", item["date_note"])
+        [task] = [item for item in queue["items"] if item["kind"] == "task"]
+        self.assertEqual(task["origin_label"], "From an email", "the assessment task says where it came from")
+        [action] = self.actions(action_type="application.deadline")
+        automation.undo(self.conn, action["id"], USER)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM email_deadlines").fetchone()[0], 0, "undo removes the row")
+
+    def test_a_plain_deadline_email_only_proposes(self):
+        self.started()
+        year = now_utc().year + 1
+        self.deliver("m-8b", job_mail(subject="Action needed: transcript",
+                                      body=f"To complete your application for the Mechanical Engineering Intern role at Acme Robotics, please upload your transcript by October 10, {year}."))
+        self.pass_once()
+        [action] = self.actions()
+        self.assertEqual((action["action_type"], action["status"]), ("application.deadline", "proposed"))
+        self.assertTrue(any("not sure enough" in reason for reason in action["evidence"]["why_proposal"]))
+
+    def test_a_date_with_no_year_only_proposes(self):
+        self.started()
+        self.deliver("m-8c", job_mail(sender="HackerRank <support@hackerrankforwork.com>", subject="Acme Robotics has invited you to take a test",
+                                      body="Acme Robotics invited you to the Mechanical Engineering Intern Coding Test. Please complete the test by December 3."))
+        self.pass_once()
+        [deadline] = self.actions(action_type="application.deadline")
+        self.assertEqual(deadline["status"], "proposed")
+        self.assertIn("the email did not state the year of the deadline", deadline["evidence"]["why_proposal"])
+
+    def test_pause_then_resume_then_the_message_is_acted_on(self):
+        self.started()
+        automation.set_paused(self.conn, USER, True)
+        self.deliver("m-9", acme_confirmation())
+        result = self.pass_once()
+        self.assertEqual(result["detail"].get("awaiting_resume"), 1)
+        self.assertEqual(self.message_row("m-9")["state"], "awaiting_resume")
+        self.assertEqual((self.actions(), self.stage(self.acme)[0]), ([], "applying"), "reading goes on; acting waits")
+        automation.set_paused(self.conn, USER, False)
+        self.pass_once()
+        self.assertEqual(self.message_row("m-9")["state"], "done")
+        self.assertEqual(self.stage(self.acme)[0], "applied")
+        self.assertEqual(len(self.actions()), 1)
+
+    def test_shadow_records_what_it_would_do(self):
+        self.started(mode="shadow")
+        self.deliver("m-10", acme_confirmation())
+        self.pass_once()
+        [action] = self.actions()
+        self.assertEqual(action["status"], "shadow")
+        self.assertEqual(self.stage(self.acme)[0], "applying")
+
+    def test_a_message_outreach_owns_is_left_to_outreach(self):
+        self.started()
+        self.deliver("m-11", acme_confirmation())
+        now = utc_now()
+        with self.conn:
+            self.conn.execute("INSERT INTO outreach_targets(id, user_id, company, created_at, updated_at) VALUES('t-1', ?, 'Acme Robotics', ?, ?)", (USER, now, now))
+            self.conn.execute(
+                "INSERT INTO outreach_inbox_messages(user_id, gmail_id, target_id, kind, sender, received_at, recorded_at) VALUES(?, 'm-11', 't-1', 'reply', 'x', ?, ?)",
+                (USER, now, now),
+            )
+        self.pass_once()
+        self.assertEqual(self.message_row("m-11")["state"], "outreach")
+        self.assertEqual(self.actions(), [])
+        self.assertEqual(self.gmail.message_gets, 0, "not even read")
+
+    def test_a_message_that_is_not_from_a_job_system_is_skipped_and_nothing_kept(self):
+        self.started()
+        self.deliver("m-12", job_mail(sender="A Friend <friend@mail.example.net>", subject="Lunch?", body="Want to grab lunch?", headers=""))
+        self.pass_once()
+        row = self.message_row("m-12")
+        self.assertEqual((row["state"], row["subject"], row["sender_domain"], row["thread_id"]), ("skipped", "", "", ""))
+        self.assertEqual(self.actions(), [])
+
+    def test_a_link_host_alone_or_a_forged_sender_only_proposes(self):
+        self.started()
+        self.deliver("m-13", job_mail(sender="Acme Robotics <news@acme-robotics-news.com>", headers="",
+                                      subject="Thank you for applying to Acme Robotics",
+                                      body="Thank you for applying to the Mechanical Engineering Intern role at Acme Robotics. https://boards.greenhouse.io/acme/jobs/1234567"))
+        self.deliver("m-14", acme_confirmation(headers="Authentication-Results: mx.google.com;\n       spf=fail smtp.mailfrom=x@forged.example\n"))
+        self.pass_once()
+        statuses = {action["evidence"]["gmail_id"]: action for action in self.actions()}
+        self.assertEqual(statuses["m-13"]["status"], "proposed")
+        self.assertIn("the sender is not a job system or a company domain you trusted", statuses["m-13"]["evidence"]["why_proposal"])
+        self.assertEqual(statuses["m-14"]["status"], "proposed")
+        self.assertIn("the sender did not pass Gmail's check", statuses["m-14"]["evidence"]["why_proposal"])
+        self.assertEqual(self.stage(self.acme)[0], "applying")
+
+    def test_a_trusted_company_domain_may_act_and_an_untrusted_one_proposes(self):
+        # Acme's posting is on its own careers site, which suggests acme.com (never trusted on its own).
+        with self.conn:
+            self.conn.execute("UPDATE opportunities SET url='https://careers.acme.com/jobs/77' WHERE id='job-a'")
+        self.started()
+        body = "We have received your application for the Mechanical Engineering Intern role at Acme Robotics."
+        self.deliver("m-15", job_mail(sender="Acme Robotics <careers@acme.com>", subject="Application received", body=body))
+        self.pass_once()
+        [first] = self.actions()
+        self.assertEqual(first["status"], "proposed")
+        self.assertIn("mail from acme.com is not trusted for Acme Robotics yet", first["evidence"]["why_proposal"])
+        suggestion = self.conn.execute("SELECT id, status FROM employer_domains WHERE domain='acme.com'").fetchone()
+        self.assertEqual(suggestion["status"], "suggested")
+        mail_trust.decide(self.conn, USER, suggestion["id"], "trusted")
+        automation.reject(self.conn, first["id"], USER)
+        self.deliver("m-16", job_mail(sender="Acme Robotics <careers@acme.com>", subject="Application received", body=body), minutes_ago=1)
+        self.pass_once()
+        [second] = [action for action in self.actions() if action["evidence"]["gmail_id"] == "m-16"]
+        self.assertEqual(second["status"], "applied")
+        self.assertEqual(self.stage(self.acme)[0], "applied")
+
+    def test_an_authenticated_email_from_an_unknown_company_domain_is_not_even_read(self):
+        self.started()
+        self.deliver("m-19", job_mail(sender="Orbit Recruiting <jobs@orbit.io>", subject="Update from Orbit Systems",
+                                      body="Hi Sam, we would like to invite you to interview for the Controls Co-op role at Orbit Systems."))
+        self.pass_once()
+        self.assertEqual(self.message_row("m-19")["state"], "skipped", "only listed senders and known company domains are read")
+
+    def test_an_untracked_role_proposes_a_capture_that_opens_a_draft(self):
+        self.started()
+        self.deliver("m-17", job_mail(sender="Nimbus Aero <notifications@ashbyhq.com>", subject="Thank you for applying to Nimbus Aero",
+                                      body="Thanks for applying to Nimbus Aero for the Flight Software Intern position. https://jobs.ashbyhq.com/nimbus/2f1c3e4a-1111-4222-8333-944455556666?utm_source=x"))
+        self.pass_once()
+        [proposal] = self.actions()
+        self.assertEqual((proposal["action_type"], proposal["status"], proposal["undoable"]), ("application.capture_proposal", "proposed", False))
+        self.assertEqual(proposal["after"]["capture"]["company"], "Nimbus Aero")
+        self.assertEqual(proposal["summary"], "Looks like you applied to Flight Software Intern at Nimbus Aero. Add it?")
+        approved = automation.approve(self.conn, proposal["id"], USER)
+        capture_id = approved["after"]["_result"]["capture_id"]
+        draft = self.conn.execute("SELECT status, source_url, parsed_json FROM opportunity_captures WHERE id=?", (capture_id,)).fetchone()
+        self.assertEqual(draft["status"], "draft", "the student confirms it in the capture form")
+        self.assertEqual(draft["source_url"], "https://jobs.ashbyhq.com/nimbus/2f1c3e4a-1111-4222-8333-944455556666")
+        with self.assertRaisesRegex(ValueError, "can't be undone"):
+            automation.undo(self.conn, proposal["id"], USER)
+
+    def test_a_hedged_rejection_only_proposes(self):
+        self.started()
+        self.deliver("m-18", orbit_mail("Orbit Systems - Controls Co-op",
+                                        "We are not moving forward with your application for the Controls Co-op role at Orbit Systems, "
+                                        "but would you be open to us considering you for another role?"))
+        self.pass_once()
+        [action] = self.actions()
+        self.assertEqual((action["status"], action["after"]["stage"]), ("proposed", "rejected"))
+        self.assertTrue(any("not sure enough" in reason for reason in action["evidence"]["why_proposal"]))
+
+
+class CursorTests(MailCase):
+    def test_a_crash_after_the_history_fetch_loses_no_ids(self):
+        self.started()
+        self.deliver("m-20", acme_confirmation())
+        self.deliver("m-21", orbit_mail("Your application to Orbit Systems", "Thanks for applying to Orbit Systems."))
+        with mock.patch.object(application_inbox, "_drain", side_effect=RuntimeError("the laptop slept")):
+            with self.assertRaises(RuntimeError):
+                self.pass_once()
+        sync = self.sync()
+        self.assertEqual(sync["history_id"], str(self.gmail.history_id), "the cursor moved")
+        self.assertEqual(json.loads(sync["pending_ids_json"]), ["m-20", "m-21"], "because the ids it covers were stored with it")
+        self.pass_once()
+        self.assertEqual(json.loads(self.sync()["pending_ids_json"]), [])
+        self.assertEqual(self.message_row("m-20")["state"], "done")
+        self.assertEqual(self.stage(self.acme)[0], "applied")
+
+    def test_a_throttled_pass_loses_no_ids(self):
+        self.started()
+        for number in range(3):
+            self.deliver(f"m-3{number}", acme_confirmation(), minutes_ago=10 - number)
+        self.gmail.throttle_after = 1
+        result = self.pass_once()
+        self.assertEqual(result["state"], "throttled")
+        self.assertEqual(json.loads(self.sync()["pending_ids_json"]), ["m-31", "m-32"])
+        # Gmail's hold is over.
+        outreach_gmail._BACKOFF.clear()
+        with self.conn:
+            self.conn.execute("UPDATE connector_accounts SET backoff_until=NULL")
+        self.gmail.throttle_after = None
+        self.assertEqual(self.pass_once()["state"], "ok")
+        self.assertEqual({row["gmail_id"] for row in self.conn.execute("SELECT gmail_id FROM application_mail_messages WHERE state='done'")},
+                         {"m-30", "m-31", "m-32"})
+
+    def test_an_expired_cursor_recovers_by_searching_since_the_last_good_pass(self):
+        self.started()
+        with self.conn:
+            self.conn.execute("UPDATE application_mail_sync SET last_ok_at=?", ((now_utc() - timedelta(hours=3)).isoformat(),))
+        received = now_utc() - timedelta(minutes=20)
+        self.gmail.store("m-40", acme_confirmation(), received)
+        self.gmail.recovery_found = ["m-40"]
+        self.gmail.history_expired = True
+        self.gmail.history_id = 555
+        result = self.pass_once()
+        self.assertEqual(result["state"], "ok", result)
+        [query] = [search for search in self.gmail.searches if search.startswith("in:inbox after:")]
+        after = int(query.rsplit(":", 1)[1])
+        enabled = automation._parse(self.sync()["enabled_at"])
+        self.assertEqual(after, int(enabled.timestamp()), "a day before the last good pass, but never before the switch was turned on")
+        self.assertEqual(self.sync()["history_id"], "555", "live reading goes on from the cursor taken before the search")
+        self.assertEqual(self.sync()["recovery_state"], "")
+        self.assertEqual(self.message_row("m-40")["state"], "done")
+
+    def test_at_most_fifty_messages_are_read_in_a_pass(self):
+        self.started()
+        for number in range(55):
+            self.deliver(f"q-{number:02d}", job_mail(sender="Someone <someone@us.greenhouse-mail.io>", subject="Hello", body="Hi."))
+        self.pass_once()
+        self.assertEqual(self.gmail.message_gets, 50)
+        self.assertEqual(len(json.loads(self.sync()["pending_ids_json"])), 5, "the rest wait for the next pass")
+        self.pass_once()
+        self.assertEqual(json.loads(self.sync()["pending_ids_json"]), [])
+
+    def test_passes_are_ten_minutes_apart_unless_forced(self):
+        self.started()
+        requests = len(self.gmail.requests)
+        result = application_inbox.run_pass(self.conn, user_id=USER, client_factory=self.factory)
+        self.assertTrue(result["skipped"])
+        self.assertEqual(len(self.gmail.requests), requests)
+
+    def test_switching_off_forgets_the_cursor(self):
+        self.started()
+        application_inbox.note_off(self.conn, USER)
+        sync = self.sync()
+        self.assertEqual((sync["history_id"], sync["enabled_at"], sync["backfill_state"]), ("", None, ""))
+
+
+class BackfillTests(MailCase):
+    def test_the_backfill_query_has_a_term_for_every_live_criterion(self):
+        enabled = now_utc()
+        query = application_inbox.backfill_query(self.conn, USER, enabled, enabled)
+        lists = mail_trust.sender_lists()
+        for category in mail_trust.READ_CATEGORIES:
+            for domain in lists[category]:
+                with self.subTest(domain=domain):
+                    self.assertIn(domain, query.split("from:(", 1)[1].split(")", 1)[0])
+                    self.assertIn(f'"{domain}"', query)
+        with self.conn:
+            mail_trust.suggest(self.conn, USER, company="Acme Robotics", host="acme.com", source="test", evidence="test")
+        self.assertIn("acme.com", application_inbox.backfill_query(self.conn, USER, enabled, enabled).split("from:(", 1)[1].split(")", 1)[0])
+        self.assertIn(f"after:{int((enabled - timedelta(days=60)).timestamp())}", query)
+        self.assertIn(f"before:{int(enabled.timestamp())}", query)
+
+    def test_the_backfill_only_ever_proposes(self):
+        received = now_utc() - timedelta(days=10)
+        self.gmail.store("b-1", acme_confirmation(date=received), received)
+        self.gmail.backfill_found = ["b-1"]
+        self.switch("on")
+        self.pass_once()
+        [action] = self.actions()
+        self.assertEqual(action["status"], "proposed")
+        self.assertIn("it arrived before you turned this on", action["evidence"]["why_proposal"])
+        self.assertIn(application_inbox.BACKFILL_BASIS, action["basis"])
+        self.assertEqual(self.stage(self.acme)[0], "applying")
+        self.assertEqual(self.message_row("b-1")["origin"], "backfill")
+        self.assertEqual(application_inbox.status(self.conn, USER)["backfill_found"], 1)
+        counts = application_inbox.approve_backfill(self.conn, USER)
+        self.assertEqual(counts, {"approved": 1, "superseded": 0})
+        self.assertEqual(self.stage(self.acme)[0], "applied")
+        self.assertEqual(self.sync()["backfill_state"], "running")
+        self.pass_once()
+        self.assertEqual(self.sync()["backfill_state"], "done")
+
+    def test_the_backfill_resumes_from_its_page_token(self):
+        self.gmail.list_page_size = 2
+        for number in range(5):
+            received = now_utc() - timedelta(days=5, minutes=number)
+            self.gmail.store(f"b-{number}", job_mail(sender="Someone <someone@us.greenhouse-mail.io>", subject="Hi", body="Hi."), received)
+        self.gmail.backfill_found = [f"b-{number}" for number in range(5)]
+        self.switch("on")
+        self.pass_once()
+        self.assertEqual(self.sync()["backfill_page_token"], "2")
+        self.pass_once()
+        self.pass_once()
+        self.pass_once()
+        self.assertEqual(self.sync()["backfill_state"], "done")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM application_mail_messages WHERE origin='backfill'").fetchone()[0], 5)
+
+
+class DecisionTests(MailCase):
+    def proposed_interview(self):
+        self.started()
+        self.deliver("m-50", orbit_mail("Update from Orbit Systems", "We'd like to invite you to interview. Reply with times."))
+        self.pass_once()
+        return self.actions(status="proposed")
+
+    def test_confirming_the_email_card_approves_its_proposals_for_the_application_picked(self):
+        proposals = self.proposed_interview()
+        self.assertTrue(proposals)
+        event = self.conn.execute("SELECT id FROM monitored_events WHERE external_id='gmail:m-50'").fetchone()
+        from opportunity_app.connections import decide_monitored_event
+
+        decided = decide_monitored_event(self.conn, event["id"], "confirm", self.acme, user_id=USER)
+        self.assertEqual((decided["status"], decided["application_id"], decided["decided_by"]), ("confirmed", self.acme, "student"))
+        self.assertEqual(self.stage(self.acme)[0], "interview", "the application the student picked, corrected from Orbit")
+        self.assertEqual(self.stage(self.orbit)[0], "applied")
+        self.assertEqual(self.actions(status="proposed"), [])
+        corrected = [action for action in self.actions() if action["action_type"] == "application.stage"][0]
+        self.assertEqual((corrected["subject_id"], corrected["evidence"]["corrected_from"]), (self.acme, self.orbit))
+        self.assertEqual(self.message_row("m-50")["application_id"], self.acme)
+
+    def test_ignoring_the_email_card_sets_its_proposals_aside_without_the_breaker(self):
+        self.proposed_interview()
+        event = self.conn.execute("SELECT id FROM monitored_events WHERE external_id='gmail:m-50'").fetchone()
+        from opportunity_app.connections import decide_monitored_event
+
+        decide_monitored_event(self.conn, event["id"], "ignore", None, user_id=USER)
+        statuses = {action["action_type"]: action["status"] for action in self.actions()}
+        # The task was allowed on its own (the company alone matched); the stage change waited and is set aside.
+        self.assertEqual(statuses, {"application.stage": "expired", "application.task": "applied"})
+        self.assertEqual(automation.mode(self.conn, USER, FEATURE), "on", "ignoring an email is not the feature being wrong")
+
+    def test_deciding_every_proposal_in_the_queue_settles_the_email_card(self):
+        proposals = self.proposed_interview()
+        for action in proposals:
+            result = automation.approve(self.conn, action["id"], USER)
+            application_inbox.after_decision(self.conn, USER, result)
+        event = self.conn.execute("SELECT status, decided_by FROM monitored_events WHERE external_id='gmail:m-50'").fetchone()
+        self.assertEqual(tuple(event), ("confirmed", "student"))
+
+
+class RetentionTests(MailCase):
+    def test_old_excerpts_are_purged_and_the_hash_stays(self):
+        self.started()
+        self.deliver("m-60", acme_confirmation())
+        self.pass_once()
+        old = (now_utc() - timedelta(days=200)).isoformat()
+        with self.conn:
+            self.conn.execute("UPDATE automation_actions SET created_at=?", (old,))
+            self.conn.execute("UPDATE monitored_events SET created_at=?", (old,))
+        from opportunity_app.operations import run_retention
+
+        counts = run_retention(self.conn)
+        self.assertEqual((counts["mail_excerpts_removed"], counts["mail_previews_removed"]), (1, 1))
+        [action] = self.actions()
+        self.assertEqual(action["evidence"]["excerpt"], "")
+        self.assertTrue(action["evidence"]["text_sha256"])
+        payload = json.loads(self.conn.execute("SELECT payload_json FROM monitored_events").fetchone()[0])
+        self.assertEqual(payload["body_preview"], "")
+
+
+class WatcherTests(MailCase):
+    def test_the_watcher_runs_it_as_a_fourth_step_only_when_it_is_not_off(self):
+        from opportunity_app.outreach_inbox import InboxWatcher
+
+        watcher = InboxWatcher(self.platform_path, client_factory=self.factory, decisions_for=lambda conn, user_id: None)
+        with mock.patch.object(application_inbox, "run_pass", return_value={"state": "ok", "detail": {"read": 0}}) as step:
+            watcher.run_once()
+            step.assert_not_called()
+            self.switch("shadow")
+            watcher.run_once()
+            step.assert_called_once()
+        components = {row["component"] for row in self.conn.execute("SELECT component FROM automation_health WHERE user_id=?", (USER,))}
+        self.assertIn("inbox.applications", components)
+
+
+class MigrationTests(unittest.TestCase):
+    def test_a_half_applied_0038_is_repaired_by_running_it_again(self):
+        from opportunity_app import schema
+
+        migrations = Path(__file__).resolve().parent.parent / "migrations"
+        with tempfile.TemporaryDirectory() as directory:
+            conn = connect_product(Path(directory) / "platform.db")
+            try:
+                conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)")
+                for migration in sorted(migrations.glob("[0-9][0-9][0-9][0-9]_*.sql")):
+                    if migration.name >= "0038":
+                        break
+                    sql = migration.read_text(encoding="utf-8")
+                    step = schema._MIGRATION_STEPS.get(migration.name)
+                    step(conn, sql) if step else conn.executescript(sql)
+                    conn.execute("INSERT INTO schema_migrations(name, applied_at) VALUES(?, ?)", (migration.name, utc_now()))
+                conn.commit()
+                # The crash: one column added, the rest (and the marker) not.
+                conn.execute("ALTER TABLE application_tasks ADD COLUMN link TEXT NOT NULL DEFAULT ''")
+                conn.commit()
+                schema.ensure_product_schema(conn)
+                for table, column in (("application_tasks", "link"), ("monitored_events", "decided_by")):
+                    self.assertTrue(schema._has_column(conn, table, column), f"{table}.{column}")
+                for table in ("application_mail_sync", "application_mail_messages", "email_deadlines", "employer_domains"):
+                    self.assertIsNotNone(conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone(), table)
+                self.assertIsNotNone(conn.execute("SELECT 1 FROM schema_migrations WHERE name='0038_application_mail.sql'").fetchone())
+            finally:
+                conn.close()
+
+
+class ApiTests(MailCase):
+    def setUp(self):
+        super().setUp()
+        root = Path(self.tempdir.name)
+        app = create_app(
+            db_path=self.platform_path, access_token="mail-owner", static_dir=STATIC_DIR,
+            resume_storage=root / "resumes", capture_storage=root / "captures", interview_storage=root / "interviews",
+            outreach_gmail_client_factory=self.factory,
+        )
+        self.client = TestClient(app)
+        self.client.__enter__()
+        self.addCleanup(self.client.__exit__, None, None, None)
+
+    def test_employer_domains_are_suggested_trusted_and_dismissed(self):
+        with self.conn:
+            self.conn.execute("UPDATE opportunities SET url='https://careers.acme-robotics.com/jobs/77' WHERE id='job-a'")
+        listed = self.client.get("/api/v1/automation/employer-domains", headers=AUTH).json()
+        [item] = listed["items"]
+        self.assertEqual((item["domain"], item["status"], item["company"], item["source"]), ("acme-robotics.com", "suggested", "Acme Robotics", "job_url"))
+        self.assertIn("acme-robotics.com", item["evidence"])
+        trusted = self.client.post(f"/api/v1/automation/employer-domains/{item['id']}/trust", headers=AUTH)
+        self.assertEqual(trusted.json()["status"], "trusted")
+        self.assertEqual(mail_trust.trusted_for(self.conn, USER, mail_trust.company_key("Acme Robotics")), {"acme-robotics.com"})
+        dismissed = self.client.post(f"/api/v1/automation/employer-domains/{item['id']}/dismiss", headers=AUTH)
+        self.assertEqual(dismissed.json()["status"], "dismissed")
+        self.assertEqual(self.client.get("/api/v1/automation/employer-domains", headers=AUTH).json()["items"], [], "a dismissal is not suggested again")
+        self.assertEqual(self.client.post("/api/v1/automation/employer-domains/nope/trust", headers=AUTH).status_code, 404)
+
+    def test_a_shared_job_host_is_never_suggested(self):
+        # Both seeded postings live on example.com, and reserved domains belong to no employer.
+        self.assertEqual(self.client.get("/api/v1/automation/employer-domains", headers=AUTH).json()["items"], [])
+
+    def test_approve_takes_a_corrected_application(self):
+        self.switch("on")
+        row = automation.perform(
+            self.conn, user_id=USER, feature=FEATURE, action_type="application.stage", subject_kind="application", subject_id=self.orbit,
+            after={"stage": "interview"}, evidence={"gmail_id": "m-70"}, summary="Orbit Systems to interview", basis="test", confidence=0.9,
+            idempotency_key="gmail:m-70:app-job-b:application.stage", auto=False,
+        )
+        response = self.client.post(f"/api/v1/automation/actions/{row['id']}/approve", headers=AUTH, json={"subject_id": self.acme})
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual((body["status"], body["subject_id"], body["evidence"]["corrected_from"]), ("applied", self.acme, self.orbit))
+        self.assertEqual(body["before"], {"stage": "applying", "applied_at": None}, "the chosen application's own before")
+        self.assertIn("different application", body["note"])
+        self.assertEqual((self.stage(self.acme)[0], self.stage(self.orbit)[0]), ("interview", "applied"))
+        automation.undo(self.conn, row["id"], USER)
+        self.assertEqual(self.stage(self.acme)[0], "applying", "undo restores the corrected application")
+
+    def test_approve_refuses_an_application_that_is_not_the_students(self):
+        self.switch("on")
+        row = automation.perform(
+            self.conn, user_id=USER, feature=FEATURE, action_type="application.stage", subject_kind="application", subject_id=self.orbit,
+            after={"stage": "interview"}, evidence={}, summary="x", basis="test", confidence=0.9, idempotency_key="k-71", auto=False,
+        )
+        response = self.client.post(f"/api/v1/automation/actions/{row['id']}/approve", headers=AUTH, json={"subject_id": "app-nobody"})
+        self.assertEqual((response.status_code, response.json()["detail"]), (404, "Application not found"))
+        self.assertEqual(self.actions()[0]["status"], "proposed", "nothing was decided")
+        plain = self.client.post(f"/api/v1/automation/actions/{row['id']}/approve", headers=AUTH)
+        self.assertEqual(plain.json()["subject_id"], self.orbit, "no body approves as proposed")
+
+    def test_the_application_lists_its_emails_with_a_gmail_link(self):
+        self.started()
+        self.deliver("m-72", acme_confirmation(), thread_id="18c0ffee")
+        self.pass_once()
+        detail = self.client.get(f"/api/v1/applications/{self.acme}", headers=AUTH).json()
+        [email_row] = detail["emails"]
+        self.assertEqual(email_row["subject"], "Thank you for applying to Acme Robotics")
+        self.assertEqual(email_row["sender_domain"], "greenhouse-mail.io")
+        self.assertEqual(email_row["gmail_url"], "https://mail.google.com/mail/u/0/#all/18c0ffee")
+
+    def test_the_overview_names_new_automatic_changes_for_the_page_to_announce(self):
+        self.switch("on")
+        common = dict(user_id=USER, feature=FEATURE, action_type="application.stage", subject_kind="application",
+                      evidence={}, basis="test", confidence=0.9)
+        automation.perform(self.conn, subject_id=self.orbit, after={"stage": "interview"}, summary="Orbit Systems to interview",
+                           idempotency_key="k-auto", auto=True, **common)
+        automation.perform(self.conn, subject_id=self.acme, after={"stage": "applied"}, summary="Acme Robotics to applied",
+                           idempotency_key="k-proposed", auto=False, **common)
+        health = self.client.get("/api/v1/automation", headers=AUTH).json()["health"]
+        [item] = health["recent_applied"]
+        self.assertEqual((item["summary"], item["action_type"], item["undoable"]), ("Orbit Systems to interview", "application.stage", True))
+        listed = self.client.get("/api/v1/automation/actions?status=proposed", headers=AUTH).json()["items"]
+        self.assertEqual([action["undoable"] for action in listed], [True])
+
+    def test_the_overview_reports_the_switch_and_a_check_runs_a_pass(self):
+        self.switch("on")
+        overview = self.client.get("/api/v1/automation", headers=AUTH).json()
+        self.assertEqual(overview["application_mail"]["mode"], "on")
+        checked = self.client.post("/api/v1/automation/application-mail/check", headers=AUTH).json()
+        self.assertEqual(checked["state"], "ok")
+        self.assertEqual(checked["status"]["enabled_at"] is not None, True)
+        off = self.client.put("/api/v1/automation/settings", headers=AUTH, json={"modes": {FEATURE: "off"}})
+        self.assertEqual(off.status_code, 200, off.text)
+        self.assertEqual(self.sync()["history_id"], "", "switching off forgets the cursor")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -361,6 +361,37 @@ class PostgresAutomationContractTests(unittest.TestCase):
         schema._apply_automation(self.conn, (MIGRATIONS_DIR / "0037_automation.sql").read_text(encoding="utf-8"))
         self.conn.commit()
 
+    def test_migration_0038_repairs_a_half_applied_upgrade_and_application_mail_runs(self):
+        from opportunity_app import application_inbox
+
+        for table, column in (("application_tasks", "link"), ("monitored_events", "decided_by")):
+            self.assertTrue(schema._has_column(self.conn, table, column), f"{table}.{column}")
+        with self.conn:
+            self.conn.execute("ALTER TABLE monitored_events DROP COLUMN decided_by")
+            self.conn.execute("DELETE FROM schema_migrations WHERE name='0038_application_mail.sql'")
+        ensure_product_schema(self.conn)
+        self.assertTrue(schema._has_column(self.conn, "monitored_events", "decided_by"))
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, 'application_mail', 'on', ?) "
+                "ON CONFLICT(user_id, key) DO UPDATE SET value='on'",
+                (AUTOMATION_USER, utc_now()),
+            )
+        row = automation.perform(
+            self.conn, user_id=AUTOMATION_USER, feature="application_mail", action_type="application.deadline", subject_kind="application",
+            subject_id="app-job-b", after={"deadline": {"deadline_on": "2026-10-10", "quote": "by October 10", "sender_domain": "lever.co",
+                                                        "gmail_id": "pg-1", "received_at": utc_now()}},
+            evidence={"gmail_id": "pg-1"}, summary="A deadline from an email", basis="rule:test", confidence=0.9,
+            idempotency_key="gmail:pg-1:app-job-b:application.deadline", auto=True,
+        )
+        self.assertEqual(row["status"], "applied")
+        # An email's actions are found by their key's prefix (LIKE with an escape, portable to both backends).
+        self.assertEqual([action["id"] for action in application_inbox._message_actions(self.conn, AUTOMATION_USER, "pg-1")], [row["id"]])
+        automation.undo(self.conn, row["id"], AUTOMATION_USER)
+        remaining = self.conn.execute("SELECT COUNT(*) AS n FROM email_deadlines").fetchone()["n"]
+        self.conn.commit()
+        self.assertEqual(remaining, 0)
+
     def test_perform_undo_and_superseded_on_an_application(self):
         automation.set_mode(self.conn, AUTOMATION_USER, AUTOMATION_SWITCH.key, "on")
         row = self.stage_change("app-job-b", "interview", key="pg-1")

@@ -44,7 +44,7 @@ import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 from uuid import uuid4
 
 from . import actions
@@ -137,6 +137,12 @@ FEATURES: dict[str, Feature] = {
                 "You still confirm each change", "applications", "internal"),
         Feature("desktop_notifications", "Show automation notices as desktop pop-ups",
                 "Show each automation notice as a pop-up on this computer, without any email text or links", "notifications", "internal"),
+        # The first feature that changes application records from what an email means,
+        # so it runs in shadow before it may act (application_inbox.py).
+        Feature("application_mail", "Update applications from job emails",
+                "Reads job-system and assessment emails in Gmail, moves an application forward when an email clearly "
+                "confirms, rejects or invites, and adds tasks and deadlines. Anything unclear waits for you",
+                "applications", "internal", OFF_SHADOW_ON),
     )
 }
 
@@ -515,7 +521,10 @@ def _same(conn: sqlite3.Connection, column: str) -> str:
     return f"{column} IS ?"
 
 
-FIELD_NAMES = {"stage": "the stage", "applied_at": "the applied date", "intent": "the saved or passed choice", "task": "the task"}
+FIELD_NAMES = {
+    "stage": "the stage", "applied_at": "the applied date", "intent": "the saved or passed choice", "task": "the task",
+    "deadline": "the deadline", "capture": "the capture draft",
+}
 
 
 def _changed(expected: dict[str, Any], current: dict[str, Any]) -> str:
@@ -738,7 +747,7 @@ class ApplicationTask:
         row = actions._add_application_task_tx(
             conn, subject_id, title=str(task["title"]), due_at=due_at, user_id=user_id,
             origin=str(task.get("origin") or "automation"), origin_ref=str(task.get("origin_ref") or ""),
-            source=source, timestamp=timestamp,
+            source=source, timestamp=timestamp, link=str(task.get("link") or ""),
         )
         return {"task_id": row["id"], "title": row["title"], "due_at": row["due_at"]}
 
@@ -774,11 +783,27 @@ HANDLERS: dict[str, Handler] = {
 }
 
 
+def register_handler(action_type: str, handler: Handler) -> Handler:
+    """Add an action type's handler (later phases define theirs beside the feature that uses it).
+
+    A handler whose change cannot be taken back sets ``undoable = False``;
+    undo() then refuses it before touching anything.
+    """
+    HANDLERS[action_type] = handler
+    return handler
+
+
 def _handler(action_type: str) -> Handler:
     try:
         return HANDLERS[action_type]
     except KeyError:
         raise ValueError(f"Unknown automation action type: {action_type}") from None
+
+
+def undoable(action_type: str) -> bool:
+    """Whether Undo can take back this action type's change once applied."""
+    handler = HANDLERS.get(action_type)
+    return handler is not None and bool(getattr(handler, "undoable", True))
 
 
 def _effective(handler: Handler, before: dict[str, Any], after: dict[str, Any], timestamp: str) -> dict[str, Any]:
@@ -798,6 +823,7 @@ def _decode(row: Any) -> dict[str, Any]:
     item = dict(row)
     for column, key in _JSON_COLUMNS.items():
         item[key] = json.loads(item.pop(column) or ("[]" if column == "fields_json" else "{}"))
+    item["undoable"] = undoable(str(item.get("action_type") or ""))
     return item
 
 
@@ -872,13 +898,20 @@ def perform(
     idempotency_key: str,
     auto: bool,
     policy_version: str = "",
+    guard: Callable[[sqlite3.Connection, dict[str, Any]], bool] | None = None,
 ) -> dict[str, Any] | None:
     """Make, propose, or shadow one change, and record it, in one transaction.
 
     Returns the ledger row, or None when nothing was recorded: the feature is
-    off, automation is paused, or the change is already in place. The same
-    idempotency key returns the row it made the first time, whatever became
-    of it. ``auto`` False proposes the change for the student to approve.
+    off, automation is paused, the change is already in place, or ``guard``
+    said no. The same idempotency key returns the row it made the first time,
+    whatever became of it. ``auto`` False proposes the change for the student
+    to approve.
+
+    ``guard(conn, before)`` runs inside the transaction, after the handler has
+    read (and on PostgreSQL locked) the fields it changes, so a rule such as
+    "only ever forward" is checked against what the change will really
+    replace, not against a read taken before the transaction began.
     """
     definition = _feature(feature)
     handler = _handler(action_type)
@@ -900,6 +933,8 @@ def perform(
                 return None
             current = handler.read(conn, user_id, subject_id)
             before = {name: current.get(name) for name in handler.fields}
+            if guard is not None and not guard(conn, before):
+                return None
             target = _effective(handler, before, after, timestamp)
             if target == before:
                 return None
@@ -935,13 +970,29 @@ def perform(
         return _decode(existing)
 
 
-def approve(conn: sqlite3.Connection, action_id: str, user_id: str) -> dict[str, Any]:
-    """Apply a proposed change the student approved, unless its fields changed since it was proposed."""
+CORRECTABLE_SUBJECTS = ("application",)
+
+
+def approve(conn: sqlite3.Connection, action_id: str, user_id: str, *, subject_id: str | None = None) -> dict[str, Any]:
+    """Apply a proposed change the student approved, unless its fields changed since it was proposed.
+
+    ``subject_id`` is the student's correction: the change was proposed for
+    one application and they chose another. That application's fields are
+    read now as the new ``before``, the change is applied to it, and the row
+    records the correction (subject_id, a note, and evidence.corrected_from).
+    Raises actions.ApplicationNotFoundError when the chosen application is
+    not the student's.
+    """
     timestamp = utc_now()
     superseded: Superseded | None = None
     with conn:
         action = _decode(_claim(conn, action_id, user_id, "proposed", "Only a proposed action can be approved", timestamp))
         handler = _handler(action["action_type"])
+        if subject_id is not None and subject_id != action["subject_id"]:
+            if action["subject_kind"] not in CORRECTABLE_SUBJECTS:
+                raise ValueError("This proposal is not about an application, so another one cannot be chosen for it")
+            _apply_corrected(conn, action, handler, user_id, subject_id, timestamp)
+            return _decode(_row(conn, action_id, user_id))
         try:
             current = handler.read(conn, user_id, action["subject_id"])
         except LookupError:
@@ -969,6 +1020,29 @@ def approve(conn: sqlite3.Connection, action_id: str, user_id: str) -> dict[str,
     if superseded is not None:
         raise superseded
     return _decode(_row(conn, action_id, user_id))
+
+
+def _apply_corrected(
+    conn: sqlite3.Connection, action: dict[str, Any], handler: Handler, user_id: str, subject_id: str, timestamp: str,
+) -> None:
+    """approve()'s correction path, inside its transaction: apply the proposal to the subject the student chose."""
+    current = handler.read(conn, user_id, subject_id)
+    before = {name: current.get(name) for name in handler.fields}
+    requested = {key: value for key, value in action["after"].items() if key != "_result"}
+    target = _effective(handler, before, requested, timestamp)
+    result = handler.apply(conn, user_id, subject_id, requested, source=f"automation:{action['id']}", timestamp=timestamp)
+    evidence = {**action["evidence"], "corrected_from": action["subject_id"]}
+    note = "You chose a different application than the one proposed"
+    _settle(
+        conn,
+        """
+        UPDATE automation_actions SET status='applied', subject_id=?, before_json=?, after_json=?, evidence_json=?, note=?,
+            applied_at=?, decided_at=?, decided_by='student'
+        WHERE id=? AND user_id=? AND status='proposed'
+        """,
+        (subject_id, _dumps(before), _dumps({**target, "_result": result or {}}), _dumps(evidence), note,
+         timestamp, timestamp, action["id"], user_id),
+    )
 
 
 def reject(conn: sqlite3.Connection, action_id: str, user_id: str) -> dict[str, Any]:
@@ -1003,6 +1077,9 @@ def undo(conn: sqlite3.Connection, action_id: str, user_id: str) -> dict[str, An
     with conn:
         action = _decode(_claim(conn, action_id, user_id, "applied", "Only an applied action can be undone", timestamp))
         handler = _handler(action["action_type"])
+        if not action["undoable"]:
+            # Raised inside the transaction, so the claim above is rolled back with it.
+            raise ValueError("This action can't be undone")
         try:
             extra = handler.undo(
                 conn, user_id, action["subject_id"], action["before"], action["after"],
@@ -1325,8 +1402,33 @@ def health_summary(conn: sqlite3.Connection, user_id: str, *, now: datetime | No
         "breaker_off": breaker_off(conn, user_id, now=now),
         "unread_notices": int(unread),
         "counts": {key: int(counts[key]) for key in ("proposed", "shadow_unreviewed", "applied_last_24h")},
+        "recent_applied": recent_applied(conn, user_id, since=since),
         "banner": banner,
     }
+
+
+RECENT_APPLIED_LIMIT = 5
+
+
+def recent_applied(conn: sqlite3.Connection, user_id: str, *, since: str) -> list[dict[str, Any]]:
+    """The newest changes the app made on its own since ``since``, still in place, for the page to announce with Undo.
+
+    Only what the app applied itself (decided_by 'system'): a proposal the
+    student approved is their own doing and is never announced back to them.
+    """
+    rows = conn.execute(
+        """
+        SELECT id, feature, action_type, summary, applied_at FROM automation_actions
+        WHERE user_id=? AND status='applied' AND decided_by='system' AND applied_at IS NOT NULL AND applied_at>=?
+        ORDER BY applied_at DESC, id DESC LIMIT ?
+        """,
+        (user_id, since, RECENT_APPLIED_LIMIT),
+    ).fetchall()
+    return [
+        {"id": row["id"], "feature": row["feature"], "action_type": row["action_type"], "summary": row["summary"],
+         "applied_at": row["applied_at"], "undoable": undoable(str(row["action_type"]))}
+        for row in rows
+    ]
 
 
 PAUSED_BANNER = "Automation is paused. Nothing is sent and no switch acts on its own. Replies and bounces are still recorded."

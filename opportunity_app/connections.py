@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import httpx
 from cryptography.fernet import Fernet
 
-from .actions import ApplicationNotFoundError, update_application
+from .actions import ApplicationNotFoundError, add_application_task, update_application
 from .inbox_classifiers import classify_email
 from .schema import utc_now
 from .typesafe_decisions import DecisionClient
@@ -233,18 +233,55 @@ def disconnect_provider(conn: sqlite3.Connection, connector_id: str, *, user_id:
     return connector_record(conn, connector_id, user_id=user_id)
 
 
+# The keyword rules for an application email, first match wins, in the order
+# inbox_classifiers.EMAIL_QUESTION asks Jev to use. Assessment and scheduling
+# add tasks, never a stage. application_inbox adds what the sender says (an
+# assessment platform, a scheduling link) on top of these.
+MONITORED_PATTERNS = (
+    ("offer", r"\b(offer of employment|pleased to offer|offer letter|(extend|extending) (you )?an offer|happy to offer you)\b", 0.95),
+    ("rejected", (
+        r"\b(not moving forward|other candidates|regret to inform|position has been filled"
+        r"|no longer (under consideration|being considered)|not (been )?selected (for|to)"
+        r"|(will not|won't|decided not to|unable to|not be able to) (be )?(mov(e|ing) (you |your application )?forward"
+        r"|proceed(ing)? with your|continu(e|ing) with your|advanc(e|ing) your))\b"
+    ), 0.92),
+    ("interview", (
+        r"\b(schedule|invite|invitation).{0,30}\binterview\b|\binterview availability\b"
+        r"|\byour interview (is |has been )?(confirmed|scheduled)\b"
+        r"|\b(like|love|want) to (invite you to|schedule|set up|arrange) (an? |some time for an? )?"
+        r"(phone |video |technical |virtual |first[- ]round |final[- ]round |onsite |on-site )?(interview|phone screen|screening call)\b"
+    ), 0.9),
+    ("assessment", (
+        r"\b(online assessment|coding (challenge|assessment|test|exercise)|technical (assessment|challenge)"
+        r"|take[- ]home (assignment|exercise|challenge|project)|assessment (link|invitation|invite)"
+        r"|(complete|take|finish) (the |your |an |this |our )?([a-z]+ ){0,2}(assessment|coding test|challenge))\b"
+    ), 0.88),
+    ("scheduling", (
+        r"\b((pick|choose|select|book) a (time|slot)|schedule a (time|call|chat|meeting)|share your availability"
+        r"|let us know your availability|calendly\.com|goodtime\.io|modernloop\.io)\b"
+    ), 0.85),
+    ("application_confirmation", (
+        r"\b(application (?:was |has been )?received|thank you for applying|thanks for applying|submission confirmation"
+        r"|(we have |we've )?received your application)\b"
+    ), 0.9),
+    ("deadline", r"\b(deadline|complete by|due by)\b", 0.65),
+    ("recruiter_reply", r"\b(recruiter|talent acquisition|hiring team)\b", 0.55),
+)
+# A rejection of one role that asks about another is not a plain rejection:
+# it keeps its label, but no longer sure enough to act on alone.
+_HEDGED_REJECTION = re.compile(
+    r"\b(consider(ing)? you for|would you be (open|interested)|like to (move|put) you forward for"
+    r"|great fit for (another|a different)|another (role|position|opening) (that|which|we))\b"
+)
+HEDGED_REJECTION_CONFIDENCE = 0.7
+
+
 def classify_monitored_message(subject: str, body: str) -> tuple[str, float]:
     text = f"{subject}\n{body}".lower()
-    patterns = [
-        ("offer", r"\b(offer of employment|pleased to offer|offer letter)\b", 0.95),
-        ("rejected", r"\b(not moving forward|other candidates|regret to inform)\b", 0.92),
-        ("interview", r"\b(schedule|invite|invitation).{0,30}\binterview\b|\binterview availability\b", 0.9),
-        ("application_confirmation", r"\b(application (?:was )?received|thank you for applying|submission confirmation)\b", 0.9),
-        ("deadline", r"\b(deadline|complete by|due by)\b", 0.65),
-        ("recruiter_reply", r"\b(recruiter|talent acquisition|hiring team)\b", 0.55),
-    ]
-    for event_type, pattern, confidence in patterns:
+    for event_type, pattern, confidence in MONITORED_PATTERNS:
         if re.search(pattern, text, re.DOTALL):
+            if event_type == "rejected" and _HEDGED_REJECTION.search(text):
+                return event_type, HEDGED_REJECTION_CONFIDENCE
             return event_type, confidence
     return "unknown", 0.1
 
@@ -350,25 +387,57 @@ def apply_channel_opt_out(conn: sqlite3.Connection, channel: str, keyword: str, 
     return {"channel": channel, "opted_out": True, "updated_at": timestamp}
 
 
+# What confirming an email does to the application the student picks.
+# Assessment and scheduling emails add a task, never a stage.
+EVENT_STAGES = {
+    "application_confirmation": "applied", "interview": "interview", "offer": "offer", "rejected": "rejected",
+    "assessment": None, "scheduling": None,
+}
+EVENT_TASKS = {"assessment": "Complete the assessment", "scheduling": "Schedule interview"}
+
+
 def decide_monitored_event(conn: sqlite3.Connection, event_id: str, decision: str, application_id: str | None, *, user_id: str) -> dict[str, Any]:
     event = monitored_event(conn, event_id, user_id=user_id)
     if event["status"] != "pending":
         raise ValueError("This monitored event was already decided")
     if decision not in {"confirm", "ignore"}:
         raise ValueError("Decision must be confirm or ignore")
+    if decision == "confirm" and not application_id:
+        raise ValueError("Choose an application before confirming this update")
+    if (event.get("payload") or {}).get("source") == "application_mail":
+        # An email the app read from Gmail: its proposals are decided with it, so it is never decided twice.
+        from .application_inbox import decide_event
+
+        decided = decide_event(conn, event, decision, application_id, user_id=user_id)
+        if decided is not None:
+            return decided
+    return decide_event_directly(conn, event, decision, application_id, user_id=user_id)
+
+
+def decide_event_directly(
+    conn: sqlite3.Connection, event: dict[str, Any], decision: str, application_id: str | None, *, user_id: str,
+) -> dict[str, Any]:
+    """Confirm or ignore an email with no automation proposals behind it: the stage or task it points to, then the event."""
+    event_id = event["id"]
     timestamp = utc_now()
     status = "ignored"
     if decision == "confirm":
-        if not application_id:
-            raise ValueError("Choose an application before confirming this update")
-        stage_map = {"application_confirmation": "applied", "interview": "interview", "offer": "offer", "rejected": "rejected"}
-        stage = stage_map.get(event["event_type"])
+        stage = EVENT_STAGES.get(event["event_type"])
         if stage:
             update_application(conn, application_id, stage=stage, user_id=user_id, source=f"monitored_event:{event_id}")
+        task = EVENT_TASKS.get(event["event_type"])
+        if task:
+            add_application_task(
+                conn, application_id, title=task, user_id=user_id, origin="monitored_event", origin_ref=event_id,
+                source=f"monitored_event:{event_id}",
+            )
         status = "confirmed"
         queue_notification(conn, "in_app", f"monitored:{event_id}", {"event_type": event["event_type"], "application_id": application_id}, user_id=user_id)
     with conn:
-        conn.execute("UPDATE monitored_events SET status=?, application_id=?, decided_at=? WHERE id=? AND user_id=?", (status, application_id, timestamp, event_id, user_id))
+        conn.execute(
+            "UPDATE monitored_events SET status=?, application_id=?, decided_at=?, decided_by='student' WHERE id=? AND user_id=?",
+            (status, application_id, timestamp, event_id, user_id),
+        )
     return monitored_event(conn, event_id, user_id=user_id)
 
 

@@ -2178,8 +2178,17 @@ _CORPORATE_SUFFIXES = {
 }
 
 
-def _identity_tokens(name: str) -> frozenset[str]:
+def identity_tokens(name: str) -> frozenset[str]:
+    """The words that identify an employer, without corporate suffixes: "Acme Robotics Inc." -> {acme, robotics}.
+
+    Public because the web app's application-email matching compares company
+    names by the same rule the board identity check uses.
+    """
     return frozenset(normalized(name).split()) - _CORPORATE_SUFFIXES
+
+
+# The old private name, kept so nothing that imported it breaks.
+_identity_tokens = identity_tokens
 
 
 def slug_candidates(name: str) -> list[str]:

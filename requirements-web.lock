@@ -21,6 +21,7 @@ jiter==0.16.0
 openai==3.3.1
 pillow==12.3.0
 psycopg[binary]==3.3.4
+publicsuffixlist==1.0.2.20260925
 pycparser==3.0
 pydantic==2.13.4
 pydantic_core==2.46.4
