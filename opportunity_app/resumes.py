@@ -482,7 +482,7 @@ def resume_record(conn: sqlite3.Connection, version_id: str, *, user_id: str) ->
     row = conn.execute(
         """
         SELECT rv.*, rf.original_name, rf.media_type, rf.byte_size,
-               rf.sha256, rf.storage_path
+               rf.sha256, rf.storage_path, rf.variant_label
         FROM resume_versions rv
         JOIN resume_files rf ON rf.id=rv.resume_file_id
         WHERE rv.id=? AND rv.user_id=?
@@ -504,6 +504,8 @@ def resume_record(conn: sqlite3.Connection, version_id: str, *, user_id: str) ->
         "confirmed": json.loads(row["confirmed_json"] or "{}"),
         "created_at": row["created_at"],
         "confirmed_at": row["confirmed_at"],
+        # The student's own name for a résumé kept for one kind of role ('' when it is not a variant).
+        "variant_label": row["variant_label"] or "",
     }
 
 
@@ -549,6 +551,52 @@ def confirm_resume(
             user_id=user_id,
             profile_file=profile_file,
         )
+    return resume_record(conn, version_id, user_id=user_id)
+
+
+MAX_VARIANT_LABEL = 60
+
+
+def confirm_variant(
+    conn: sqlite3.Connection,
+    version_id: str,
+    variant_label: str,
+    *,
+    user_id: str,
+) -> dict[str, Any]:
+    """"Use as a variant": mark a résumé confirmed and give it a variant label, without touching the profile.
+
+    confirm_resume copies facts into the profile, so confirming a second
+    résumé that way would overwrite the first one's facts. A variant is
+    confirmed as a document to send, nothing more: profile facts still come
+    from the one résumé confirmed normally. Calling it again renames the
+    variant; an empty label keeps the résumé confirmed but no longer a variant.
+    Labels are unique per student, compared trimmed and case-insensitively.
+    """
+    record = resume_record(conn, version_id, user_id=user_id)
+    label = " ".join(str(variant_label or "").split())
+    if len(label) > MAX_VARIANT_LABEL:
+        raise ResumeValidationError(f"Keep the variant label under {MAX_VARIANT_LABEL} characters")
+    timestamp = utc_now()
+    with conn:
+        if label:
+            clash = conn.execute(
+                "SELECT original_name, variant_label FROM resume_files WHERE user_id=? AND id<>? AND variant_label<>''",
+                (user_id, record["file_id"]),
+            ).fetchall()
+            for row in clash:
+                if " ".join(str(row["variant_label"]).split()).casefold() == label.casefold():
+                    raise ResumeValidationError(f"{row['original_name']} already uses the label {row['variant_label']}")
+        conn.execute(
+            "UPDATE resume_files SET variant_label=? WHERE id=? AND user_id=?",
+            (label, record["file_id"], user_id),
+        )
+        if record["status"] != "confirmed":
+            # confirmed_json stays empty: nothing from this résumé became a profile fact.
+            conn.execute(
+                "UPDATE resume_versions SET status='confirmed', confirmed_at=? WHERE id=? AND user_id=?",
+                (timestamp, version_id, user_id),
+            )
     return resume_record(conn, version_id, user_id=user_id)
 
 

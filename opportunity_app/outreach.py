@@ -1074,6 +1074,125 @@ def _confirming(payload: dict[str, Any], previous: dict[str, Any], values: dict[
     return not previous["location_verified"]
 
 
+def _plan_target_update(
+    conn: sqlite3.Connection, payload: dict[str, Any], previous: dict[str, Any], *, user_id: str, today: date,
+) -> dict[str, Any] | None:
+    """What a change to a target writes, worked out against ``previous``. None when it changes nothing. Writes nothing."""
+    values = _normalize(payload, partial=True)
+    if "location" in values:
+        if values["location"] == previous["location"]:
+            del values["location"]
+        else:
+            # The student's own word outranks every source, so it is never overwritten.
+            values["location_basis"] = "manual" if values["location"] else ""
+            values["location_source_url"] = ""
+            values["location_inferred"] = 0
+    typed_location = "location" in values
+    confirming = _confirming(payload, previous, values)
+    if confirming:
+        # The student vouches for the place shown. A site mention keeps its page;
+        # a deep search location becomes the student's own entry.
+        values["location_inferred"] = 0
+        if previous["location_basis"] in {"research", ""}:
+            values["location_basis"] = "manual"
+    _apply_status_side_effects(values, previous, today)
+    readdressed = _readdress_drafts(values, previous, greeting_style(conn, user_id))
+    withdrawn = _apply_draft_side_effects(values, previous)
+    if not values:
+        return None
+    return {
+        "values": values, "typed_location": typed_location, "confirming": confirming,
+        "readdressed": readdressed, "withdrawn": withdrawn,
+    }
+
+
+def _write_target_update(
+    conn: sqlite3.Connection, target_id: str, user_id: str, previous: dict[str, Any], plan: dict[str, Any],
+    *, status_detail: str = "",
+) -> None:
+    """Write a planned change and its events, inside the caller's transaction.
+
+    Raises _ConfirmRaced when a location confirmation finds the row moved.
+    ``status_detail`` is recorded on the status event (an automatic change says so there).
+    """
+    values, confirming = plan["values"], plan["confirming"]
+    assignments = ", ".join(f"{column}=?" for column in values)
+    # Guarding on the location text alone is not enough: an enrichment pass
+    # can attach a stronger basis and a source URL to the *same* text, and a
+    # stale confirmation would then overwrite that basis with "manual" while
+    # leaving the company's URL attached — "your entry" linking to a page the
+    # student never vouched for.
+    guard, guarded = "", []
+    if confirming:
+        guard = " AND location=? AND location_basis=? AND location_inferred=?"
+        guarded = [
+            previous["location"], previous["location_basis"] or "",
+            int(bool(previous["location_inferred"])),
+        ]
+    cursor = conn.execute(
+        f"UPDATE outreach_targets SET {assignments}, updated_at=? WHERE id=? AND user_id=?{guard}",
+        [*values.values(), utc_now(), target_id, user_id, *guarded],
+    )
+    if confirming and cursor.rowcount == 0:
+        raise _ConfirmRaced()
+    if "status" in values and values["status"] != previous["status"]:
+        _log(conn, target_id, user_id, "status", from_status=previous["status"], to_status=values["status"], detail=status_detail)
+    if confirming:
+        _log(conn, target_id, user_id, "location_confirmed", detail=f"You confirmed {previous['location']}")
+    if plan["typed_location"] and values["location"]:
+        # Its own event type, not the "location_recorded" a source
+        # establishing a location writes: telling the student's word
+        # apart from a source's is the whole point of this record.
+        _log(conn, target_id, user_id, "location_entered", detail=f"You entered {values['location']}")
+    readdressed, withdrawn = plan["readdressed"], plan["withdrawn"]
+    swapped = {kind for kind, _old, _new in readdressed}
+    if "initial" not in swapped and (("email_subject" in values and values["email_subject"] != previous["email_subject"]) or (
+        "email_body" in values and values["email_body"] != previous["email_body"]
+    )):
+        _log(conn, target_id, user_id, "draft_edited")
+    if "follow_up" not in swapped and (("follow_up_subject" in values and values["follow_up_subject"] != previous["follow_up_subject"]) or (
+        "follow_up_body" in values and values["follow_up_body"] != previous["follow_up_body"]
+    )):
+        _log(conn, target_id, user_id, "follow_up_edited")
+    for kind, old_line, new_line in readdressed:
+        label = "Draft" if kind == "initial" else "Follow-up"
+        _log(conn, target_id, user_id, "greeting_updated", detail=f'{label}: "{old_line}" is now "{new_line}" for the new contact')
+    for kind in withdrawn:
+        _log(conn, target_id, user_id, "approval_withdrawn", detail=f"The {kind.replace('_', '-')} draft changed after approval")
+    _cancel_schedules(conn, target_id, user_id, withdrawn, "The draft or its recipient changed after you scheduled it")
+    # Marked sent by hand: the scheduled copy must not go out as well.
+    sent_kind = {"sent": "initial", "followed_up": "follow_up"}.get(values.get("status", ""))
+    if sent_kind and values["status"] != previous["status"]:
+        _cancel_schedules(conn, target_id, user_id, [sent_kind], "You marked it sent")
+
+
+def _update_target_tx(
+    conn: sqlite3.Connection, target_id: str, payload: dict[str, Any], *, user_id: str, today: date | None = None,
+    status_detail: str = "",
+) -> dict[str, Any]:
+    """update_target's writes, inside a transaction the caller owns (automation runs it with its ledger insert).
+
+    As in actions._update_application_tx, a no-op write locks the row first
+    (SQLite's write lock; the row's lock on PostgreSQL), and only then is the
+    row read, so what is written follows what is stored now: nothing can land
+    between the read and the write. Returns the row as it was (``previous``)
+    and the columns written (``values``, empty when nothing changed).
+    A location confirmation that finds the row moved raises LocationConflictError
+    here, since there is no second pass inside someone else's transaction.
+    """
+    conn.execute("UPDATE outreach_targets SET updated_at=updated_at WHERE id=? AND user_id=?", (target_id, user_id))
+    today = today or local_today(conn, user_id)
+    previous = get_target(conn, target_id, user_id=user_id, today=today)
+    plan = _plan_target_update(conn, payload, previous, user_id=user_id, today=today)
+    if plan is None:
+        return {"previous": previous, "values": {}}
+    try:
+        _write_target_update(conn, target_id, user_id, previous, plan, status_detail=status_detail)
+    except _ConfirmRaced:
+        raise LocationConflictError("This target's location changed while you confirmed it. Have another look.") from None
+    return {"previous": previous, "values": plan["values"]}
+
+
 def update_target(
     conn: sqlite3.Connection, target_id: str, payload: dict[str, Any], *, user_id: str, today: date | None = None,
     before_write: Callable[[], None] | None = None,
@@ -1084,79 +1203,15 @@ def update_target(
     # A confirmation is a compare-and-swap, so it may have to be recomputed once
     # against a row that moved. Everything else runs on the first pass.
     for _ in range(2):
-        values = _normalize(payload, partial=True)
-        if "location" in values:
-            if values["location"] == previous["location"]:
-                del values["location"]
-            else:
-                # The student's own word outranks every source, so it is never overwritten.
-                values["location_basis"] = "manual" if values["location"] else ""
-                values["location_source_url"] = ""
-                values["location_inferred"] = 0
-        typed_location = "location" in values
-        confirming = _confirming(payload, previous, values)
-        if confirming:
-            # The student vouches for the place shown. A site mention keeps its page;
-            # a deep search location becomes the student's own entry.
-            values["location_inferred"] = 0
-            if previous["location_basis"] in {"research", ""}:
-                values["location_basis"] = "manual"
-        _apply_status_side_effects(values, previous, today)
-        readdressed = _readdress_drafts(values, previous, greeting_style(conn, user_id))
-        withdrawn = _apply_draft_side_effects(values, previous)
-        if not values:
+        plan = _plan_target_update(conn, payload, previous, user_id=user_id, today=today)
+        if plan is None:
             return previous
-        assignments = ", ".join(f"{column}=?" for column in values)
-        # Guarding on the location text alone is not enough: an enrichment pass
-        # can attach a stronger basis and a source URL to the *same* text, and a
-        # stale confirmation would then overwrite that basis with "manual" while
-        # leaving the company's URL attached — "your entry" linking to a page the
-        # student never vouched for.
-        guard, guarded = "", []
-        if confirming:
-            guard = " AND location=? AND location_basis=? AND location_inferred=?"
-            guarded = [
-                previous["location"], previous["location_basis"] or "",
-                int(bool(previous["location_inferred"])),
-            ]
+        values = plan["values"]
         try:
             with conn:
                 if before_write is not None:
                     before_write()
-                cursor = conn.execute(
-                    f"UPDATE outreach_targets SET {assignments}, updated_at=? WHERE id=? AND user_id=?{guard}",
-                    [*values.values(), utc_now(), target_id, user_id, *guarded],
-                )
-                if confirming and cursor.rowcount == 0:
-                    raise _ConfirmRaced()
-                if "status" in values and values["status"] != previous["status"]:
-                    _log(conn, target_id, user_id, "status", from_status=previous["status"], to_status=values["status"])
-                if confirming:
-                    _log(conn, target_id, user_id, "location_confirmed", detail=f"You confirmed {previous['location']}")
-                if typed_location and values["location"]:
-                    # Its own event type, not the "location_recorded" a source
-                    # establishing a location writes: telling the student's word
-                    # apart from a source's is the whole point of this record.
-                    _log(conn, target_id, user_id, "location_entered", detail=f"You entered {values['location']}")
-                swapped = {kind for kind, _old, _new in readdressed}
-                if "initial" not in swapped and (("email_subject" in values and values["email_subject"] != previous["email_subject"]) or (
-                    "email_body" in values and values["email_body"] != previous["email_body"]
-                )):
-                    _log(conn, target_id, user_id, "draft_edited")
-                if "follow_up" not in swapped and (("follow_up_subject" in values and values["follow_up_subject"] != previous["follow_up_subject"]) or (
-                    "follow_up_body" in values and values["follow_up_body"] != previous["follow_up_body"]
-                )):
-                    _log(conn, target_id, user_id, "follow_up_edited")
-                for kind, old_line, new_line in readdressed:
-                    label = "Draft" if kind == "initial" else "Follow-up"
-                    _log(conn, target_id, user_id, "greeting_updated", detail=f'{label}: "{old_line}" is now "{new_line}" for the new contact')
-                for kind in withdrawn:
-                    _log(conn, target_id, user_id, "approval_withdrawn", detail=f"The {kind.replace('_', '-')} draft changed after approval")
-                _cancel_schedules(conn, target_id, user_id, withdrawn, "The draft or its recipient changed after you scheduled it")
-                # Marked sent by hand: the scheduled copy must not go out as well.
-                sent_kind = {"sent": "initial", "followed_up": "follow_up"}.get(values.get("status", ""))
-                if sent_kind and values["status"] != previous["status"]:
-                    _cancel_schedules(conn, target_id, user_id, [sent_kind], "You marked it sent")
+                _write_target_update(conn, target_id, user_id, previous, plan)
         except _ConfirmRaced:
             previous = get_target(conn, target_id, user_id=user_id, today=today)
             if previous["location_verified"]:

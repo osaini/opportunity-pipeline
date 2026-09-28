@@ -2,6 +2,8 @@
 
 Switches. FEATURES is the one list of automation features. Each is off until
 the student turns it on (a missing user_settings row means off). A feature
+that needs something besides its switch (a threshold in the student's
+profile, or a résumé variant set up) names it in REQUIREMENTS, and cannot be turned on without it. A feature
 that can act on the student's records without asking may also run in
 "shadow": it records what it would have done and changes nothing. It can be
 turned on only after SHADOW_HOURS in shadow with at least SHADOW_MIN_ROWS
@@ -103,6 +105,14 @@ class Superseded(Exception):
     """A later change touched this action's fields; the message names which, in a plain sentence."""
 
 
+class NotApplicable(ValueError):
+    """Raised by a handler's apply when what the action was for no longer holds (the student acted first).
+
+    perform() lets it through, and its transaction writes nothing: neither the
+    change nor a ledger row. The caller skips that subject.
+    """
+
+
 class CorrectionRefused(ValueError):
     """The subject the student chose instead cannot take this change; the message says why. Nothing was decided."""
 
@@ -161,8 +171,69 @@ FEATURES: dict[str, Feature] = {
                 "Reads job-system and assessment emails in Gmail, moves an application forward when an email clearly "
                 "confirms, rejects or invites, and adds tasks and deadlines. Anything unclear waits for you",
                 "applications", "internal", OFF_SHADOW_ON),
+        # Phase 2: changes that stay inside the app, each with an Undo (resume_variants.py,
+        # internal_automation.py, auto_triage.py).
+        Feature("outreach_auto_close", "Close companies that never answered",
+                "Mark a company No response once 14 days have passed since its follow-up with no reply, after checking "
+                "Gmail once more. A company Gmail can't search for, such as one you messaged on LinkedIn, is left for "
+                "you. You can undo it, and a later reply reopens it", "outreach", "internal"),
+        Feature("auto_follow_up_drafts", "Write follow-up drafts when they are due",
+                "When a company's follow-up date arrives and nobody has replied, write the follow-up draft. "
+                "It waits for your approval; nothing is sent", "outreach", "internal"),
+        Feature("resume_variant_pick", "Pick the résumé variant for each saved role",
+                "When you save a role, choose which of your résumé variants fits it, from the words you listed for each "
+                "variant in your profile. It picks only for roles you save while it is on. The role shows the pick "
+                "and you can change it", "applications", "internal"),
+        Feature("application_silence", "Flag applications with no reply",
+                "Show an Urgent row when an application is still at Applied a set number of days after you applied "
+                "(21 days, unless your profile sets another number), or after the company's latest job email about it "
+                "while Update applications from job emails is on", "applications", "internal"),
+        Feature("archive_silent_applications", "Archive applications that never answered",
+                "Move an application still at Applied to Archived after a set number of days "
+                "(60 days, unless your profile sets another number). You can undo it, and with Update applications from "
+                "job emails on, an email about it that the archive did not know of reopens it", "applications", "internal"),
+        Feature("auto_save", "Save new roles that score high",
+                "After each daily sync, save new roles that score at or above the number in your profile "
+                "(automation.auto_save_at). Scores are kept only for this computer's main account, so it works only there",
+                "discovery", "internal"),
+        Feature("auto_pass", "Pass on new roles that score low",
+                "After each daily sync, pass on new roles that have a description and score below the number in your "
+                "profile (automation.auto_pass_below). Review them under Auto-passed this week. Scores are kept only for "
+                "this computer's main account, so it works only there", "discovery", "internal"),
     )
 }
+
+
+def _triage_requirement(key: str) -> Callable[[Any, str], str]:
+    def check(conn: Any, user_id: str) -> str:
+        from .auto_triage import requirement  # imported here: auto_triage imports this module
+
+        return requirement(conn, user_id, key)
+
+    return check
+
+
+def _resume_variant_requirement(conn: Any, user_id: str) -> str:
+    from .resume_variants import setup_requirement  # imported here: resume_variants imports this module
+
+    return setup_requirement(conn, user_id)
+
+
+# What a feature needs before it can act, beyond its switch: a function that
+# returns "" when the need is met, or a plain sentence saying what is missing.
+# A feature whose need is not met cannot be turned on (can_turn_on), and the
+# Automation panel shows why.
+REQUIREMENTS: dict[str, Callable[[Any, str], str]] = {
+    "auto_save": _triage_requirement("auto_save"),
+    "auto_pass": _triage_requirement("auto_pass"),
+    "resume_variant_pick": _resume_variant_requirement,
+}
+
+
+def requirement(conn: sqlite3.Connection, user_id: str, key: str) -> str:
+    """What ``key`` still needs before it can act, or "" when nothing."""
+    check = REQUIREMENTS.get(key)
+    return check(conn, user_id) if check is not None else ""
 
 
 def register(feature: Feature) -> Feature:
@@ -186,7 +257,11 @@ def _now(now: datetime | None) -> datetime:
 
 
 def _stamp(now: datetime | None) -> str:
-    return _now(now).isoformat(timespec="microseconds")
+    """The stamp a write records. Without a given time it is utc_now's, which
+    never repeats in this process: breaker_off tells the breaker's own switch
+    write from a later one by its exact stamp, and a coarse clock (Windows
+    before Python 3.13) would otherwise give both the same one."""
+    return utc_now() if now is None else _now(now).isoformat(timespec="microseconds")
 
 
 def _setting(conn: sqlite3.Connection, user_id: str, key: str) -> str | None:
@@ -242,16 +317,32 @@ def still_enabled(conn: sqlite3.Connection, user_id: str, key: str) -> bool:
     return not pause_guard(conn, user_id) and mode(conn, user_id, key) == "on"
 
 
+def on_since(conn: sqlite3.Connection, user_id: str, key: str) -> str | None:
+    """When the switch was last turned on, while it is on; None when it is not on."""
+    if mode(conn, user_id, key) != "on":
+        return None
+    return _setting(conn, user_id, f"{key}.on_since")
+
+
 def is_shadow(conn: sqlite3.Connection, user_id: str, key: str) -> bool:
     """In shadow and not paused: the feature records what it would do."""
     return mode(conn, user_id, key) == "shadow" and not paused(conn, user_id)
 
 
 def can_turn_on(conn: sqlite3.Connection, user_id: str, key: str, *, now: datetime | None = None) -> tuple[bool, str]:
-    """Whether a shadow-capable feature has earned acting on its own, and if not, what it still needs."""
+    """Whether a feature may be turned on now, and if not, what it still needs.
+
+    A feature with an unmet requirement (REQUIREMENTS) cannot be; a
+    shadow-capable one must also have earned acting on its own in shadow.
+    """
     feature = _feature(key)
     current = mode(conn, user_id, key)
-    if not feature.shadow_capable or current == "on":
+    if current == "on":
+        return True, ""
+    missing = requirement(conn, user_id, key)
+    if missing:
+        return False, missing
+    if not feature.shadow_capable:
         return True, ""
     since_text = _setting(conn, user_id, f"{key}.shadow_since")
     since = _parse(since_text)
@@ -290,7 +381,7 @@ def _plan_modes(
         if value not in feature.modes:
             raise ValueError(f"{feature.label} can be {' or '.join(feature.modes)}, not {value!r}")
         current = mode(conn, user_id, key)
-        if value == "on" and current != "on" and feature.shadow_capable:
+        if value == "on" and current != "on":
             allowed, reason = can_turn_on(conn, user_id, key, now=now)
             if not allowed:
                 raise AutomationGateError(reason)
@@ -305,6 +396,9 @@ def _write_modes(conn: sqlite3.Connection, user_id: str, plans: list[tuple[str, 
         # The shadow clock starts when shadow starts, not on every save.
         if value == "shadow" and current != "shadow":
             _put_setting(conn, user_id, f"{key}.shadow_since", stamp, stamp)
+        # Likewise when it was last turned on (auto_triage acts only on roles first seen since).
+        if value == "on" and current != "on":
+            _put_setting(conn, user_id, f"{key}.on_since", stamp, stamp)
 
 
 def _set_modes(conn: sqlite3.Connection, user_id: str, changes: dict[str, str], *, now: datetime | None = None) -> None:
@@ -485,6 +579,8 @@ def settings_payload(conn: sqlite3.Connection, user_id: str, *, now: datetime | 
             "risk": feature.risk, "modes": list(feature.modes), "mode": current[feature.key],
             "shadow_since": _setting(conn, user_id, f"{feature.key}.shadow_since") if feature.shadow_capable else None,
             "can_turn_on": allowed, "can_turn_on_reason": reason,
+            # What it still needs to act, whatever its mode: a switch left on can lose a requirement later.
+            "requirement": requirement(conn, user_id, feature.key),
         })
     return {"paused": paused(conn, user_id), "features": features}
 
@@ -542,6 +638,7 @@ def _same(conn: sqlite3.Connection, column: str) -> str:
 FIELD_NAMES = {
     "stage": "the stage", "applied_at": "the applied date", "intent": "the saved or passed choice", "task": "the task",
     "deadline": "the deadline", "capture": "the capture draft",
+    "status": "the status", "follow_up": "the follow-up draft", "resume_pick": "the résumé choice",
 }
 
 
@@ -556,6 +653,19 @@ def _capitalized(text: str) -> str:
     return text[:1].upper() + text[1:]
 
 
+UNDO_REMINDER_NOTES = {
+    "restored": "Your follow-up reminder is scheduled again.",
+    "no_date": "The follow-up reminder this change cancelled was not restored, because no follow-up date is set.",
+    "passed": "The follow-up reminder this change cancelled was not restored, because its date has passed. Set a new follow-up date if you want one.",
+    "changed": "The follow-up reminder this change cancelled was changed since, so it was left as it is. Set the follow-up date again if you want a reminder.",
+}
+REOPEN_REMINDER_NOTES = {
+    "no_date": "The follow-up reminder the automatic archive cancelled was not restored, because no follow-up date is set.",
+    "passed": "The follow-up reminder the automatic archive cancelled was not restored, because its date has passed. Set a new follow-up date if you want one.",
+    "changed": "The follow-up reminder the automatic archive cancelled was changed since, so it was left as it is. Set the follow-up date again if you want a reminder.",
+}
+
+
 class ApplicationStage:
     """application.stage: an application's stage, and when the student applied.
 
@@ -567,6 +677,13 @@ class ApplicationStage:
     this move cancelled (unchanged since) and the follow-up date is still set
     and still ahead. Otherwise undo says the reminder was not restored, so the
     student is not left with a follow-up date that will never remind them.
+
+    A move out of an archive the app made after no reply
+    (internal_automation.automatic_archive), to a stage that keeps its
+    reminder, is the same as undoing that archive for the reminder: the one
+    the archive cancelled is scheduled again under the same conditions, or
+    the result's reminder_note says why not. Undoing that move cancels it
+    again while it is unchanged.
     """
 
     fields = ("stage", "applied_at")
@@ -580,10 +697,16 @@ class ApplicationStage:
         return {"stage": row["stage"], "applied_at": row["applied_at"]}
 
     def effective(self, before: dict[str, Any], after: dict[str, Any], timestamp: str) -> dict[str, Any]:
-        """What the fields become, by the same rule _update_application_tx writes with."""
+        """What the fields become, by the same rule _update_application_tx writes with.
+
+        ``only_from`` makes the move conditional: when the stage is no longer
+        that one (the student moved it on), nothing changes.
+        """
         stage = after.get("stage")
         if stage not in actions.APPLICATION_STAGES:
             raise ValueError(f"Unsupported application stage: {stage}")
+        if after.get("only_from") is not None and before["stage"] != after["only_from"]:
+            return dict(before)
         return {"stage": stage, "applied_at": actions._next_applied_at(before["applied_at"], stage, after.get("applied_at"), timestamp)}
 
     @staticmethod
@@ -597,40 +720,59 @@ class ApplicationStage:
         self, conn: sqlite3.Connection, user_id: str, subject_id: str, after: dict[str, Any], *, source: str, timestamp: str,
     ) -> dict[str, Any]:
         reminder = self._reminder(conn, user_id, subject_id)
+        # Read before the move: once it is made, the archive is no longer the latest stage change.
+        archive = None
+        if after["stage"] not in actions.TERMINAL_APPLICATION_STAGES:
+            from . import internal_automation  # imported here: it imports this module
+
+            archive = internal_automation.automatic_archive(conn, subject_id)
         actions._update_application_tx(
             conn, subject_id, stage=after["stage"], applied_at=after.get("applied_at"), user_id=user_id,
             source=source, timestamp=timestamp,
         )
         now = self._reminder(conn, user_id, subject_id)
+        result: dict[str, Any] = {}
         if reminder is not None and reminder["status"] == "scheduled" and now is not None and now["status"] == "cancelled":
             # What undo needs to put it back, and to know it is still the one this move cancelled.
-            return {"reminder_cancelled_at": now["updated_at"]}
-        return {}
+            result["reminder_cancelled_at"] = now["updated_at"]
+        if archive and archive.get("reminder_cancelled_at"):
+            outcome = self._reschedule(conn, user_id, subject_id, archive["reminder_cancelled_at"], timestamp)
+            if outcome == "restored":
+                result["reminder_restored_at"] = timestamp
+            else:
+                result["reminder_note"] = REOPEN_REMINDER_NOTES[outcome]
+        return result
 
     def undo(
         self, conn: sqlite3.Connection, user_id: str, subject_id: str, before: dict[str, Any], after: dict[str, Any],
         *, source: str, timestamp: str,
     ) -> dict[str, Any]:
         self._restore_stage(conn, user_id, subject_id, before, after, source=source, timestamp=timestamp)
-        cancelled_at = (after.get("_result") or {}).get("reminder_cancelled_at")
+        result = after.get("_result") or {}
+        if result.get("reminder_restored_at"):
+            # This move put back the reminder an automatic archive cancelled; back in Archived, it stops again.
+            conn.execute(
+                """
+                UPDATE reminders SET status='cancelled', updated_at=?
+                WHERE application_id=? AND user_id=? AND reminder_type='follow_up' AND status='scheduled' AND updated_at=?
+                """,
+                (timestamp, subject_id, user_id, result["reminder_restored_at"]),
+            )
+        cancelled_at = result.get("reminder_cancelled_at")
         if not cancelled_at:
             return {}
         return self._restore_reminder(conn, user_id, subject_id, cancelled_at, timestamp)
 
-    def _restore_reminder(
-        self, conn: sqlite3.Connection, user_id: str, subject_id: str, cancelled_at: str, timestamp: str,
-    ) -> dict[str, Any]:
-        """Schedule again the follow-up reminder this move cancelled, or say why it stays cancelled."""
+    def _reschedule(self, conn: sqlite3.Connection, user_id: str, subject_id: str, cancelled_at: str, timestamp: str) -> str:
+        """Schedule again a follow-up reminder a move to a closed stage cancelled: restored, no_date, passed, or changed."""
         row = conn.execute(
             f"SELECT follow_up_at FROM applications WHERE id=? AND user_id=?{_for_update(conn)}", (subject_id, user_id),
         ).fetchone()
         due = _parse(row["follow_up_at"]) if row is not None else None
         if due is None:
-            return {"reminder_restored": False,
-                    "undo_note": "The follow-up reminder this change cancelled was not restored, because no follow-up date is set."}
+            return "no_date"
         if due <= _now(None):
-            return {"reminder_restored": False,
-                    "undo_note": "The follow-up reminder this change cancelled was not restored, because its date has passed. Set a new follow-up date if you want one."}
+            return "passed"
         # Due on the follow-up date as it stands now: the student may have moved it while the stage was closed.
         restored = conn.execute(
             """
@@ -639,10 +781,14 @@ class ApplicationStage:
             """,
             (row["follow_up_at"], timestamp, subject_id, user_id, cancelled_at),
         ).rowcount
-        if not restored:
-            return {"reminder_restored": False,
-                    "undo_note": "The follow-up reminder this change cancelled was changed since, so it was left as it is. Set the follow-up date again if you want a reminder."}
-        return {"reminder_restored": True, "undo_note": "Your follow-up reminder is scheduled again."}
+        return "restored" if restored else "changed"
+
+    def _restore_reminder(
+        self, conn: sqlite3.Connection, user_id: str, subject_id: str, cancelled_at: str, timestamp: str,
+    ) -> dict[str, Any]:
+        """Schedule again the follow-up reminder this move cancelled, or say why it stays cancelled."""
+        outcome = self._reschedule(conn, user_id, subject_id, cancelled_at, timestamp)
+        return {"reminder_restored": outcome == "restored", "undo_note": UNDO_REMINDER_NOTES[outcome]}
 
     def _restore_stage(
         self, conn: sqlite3.Connection, user_id: str, subject_id: str, before: dict[str, Any], after: dict[str, Any],
@@ -710,6 +856,14 @@ class OpportunityIntent:
     def apply(
         self, conn: sqlite3.Connection, user_id: str, subject_id: str, after: dict[str, Any], *, source: str, timestamp: str,
     ) -> dict[str, Any]:
+        # ``only_if_untouched`` (auto_triage): act only on a role the student has never saved, passed,
+        # or opened. Checked here, inside the write, so a choice they made meanwhile always stands.
+        if after.get("only_if_untouched") and conn.execute(
+            "SELECT 1 FROM opportunity_interactions WHERE opportunity_id=? AND user_id=? "
+            "UNION ALL SELECT 1 FROM applications WHERE opportunity_id=? AND user_id=? LIMIT 1",
+            (subject_id, user_id, subject_id, user_id),
+        ).fetchone() is not None:
+            raise NotApplicable("You already acted on this role, so it was left as it is")
         response = actions._record_intent_tx(
             conn, subject_id, after["intent"] or "undo", user_id=user_id, source=source, timestamp=timestamp,
         )
@@ -809,10 +963,245 @@ class ApplicationTask:
         )
 
 
+class OutreachStatus:
+    """outreach.status: a cold-outreach company's status (outreach_auto_close closes one as no_response).
+
+    The change runs through outreach._update_target_tx, so it has every side
+    effect a status change made by hand has: a follow-up date that no longer
+    applies is cleared, and the change is logged. Undo puts the status back only
+    while it is still what this action left, and the follow-up date too, only
+    while it is still what this action left.
+    """
+
+    fields = ("status",)
+
+    def read(self, conn: sqlite3.Connection, user_id: str, subject_id: str) -> dict[str, Any]:
+        row = conn.execute(
+            f"SELECT status FROM outreach_targets WHERE id=? AND user_id=?{_for_update(conn)}", (subject_id, user_id),
+        ).fetchone()
+        if row is None:
+            from .outreach import OutreachNotFoundError
+
+            raise OutreachNotFoundError(subject_id)
+        return {"status": row["status"]}
+
+    def effective(self, before: dict[str, Any], after: dict[str, Any], timestamp: str) -> dict[str, Any]:
+        from .outreach import OUTREACH_STATUSES
+
+        if after.get("status") not in OUTREACH_STATUSES:
+            raise ValueError(f"Unsupported outreach status: {after.get('status')!r}")
+        # ``only_from``: change it only from that status, so a reply recorded meanwhile stands.
+        if after.get("only_from") is not None and before["status"] != after["only_from"]:
+            return dict(before)
+        return {"status": after["status"]}
+
+    def apply(
+        self, conn: sqlite3.Connection, user_id: str, subject_id: str, after: dict[str, Any], *, source: str, timestamp: str,
+    ) -> dict[str, Any]:
+        from .outreach import _update_target_tx
+
+        written = _update_target_tx(
+            conn, subject_id, {"status": after["status"]}, user_id=user_id, status_detail="Changed automatically",
+        )
+        previous = written["previous"]
+        return {
+            "follow_up_at_before": previous.get("follow_up_at"),
+            "follow_up_at_after": written["values"].get("follow_up_at", previous.get("follow_up_at")),
+        }
+
+    def undo(
+        self, conn: sqlite3.Connection, user_id: str, subject_id: str, before: dict[str, Any], after: dict[str, Any],
+        *, source: str, timestamp: str,
+    ) -> dict[str, Any] | None:
+        from .outreach import _log
+
+        row = conn.execute(
+            f"SELECT status, follow_up_at FROM outreach_targets WHERE id=? AND user_id=?{_for_update(conn)}", (subject_id, user_id),
+        ).fetchone()
+        if row is None:
+            raise Superseded("The company is no longer in your outreach list, so there is nothing to undo")
+        if row["status"] != after["status"]:
+            raise Superseded("The status changed since, so it was left as it is")
+        result = after.get("_result") or {}
+        restore_date = row["follow_up_at"] == result.get("follow_up_at_after")
+        follow_up_at = result.get("follow_up_at_before") if restore_date else row["follow_up_at"]
+        conn.execute(
+            f"UPDATE outreach_targets SET status=?, follow_up_at=?, updated_at=? WHERE id=? AND user_id=? AND status=? AND {_same(conn, 'follow_up_at')}",
+            (before["status"], follow_up_at, timestamp, subject_id, user_id, after["status"], row["follow_up_at"]),
+        )
+        _log(conn, subject_id, user_id, "status", from_status=after["status"], to_status=before["status"], detail="Undone by you")
+        if not restore_date and result.get("follow_up_at_before") != row["follow_up_at"]:
+            return {"undo_note": "The follow-up date was changed since, so it was left as it is."}
+        return None
+
+
+class OutreachFollowUpDraft:
+    """outreach.follow_up_draft: a follow-up draft auto_follow_up_drafts wrote for a company.
+
+    ``after['draft']`` is what outreach_drafting.compose_draft wrote; apply stores
+    it the way a draft written on request is stored (the history keeps it), and
+    only while the company is still waiting on a follow-up, with none written.
+    Undo discards the draft from the editor only while it is exactly as written
+    (its fingerprint) and not approved; the draft stays in the history.
+    """
+
+    fields = ("follow_up",)
+
+    @staticmethod
+    def _row(conn: sqlite3.Connection, user_id: str, subject_id: str) -> Any:
+        return conn.execute(
+            "SELECT status, contact_email, contact_cc, follow_up_subject, follow_up_body, follow_up_claims_json, "
+            f"follow_up_generated_by, follow_up_status FROM outreach_targets WHERE id=? AND user_id=?{_for_update(conn)}",
+            (subject_id, user_id),
+        ).fetchone()
+
+    @staticmethod
+    def _fingerprint(row: Any) -> str:
+        from .outreach import _draft_fingerprint
+
+        # The same inputs outreach._record fingerprints the follow-up with.
+        return _draft_fingerprint(
+            "follow_up", row["follow_up_subject"] or "", row["follow_up_body"] or "", row["contact_email"] or "",
+            row["follow_up_claims_json"] or "[]", row["follow_up_generated_by"] or "", row["contact_cc"] or "",
+        )
+
+    def read(self, conn: sqlite3.Connection, user_id: str, subject_id: str) -> dict[str, Any]:
+        row = self._row(conn, user_id, subject_id)
+        if row is None:
+            from .outreach import OutreachNotFoundError
+
+            raise OutreachNotFoundError(subject_id)
+        written = bool(str(row["follow_up_body"] or "").strip() or str(row["follow_up_subject"] or "").strip())
+        return {"follow_up": self._fingerprint(row) if written else ""}
+
+    def effective(self, before: dict[str, Any], after: dict[str, Any], timestamp: str) -> dict[str, Any]:
+        draft = after.get("draft")
+        if not isinstance(draft, dict) or draft.get("kind") != "follow_up" or not str(draft.get("body") or "").strip():
+            raise ValueError("An automatic follow-up needs a written follow-up draft")
+        if before["follow_up"]:
+            # A follow-up is already written (the student's own, most likely): it stays.
+            return dict(before)
+        return {"follow_up": "generated"}
+
+    def apply(
+        self, conn: sqlite3.Connection, user_id: str, subject_id: str, after: dict[str, Any], *, source: str, timestamp: str,
+    ) -> dict[str, Any]:
+        from .outreach import get_target
+        from .outreach_drafting import save_draft_tx
+
+        target = get_target(conn, subject_id, user_id=user_id)
+        if (
+            target["status"] != "sent" or target["follow_up_body"] or target["reply_count"] or target["reply_suggestion"]
+            or target["contact_bounced"] or target.get("bounced_at")
+        ):
+            raise NotApplicable("The company is no longer waiting on a follow-up, so no draft was saved")
+        prepared = {**after["draft"], "target_status": target["status"], "target_draft_status": target["follow_up_status"]}
+        version_id = save_draft_tx(conn, subject_id, user_id=user_id, prepared=prepared)
+        return {"fingerprint": self._fingerprint(self._row(conn, user_id, subject_id)), "version_id": version_id}
+
+    def undo(
+        self, conn: sqlite3.Connection, user_id: str, subject_id: str, before: dict[str, Any], after: dict[str, Any],
+        *, source: str, timestamp: str,
+    ) -> dict[str, Any]:
+        from .outreach import _log
+
+        result = after.get("_result") or {}
+        row = self._row(conn, user_id, subject_id)
+        if row is None:
+            raise Superseded("The company is no longer in your outreach list, so there is nothing to undo")
+        if row["follow_up_status"] == "approved":
+            raise Superseded("You approved the follow-up draft since, so it was left as it is")
+        if not (row["follow_up_body"] or row["follow_up_subject"]):
+            raise Superseded("The follow-up draft was already cleared")
+        if row["follow_up_status"] != "generated" or self._fingerprint(row) != result.get("fingerprint"):
+            raise Superseded("The follow-up draft or its recipient changed since, so it was left as it is")
+        conn.execute(
+            """
+            UPDATE outreach_targets SET follow_up_subject='', follow_up_body='', follow_up_claims_json='[]',
+                follow_up_generated_by='', follow_up_status='none', updated_at=?
+            WHERE id=? AND user_id=? AND follow_up_status='generated'
+            """,
+            (timestamp, subject_id, user_id),
+        )
+        _log(conn, subject_id, user_id, "follow_up_discarded",
+             detail="The automatic follow-up draft was undone. It stays in the follow-up history.")
+        return {"undo_note": "The draft stays in the follow-up's history if you want it back."}
+
+
+class ResumePick:
+    """resume.pick: which résumé variant to use for a role (resume_variant_pick).
+
+    A pick the student made (picked_by 'student') is never overwritten: the
+    change counts as already in place. Undo clears the automatic pick, only
+    while it is still the one this action made.
+    """
+
+    fields = ("resume_pick",)
+
+    def read(self, conn: sqlite3.Connection, user_id: str, subject_id: str) -> dict[str, Any]:
+        # No row lock on the role: a save's pick runs in the web request, and on
+        # PostgreSQL FOR UPDATE here would wait for a running sync, which holds
+        # every role's row until it commits. The insert in apply is what guards
+        # against a student pick landing meanwhile.
+        if conn.execute("SELECT 1 FROM opportunities WHERE id=?", (subject_id,)).fetchone() is None:
+            raise actions.OpportunityNotFoundError(subject_id)
+        row = conn.execute(
+            f"SELECT resume_file_id, picked_by FROM opportunity_resume_picks WHERE user_id=? AND opportunity_id=?{_for_update(conn)}",
+            (user_id, subject_id),
+        ).fetchone()
+        return {"resume_pick": None if row is None else {"resume_file_id": row["resume_file_id"], "picked_by": row["picked_by"]}}
+
+    def effective(self, before: dict[str, Any], after: dict[str, Any], timestamp: str) -> dict[str, Any]:
+        file_id = after.get("resume_file_id")
+        if not isinstance(file_id, str) or not file_id:
+            raise ValueError("A résumé pick needs a résumé")
+        current = before.get("resume_pick")
+        if current and current.get("picked_by") == "student":
+            return dict(before)  # the student's choice sticks
+        return {"resume_pick": {"resume_file_id": file_id, "picked_by": "automatic"}}
+
+    def apply(
+        self, conn: sqlite3.Connection, user_id: str, subject_id: str, after: dict[str, Any], *, source: str, timestamp: str,
+    ) -> dict[str, Any]:
+        if conn.execute(
+            "SELECT 1 FROM resume_files WHERE id=? AND user_id=?", (after["resume_file_id"], user_id),
+        ).fetchone() is None:
+            raise NotApplicable("That résumé was deleted, so nothing was picked")
+        written = conn.execute(
+            """
+            INSERT INTO opportunity_resume_picks(user_id, opportunity_id, resume_file_id, picked_by, matched_json, created_at, updated_at)
+            VALUES(?, ?, ?, 'automatic', ?, ?, ?)
+            ON CONFLICT(user_id, opportunity_id) DO UPDATE SET
+                resume_file_id=excluded.resume_file_id, matched_json=excluded.matched_json, updated_at=excluded.updated_at
+            WHERE opportunity_resume_picks.picked_by='automatic'
+            """,
+            (user_id, subject_id, after["resume_file_id"], _dumps(after.get("matched") or {}), timestamp, timestamp),
+        ).rowcount
+        if not written:
+            # The student picked one for this role after it was read: theirs sticks, and no row claims a pick.
+            raise NotApplicable("You picked a résumé for this role yourself, so it was left as it is")
+        return {}
+
+    def undo(
+        self, conn: sqlite3.Connection, user_id: str, subject_id: str, before: dict[str, Any], after: dict[str, Any],
+        *, source: str, timestamp: str,
+    ) -> None:
+        pick = after.get("resume_pick") or {}
+        deleted = conn.execute(
+            "DELETE FROM opportunity_resume_picks WHERE user_id=? AND opportunity_id=? AND resume_file_id=? AND picked_by='automatic'",
+            (user_id, subject_id, pick.get("resume_file_id")),
+        ).rowcount
+        if not deleted:
+            raise Superseded("The résumé choice changed since, so it was left as it is")
+
+
 HANDLERS: dict[str, Handler] = {
     "application.stage": ApplicationStage(),
     "opportunity.intent": OpportunityIntent(),
     "application.task": ApplicationTask(),
+    "outreach.status": OutreachStatus(),
+    "outreach.follow_up_draft": OutreachFollowUpDraft(),
+    "resume.pick": ResumePick(),
 }
 
 

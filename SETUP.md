@@ -346,7 +346,10 @@ themselves (rule 3). The details:
     invites them to interview moves the application forward on its own (never
     backward, and never over a change they made after the email), and adds a
     task or a deadline. Each change shows on the application's timeline with
-    Undo, and the email is listed on the application.
+    Undo, and the email is listed on the application. An application they
+    archived stays archived; one the app archived itself after no reply
+    (**Archive applications that never answered**) is reopened by an email
+    about it that the archive did not know of.
   - Anything unclear waits under **Waiting for you**, with the reason and a
     picker to choose the right application: an offer (always), an email that
     could be about two applications, a forwarded email, a newsletter, or an
@@ -370,6 +373,82 @@ themselves (rule 3). The details:
 Copy `config/resume.example.json` to `config/resume.json` and fill it in from
 the student's resume, if they share one. Copy facts exactly; never embellish.
 The resume and cover-letter commands only reformulate what is in that file.
+
+**Résumé variants (optional).** Ask: *"Which kinds of roles do you apply to?
+Do you keep a different résumé for each?"* Many students keep two or three
+they designed themselves, one per field (for example one for hardware roles
+and one for software roles). If they do:
+
+1. They upload each one on the Profile page, under Resume versions, then type
+   a label for it and press **Use as a variant**. That confirms it as a
+   document to send without copying anything into the profile; profile facts
+   still come from the one résumé confirmed normally.
+2. Ask for the words that mark each kind of posting, and write them into
+   `config/profile.json` with the same labels:
+
+```json
+"resume_variants": [
+  {"label": "Hardware", "keywords": ["CAD", "PCB", "embedded", "mechanical"]},
+  {"label": "Software", "keywords": ["Python", "React", "backend", "APIs"]}
+],
+"default_variant": "Software"
+```
+
+Labels match the ones typed in the app, ignoring case and spaces at the ends.
+The switch can be turned on only once at least one listed label is on a
+confirmed résumé; the Profile page says which labels are ready and which are
+not listed. With the **Pick the résumé variant for each saved role** switch on
+(Profile › Automation), every role they save from then on gets the variant whose words the posting
+names most: a word in the title counts three times, one in the description
+once, and the winner needs at least 2 points and 1.5 times the next variant.
+Otherwise the pick is marked unsure and `default_variant` is used. The role
+shows the pick, which they can change with one click, and the browser
+extension preselects it. Nothing is rewritten. Leave `resume_variants` empty
+(the default) if they keep one résumé; the app then uses the confirmed résumé,
+as before.
+
+**What the app may do on its own.** Every switch under Profile › Automation is
+off until the student turns it on, and each change can be undone. A few read
+settings from `config/profile.json`; ask before setting them:
+
+| Ask | Field | Notes |
+| --- | --- | --- |
+| After how many days with no reply should an application show up in Urgent? | `application_follow_up_days` | default 21; used by **Flag applications with no reply** |
+| After how many days should a silent application be archived? | `archive_after_days` | default 60; used by **Archive applications that never answered** |
+| From what score should new roles be saved for you? Below what score passed? | `automation.auto_save_at`, `automation.auto_pass_below` | scores from 0 to 100, with no defaults: left out, the switch can't be turned on. Keep `auto_pass_below` at or under `auto_save_at`. |
+
+With **Update applications from job emails** on (not in shadow), a job email
+linked to an application that says something happened (a confirmation, an
+interview invite, a scheduling link, an assessment, a deadline, a rejection or
+an offer) counts as a reply: both day counts above start again from the latest
+one. A job alert or newsletter does not count, nor does an email whose changes
+the student turned down or ignored. An application the app archived after no
+reply is reopened by a job email about it that the archive did not know of: an
+interview invite moves it to Interview, a rejection to Rejected, and a
+confirmation, assessment or scheduling email back to Applied, even when that
+email reached Gmail before the archive and was read later. The follow-up
+reminder the archive cancelled comes back with it. If the email names only the
+company and the student has another open application there, it waits for them
+to pick. One the student archived is never reopened, and one with a job email's
+change waiting for their approval is not archived at all. An archive the
+student undoes stays undone until a new job email or a new applied date; one a
+job email reopened is archived again only after the full count of silent days
+from that email.
+
+Auto-save and auto-pass run after each daily sync, only on roles first seen
+since the switch was turned on, and never pass a posting that has no
+description. Known limit: the daily sync keeps scores only for the main account
+on the computer, so these two switches work only for that account. Roles passed
+this way are listed for a week under Auto-passed this week, each with Restore.
+
+```json
+"application_follow_up_days": 21,
+"archive_after_days": 60,
+"automation": {"auto_save_at": 85, "auto_pass_below": 30}
+```
+
+Run `python -m opportunity_app.setup validate` again after editing; it checks
+these fields too.
 
 ## 8. First run and daily use
 

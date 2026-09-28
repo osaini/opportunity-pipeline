@@ -295,6 +295,20 @@ def _apply_application_mail(conn: sqlite3.Connection, sql: str) -> None:
     conn.executescript(sql)
 
 
+# The student's own name for a résumé kept for one kind of role (resume_variants.py).
+_INTERNAL_AUTOMATION_COLUMNS = (
+    ("resume_files", "variant_label", "TEXT NOT NULL DEFAULT ''"),
+)
+
+
+def _apply_internal_automation(conn: sqlite3.Connection, sql: str) -> None:
+    # Guarded like _apply_automation: running it again after a crash repairs it.
+    for table, column, definition in _INTERNAL_AUTOMATION_COLUMNS:
+        if not _has_column(conn, table, column):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    conn.executescript(sql)
+
+
 # Migrations whose SQL alone cannot express the change: parsing timestamps is
 # not portable across SQLite and PostgreSQL, so a Python step owns it. Adding a
 # column is not repeatable, so a step owns that too.
@@ -303,6 +317,7 @@ _MIGRATION_STEPS: dict[str, Callable[[Any, str], None]] = {
     "0021_company_sort_keys.sql": _apply_company_sort_keys,
     "0037_automation.sql": _apply_automation,
     "0038_application_mail.sql": _apply_application_mail,
+    "0039_internal_automation.sql": _apply_internal_automation,
 }
 
 

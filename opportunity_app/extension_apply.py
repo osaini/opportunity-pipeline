@@ -320,11 +320,19 @@ def _safe_answers(conn: sqlite3.Connection, user_id: str) -> list[dict[str, Any]
     ]
 
 
-def _document_records(conn: sqlite3.Connection, user_id: str) -> list[dict[str, Any]]:
+def _document_records(conn: sqlite3.Connection, user_id: str, opportunity_id: str | None = None) -> list[dict[str, Any]]:
+    """The documents the extension may attach. The résumé variant picked for this role is marked ``preferred``.
+
+    The order stays as it always was (the pick is marked, not moved), so the
+    side panel preselects it without anything else shifting.
+    """
+    from .resume_variants import preferred_resume_file
+
+    preferred = preferred_resume_file(conn, user_id, opportunity_id)
     resumes = conn.execute(
         """
-        SELECT rv.id, rf.original_name, rf.media_type, rf.byte_size, rf.sha256,
-               rv.confirmed_at
+        SELECT rv.id, rf.id AS file_id, rf.original_name, rf.media_type, rf.byte_size, rf.sha256,
+               rv.confirmed_at, rf.variant_label
         FROM resume_versions rv JOIN resume_files rf ON rf.id=rv.resume_file_id
         WHERE rv.user_id=? AND rv.status='confirmed'
         ORDER BY rv.confirmed_at DESC, rv.created_at DESC
@@ -353,6 +361,8 @@ def _document_records(conn: sqlite3.Connection, user_id: str) -> list[dict[str, 
             "sha256": row["sha256"],
             "approved_at": row["confirmed_at"],
             "source_kind": "confirmed_upload",
+            "variant_label": row["variant_label"] or "",
+            "preferred": bool(preferred) and row["file_id"] == preferred,
         }
         for row in resumes
     ]
@@ -418,7 +428,7 @@ def apply_context(
         },
         "confirmed_profile": _confirmed_profile(conn, user_id),
         "answers": _safe_answers(conn, user_id),
-        "documents": _document_records(conn, user_id),
+        "documents": _document_records(conn, user_id, row["opportunity_id"]),
         "sessions": [dict(item) for item in sessions],
     }
 

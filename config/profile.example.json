@@ -29,5 +29,13 @@
   "break_location": "",
   "greeting_word": "Hi",
   "unnamed_greeting": "{company} team",
-  "compensation_preferences": null
+  "compensation_preferences": null,
+  "resume_variants": [],
+  "default_variant": "",
+  "application_follow_up_days": 21,
+  "archive_after_days": 60,
+  "automation": {
+    "auto_save_at": null,
+    "auto_pass_below": null
+  }
 }

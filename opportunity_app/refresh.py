@@ -6,7 +6,8 @@ publishes per-step progress for the UI to poll:
 1. ``pipeline.py run``: fetch every enabled source, score, report
 2. ``pipeline.py liveness``: retire postings whose pages are gone
 3. ``pipeline.py purge-expired``: delete expired postings from pipeline.db
-4. sync platform.db from pipeline.db, retiring postings it no longer holds
+4. sync platform.db from pipeline.db, retiring postings it no longer holds,
+   then save and pass on new roles by the student's thresholds (auto_triage)
 5. purge expired postings from platform.db
 
 The pipeline CLI runs as a subprocess, as the worker does, so a hung fetch
@@ -30,6 +31,7 @@ from typing import Any, Callable
 from pipeline import load_sources
 
 from . import DEFAULT_LEGACY_DB, DEFAULT_PROFILE, ROOT
+from .auto_triage import triage_after_sync
 from .purge import purge_expired_opportunities
 from .schema import connect_product, migrate_legacy_database, utc_now
 
@@ -341,13 +343,13 @@ class RefreshManager:
         result = migrate_legacy_database(
             self.legacy_path, self.platform_target, self.profile_path, progress=progress
         )
-        self._update(
-            "sync",
-            state="done",
-            done=1,
-            total=1,
-            detail=f"{result.active_unique_target} active; retired {result.retired_missing} no longer listed",
-        )
+        detail = f"{result.active_unique_target} active; retired {result.retired_missing} no longer listed"
+        # Save and pass on the new roles by the student's thresholds (auto_save,
+        # auto_pass). It never fails the sync: a failure is logged and shown in Health.
+        triaged = triage_after_sync(self.platform_target)
+        if triaged and (triaged["saved"] or triaged["passed"]):
+            detail += f"; automatically saved {len(triaged['saved'])} and passed on {len(triaged['passed'])}"
+        self._update("sync", state="done", done=1, total=1, detail=detail)
 
     def _purge_app(self) -> None:
         self._update("purge-app", total=1)

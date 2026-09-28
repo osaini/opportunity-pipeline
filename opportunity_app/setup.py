@@ -326,6 +326,55 @@ ROLE_TYPES = {"internship", "externship", "co-op", "research", "part_time", "ear
 TERM = re.compile(r"^(spring|summer|fall|winter) 20\d{2}$")
 
 
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _validate_automation_settings(profile: dict[str, Any], errors: list[str], warnings: list[str]) -> None:
+    """The per-student settings Phase 2 automation reads: résumé variants, day counts, score thresholds."""
+    variants = profile.get("resume_variants")
+    labels: list[str] = []
+    if variants is not None and not isinstance(variants, list):
+        errors.append("resume_variants should be a list of {\"label\": ..., \"keywords\": [...]} objects")
+    for index, entry in enumerate(variants if isinstance(variants, list) else []):
+        label = entry.get("label") if isinstance(entry, dict) else None
+        if not isinstance(label, str) or not label.strip():
+            errors.append(f"resume_variants[{index}].label is required (text)")
+            continue
+        key = " ".join(label.split()).casefold()
+        if key in labels:
+            errors.append(f"resume_variants[{index}].label {label!r} is listed twice")
+        labels.append(key)
+        keywords = entry.get("keywords")
+        if not isinstance(keywords, list) or not all(isinstance(word, str) for word in keywords):
+            errors.append(f"resume_variants[{index}].keywords should be a list of words")
+        elif not [word for word in keywords if word.strip()]:
+            warnings.append(f"resume_variants[{index}] has no keywords, so it is only ever used as the default")
+    default = profile.get("default_variant")
+    if default not in (None, ""):
+        if not isinstance(default, str):
+            errors.append("default_variant should be the label of one of resume_variants")
+        elif " ".join(default.split()).casefold() not in labels:
+            warnings.append(f"default_variant {default!r} is not one of the resume_variants labels")
+    for key in ("application_follow_up_days", "archive_after_days"):
+        value = profile.get(key)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 365):
+            errors.append(f"{key} should be a whole number of days from 1 to 365")
+    settings = profile.get("automation")
+    if settings is None:
+        return
+    if not isinstance(settings, dict):
+        errors.append("automation should be an object such as {\"auto_save_at\": 80, \"auto_pass_below\": 30}")
+        return
+    for key in ("auto_save_at", "auto_pass_below"):
+        value = settings.get(key)
+        if value is not None and (not _is_number(value) or not 0 <= value <= 100):
+            errors.append(f"automation.{key} should be a score from 0 to 100, or left out")
+    save_at, pass_below = settings.get("auto_save_at"), settings.get("auto_pass_below")
+    if _is_number(save_at) and _is_number(pass_below) and pass_below > save_at:
+        errors.append("automation.auto_pass_below is above automation.auto_save_at, so a role could be both saved and passed")
+
+
 def validate_profile(profile: Any) -> dict[str, Any]:
     errors: list[str] = []
     warnings: list[str] = []
@@ -364,6 +413,7 @@ def validate_profile(profile: Any) -> dict[str, Any]:
             )
     if profile.get("requires_sponsorship") is True and profile.get("work_authorized_us") is True:
         warnings.append("requires_sponsorship and work_authorized_us are both true; confirm with the student")
+    _validate_automation_settings(profile, errors, warnings)
     from .profile import COMPLETENESS_FIELDS, is_answered
 
     missing = [field for field in COMPLETENESS_FIELDS if not is_answered(profile.get(field))]

@@ -70,9 +70,16 @@ def record_intent(
             response["replayed"] = True
             return response
     with conn:
-        return _record_intent_tx(
+        response = _record_intent_tx(
             conn, opportunity_id, action, user_id=user_id, idempotency_key=idempotency_key, source=source,
         )
+    if action == "saved" and not response["unchanged"]:
+        # After the save has committed, in its own transaction: picking a résumé
+        # variant (resume_variant_pick) can never undo or hold up the save.
+        from .resume_variants import safe_pick_after_save
+
+        safe_pick_after_save(conn, user_id, opportunity_id)
+    return response
 
 
 def _intent_state(conn: sqlite3.Connection, opportunity_id: str, user_id: str) -> str:

@@ -998,9 +998,12 @@
     els.systemStatus.hidden = !payload?.available && !payload?.can_add_boards;
     if (els.systemStatus.hidden) return;
     const body = els.systemStatusBody;
+    // Opening the dialog renders at once and again when a fresh status arrives: the board form is
+    // kept across that, so a company typed or a lookup already shown is not wiped by the second render.
+    const tracker = body.querySelector(".board-tracker") || boardTrackerForm();
     body.replaceChildren();
     if (!payload.available) {
-      body.appendChild(boardTrackerForm());
+      body.appendChild(tracker);
       return;
     }
 
@@ -1091,7 +1094,7 @@
         body.appendChild(details);
       }
     }
-    if (payload.can_add_boards) body.appendChild(boardTrackerForm());
+    if (payload.can_add_boards) body.appendChild(tracker);
   }
 
   async function pollRefresh() {
@@ -1313,6 +1316,8 @@
     reason.appendChild(document.createTextNode(item.reasons?.[0] || baseScoreReason()));
 
     button.append(top, title, description, meta, reason);
+    // The résumé variant picked for a saved role (resume_variants.py); changed on the role's page.
+    if (item.resume_pick) button.appendChild(element("p", "card-resume", resumePickText(item.resume_pick)));
 
     const actions = element("div", "card-actions");
     const save = element(
@@ -6054,7 +6059,10 @@
     const identity = element("div");
     identity.appendChild(element("strong", "", record.original_name));
     identity.appendChild(element("span", "", `${Math.ceil(record.byte_size / 1024)} KB · ${record.status}`));
-    heading.append(identity, chip(record.status === "confirmed" ? "Confirmed" : "Needs review", record.status === "confirmed" ? "is-region" : ""));
+    const chips = element("div", "resume-chips");
+    chips.appendChild(chip(record.status === "confirmed" ? "Confirmed" : "Needs review", record.status === "confirmed" ? "is-region" : ""));
+    if (record.variant_label) chips.appendChild(chip(`Variant: ${record.variant_label}`));
+    heading.append(identity, chips);
     card.appendChild(heading);
 
     const preview = element("details", "resume-preview");
@@ -6110,6 +6118,8 @@
       card.appendChild(review);
     }
 
+    card.appendChild(resumeVariantForm(record));
+
     const actions = element("div", "resume-actions");
     const download = element("a", "secondary-button", "Download original");
     download.href = `/api/v1/resumes/${encodeURIComponent(record.id)}/file`;
@@ -6129,6 +6139,96 @@
     actions.append(download, remove);
     card.appendChild(actions);
     return card;
+  }
+
+  // "Use as a variant": a résumé kept for one kind of role, confirmed as a
+  // document to send. Nothing from it is copied into the profile, so a second
+  // variant never overwrites the facts the main résumé confirmed.
+  // What the résumé section says about variants. Only a label the profile lists
+  // under resume_variants, on a confirmed résumé, is ever picked (resume_variants.variant_setup).
+  function resumeVariantSummary(resumesPayload) {
+    const setup = resumesPayload?.variants || {};
+    const list = (value) => (Array.isArray(value) ? value : []);
+    const usable = list(setup.usable);
+    const configured = list(setup.configured);
+    const unlisted = list(setup.unlisted);
+    const where = "The words that mark each kind of role go under resume_variants in your profile file.";
+    const unlistedText = unlisted.length
+      ? ` ${unlisted.join(", ")} ${unlisted.length === 1 ? "is not listed there, so it is" : "are not listed there, so they are"} never picked.`
+      : "";
+    if (usable.length) {
+      return `${plural(usable.length, "résumé variant", "résumé variants")} ready: ${usable.join(", ")}. Roles you save from now on get the one that fits when the résumé variant switch is on under Automation. ${where}${unlistedText}`;
+    }
+    if (configured.length) {
+      return `Your profile lists ${configured.join(", ")}, but no confirmed résumé carries ${configured.length === 1 ? "that label" : "those labels"} yet, so nothing is picked. Label one below with Use as a variant.${unlistedText}`;
+    }
+    if (unlisted.length) {
+      return `${plural(unlisted.length, "résumé carries", "résumés carry")} a variant label, but your profile file lists no resume_variants yet, so nothing is picked. ${where}`;
+    }
+    return "No résumé variants yet. With one résumé, the app uses it for every role, as before.";
+  }
+
+  function resumeVariantForm(record) {
+    const form = element("form", "resume-variant");
+    const id = `resume-variant-${record.id}`;
+    const label = element("label", "profile-field");
+    label.htmlFor = id;
+    label.appendChild(element("span", "", "Variant label"));
+    const input = document.createElement("input");
+    input.type = "text";
+    input.id = id;
+    input.maxLength = 60;
+    input.placeholder = "The kind of role it is for";
+    input.value = record.variant_label || "";
+    label.appendChild(input);
+    const help = element("p", "profile-help", record.status === "confirmed" && !record.variant_label
+      ? "Keep a résumé for each kind of role? Label this one to use it as a variant. Your profile facts stay as they are."
+      : "Using it as a variant confirms it as a document to send, without copying anything into your profile. The words that mark each kind of role go under resume_variants in your profile file.");
+    help.id = `${id}-help`;
+    input.setAttribute("aria-describedby", help.id);
+    const save = element("button", "secondary-button", record.variant_label ? "Save variant label" : "Use as a variant");
+    save.type = "submit";
+    const status = element("p", "form-status");
+    status.id = `${id}-status`;
+    status.setAttribute("aria-live", "polite");
+    form.append(label, help, save, status);
+    const settle = () => {
+      input.removeAttribute("aria-invalid");
+      input.setAttribute("aria-describedby", help.id);
+    };
+    input.addEventListener("input", () => {
+      if (input.getAttribute("aria-invalid") !== "true") return;
+      settle();
+      status.textContent = "";
+    });
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const wanted = input.value.trim();
+      if (!wanted && !record.variant_label) {
+        status.textContent = "Type a label first, such as the kind of role this résumé is for.";
+        // The input names the warning too, so moving focus to it reads the warning out.
+        input.setAttribute("aria-invalid", "true");
+        input.setAttribute("aria-describedby", `${help.id} ${status.id}`);
+        input.focus();
+        return;
+      }
+      settle();
+      save.disabled = true;
+      status.textContent = "Saving…";
+      try {
+        const saved = await api(`/api/v1/resumes/${encodeURIComponent(record.id)}/variant`, {
+          method: "POST",
+          body: JSON.stringify({ variant_label: wanted }),
+        });
+        state.profileStatus = null;
+        announce(saved.variant_label ? `${record.original_name} is now your ${saved.variant_label} variant.` : `${record.original_name} is no longer a variant.`);
+        await loadProfile();
+      } catch (error) {
+        if (error.message !== "Authentication required") status.textContent = error.message;
+        save.disabled = false;
+      }
+    });
+    return form;
   }
 
   function notificationSettingsSection(connections, preferences, events, applications, automation = null) {
@@ -6577,7 +6677,10 @@
   const AUTOMATION_MODE_WORDS = { off: "off", shadow: "shadow, logging what it would do", on: "on" };
   // Action types whose change Undo can take back: every type the ledger has
   // today. A sent email or a submitted application will never be one.
-  const UNDOABLE_ACTION_TYPES = new Set(["application.stage", "opportunity.intent", "application.task", "application.deadline"]);
+  const UNDOABLE_ACTION_TYPES = new Set([
+    "application.stage", "opportunity.intent", "application.task", "application.deadline",
+    "outreach.status", "outreach.follow_up_draft", "resume.pick",
+  ]);
 
   // Whether Undo can take this action back: the server says so (undoable), else by its type.
   function canUndo(action) {
@@ -6637,8 +6740,12 @@
     const reason = control.closest(".automation-feature")?.querySelector(".automation-reason");
     if (reason) {
       const blocked = !feature.can_turn_on && feature.mode !== "on" && Boolean(feature.can_turn_on_reason);
-      reason.textContent = blocked ? `On is not available yet: ${feature.can_turn_on_reason}.` : "";
-      reason.hidden = !blocked;
+      // A switch left on can lose what it needs later (a threshold taken out of the profile).
+      const stuck = feature.mode === "on" && Boolean(feature.requirement);
+      reason.textContent = blocked
+        ? `On is not available yet: ${feature.can_turn_on_reason}.`
+        : stuck ? `On, but it can't act yet: ${feature.requirement}.` : "";
+      reason.hidden = !(blocked || stuck);
     }
   }
 
@@ -6823,11 +6930,15 @@
         },
       });
     } else {
+      const reason = element("p", "profile-help automation-reason");
+      reason.id = `${id}-reason`;
+      reason.hidden = true;
       const [label, box] = automationCheckbox(feature, id, feature.label, status);
-      box.setAttribute("aria-describedby", help.id);
+      box.setAttribute("aria-describedby", `${reason.id} ${help.id}`);
       head.appendChild(label);
       if (external) head.appendChild(external);
-      field.append(head, help);
+      field.append(head, reason, help);
+      paintAutomationControl(box, feature);
     }
     return field;
   }
@@ -6977,6 +7088,89 @@
       features.appendChild(wrap);
     });
     section.appendChild(features);
+
+    // Roles auto_pass passed on in the last week, each with Restore (the ledger's undo).
+    const [passedBlock, passedHeading] = block("automation-auto-passed", "Auto-passed this week", "automation-auto-passed-heading");
+    passedBlock.appendChild(element("p", "profile-help", "Roles the app passed on for you in the last 7 days. Restore puts one back as if it had never been passed."));
+    const passedHost = element("div");
+    const passedStatus = liveStatus();
+    passedBlock.append(passedHost, passedStatus);
+    let autoPassed = null;
+    const restoring = new Set();
+
+    function paintAutoPassed() {
+      passedHost.replaceChildren();
+      if (!autoPassed) {
+        passedHost.appendChild(element("p", "empty-inline", "Loading…"));
+        return;
+      }
+      if (autoPassed.error) {
+        passedHost.appendChild(element("p", "form-error", `Auto-passed roles could not be loaded: ${autoPassed.error}`));
+        return;
+      }
+      if (!autoPassed.items.length) {
+        passedHost.appendChild(element("p", "empty-inline", "Nothing was passed on automatically in the last 7 days."));
+        return;
+      }
+      const list = element("ul", "automation-actions");
+      autoPassed.items.forEach((item) => {
+        const row = element("li", "automation-action");
+        row.dataset.actionId = item.action_id;
+        const name = [item.title, item.company].filter(Boolean).join(" at ") || "A role";
+        row.appendChild(element("p", "automation-action-summary", name));
+        const why = Number.isFinite(item.score) && Number.isFinite(item.threshold)
+          ? `Score ${item.score}, below your ${item.threshold}`
+          : "";
+        const meta = [why, item.applied_at ? `Passed ${formatDateTime(item.applied_at)}` : ""].filter(Boolean).join(" · ");
+        if (meta) row.appendChild(element("p", "automation-meta", meta));
+        if (Array.isArray(item.reasons) && item.reasons.length) row.appendChild(element("p", "automation-evidence", `Why it scored so: ${item.reasons.join("; ")}`));
+        const buttons = element("div", "automation-action-buttons");
+        const restore = element("button", "secondary-button", "Restore");
+        restore.type = "button";
+        restore.disabled = restoring.has(item.action_id);
+        restore.setAttribute("aria-label", `Restore ${name}`);
+        restore.addEventListener("click", async () => {
+          if (restoring.has(item.action_id)) return;
+          restoring.add(item.action_id);
+          restore.disabled = true;
+          passedStatus.textContent = "Saving…";
+          let message;
+          try {
+            const result = await automationWrite(() => api(`/api/v1/automation/actions/${encodeURIComponent(item.action_id)}/undo`, { method: "POST" }));
+            message = withUndoNote(result.feature_paused ? automationBreakerMessage("auto_pass", result.breaker_notice) : `Restored ${name}.`, result);
+          } catch (error) {
+            if (error.message === "Authentication required") {
+              restoring.delete(item.action_id);
+              return;
+            }
+            // As decide(): a 409 or 404 says it is no longer open to Restore; anything else can be tried again.
+            if (error.status !== 409 && error.status !== 404) restoring.delete(item.action_id);
+            message = error.message;
+          }
+          await Promise.all([reload(), loadAutoPassed()]);
+          passedStatus.textContent = message;
+          if (!document.activeElement || document.activeElement === document.body || !document.activeElement.isConnected) passedHeading.focus();
+        });
+        buttons.appendChild(restore);
+        row.appendChild(buttons);
+        list.appendChild(row);
+      });
+      passedHost.appendChild(list);
+    }
+
+    async function loadAutoPassed() {
+      try {
+        const payload = await api("/api/v1/automation/auto-passed");
+        autoPassed = { items: Array.isArray(payload?.items) ? payload.items : [], error: "" };
+      } catch (error) {
+        if (error.message === "Authentication required") return;
+        autoPassed = { items: [], error: error.message };
+      }
+      paintAutoPassed();
+    }
+    paintAutoPassed();
+    loadAutoPassed();
+    section.appendChild(passedBlock);
 
     const applicationList = Array.isArray(applicationsPayload?.items) ? applicationsPayload.items : [];
     let mailState = payload.application_mail || null;
@@ -7359,7 +7553,8 @@
         message = error.message;
       }
       deciding.delete(action.id);
-      const refreshed = await reload();
+      // An auto-pass undone here also leaves Auto-passed this week, which has its own list.
+      const [refreshed] = await Promise.all([reload(), action.feature === "auto_pass" ? loadAutoPassed() : null]);
       // Whether or not the lists were redrawn, the buttons follow what is known.
       syncRowButtons();
       entry.status.textContent = refreshed ? message : `${message} The lists could not be refreshed, so they may be out of date.`;
@@ -7536,8 +7731,9 @@
       }
     }
 
-    // An automatic change announced while this section is showing refreshes its lists.
-    automationStatus.reloadLists = () => (section.isConnected ? reload() : null);
+    // An automatic change announced while this section is showing refreshes its lists,
+    // Auto-passed this week included (a role auto_pass passed, or its Undo from the announcement).
+    automationStatus.reloadLists = () => (section.isConnected ? Promise.all([reload(), loadAutoPassed()]).then(([shown]) => shown) : null);
 
     paintNotices();
     paintLists();
@@ -7661,6 +7857,7 @@
     resumeSection.appendChild(element("p", "eyebrow", "Private documents"));
     resumeSection.appendChild(element("h3", "", "Resume versions"));
     resumeSection.appendChild(element("p", "profile-help", "PDF and DOCX only, up to 5 MB. Parsed suggestions remain drafts until you confirm each fact."));
+    resumeSection.appendChild(element("p", "profile-help resume-variant-summary", resumeVariantSummary(resumesPayload)));
     const upload = element("form", "upload-form");
     const file = document.createElement("input");
     file.type = "file";
@@ -8464,6 +8661,7 @@
     application_follow_up: "Follow-up",
     outreach_follow_up: "Outreach follow-up",
     outreach_revisit: "Outreach revisit",
+    application_silence: "No reply yet",
   };
   const URGENT_GROUPS = [
     ["overdue", "Overdue", (item) => item.days_until < 0],
@@ -8497,7 +8695,7 @@
 
   function urgentHeadline(item) {
     if (item.kind.startsWith("outreach_")) return [item.company, "Cold outreach"];
-    if (item.kind === "task") return [item.title, [item.company, item.subtitle].filter(Boolean).join(" · ")];
+    if (item.kind === "task" || item.kind === "application_silence") return [item.title, [item.company, item.subtitle].filter(Boolean).join(" · ")];
     return [item.title, item.company];
   }
 
@@ -8513,7 +8711,7 @@
         setView("programs");
       }];
     }
-    if (item.kind === "task" || item.kind === "application_follow_up" || item.kind === "email_deadline") {
+    if (item.kind === "task" || item.kind === "application_follow_up" || item.kind === "application_silence" || item.kind === "email_deadline") {
       return ["Open application", `Open the application for ${item.company}`, () => {
         state.applicationFocus = item.application_id;
         setView("applications");
@@ -8563,7 +8761,7 @@
     { id: "all", label: "Everything dated", test: () => true },
     ...URGENT_GROUPS.map(([key, label, test]) => ({ id: key, label, group: "When", tone: key === "overdue" ? "is-alert" : key === "today" ? "is-soon" : "", test })),
     { id: "deadlines", label: "Deadlines", group: "Kind", test: (item) => ["posting_deadline", "your_deadline", "program_deadline", "outreach_deadline", "email_deadline"].includes(item.kind) },
-    { id: "follow-ups", label: "Follow-ups", group: "Kind", test: (item) => ["application_follow_up", "outreach_follow_up", "outreach_revisit"].includes(item.kind) },
+    { id: "follow-ups", label: "Follow-ups", group: "Kind", test: (item) => ["application_follow_up", "application_silence", "outreach_follow_up", "outreach_revisit"].includes(item.kind) },
     { id: "tasks", label: "Tasks", group: "Kind", test: (item) => item.kind === "task" },
   ];
 
@@ -9363,6 +9561,150 @@
     host.replaceChildren(cards, metadata, element("p", "score-note", result.notice), disclosure);
   }
 
+  // Which of the student's résumés goes with a role (resume_variants.py).
+  function resumePickText(pick) {
+    if (!pick) return "";
+    const label = pick.label || "your résumé";
+    if (pick.picked_by === "student") return `Résumé: ${label} (your choice)`;
+    if (pick.status === "unsure") return `Résumé: ${label}, the default: couldn't tell which variant fits`;
+    const matched = Array.isArray(pick.matched) && pick.matched.length ? ` (matched ${pick.matched.join(", ")})` : "";
+    return `Résumé: ${label}${matched}`;
+  }
+
+  function resumeOptionText(option) {
+    if (option.label) return `${option.label} (${option.original_name})`;
+    return option.original_name || "Résumé";
+  }
+
+  // The résumé for this role: the pick in force (or what the words suggest),
+  // a dropdown to change it, and the confirmed skills the posting names that
+  // the résumé never mentions. Informational; nothing is edited.
+  function resumePickSection(item) {
+    const section = element("section", "detail-section resume-pick");
+    section.appendChild(element("p", "eyebrow", "Résumé for this role"));
+    const current = element("p", "resume-pick-current", "Checking your résumés…");
+    const control = element("div", "resume-pick-control");
+    const status = element("p", "form-status");
+    status.setAttribute("role", "status");
+    const check = element("div", "resume-check");
+    section.append(current, control, status, check);
+    let view = null;
+    const stale = () => state.detailItem !== item || !section.isConnected;
+
+    function paintCheck(result) {
+      check.replaceChildren();
+      const terms = Array.isArray(result?.terms) ? result.terms : [];
+      if (!terms.length) {
+        // A check that could not run says so, so it is not mistaken for one that found nothing missing.
+        // With no confirmed résumé, the line above already says so.
+        if (result?.note && result.resume_file_id) check.appendChild(element("p", "resume-check-note", `${result.note}.`));
+        return;
+      }
+      const list = element("ul", "reason-list is-gap");
+      terms.forEach((term) => {
+        list.appendChild(element("li", "", `This posting asks for ${term}. Your profile lists ${term}, but your ${result.label} résumé doesn't mention it.`));
+      });
+      check.append(element("p", "resume-check-note", "From your confirmed skills only. Nothing is changed."), list);
+    }
+
+    async function refreshCheck() {
+      try {
+        const result = await api(`/api/v1/opportunities/${encodeURIComponent(item.id)}/resume-check`);
+        if (!stale()) paintCheck(result);
+      } catch (error) {
+        if (!stale() && error.message !== "Authentication required") check.replaceChildren(element("p", "form-error", `The skills check could not run: ${error.message}`));
+      }
+    }
+
+    function paint() {
+      const pick = view.pick;
+      const suggestion = view.suggestion || {};
+      if (pick) {
+        current.textContent = resumePickText(pick);
+      } else if (!view.options.length) {
+        current.textContent = "No confirmed résumé yet. Confirm one on your Profile page to use it here.";
+      } else if (!view.configured) {
+        current.textContent = "No résumé variants are listed under resume_variants in your profile file, so the app uses your confirmed résumé, as before.";
+      } else if (suggestion.resume_file_id) {
+        const suggested = resumePickText({ ...suggestion, picked_by: "automatic" }).replace(/^Résumé: /, "");
+        // A pick is made only when a save changes the role, with the switch on and automation not paused.
+        let next;
+        if (view.saved) next = "Nothing was picked when this role was saved. Choose a résumé below to set one.";
+        else if (!view.enabled) next = "Turn on the résumé variant switch under Automation to have it picked when you save.";
+        else if (view.paused) next = "Automation is paused, so nothing is picked when you save. Choose a résumé below to set one.";
+        else next = "It is picked when you save this role.";
+        current.textContent = `Suggested: ${suggested}. ${next}`;
+      } else {
+        current.textContent = suggestion.reason ? `${suggestion.reason}.` : "No variant fits this role yet.";
+      }
+      control.replaceChildren();
+      if (!view.options.length) return;
+      const label = element("label", "profile-field");
+      label.appendChild(element("span", "", "Change résumé"));
+      const select = document.createElement("select");
+      if (!pick) {
+        const none = document.createElement("option");
+        none.value = "";
+        none.textContent = "Choose a résumé for this role";
+        select.appendChild(none);
+      }
+      view.options.forEach((option) => {
+        const entry = document.createElement("option");
+        entry.value = option.resume_file_id;
+        entry.textContent = resumeOptionText(option);
+        select.appendChild(entry);
+      });
+      select.value = pick?.resume_file_id || "";
+      label.appendChild(select);
+      control.appendChild(label);
+      autoSaveSelect(select, {
+        saved: () => view.pick?.resume_file_id || "",
+        commit: async (value, trigger) => {
+          if (!value) {
+            select.value = view.pick?.resume_file_id || "";
+            return;
+          }
+          select.disabled = true;
+          status.textContent = "Saving…";
+          try {
+            view = await api(`/api/v1/opportunities/${encodeURIComponent(item.id)}/resume-pick`, {
+              method: "PUT",
+              body: JSON.stringify({ resume_file_id: value }),
+            });
+            if (stale()) return;
+            item.resume_pick = view.pick;
+            paint();
+            status.textContent = `Using ${view.pick?.label || "that résumé"} for this role. The app will not change it.`;
+            // A save made by leaving the select leaves focus where the student went.
+            const focused = document.activeElement;
+            if (trigger !== "blur" || !focused || focused === document.body || !focused.isConnected) {
+              control.querySelector("select")?.focus();
+            }
+            refreshCheck();
+            // The card behind the panel shows the pick too, so it is drawn again with the new one.
+            if (["discover", "saved", "urgent"].includes(state.view)) loadCurrentView();
+          } catch (error) {
+            if (stale()) return;
+            select.value = view.pick?.resume_file_id || "";
+            select.disabled = false;
+            if (error.message !== "Authentication required") status.textContent = error.message;
+          }
+        },
+      });
+    }
+
+    api(`/api/v1/opportunities/${encodeURIComponent(item.id)}/resume-pick`).then((payload) => {
+      if (stale()) return;
+      view = { ...payload, options: Array.isArray(payload?.options) ? payload.options : [] };
+      paint();
+      refreshCheck();
+    }).catch((error) => {
+      if (stale() || error.message === "Authentication required") return;
+      current.textContent = `Your résumé choice could not be loaded: ${error.message}`;
+    });
+    return section;
+  }
+
   function jevReviewSection(item) {
     const section = element("section", "detail-section jev-review");
     section.appendChild(element("p", "eyebrow", "Jev second opinion"));
@@ -9521,6 +9863,7 @@
       content.appendChild(gaps);
     }
 
+    content.appendChild(resumePickSection(item));
     content.appendChild(jevReviewSection(item));
 
     const overview = element("section", "detail-section");

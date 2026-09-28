@@ -46,7 +46,8 @@ Which application. match_application tries, strongest first: an ATS job id or
 job URL in a link that equals an application's source (job_id); the company
 named in the sender, subject or opening of the email, equal by
 pipeline.identity_tokens, plus at least 0.8 of the role's words (company_title);
-the company alone, when exactly one open application has it (company_single).
+the company alone, when exactly one open application has it (company_single;
+one the app archived after no reply counts as open, counts_as_open).
 Otherwise ambiguous (the candidates are ranked for the student's picker) or
 none.
 
@@ -69,6 +70,23 @@ Stages only move forward (applying, applied, interview, offer; a rejection
 closes anything before an offer), and the check is made inside the change's
 own transaction. The same rules hold when the student approves a proposal for
 another application than the one proposed (_correct).
+
+Reopening. Nothing leaves a closed stage, with one exception: an application
+the app archived itself after no reply (archive_silent_applications;
+internal_automation.automatic_archive) counts as still at the stage it was
+archived from, Applied, both here and when matching (counts_as_open), so an
+email naming only the company is as unclear about which application it
+means as it was before the archive. An interview, a rejection or an offer
+(proposed, as always) moves it out of Archived whenever the email came; a
+confirmation, an assessment, a scheduling link or a deadline reopens it to
+Applied only when the archive did not know of the email: received on a
+later day than the one it counted the silence from, even if it is read only
+after the archive (news_to_archive). A task or deadline is never added to an
+application still archived, on its own or by a correction. Each move out of
+Archived checks again, inside its own transaction, that the archive is still
+the app's (_reopen_guard): an application the student archived is never
+reopened. A move out of it puts back the follow-up reminder the archive
+cancelled (automation.ApplicationStage).
 
 A stated date counts as a deadline only right after its cue ("by October 3",
 "due on October 8", "before it expires on October 5"); "sent by the team on
@@ -129,7 +147,7 @@ import httpx
 
 from pipeline import identity_tokens, normalized
 
-from . import automation, mail_trust
+from . import automation, internal_automation, mail_trust
 from .connections import classify_monitored_message
 from .database import is_transient_error
 from .extension_apply import _canonical_url
@@ -138,6 +156,7 @@ from .outreach_drafting import sender_account
 from .outreach_gmail import ClientFactory, GmailAuthError, GmailThrottled, _connector, _Gmail
 from .schema import utc_now
 from .typesafe_decisions import DecisionClient
+from .user_time import user_timezone
 
 LOGGER = logging.getLogger(__name__)
 
@@ -555,10 +574,27 @@ def _applications(conn: sqlite3.Connection, user_id: str) -> list[dict[str, Any]
     return apps
 
 
-def _rank(apps: list[dict[str, Any]], overlap: dict[str, float]) -> list[dict[str, Any]]:
-    """Best first: the most of the role's words, then open before closed, then the most recently updated."""
+def counts_as_open(conn: sqlite3.Connection, application_id: str, stage: str) -> bool:
+    """Open for matching an email: not closed, or archived only by the app after no reply.
+
+    An application archive_silent_applications archived counts as still at
+    Applied (plan() may reopen it), so the matcher counts it as open too: an
+    email naming only the company is then no clearer about the company's
+    other open application than it was before the archive.
+    """
+    if stage not in CLOSED_STAGES:
+        return True
+    return stage == "archived" and internal_automation.automation_archived(conn, application_id)
+
+
+def _rank(apps: list[dict[str, Any]], overlap: dict[str, float], open_ids: set[str]) -> list[dict[str, Any]]:
+    """Best first: the most of the role's words, then open (counts_as_open) before closed, then the most recently updated."""
     newest = sorted(apps, key=lambda app: str(app["updated_at"] or ""), reverse=True)
-    return sorted(newest, key=lambda app: (-overlap.get(app["id"], 0.0), app["stage"] in CLOSED_STAGES))
+    return sorted(newest, key=lambda app: (-overlap.get(app["id"], 0.0), app["id"] not in open_ids))
+
+
+def _open_ids(conn: sqlite3.Connection, apps: list[dict[str, Any]]) -> set[str]:
+    return {app["id"] for app in apps if counts_as_open(conn, app["id"], str(app["stage"]))}
 
 
 def match_application(conn: sqlite3.Connection, user_id: str, mail: Mail) -> Match:
@@ -582,7 +618,7 @@ def match_application(conn: sqlite3.Connection, user_id: str, mail: Mail) -> Mat
         app = by_job[0]
         return Match("job_id", app["id"], [app["id"]], app["company"], app["company_key"], app["title"])
     if len(by_job) > 1:
-        ranked = _rank(by_job, overlap)
+        ranked = _rank(by_job, overlap, _open_ids(conn, by_job))
         return Match("ambiguous", ranked[0]["id"], [app["id"] for app in ranked], ranked[0]["company"], ranked[0]["company_key"], title)
     display = _DISPLAY_NOISE.sub("", mail.sender_name)
     places = (display, mail.subject, mail.text[:3000])
@@ -594,13 +630,16 @@ def match_application(conn: sqlite3.Connection, user_id: str, mail: Mail) -> Mat
     by_domain = bool(sender_keys) and all(app["company_key"] in sender_keys for app in by_company)
     if not by_company:
         return Match("none", "", [], company, mail_trust.company_key(company), title)
-    ranked = _rank(by_company, overlap)
+    open_ids = _open_ids(conn, by_company)
+    ranked = _rank(by_company, overlap, open_ids)
     candidates = [app["id"] for app in ranked]
     titled = [app for app in by_company if overlap[app["id"]] >= 0.8]
     if len(titled) == 1:
         app = titled[0]
         return Match("company_title", app["id"], candidates, app["company"], app["company_key"], app["title"], by_domain)
-    open_ones = [app for app in by_company if app["stage"] not in CLOSED_STAGES]
+    # An application the app archived after no reply counts as open here, as in plan(): otherwise its
+    # archive would turn an email about either of two applications into a guess acted on for the other.
+    open_ones = [app for app in by_company if app["id"] in open_ids]
     if not titled and len(open_ones) == 1:
         app = open_ones[0]
         return Match("company_single", app["id"], candidates, app["company"], app["company_key"], app["title"], by_domain)
@@ -784,6 +823,49 @@ def _stage_guard(expected: str) -> Callable[[sqlite3.Connection, dict[str, Any]]
     return lambda _conn, before: before.get("stage") == expected
 
 
+def _reopen_guard(application_id: str) -> Callable[[sqlite3.Connection, dict[str, Any]], bool]:
+    """Inside the change's transaction: still archived, and still by the app's own archive for silence.
+
+    internal_automation.automation_archived reads the latest stage change, so an
+    archive the student made meanwhile (or an undo of the app's) stops the move:
+    a student's archive is never reopened.
+    """
+    return lambda conn, before: before.get("stage") == "archived" and internal_automation.automation_archived(conn, application_id)
+
+
+def news_to_archive(conn: sqlite3.Connection, user_id: str, archive: dict[str, Any], received: datetime) -> bool:
+    """Whether an email tells an automatic archive (internal_automation.automatic_archive) something it did not know.
+
+    The archive counted the silence from a calendar day (the company's last
+    email it knew of, else the day the student applied) and knew of no email
+    after it. An email received on a later day than that is news, even when
+    it is read after the archive but was received before it (Gmail needed
+    reconnecting, a pass ran out of reads, the look back when the switch was
+    turned on): the silence the archive was made for never happened. One
+    received on that day or before it is not. An archive that did not record
+    its day falls back to when it was made.
+    """
+    archived_at = automation._parse(archive.get("archived_at"))
+    if archived_at is not None and received > archived_at:
+        return True
+    since = str(archive.get("silent_since") or "")
+    if not since:
+        return archived_at is None
+    try:
+        received_on = user_timezone(conn, user_id).calendar_date(received.isoformat())
+        return received_on is not None and received_on > date.fromisoformat(since)
+    except ValueError:
+        return False
+
+
+def _open_guard(application_id: str) -> Callable[[sqlite3.Connection, dict[str, Any]], bool]:
+    """For a task or deadline planned with a reopen: the application is open now, or still archived only by the app."""
+    def check(conn: sqlite3.Connection, _before: dict[str, Any]) -> bool:
+        row = conn.execute("SELECT stage FROM applications WHERE id=?", (application_id,)).fetchone()
+        return row is not None and counts_as_open(conn, application_id, str(row["stage"]))
+    return check
+
+
 def _platform(mail: Mail) -> str:
     for host in [mail.sender_domain, *mail.link_hosts]:
         for domain, name in PLATFORM_NAMES.items():
@@ -879,11 +961,20 @@ def plan(
     if app is None:
         return planned, common
     stage, company = str(app["stage"]), str(app["company"])
+    # An application the app archived itself for no reply (archive_silent_applications) counts as
+    # still at the stage it was archived from, so a later email can reopen it; each move out of
+    # archived re-checks that inside its own transaction (_reopen_guard). A student's archive stays.
+    archive = internal_automation.automatic_archive(conn, match.application_id) if stage == "archived" else None
+    current = str(archive["from_stage"]) if archive else stage
+    # An email that only confirms, or adds a task or a deadline, reopens it only when the archive did
+    # not know of it (news_to_archive): one it had already counted the silence from says nothing new.
+    news_since_archive = archive is None or news_to_archive(conn, user_id, archive, mail.received_at)
+    reopen_waits: list[str] = []
     who = f"{company} ({app['title']})"
     apps_open = sum(
         1 for row in conn.execute(
-            "SELECT a.stage, o.company FROM applications a JOIN opportunities o ON o.id=a.opportunity_id WHERE a.user_id=?", (user_id,),
-        ).fetchall() if mail_trust.company_key(row["company"]) == match.company_key and row["stage"] not in CLOSED_STAGES
+            "SELECT a.id, a.stage, o.company FROM applications a JOIN opportunities o ON o.id=a.opportunity_id WHERE a.user_id=?", (user_id,),
+        ).fetchall() if mail_trust.company_key(row["company"]) == match.company_key and counts_as_open(conn, str(row["id"]), str(row["stage"]))
     )
     manual = _manual_after(conn, match.application_id, mail.received_at)
     received_iso = mail.received_at.isoformat(timespec="seconds")
@@ -894,46 +985,68 @@ def plan(
             blockers.append("you changed this application's stage after the email arrived")
         after = {"stage": target}
         words = f"{who}: move to {target}, {origin}"
-        if target == "applied" or (label == "application_confirmation" and target == stage):
+        if target == "applied" or (label == "application_confirmation" and target == current):
             after["applied_at"] = received_iso
             if target == stage:
                 words = f"{who}: set when you applied to {mail.received_at:%b} {mail.received_at.day}, {origin}"
-        planned.append(Planned("application.stage", "application", match.application_id, after, words, blockers, _stage_guard(stage)))
+        guard = _stage_guard(stage)
+        if archive:
+            words = f"{who}: reopen (archived automatically after no reply) and move to {target}, {origin}"
+            guard = _reopen_guard(match.application_id)
+            # What stops the reopen stops the task or deadline that comes with it too (reopening).
+            reopen_waits[:] = blockers
+        planned.append(Planned("application.stage", "application", match.application_id, after, words, blockers, guard))
+
+    def reopening(blockers: list[str]) -> Callable[[sqlite3.Connection, dict[str, Any]], bool] | None:
+        """For a task or deadline on an application the app archived: never added on its own to one still archived."""
+        if not archive:
+            return None
+        if reopen_waits:
+            blockers.append("reopening the application, which the app archived after no reply, waits for you")
+        return _open_guard(match.application_id)
 
     def task(title: str, due_at: str | None, link: str, tiers: set[str], extra: list[str] | None = None) -> None:
         blockers = [blocker for blocker in [_tier_blocker(match, tiers, apps_open), *(extra or [])] if blocker]
+        guard = reopening(blockers)
         spec = {"title": title, "due_at": due_at, "origin": "email", "origin_ref": mail.gmail_id, "link": link}
         planned.append(Planned("application.task", "application", match.application_id, {"task": spec},
-                               f"{who}: add the task “{title}”, {origin}", blockers))
+                               f"{who}: add the task “{title}”, {origin}", blockers, guard))
 
     def deadline(found: StatedDate) -> None:
         blockers = [blocker for blocker in [_tier_blocker(match, ANY_TIER, apps_open)] if blocker]
         blockers.extend(_date_blockers(found))
+        guard = reopening(blockers)
         # Urgent's note reads "From <sender_domain>, received ...": never a domain Gmail did not vouch for, unmarked.
         spec = {"deadline_on": found.on.isoformat(), "quote": found.quote,
                 "sender_domain": domain if auth.ok or not domain else f"{domain} (sender not verified)",
                 "gmail_id": mail.gmail_id, "received_at": received_iso}
         planned.append(Planned("application.deadline", "application", match.application_id, {"deadline": spec},
-                               f"{who}: add the deadline {found.on:%b} {found.on.day}, {origin}", blockers))
+                               f"{who}: add the deadline {found.on:%b} {found.on.day}, {origin}", blockers, guard))
 
-    closed = stage in CLOSED_STAGES
+    # An interview, a rejection or an offer reopens an application the app archived whenever it came;
+    # a confirmation, a task or a deadline only when the archive did not know of it (news_since_archive).
+    closed = stage in CLOSED_STAGES and not (archive and (news_since_archive or label in ("interview", "rejected", "offer")))
     if label == "application_confirmation" and not closed:
-        stage_change("applied" if stage == "applying" else stage, ANY_TIER)
-    elif label == "interview" and not closed and stage != "offer":
-        if stage in ("applying", "applied"):
+        stage_change("applied" if current == "applying" else current, ANY_TIER)
+    elif label == "interview" and not closed and current != "offer":
+        if current in ("applying", "applied"):
             stage_change("interview", STRONG_TIERS)
         due = (now + timedelta(days=SCHEDULE_TASK_DAYS)).isoformat(timespec="minutes")
         task("Schedule interview", due, _first_link(mail, "scheduling"), ANY_TIER)
     elif label == "scheduling" and not closed:
+        if archive:
+            stage_change(current, ANY_TIER)
         due = (now + timedelta(days=SCHEDULE_TASK_DAYS)).isoformat(timespec="minutes")
         task("Schedule interview", due, _first_link(mail, "scheduling"), ANY_TIER)
-    elif label == "rejected" and stage in ("applying", "applied", "interview"):
+    elif label == "rejected" and current in ("applying", "applied", "interview"):
         stage_change("rejected", STRONG_TIERS)
-    elif label == "offer" and stage != "offer":
+    elif label == "offer" and current != "offer":
         # Proposed whatever the stage: an offer for an application the student closed is theirs to judge.
         stage_change("offer", ANY_TIER, ["an offer is always yours to confirm", *([f"the application is {stage}"] if closed else [])])
     elif label in ("assessment", "deadline") and not closed:
         found = stated_deadline(mail.text, mail.received_at)
+        if archive and (label == "assessment" or found):
+            stage_change(current, ANY_TIER)
         if label == "assessment":
             platform = _platform(mail)
             title = f"Complete the {platform} assessment" if platform else "Complete the assessment"
@@ -1744,11 +1857,26 @@ def _correct(conn: sqlite3.Connection, user_id: str, action: dict[str, Any], sub
     offer (always the student's call), and a rejection never overwrites an
     offer or a withdrawal. A confirmation keeps a stage past Applied and sets
     when they applied. A task or a deadline is never added to a closed
-    application. The summary names the chosen application.
+    application, since Urgent never shows it there. An application the app
+    archived after no reply (internal_automation.automatic_archive) counts
+    as at the stage it was archived from for a stage change, so the pick can
+    reopen it; a task or deadline waits until it is reopened (decide_event
+    reopens it first when the same email's stage change is approved for it,
+    as plan() pairs them). The summary names the chosen application.
     """
     row = conn.execute("SELECT stage FROM applications WHERE id=? AND user_id=?", (subject_id, user_id)).fetchone()
     stage = str(row["stage"]) if row else ""
+    # As in plan(): an application the app archived after no reply counts as at the stage it was archived
+    # from, so the student's pick can reopen it. Checked inside approve()'s transaction. A student's archive stays.
+    archive = internal_automation.automatic_archive(conn, subject_id) if stage == "archived" else None
     who = _who(conn, user_id, subject_id) or "That application"
+    if archive and action["action_type"] != "application.stage":
+        raise automation.CorrectionRefused(
+            f"{who} was archived by the app after no reply, so this email's task or deadline is not added to it while it is "
+            "archived. Move it back to Applied first if the email is about it"
+        )
+    if archive:
+        stage = str(archive["from_stage"])
     old = _who(conn, user_id, action["subject_id"])
     after = {key: value for key, value in action["after"].items() if key != "_result"}
     if action["action_type"] == "application.stage":
@@ -1808,8 +1936,13 @@ def _move_applied(conn: sqlite3.Connection, user_id: str, gmail_id: str, applica
     A task or deadline the app added to another application (the company
     alone matched) is made again for the chosen one, approved by the student,
     and taken back from the other while it is unchanged. One the student has
-    edited or finished since stays where it is.
+    edited or finished since stays where it is, and so does everything while
+    the chosen one is closed (archived by the app included): a task or
+    deadline is never added to a closed application (_correct).
     """
+    row = conn.execute("SELECT stage FROM applications WHERE id=? AND user_id=?", (application_id, user_id)).fetchone()
+    if row is None or row["stage"] in CLOSED_STAGES:
+        return
     for action in _message_actions(conn, user_id, gmail_id, "applied"):
         if (action["subject_kind"] != "application" or action["subject_id"] == application_id
                 or action.get("decided_by") != "system" or action["action_type"] not in MOVABLE):
@@ -1840,6 +1973,18 @@ def _move_applied(conn: sqlite3.Connection, user_id: str, gmail_id: str, applica
             continue  # edited or finished since: the student's own now
 
 
+def _reopens(conn: sqlite3.Connection, user_id: str, proposals: list[dict[str, Any]], application_id: str) -> bool:
+    """Whether confirming these proposals for ``application_id`` approves a stage change that reopens the app's archive of it."""
+    if not internal_automation.automation_archived(conn, application_id):
+        return False
+    return any(
+        action["subject_kind"] == "application" and action["action_type"] == "application.stage"
+        and str(action["after"].get("stage") or "") not in CLOSED_STAGES
+        and automation.correction_refusal(conn, action["id"], user_id, application_id) is None
+        for action in proposals
+    )
+
+
 def decide_event(
     conn: sqlite3.Connection, event: dict[str, Any], decision: str, application_id: str | None, *, user_id: str,
 ) -> dict[str, Any] | None:
@@ -1852,8 +1997,12 @@ def decide_event(
     Confirm approves each of the email's proposals for the application the
     student picked (a correction when it is another one, held to the same
     rules as plan(): if any would be refused, nothing is decided and
-    CorrectionRefused says why). What the email already added on its own to
-    another application moves to the picked one (_move_applied). A proposal
+    CorrectionRefused says why). Its stage change is approved first: when
+    it reopens an application the app archived after no reply, the email's
+    task and deadline then go to the reopened application, as plan() pairs
+    them; without one, a task or deadline is refused there. What the email
+    already added on its own to another application moves to the picked one
+    (_move_applied). A proposal
     to capture an untracked role is set aside, since the student picked a
     tracked one. When a proposal finds its application changed since, it is
     left as it is; if nothing of the email was applied, the card is settled
@@ -1869,22 +2018,30 @@ def decide_event(
     proposals = [action for action in actions if action["status"] == "proposed"]
     if not tracked and not proposals:
         return None
+    reopening = bool(decision == "confirm" and application_id and _reopens(conn, user_id, proposals, application_id))
     if decision == "confirm" and application_id:
         for action in proposals:
-            if action["subject_kind"] == "application":
-                refusal = automation.correction_refusal(conn, action["id"], user_id, application_id)
-                if refusal:
-                    raise automation.CorrectionRefused(refusal)
+            if action["subject_kind"] != "application":
+                continue
+            if reopening and action["action_type"] in MOVABLE:
+                continue  # checked when approved, once the email's stage change has reopened the application
+            refusal = automation.correction_refusal(conn, action["id"], user_id, application_id)
+            if refusal:
+                raise automation.CorrectionRefused(refusal)
     timestamp = utc_now()
     superseded: list[str] = []
-    for action in proposals:
+    # The stage change first (a stable sort keeps the rest in order): it may reopen what a task or deadline needs open.
+    for action in sorted(proposals, key=lambda item: item["action_type"] != "application.stage"):
         if decision == "confirm" and action["subject_kind"] == "application":
             try:
                 automation.approve(conn, action["id"], user_id, subject_id=application_id)
             except automation.Superseded as exc:
                 superseded.append(str(exc))
-            except automation.CorrectionRefused:
-                raise
+            except automation.CorrectionRefused as exc:
+                if not reopening:
+                    raise
+                # The reopen did not happen (the application changed meanwhile), so this waits.
+                superseded.append(str(exc))
             except ValueError:
                 continue  # decided somewhere else meanwhile
         else:

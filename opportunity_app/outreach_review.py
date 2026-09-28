@@ -35,9 +35,10 @@ import httpx
 from .agent_providers import _cli_binary
 from .outreach import get_target
 from .outreach_delivery import check_deliveries
-from .outreach_inbox import capture_replies
+from .outreach_inbox import OnReply, capture_replies
 from .outreach_gmail import ClientFactory, GmailThrottled
 from .preparation import confirmed_facts
+from .typesafe_decisions import DecisionClient
 
 Runner = Callable[[str], str]
 REVIEW_TIMEOUT_SECONDS = 240
@@ -70,16 +71,26 @@ FRESH_LOOK_REASONS = {
 }
 
 
-def fresh_look(conn: sqlite3.Connection, target_id: str, *, user_id: str, client_factory: ClientFactory) -> dict[str, Any]:
+def fresh_look(
+    conn: sqlite3.Connection, target_id: str, *, user_id: str, client_factory: ClientFactory,
+    decisions: DecisionClient | None = None, on_reply: OnReply | None = None,
+) -> dict[str, Any]:
     """Read Gmail again for this company's bounces and replies. ``ok`` is False when Gmail could not be read.
 
     Both checks report Gmail trouble as a state rather than raising. Should one
     raise anyway, the email still only waits: a slowdown or an unreachable
-    Gmail never reaches the send as a failure.
+    Gmail never reaches the send as a failure. ``ok`` says only that Gmail
+    could be read: a company capture_replies does not watch
+    (outreach_inbox.watched_ids) is not searched at all, so a caller that
+    needs its replies checked asks that first. ``decisions`` and ``on_reply``
+    are passed to capture_replies, so a reply found here is handled as the
+    InboxWatcher would handle it.
     """
     try:
         delivery = check_deliveries(conn, user_id=user_id, client_factory=client_factory, force_target=target_id)
-        replies = capture_replies(conn, user_id=user_id, client_factory=client_factory, force=True)
+        replies = capture_replies(
+            conn, user_id=user_id, client_factory=client_factory, force=True, decisions=decisions, on_reply=on_reply,
+        )
     except GmailThrottled:
         return {"ok": False, "reason": FRESH_LOOK_REASONS["throttled"]}
     except httpx.HTTPError:

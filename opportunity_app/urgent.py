@@ -3,8 +3,12 @@
 Postings almost never state a deadline, so Urgent is built from every dated
 record that really exists: deadlines stated in posting text, deadlines the
 student entered, deadlines from their own program research, outreach
-deadlines, open application tasks, and follow-up dates. Each row keeps a label saying where its date came from. Nothing is
-estimated; a posting's age is never turned into a closing date.
+deadlines, deadlines a job email stated, open application tasks, and follow-up dates. Each row keeps a label saying where its date came from. Nothing is
+estimated; a posting's age is never turned into a closing date. With the
+application_silence switch on, an application still at Applied a set number of
+days after the student applied adds a "No reply yet" row, dated that many days
+after the applied date the tracker recorded, or after the latest job email
+linked to it when one came later (internal_automation.silence_rows).
 
 "Overdue" and "today" are calendar dates in the student's timezone
 (``user_time.user_timezone``), the same rule Outreach and the application
@@ -23,6 +27,7 @@ from typing import Any
 from pipeline_core.visibility import CAPTURE_SOURCE_KEY, capture_visible_sql  # noqa: F401  (re-exported)
 
 from .early_programs import early_programs
+from .internal_automation import silence_rows
 from .outreach import CLOSED_STATUSES as OUTREACH_CLOSED, REVISIT_STATUSES as OUTREACH_REVISIT
 from .schema import utc_now
 from .user_time import UserTimezone, user_timezone
@@ -53,6 +58,9 @@ DATE_SOURCE_LABELS = {
     "application_follow_up": "Follow-up date",
     "outreach_follow_up": "Follow-up scheduled",
     "outreach_revisit": "Revisit date you set",
+    # Derived, never stored: applied_at plus the profile's application_follow_up_days
+    # (internal_automation.silence_rows), shown only with application_silence on.
+    "application_silence": "No reply yet",
 }
 KIND_PRIORITY = {
     "posting_deadline": 0,
@@ -64,6 +72,7 @@ KIND_PRIORITY = {
     "application_follow_up": 2,
     "outreach_follow_up": 2,
     "outreach_revisit": 2,
+    "application_silence": 2,
 }
 
 _DATE_ONLY = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -485,6 +494,7 @@ def urgent_queue(
     candidates = [
         *_posting_rows(conn, user_id), *_program_rows(conn, user_id, programs_path, now),
         *_application_rows(conn, user_id), *_email_deadline_rows(conn, user_id), *_outreach_rows(conn, user_id),
+        *silence_rows(conn, user_id, now=now),
     ]
     items: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []

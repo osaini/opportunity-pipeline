@@ -568,14 +568,16 @@ def revision_request(target: dict[str, Any], kind: str, comments: str) -> str:
 def _insert_version(
     conn: sqlite3.Connection, target_id: str, user_id: str, kind: str, *, source: str,
     subject: str, body: str, claims_json: str, generated_by: str, comments: str, created_at: str,
-) -> None:
+) -> str:
+    version_id = f"draft-version-{uuid4().hex}"
     conn.execute(
         """
         INSERT INTO outreach_draft_versions(id, target_id, user_id, kind, source, subject, body, claims_json, generated_by, comments, created_at)
         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (f"draft-version-{uuid4().hex}", target_id, user_id, kind, source, subject, body, claims_json, generated_by, comments, created_at),
+        (version_id, target_id, user_id, kind, source, subject, body, claims_json, generated_by, comments, created_at),
     )
+    return version_id
 
 
 def _keep_current_draft(conn: sqlite3.Connection, target_id: str, user_id: str, kind: str) -> None:
@@ -690,6 +692,31 @@ def generate_draft(
     ``before_write`` runs first inside the transaction that saves it, after
     the model call; raising there saves nothing.
     """
+    prepared = compose_draft(
+        conn, target_id, user_id=user_id, provider_factory=provider_factory, kind=kind, provider=provider, comments=comments,
+    )
+    with conn:
+        if before_write is not None:
+            before_write()
+        save_draft_tx(conn, target_id, user_id=user_id, prepared=prepared)
+    return get_target(conn, target_id, user_id=user_id)
+
+
+def compose_draft(
+    conn: sqlite3.Connection,
+    target_id: str,
+    *,
+    user_id: str,
+    provider_factory: ProviderFactory,
+    kind: str = "initial",
+    provider: str | None = None,
+    comments: str = "",
+) -> dict[str, Any]:
+    """Write a draft without saving it: the model call, checked against the student's facts and the research.
+
+    Returns what save_draft_tx stores. Raises ValueError (DraftRejected
+    included) or RuntimeError when no draft can be written.
+    """
     if kind not in DRAFT_KINDS:
         raise ValueError("kind must be initial or follow_up")
     comments = comments.replace("\r\n", "\n").strip()
@@ -729,34 +756,47 @@ def generate_draft(
             raise DraftRejected("The generated draft was not grounded in your profile and research: " + "; ".join(problems))
         generated_by = f"{provider_id}:{model}"
 
+    return {
+        "kind": kind, "subject": draft["subject"], "body": draft["body"],
+        "claims_json": json.dumps(draft["claims"], ensure_ascii=kind != "follow_up"),
+        "generated_by": generated_by, "comments": comments,
+        # What the target held when the draft was written; save_draft_tx logs against it.
+        "target_status": target["status"], "target_draft_status": target[DRAFT_KINDS[kind][2]],
+    }
+
+
+def save_draft_tx(conn: sqlite3.Connection, target_id: str, *, user_id: str, prepared: dict[str, Any]) -> str:
+    """Store a draft compose_draft wrote, inside a transaction the caller owns. Returns its version id.
+
+    The draft in the editor is kept in the history first, so nothing the
+    student wrote is lost; the new draft needs approval, like any draft.
+    """
+    kind = prepared["kind"]
     subject_field, body_field, status_field = DRAFT_KINDS[kind]
     claims_field, generated_field = DRAFT_META[kind]
     timestamp = utc_now()
-    claims_json = json.dumps(draft["claims"], ensure_ascii=kind != "follow_up")
+    claims_json, generated_by = prepared["claims_json"], prepared["generated_by"]
     assignments: dict[str, Any] = {
-        subject_field: draft["subject"], body_field: draft["body"], status_field: "generated",
+        subject_field: prepared["subject"], body_field: prepared["body"], status_field: "generated",
         claims_field: claims_json, generated_field: generated_by,
     }
     if kind == "initial":
         assignments.update(draft_generated_at=timestamp, draft_approved_at=None)
-        if target["status"] == "not_started":
+        if prepared["target_status"] == "not_started":
             assignments["status"] = "drafted"
-    with conn:
-        if before_write is not None:
-            before_write()
-        _keep_current_draft(conn, target_id, user_id, kind)
-        _insert_version(
-            conn, target_id, user_id, kind, source="generated", subject=draft["subject"], body=draft["body"],
-            claims_json=claims_json, generated_by=generated_by, comments=comments, created_at=timestamp,
-        )
-        conn.execute(
-            f"UPDATE outreach_targets SET {', '.join(f'{column}=?' for column in assignments)}, updated_at=? WHERE id=? AND user_id=?",
-            [*assignments.values(), timestamp, target_id, user_id],
-        )
-        if target[status_field] == "approved":
-            _log(conn, target_id, user_id, "approval_withdrawn", detail=f"The {kind.replace('_', '-')} draft was regenerated")
-            _cancel_schedules(conn, target_id, user_id, [kind], "The draft was regenerated after you scheduled it")
-        _log(conn, target_id, user_id, "draft_generated" if kind == "initial" else "follow_up_generated", detail=generated_by)
-        if assignments.get("status"):
-            _log(conn, target_id, user_id, "status", from_status=target["status"], to_status="drafted")
-    return get_target(conn, target_id, user_id=user_id)
+    _keep_current_draft(conn, target_id, user_id, kind)
+    version_id = _insert_version(
+        conn, target_id, user_id, kind, source="generated", subject=prepared["subject"], body=prepared["body"],
+        claims_json=claims_json, generated_by=generated_by, comments=prepared.get("comments", ""), created_at=timestamp,
+    )
+    conn.execute(
+        f"UPDATE outreach_targets SET {', '.join(f'{column}=?' for column in assignments)}, updated_at=? WHERE id=? AND user_id=?",
+        [*assignments.values(), timestamp, target_id, user_id],
+    )
+    if prepared["target_draft_status"] == "approved":
+        _log(conn, target_id, user_id, "approval_withdrawn", detail=f"The {kind.replace('_', '-')} draft was regenerated")
+        _cancel_schedules(conn, target_id, user_id, [kind], "The draft was regenerated after you scheduled it")
+    _log(conn, target_id, user_id, "draft_generated" if kind == "initial" else "follow_up_generated", detail=generated_by)
+    if assignments.get("status"):
+        _log(conn, target_id, user_id, "status", from_status=prepared["target_status"], to_status="drafted")
+    return version_id

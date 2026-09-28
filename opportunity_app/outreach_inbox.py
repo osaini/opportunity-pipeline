@@ -223,6 +223,16 @@ def _watched(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict
     return watched
 
 
+def watched_ids(conn: sqlite3.Connection, user_id: str, now: datetime | None = None) -> set[str]:
+    """The companies capture_replies searches Gmail for. Any other company's replies are never looked for.
+
+    A company drops out when it has no address to search for (a LinkedIn
+    message, a contact form without a website domain), no record of when it
+    was written to, or was first written to more than REPLY_WINDOW ago.
+    """
+    return {str(target["id"]) for target in _watched(conn, user_id, now or datetime.now(timezone.utc))}
+
+
 def _owner(watched: list[dict[str, Any]], sender: str) -> dict[str, Any] | None:
     """The one company a sender speaks for: by address, else by the company's own domain."""
     by_address = [target for target in watched if sender in target["addresses"]]

@@ -164,6 +164,7 @@ ACCOUNT_QUERIES = {
     "fit_scores": "SELECT * FROM fit_scores WHERE user_id=?",
     "interactions": "SELECT * FROM opportunity_interactions WHERE user_id=?",
     "opportunity_deadlines": "SELECT * FROM opportunity_deadlines WHERE user_id=?",
+    "resume_picks": "SELECT * FROM opportunity_resume_picks WHERE user_id=?",
     "early_program_status": "SELECT * FROM early_program_status WHERE user_id=?",
     "company_tag_choices": "SELECT * FROM company_tag_choices WHERE user_id=?",
     "outreach_company_tags": "SELECT * FROM outreach_company_tags WHERE user_id=?",
