@@ -699,6 +699,16 @@ def _gmail_link(fragment: str) -> str:
     return f"https://mail.google.com/mail/?authuser={quote(account) if account else '0'}#{fragment}"
 
 
+def _thank_you_hold(conn: sqlite3.Connection, user_id: str) -> str:
+    """Why a waiting thank-you will be held at its time rather than sent, or "": its switch, or Jev, turned off."""
+    from . import automation  # imported here: automation imports this module
+
+    feature = automation.FEATURES["decline_thank_you"]
+    if automation.mode(conn, user_id, feature.key) != "on":
+        return f"{feature.label} is off"
+    return automation.requirement(conn, user_id, feature.key)
+
+
 def _thank_yous(conn: sqlite3.Connection, user_id: str, target_id: str | None = None) -> dict[str, dict[str, Any]]:
     """The thank-you after a decline each company has (outreach_thank_you.py), as its card shows it.
 
@@ -718,14 +728,21 @@ def _thank_yous(conn: sqlite3.Connection, user_id: str, target_id: str | None = 
         sql += " AND y.target_id=?"
         params.append(target_id)
     found: dict[str, dict[str, Any]] = {}
+    hold: str | None = None
     for row in conn.execute(sql, params).fetchall():
         item = {key: row[key] for key in (
             "state", "to_email", "to_name", "subject", "body", "generated_by", "fingerprint", "note", "send_at", "label",
             "created_at", "updated_at",
         )}
+        # The name the email greets them by ("Dr. Priya Shah" is Priya), for the card's words.
+        item["to_first_name"] = contact_first_name(row["to_name"] or "")
         item["send_state"] = None
+        item["will_hold"] = ""
         if row["state"] in {"scheduled", "transmitting"} and row["send_state"] in {"scheduled", "sending", "transmitting"}:
             item.update(send_state=row["send_state"], send_at=row["send_send_at"], label=row["send_label"], note=row["send_error"] or "")
+            if hold is None:
+                hold = _thank_you_hold(conn, user_id)
+            item["will_hold"] = hold
         item["sent_at"] = row["updated_at"] if row["state"] == "sent" else None
         item["thread_url"] = _gmail_link(f"all/{quote(row['thread_id'])}") if row["thread_id"] else ""
         item["draft_url"] = ""
@@ -1613,6 +1630,10 @@ def log_reply(
     with conn:
         # A pasted reply has no Gmail thread, so nothing automatic ever answers it.
         _log(conn, target_id, user_id, "reply_logged", detail=body, data={"source": "pasted", "readings": readings})
+        # They wrote again: a thank-you after their earlier decline that has not gone stops now.
+        from .outreach_thank_you import on_new_reply  # imported here: it imports this module
+
+        on_new_reply(conn, target_id, user_id)
     return {"suggestion": suggestion, "logged": True, "target": get_target(conn, target["id"], user_id=user_id, include_events=True)}
 
 

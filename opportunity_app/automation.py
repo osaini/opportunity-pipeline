@@ -562,14 +562,17 @@ def unconfirmed(conn: sqlite3.Connection, user_id: str, *, now: datetime | None 
 
     An 'unconfirmed' claim, and a form claim left mid-click longer than
     IN_FLIGHT_CLAIM_AGE (the app stopped while pressing the button). A first
-    email is left out once the company is recorded as sent ("I sent it"), and
-    a follow-up once the company has moved past Sent.
+    email is left out once the company is recorded as sent ("I sent it"), a
+    follow-up once the company has moved past Sent, and a thank-you after a
+    decline once it was sent or the student dismissed or closed it (its card
+    then says whether Gmail confirmed the earlier try).
     """
     cutoff = (_now(now) - IN_FLIGHT_CLAIM_AGE).isoformat(timespec="microseconds")
     rows = conn.execute(
         """
-        SELECT c.target_id, c.kind, c.action, c.claimed_at, t.company, t.sent_at, t.status
+        SELECT c.target_id, c.kind, c.action, c.claimed_at, t.company, t.sent_at, t.status, y.state AS thank_you_state
         FROM outreach_send_claims c LEFT JOIN outreach_targets t ON t.id=c.target_id
+        LEFT JOIN outreach_thank_yous y ON y.target_id=c.target_id AND c.kind='thank_you'
         WHERE c.user_id=? AND (c.state='unconfirmed' OR (c.state=? AND c.claimed_at<?))
         ORDER BY c.claimed_at
         """,
@@ -580,6 +583,8 @@ def unconfirmed(conn: sqlite3.Connection, user_id: str, *, now: datetime | None 
         if row["kind"] == "initial" and row["sent_at"]:
             continue
         if row["kind"] == "follow_up" and row["status"] not in (None, "sent"):
+            continue
+        if row["kind"] == "thank_you" and row["thank_you_state"] in ("sent", "cancelled"):
             continue
         items.append({
             "target_id": row["target_id"], "company": row["company"] or "", "kind": row["kind"],
@@ -1051,9 +1056,24 @@ class OutreachStatus:
             (before["status"], follow_up_at, timestamp, subject_id, user_id, after["status"], row["follow_up_at"]),
         )
         _log(conn, subject_id, user_id, "status", from_status=after["status"], to_status=before["status"], detail="Undone by you")
+        notes = []
         if not restore_date and result.get("follow_up_at_before") != row["follow_up_at"]:
-            return {"undo_note": "The follow-up date was changed since, so it was left as it is."}
-        return None
+            notes.append("The follow-up date was changed since, so it was left as it is.")
+        # A thank-you planned with this change (decline_thank_you) is an email, which this Undo does not stop.
+        waiting = conn.execute(
+            "SELECT to_name, to_email, state FROM outreach_thank_yous WHERE target_id=? AND user_id=? "
+            "AND state IN ('planned', 'scheduled', 'sending', 'transmitting')",
+            (subject_id, user_id),
+        ).fetchone()
+        if waiting is not None:
+            from .outreach import contact_first_name
+
+            who = contact_first_name(waiting["to_name"]) or waiting["to_email"]
+            notes.append(
+                f"The thank-you to {who} is being sent now, so it could not be stopped." if waiting["state"] in ("sending", "transmitting")
+                else f"The thank-you to {who} is still scheduled; cancel it on the company's card in Outreach."
+            )
+        return {"undo_note": " ".join(notes)} if notes else None
 
 
 class OutreachFollowUpDraft:

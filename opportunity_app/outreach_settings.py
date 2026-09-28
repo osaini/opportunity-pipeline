@@ -6,8 +6,9 @@ None of these values is secret:
 - PIPELINE_OUTREACH_FOLLOW_UP_PROVIDER, PIPELINE_OUTREACH_CALL_PREP_PROVIDER and
   PIPELINE_OUTREACH_THANK_YOU_PROVIDER: who writes follow-ups, call prep, and
   the thank-you after a decline; empty means the same as first emails.
-- PIPELINE_OUTREACH_REVIEW_PROVIDER: who reviews a follow-up before it goes;
-  empty means automatic (outreach_review.review_choice).
+- PIPELINE_OUTREACH_REVIEW_PROVIDER: who reviews a follow-up, or a thank-you
+  after a decline, before it goes; empty means automatic
+  (outreach_review.review_choice, per purpose).
 - PIPELINE_OUTREACH_DISCOVERY_PROVIDER: which CLI does the web research (the
   deep search, placing companies, Find people, and searching other sites).
 - PIPELINE_OUTREACH_ATTACHMENT: the file attached to Gmail drafts.
@@ -73,13 +74,18 @@ class OutreachSettings:
         ] + [LEGACY_OPTION]
         research = [option for option in drafts if option["id"] in RESEARCH_AGENTS]
         attached = attachment_path()
-        try:
-            from .outreach_review import review_choice
+        from .outreach_review import review_choice
 
-            chosen, note = review_choice()
-            automatic_review = {"id": chosen, "note": note, "problem": ""}
-        except ValueError as exc:
-            automatic_review = {"id": "", "note": "", "problem": str(exc)}
+        def automatic(purpose: str) -> dict[str, str]:
+            try:
+                chosen, note = review_choice(purpose)
+            except ValueError as exc:
+                return {"id": "", "note": "", "problem": str(exc)}
+            return {"id": chosen, "note": note, "problem": ""}
+
+        # Automatic avoids the writer's company, and follow-ups and thank-yous can have different writers.
+        automatic_review = automatic("follow_up")
+        automatic_thank_you_review = automatic("thank_you")
         following = {
             key: {"value": os.environ.get(env, "").strip(), "options": drafts}
             for key, env in FOLLOWING_DRAFTS.items()
@@ -88,8 +94,9 @@ class OutreachSettings:
             **following,
             "review_provider": {
                 "value": os.environ.get(REVIEW_ENV, "").strip(),
-                # On Automatic: which model reviews now, and why.
+                # On Automatic: which model reviews now, and why: follow-ups, and thank-yous after a decline.
                 "automatic": automatic_review,
+                "automatic_thank_you": automatic_thank_you_review,
                 "options": [option for option in drafts if option["id"] != "legacy"],
             },
             "draft_provider": {

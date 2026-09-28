@@ -52,7 +52,7 @@ def test_settings_save_at_once_and_attach_a_resume_under_its_own_name(owner_page
     expect(panel.locator(".form-status")).to_have_text("Follow-up writer saved.")
     assert os.environ["PIPELINE_OUTREACH_FOLLOW_UP_PROVIDER"] == ""
     expect(panel.get_by_label("Who writes call prep")).to_have_value("")
-    reviewer = panel.get_by_label("Who reviews follow-ups before they go")
+    reviewer = panel.get_by_label("Who reviews follow-ups and thank-yous")
     expect(reviewer).to_have_value("")
     expect(reviewer.locator("option").first).to_contain_text("Automatic")
 

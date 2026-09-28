@@ -127,7 +127,7 @@ def review_choice(purpose: str = "follow_up") -> tuple[str, str]:
         return chosen, ""
     ready = [provider for provider in AUTOMATIC_ORDER if catalog.get(provider, {}).get("configured")]
     if not ready:
-        raise ValueError("No model is set up on this computer to review follow-ups")
+        raise ValueError(f"No model is set up on this computer to review {'thank-yous' if purpose == 'thank_you' else 'follow-ups'}")
     try:
         drafter = resolve_provider(None, purpose=purpose)[0]
     except ValueError:

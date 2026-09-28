@@ -130,6 +130,8 @@ def build_client() -> DecisionClient | None:
 
 
 PAUSED_REASON = "Automation is paused, so Jev was not asked"
+# A reading with no Jev answer and no other reason: Jev was off, or the check that read it had no client to ask.
+JEV_NOT_ASKED = "Jev was not asked"
 
 
 class _Paused:
@@ -210,7 +212,8 @@ def read_reply(
     readings = {
         "rules": {"status": str(by_rules.get("status") or ""), "reason": str(by_rules.get("reason") or "")},
         "jev": dict(answer) if answer is not None else None,
-        "jev_fallback": fallback,
+        # With no client (Jev off, or a check that had none to ask) there is no other reason to give.
+        "jev_fallback": fallback or ("" if answer is not None else JEV_NOT_ASKED),
     }
     if answer is None:
         return {**by_rules, "source": "rules", "confidence": None, "model": "", "fallback_reason": fallback}, readings

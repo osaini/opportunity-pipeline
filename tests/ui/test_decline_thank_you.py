@@ -48,16 +48,16 @@ def declined_company(page, base_url, live_server, company="Acme Robotics"):
     return target
 
 
-def seed_thank_you(live_server, target_id, *, state="scheduled", send_state="scheduled", note="", generated_by="template"):
-    fingerprint = thank_you_fingerprint("dana@acme.example", "Dana Lee", SUBJECT, BODY, "<d-1@acme.example>", "t-decline")
+def seed_thank_you(live_server, target_id, *, state="scheduled", send_state="scheduled", note="", generated_by="template", to_name="Dana Lee"):
+    fingerprint = thank_you_fingerprint("dana@acme.example", to_name, SUBJECT, BODY, "<d-1@acme.example>", "t-decline")
     now = utc_now()
     send_at = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(timespec="seconds")
     with db(live_server) as conn, conn:
         conn.execute(
             "INSERT INTO outreach_thank_yous(target_id, user_id, reply_gmail_id, reply_message_id, thread_id, to_email, to_name, subject, "
             "body, generated_by, fingerprint, state, note, send_at, label, created_at, updated_at) "
-            "VALUES(?, ?, 'd-1', '<d-1@acme.example>', 't-decline', 'dana@acme.example', 'Dana Lee', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (target_id, USER, SUBJECT, BODY, generated_by, fingerprint, state, note, send_at, LABEL, now, now),
+            "VALUES(?, ?, 'd-1', '<d-1@acme.example>', 't-decline', 'dana@acme.example', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (target_id, USER, to_name, SUBJECT, BODY, generated_by, fingerprint, state, note, send_at, LABEL, now, now),
         )
         if send_state:
             conn.execute(
@@ -149,9 +149,10 @@ def test_dismiss_drops_a_held_thank_you(owner_page, base_url, live_server):
     seed_thank_you(live_server, target["id"], state="failed", send_state="failed", note="Gmail did not confirm it (HTTP 503)")
     open_outreach(owner_page, "closed")
     box = thank_you_box(owner_page)
-    expect(box.locator(".outreach-research-warning")).to_have_text("Thank-you to Dana was not sent: Gmail did not confirm it (HTTP 503).")
+    # Gmail may have sent it, so the card never says it was not sent.
+    expect(box.locator(".outreach-research-warning")).to_have_text("Thank-you to Dana stopped: Gmail did not confirm it (HTTP 503).")
     box.get_by_role("button", name="Dismiss the thank-you to Dana").click()
-    expect(thank_you_box(owner_page)).to_have_text("Thank-you to Dana not sent: You cancelled it")
+    expect(thank_you_box(owner_page)).to_have_text("Thank-you to Dana not sent: You dismissed it")
     assert stored(live_server, target["id"])["state"] == "cancelled"
 
 
@@ -180,6 +181,44 @@ def test_edit_moves_it_to_gmail_drafts(owner_page, base_url, live_server):
     expect(box.get_by_role("link", name="Open the draft in Gmail: the thank-you to Dana")).to_have_attribute("href", re.compile(r"drafts\?compose=18c1$"))
     assert called == ["POST"]
     owner_page.unroute_all(behavior="ignoreErrors")
+
+
+def test_a_waiting_card_says_it_will_be_held_while_its_switch_is_off(owner_page, base_url, live_server):
+    target = declined_company(owner_page, base_url, live_server)
+    # "Dr." is a title: the card names her as the email greets her.
+    seed_thank_you(live_server, target["id"], to_name="Dr. Dana Lee")
+    saved = owner_page.request.put(f"{base_url}/api/v1/automation/settings", headers=BEARER, data={"modes": {"jev_inbox_suggestions": "on"}})
+    assert saved.ok, saved.text()
+    owner_page.reload()
+    wait_for_results(owner_page)
+    open_outreach(owner_page, "scheduled")
+    box = thank_you_box(owner_page)
+    expect(box.locator(".outreach-thank-you-when")).to_have_text(f"Thank-you to Dana goes out {LABEL}.")
+    hold = box.locator(".outreach-thank-you-hold")
+    expect(hold).to_have_text("It will be held at its time, not sent: Send a thank-you when someone declines is off.")
+    owner_page.click("#profile-nav")
+    wait_for_results(owner_page)
+    owner_page.locator("#automation-mode-decline_thank_you").check()
+    status = owner_page.locator(".automation-group", has=owner_page.locator("#automation-mode-decline_thank_you")).locator(".form-status")
+    expect(status).to_have_text("Send a thank-you when someone declines: on.")
+    open_outreach(owner_page, "scheduled")
+    expect(thank_you_box(owner_page).locator(".outreach-thank-you-hold")).to_be_hidden()
+
+
+def test_cancel_on_a_card_a_check_already_stopped_says_so(owner_page, base_url, live_server):
+    target = declined_company(owner_page, base_url, live_server)
+    seed_thank_you(live_server, target["id"])
+    open_outreach(owner_page, "scheduled")
+    box = thank_you_box(owner_page)
+    expect(box.locator(".outreach-thank-you-when")).to_be_visible()
+    # The check before sending stopped it after the page loaded: they wrote again.
+    with db(live_server) as conn, conn:
+        conn.execute("UPDATE outreach_scheduled_sends SET state='cancelled' WHERE target_id=? AND kind='thank_you'", (target["id"],))
+        conn.execute("UPDATE outreach_thank_yous SET state='cancelled', note=? WHERE target_id=?",
+                     ("They wrote again, so the thank-you was not sent. Read their reply.", target["id"]))
+    box.get_by_role("button", name="Cancel the thank-you to Dana").click()
+    expect(owner_page.locator("#action-status")).to_have_text(
+        "The thank-you to Dana had already stopped: They wrote again, so the thank-you was not sent. Read their reply.")
 
 
 def test_the_history_names_each_step(owner_page, base_url, live_server):

@@ -32,7 +32,7 @@ from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from email import policy
 from email.message import EmailMessage
-from email.utils import parseaddr
+from email.utils import getaddresses, parseaddr
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote
@@ -104,23 +104,74 @@ def _html_text(markup: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", "", markup))
 
 
-def strip_quoted(text: str) -> str:
-    """The reply above the email it quotes."""
-    lines = text.replace("\r\n", "\n").split("\n")
+def _quote_start(lines: list[str]) -> tuple[int, str] | None:
+    """Where the quoted email starts, and how: "quote" (a "> " line), "wrote" or "wrote2" (an "On ... wrote:"
+    line, or one split over two lines), or "header" (Outlook's From:/Sent: block, or an Original Message line)."""
     for index, line in enumerate(lines):
         pair = f"{line} {lines[index + 1]}" if index + 1 < len(lines) else line
         header_block = line.startswith("From:") and any(
             following.startswith(("Sent:", "Date:")) for following in lines[index + 1:index + 3]
         )
-        if line.lstrip().startswith(">") or _ORIGINAL.match(line) or header_block or _ON_WROTE.match(line) or (
-            line.lstrip().startswith("On ") and _ON_WROTE.match(pair)
-        ):
-            lines = lines[:index]
-            break
+        if line.lstrip().startswith(">"):
+            return index, "quote"
+        if _ORIGINAL.match(line) or header_block:
+            return index, "header"
+        if _ON_WROTE.match(line):
+            return index, "wrote"
+        if line.lstrip().startswith("On ") and _ON_WROTE.match(pair):
+            return index, "wrote2"
+    return None
+
+
+def strip_quoted(text: str) -> str:
+    """The reply above the email it quotes."""
+    lines = text.replace("\r\n", "\n").split("\n")
+    found = _quote_start(lines)
+    if found is not None:
+        lines = lines[:found[0]]
     return "\n".join(lines).strip()
 
 
-def reply_text(message: EmailMessage) -> str:
+def written_between_quotes(text: str) -> str:
+    """What the sender wrote after the email they quote begins: between its quoted lines, or below them.
+
+    strip_quoted keeps only what is above the quote, so an answer typed inline
+    ("> Would you have time for a call?" then "Sure, Thursday?") is lost there.
+    Only "> "-quoted email can be read this way: an Outlook-style quote (a
+    From:/Sent: block, or an Original Message line) carries the quoted email
+    unmarked, so nothing below it can be told apart from it.
+    """
+    lines = text.replace("\r\n", "\n").split("\n")
+    found = _quote_start(lines)
+    if found is None or found[1] == "header":
+        return ""
+    index, how = found
+    rest = lines[index + {"quote": 0, "wrote": 1, "wrote2": 2}[how]:]
+    return "\n".join(line for line in rest if line.strip() and not line.lstrip().startswith(">")).strip()
+
+
+def _html_full_text(markup: str) -> str:
+    """HTML as text with each quoted (<blockquote>) line marked "> ", as a plain-text reply marks it."""
+    markup = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", markup)
+    markup = re.sub(r"(?i)<br\s*/?>|</(p|div|li|tr|h\d)>", "\n", markup)
+    markup = re.sub(r"(?i)<blockquote\b[^>]*>", "\n\x00quote-open\x00\n", markup)
+    markup = re.sub(r"(?i)</blockquote\s*>", "\n\x00quote-close\x00\n", markup)
+    text = html.unescape(re.sub(r"<[^>]+>", "", markup))
+    depth, lines = 0, []
+    for line in text.split("\n"):
+        if line == "\x00quote-open\x00":
+            depth += 1
+        elif line == "\x00quote-close\x00":
+            depth = max(0, depth - 1)
+        else:
+            lines.append(f"> {line}" if depth and line.strip() else line)
+    return "\n".join(lines)
+
+
+FULL_TEXT_LIMIT = 20_000
+
+
+def _body_text(message: EmailMessage, *, whole: bool) -> str:
     body = message.get_body(preferencelist=("plain", "html"))
     if body is None:
         return ""
@@ -129,8 +180,17 @@ def reply_text(message: EmailMessage) -> str:
     except (LookupError, ValueError):
         return ""
     if body.get_content_type() == "text/html":
-        text = _html_text(text)
-    return strip_quoted(text)[:20_000]
+        return _html_full_text(text) if whole else _html_text(text)
+    return text
+
+
+def reply_text(message: EmailMessage) -> str:
+    return strip_quoted(_body_text(message, whole=False))[:20_000]
+
+
+def full_reply_text(message: EmailMessage) -> str:
+    """The whole message as it arrived, quoted lines marked "> ", so an answer typed inline is kept."""
+    return _body_text(message, whole=True).replace("\r\n", "\n").strip()
 
 
 def is_bulk(message: EmailMessage) -> bool:
@@ -297,6 +357,12 @@ def _remember(conn: sqlite3.Connection, user_id: str, gmail_id: str, target_id: 
     ).rowcount)
 
 
+# What a reply_logged event keeps about where a Gmail reply came from, beside its text and readings.
+# full_text is the whole message, quoted lines and anything typed between them included (a thank-you
+# after a decline reads it: outreach_thank_you); reply_to is its Reply-To address, when it has one.
+REPLY_META = {"thread_id", "message_id", "subject", "from_name", "full_text", "reply_to"}
+
+
 def _record_reply(
     conn: sqlite3.Connection, target: dict[str, Any], *, user_id: str, gmail_id: str, sender: str,
     received: str, text: str, decisions: DecisionClient | None, meta: dict[str, Any] | None = None,
@@ -315,12 +381,16 @@ def _record_reply(
         suggestion = {**suggestion, "status": "replied"}
     data = {
         "source": "gmail", "gmail_id": gmail_id, "from": sender, "received_at": received, "readings": readings,
-        **{key: str(value) for key, value in (meta or {}).items() if key in {"thread_id", "message_id", "subject", "from_name"}},
+        **{key: str(value) for key, value in (meta or {}).items() if key in REPLY_META},
     }
     with conn:
         if not _remember(conn, user_id, gmail_id, target["id"], "reply", sender, received):
             return None
         _log(conn, target["id"], user_id, "reply_logged", detail=text, data=data)
+        # They wrote again: a thank-you after their earlier decline that has not gone stops now.
+        from .outreach_thank_you import on_new_reply  # imported here: it imports this module's neighbours
+
+        on_new_reply(conn, target["id"], user_id)
     if target["status"] in REOPENED_BY_REPLY:
         update_target(conn, target["id"], {"status": "replied"}, user_id=user_id)
     current = get_target(conn, target["id"], user_id=user_id)
@@ -426,6 +496,11 @@ def capture_replies(
                             "message_id": " ".join(str(message.get("Message-ID", "")).split()),
                             "subject": " ".join(str(message.get("Subject", "")).split())[:300],
                             "from_name": " ".join(str(sender_name or "").split())[:120],
+                            # One character past the limit says it was cut (outreach_thank_you reads it whole or not at all).
+                            "full_text": full_reply_text(message)[:FULL_TEXT_LIMIT + 1],
+                            "reply_to": ", ".join(
+                                address.casefold() for _name, address in getaddresses([str(message.get("Reply-To", ""))]) if address
+                            )[:300],
                         },
                     )
                     if captured is None:

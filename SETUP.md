@@ -373,10 +373,13 @@ themselves (rule 3). The details:
   they want the app to answer a plain "no" to their cold outreach with a short
   thank-you, sent on its own in the same thread. It is the one email the app
   sends without their approval, so explain it before they choose:
-  - It needs Jev inbox suggestions on (and so `TYPESAFE_API_KEY`), and Gmail
-    connected with read access. It acts only when both the keyword rules and
-    Jev read the reply as a plain decline; with Jev off, paused, or unavailable
-    nothing goes. A reply about a call, an offer, a question, a referral, or
+  - It needs Jev inbox suggestions on (and so `TYPESAFE_API_KEY`), Gmail
+    connected with read access, and a model set up to review it (the AI step
+    above; Outreach → Settings → **Who reviews follow-ups and thank-yous**).
+    Without a reviewer every thank-you is held on the card for them. It acts
+    only when both the keyword rules and Jev read the reply as a plain decline;
+    with Jev off, paused, or unavailable nothing goes, and turning Jev or the
+    switch off holds one already scheduled for them to send or dismiss. A reply about a call, an offer, a question, a referral, or
     "maybe later" is always left for them, and so is a rejection from a job
     system (those come from no-reply addresses).
   - A decline that arrives before 5 PM on a weekday in the recipient's time
@@ -390,7 +393,8 @@ themselves (rule 3). The details:
     number, no dash), and a second model reads it just before it goes; anything
     unclear holds it on the card with **Send it anyway** and **Dismiss**. While
     it waits the card offers **Cancel** and **Edit** (which puts it in their
-    Gmail Drafts instead). Pausing automation holds it.
+    Gmail Drafts instead). Pausing automation holds it, and a new message from
+    the contact, or one of theirs to the contact, stops it.
 
 ## 7. Resume (optional, recommended)
 

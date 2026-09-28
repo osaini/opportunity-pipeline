@@ -410,7 +410,10 @@ class AutomationWorker:
 
                 due_users = self._users_with_due_sends(conn)
                 try:
-                    report["sent"] = run_due_sends(conn, client_factory=self._gmail_client_factory)
+                    # A reply the check before each send finds is read, by Jev too, as the InboxWatcher reads one.
+                    report["sent"] = run_due_sends(
+                        conn, client_factory=self._gmail_client_factory, decisions_for=self._decisions_for, on_reply=self._on_reply,
+                    )
                 except Exception as exc:  # noqa: BLE001 - the other steps still run, and the failure is recorded
                     LOGGER.exception("Scheduled emails were not sent")
                     _discard_open_transaction(conn)
@@ -488,7 +491,9 @@ class AutomationWorker:
                     from .outreach_schedule import run_due_sends  # imported here: it pulls in the Gmail send path
 
                     # Right away, as the student asked: not on the next pass, after drafts and forms.
-                    report["sent"].extend(run_due_sends(conn, client_factory=self._gmail_client_factory))
+                    report["sent"].extend(run_due_sends(
+                        conn, client_factory=self._gmail_client_factory, decisions_for=self._decisions_for, on_reply=self._on_reply,
+                    ))
         if self._provider_factory is not None and not report["drafted"] and automation.is_enabled(conn, user_id, "auto_drafts"):
             due = draft_due(conn, user_id=user_id)
             if due:

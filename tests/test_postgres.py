@@ -608,7 +608,8 @@ class PostgresAutomationContractTests(unittest.TestCase):
         self.conn.commit()
         self.outreach_target("t-1", "Bovi")
         with self.conn:
-            self.conn.execute("UPDATE outreach_targets SET status='replied', sent_at='2026-09-20', contact_email='greg@bovi.example' WHERE id='t-1'")
+            self.conn.execute("UPDATE outreach_targets SET status='replied', sent_at='2026-09-20', contact_email='greg@bovi.example', "
+                              "location='Austin, TX' WHERE id='t-1'")
             outreach._log(self.conn, "t-1", AUTOMATION_USER, "reply_logged", detail="We're not hiring right now.",
                           data={"source": "gmail", "gmail_id": "g-1", "readings": {"rules": {"status": "declined"}}})
         stored = self.conn.execute("SELECT detail_json FROM outreach_events WHERE target_id='t-1' AND event_type='reply_logged'").fetchone()
@@ -656,7 +657,8 @@ class PostgresAutomationContractTests(unittest.TestCase):
             self.conn.execute("UPDATE outreach_scheduled_sends SET state='sending' WHERE target_id='t-1' AND kind='thank_you'")
         row = self.conn.execute("SELECT * FROM outreach_scheduled_sends WHERE target_id='t-1' AND kind='thank_you'").fetchone()
         self.conn.commit()
-        self.assertEqual(outreach_schedule._hand_over(self.conn, row), "handed_over")
+        # 11:00 in Austin on a Tuesday: inside the thank-you's window, whenever this test runs.
+        self.assertEqual(outreach_schedule._hand_over(self.conn, row, now=datetime(2026, 9, 29, 16, 0, tzinfo=timezone.utc)), "handed_over")
         state = self.conn.execute("SELECT state FROM outreach_thank_yous WHERE target_id='t-1'").fetchone()["state"]
         self.conn.commit()
         self.assertEqual(state, "transmitting")
@@ -668,7 +670,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
         self.conn.commit()
         self.assertEqual((stored["state"], stored["note"]), ("failed", "Gmail did not confirm it (HTTP 503)"))
         self.assertEqual([notice["title"] for notice in automation.list_notices(self.conn, AUTOMATION_USER)],
-                         ["Thank-you to Bovi was not sent: Gmail did not confirm it (HTTP 503)"])
+                         ["Thank-you to Bovi stopped: it may have gone out, so check your Gmail Sent folder"])
         self.assertTrue(outreach_thank_you.cancel(self.conn, "t-1", user_id=AUTOMATION_USER, reason="You dismissed it"))
         stored = self.conn.execute("SELECT state FROM outreach_thank_yous WHERE target_id='t-1'").fetchone()
         self.conn.commit()

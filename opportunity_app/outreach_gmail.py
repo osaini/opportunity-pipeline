@@ -1098,7 +1098,22 @@ def _thank_you_ready(
         "SELECT 1 FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=?", (target_id, user_id, THANK_YOU_SENT_EVENT),
     ).fetchone() is not None:
         raise ValueError("The thank-you was already sent")
+    from .outreach_thank_you import problem_now  # imported here: it imports this module
+
+    # Read under the claim's write lock: a reply, or a send of the student's, logged since the last check
+    # (while the reviewer ran, say) still stops it. The student's own Send it anyway is not stopped by the
+    # company's status, only by their newer message or the student's.
+    stop = problem_now(conn, target_id, user_id, row, manual=states != ("transmitting",))
+    if stop is not None:
+        raise ThankYouChanged(stop[1])
     return {**row, "target": target}
+
+
+def _thank_you_claim_reason(row: sqlite3.Row) -> str:
+    if row["action"] == "draft":
+        return ("Gmail may have put this thank-you in your Drafts without the app hearing back. Check your Gmail Drafts "
+                "and Sent folders, and delete any copy there, before sending it from here.")
+    return "Gmail may already have sent this thank-you. Check your Gmail Sent folder before sending it again."
 
 
 def thank_you_mime(account: str, row: dict[str, Any]) -> str:
@@ -1152,7 +1167,7 @@ def send_thank_you(
         stale_token = existing["token"]
         if existing["state"] == "sent":
             raise ValueError("The thank-you was already sent from Gmail")
-        reasons[f"claim:{stale_token}"] = _claim_reason(existing)
+        reasons[f"claim:{stale_token}"] = _thank_you_claim_reason(existing)
     if reasons:
         check = hashlib.sha256(json.dumps(sorted(reasons)).encode()).hexdigest()[:32]
         if automatic or sent_folder_check != check:
@@ -1199,27 +1214,64 @@ def create_thank_you_draft(
 ) -> dict[str, Any]:
     """Write the thank-you into the student's Gmail Drafts, in their thread, for the student to edit and send.
 
-    Nothing is sent. The caller has already stopped the automatic send.
+    Nothing is sent. The caller has already stopped the automatic send. The
+    one call that makes the draft runs under the thank-you's claim (action
+    'draft'), as a first email's draft does: a call that got no clear answer
+    leaves it 'unconfirmed', so a later Send it anyway asks the student to
+    look in Drafts first. An earlier try Gmail may have carried out stops a
+    draft being made at all, since a copy in Drafts could then go twice.
     """
     row = thank_you_row(conn, target_id, user_id)
     if row is None:
         raise ThankYouChanged("There is no thank-you for this company")
+    existing = _claim(conn, target_id, user_id, THANK_YOU_KIND)
+    if existing is not None:
+        if _claim_held(existing):
+            raise SendConflictError(IN_PROGRESS)
+        if existing["state"] == "sent":
+            raise ValueError("The thank-you was already sent from Gmail")
+        raise SendConflictError(f"{_thank_you_claim_reason(existing)} Until then no draft of it is made.")
     account = sender_account()
-    with client_factory() as client:
-        # The student asked for this draft, so its checks go to Gmail even while background reads wait.
-        gmail = _Gmail(conn, client, user_id, wait_out_backoff=False)
-        _require_account(gmail, account)
-        response = gmail.request("POST", "/drafts", json={"message": {"raw": thank_you_mime(account, row), "threadId": row["thread_id"]}})
-    if response.status_code != 200:
-        raise RuntimeError(f"Gmail did not create the draft (HTTP {response.status_code}). Nothing was sent")
-    created = response.json()
-    message = created.get("message") or {}
-    detail = {
-        "draft_id": str(created.get("id", "")), "message_id": str(message.get("id", "")),
-        "thread_id": str(message.get("threadId", "") or row["thread_id"]),
-    }
-    with conn:
-        _log(conn, target_id, user_id, THANK_YOU_DRAFT_EVENT, detail=json.dumps(detail, sort_keys=True))
+
+    def revalidate() -> dict[str, Any]:
+        fresh = thank_you_row(conn, target_id, user_id)
+        if fresh is None or fresh["fingerprint"] != row["fingerprint"]:
+            raise ThankYouChanged("The thank-you changed while its draft was being made. Reload and try again")
+        return fresh
+
+    with _claimed(conn, target_id, user_id, THANK_YOU_KIND, "draft", revalidate) as (token, fresh):
+        try:
+            client = client_factory()
+        except BaseException:
+            _settle_claim(conn, target_id, THANK_YOU_KIND, token, None)
+            raise
+        with client:
+            try:
+                # The student asked for this draft, so its checks go to Gmail even while background reads wait.
+                gmail = _Gmail(conn, client, user_id, wait_out_backoff=False)
+                _require_account(gmail, account)
+                raw = thank_you_mime(account, fresh)
+            except BaseException:
+                _settle_claim(conn, target_id, THANK_YOU_KIND, token, None)
+                raise
+            created = _post_under_claim(
+                conn, gmail, target_id, THANK_YOU_KIND, token, "/drafts", {"message": {"raw": raw, "threadId": fresh["thread_id"]}},
+                refused="Gmail did not create the draft",
+                uncertain="the draft may be in your Gmail Drafts. Check Drafts before trying again",
+            )
+            try:
+                message = created.get("message") or {}
+                detail = {
+                    "draft_id": str(created.get("id", "")), "message_id": str(message.get("id", "")),
+                    "thread_id": str(message.get("threadId", "") or fresh["thread_id"]),
+                }
+                with conn:
+                    _log(conn, target_id, user_id, THANK_YOU_DRAFT_EVENT, detail=json.dumps(detail, sort_keys=True))
+                    conn.execute("DELETE FROM outreach_send_claims WHERE target_id=? AND kind=? AND token=?", (target_id, THANK_YOU_KIND, token))
+            except BaseException:
+                # The draft exists but is not recorded, so the next send asks first.
+                _settle_claim(conn, target_id, THANK_YOU_KIND, token, "unconfirmed")
+                raise
     return {**detail, "url": draft_url(account, detail["message_id"])}
 
 

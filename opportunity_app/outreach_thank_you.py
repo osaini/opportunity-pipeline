@@ -11,11 +11,18 @@ automation is not paused, and Jev inbox suggestions are on):
 
 - The company's latest reply was read from Gmail by capture_replies, from the
   contact, the Cc, or anyone at the company's domain (outreach_inbox's owner
-  rules), and was not an automatic reply or a delivery failure.
+  rules), and was not an automatic reply or a delivery failure. It came from
+  an address that takes replies (no "no-reply"), with no Reply-To elsewhere,
+  and its whole message was kept (full_text), so nothing typed between the
+  lines of the email it quotes is missed: anything there leaves it to the student.
 - Both readings say declined: the keyword rules and Jev, each kept on the
   reply_logged event (inbox_classifiers.read_reply), Jev at least
   MIN_CONFIDENCE sure. With Jev off, paused, or unavailable at capture there is
-  no Jev reading, so nothing is sent.
+  no Jev reading, so nothing is sent. The rules are also read strictly
+  (``plain_decline_problem``): the no must be all it says, with no call, offer,
+  "later", referral or question anywhere in it.
+- No earlier reply keeps something open (a call, an offer, "later", by either
+  reading), and no suggestion other than declined is waiting for the student.
 - It is the company's first thank-you (one per company, ever), the decline
   arrived after the switch was last turned on (turning it on never thanks an
   old one), nothing went to them after that reply, they were emailed first, the
@@ -45,14 +52,23 @@ change to Declined (undoable; undoing it leaves the email scheduled), and the
 ledger entry that says it was scheduled (not undoable).
 
 Sending is the scheduled-send machinery (outreach_schedule.run_due_sends), so
-the pause, the hand-over guard, stuck recovery and missed mornings all apply.
-Just before it goes (``gate``), every check fails closed: Gmail is read again
-(fresh_look) and so is the thread itself; a new message from them, or anything
-the student sent them, cancels it; a paused, moved-on, or bounced company
-cancels it; and a second model (outreach_review.review_choice, a different
-family when one is set up) must pass it, or it is held with the reason on the
-card and a notice. The student can cancel it, move it to their Gmail Drafts to
-edit (which stops the automatic send), or send a held one anyway.
+the pause, the hand-over guard, stuck recovery and missed mornings all apply,
+and it goes only 9:00 to 17:00 on a weekday in their zone (``in_window``): one
+a retry, a pause or a slow check carried outside that waits for their next
+weekday morning. Just before it goes (``gate``), every check fails closed:
+Gmail is read again (fresh_look); a new message from them (arrived after the
+decline, or logged after the thank-you was planned), or anything the student
+sent them, cancels it; a paused, moved-on, or bounced company cancels it; Jev
+inbox suggestions turned off holds it; a second model
+(outreach_review.review_choice, a different family when one is set up) must
+pass it, or it is held with the reason on the card and a notice (in fixed
+words, never the reviewer's); then the records are read again, and last the
+thread itself (a reply or a draft of the student's there cancels it). The
+hand-over and the send claim read the records once more (``problem_now``),
+so a reply logged while the reviewer ran still stops it. A reply logged at
+any time closes a thank-you not yet on its way (``on_new_reply``). The
+student can cancel it, move it to their Gmail Drafts to edit (which stops the
+automatic send), or send a held one anyway.
 """
 
 from __future__ import annotations
@@ -70,8 +86,9 @@ from urllib.parse import quote
 import httpx
 
 from . import automation
-from .inbox_classifiers import MIN_CONFIDENCE
+from .inbox_classifiers import JEV_NOT_ASKED, MIN_CONFIDENCE
 from .outreach import (
+    REPLY_PATTERNS,
     OutreachNotFoundError,
     _log,
     company_key,
@@ -80,6 +97,7 @@ from .outreach import (
     greeting_line,
     greeting_style,
     spoken_company,
+    suggest_reply_status,
 )
 from .outreach_gmail import (
     SENT_EVENT,
@@ -89,6 +107,7 @@ from .outreach_gmail import (
     GmailAuthError,
     GmailThrottled,
     SendConflictError,
+    SendUnconfirmedError,
     ThankYouChanged,
     _Gmail,
     backoff_until,
@@ -126,10 +145,24 @@ DELAY_MINUTES = (40, 150)
 DETECTION_MARGIN = timedelta(minutes=10)
 MAX_WORDS = 70
 SIGN_OFF = "Best"
+# The whole of a reply is kept up to this long (outreach_inbox.FULL_TEXT_LIMIT); a longer one is not read whole.
+FULL_TEXT_LIMIT = 20_000
 WROTE_AGAIN = "They wrote again, so the thank-you was not sent. Read their reply."
 STUDENT_WROTE = "You wrote to them after their reply, so the thank-you was not sent."
+DRAFT_STARTED = "You started a reply to them in Gmail, so the thank-you was not sent."
 SWITCHED_OFF = "Send a thank-you when someone declines was turned off before it went, so it was not sent"
+JEV_OFF = "Jev inbox suggestions was turned off before it went, so it was not sent automatically"
 EDITED = "You chose to edit it yourself, so it went to your Gmail Drafts and was not sent automatically"
+STUCK_SENDING = "The app stopped while sending this. Check your Gmail Sent folder before sending it again"
+# What a notice may say about why a thank-you stopped: fixed words only, never the reviewer's or an email's.
+_NOTICE_REASONS = (
+    ("The reviewer held it", "the reviewer did not pass it"),
+    ("The reviewer could not run", "the reviewer could not run"),
+    (SWITCHED_OFF, "the switch was turned off"),
+    (JEV_OFF, "Jev inbox suggestions was turned off"),
+    ("Could not check Gmail", "Gmail could not be checked first"),
+    ("Could not read their thread", "Gmail could not be checked first"),
+)
 
 _NOTED: set[tuple[str, str, str]] = set()
 _NOTED_LOCK = threading.Lock()
@@ -141,6 +174,16 @@ def _parse(value: Any) -> datetime | None:
 
 def _local(moment: datetime, zone: Any) -> datetime:
     return moment.astimezone(zone) if zone else moment.astimezone()
+
+
+def in_window(moment: datetime, zone: Any) -> bool:
+    """Whether a thank-you may go at ``moment``: a weekday, 9:00 to before 17:00, in the recipient's zone.
+
+    Checked when it is planned (plan_send_at) and again as it goes (outreach_schedule), since a retry, a
+    wait on Gmail, a pause, a sleeping computer or a slow check can carry it past five.
+    """
+    local = _local(moment, zone)
+    return local.weekday() < 5 and WORKDAY_START <= local.time() < WORKDAY_END
 
 
 # --- When it goes ------------------------------------------------------------------------
@@ -193,7 +236,8 @@ Rules:
 - Then two or three short sentences: thank them for getting back to the student and for considering it, and wish them
   and their team well.
 - Do not ask for anything. No question, no "let me know", no call, chat or meeting, no "keep me in mind", no asking
-  them to reconsider or to pass anything on, and no promise to write again.
+  them to reconsider or to pass anything on, and no promise or plan of the student's: no "I will" or "I'll", no
+  applying, no "next year", and no writing again.
 - No numbers, no attachment, no links, and no dashes of any kind between words.
 - At most 60 words in all. Plain text, no markdown.
 - End with a short sign-off line, then the student's name exactly as given, alone on the last line.
@@ -205,7 +249,12 @@ _ASKS = re.compile(
     r"\b(let me know|would you|could you|could we|can we|can you|will you|call(?:s|ed|ing)?|chat(?:s|ted|ting)?"
     r"|meet(?:s|ing|ings)?|connect(?:s|ed|ing)?|keep me in mind|reconsider\w*|keep in touch|stay in touch|reach out"
     r"|in the future|down the road|if anything changes|refer(?:ral|rals|red)?|introduc\w+|later|hope to hear"
-    r"|look(?:ing)? forward|follow(?:ing)? up|touch base|circle back|opening|openings|position|positions|role|roles)\b",
+    r"|look(?:ing)? forward|follow(?:ing)? up|touch base|circle back|opening|openings|position|positions|role|roles"
+    # A promise, or a plan of the student's: "I will be sure to apply again next year".
+    r"|i will|i'll|i shall|apply|applying|re-?apply\w*|someday|some day|hope to|next (?:year|summer|spring|fall|autumn"
+    r"|winter|semester|term|quarter|cycle|round|time))\b"
+    # "Again" promises more, except in "thank you again".
+    r"|(?<!thanks )(?<!thank you )\bagain\b",
     re.IGNORECASE,
 )
 _ATTACHMENT = re.compile(r"\b(attach\w*|enclos\w*|r[eé]sum[eé]s?|cv|portfolio|transcript)\b", re.IGNORECASE)
@@ -317,21 +366,69 @@ _TEAM_WORDS = re.compile(
 )
 
 
+# Letters after a name that are not a name: "Dana Lee, PhD", "John Smith, Jr.", "Jane Doe, SHRM-CP".
+_SUFFIXES = re.compile(
+    r"(jr|sr|ii|iii|iv|phd|ph\.d|md|mba|ms|msc|ma|ba|bs|bsc|meng|beng|mfa|mph|jd|cpa|cfa|pe|esq|pmp|rn|phr|sphr"
+    r"|shrm-?cp|shrm-?scp)\.?",
+    re.IGNORECASE,
+)
+
+
+def _letters(word: str) -> str:
+    return word.replace("-", "").replace("'", "").replace(".", "")
+
+
+def _credential(part: str) -> bool:
+    """Every word is a suffix or a credential: listed, or two or more capitals ("MBA", "SHRM-CP")."""
+    words = part.split()
+    return bool(words) and all(
+        _SUFFIXES.fullmatch(word) or (_letters(word).isalpha() and _letters(word).isupper() and len(_letters(word)) >= 2)
+        for word in words
+    )
+
+
+def _given_name(part: str) -> bool:
+    """One or two capitalised words ("Dana", "Mary Ann", "John A."), none a suffix or all capitals."""
+    words = part.split()
+    if not 1 <= len(words) <= 2:
+        return False
+
+    def word_ok(word: str, first: bool) -> bool:
+        if not first and re.fullmatch(r"[A-Z]\.?", word):
+            return True  # an initial
+        letters = _letters(word)
+        return (letters.isalpha() and word[:1].isupper() and not letters.isupper() and not _SUFFIXES.fullmatch(word))
+
+    return all(word_ok(word, index == 0) for index, word in enumerate(words))
+
+
+def _display_name(name: str) -> str:
+    """A From display name in the order people say it: suffixes and credentials after a comma dropped, and
+    "Lee, Dana" turned into Dana Lee only when what follows the comma is plainly a given name."""
+    parts = [part.strip() for part in name.split(",")]
+    while len(parts) > 1 and _credential(parts[-1]):
+        parts.pop()
+    parts = [part for part in parts if part]
+    if len(parts) == 2 and _given_name(parts[1]):
+        return f"{parts[1]} {parts[0]}"
+    return parts[0] if parts else ""
+
+
 def recipient_name(from_name: str, to_email: str, target: dict[str, Any]) -> str:
     """The name of the person who wrote, from their From header, or the contact's name when it was the contact.
 
     A shared inbox ("Acme Careers", "Hiring Team") names nobody, so it is left
-    out and the student's shared-inbox greeting is used. "Lee, Dana" is Dana Lee.
+    out and the student's shared-inbox greeting is used. "Lee, Dana" is Dana
+    Lee, while "Dana Lee, PhD" is Dana Lee and never "PhD Dana Lee".
     """
     name = " ".join(str(from_name or "").replace('"', " ").split())
     if "@" in name:
         name = ""
-    if name.count(",") == 1:
-        last, first = (part.strip() for part in name.split(","))
-        name = f"{first} {last}".strip()
+    if "," in name:
+        name = _display_name(name)
     company = spoken_company(str(target.get("company") or ""))
     if name and (_TEAM_WORDS.search(name) or (company and (
-        company_key(name) == company_key(company) or re.search(rf"{re.escape(company)}", name, re.IGNORECASE)
+        company_key(name) == company_key(company) or re.search(rf"\b{re.escape(company)}\b", name, re.IGNORECASE)
     ))):
         name = ""
     if not name and to_email.casefold() == str(target.get("contact_email") or "").casefold():
@@ -409,8 +506,76 @@ def sent_since(conn: sqlite3.Connection, target_id: str, user_id: str, since: da
 def _readings_words(readings: dict[str, Any]) -> str:
     rules = (readings.get("rules") or {}).get("status") or "nothing"
     jev = readings.get("jev") or {}
-    said = jev.get("label") or f"nothing ({readings.get('jev_fallback') or 'Jev was off'})"
+    said = jev.get("label") or f"nothing ({readings.get('jev_fallback') or JEV_NOT_ASKED})"
     return f"the rules read it as {rules}, and Jev as {said}"
+
+
+def _pattern(status: str) -> str:
+    return next(pattern for name, pattern, _reason in REPLY_PATTERNS if name == status)
+
+
+# Anything in a reply that keeps a door open, beyond what the rules' own patterns catch: a call or a
+# meeting in any words, "later", a pointer to a job board, someone else to talk to. A plain decline has none.
+_OPEN_DOOR = re.compile(
+    r"\b(call|calls|chat|chats|meet|meeting|meetings|zoom|coffee|talk|speak|schedule\w*|interview (?:you|with)"
+    r"|next (?:year|summer|spring|fall|autumn|winter|semester|term|quarter|cycle|round|time)|in the future"
+    r"|future (?:openings?|roles?|positions?|opportunit\w+|internships?|hiring|needs)|down the road|later|someday|revisit"
+    r"|re-?apply\w*|apply|application portal|careers? (?:page|site|portal)|job board|posting|posted"
+    r"|keep (?:you|your \w+) (?:in mind|on file)|on file|in touch|reach (?:back )?out|check back|circle back|touch base"
+    r"|let you know|keep you posted|get back to you|if anything changes|open(?:s|ed|ing)? up"
+    r"|talk to|colleague\w*|co-?workers?|forward\w*|refer\w*|introduc\w*|connect\w*|loop\w* in|cc'?e?d"
+    r"|pass(?:ed|ing)? (?:this|it|your|along)|contact (?:him|her|them|my|our)|point you|try (?:reaching|contacting|emailing))\b"
+    r"|(?<!thanks )(?<!thank you )\bagain\b",
+    re.IGNORECASE,
+)
+
+
+def plain_decline_problem(text: str) -> str:
+    """Why the rules, read strictly, do not see a plain decline in ``text``; "" when they do.
+
+    The rules' reading (suggest_reply_status) stops at its first match and
+    looks for a decline before a call or a "later", so "We're not hiring, but
+    happy to set up a call" reads as declined there. Here the decline must be
+    there and nothing else may be: no offer, call, "later" or referral, by the
+    rules' patterns or in plainer words, and no question.
+    """
+    lowered = " ".join(str(text).lower().split())
+    if not re.search(_pattern("declined"), lowered):
+        return "the rules find no plain no in it"
+    for status in ("offer", "paused", "call_scheduled"):
+        if re.search(_pattern(status), lowered):
+            return f"the rules also read it as {status.replace('_', ' ')}"
+    if "?" in lowered:
+        return "it asks a question"
+    found = _OPEN_DOOR.search(lowered)
+    if found:
+        return f"it says more than no ({found.group(0)!r})"
+    return ""
+
+
+def _unquoted(item: dict[str, Any]) -> str:
+    """A reply's own words: above the email it quotes, and anything typed between its quoted lines."""
+    from .outreach_inbox import written_between_quotes
+
+    between = written_between_quotes(str(item["data"].get("full_text") or ""))
+    return f"{item['text']}\n{between}".strip()
+
+
+_NO_REPLY = re.compile(r"^(no-?reply|do-?not-?reply|donotreply|no_reply|do_not_reply|noreply-\w+|bounce\w*|notifications?)$")
+# What any reply since the first email may not say, by either reading, for a thank-you to go.
+_STUDENTS = ("call_scheduled", "offer", "paused")
+
+
+def _open_reply(item: dict[str, Any]) -> str:
+    """Whether an earlier reply keeps something open (a call, an offer, "later"), by Jev, the rules, or the rules on its own words."""
+    readings = item["data"].get("readings") if isinstance(item["data"].get("readings"), dict) else {}
+    said = {
+        (readings.get("rules") or {}).get("status"),
+        (readings.get("jev") or {}).get("label") if isinstance(readings.get("jev"), dict) else None,
+        suggest_reply_status(_unquoted(item))["status"],
+    }
+    found = sorted(status for status in said if status in _STUDENTS)
+    return found[0].replace("_", " ") if found else ""
 
 
 def eligibility(conn: sqlite3.Connection, target: dict[str, Any], user_id: str) -> tuple[dict[str, Any] | None, str]:
@@ -419,7 +584,8 @@ def eligibility(conn: sqlite3.Connection, target: dict[str, Any], user_id: str) 
         return None, f"the company is marked {target['status']}"
     if thank_you_row(conn, target["id"], user_id) is not None:
         return None, "it already has its one thank-you"
-    reply = latest_reply(conn, target["id"], user_id)
+    found = replies(conn, target["id"], user_id)
+    reply = found[-1] if found else None
     if reply is None:
         return None, "no reply is on record"
     data = reply["data"]
@@ -427,6 +593,14 @@ def eligibility(conn: sqlite3.Connection, target: dict[str, Any], user_id: str) 
         return None, "the latest reply was not read from Gmail, so there is no thread to answer"
     if not data.get("thread_id") or not data.get("message_id"):
         return None, "the latest reply has no thread or message id to answer in"
+    if "full_text" not in data or len(str(data["full_text"])) > FULL_TEXT_LIMIT:
+        return None, "the whole of their reply is not on record, so nothing typed between its quoted lines can be ruled out"
+    sender = str(data["from"]).casefold()
+    if _NO_REPLY.match(sender.split("@", 1)[0]):
+        return None, "their reply came from an address that takes no replies"
+    reply_to = {address.strip() for address in str(data.get("reply_to") or "").casefold().split(",") if address.strip()}
+    if reply_to and reply_to != {sender}:
+        return None, "their reply asks for answers to go to another address, so it is left for you"
     readings = data.get("readings") if isinstance(data.get("readings"), dict) else {}
     rules = (readings.get("rules") or {}).get("status")
     jev = readings.get("jev") if isinstance(readings.get("jev"), dict) else {}
@@ -438,6 +612,22 @@ def eligibility(conn: sqlite3.Connection, target: dict[str, Any], user_id: str) 
         confidence = 0.0
     if confidence < MIN_CONFIDENCE:
         return None, f"Jev was only {round(confidence * 100)}% sure"
+    from .outreach_inbox import written_between_quotes
+
+    # The strict reading covers what they wrote: above the quote and between its lines. The quoted lines
+    # themselves are the student's own email, which often asks for a call, so they are not read as theirs.
+    if written_between_quotes(str(data["full_text"])):
+        return None, "they wrote between the lines of the email they quoted, so it is left for you"
+    problem = plain_decline_problem(_unquoted(reply))
+    if problem:
+        return None, f"not a plain decline to the rules read strictly: {problem}"
+    for earlier in found[:-1]:
+        kept = _open_reply(earlier)
+        if kept:
+            return None, f"an earlier reply reads as {kept}, and that is left for you"
+    suggestion = target.get("reply_suggestion")
+    if suggestion and suggestion.get("status") not in (None, "declined"):
+        return None, f"a suggestion of {str(suggestion['status']).replace('_', ' ')} is waiting for you"
     since = _parse(data.get("received_at")) or reply["at"]
     # Only a decline that arrived while the switch was on: turning it on never thanks an old one.
     switched_on = _parse(automation.on_since(conn, user_id, FEATURE))
@@ -447,7 +637,6 @@ def eligibility(conn: sqlite3.Connection, target: dict[str, Any], user_id: str) 
         return None, "something went to them after their reply"
     if not target.get("sent_at"):
         return None, "no email to them is on record before their reply"
-    sender = str(data["from"]).casefold()
     if target["contact_bounced"] or sender in target["bounced_addresses"] or target.get("bounced_at"):
         return None, "an email to them bounced"
     if not gmail_drafts_status(conn, user_id=user_id)["bounce_check"]:
@@ -639,12 +828,15 @@ def run_for_user(
 # --- Settling a thank-you ----------------------------------------------------------------
 
 
-def _plain(reason: str) -> str:
-    """A reason fit for a notice: no address, no link, and short."""
-    text = re.sub(r"https?://\S+", "[link]", str(reason or ""))
-    text = re.sub(r"[^\s@<>\"'(),;:]+@[^\s@<>\"'(),;:]+", "[address]", text)
-    text = " ".join(text.split()).rstrip(".")
-    return text[:160]
+def notice_reason(state: str, note: str) -> str:
+    """Why a thank-you stopped, in fixed words: a notice can become a desktop pop-up, which never carries
+    email text, and a reviewer's problems often quote their reply. The card keeps the full reason."""
+    for start, words in _NOTICE_REASONS:
+        if note.startswith(start):
+            return words
+    if any(words in note for words in ("may have gone out", "Check your Gmail Sent folder", "Gmail did not confirm", "Gmail did not answer")):
+        return "it may have gone out, so check your Gmail Sent folder"
+    return "open Outreach to see why"
 
 
 def settle_in(conn: sqlite3.Connection, target_id: str, user_id: str, state: str, note: str = "") -> bool:
@@ -674,8 +866,8 @@ def settle_in(conn: sqlite3.Connection, target_id: str, user_id: str, state: str
     if state in {"held", "failed"}:
         row = conn.execute("SELECT company FROM outreach_targets WHERE id=? AND user_id=?", (target_id, user_id)).fetchone()
         company = spoken_company(row["company"]) if row is not None else "a company"
-        title = (f"Thank-you to {company} held: {_plain(note)}" if state == "held"
-                 else f"Thank-you to {company} was not sent: {_plain(note)}")
+        # 'failed' covers a send Gmail may have carried out, so it is "stopped", never "was not sent".
+        title = f"Thank-you to {company} {'held' if state == 'held' else 'stopped'}: {notice_reason(state, note)}"
         automation._insert_notice(
             conn, user_id, event_key=f"thank-you:{state}:{target_id}:{stamp}", level="warning", title=title,
             body="Open Outreach to read it, then send it anyway or dismiss it.", timestamp=stamp,
@@ -697,14 +889,18 @@ REVIEW_INSTRUCTIONS = """You check a thank-you email before it is sent automatic
 Nobody else reads it first, so be strict: when unsure, do not send.
 
 The student cold-emailed a company about an internship, and someone there replied. The JSON input has the company, the
-student's first email (and follow-up, if one went), every reply that came back, who wrote the latest reply, and the
-thank-you about to go out.
+student's first email (and follow-up, if one went), every reply that came back, who wrote the latest reply (from its
+own From and Reply-To headers), and the thank-you about to go out. Each reply's "whole_message" is the message as it
+arrived, including the parts of the student's email it quotes (lines starting with ">"). People sometimes answer
+between the quoted lines or below them, so read every line that is not quoted, wherever it is.
 
 Answer each question:
-1. Is the latest reply a plain decline: no question, no referral to someone else, no "later", "next year" or "keep in
-   touch", and nothing about a call or a meeting? If not, do not send.
+1. Is every reply, not only the latest, free of anything the student should answer themselves: a question, a referral
+   to someone else, a "later", "next year" or "keep in touch", an offer, or anything about a call or a meeting? Is the
+   latest reply a plain decline? If not, do not send.
 2. Does the thank-you only thank them: no ask, no promise, and no claim that is not in the thread? If not, do not send.
-3. Is it addressed to the person who wrote the latest reply? If not, do not send.
+3. Is it addressed to the person who wrote the latest reply, at the address they wrote from, with a greeting that
+   fits their name? If not, do not send.
 4. Is the tone right: short, warm and gracious, with no pressure, disappointment, guilt or sarcasm? If not, do not send.
 
 List every problem you found, in one plain sentence each. send is true only when you found none.
@@ -733,14 +929,23 @@ def review(conn: sqlite3.Connection, target_id: str, *, user_id: str, runner: Ca
     held: dict[str, Any] = {"send": False, "reviewer": reviewer}
     if thank_you is None:
         return {**held, "problems": ["The thank-you is no longer there"]}
+    found = replies(conn, target_id, user_id)
+    decline = next((item for item in found if item["data"].get("gmail_id") == thank_you["reply_gmail_id"]), None)
+    if decline is None:
+        return {**held, "problems": ["The reply it answers is no longer on record"]}
     payload: dict[str, Any] = {
         "company": target["company"],
         "first_email": {"sent_on": target["sent_at"], "subject": target["email_subject"], "body": target["email_body"]},
         "replies": [
-            {"on": item["at"].date().isoformat(), "from": str(item["data"].get("from") or ""), "text": item["text"][:4_000]}
-            for item in replies(conn, target_id, user_id)
+            {"on": item["at"].date().isoformat(), "from": str(item["data"].get("from") or ""),
+             "from_name": str(item["data"].get("from_name") or ""),
+             # The whole message when it was kept (quoted lines and inline answers too), else its words above the quote.
+             "whole_message": str(item["data"].get("full_text") or item["text"])[:8_000]}
+            for item in found
         ],
-        "latest_reply_from": {"name": thank_you["to_name"], "email": thank_you["to_email"]},
+        # Read from the decline's own headers, not from the thank-you, so question 3 compares two things.
+        "latest_reply_from": {"name": str(decline["data"].get("from_name") or ""), "email": str(decline["data"].get("from") or ""),
+                              "reply_to": str(decline["data"].get("reply_to") or "")},
         "thank_you": {"to": {"name": thank_you["to_name"], "email": thank_you["to_email"]},
                       "subject": thank_you["subject"], "body": thank_you["body"]},
     }
@@ -763,9 +968,9 @@ def review(conn: sqlite3.Connection, target_id: str, *, user_id: str, runner: Ca
 
 
 def _thread_news(conn: sqlite3.Connection, client_factory: Callable[[], Any], user_id: str, thank_you: dict[str, Any]) -> tuple[str, str]:
-    """What Gmail's own thread shows after their decline: ("they" | "student" | "", ""), or ("error", why).
+    """What Gmail's own thread shows after their decline: ("they" | "student" | "draft" | "", ""), or ("error", why).
 
-    A reply the student typed in Gmail itself is on record nowhere else.
+    A reply the student typed in Gmail itself, sent or still a draft, is on record nowhere else.
     """
     try:
         with client_factory() as client:
@@ -785,7 +990,7 @@ def _thread_news(conn: sqlite3.Connection, client_factory: Callable[[], Any], us
         decline_at = int(decline.get("internalDate") or 0)
     except (ValueError, AttributeError, StopIteration, TypeError):
         return "error", "Their reply was not found in its thread"
-    news = ""
+    news: set[str] = set()
     for message in messages:
         if str(message.get("id")) == thank_you["reply_gmail_id"]:
             continue
@@ -794,66 +999,106 @@ def _thread_news(conn: sqlite3.Connection, client_factory: Callable[[], Any], us
             at = int(message.get("internalDate") or 0)
         except (TypeError, ValueError):
             return "error", "Gmail's thread could not be read"
-        if at <= decline_at or "DRAFT" in labels:
+        if at <= decline_at:
             continue
-        if "SENT" in labels:
-            return "student", ""
-        news = "they"
-    return news, ""
+        # The student's reply, sent or still being written, is theirs. The app's own Edit draft never gets
+        # here: Edit stops the automatic send first.
+        news.add("student" if "SENT" in labels else "draft" if "DRAFT" in labels else "they")
+    return next((what for what in ("student", "they", "draft") if what in news), ""), ""
+
+
+def problem_now(
+    conn: sqlite3.Connection, target_id: str, user_id: str, thank_you: dict[str, Any], *, manual: bool = False,
+) -> tuple[str, str] | None:
+    """What stops this thank-you going now, from the app's own records: (the state it ends in, why), or None.
+
+    Read at every step before it goes (the check just before sending, again
+    after the reviewer, the hand-over, and the claim for the one call to
+    Gmail), so a reply or a send logged meanwhile, even while the reviewer
+    ran, still stops it. They wrote again when a reply arrived after their
+    decline, or was logged after the thank-you was planned whenever it
+    arrived. ``manual`` is the student's own Send it anyway, which the
+    company's status does not stop.
+    """
+    try:
+        target = get_target(conn, target_id, user_id=user_id)
+    except OutreachNotFoundError:
+        return "cancelled", "The company is no longer in your outreach list"
+    found = replies(conn, target_id, user_id)
+    decline = next((item for item in found if item["data"].get("gmail_id") == thank_you["reply_gmail_id"]), None)
+    if decline is None:
+        return "cancelled", "The reply it answers is no longer on record"
+    planned = _parse(thank_you.get("created_at"))
+    for item in found:
+        if item is decline:
+            continue
+        logged = _parse(item["created_at"])
+        if (item["at"], item["created_at"]) > (decline["at"], decline["created_at"]) or (
+            planned is not None and logged is not None and logged > planned
+        ):
+            return "cancelled", WROTE_AGAIN
+    if sent_since(conn, target_id, user_id, decline["at"]):
+        return "cancelled", STUDENT_WROTE
+    if not manual and target["status"] == "paused":
+        return "cancelled", "The company is marked Paused, so the thank-you was not sent"
+    if not manual and target["status"] not in ELIGIBLE_STATUSES:
+        return "cancelled", f"The company is now marked {target['status'].replace('_', ' ')}, so the thank-you was not sent"
+    if target["contact_bounced"] or thank_you["to_email"].casefold() in target["bounced_addresses"] or target.get("bounced_at"):
+        return "cancelled", "An email to them bounced, so the thank-you was not sent"
+    return None
+
+
+def hand_over_stop(conn: sqlite3.Connection, row: Any, now: datetime) -> tuple[str, str] | None:
+    """What stops a thank-you at the hand-over, inside its transaction after the pause guard; None to hand it over.
+
+    ("held", why) when the switch or Jev inbox suggestions was turned off
+    (each is part of what lets it go unapproved); ("cancelled", why) for
+    problem_now; ("later", "") when it is now outside its window in their zone
+    (a slow check ran past five), so it waits for their next weekday morning.
+    """
+    user_id = row["user_id"]
+    if automation.mode(conn, user_id, FEATURE) != "on":
+        return "held", SWITCHED_OFF
+    if automation.requirement(conn, user_id, FEATURE):
+        return "held", JEV_OFF
+    thank_you = thank_you_row(conn, row["target_id"], user_id)
+    if thank_you is None or thank_you["state"] != "scheduled" or thank_you["fingerprint"] != row["fingerprint"]:
+        return "cancelled", "The thank-you changed or was stopped after it was scheduled"
+    stop = problem_now(conn, row["target_id"], user_id, thank_you)
+    if stop:
+        return stop
+    zone, _basis = recipient_zone(conn, get_target(conn, row["target_id"], user_id=user_id), user_id=user_id)
+    if not in_window(now, zone):
+        return "later", ""
+    return None
 
 
 def gate(
     conn: sqlite3.Connection, row: Any, *, client_factory: Callable[[], Any], now: datetime,
     reviewer: Callable[[], tuple[str, Callable[[str], str]]] | None,
 ) -> str | None:
-    """The checks after fresh_look, just before a thank-you is handed over. None to send; else the outcome it stopped with."""
+    """The checks after fresh_look, just before a thank-you is handed over. None to send; else the outcome it stopped with.
+
+    The app's records first (problem_now), then Jev's switch, then the
+    reviewer, which can take minutes; then the records again, for anything
+    logged while it ran; and last Gmail's own thread, read just before the
+    hand-over (which reads the records once more).
+    """
     from .outreach_review import review_runner
     from .outreach_schedule import GMAIL_HOLD_MARGIN, _finish, _hold_for_retry, _wait_for_gmail
 
     target_id, user_id = row["target_id"], row["user_id"]
-    try:
-        target = get_target(conn, target_id, user_id=user_id)
-    except OutreachNotFoundError:
-        _finish(conn, row, "cancelled", "The company is no longer in your outreach list")
-        return "cancelled"
     thank_you = thank_you_row(conn, target_id, user_id)
     if thank_you is None or thank_you["state"] != "scheduled" or thank_you["fingerprint"] != row["fingerprint"]:
         _finish(conn, row, "cancelled", "The thank-you changed or was stopped after it was scheduled")
         return "cancelled"
-    found = replies(conn, target_id, user_id)
-    decline = next((item for item in found if item["data"].get("gmail_id") == thank_you["reply_gmail_id"]), None)
-    if decline is None:
-        _finish(conn, row, "cancelled", "The reply it answers is no longer on record")
-        return "cancelled"
-    if any(item is not decline and (item["at"], item["created_at"]) > (decline["at"], decline["created_at"]) for item in found):
-        _finish(conn, row, "cancelled", WROTE_AGAIN)
-        return "cancelled"
-    if sent_since(conn, target_id, user_id, decline["at"]):
-        _finish(conn, row, "cancelled", STUDENT_WROTE)
-        return "cancelled"
-    if target["status"] == "paused":
-        _finish(conn, row, "cancelled", "The company is marked Paused, so the thank-you was not sent")
-        return "cancelled"
-    if target["status"] not in ELIGIBLE_STATUSES:
-        _finish(conn, row, "cancelled", f"The company is now marked {target['status'].replace('_', ' ')}, so the thank-you was not sent")
-        return "cancelled"
-    if target["contact_bounced"] or thank_you["to_email"].casefold() in target["bounced_addresses"] or target.get("bounced_at"):
-        _finish(conn, row, "cancelled", "An email to them bounced, so the thank-you was not sent")
-        return "cancelled"
-    news, why = _thread_news(conn, client_factory, user_id, thank_you)
-    if news == "throttled":
-        hold = backoff_until(user_id)
-        if hold is not None:
-            return _wait_for_gmail(conn, row, hold + GMAIL_HOLD_MARGIN)
-        return _hold_for_retry(conn, row, now, f"Could not read their thread in Gmail first: {why}")
-    if news == "error":
-        return _hold_for_retry(conn, row, now, f"Could not read their thread in Gmail first: {why}")
-    if news == "they":
-        _finish(conn, row, "cancelled", WROTE_AGAIN)
-        return "cancelled"
-    if news == "student":
-        _finish(conn, row, "cancelled", STUDENT_WROTE)
-        return "cancelled"
+    stop = problem_now(conn, target_id, user_id, thank_you)
+    if stop:
+        _finish(conn, row, *stop)
+        return stop[0]
+    if automation.requirement(conn, user_id, FEATURE):
+        _finish(conn, row, "held", JEV_OFF)
+        return "held"
     try:
         name, run = (reviewer or (lambda: review_runner("thank_you")))()
         verdict = review(conn, target_id, user_id=user_id, runner=run, reviewer=name)
@@ -864,10 +1109,51 @@ def gate(
         _log(conn, target_id, user_id, REVIEWED_EVENT, detail=(
             f"Passed by {name}" if verdict["send"] else f"Held by {name}: " + "; ".join(verdict["problems"])
         )[:1_000])
-    if verdict["send"]:
-        return None
-    _finish(conn, row, "held", "The reviewer held it: " + "; ".join(verdict["problems"]))
-    return "held"
+    if not verdict["send"]:
+        _finish(conn, row, "held", "The reviewer held it: " + "; ".join(verdict["problems"]))
+        return "held"
+    # The reviewer can take minutes, and the InboxWatcher keeps reading Gmail meanwhile.
+    fresh = thank_you_row(conn, target_id, user_id)
+    stop = problem_now(conn, target_id, user_id, fresh) if fresh is not None else ("cancelled", "The thank-you is no longer there")
+    if stop:
+        _finish(conn, row, *stop)
+        return stop[0]
+    news, why = _thread_news(conn, client_factory, user_id, thank_you)
+    if news == "throttled":
+        hold = backoff_until(user_id)
+        if hold is not None:
+            return _wait_for_gmail(conn, row, hold + GMAIL_HOLD_MARGIN)
+        return _hold_for_retry(conn, row, now, f"Could not read their thread in Gmail first: {why}")
+    if news == "error":
+        return _hold_for_retry(conn, row, now, f"Could not read their thread in Gmail first: {why}")
+    if news in {"they", "student", "draft"}:
+        _finish(conn, row, "cancelled", {"they": WROTE_AGAIN, "student": STUDENT_WROTE, "draft": DRAFT_STARTED}[news])
+        return "cancelled"
+    return None
+
+
+def recover_stuck(conn: sqlite3.Connection, now: datetime, stuck_after: timedelta) -> int:
+    """A Send it anyway cut off mid-way (the app stopped) leaves its thank-you 'sending' with nothing to finish it.
+
+    Past ``stuck_after``, with no request still holding its claim, it is
+    stopped ('failed') with a note to look in Gmail's Sent folder, so the card
+    can offer it again; a claim it left unconfirmed makes the next Send it
+    anyway ask for that look first. Returns how many were stopped.
+    """
+    from .outreach_gmail import _claim, _claim_held
+
+    cutoff = (now - stuck_after).isoformat(timespec="microseconds")
+    stopped = 0
+    for row in conn.execute(
+        "SELECT target_id, user_id FROM outreach_thank_yous WHERE state='sending' AND updated_at<?", (cutoff,),
+    ).fetchall():
+        claim = _claim(conn, row["target_id"], row["user_id"], THANK_YOU_KIND)
+        if claim is not None and _claim_held(claim):
+            continue
+        with conn:
+            if settle_in(conn, row["target_id"], row["user_id"], "failed", STUCK_SENDING):
+                stopped += 1
+    return stopped
 
 
 # --- What the student can do on the card -------------------------------------------------
@@ -888,17 +1174,55 @@ def _stop_schedule(conn: sqlite3.Connection, target_id: str, user_id: str, reaso
     )
 
 
-def cancel(conn: sqlite3.Connection, target_id: str, *, user_id: str, reason: str = "You cancelled it") -> bool:
-    """Stop the thank-you (Cancel, or Dismiss for a held one). False when there was nothing left to stop."""
+def _unconfirmed_claim(conn: sqlite3.Connection, target_id: str, user_id: str) -> bool:
+    """Whether Gmail may have carried out an earlier try at this thank-you (a send, or an Edit's draft) without saying so."""
+    return conn.execute(
+        "SELECT 1 FROM outreach_send_claims WHERE target_id=? AND user_id=? AND kind=? AND state='unconfirmed'",
+        (target_id, user_id, THANK_YOU_KIND),
+    ).fetchone() is not None
+
+
+def _with_doubt(conn: sqlite3.Connection, target_id: str, user_id: str, state: str, reason: str) -> str:
+    """A reason for closing a thank-you, which says so when an earlier try may have gone out."""
+    if state == "failed" and _unconfirmed_claim(conn, target_id, user_id):
+        return f"{reason.rstrip('.')}. Gmail never confirmed whether the earlier try went, so check your Gmail Sent folder."
+    return reason
+
+
+def cancel(conn: sqlite3.Connection, target_id: str, *, user_id: str, reason: str | None = None) -> bool:
+    """Stop the thank-you (Cancel, or Dismiss for a held or stopped one). False when there was nothing left to stop."""
     get_target(conn, target_id, user_id=user_id)
     with conn:
         # Written first, so on SQLite the worker's hand-over and this cannot cross.
         automation.pause_guard(conn, user_id)
+        before = thank_you_row(conn, target_id, user_id)
+        state = before["state"] if before is not None else ""
+        if reason is None:
+            reason = "You cancelled it" if state in {"planned", "scheduled"} else "You dismissed it"
+        reason = _with_doubt(conn, target_id, user_id, state, reason)
         _stop_schedule(conn, target_id, user_id, reason)
         # Read after the stop: a hand-over that won the race (on PostgreSQL, the row's lock) is too far along.
         if _scheduled_state(conn, target_id, user_id) == "transmitting":
             return False
         return _close(conn, target_id, user_id, reason)
+
+
+def on_new_reply(conn: sqlite3.Connection, target_id: str, user_id: str) -> None:
+    """They wrote again (a reply was just logged): a thank-you not yet on its way stops at once.
+
+    The check just before sending would stop a waiting one anyway; this also
+    stops a held or stopped one, so the card never offers Send it anyway for
+    a thank-you their newer message may have overtaken. One already handed to
+    Gmail is left to the claim's own check. Inside the caller's transaction.
+    """
+    row = conn.execute("SELECT state FROM outreach_thank_yous WHERE target_id=? AND user_id=?", (target_id, user_id)).fetchone()
+    if row is None or row["state"] not in OPEN_STATES:
+        return
+    reason = _with_doubt(conn, target_id, user_id, str(row["state"]), WROTE_AGAIN)
+    _stop_schedule(conn, target_id, user_id, reason)
+    if _scheduled_state(conn, target_id, user_id) == "transmitting":
+        return
+    _close(conn, target_id, user_id, reason)
 
 
 def _close(conn: sqlite3.Connection, target_id: str, user_id: str, reason: str) -> bool:
@@ -916,9 +1240,11 @@ def _close(conn: sqlite3.Connection, target_id: str, user_id: str, reason: str) 
 def edit_in_gmail(conn: sqlite3.Connection, target_id: str, *, user_id: str, client_factory: Callable[[], Any]) -> dict[str, Any]:
     """Edit: stop the automatic send and put the thank-you in the student's Gmail Drafts, in their thread.
 
-    The student edits and sends it there. If Gmail cannot make the draft, the
-    thank-you is held (nothing was sent) so the student can still send or
-    dismiss it.
+    The student edits and sends it there. If Gmail does not make the draft,
+    the thank-you goes back to held (or stopped, if it was) so the student can
+    still send or dismiss it; when Gmail may have made it without saying so,
+    the note says to look in Drafts, and the draft's unconfirmed claim makes
+    Send it anyway ask for that look first.
     """
     get_target(conn, target_id, user_id=user_id)
     with conn:
@@ -936,10 +1262,18 @@ def edit_in_gmail(conn: sqlite3.Connection, target_id: str, *, user_id: str, cli
     try:
         return create_thank_you_draft(conn, target_id, user_id=user_id, client_factory=client_factory)
     except Exception as exc:
+        if isinstance(exc, SendUnconfirmedError):
+            note = f"{exc}. Delete any copy in your Gmail Drafts before sending this one"
+        elif isinstance(exc, SendConflictError):
+            note = str(exc)
+        elif "Nothing was sent" in str(exc):
+            note = f"Could not put it in your Gmail Drafts: {exc}"
+        else:
+            note = f"Could not put it in your Gmail Drafts ({exc}). Nothing was sent"
         with conn:
             conn.execute(
-                "UPDATE outreach_thank_yous SET state='held', note=?, updated_at=? WHERE target_id=? AND user_id=? AND state='cancelled'",
-                (f"Could not put it in your Gmail Drafts ({exc}). Nothing was sent"[:500], utc_now(), target_id, user_id),
+                "UPDATE outreach_thank_yous SET state=?, note=?, updated_at=? WHERE target_id=? AND user_id=? AND state='cancelled'",
+                ("failed" if row["state"] == "failed" else "held", note[:500], utc_now(), target_id, user_id),
             )
         raise
 
@@ -948,7 +1282,11 @@ def send_anyway(
     conn: sqlite3.Connection, target_id: str, *, user_id: str, fingerprint: str, client_factory: Callable[[], Any],
     sent_folder_check: str | None = None,
 ) -> dict[str, Any]:
-    """Send it anyway: the student's own confirmed send of a held or stopped thank-you. A pause never stops it."""
+    """Send it anyway: the student's own confirmed send of a held or stopped thank-you. A pause never stops it.
+
+    Not after they wrote again or the student wrote to them: the thank-you is
+    closed with why instead (problem_now), and the send claim checks it once more.
+    """
     get_target(conn, target_id, user_id=user_id)
     with conn:
         row = thank_you_row(conn, target_id, user_id)
@@ -958,11 +1296,17 @@ def send_anyway(
             raise ThankYouChanged(f"The thank-you is {row['state']}; only a held or stopped one is sent from here")
         if row["fingerprint"] != fingerprint:
             raise ThankYouChanged("The thank-you changed after it was shown. Reload and check it before sending")
-        conn.execute(
-            "UPDATE outreach_thank_yous SET state='sending', updated_at=? WHERE target_id=? AND user_id=? AND state=?",
-            (utc_now(), target_id, user_id, row["state"]),
-        )
-        _stop_schedule(conn, target_id, user_id, "You sent it yourself")
+        stop = problem_now(conn, target_id, user_id, row, manual=True)
+        if stop is None:
+            conn.execute(
+                "UPDATE outreach_thank_yous SET state='sending', updated_at=? WHERE target_id=? AND user_id=? AND state=?",
+                (utc_now(), target_id, user_id, row["state"]),
+            )
+            _stop_schedule(conn, target_id, user_id, "You sent it yourself")
+        else:
+            _close(conn, target_id, user_id, _with_doubt(conn, target_id, user_id, row["state"], stop[1]))
+    if stop is not None:
+        raise ThankYouChanged(stop[1])
     try:
         return send_thank_you(
             conn, target_id, user_id=user_id, fingerprint=fingerprint, client_factory=client_factory,

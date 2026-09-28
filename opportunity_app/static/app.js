@@ -508,6 +508,7 @@
     if (payload?.settings) {
       state.automation = { ...(state.automation || {}), settings: payload.settings };
       syncAutomationControls(payload.settings);
+      repaintThankYouHolds();
     }
     if (payload?.health) applyAutomationStatus(payload.health);
     // The job-email block on the Profile page follows its switch at once.
@@ -4168,7 +4169,7 @@
       select.value = setting.enabled ? "jev" : "rules";
       select.disabled = false;
       help.textContent = setting.available
-        ? `${setting.sends} With Jev, these go to TypeSafe. When Jev is unsure or unreachable, the keyword rules suggest instead, and every suggestion says which one made it. You still confirm each change, except that Update applications from job emails (under Automation on your Profile) may act on its own when Jev and the keyword rules agree.`
+        ? `${setting.sends} With Jev, these go to TypeSafe. When Jev is unsure or unreachable, the keyword rules suggest instead, and every suggestion says which one made it. You still confirm each change, except that Update applications from job emails and Send a thank-you when someone declines (both under Automation on your Profile) act on their own when Jev and the keyword rules agree; the thank-you is an email, sent from your Gmail.`
         : "Jev is not set up on this computer (TYPESAFE_API_KEY in .env), so the keyword rules make these suggestions. Nothing is sent anywhere.";
     }
     try {
@@ -4212,7 +4213,7 @@
   const AUTOMATION_SWITCH_HELP = Object.fromEntries(AUTOMATION_SWITCHES.map(([key, , help]) => [key, help]));
   // Longer help for automation features with no switch on the Outreach tab.
   const AUTOMATION_FEATURE_HELP = {
-    decline_thank_you: "When a contact writes back with a plain no, and both the keyword rules and Jev read it that way, the app writes a few lines of thanks and sends them in the same thread, with no approval step. Before 5 PM on a weekday in their time zone it goes after a normal delay the same day; otherwise the next weekday morning. Anything about a call, a question, a referral, an offer, or \"maybe later\" stays yours. Just before it goes, Gmail is read again, a new message from them (or one from you) stops it, and a second model reads it; anything unclear holds it for you on the card. The card shows it with Cancel and Edit (which moves it to your Gmail Drafts instead). Needs Jev inbox suggestions on and Gmail connected. There is no shadow period.",
+    decline_thank_you: "When a contact writes back with a plain no, and both the keyword rules and Jev read it that way, the app writes a few lines of thanks and sends them in the same thread, with no approval step. Before 5 PM on a weekday in their time zone it goes after a normal delay the same day; otherwise the next weekday morning. Anything about a call, a question, a referral, an offer, or \"maybe later\" stays yours. Just before it goes, Gmail is read again, a new message from them (or one from you) stops it, and a second model reads it; anything unclear holds it for you on the card. The card shows it with Cancel and Edit (which moves it to your Gmail Drafts instead). Turning this off, or turning Jev inbox suggestions off, holds a waiting thank-you at its time for you to send or dismiss. Needs Jev inbox suggestions on, Gmail connected, and a model set up to review it (Outreach → Settings); without a reviewer every thank-you is held for you. There is no shadow period.",
     application_mail: "Reads job-system and assessment emails in Gmail (and mail from company domains you trust below). An email that clearly confirms, rejects, or invites you moves that application forward and adds a task or a deadline; the email is shown on the application. Anything unclear, an offer, or an email from before you turned this on waits under Waiting for you, with the reason. Start it in shadow: for 48 hours it only logs what it would do, and you mark each one right or wrong before it can act. Needs Gmail connected.",
   };
 
@@ -4371,14 +4372,19 @@
       "Thank-you writer");
 
     const review = settings.review_provider;
-    const [reviewField, reviewSelect] = selectField("settings-review-provider", "Who reviews follow-ups before they go",
+    const [reviewField, reviewSelect] = selectField("settings-review-provider", "Who reviews follow-ups and thank-yous",
       "Used when \"Have a second model check each follow-up\" is on, and for every thank-you after a decline. Automatic picks a model from a different company than the writer, so it does not share its blind spots.");
     const reviewAutomatic = document.createElement("option");
     reviewAutomatic.value = "";
-    const nowReviewing = review.options.find((option) => option.id === review.automatic.id)?.label || review.automatic.id;
+    const reviewerName = (choice) => review.options.find((option) => option.id === choice.id)?.label || choice.id;
+    const thanksReview = review.automatic_thank_you || review.automatic;
+    // Follow-ups and thank-yous can have different writers, so Automatic can pick a different reviewer for each.
+    const splitReview = !review.automatic.problem && !thanksReview.problem && thanksReview.id !== review.automatic.id;
     reviewAutomatic.textContent = review.automatic.problem
       ? "Automatic (no model is set up)"
-      : `Automatic (now: ${nowReviewing}${review.automatic.note ? ", same company as the writer" : ""})`;
+      : splitReview
+        ? `Automatic (now: ${reviewerName(review.automatic)} for follow-ups, ${reviewerName(thanksReview)} for thank-yous)`
+        : `Automatic (now: ${reviewerName(review.automatic)}${review.automatic.note || thanksReview.note ? ", same company as a writer" : ""})`;
     reviewAutomatic.selected = !review.value;
     reviewSelect.appendChild(reviewAutomatic);
     review.options.forEach((option) => reviewSelect.appendChild(providerOption(option, review.value)));
@@ -4386,15 +4392,15 @@
     const showReviewHint = () => {
       const chosen = review.options.find((option) => option.id === reviewSelect.value);
       if (chosen && !chosen.available) reviewHint.textContent = chosen.hint;
-      else if (!reviewSelect.value && review.automatic.problem) reviewHint.textContent = `${review.automatic.problem}. Reviewed follow-ups wait until one is.`;
-      else if (!reviewSelect.value && review.automatic.note) reviewHint.textContent = "Only one company's models are set up here, so the reviewer is from the same company as the writer. It still reads every follow-up; set up another model for a fully independent check.";
+      else if (!reviewSelect.value && review.automatic.problem) reviewHint.textContent = "No model is set up on this computer to review. Reviewed follow-ups wait until one is, and every thank-you after a decline is held for you.";
+      else if (!reviewSelect.value && (review.automatic.note || thanksReview.note)) reviewHint.textContent = "Only one company's models are set up here, so the reviewer is from the same company as the writer. It still reads every follow-up and thank-you; set up another model for a fully independent check.";
       else reviewHint.textContent = "";
     };
     showReviewHint();
     reviewField.appendChild(reviewHint);
     reviewSelect.addEventListener("change", () => {
       showReviewHint();
-      save({ review_provider: reviewSelect.value }, "Follow-up reviewer");
+      save({ review_provider: reviewSelect.value }, "Reviewer");
     });
 
     const research = settings.research_agent;
@@ -5041,7 +5047,8 @@
   // held shows why, with Send it anyway (the student's own confirmed send) and
   // Dismiss. Once sent, when, and a link to the thread.
   function thankYouWho(thankYou) {
-    return String(thankYou.to_name || "").trim().split(/\s+/)[0] || thankYou.to_email;
+    // The server's first name leaves out a title ("Dr. Priya Shah" is Priya), as the email's greeting does.
+    return String(thankYou.to_first_name || "").trim() || thankYou.to_email;
   }
 
   function thankYouText(thankYou) {
@@ -5052,7 +5059,7 @@
     details.appendChild(element("pre", "outreach-event-detail", thankYou.body));
     const writer = String(thankYou.generated_by || "").split(":")[0];
     details.appendChild(element("p", "outreach-thank-you-meta", thankYou.generated_by === "template"
-      ? "Fixed words, with no model. Checked by plain rules."
+      ? "Fixed words, with no model. Checked by plain rules, and read by a second model before it goes."
       : `Written by ${DRAFT_PROVIDER_LABELS[writer] || writer}. Checked by plain rules, and read by a second model before it goes.`));
     return details;
   }
@@ -5091,11 +5098,34 @@
     const who = thankYouWho(item.thank_you);
     return thankYouAction(item, text, async () => {
       const result = await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/thank-you`, { method: "DELETE" });
-      if (text !== "Cancel") return "Dismissed. The thank-you will not be sent.";
-      return result.cancelled
-        ? `Cancelled the thank-you to ${who}.`
-        : `Too late to cancel: the thank-you to ${who} had already gone to Gmail. Check the history.`;
+      if (result.cancelled) return text === "Cancel" ? `Cancelled the thank-you to ${who}.` : "Dismissed. The thank-you will not be sent.";
+      // Nothing was left to stop: it went (or is going) to Gmail, or a check had already stopped it.
+      const now = result.thank_you || {};
+      if (now.state === "sent" || now.state === "transmitting" || now.state === "sending" || now.send_state === "transmitting") {
+        return `Too late to ${text === "Cancel" ? "cancel" : "dismiss"}: the thank-you to ${who} had already gone to Gmail. Check the history.`;
+      }
+      return `The thank-you to ${who} had already stopped${now.note ? `: ${String(now.note).replace(/[.!?]+$/, "")}` : ""}.`;
     }, text === "Cancel" ? `Cancel the thank-you to ${who}` : `Dismiss the thank-you to ${who}`);
+  }
+
+  // Why a waiting thank-you will be held at its time rather than sent: its switch, or Jev inbox
+  // suggestions, turned off. Read from the switches on the page when they are loaded, else from the server.
+  function thankYouHoldReason(serverReason) {
+    const feature = automationFeature(state.automation?.settings, "decline_thank_you");
+    if (!feature) return serverReason || "";
+    if (feature.mode !== "on") return `${feature.label} is off`;
+    return feature.requirement || "";
+  }
+
+  function paintThankYouHold(node) {
+    const reason = thankYouHoldReason(node.dataset.thankYouHold);
+    node.textContent = reason ? `It will be held at its time, not sent: ${reason}.` : "";
+    node.hidden = !reason;
+    return node;
+  }
+
+  function repaintThankYouHolds() {
+    document.querySelectorAll("[data-thank-you-hold]").forEach(paintThankYouHold);
   }
 
   function thankYouEdit(item) {
@@ -5170,6 +5200,9 @@
         `Thank-you to ${who} goes out ${thankYou.label}.`,
         `Thank-you to ${who}. ${scheduleWords(thankYou.label, { paused: true })}.`);
       section.appendChild(line);
+      const hold = element("p", "outreach-research-warning outreach-thank-you-hold");
+      hold.dataset.thankYouHold = thankYou.will_hold || "";
+      section.appendChild(paintThankYouHold(hold));
       if (thankYou.note && !/^paused/i.test(thankYou.note)) section.appendChild(element("p", "outreach-thank-you-meta", thankYou.note));
       actions.append(thankYouCancel(item, "Cancel"), thankYouEdit(item));
       section.append(thankYouText(thankYou), actions);
@@ -5178,7 +5211,8 @@
       if (thankYou.thread_url) actions.appendChild(thankYouLink(thankYou.thread_url, "Open the thread in Gmail ↗", `Open the thread in Gmail, with ${who}`));
       section.append(thankYouText(thankYou), actions);
     } else if (["held", "failed"].includes(thankYou.state)) {
-      const what = thankYou.state === "held" ? "held" : "was not sent";
+      // 'failed' includes a send Gmail may have carried out, so it is "stopped", never "was not sent".
+      const what = thankYou.state === "held" ? "held" : "stopped";
       section.appendChild(element("p", "outreach-research-warning", `Thank-you to ${who} ${what}: ${thankYou.note || "no reason was given"}.`.replace(/\.\.$/, ".")));
       actions.append(thankYouSendAnyway(item), thankYouCancel(item, "Dismiss"));
       section.append(thankYouText(thankYou), actions);
@@ -5188,7 +5222,10 @@
         actions.appendChild(thankYouLink(thankYou.draft_url, "Open the draft in Gmail ↗", `Open the draft in Gmail: the thank-you to ${who}`));
         section.appendChild(actions);
       } else {
-        section.appendChild(element("p", "outreach-thank-you-meta", `Thank-you to ${who} not sent: ${thankYou.note || "cancelled"}`));
+        const note = thankYou.note || "cancelled";
+        // Closed after a try Gmail never confirmed: it may have gone, and the note says so.
+        const what = /Sent folder/.test(note) ? "stopped" : "not sent";
+        section.appendChild(element("p", "outreach-thank-you-meta", `Thank-you to ${who} ${what}: ${note}`));
       }
     } else {
       return null;
