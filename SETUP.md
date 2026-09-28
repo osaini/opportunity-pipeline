@@ -348,8 +348,8 @@ themselves (rule 3). The details:
     task or a deadline. Each change shows on the application's timeline with
     Undo, and the email is listed on the application. An application they
     archived stays archived; one the app archived itself after no reply
-    (**Archive applications that never answered**) is reopened by a later
-    email about it.
+    (**Archive applications that never answered**) is reopened by an email
+    about it that the archive did not know of.
   - Anything unclear waits under **Waiting for you**, with the reason and a
     picker to choose the right application: an offer (always), an email that
     could be about two applications, a forwarded email, a newsletter, or an
@@ -417,13 +417,23 @@ settings from `config/profile.json`; ask before setting them:
 | After how many days should a silent application be archived? | `archive_after_days` | default 60; used by **Archive applications that never answered** |
 | From what score should new roles be saved for you? Below what score passed? | `automation.auto_save_at`, `automation.auto_pass_below` | scores from 0 to 100, with no defaults: left out, the switch can't be turned on. Keep `auto_pass_below` at or under `auto_save_at`. |
 
-With **Update applications from job emails** on, a job email linked to an
-application counts as a reply: both day counts above start again from the
-latest one. An application the app archived after no reply is reopened when a
-job email about it arrives later: an interview invite moves it to Interview, a
-rejection to Rejected, and a confirmation, assessment or scheduling email back
-to Applied. One the student archived is never reopened, and one with a job
-email's change waiting for their approval is not archived at all.
+With **Update applications from job emails** on (not in shadow), a job email
+linked to an application that says something happened (a confirmation, an
+interview invite, a scheduling link, an assessment, a deadline, a rejection or
+an offer) counts as a reply: both day counts above start again from the latest
+one. A job alert or newsletter does not count, nor does an email whose changes
+the student turned down or ignored. An application the app archived after no
+reply is reopened by a job email about it that the archive did not know of: an
+interview invite moves it to Interview, a rejection to Rejected, and a
+confirmation, assessment or scheduling email back to Applied, even when that
+email reached Gmail before the archive and was read later. The follow-up
+reminder the archive cancelled comes back with it. If the email names only the
+company and the student has another open application there, it waits for them
+to pick. One the student archived is never reopened, and one with a job email's
+change waiting for their approval is not archived at all. An archive the
+student undoes stays undone until a new job email or a new applied date; one a
+job email reopened is archived again only after the full count of silent days
+from that email.
 
 Auto-save and auto-pass run after each daily sync, only on roles first seen
 since the switch was turned on, and never pass a posting that has no

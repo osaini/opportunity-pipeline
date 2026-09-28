@@ -186,12 +186,12 @@ FEATURES: dict[str, Feature] = {
                 "and you can change it", "applications", "internal"),
         Feature("application_silence", "Flag applications with no reply",
                 "Show an Urgent row when an application is still at Applied a set number of days after you applied "
-                "(21 days, unless your profile sets another number), or after the company's latest job email when "
-                "Update applications from job emails found one", "applications", "internal"),
+                "(21 days, unless your profile sets another number), or after the company's latest job email about it "
+                "while Update applications from job emails is on", "applications", "internal"),
         Feature("archive_silent_applications", "Archive applications that never answered",
                 "Move an application still at Applied to Archived after a set number of days "
                 "(60 days, unless your profile sets another number). You can undo it, and with Update applications from "
-                "job emails on, a later email about it reopens it", "applications", "internal"),
+                "job emails on, an email about it that the archive did not know of reopens it", "applications", "internal"),
         Feature("auto_save", "Save new roles that score high",
                 "After each daily sync, save new roles that score at or above the number in your profile "
                 "(automation.auto_save_at). Scores are kept only for this computer's main account, so it works only there",
@@ -649,6 +649,19 @@ def _capitalized(text: str) -> str:
     return text[:1].upper() + text[1:]
 
 
+UNDO_REMINDER_NOTES = {
+    "restored": "Your follow-up reminder is scheduled again.",
+    "no_date": "The follow-up reminder this change cancelled was not restored, because no follow-up date is set.",
+    "passed": "The follow-up reminder this change cancelled was not restored, because its date has passed. Set a new follow-up date if you want one.",
+    "changed": "The follow-up reminder this change cancelled was changed since, so it was left as it is. Set the follow-up date again if you want a reminder.",
+}
+REOPEN_REMINDER_NOTES = {
+    "no_date": "The follow-up reminder the automatic archive cancelled was not restored, because no follow-up date is set.",
+    "passed": "The follow-up reminder the automatic archive cancelled was not restored, because its date has passed. Set a new follow-up date if you want one.",
+    "changed": "The follow-up reminder the automatic archive cancelled was changed since, so it was left as it is. Set the follow-up date again if you want a reminder.",
+}
+
+
 class ApplicationStage:
     """application.stage: an application's stage, and when the student applied.
 
@@ -660,6 +673,13 @@ class ApplicationStage:
     this move cancelled (unchanged since) and the follow-up date is still set
     and still ahead. Otherwise undo says the reminder was not restored, so the
     student is not left with a follow-up date that will never remind them.
+
+    A move out of an archive the app made after no reply
+    (internal_automation.automatic_archive), to a stage that keeps its
+    reminder, is the same as undoing that archive for the reminder: the one
+    the archive cancelled is scheduled again under the same conditions, or
+    the result's reminder_note says why not. Undoing that move cancels it
+    again while it is unchanged.
     """
 
     fields = ("stage", "applied_at")
@@ -696,40 +716,59 @@ class ApplicationStage:
         self, conn: sqlite3.Connection, user_id: str, subject_id: str, after: dict[str, Any], *, source: str, timestamp: str,
     ) -> dict[str, Any]:
         reminder = self._reminder(conn, user_id, subject_id)
+        # Read before the move: once it is made, the archive is no longer the latest stage change.
+        archive = None
+        if after["stage"] not in actions.TERMINAL_APPLICATION_STAGES:
+            from . import internal_automation  # imported here: it imports this module
+
+            archive = internal_automation.automatic_archive(conn, subject_id)
         actions._update_application_tx(
             conn, subject_id, stage=after["stage"], applied_at=after.get("applied_at"), user_id=user_id,
             source=source, timestamp=timestamp,
         )
         now = self._reminder(conn, user_id, subject_id)
+        result: dict[str, Any] = {}
         if reminder is not None and reminder["status"] == "scheduled" and now is not None and now["status"] == "cancelled":
             # What undo needs to put it back, and to know it is still the one this move cancelled.
-            return {"reminder_cancelled_at": now["updated_at"]}
-        return {}
+            result["reminder_cancelled_at"] = now["updated_at"]
+        if archive and archive.get("reminder_cancelled_at"):
+            outcome = self._reschedule(conn, user_id, subject_id, archive["reminder_cancelled_at"], timestamp)
+            if outcome == "restored":
+                result["reminder_restored_at"] = timestamp
+            else:
+                result["reminder_note"] = REOPEN_REMINDER_NOTES[outcome]
+        return result
 
     def undo(
         self, conn: sqlite3.Connection, user_id: str, subject_id: str, before: dict[str, Any], after: dict[str, Any],
         *, source: str, timestamp: str,
     ) -> dict[str, Any]:
         self._restore_stage(conn, user_id, subject_id, before, after, source=source, timestamp=timestamp)
-        cancelled_at = (after.get("_result") or {}).get("reminder_cancelled_at")
+        result = after.get("_result") or {}
+        if result.get("reminder_restored_at"):
+            # This move put back the reminder an automatic archive cancelled; back in Archived, it stops again.
+            conn.execute(
+                """
+                UPDATE reminders SET status='cancelled', updated_at=?
+                WHERE application_id=? AND user_id=? AND reminder_type='follow_up' AND status='scheduled' AND updated_at=?
+                """,
+                (timestamp, subject_id, user_id, result["reminder_restored_at"]),
+            )
+        cancelled_at = result.get("reminder_cancelled_at")
         if not cancelled_at:
             return {}
         return self._restore_reminder(conn, user_id, subject_id, cancelled_at, timestamp)
 
-    def _restore_reminder(
-        self, conn: sqlite3.Connection, user_id: str, subject_id: str, cancelled_at: str, timestamp: str,
-    ) -> dict[str, Any]:
-        """Schedule again the follow-up reminder this move cancelled, or say why it stays cancelled."""
+    def _reschedule(self, conn: sqlite3.Connection, user_id: str, subject_id: str, cancelled_at: str, timestamp: str) -> str:
+        """Schedule again a follow-up reminder a move to a closed stage cancelled: restored, no_date, passed, or changed."""
         row = conn.execute(
             f"SELECT follow_up_at FROM applications WHERE id=? AND user_id=?{_for_update(conn)}", (subject_id, user_id),
         ).fetchone()
         due = _parse(row["follow_up_at"]) if row is not None else None
         if due is None:
-            return {"reminder_restored": False,
-                    "undo_note": "The follow-up reminder this change cancelled was not restored, because no follow-up date is set."}
+            return "no_date"
         if due <= _now(None):
-            return {"reminder_restored": False,
-                    "undo_note": "The follow-up reminder this change cancelled was not restored, because its date has passed. Set a new follow-up date if you want one."}
+            return "passed"
         # Due on the follow-up date as it stands now: the student may have moved it while the stage was closed.
         restored = conn.execute(
             """
@@ -738,10 +777,14 @@ class ApplicationStage:
             """,
             (row["follow_up_at"], timestamp, subject_id, user_id, cancelled_at),
         ).rowcount
-        if not restored:
-            return {"reminder_restored": False,
-                    "undo_note": "The follow-up reminder this change cancelled was changed since, so it was left as it is. Set the follow-up date again if you want a reminder."}
-        return {"reminder_restored": True, "undo_note": "Your follow-up reminder is scheduled again."}
+        return "restored" if restored else "changed"
+
+    def _restore_reminder(
+        self, conn: sqlite3.Connection, user_id: str, subject_id: str, cancelled_at: str, timestamp: str,
+    ) -> dict[str, Any]:
+        """Schedule again the follow-up reminder this move cancelled, or say why it stays cancelled."""
+        outcome = self._reschedule(conn, user_id, subject_id, cancelled_at, timestamp)
+        return {"reminder_restored": outcome == "restored", "undo_note": UNDO_REMINDER_NOTES[outcome]}
 
     def _restore_stage(
         self, conn: sqlite3.Connection, user_id: str, subject_id: str, before: dict[str, Any], after: dict[str, Any],

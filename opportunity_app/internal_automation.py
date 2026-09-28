@@ -4,16 +4,25 @@
   student applied gets an Urgent row ("No reply yet"). N is the profile's
   application_follow_up_days (default 21). The row is derived each time the
   queue is read (urgent.py); nothing is written, so there is nothing to undo.
-  A job email linked to the application (application_mail) is a reply, so
-  silence here and in the archive below counts from the latest one when it
-  came after the student applied (last_heard).
+  While "Update applications from job emails" (application_mail) is on, a
+  job email linked to the application that says something happened (a
+  confirmation, an invitation, a scheduling link, an assessment, a deadline,
+  a rejection or an offer) is a reply, unless the student turned down or
+  ignored everything it proposed; silence here and in the archive below
+  counts from the latest one when it came after the student applied
+  (last_heard).
 - archive_silent_applications: at M days (archive_after_days, default 60) the
   application moves to Archived through the ledger, at most once a day per
   student. One with a job email's proposed change waiting for the student
-  (application_mail) is not silent, and is left alone. automation_archived
-  says whether an application's stage was last set by that switch, so a later
-  job email can reopen it (application_inbox.plan); a student's archive is
-  never reopened.
+  (application_mail) is not silent, and is left alone, and so is one a job
+  email reached after the day's list was made (checked inside the change's
+  transaction). automatic_archive says whether an application's stage was
+  last set by that switch, and from which day it counted the silence, so a
+  later job email can reopen it (application_inbox.plan); a student's archive
+  is never reopened. Each silent period is archived at most once: an undo
+  sticks until a job email or a new applied date comes after it, and an
+  archive a job email reopened is archived again only after M more silent
+  days from that email (_new_silence).
 - outreach_auto_close: a company that never answered its follow-up
   (outreach.lifecycle_suggestion says no_response) is closed as No response,
   after outreach_review.fresh_look has read Gmail once more. It fails closed:
@@ -90,23 +99,61 @@ def archive_days(conn: sqlite3.Connection, user_id: str) -> int:
 # --- Application silence (Urgent rows) ----------------------------------------------------
 
 
-def last_heard(conn: sqlite3.Connection, user_id: str) -> dict[str, str]:
+# The kinds of job email that say the employer did something (application_inbox.ACTIONABLE; a test
+# keeps the two equal). Only these are a reply: a job alert or an unclassified receipt is not.
+REPLY_KINDS = ("application_confirmation", "interview", "scheduling", "rejected", "offer", "assessment", "deadline")
+# A job email whose every change the student turned down (rejected) or set aside (ignored the email) is
+# not counted as a reply; neither is one whose would-have-done entries in shadow they marked wrong.
+_TURNED_DOWN = frozenset({"rejected", "expired"})
+
+
+def _turned_down(rows: list[Any]) -> bool:
+    return bool(rows) and all(
+        str(row["status"]) in _TURNED_DOWN or (str(row["status"]) == "shadow" and str(row["review"] or "") == "wrong") for row in rows
+    )
+
+
+def last_heard(conn: sqlite3.Connection, user_id: str, application_id: str | None = None) -> dict[str, str]:
     """When a job email about each application last arrived: {application_id: received_at}.
 
-    The emails "Update applications from job emails" linked to the
-    application (application_mail_messages), the same ones its Emails list
-    shows. An email from the company is a reply, so silence counts from the
-    later of this and when the student applied (_silent_since).
+    Only while "Update applications from job emails" (application_mail) is
+    on: in shadow it only logs what it would do, and changes nothing another
+    switch shows. Only the emails it linked to the application (the ones its
+    Emails list shows) that say the employer did something (REPLY_KINDS), and
+    not one whose every change the student turned down or ignored. Such an
+    email is a reply, so silence counts from the later of this and when the
+    student applied (_silent_since). ``application_id`` limits it to one.
     """
-    rows = conn.execute(
-        """
-        SELECT application_id, MAX(received_at) AS heard FROM application_mail_messages
-        WHERE user_id=? AND application_id<>'' AND state IN ('done', 'awaiting_resume')
-        GROUP BY application_id
+    if automation.mode(conn, user_id, "application_mail") != "on":
+        return {}
+    kinds = ", ".join("?" for _ in REPLY_KINDS)
+    only = " AND application_id=?" if application_id else ""
+    messages = conn.execute(
+        f"""
+        SELECT application_id, gmail_id, received_at FROM application_mail_messages
+        WHERE user_id=? AND application_id<>'' AND state IN ('done', 'awaiting_resume') AND kind IN ({kinds}){only}
         """,
-        (user_id,),
+        (user_id, *REPLY_KINDS, *((application_id,) if application_id else ())),
     ).fetchall()
-    return {str(row["application_id"]): str(row["heard"]) for row in rows if row["heard"]}
+    if not messages:
+        return {}
+    # What the student did with each email's changes: the ledger rows it made all have keys gmail:<id>:...
+    decided: dict[str, list[Any]] = {}
+    for row in conn.execute(
+        "SELECT idempotency_key, status, review FROM automation_actions WHERE user_id=? AND feature='application_mail'", (user_id,),
+    ).fetchall():
+        parts = str(row["idempotency_key"] or "").split(":")
+        if len(parts) >= 3 and parts[0] == "gmail":
+            decided.setdefault(parts[1], []).append(row)
+    heard: dict[str, str] = {}
+    for row in messages:
+        received = str(row["received_at"] or "")
+        if not received or _turned_down(decided.get(str(row["gmail_id"]), [])):
+            continue
+        key = str(row["application_id"])
+        if received > heard.get(key, ""):
+            heard[key] = received
+    return heard
 
 
 def _silent_since(zone: Any, applied_at: Any, heard_at: str | None) -> tuple[date | None, bool]:
@@ -175,12 +222,29 @@ def silence_rows(conn: sqlite3.Connection, user_id: str, *, now: datetime | None
 # --- Archive silent applications (Could) ---------------------------------------------------
 
 
+def _decoded(text: Any) -> dict[str, Any]:
+    try:
+        value = json.loads(text or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _silent_since_of(evidence: dict[str, Any]) -> str:
+    """The calendar day (ISO) an archive counted the silence from: the company's last email, else the applied day."""
+    return str(evidence.get("last_email_on") or evidence.get("applied_on") or "")
+
+
 def automatic_archive(conn: sqlite3.Connection, application_id: str) -> dict[str, Any] | None:
     """The archive archive_silent_applications made, while it is still the application's latest stage change.
 
-    Returns {action_id, archived_at, from_stage} (the stage it was archived
-    from, which is always Applied), or None: never archived by the switch,
-    undone, moved on since, or archived by the student.
+    Returns {action_id, archived_at, from_stage, silent_since,
+    reminder_cancelled_at}, or None: never archived by the switch, undone,
+    moved on since, or archived by the student. from_stage is the stage it
+    was archived from (always Applied); silent_since is the calendar day it
+    counted the silence from, so an email from a later day is one it did not
+    know of ('' for an archive that did not record it); reminder_cancelled_at
+    is set when the archive cancelled the follow-up reminder.
     """
     row = conn.execute(
         """
@@ -198,7 +262,10 @@ def automatic_archive(conn: sqlite3.Connection, application_id: str) -> dict[str
     if not source.startswith("automation:"):
         return None
     action = conn.execute(
-        "SELECT id, feature, status, action_type, before_json, applied_at FROM automation_actions WHERE id=?",
+        """
+        SELECT id, feature, status, action_type, before_json, after_json, evidence_json, applied_at
+        FROM automation_actions WHERE id=?
+        """,
         (source.split(":", 1)[1],),
     ).fetchone()
     if not (action and action["feature"] == "archive_silent_applications" and action["status"] == "applied"
@@ -209,12 +276,13 @@ def automatic_archive(conn: sqlite3.Connection, application_id: str) -> dict[str
     stage = conn.execute("SELECT stage FROM applications WHERE id=?", (application_id,)).fetchone()
     if stage is None or stage["stage"] != "archived":
         return None
-    try:
-        before = json.loads(action["before_json"] or "{}")
-    except (TypeError, ValueError):
-        before = {}
-    from_stage = before.get("stage") if isinstance(before, dict) else None
-    return {"action_id": str(action["id"]), "archived_at": action["applied_at"], "from_stage": from_stage or "applied"}
+    result = _decoded(action["after_json"]).get("_result")
+    return {
+        "action_id": str(action["id"]), "archived_at": action["applied_at"],
+        "from_stage": _decoded(action["before_json"]).get("stage") or "applied",
+        "silent_since": _silent_since_of(_decoded(action["evidence_json"])),
+        "reminder_cancelled_at": str(result.get("reminder_cancelled_at") or "") if isinstance(result, dict) else "",
+    }
 
 
 def automation_archived(conn: sqlite3.Connection, application_id: str) -> bool:
@@ -244,7 +312,12 @@ def pending_email_news(conn: sqlite3.Connection, user_id: str, application_id: s
 
 
 def archive_due(conn: sqlite3.Connection, user_id: str, *, now: datetime | None = None) -> list[dict[str, Any]]:
-    """Applications still at Applied at least M days after the student applied, or after the company's latest job email."""
+    """Applications still at Applied at least M days after the student applied, or after the company's latest job email.
+
+    Each item carries what the silence was counted from: ``since`` (the
+    calendar day), ``anchor_at`` (the applied_at or the email's received_at it
+    came from), and ``heard_at`` (the latest email last_heard found, or '').
+    """
     days = archive_days(conn, user_id)
     zone = user_timezone(conn, user_id)
     today = zone.today(now)
@@ -258,11 +331,13 @@ def archive_due(conn: sqlite3.Connection, user_id: str, *, now: datetime | None 
         """,
         (user_id,),
     ).fetchall():
-        since, by_email = _silent_since(zone, row["applied_at"], heard.get(str(row["id"])))
+        heard_at = heard.get(str(row["id"]), "")
+        since, by_email = _silent_since(zone, row["applied_at"], heard_at or None)
         if since is None or (today - since).days < days:
             continue
         applied_on = zone.calendar_date(row["applied_at"])
-        item = {**dict(row), "days": (today - since).days, "applied_on": applied_on.isoformat() if applied_on else ""}
+        item = {**dict(row), "days": (today - since).days, "applied_on": applied_on.isoformat() if applied_on else "",
+                "since": since.isoformat(), "anchor_at": heard_at if by_email else str(row["applied_at"]), "heard_at": heard_at}
         if by_email:
             item["last_email_on"] = since.isoformat()
         due.append(item)
@@ -275,8 +350,41 @@ def _archive_ran_recently(conn: sqlite3.Connection, user_id: str, now: datetime)
     return last is not None and now - last < ARCHIVE_EVERY
 
 
+def _new_silence(conn: sqlite3.Connection, user_id: str, item: dict[str, Any]) -> bool:
+    """Whether this silent period is one no archive has been made for yet.
+
+    Each silent period is archived at most once. After the latest archive of
+    this application was undone, only a job email or a new applied date that
+    came after the undo starts a new one, so an undo sticks (a job email that
+    only moves the applied date earlier, or one read late that came before
+    the undo, does not). After an archive that was moved on from any other
+    way (a job email reopened it, or the student moved it back), the silence
+    must count from a later day than that archive's did: a reopening email
+    starts a new period, and the student moving it back does not.
+    """
+    latest = conn.execute(
+        """
+        SELECT status, evidence_json, created_at, decided_at FROM automation_actions
+        WHERE user_id=? AND feature='archive_silent_applications' AND subject_kind='application' AND subject_id=?
+        ORDER BY created_at DESC, id DESC LIMIT 1
+        """,
+        (user_id, item["id"]),
+    ).fetchone()
+    if latest is None:
+        return True
+    anchor = automation._parse(item.get("anchor_at"))
+    if latest["status"] == "undone":
+        undone_at = automation._parse(latest["decided_at"])
+        return anchor is not None and undone_at is not None and anchor > undone_at
+    counted_from = _silent_since_of(_decoded(latest["evidence_json"]))
+    if counted_from:
+        return str(item.get("since") or "") > counted_from
+    made_at = automation._parse(latest["created_at"])
+    return anchor is not None and made_at is not None and anchor > made_at
+
+
 def archive_silent_applications(conn: sqlite3.Connection, user_id: str, *, now: datetime | None = None, force: bool = False) -> list[dict[str, Any]]:
-    """Archive every application that has been silent M days, at most once a day per student. Returns what was archived."""
+    """Archive every application that has been silent M days, at most once a day per student. Returns what this call archived."""
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     if not automation.is_enabled(conn, user_id, "archive_silent_applications"):
         return []
@@ -286,6 +394,17 @@ def archive_silent_applications(conn: sqlite3.Connection, user_id: str, *, now: 
     for item in archive_due(conn, user_id, now=now):
         if not automation.is_enabled(conn, user_id, "archive_silent_applications"):
             break
+        if not _new_silence(conn, user_id, item):
+            continue
+
+        def still_silent(guarded: sqlite3.Connection, _before: dict[str, Any], application_id: str = item["id"],
+                         heard_at: str = item["heard_at"]) -> bool:
+            # Checked inside the change's transaction: a job email's proposal waiting on this application
+            # means it was not silent, and archiving it would strand that approval; and a job email decided
+            # since the list was made restarts the silence, so the archive waits for the next pass.
+            return (not pending_email_news(guarded, user_id, application_id)
+                    and last_heard(guarded, user_id, application_id).get(application_id, "") == heard_at)
+
         try:
             row = automation.perform(
                 conn, user_id=user_id, feature="archive_silent_applications", action_type="application.stage",
@@ -295,14 +414,14 @@ def archive_silent_applications(conn: sqlite3.Connection, user_id: str, *, now: 
                 summary=(f"Archived {item['title']} at {item['company']}: no reply {item['days']} days after "
                          f"{'their last email' if item.get('last_email_on') else 'you applied'}"),
                 basis=f"silence:{archive_days(conn, user_id)}d", confidence=None,
-                idempotency_key=f"archive-silent:{item['id']}:{item['applied_at']}", auto=True,
-                # Checked inside the change's transaction: a job email's proposal waiting on this
-                # application means it was not silent, and archiving it would strand that approval.
-                guard=lambda guarded, _before, application_id=item["id"]: not pending_email_news(guarded, user_id, application_id),
+                # One key per silent period (_new_silence decides whether this is a new one).
+                idempotency_key=f"archive-silent:{item['id']}:{item['anchor_at']}", auto=True, guard=still_silent,
             )
         except automation.NotApplicable:
             continue
-        if row is not None and row.get("status") == "applied" and row.get("created_at") == row.get("applied_at"):
+        # Only an archive this call made: the same key hands back an earlier row, which archived nothing now.
+        made = automatic_archive(conn, item["id"]) if row is not None and row.get("status") == "applied" else None
+        if made is not None and row is not None and made["action_id"] == row["id"]:
             archived.append({"application_id": item["id"], "action_id": row["id"]})
     with conn:
         automation._put_setting(conn, user_id, ARCHIVE_LAST_RUN_KEY, now.isoformat(timespec="seconds"), utc_now())

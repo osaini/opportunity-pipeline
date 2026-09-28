@@ -501,16 +501,46 @@ class KeywordCheckTests(Case):
         self.assertIn("no confirmed skills", resume_variants.resume_check(self.conn, USER, "job-a")["note"])
 
 
-def job_email(conn, days_ago, *, application_id="app-job-b", gmail_id=None, kind="assessment", state="done"):
-    """A job email "Update applications from job emails" read and linked to the application, received ``days_ago``."""
-    received = (datetime.now(timezone.utc) - timedelta(days=days_ago)).replace(microsecond=0).isoformat()
+def mail_mode(conn, mode):
+    """Set "Update applications from job emails" directly (its 48-hour shadow gate is automation's, tested there)."""
     with conn:
+        conn.execute(
+            "INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, 'application_mail', ?, ?) "
+            "ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value",
+            (USER, mode, utc_now()),
+        )
+
+
+def job_email(conn, days_ago, *, application_id="app-job-b", gmail_id=None, kind="assessment", state="done", received=None):
+    """A job email "Update applications from job emails" read and linked to the application, received ``days_ago``.
+
+    The switch is turned on first, unless the test set it already: only while it is on does a job email count as a reply.
+    Returns the email's Gmail id.
+    """
+    received = received or (datetime.now(timezone.utc) - timedelta(days=days_ago)).replace(microsecond=0).isoformat()
+    gmail_id = gmail_id or f"m-{uuid4().hex}"
+    with conn:
+        conn.execute(
+            "INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, 'application_mail', 'on', ?) "
+            "ON CONFLICT(user_id, key) DO NOTHING",
+            (USER, utc_now()),
+        )
         conn.execute(
             "INSERT INTO application_mail_messages(user_id, gmail_id, thread_id, application_id, kind, matched_by, state, origin, "
             "subject, sender_domain, received_at, recorded_at) VALUES(?, ?, 't', ?, ?, 'company_title', ?, 'live', 'An update', "
             "'hire.lever.co', ?, ?)",
-            (USER, gmail_id or f"m-{uuid4().hex}", application_id, kind, state, received, utc_now()),
+            (USER, gmail_id, application_id, kind, state, received, utc_now()),
         )
+    return gmail_id
+
+
+def email_proposal(conn, gmail_id, after, *, auto=False):
+    """A change "Update applications from job emails" made or proposed from that email, keyed as it keys them."""
+    return automation.perform(
+        conn, user_id=USER, feature="application_mail", action_type="application.stage", subject_kind="application",
+        subject_id="app-job-b", after=after, evidence={"gmail_id": gmail_id}, summary="Orbit Systems: from an email",
+        basis="test", confidence=0.9, idempotency_key=f"gmail:{gmail_id}:app-job-b:application.stage", auto=auto,
+    )
 
 
 # --- Application silence and archive --------------------------------------------------------
@@ -572,6 +602,32 @@ class SilenceTests(Case):
         job_email(self.conn, 1, state="skipped", gmail_id="m-skipped")
         self.assertEqual(len(self.silence()), 1, "only emails linked and kept, as the application's Emails list shows them")
 
+    def test_only_news_from_the_employer_counts_and_only_while_job_emails_are_on(self):
+        self.on("application_silence")
+        self.applied(30)
+        self.assertEqual(len(self.silence()), 1)
+        job_email(self.conn, 5, kind="unknown", gmail_id="m-alert")
+        [row] = self.silence()
+        self.assertEqual(row["subtitle"], "No reply 21 days after you applied", "a job alert or an unclassified receipt is not a reply")
+        job_email(self.conn, 5, gmail_id="m-assessment")
+        self.assertEqual(self.silence(), [], "an assessment is")
+        mail_mode(self.conn, "shadow")
+        self.assertEqual(len(self.silence()), 1, "in shadow it only logs what it would do, and changes nothing another switch shows")
+        mail_mode(self.conn, "off")
+        self.assertEqual(len(self.silence()), 1)
+        mail_mode(self.conn, "on")
+        self.assertEqual(self.silence(), [])
+        proposal = email_proposal(self.conn, "m-assessment", {"stage": "interview"})
+        self.assertEqual(self.silence(), [], "waiting for the student, it still came")
+        automation.reject(self.conn, proposal["id"], USER)
+        [row] = self.silence()
+        self.assertEqual(row["subtitle"], "No reply 21 days after you applied", "the student turned down everything it proposed")
+        job_email(self.conn, 4, gmail_id="m-ignored")
+        ignored = email_proposal(self.conn, "m-ignored", {"stage": "interview"})
+        with self.conn:  # what ignoring the email card does to its proposals (application_inbox._expire)
+            self.conn.execute("UPDATE automation_actions SET status='expired' WHERE id=?", (ignored["id"],))
+        self.assertEqual(len(self.silence()), 1, "nor an email the student ignored")
+
     def test_a_bad_setting_falls_back_to_21(self):
         self.set_profile(application_follow_up_days="soon")
         self.assertEqual(internal_automation.follow_up_days(self.conn, USER), 21)
@@ -587,6 +643,7 @@ class ArchiveTests(Case):
         applied_at = zone.localize(datetime(day.year, day.month, day.day, 12)).isoformat(timespec="microseconds")
         with self.conn:
             self.conn.execute("UPDATE applications SET stage='applied', applied_at=? WHERE id='app-job-b'", (applied_at,))
+        return applied_at
 
     def stage(self):
         return self.conn.execute("SELECT stage FROM applications WHERE id='app-job-b'").fetchone()[0]
@@ -694,6 +751,65 @@ class ArchiveTests(Case):
         self.assertIn("no reply 61 days after their last email", action["summary"])
         self.assertEqual(action["evidence"]["days"], 61)
         self.assertTrue(action["evidence"]["last_email_on"])
+
+    def test_an_undo_sticks_when_a_job_email_moves_the_applied_date_earlier(self):
+        applied_at = self.applied(61)
+        self.on("archive_silent_applications")
+        [done] = internal_automation.archive_silent_applications(self.conn, USER, force=True)
+        automation.undo(self.conn, done["action_id"], USER)
+        self.assertEqual(internal_automation.archive_silent_applications(self.conn, USER, force=True), [])
+        # A confirmation read late, received an hour before the applied date the student recorded, moves that date earlier.
+        earlier = (datetime.fromisoformat(applied_at) - timedelta(hours=1)).astimezone(timezone.utc).isoformat(timespec="seconds")
+        gmail_id = job_email(self.conn, 0, kind="application_confirmation", received=earlier)
+        moved = email_proposal(self.conn, gmail_id, {"stage": "applied", "applied_at": earlier}, auto=True)
+        self.assertEqual(moved["status"], "applied")
+        stored = self.conn.execute("SELECT applied_at FROM applications WHERE id='app-job-b'").fetchone()[0]
+        self.assertLess(datetime.fromisoformat(stored), datetime.fromisoformat(applied_at))
+        self.assertEqual(internal_automation.archive_silent_applications(self.conn, USER, force=True), [], "the undo still stands")
+        self.assertEqual(self.stage(), "applied")
+        self.assertEqual(len(automation.list_actions(self.conn, USER, feature="archive_silent_applications")), 1)
+
+    def test_moving_it_back_by_hand_sticks_and_a_pass_reports_only_what_it_archived(self):
+        self.applied(61)
+        self.on("archive_silent_applications")
+        [done] = internal_automation.archive_silent_applications(self.conn, USER, force=True)
+        update_application(self.conn, "app-job-b", stage="applied", user_id=USER)
+        self.assertEqual(internal_automation.archive_silent_applications(self.conn, USER, force=True), [],
+                         "not archived again, and the earlier archive is not reported as a new one")
+        self.assertEqual(self.stage(), "applied")
+        [action] = automation.list_actions(self.conn, USER, feature="archive_silent_applications")
+        self.assertEqual(action["id"], done["action_id"])
+
+    def test_a_new_applied_date_after_an_undo_starts_a_new_silence(self):
+        self.applied(90)
+        self.on("archive_silent_applications")
+        [done] = internal_automation.archive_silent_applications(self.conn, USER, force=True)
+        automation.undo(self.conn, done["action_id"], USER)
+        later = datetime.now(timezone.utc) + timedelta(days=61)
+        self.assertEqual(internal_automation.archive_silent_applications(self.conn, USER, now=later, force=True), [],
+                         "an undo sticks however long it stays silent")
+        # The student recorded a new applied date after the undo, and it went silent for 61 days from then.
+        with self.conn:
+            self.conn.execute("UPDATE applications SET applied_at=? WHERE id='app-job-b'", (utc_now(),))
+        [again] = internal_automation.archive_silent_applications(self.conn, USER, now=later, force=True)
+        self.assertNotEqual(again["action_id"], done["action_id"])
+        self.assertEqual(self.stage(), "archived")
+
+    def test_a_job_email_decided_after_the_list_was_made_stops_the_archive(self):
+        self.applied(61)
+        self.on("archive_silent_applications")
+        mail_mode(self.conn, "on")
+        real = internal_automation.archive_due
+
+        def email_meanwhile(*args, **kwargs):
+            due = real(*args, **kwargs)
+            job_email(self.conn, 0)  # decided between the list and the archive's transaction
+            return due
+
+        with mock.patch.object(internal_automation, "archive_due", email_meanwhile):
+            self.assertEqual(internal_automation.archive_silent_applications(self.conn, USER, force=True), [])
+        self.assertEqual(self.stage(), "applied")
+        self.assertEqual(automation.list_actions(self.conn, USER, feature="archive_silent_applications"), [])
 
     def test_a_student_archive_is_not_the_automations(self):
         update_application(self.conn, "app-job-b", stage="archived", user_id=USER)

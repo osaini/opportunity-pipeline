@@ -1619,6 +1619,13 @@ class ReviewFixDecisionTests(DecisionTests):
         self.assertEqual(tasks, {self.acme: "Schedule interview"}, "the task follows the student's choice")
         self.assertEqual(automation.mode(self.conn, USER, FEATURE), "on")
 
+    def test_what_the_email_added_on_its_own_never_moves_to_a_closed_application(self):
+        self.proposed_interview()
+        update_application(self.conn, self.acme, stage="archived", user_id=USER)
+        application_inbox._move_applied(self.conn, USER, "m-50", self.acme)
+        tasks = {row["application_id"]: row["title"] for row in self.conn.execute("SELECT application_id, title FROM application_tasks WHERE status='open'")}
+        self.assertEqual(tasks, {self.orbit: "Schedule interview"}, "Urgent would never show it on a closed application")
+
     def test_a_card_whose_stage_proposal_was_overtaken_never_writes_the_stage(self):
         self.proposed_interview()
         update_application(self.conn, self.orbit, stage="rejected", user_id=USER)  # the student, since
@@ -1811,25 +1818,51 @@ class AutomaticArchiveTests(MailCase):
         self.assertEqual(self.actions(feature=FEATURE), [], "the guard said no inside the transaction, so nothing was recorded")
         self.assertEqual(self.orbit_tasks(), [])
 
-    def test_a_confirmation_reopens_only_when_it_came_after_the_archive(self):
-        self.started()
-        _, applied_at = self.archive_automatically(hours_ago=1)
-        self.deliver("m-906", orbit_mail(*ORBIT_CONFIRMATION), minutes_ago=120)
+    def test_a_confirmation_reopens_only_when_the_archive_did_not_know_of_it(self):
+        self.switch("on", since=now_utc() - timedelta(days=90))
         self.pass_once()
-        self.assertEqual(self.stage(self.orbit)[0], "archived", "an older confirmation tells the archive nothing new")
+        _, applied_at = self.archive_automatically(hours_ago=1)
+        # Received before the student applied, the day the archive counted the silence from: nothing new.
+        before = datetime.now(timezone.utc) - datetime.fromisoformat(applied_at) + timedelta(hours=1)
+        self.deliver("m-906", orbit_mail(*ORBIT_CONFIRMATION), minutes_ago=int(before.total_seconds() // 60))
+        self.pass_once()
+        self.assertEqual(self.stage(self.orbit)[0], "archived", "a confirmation from before the silence tells the archive nothing new")
         self.assertEqual(self.actions(feature=FEATURE), [])
-        self.deliver("m-907", orbit_mail(*ORBIT_CONFIRMATION), minutes_ago=5)
+        # Received two hours ago, before the archive, and read only now: the silence never happened.
+        self.deliver("m-907", orbit_mail(*ORBIT_CONFIRMATION), minutes_ago=120)
         self.pass_once()
         stage, kept = self.stage(self.orbit)
-        self.assertEqual(stage, "applied", "the company wrote after the archive, so it is open again")
+        self.assertEqual(stage, "applied", "the company wrote after the silence began, so it is open again")
         self.assertEqual(datetime.fromisoformat(kept), datetime.fromisoformat(applied_at), "the applied date stays the earlier one")
+
+    def test_an_assessment_read_after_the_archive_but_received_before_it_reopens_it_with_its_task_and_deadline(self):
+        self.switch("on", since=now_utc() - timedelta(days=1))
+        self.pass_once()
+        self.archive_automatically(hours_ago=1)
+        due = in_days(10)
+        raw = job_mail(sender="HackerRank <support@hackerrankforwork.com>", subject="Orbit Systems has invited you to take a test",
+                       body=f"Orbit Systems has invited you to take the Controls Co-op Coding Test. Please complete the test by {spelled(due)}.")
+        # Received three hours ago (Gmail needed reconnecting, say), read only now, after the archive.
+        self.deliver("m-914", raw, minutes_ago=180)
+        self.pass_once()
+        self.assertEqual(self.stage(self.orbit)[0], "applied")
+        [move] = self.actions(feature=FEATURE, action_type="application.stage")
+        self.assertEqual((move["status"], move["before"]["stage"]), ("applied", "archived"))
+        self.assertEqual([row["title"] for row in self.orbit_tasks()], ["Complete the HackerRank assessment"])
+        [deadline] = self.conn.execute("SELECT deadline_on FROM email_deadlines WHERE application_id=?", (self.orbit,)).fetchall()
+        self.assertEqual(deadline["deadline_on"], due.isoformat())
+        kinds = {item["kind"] for item in urgent_queue(self.conn, user_id=USER, days=14)["items"] if item["application_id"] == self.orbit}
+        self.assertLessEqual({"task", "email_deadline"}, kinds, "both show in Urgent")
 
     def test_a_task_with_a_reopen_that_waits_also_waits(self):
         self.started()
         self.archive_automatically()
-        # The company alone matches (no role named), which may add a task on its own but never move a stage.
+        # The company alone matches (no role named): its one open application is the one the app archived,
+        # which counts as open. That tier may add a task on its own but never move a stage.
         self.deliver("m-908", orbit_mail("Update from Orbit Systems", "We'd like to invite you to interview. Reply with times."))
         self.pass_once()
+        row = self.message_row("m-908")
+        self.assertEqual((row["matched_by"], row["application_id"]), ("company_single", self.orbit))
         statuses = {action["action_type"]: action["status"] for action in self.actions(feature=FEATURE)}
         self.assertEqual(statuses, {"application.stage": "proposed", "application.task": "proposed"})
         [task] = self.actions(feature=FEATURE, action_type="application.task")
@@ -1859,6 +1892,103 @@ class AutomaticArchiveTests(MailCase):
             automation.approve(self.conn, again["id"], USER, subject_id=closed)
         self.assertIn("is archived", str(refused.exception))
         self.assertEqual(self.stage(closed)[0], "archived")
+
+    def test_a_task_or_deadline_alone_is_never_corrected_onto_an_application_still_archived(self):
+        self.switch("on")
+        self.archive_automatically()
+        task = automation.perform(
+            self.conn, user_id=USER, feature=FEATURE, action_type="application.task", subject_kind="application", subject_id=self.acme,
+            after={"task": {"title": "Complete the assessment", "due_at": (now_utc() + timedelta(days=3)).isoformat(), "origin": "email",
+                            "origin_ref": "m-915", "link": ""}},
+            evidence={"gmail_id": "m-915"}, summary="Acme Robotics (Mechanical Engineering Intern): add the task", basis="test",
+            confidence=0.9, idempotency_key=f"gmail:m-915:{self.acme}:application.task", auto=False,
+        )
+        refusal = automation.correction_refusal(self.conn, task["id"], USER, self.orbit)
+        self.assertIn("archived by the app after no reply", refusal)
+        self.assertIn("Move it back to Applied first", refusal)
+        with self.assertRaises(automation.CorrectionRefused):
+            automation.approve(self.conn, task["id"], USER, subject_id=self.orbit)
+        self.assertEqual(self.stage(self.orbit)[0], "archived")
+        self.assertEqual(self.orbit_tasks(), [])
+        [waiting] = self.actions(feature=FEATURE)
+        self.assertEqual(waiting["status"], "proposed", "nothing was decided")
+
+    def test_confirming_an_email_for_an_application_the_app_archived_reopens_it_before_its_task(self):
+        self.started()
+        self.archive_automatically()
+        other = self.add_application("orbit-2", "Orbit Systems", "Avionics Intern", stage="applied")
+        self.deliver("m-916", orbit_mail("Update from Orbit Systems", "We'd like to invite you to interview. Reply with times."))
+        self.pass_once()
+        proposals = self.actions(feature=FEATURE, status="proposed")
+        self.assertEqual({(action["subject_id"], action["action_type"]) for action in proposals},
+                         {(other, "application.stage"), (other, "application.task")}, "both wait: it could be either application")
+        event = self.conn.execute("SELECT id FROM monitored_events WHERE external_id='gmail:m-916'").fetchone()
+        decided = decide_monitored_event(self.conn, event["id"], "confirm", self.orbit, user_id=USER)
+        self.assertEqual((decided["status"], decided["application_id"]), ("confirmed", self.orbit))
+        self.assertEqual(self.stage(self.orbit)[0], "interview", "the email's stage change reopened it first")
+        self.assertEqual(self.stage(other)[0], "applied")
+        self.assertEqual([row["title"] for row in self.orbit_tasks()], ["Schedule interview"])
+        tasks = [item for item in urgent_queue(self.conn, user_id=USER)["items"] if item["kind"] == "task"]
+        self.assertEqual([item["application_id"] for item in tasks], [self.orbit], "and its task shows in Urgent")
+
+    def test_a_company_only_email_is_a_guess_while_another_application_there_is_open(self):
+        self.started()
+        self.archive_automatically()
+        other = self.add_application("orbit-2", "Orbit Systems", "Avionics Intern", stage="applied")
+        self.deliver("m-911", orbit_mail("Update from Orbit Systems", "We'd like to invite you to interview. Reply with times."))
+        self.pass_once()
+        row = self.message_row("m-911")
+        self.assertEqual((row["matched_by"], row["application_id"]), ("ambiguous", ""), "linked to neither until the student picks")
+        actions = self.actions(feature=FEATURE)
+        self.assertTrue(actions)
+        self.assertEqual({action["status"] for action in actions}, {"proposed"}, "nothing acts on a guess")
+        self.assertIn("2 open Orbit Systems applications, so it could be any of them", actions[0]["evidence"]["why_proposal"])
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM application_tasks").fetchone()[0], 0)
+        self.assertEqual(self.stage(other)[0], "applied")
+        self.assertEqual(self.stage(self.orbit)[0], "archived")
+        [candidates] = [json.loads(event["payload_json"])["candidates"] for event in self.conn.execute(
+            "SELECT payload_json FROM monitored_events WHERE external_id='gmail:m-911'").fetchall()]
+        self.assertEqual(set(candidates), {self.orbit, other}, "the picker offers both")
+
+    def test_a_reopened_archive_is_archived_again_only_after_a_new_silence(self):
+        self.started()
+        first, _ = self.archive_automatically()
+        self.deliver("m-917", orbit_mail(*ORBIT_CONFIRMATION), minutes_ago=5)
+        self.pass_once()
+        self.assertEqual(self.stage(self.orbit)[0], "applied", "the company wrote after the archive")
+        later = now_utc() + timedelta(days=30)
+        self.assertEqual(internal_automation.archive_silent_applications(self.conn, USER, now=later, force=True), [],
+                         "30 days after that email: not silent long enough")
+        later = now_utc() + timedelta(days=61)
+        [again] = internal_automation.archive_silent_applications(self.conn, USER, now=later, force=True)
+        self.assertNotEqual(again["action_id"], first["action_id"])
+        self.assertEqual(self.stage(self.orbit)[0], "archived")
+        [action] = [item for item in self.actions(feature="archive_silent_applications") if item["id"] == again["action_id"]]
+        self.assertIn("after their last email", action["summary"])
+        automation.undo(self.conn, again["action_id"], USER)
+        self.assertEqual(internal_automation.archive_silent_applications(self.conn, USER, now=later + timedelta(days=1), force=True), [],
+                         "an undo sticks, and nothing is reported")
+        self.assertEqual(self.stage(self.orbit)[0], "applied")
+
+    def test_reopening_puts_back_the_follow_up_reminder_the_archive_cancelled(self):
+        self.started()
+        update_application(self.conn, self.orbit, follow_up_at=(now_utc() + timedelta(days=20)).isoformat(), user_id=USER)
+        reminder = lambda: self.conn.execute(  # noqa: E731
+            "SELECT status FROM reminders WHERE application_id=? AND reminder_type='follow_up'", (self.orbit,)).fetchone()[0]
+        self.assertEqual(reminder(), "scheduled")
+        self.archive_automatically()
+        self.assertEqual(reminder(), "cancelled", "the archive cancelled it")
+        self.deliver("m-918", orbit_mail(*ORBIT_INVITE))
+        self.pass_once()
+        self.assertEqual(self.stage(self.orbit)[0], "interview")
+        self.assertEqual(reminder(), "scheduled", "reopened, it reminds again")
+        [move] = self.actions(feature=FEATURE, action_type="application.stage")
+        automation.undo(self.conn, move["id"], USER)
+        self.assertEqual(self.stage(self.orbit)[0], "archived")
+        self.assertEqual(reminder(), "cancelled", "back in Archived, it stops again")
+
+    def test_the_reply_kinds_are_the_kinds_that_lead_to_a_change(self):
+        self.assertEqual(set(internal_automation.REPLY_KINDS), application_inbox.ACTIONABLE)
 
 
 if __name__ == "__main__":

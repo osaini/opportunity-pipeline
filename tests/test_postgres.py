@@ -435,6 +435,47 @@ class PostgresAutomationContractTests(unittest.TestCase):
         self.assertIsNone(refused)
         self.assertEqual(self.application("app-job-b")[0], "archived")
 
+    def test_a_job_email_restarts_the_silence_and_an_undone_archive_stays_undone(self):
+        from datetime import datetime, timedelta, timezone
+
+        from opportunity_app import internal_automation
+
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        with self.conn:
+            for key in ("application_mail", "archive_silent_applications"):
+                self.conn.execute(
+                    "INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, ?, 'on', ?) "
+                    "ON CONFLICT(user_id, key) DO UPDATE SET value='on'",
+                    (AUTOMATION_USER, key, utc_now()),
+                )
+            self.conn.execute("UPDATE applications SET stage='applied', applied_at=? WHERE id='app-job-b'",
+                              ((now - timedelta(days=90)).isoformat(),))
+            for gmail_id, days_ago in (("pg-heard", 70), ("pg-turned-down", 65)):
+                self.conn.execute(
+                    "INSERT INTO application_mail_messages(user_id, gmail_id, thread_id, application_id, kind, matched_by, state, "
+                    "subject, sender_domain, received_at, recorded_at) VALUES(?, ?, 't', 'app-job-b', 'assessment', 'company_title', "
+                    "'done', 'An update', 'hire.lever.co', ?, ?)",
+                    (AUTOMATION_USER, gmail_id, (now - timedelta(days=days_ago)).isoformat(), utc_now()),
+                )
+        proposal = automation.perform(
+            self.conn, user_id=AUTOMATION_USER, feature="application_mail", action_type="application.stage", subject_kind="application",
+            subject_id="app-job-b", after={"stage": "interview"}, evidence={"gmail_id": "pg-turned-down"}, summary="From an email",
+            basis="rule:test", confidence=0.9, idempotency_key="gmail:pg-turned-down:app-job-b:application.stage", auto=False,
+        )
+        automation.reject(self.conn, proposal["id"], AUTOMATION_USER)
+        heard = internal_automation.last_heard(self.conn, AUTOMATION_USER)
+        self.conn.commit()
+        self.assertEqual(list(heard), ["app-job-b"])
+        self.assertEqual(datetime.fromisoformat(heard["app-job-b"]), now - timedelta(days=70), "the email the student turned down is not a reply")
+        [done] = internal_automation.archive_silent_applications(self.conn, AUTOMATION_USER, force=True)
+        archive = internal_automation.automatic_archive(self.conn, "app-job-b")
+        self.conn.commit()
+        self.assertEqual(archive["action_id"], done["action_id"])
+        self.assertTrue(archive["silent_since"])
+        automation.undo(self.conn, done["action_id"], AUTOMATION_USER)
+        self.assertEqual(internal_automation.archive_silent_applications(self.conn, AUTOMATION_USER, force=True), [])
+        self.assertEqual(self.application("app-job-b")[0], "applied")
+
     def test_perform_undo_and_superseded_on_an_application(self):
         automation.set_mode(self.conn, AUTOMATION_USER, AUTOMATION_SWITCH.key, "on")
         row = self.stage_change("app-job-b", "interview", key="pg-1")
