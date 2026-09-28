@@ -257,7 +257,11 @@ def _now(now: datetime | None) -> datetime:
 
 
 def _stamp(now: datetime | None) -> str:
-    return _now(now).isoformat(timespec="microseconds")
+    """The stamp a write records. Without a given time it is utc_now's, which
+    never repeats in this process: breaker_off tells the breaker's own switch
+    write from a later one by its exact stamp, and a coarse clock (Windows
+    before Python 3.13) would otherwise give both the same one."""
+    return utc_now() if now is None else _now(now).isoformat(timespec="microseconds")
 
 
 def _setting(conn: sqlite3.Connection, user_id: str, key: str) -> str | None:

@@ -1175,6 +1175,29 @@ class HealthTests(AutomationCase):
         self.assertIn("by Sun, Sep 27", before["banner"][0]["text"], "before the date, the date is given")
         self.assertFalse(before["gmail"]["estimate_passed"])
 
+    def test_a_switch_right_after_the_breaker_is_the_students_even_on_a_coarse_clock(self):
+        # Windows before Python 3.13 ticks every ~15 ms: the breaker's write and the
+        # student's next switch must still get different stamps, or breaker_off
+        # would keep listing a feature the student set themselves.
+        frozen = datetime.now(timezone.utc)
+
+        class CoarseClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen
+
+        with mock.patch.object(schema, "datetime", CoarseClock), mock.patch.object(automation, "datetime", CoarseClock):
+            automation.set_mode(self.conn, USER, "test_switch", "on")
+            rows = [self.act(subject_id=f"s{n}") for n in range(2)]
+            automation.undo(self.conn, rows[0]["id"], USER)
+            # The breaker's write is the first in a new tick, so its stamp is the clock's own value.
+            schema._LAST_NOW = datetime.min.replace(tzinfo=timezone.utc)
+            self.assertTrue(automation.undo(self.conn, rows[1]["id"], USER)["feature_paused"])
+            self.assertEqual(len(automation.health_summary(self.conn, USER)["breaker_off"]), 1)
+            automation.set_mode(self.conn, USER, "test_switch", "on")
+            automation.set_mode(self.conn, USER, "test_switch", "off")
+            self.assertEqual(automation.health_summary(self.conn, USER)["breaker_off"], [], "off by the student's own choice")
+
     def test_features_the_breaker_turned_off_are_listed_while_they_stay_off(self):
         automation.set_mode(self.conn, USER, "test_switch", "on")
         rows = [self.act(subject_id=f"s{n}") for n in range(2)]
