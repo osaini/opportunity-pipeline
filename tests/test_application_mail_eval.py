@@ -13,6 +13,12 @@ with these rules (application_inbox's docstring).
 
 The rules were written alongside this set, so the numbers describe it, not
 real mail.
+
+The fixture's added_after_review emails are ordinary confirmations (and one
+interview invitation) that review found the rules misreading as rejections,
+interviews, scheduling requests or offers. They were chosen because the rules
+got them wrong, so they stay out of the blind set's precision; each must now
+get its label, and none may act on its own wrongly at the threshold.
 """
 
 import json
@@ -45,10 +51,10 @@ AUTO_LABELS = ("rejected", "interview")
 RECEIVED = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
 
 
-def examples():
+def examples(key="emails"):
     data = json.loads(FIXTURE.read_text(encoding="utf-8"))
     rows = []
-    for item in data["emails"]:
+    for item in data[key]:
         domain = item["sender"].rsplit("@", 1)[1].rstrip(">").strip().lower()
         hosts = [mail_trust.host_of(link.rstrip(".,")) for link in re.findall(r"https?://[^\s<>\"']+", item["body"])]
         label, confidence, _prior = application_inbox.classify_rules(item["subject"], item["body"], domain, hosts, RECEIVED)
@@ -100,6 +106,16 @@ class ApplicationMailEvalTests(unittest.TestCase):
             self.assertFalse(by_id[newsletter_or_forward]["may_act"])
         # Thanks for a finished test from an assessment platform is not a new assessment.
         self.assertEqual(by_id["e59"]["label"], "unknown")
+
+    def test_what_review_found_misread_is_read_right_and_never_acts_wrongly(self):
+        added = examples("added_after_review")
+        self.assertEqual([(row["id"], row["label"]) for row in added if row["label"] != row["truth"]], [])
+        self.assertEqual(false_auto_acts(added, application_inbox.AUTO_ACT_MIN_CONFIDENCE), [])
+        # Over both sets together, the threshold is still the floor.
+        both = self.rows + added
+        confidences = sorted({row["confidence"] for row in both} | {application_inbox.AUTO_ACT_FLOOR})
+        lowest = next(value for value in confidences if not false_auto_acts(both, value))
+        self.assertEqual(application_inbox.AUTO_ACT_MIN_CONFIDENCE, max(lowest, application_inbox.AUTO_ACT_FLOOR))
 
 
 if __name__ == "__main__":

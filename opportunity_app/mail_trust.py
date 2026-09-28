@@ -8,16 +8,21 @@ anything. Private-section suffixes (github.io, herokuapp.com) count as
 suffixes, so two tenants of one host never match. It fails closed: a host
 whose suffix is unknown, an IP literal, or a malformed name has no
 registrable domain and matches nothing. If the package is not installed,
-nothing has one, so company-domain mail only ever proposes.
+nothing has one, so no sender can be checked: every email only proposes, and
+authenticate's reason says why (NO_DOMAIN_CHECK).
 
 Authentication. ``authenticate`` reads only the topmost
 Authentication-Results header, and only when its authserv-id is
 mx.google.com: Gmail's inbound servers prepend that header, and a receiver
 strips forged copies of its own authserv-id (RFC 8601), so a copy lower down
-was written by someone else. It must show dmarc=pass, or dkim=pass signed by
-the From domain's own organization (relaxed alignment). Anything missing,
-added by another server, ambiguous, or failing is unauthenticated, and the
-caller only proposes.
+was written by someone else. It must show dmarc=pass, or, when Gmail found no
+DMARC policy to apply (dmarc=none, or no dmarc result), dkim=pass signed by
+the From domain's own organization (relaxed alignment). A DMARC result that
+failed (or could not be worked out) is never overridden by the DKIM check:
+the domain's own policy, strict alignment included, has spoken. Anything
+missing, added by another server, ambiguous, or failing is unauthenticated,
+and the caller only proposes. Without publicsuffixlist nothing can be
+checked, and the reason says so.
 
 Employer domains. A domain is trusted for a company only when the student
 says so. Suggestions, which authorize nothing, come from the job URL of an
@@ -52,6 +57,9 @@ READ_CATEGORIES = ("ats", "assessment", "scheduling")
 # Only these senders can authorize an automatic change: a scheduling tool sends for anyone.
 AUTHORIZING_CATEGORIES = ("ats", "assessment")
 GMAIL_AUTHSERV_ID = "mx.google.com"
+# DMARC results that leave the question to the DKIM check: no policy was found to apply.
+DMARC_NO_POLICY = {"none", "bestguesspass"}
+NO_DOMAIN_CHECK = "this computer cannot check sender domains (publicsuffixlist is not installed)"
 # Domains shared by millions of senders say nothing about who wrote (outreach_inbox.FREEMAIL).
 FREEMAIL = {
     "gmail.com", "googlemail.com", "yahoo.com", "outlook.com", "hotmail.com", "live.com", "msn.com", "icloud.com",
@@ -222,6 +230,9 @@ def authenticate(message: EmailMessage) -> Authentication:
         return _unauthenticated("the sender is not one clear address")
     address = addresses[0].strip().lower()
     domain = address.rsplit("@", 1)[1].rstrip(".")
+    if not psl_available():
+        # Every domain comparison below would fail, and "another domain" would be a false reason.
+        return _unauthenticated(NO_DOMAIN_CHECK, address, domain)
     headers = message.get_all("Authentication-Results") or []
     if not headers:
         return _unauthenticated("Gmail's sender check is missing", address, domain)
@@ -238,6 +249,10 @@ def authenticate(message: EmailMessage) -> Authentication:
         if registrable_domain(domain) is None:
             return _unauthenticated("the sender's domain is not one the public suffix list knows", address, domain)
         return Authentication(True, "dmarc", "", address, domain)
+    if dmarc == {"fail"}:
+        return _unauthenticated("Gmail's DMARC check failed", address, domain)
+    if dmarc and not dmarc <= DMARC_NO_POLICY:
+        return _unauthenticated("Gmail could not complete its DMARC check", address, domain)
     signed_elsewhere = False
     for method, result, props in results:
         if method != "dkim" or result != "pass":
@@ -344,9 +359,13 @@ def list_domains(conn: sqlite3.Connection, user_id: str) -> list[dict[str, Any]]
 
 
 def decide(conn: sqlite3.Connection, user_id: str, domain_id: str, status: str) -> dict[str, Any]:
-    """Trust or dismiss one domain. Raises LookupError when it is not the student's."""
-    if status not in ("trusted", "dismissed"):
-        raise ValueError("A domain is trusted or dismissed")
+    """Trust, stop trusting (back to suggested), or dismiss one domain. Raises LookupError when it is not the student's.
+
+    Stopping trusting keeps the domain's mail read, only ever proposing. A
+    dismissed domain's mail is no longer read at all (unless a job system sends it).
+    """
+    if status not in DOMAIN_STATUSES:
+        raise ValueError("A domain is suggested, trusted or dismissed")
     timestamp = utc_now()
     with conn:
         changed = conn.execute(

@@ -238,11 +238,21 @@ def disconnect_provider(conn: sqlite3.Connection, connector_id: str, *, user_id:
 # add tasks, never a stage. application_inbox adds what the sender says (an
 # assessment platform, a scheduling link) on top of these.
 MONITORED_PATTERNS = (
-    ("offer", r"\b(offer of employment|pleased to offer|offer letter|(extend|extending) (you )?an offer|happy to offer you)\b", 0.95),
+    # "Pleased to offer you" counts only for a job: "happy to offer you an interview slot" is an invitation.
+    ("offer", (
+        r"\b(offer of employment|offer letter|(extend|extending) (you )?an offer"
+        r"|(pleased|happy|delighted|excited|thrilled) to offer you"
+        r" (?!(an? |the )?([\w-]+ )?(interview|phone|video|call|chat|screen|screening|meeting|slot|time)\b)"
+        r"(an? |the )?([\w-]+ ){0,3}(position|role|internship|job|co-?op|offer|employment|place on))\b"
+    ), 0.95),
+    # A definite statement only: "other candidates" or "not selected" said of the process in general
+    # ("along with other candidates", "if you are not selected") is not a rejection (_HEDGES).
     ("rejected", (
-        r"\b(not moving forward|other candidates|regret to inform|position has been filled"
+        r"\b(not moving forward|regret to inform|(the |this )?(position|role|opening) has (now |already )?been filled"
+        r"|(mov(e|ing)|proceed(ing)?|go(ing)?) forward with (an?other|other|different|a different) (candidates?|applicants?)"
+        r"|(selected|chosen|chose|hired|decided on|pursue|pursuing|offered the (position|role) to) (an?other|other|a different) (candidates?|applicants?)"
         r"|no longer (under consideration|being considered)|not (been )?selected (for|to)"
-        r"|(will not|won't|decided not to|unable to|not be able to) (be )?(mov(e|ing) (you |your application )?forward"
+        r"|(will not|won't|decided not to|unable to|not be able to) (be )?(mov(e|ing) (you |your application |your candidacy )?forward"
         r"|proceed(ing)? with your|continu(e|ing) with your|advanc(e|ing) your))\b"
     ), 0.92),
     ("interview", (
@@ -250,6 +260,7 @@ MONITORED_PATTERNS = (
         r"|\byour interview (is |has been )?(confirmed|scheduled)\b"
         r"|\b(like|love|want) to (invite you to|schedule|set up|arrange) (an? |some time for an? )?"
         r"(phone |video |technical |virtual |first[- ]round |final[- ]round |onsite |on-site )?(interview|phone screen|screening call)\b"
+        r"|\b(offer|offering) you an? ([\w-]+ )?(interview|phone screen|screening call)\b"
     ), 0.9),
     ("assessment", (
         r"\b(online assessment|coding (challenge|assessment|test|exercise)|technical (assessment|challenge)"
@@ -275,11 +286,48 @@ _HEDGED_REJECTION = re.compile(
 )
 HEDGED_REJECTION_CONFIDENCE = 0.7
 
+# A phrase said of what may happen is not news that it did. "If you are not
+# selected", "until the position has been filled" and "we may not be able to
+# move forward with all applicants" are what confirmations say; so are "we will
+# reach out to schedule a call" and "we invite the strongest candidates to
+# interview". A match counts only when the words before it in its own sentence
+# are not conditional (and, for an invitation or a task, not future tense), and
+# an invitation or a task is not one meant for other candidates.
+_CONDITIONAL = re.compile(r"\b(if|until|unless|whether|should|in case|in the event|once|may|might)\b")
+_FUTURE = re.compile(r"\b(will|we'll|they'll|you'll|shall)\b")
+_OTHERS = re.compile(r"\b(selected|strongest|shortlisted|qualified|successful|top|chosen|a few|some) (candidates|applicants)\b")
+_HEDGES = {
+    "rejected": (_CONDITIONAL,),
+    "interview": (_CONDITIONAL, _FUTURE),
+    "assessment": (_CONDITIONAL, _FUTURE),
+    "scheduling": (_CONDITIONAL, _FUTURE),
+}
+_FOR_OTHERS = {"interview", "assessment", "scheduling"}
+
+
+def _sentence(text: str, start: int, end: int) -> tuple[str, str]:
+    """The words before a match in its own sentence, and the whole sentence."""
+    left = max(text.rfind(mark, 0, start) for mark in ".!?\n") + 1
+    rights = [index for index in (text.find(mark, end) for mark in ".!?\n") if index != -1]
+    right = min(rights) if rights else len(text)
+    return text[left:start], text[left:right]
+
+
+def _definite(event_type: str, text: str, found: re.Match[str]) -> bool:
+    """Whether one match states what happened, rather than what might (see _HEDGES)."""
+    hedges = _HEDGES.get(event_type)
+    if not hedges:
+        return True
+    before, sentence = _sentence(text, found.start(), found.end())
+    if any(hedge.search(before) for hedge in hedges):
+        return False
+    return not (event_type in _FOR_OTHERS and _OTHERS.search(sentence))
+
 
 def classify_monitored_message(subject: str, body: str) -> tuple[str, float]:
     text = f"{subject}\n{body}".lower()
     for event_type, pattern, confidence in MONITORED_PATTERNS:
-        if re.search(pattern, text, re.DOTALL):
+        if any(_definite(event_type, text, found) for found in re.finditer(pattern, text, re.DOTALL)):
             if event_type == "rejected" and _HEDGED_REJECTION.search(text):
                 return event_type, HEDGED_REJECTION_CONFIDENCE
             return event_type, confidence

@@ -352,10 +352,14 @@ themselves (rule 3). The details:
     could be about two applications, a forwarded email, a newsletter, or an
     email from a company's own domain until they trust that domain under
     **Trusted company mail domains** (suggested from their job links and
-    outreach records; nothing is trusted without their click).
+    outreach records; nothing is trusted without their click). **Stop
+    trusting** puts a domain back to a suggestion, so its mail still only
+    proposes; **Dismiss** stops the app reading that domain's mail at all.
   - The first time it runs it also looks back 60 days. What it finds there
-    only ever waits for them ("Found 14 updates from the last 60 days", with
-    **Approve all**).
+    only ever waits for them ("Found 14 updates from the last 60 days").
+    **Approve all** approves only those that waited just because they arrived
+    before the switch was on; an offer, a sender Gmail could not verify, a
+    guessed application, or a role not in their tracker stays for one by one.
   - Email excerpts kept as evidence are dropped after 180 days
     (`PIPELINE_MAIL_EVIDENCE_DAYS`). With Jev inbox suggestions on, the text of
     these emails goes to TypeSafe too, and Jev's answer acts on its own only

@@ -13,6 +13,7 @@ from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from uuid import uuid4
 
+import pytest
 from playwright.sync_api import expect
 
 from conftest import wait_for_results
@@ -151,12 +152,19 @@ def test_a_company_domain_is_trusted_from_the_automation_section(owner_page, liv
     expect(row).to_contain_text("Your outreach record for Acme Robotics lists the website acme-robotics.com.")
     domains.get_by_role("button", name="Trust mail from acme-robotics.com for Acme Robotics").click()
     expect(domains.locator(".form-status")).to_contain_text("Trusted @acme-robotics.com for Acme Robotics.")
+    # In shadow nothing acts on its own, and the words say so.
+    expect(domains.locator(".form-status")).to_contain_text("While this is in shadow, its emails are logged under Would have done")
     expect(row).to_contain_text("Trusted: mail from @acme-robotics.com for Acme Robotics")
     expect(domains.get_by_role("button", name="Stop trusting acme-robotics.com for Acme Robotics")).to_be_visible()
     with closing(connect_product(live_server.live_path)) as conn:
         assert conn.execute("SELECT status FROM employer_domains WHERE id='domain-ui'").fetchone()[0] == "trusted"
+    # Stop trusting puts it back to a suggestion: still read, only proposing, and trusted again in one click.
     domains.get_by_role("button", name="Stop trusting acme-robotics.com for Acme Robotics").click()
-    expect(domains).to_contain_text("No company domains to review yet.")
+    expect(domains.locator(".form-status")).to_contain_text("Stopped trusting @acme-robotics.com for Acme Robotics. Its emails are still read")
+    expect(row).to_contain_text("Trust mail from @acme-robotics.com for Acme Robotics?")
+    expect(domains.get_by_role("button", name="Trust mail from acme-robotics.com for Acme Robotics")).to_be_visible()
+    with closing(connect_product(live_server.live_path)) as conn:
+        assert conn.execute("SELECT status FROM employer_domains WHERE id='domain-ui'").fetchone()[0] == "suggested"
 
 
 def test_the_domain_list_stays_out_of_sight_while_the_switch_is_off(owner_page):
@@ -284,6 +292,100 @@ def test_the_job_email_parts_of_the_automation_section_are_accessible_in_both_th
     section = open_profile(owner_page)
     expect(section.locator(".automation-domain")).to_be_visible()
     expect(section.locator(".automation-picker")).to_be_visible()
+    # Themed like the other selects on the page, not the browser's bare control.
+    style = section.locator(".automation-picker").evaluate("el => [getComputedStyle(el).borderTopLeftRadius, getComputedStyle(el).fontSize]")
+    assert style == ["10px", "12px"], style
     _assert_accessible(owner_page, "the job-email parts of the automation section")
     owner_page.evaluate("document.documentElement.dataset.theme = 'dark'")
     _assert_accessible(owner_page, "the job-email parts of the automation section in dark mode")
+
+
+def test_an_application_chosen_in_waiting_survives_another_rows_decision(owner_page, live_server):
+    with closing(connect_product(live_server.live_path)) as conn:
+        switch(conn, "on")
+        acme = acme_application(conn)
+        propose(conn, ORBIT, after={"stage": "interview"}, candidates=[ORBIT, acme],
+                reasons=["2 open applications, so it could be any of them"], summary="Orbit Systems (Controls Co-op): move to interview")
+        propose(conn, ORBIT, after={"task": {"title": "Schedule interview", "due_at": None, "origin": "email", "origin_ref": "m-ui-7"}},
+                candidates=[ORBIT], reasons=["only the company matched, not the role"], action_type="application.task",
+                summary="Orbit Systems (Controls Co-op): add the task “Schedule interview”")
+    section = open_profile(owner_page)
+    waiting = section.locator(".automation-waiting")
+    stage_row = waiting.locator(".automation-action", has_text="move to interview")
+    task_row = waiting.locator(".automation-action", has_text="Schedule interview")
+    stage_row.locator(".automation-picker").select_option(acme)
+    # Deciding the other row repaints the list; the choice made here is not put back to Orbit.
+    task_row.get_by_role("button", name="Approve", exact=True).click()
+    expect(waiting.locator(".form-status")).to_contain_text("Approved:")
+    expect(stage_row.locator(".automation-picker")).to_have_value(acme)
+    stage_row.get_by_role("button", name="Approve", exact=True).click()
+    expect(waiting.locator(".form-status")).to_contain_text("Approved for Acme Robotics (Mechanical Engineering Intern) instead")
+    with closing(connect_product(live_server.live_path)) as conn:
+        stages = dict(conn.execute("SELECT id, stage FROM applications WHERE id IN (?, ?)", (ORBIT, acme)).fetchall())
+    assert stages == {ORBIT: "applied", acme: "interview"}, stages
+
+
+@pytest.mark.allow_page_errors
+def test_an_email_card_decided_elsewhere_says_so_instead_of_failing_silently(owner_page, live_server, defects):
+    with closing(connect_product(live_server.live_path)) as conn:
+        payload = {"source": "application_mail", "subject": "Update on your application", "body_preview": "", "sender": "no-reply@hire.lever.co",
+                   "sender_domain": "lever.co", "classified_by": {"source": "rules"}, "gmail_id": "m-ui-8", "candidates": [ORBIT],
+                   "matched_by": "company_single", "sender_verified": False}
+        with conn:
+            conn.execute(
+                "INSERT INTO monitored_events(id, user_id, connector_id, external_id, event_type, confidence, payload_json, status, created_at) "
+                "VALUES('event-ui-8', ?, NULL, 'gmail:m-ui-8', 'interview', 0.9, ?, 'pending', ?)",
+                (USER, json.dumps(payload), utc_now()),
+            )
+    open_profile(owner_page)
+    card = owner_page.locator(".monitored-event")
+    expect(card).to_contain_text("Claims to be from lever.co (sender not verified)")
+    with closing(connect_product(live_server.live_path)) as conn:
+        with conn:
+            conn.execute("UPDATE monitored_events SET status='ignored', decided_by='student' WHERE id='event-ui-8'")
+    card.get_by_role("button", name="Ignore").click()
+    expect(card.locator(".form-status")).to_have_text("This monitored event was already decided")
+    expect(card.get_by_role("button", name="Ignore")).to_be_disabled()
+    expect(card.get_by_role("button", name="Confirm tracker update")).to_be_disabled()
+    # The one failure is the 409 the card now shows; nothing else went wrong.
+    assert [entry.split(" ", 2)[:2] for entry in defects.failed_requests] == [["409", "POST"]], defects.report()
+    assert not defects.exceptions and not defects.server_errors, defects.report()
+
+
+def test_check_now_says_when_another_check_is_already_running(owner_page, live_server):
+    from opportunity_app import application_inbox
+
+    with closing(connect_product(live_server.live_path)) as conn:
+        switch(conn, "on")
+    section = open_profile(owner_page)
+    check = section.get_by_role("button", name="Check now")
+    lock = application_inbox._lock(USER)
+    lock.acquire()  # the background watcher's pass, holding the reader
+    try:
+        check.click()
+        expect(section.locator(".automation-application-mail .form-status")).to_have_text(
+            "A check is already running; what it finds will show here shortly.")
+    finally:
+        lock.release()
+    # The block was repainted, and focus came back to the button the student pressed.
+    expect(section.get_by_role("button", name="Check now")).to_be_focused()
+    expect(section.get_by_role("button", name="Check now")).to_be_enabled()
+
+
+def test_an_approved_capture_draft_can_be_opened_again_from_recent(owner_page, live_server):
+    with closing(connect_product(live_server.live_path)) as conn:
+        switch(conn, "on")
+        row = automation.perform(
+            conn, user_id=USER, feature=FEATURE, action_type="application.capture_proposal", subject_kind="gmail_message", subject_id="m-ui-10",
+            after={"capture": {"company": "Nimbus Aero", "title": "Flight Software Intern", "url": "https://jobs.ashbyhq.com/nimbus/2f1c3e4a",
+                               "received_at": utc_now()}},
+            summary="Looks like you applied to Flight Software Intern at Nimbus Aero. Add it?", basis="classify:rules;match:none", confidence=0.9,
+            evidence={"gmail_id": "m-ui-10"}, idempotency_key="gmail:m-ui-10:m-ui-10:application.capture_proposal", auto=False,
+        )
+        automation.approve(conn, row["id"], USER)  # the dialog it opened was closed without confirming
+    section = open_profile(owner_page)
+    recent = section.locator(".automation-recent")
+    recent.get_by_role("button", name="Open capture draft: Looks like you applied to Flight Software Intern at Nimbus Aero. Add it?").click()
+    dialog = owner_page.locator("#capture-dialog")
+    expect(dialog).to_be_visible()
+    expect(dialog.get_by_label("Company")).to_have_value("Nimbus Aero")

@@ -2248,6 +2248,10 @@ def create_app(
         except automation_core.Superseded as exc:
             # Recorded as superseded before this was raised; the message names what changed.
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        except automation_core.CorrectionRefused as exc:
+            # The application the student chose cannot take this change. Nothing was decided, so they
+            # can choose another (422, not 409: the action is still open).
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
         except LookupError as exc:
             if isinstance(exc, KeyError):
                 raise  # a bug, not a missing action
@@ -2339,7 +2343,16 @@ def create_app(
     ) -> dict[str, Any]:
         # subject_id: the student picked another application than the one proposed (automation.approve records it).
         subject_id = payload.subject_id if payload is not None else None
-        result = automation_decision(lambda: automation_core.approve(conn, action_id, user_id, subject_id=subject_id))
+
+        def approve() -> dict[str, Any]:
+            try:
+                return automation_core.approve(conn, action_id, user_id, subject_id=subject_id)
+            except automation_core.Superseded:
+                # Nothing is left to approve on its email card either, so it is settled before the 409.
+                application_inbox.after_superseded(conn, user_id, action_id)
+                raise
+
+        result = automation_decision(approve)
         application_inbox.after_decision(conn, user_id, result)
         return result
 
@@ -2387,6 +2400,15 @@ def create_app(
     ) -> dict[str, Any]:
         return decide_employer_domain(conn, user_id, domain_id, "trusted")
 
+    @app.post("/api/v1/automation/employer-domains/{domain_id}/untrust")
+    def untrust_employer_domain(
+        domain_id: str,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        # Back to a suggestion: its mail is still read, and only ever proposes.
+        return decide_employer_domain(conn, user_id, domain_id, "suggested")
+
     @app.post("/api/v1/automation/employer-domains/{domain_id}/dismiss")
     def dismiss_employer_domain(
         domain_id: str,
@@ -2420,7 +2442,7 @@ def create_app(
         conn: sqlite3.Connection = Depends(writable_connection),
         user_id: str = Depends(require_auth),
     ) -> dict[str, Any]:
-        """Approve every update found in the 60 days before the switch was turned on (roles not tracked are left one by one)."""
+        """Approve the updates found in the 60 days before the switch was on that waited only for that; the rest stay one by one."""
         counts = application_inbox.approve_backfill(conn, user_id)
         return {**counts, **automation_view(conn, user_id)}
 
@@ -3853,6 +3875,12 @@ def create_app(
             return decide_monitored_event(conn, event_id, payload.decision, payload.application_id, user_id=user_id)
         except (ConnectionNotFoundError, ApplicationNotFoundError) as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event or application not found") from exc
+        except automation_core.CorrectionRefused as exc:
+            # The application picked cannot take what the email says; nothing was decided, so pick another.
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        except automation_core.Superseded as exc:
+            # The application changed after the email's proposals were made: the card is settled, nothing applied.
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 

@@ -447,6 +447,8 @@
   // once, with Undo when it can be taken back: at most one announcement per
   // answer, naming how many more there are. What was already there when the
   // student signed in is not news, so the first answer only sets the mark.
+  // A status line still offering the student's own Undo is theirs: the news
+  // waits for a later answer rather than take that Undo away.
   function announceNewAutomatic(health) {
     const items = Array.isArray(health?.recent_applied) ? health.recent_applied : [];
     const newest = items.reduce((latest, item) => (String(item.applied_at || "") > latest ? String(item.applied_at) : latest), "");
@@ -455,23 +457,46 @@
       return;
     }
     const fresh = items.filter((item) => String(item.applied_at || "") > automationStatus.appliedSeen);
-    if (newest > automationStatus.appliedSeen) automationStatus.appliedSeen = newest;
     if (!fresh.length) return;
+    if (!els.actionStatus.hidden && els.actionStatus.querySelector(".status-undo:not([data-automatic])")) return;
+    if (newest > automationStatus.appliedSeen) automationStatus.appliedSeen = newest;
     const [first] = fresh;
-    const more = fresh.length > 1 ? `, and ${plural(fresh.length - 1, "more change", "more changes")} (see Automation on your Profile)` : "";
+    // The server lists at most a few; when every one listed is new, there may be more than it sent.
+    const capped = (Number(health?.recent_applied_total) || 0) > items.length && fresh.length === items.length;
+    const more = fresh.length > 1
+      ? `, and ${capped ? "at least " : ""}${plural(fresh.length - 1, "more change", "more changes")} (see Automation on your Profile)`
+      : "";
     const message = `Automatic: ${String(first.summary || "a change").replace(/[.!?]+$/, "")}${more}.`;
     if (!first.undoable) {
       announce(message);
+    } else {
+      announceWithUndo(message, async () => {
+        try {
+          const result = await automationWrite(() => api(`/api/v1/automation/actions/${encodeURIComponent(first.id)}/undo`, { method: "POST" }));
+          announce(withUndoNote(result.feature_paused ? automationBreakerMessage(first.feature, result.breaker_notice) : "Undid the automatic change.", result));
+        } catch (error) {
+          if (error.message !== "Authentication required") announce(error.message);
+        }
+        refreshAutomationStatus();
+        refreshViewAfterAutomatic();
+      }, { automatic: true });
+    }
+    refreshViewAfterAutomatic();
+  }
+
+  // What an automatic change, or its Undo, touched is shown where the student
+  // is looking: the Automation lists on Profile, the board on Applications.
+  // Nothing is redrawn under a field the student is typing in.
+  function refreshViewAfterAutomatic() {
+    if (state.view === "profile") {
+      automationStatus.reloadLists?.();
       return;
     }
-    announceWithUndo(message, async () => {
-      try {
-        const result = await automationWrite(() => api(`/api/v1/automation/actions/${encodeURIComponent(first.id)}/undo`, { method: "POST" }));
-        announce(withUndoNote(result.feature_paused ? automationBreakerMessage(first.feature, result.breaker_notice) : "Undid the automatic change.", result));
-      } catch (error) {
-        if (error.message !== "Authentication required") announce(error.message);
-      }
-      refreshAutomationStatus();
+    if (state.view !== "applications") return;
+    const active = document.activeElement;
+    if (active && els.results.contains(active) && active.matches("input, textarea, select")) return;
+    Promise.all([loadApplications(), loadStats()]).catch((error) => {
+      if (error.message !== "Authentication required") showError(error.message);
     });
   }
 
@@ -1824,10 +1849,12 @@
     refocus?.focus();
   }
 
-  function announceWithUndo(message, undo) {
+  function announceWithUndo(message, undo, { automatic = false } = {}) {
     announce(message);
     const button = element("button", "text-button status-undo", "Undo");
     button.type = "button";
+    // An automatic announcement's Undo may be replaced by the next one; the student's own never is.
+    if (automatic) button.dataset.automatic = "true";
     button.addEventListener("click", () => {
       announce("");
       undo();
@@ -2176,7 +2203,9 @@
         emails.forEach((mail) => {
           const row = element("li", "tracker-email");
           row.appendChild(element("span", "tracker-email-subject", mail.subject || "(no subject)"));
-          row.appendChild(element("small", "", [mail.sender_domain, formatDate(mail.received_at)].filter(Boolean).join(" · ")));
+          // Only the company matched (its one open application): a guess until the student confirms it.
+          const guessed = mail.matched_by === "company_single" ? "Matched by the company name only, not confirmed" : "";
+          row.appendChild(element("small", "", [mail.sender_domain, formatDate(mail.received_at), guessed].filter(Boolean).join(" · ")));
           if (typeof mail.gmail_url === "string" && mail.gmail_url.startsWith("https://mail.google.com/")) {
             const open = element("a", "text-button", "Open in Gmail");
             open.href = mail.gmail_url;
@@ -2291,6 +2320,7 @@
   // the ordinary capture form: nothing enters the tracker until the student confirms.
   async function openCaptureDraft(captureId, onConfirmed) {
     const draft = await api(`/api/v1/opportunity-captures/${encodeURIComponent(captureId)}`);
+    if (draft.status && draft.status !== "draft") throw new Error("This role was already added from its capture draft.");
     openCaptureDialog();
     const dialog = document.getElementById("capture-dialog");
     dialog.querySelector(".capture-source-form").hidden = true;
@@ -6242,10 +6272,16 @@
       const eventList = element("div", "monitored-event-list");
       pending.forEach((item) => {
         const card = element("article", "monitored-event");
+        card.dataset.eventId = item.id;
         const decidedBy = item.payload.classified_by?.source === "jev" ? "Jev suggestion" : "keyword rules";
         card.appendChild(element("strong", "", `${item.event_type.replaceAll("_", " ")} · ${Math.round(item.confidence * 100)}% · ${decidedBy}`));
         card.appendChild(element("p", "", item.payload.subject || item.payload.body_preview));
-        if (item.payload.sender_domain) card.appendChild(element("p", "automation-meta", `From ${item.payload.sender_domain}`));
+        // Anyone can write any From line: a domain Gmail did not vouch for is never named as the sender.
+        if (item.payload.sender_domain) {
+          card.appendChild(element("p", "automation-meta", item.payload.sender_verified === false
+            ? `Claims to be from ${item.payload.sender_domain} (sender not verified)`
+            : `From ${item.payload.sender_domain}`));
+        }
         const candidates = Array.isArray(item.payload.candidates) ? item.payload.candidates : [];
         const select = applicationPicker(applications.items || [], candidates, item.application_id || candidates[0] || "");
         select.setAttribute("aria-label", "Application this email is about");
@@ -6256,19 +6292,41 @@
         ignore.type = "button";
         const cardStatus = element("p", "form-status");
         cardStatus.setAttribute("aria-live", "polite");
-        confirm.addEventListener("click", async () => {
+        // One decision at a time. A 422 means the application picked cannot take what the email says
+        // (pick another); a 409 means the email was decided already, or its application changed
+        // since, so the card is settled and stays closed.
+        const decideCard = async (decision, applicationId) => {
+          confirm.disabled = true;
+          ignore.disabled = true;
+          cardStatus.textContent = "Saving…";
+          try {
+            await api(`/api/v1/monitored-events/${encodeURIComponent(item.id)}/decision`, { method: "POST", body: JSON.stringify({ decision, application_id: applicationId }) });
+          } catch (error) {
+            if (error.message === "Authentication required") {
+              confirm.disabled = false;
+              ignore.disabled = false;
+              cardStatus.textContent = "";
+              return;
+            }
+            cardStatus.textContent = error.message;
+            if (error.status !== 409) {
+              confirm.disabled = false;
+              ignore.disabled = false;
+              if (error.status === 422) select.focus();
+            }
+            return;
+          }
+          await loadProfile();
+        };
+        confirm.addEventListener("click", () => {
           if (!select.value) {
             cardStatus.textContent = "Choose the application this email is about first.";
             select.focus();
             return;
           }
-          await api(`/api/v1/monitored-events/${encodeURIComponent(item.id)}/decision`, { method: "POST", body: JSON.stringify({ decision: "confirm", application_id: select.value }) });
-          await loadProfile();
+          decideCard("confirm", select.value);
         });
-        ignore.addEventListener("click", async () => {
-          await api(`/api/v1/monitored-events/${encodeURIComponent(item.id)}/decision`, { method: "POST", body: JSON.stringify({ decision: "ignore", application_id: null }) });
-          await loadProfile();
-        });
+        ignore.addEventListener("click", () => decideCard("ignore", null));
         controls.append(confirm, ignore);
         card.append(select, controls, cardStatus);
         eventList.appendChild(card);
@@ -6924,14 +6982,27 @@
     let mailState = payload.application_mail || null;
 
     // Update applications from job emails: how reading stands, and what the first look back found.
-    const [mailBlock] = block("automation-application-mail", "Job emails", "automation-application-mail-heading");
+    // Painted only when what it shows changed, so a poll or a window focus never takes a button
+    // from under the keyboard; a button whose request is on its way stays disabled across a
+    // repaint, and focus comes back to it (or to the heading once it is gone).
+    const [mailBlock, mailHeading] = block("automation-application-mail", "Job emails", "automation-application-mail-heading");
     const mailHost = element("div");
     const mailStatus = liveStatus();
     mailBlock.append(mailHost, mailStatus);
+    const mailBusy = { check: false, all: false };
+    let mailPainted = null;
+    const refocusMail = (id) => {
+      const active = document.activeElement;
+      if (!active || active === document.body || !active.isConnected) (document.getElementById(id) || mailHeading).focus();
+    };
     function paintMail() {
-      mailHost.replaceChildren();
       const mail = mailState;
-      const on = mail && mail.mode && mail.mode !== "off";
+      const key = JSON.stringify([mail, mailBusy]);
+      if (key === mailPainted) return;
+      mailPainted = key;
+      const focusedId = mailHost.contains(document.activeElement) ? document.activeElement.id : "";
+      mailHost.replaceChildren();
+      const on = Boolean(mail && mail.mode && mail.mode !== "off");
       mailBlock.hidden = !mail || (!on && !mail.backfill_found);
       if (mailBlock.hidden) return;
       const words = [];
@@ -6939,52 +7010,94 @@
       if (mail.last_ok_at) words.push(`Last checked ${timeAgo(mail.last_ok_at)}.`);
       if (mail.awaiting_resume) words.push(`${plural(mail.awaiting_resume, "email waits", "emails wait")} for you to resume automation.`);
       if (mail.last_error) words.push(`Last problem: ${String(mail.last_error).replace(/[.]+$/, "")}.`);
-      if (mail.domain_check === false) words.push("Company domains cannot be checked on this computer (publicsuffixlist is not installed), so their emails only propose.");
+      if (mail.domain_check === false) words.push("Sender domains cannot be checked on this computer (publicsuffixlist is not installed), so every job email only proposes until it is installed.");
       mailHost.appendChild(element("p", "profile-help", words.join(" ")));
       const buttons = element("div", "automation-action-buttons");
       if (mail.backfill_found) {
-        mailHost.appendChild(element("p", "automation-backfill", `Found ${plural(mail.backfill_found, "update", "updates")} from the last 60 days. Each is under Waiting for you; approve them one by one, or all at once.`));
-        const all = element("button", "secondary-button", "Approve all");
-        all.type = "button";
-        all.id = "automation-backfill-approve";
-        all.addEventListener("click", async () => {
-          all.disabled = true;
-          mailStatus.textContent = "Approving…";
-          try {
-            const result = await automationWrite(() => api("/api/v1/automation/application-mail/backfill/approve-all", { method: "POST" }));
-            await reload();
-            mailStatus.textContent = `Approved ${plural(result.approved, "update", "updates")}${result.superseded ? `; ${plural(result.superseded, "was", "were")} left as ${result.superseded === 1 ? "it was" : "they were"}, because the application changed since` : ""}.`;
-          } catch (error) {
-            if (error.message !== "Authentication required") mailStatus.textContent = error.message;
-          } finally {
-            all.disabled = false;
-          }
-        });
-        buttons.appendChild(all);
+        const found = Number(mail.backfill_found) || 0;
+        const approvable = Math.min(Number(mail.backfill_approvable) || 0, found);
+        const rest = found - approvable;
+        const others = "an offer, a sender Gmail could not verify, a guessed application, or a role not in your tracker";
+        let text = `Found ${plural(found, "update", "updates")} from the last 60 days. Each is under Waiting for you.`;
+        if (approvable && rest) {
+          text += ` Approve all approves the ${plural(approvable, "one", "ones")} that waited only because ${approvable === 1 ? "it" : "they"} came before you turned this on; the other ${rest} need${rest === 1 ? "s" : ""} a look one by one (${others}).`;
+        } else if (approvable) {
+          text += " Approve them one by one, or all at once.";
+        } else {
+          text += ` Each needs a look one by one (${others}).`;
+        }
+        mailHost.appendChild(element("p", "automation-backfill", text));
+        if (approvable) {
+          const all = element("button", "secondary-button", "Approve all");
+          all.type = "button";
+          all.id = "automation-backfill-approve";
+          all.disabled = mailBusy.all;
+          all.addEventListener("click", async () => {
+            if (mailBusy.all) return;
+            mailBusy.all = true;
+            all.disabled = true;
+            mailStatus.textContent = "Approving…";
+            let message = "";
+            try {
+              const result = await automationWrite(() => api("/api/v1/automation/application-mail/backfill/approve-all", { method: "POST" }));
+              await reload();
+              const kept = result.superseded ? `; ${plural(result.superseded, "was", "were")} left as ${result.superseded === 1 ? "it was" : "they were"}, because the application changed since` : "";
+              const left = result.left ? `. ${plural(result.left, "update waits", "updates wait")} for you to look at one by one` : "";
+              message = `Approved ${plural(result.approved, "update", "updates")}${kept}${left}.`;
+            } catch (error) {
+              if (error.message !== "Authentication required") message = error.message;
+            } finally {
+              mailBusy.all = false;
+              paintMail();
+              refocusMail("automation-backfill-approve");
+            }
+            if (message) mailStatus.textContent = message;
+          });
+          buttons.appendChild(all);
+        }
       }
       if (on) {
         const check = element("button", "secondary-button", "Check now");
         check.type = "button";
         check.id = "automation-application-mail-check";
+        check.disabled = mailBusy.check;
         check.addEventListener("click", async () => {
+          if (mailBusy.check) return;
+          mailBusy.check = true;
           check.disabled = true;
           mailStatus.textContent = "Checking Gmail…";
+          let message = "";
           try {
             const result = await api("/api/v1/automation/application-mail/check", { method: "POST" });
             const read = Number(result.detail?.read) || 0;
+            const errors = Number(result.detail?.error) || 0;
             await reload();
-            mailStatus.textContent = result.state === "ok" || result.state === "message_errors"
-              ? `Checked: ${plural(read, "new email", "new emails")} read.`
-              : `Could not check Gmail (${String(result.state).replaceAll("_", " ")}).`;
+            if (result.state === "off") {
+              message = "Update applications from job emails is off, so nothing was read.";
+            } else if (result.skipped) {
+              // Another check (the background one) holds the reader: this one read nothing.
+              message = "A check is already running; what it finds will show here shortly.";
+            } else if (result.state === "ok" || result.state === "message_errors") {
+              const setAside = errors ? `; ${plural(errors, "email", "emails")} could not be read and ${errors === 1 ? "was" : "were"} set aside` : "";
+              message = `Checked: ${plural(read, "new email", "new emails")} read${setAside}.`;
+            } else if (result.state === "database_busy") {
+              message = "The database was busy, so the check stopped. It tries again at the next check.";
+            } else {
+              message = `Could not check Gmail (${String(result.state).replaceAll("_", " ")}).`;
+            }
           } catch (error) {
-            if (error.message !== "Authentication required") mailStatus.textContent = error.message;
+            if (error.message !== "Authentication required") message = error.message;
           } finally {
-            check.disabled = false;
+            mailBusy.check = false;
+            paintMail();
+            refocusMail("automation-application-mail-check");
           }
+          if (message) mailStatus.textContent = message;
         });
         buttons.appendChild(check);
       }
       if (buttons.childElementCount) mailHost.appendChild(buttons);
+      if (focusedId) document.getElementById(focusedId)?.focus();
     }
 
     // Trusted company mail domains: only the student's yes lets mail from one act.
@@ -7023,10 +7136,11 @@
           trust.addEventListener("click", () => decideDomain(item, "trust"));
           buttons.appendChild(trust);
         }
+        // Stop trusting puts it back to a suggestion (still read, only proposing); Dismiss stops reading its mail.
         const dismiss = element("button", trusted ? "secondary-button" : "danger-button", trusted ? "Stop trusting" : "Dismiss");
         dismiss.type = "button";
         dismiss.setAttribute("aria-label", `${trusted ? "Stop trusting" : "Dismiss"} ${item.domain} for ${item.company}`);
-        dismiss.addEventListener("click", () => decideDomain(item, "dismiss"));
+        dismiss.addEventListener("click", () => decideDomain(item, trusted ? "untrust" : "dismiss"));
         buttons.appendChild(dismiss);
         row.appendChild(buttons);
         list.appendChild(row);
@@ -7048,9 +7162,17 @@
       domainStatus.textContent = "Saving…";
       try {
         await api(`/api/v1/automation/employer-domains/${encodeURIComponent(item.id)}/${verb}`, { method: "POST" });
-        domainStatus.textContent = verb === "trust"
-          ? `Trusted @${item.domain} for ${item.company}. Its emails can now update ${item.company} applications on their own.`
-          : `${item.status === "trusted" ? "Stopped trusting" : "Dismissed"} @${item.domain} for ${item.company}.`;
+        const what = `@${item.domain} for ${item.company}`;
+        if (verb === "trust") {
+          // In shadow nothing acts on its own, and even on, Gmail must vouch for the sender first.
+          domainStatus.textContent = mailState?.mode === "on"
+            ? `Trusted ${what}. Its emails can now update ${item.company} applications on their own when Gmail vouches for the sender.`
+            : `Trusted ${what}. While this is in shadow, its emails are logged under Would have done until you turn it on.`;
+        } else if (verb === "untrust") {
+          domainStatus.textContent = `Stopped trusting ${what}. Its emails are still read, and only propose changes for you to approve.`;
+        } else {
+          domainStatus.textContent = `Dismissed ${what}. Its emails are no longer read, unless a job system sends them.`;
+        }
       } catch (error) {
         if (error.message === "Authentication required") return;
         domainStatus.textContent = error.message;
@@ -7213,10 +7335,16 @@
         message = decisionMessage(verb, action, result, body);
         const captureId = verb === "approve" ? result?.after?._result?.capture_id : null;
         if (captureId) {
-          openCaptureDraft(captureId, async () => {
-            announce("Added to your tracker.");
-            await reload();
-          }).catch((error) => { if (error.message !== "Authentication required") entry.status.textContent = error.message; });
+          try {
+            await openCaptureDraft(captureId, async () => {
+              announce("Added to your tracker.");
+              await reload();
+            });
+          } catch (error) {
+            if (error.message !== "Authentication required") {
+              message = `The capture draft was made, but it could not be opened (${error.message}). Open it from Recent.`;
+            }
+          }
         }
       } catch (error) {
         if (error.message === "Authentication required") {
@@ -7248,7 +7376,36 @@
       return [...items.filter((action) => !action.review), ...items.filter((action) => action.review)];
     }
 
+    // Application choices made in Waiting but not approved yet, so a repaint after another
+    // row's decision does not put the proposed application back under the student's Approve.
+    function unsavedPickers() {
+      return [...lists.waiting.host.querySelectorAll(".automation-action[data-action-id] .automation-picker")]
+        .map((picker) => ({ id: picker.closest("[data-action-id]").dataset.actionId, value: picker.value, proposed: picker.dataset.proposed, focused: picker === document.activeElement }))
+        .filter((choice) => choice.value !== choice.proposed || choice.focused);
+    }
+
+    function restorePickers(choices) {
+      choices.forEach(({ id, value, focused }) => {
+        const picker = lists.waiting.host.querySelector(`[data-action-id="${CSS.escape(id)}"] .automation-picker`);
+        if (!picker) return;
+        if ([...picker.options].some((option) => option.value === value)) picker.value = value;
+        if (focused) picker.focus();
+      });
+    }
+
+    async function openDraftFromRecent(entry, captureId) {
+      try {
+        await openCaptureDraft(captureId, async () => {
+          announce("Added to your tracker.");
+          await reload();
+        });
+      } catch (error) {
+        if (error.message !== "Authentication required") entry.status.textContent = error.message;
+      }
+    }
+
     function paintLists() {
+      const carried = unsavedPickers();
       Object.entries(lists).forEach(([key, entry]) => {
         const { items, total, error } = data[key];
         entry.headingNode.textContent = total ? `${entry.heading} (${total.toLocaleString()})` : entry.heading;
@@ -7271,6 +7428,7 @@
               const candidates = Array.isArray(action.evidence?.match?.candidates) ? action.evidence.match.candidates : [action.subject_id];
               picker = applicationPicker(applicationList, candidates, action.subject_id);
               picker.classList.add("automation-picker");
+              picker.dataset.proposed = action.subject_id;
               picker.setAttribute("aria-label", `Application for: ${action.summary || "this change"}`);
               row.appendChild(picker);
             }
@@ -7316,6 +7474,13 @@
               undo.setAttribute("aria-label", `Undo: ${action.summary || "this automatic change"}`);
               buttons.appendChild(undo);
             }
+            const captureId = action.action_type === "application.capture_proposal" && action.status === "applied" ? action.after?._result?.capture_id : null;
+            if (captureId) {
+              // The draft an approved capture opened, for when its dialog was closed before confirming.
+              const open = actionButton("Open capture draft", "secondary-button", () => openDraftFromRecent(entry, captureId));
+              open.setAttribute("aria-label", `Open capture draft: ${action.summary || "this role"}`);
+              buttons.appendChild(open);
+            }
             row.appendChild(buttons);
             if (action.note) row.appendChild(element("p", "automation-meta", action.note));
             list.appendChild(row);
@@ -7326,6 +7491,7 @@
           entry.host.appendChild(element("p", "automation-meta automation-more", `Showing the newest ${items.length.toLocaleString()} of ${total.toLocaleString()}.`));
         }
       });
+      restorePickers(carried);
       syncRowButtons();
     }
 
@@ -7339,21 +7505,39 @@
         const [nextOverview, ...nextLists] = await Promise.all([api("/api/v1/automation"), ...automationListRequests()]);
         if (ticket !== reloads) return true;
         // A pause or switch saved while this was on its way is newer than this
-        // answer, and has already been shown (applyAutomationRead drops it).
+        // answer, and has already been shown (applyAutomationRead drops it). The
+        // job-email block follows this answer only when it is still the latest
+        // word: onMail painted it then.
         applyAutomationRead(read, nextOverview);
         notices = Array.isArray(nextOverview.notices) ? nextOverview.notices : [];
-        mailState = nextOverview.application_mail || mailState;
         AUTOMATION_LIST_KEYS.forEach((key, index) => { data[key] = automationList(nextLists[index]); });
         paintNotices();
         paintLists();
-        paintMail();
         syncDomains();
+        syncEmailCards();
         return true;
       } catch (error) {
         if (ticket === reloads && error.message !== "Authentication required") showError(error.message);
         return false;
       }
     }
+
+    // An email card whose proposals were all decided here is settled on the server; it leaves the page.
+    async function syncEmailCards() {
+      const cards = [...document.querySelectorAll(".monitored-event[data-event-id]")];
+      if (!cards.length) return;
+      try {
+        const events = await api("/api/v1/monitored-events");
+        const pending = new Set((events.items || []).filter((item) => item.status === "pending").map((item) => item.id));
+        cards.forEach((card) => { if (!pending.has(card.dataset.eventId)) card.remove(); });
+        document.querySelectorAll(".monitored-event-list").forEach((list) => { if (!list.childElementCount) list.remove(); });
+      } catch (_) {
+        // The cards stay; a decision on one that was settled says so.
+      }
+    }
+
+    // An automatic change announced while this section is showing refreshes its lists.
+    automationStatus.reloadLists = () => (section.isConnected ? reload() : null);
 
     paintNotices();
     paintLists();
@@ -7419,7 +7603,10 @@
       const action = actions.get(actionId);
       if (!action) return;
       const domain = typeof action.evidence?.sender_domain === "string" ? action.evidence.sender_domain : "";
-      const from = domain ? `Automatic: from an email by ${domain}` : "Automatic";
+      // A sender Gmail did not vouch for is only ever "claiming to be" that domain.
+      const verified = action.evidence?.auth?.ok !== false;
+      const from = !domain ? "Automatic"
+        : verified ? `Automatic: from an email by ${domain}` : `Automatic: from an email claiming to be from ${domain} (sender not verified)`;
       hosts.forEach((host) => {
         const author = host.querySelector(".timeline-author");
         if (author) author.textContent = approvedByStudent(action) ? `${from}, approved by you` : from;

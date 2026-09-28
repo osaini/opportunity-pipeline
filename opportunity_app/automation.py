@@ -26,7 +26,20 @@ reads the fields it changes, applies the change, and undoes it only if
 nothing changed those fields since (a compare-and-swap). An undo that finds
 them changed marks the action superseded and refuses, naming what changed.
 Undoing or rejecting 2 of a feature's last 5 actions turns it off (the
-circuit breaker) and leaves the student a notice.
+circuit breaker) and leaves the student a notice. A feature whose one piece of
+evidence makes several changes (one email: a stage, a task, a deadline)
+registers how they group (register_breaker_group), so taking back all of one
+email's changes counts once, not three times.
+
+Corrections. When the student approves a proposal for another subject than
+the one proposed, the feature's rules are checked against that subject
+(register_correction): a change it would never have proposed for it is
+refused (CorrectionRefused), and nothing is decided.
+
+What the ledger keeps. A handler may say what of a change's ``after`` the
+ledger keeps once the change is applied, shadowed, or decided (``ledger``):
+an assessment link with its token lives on the task only, so the ledger keeps
+its host.
 
 Every ledger transaction writes before it reads. Python's sqlite3 opens a
 transaction only at the first write, so a read that came first would run on
@@ -45,6 +58,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Protocol
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from . import actions
@@ -87,6 +101,10 @@ class AutomationPaused(ValueError):
 
 class Superseded(Exception):
     """A later change touched this action's fields; the message names which, in a plain sentence."""
+
+
+class CorrectionRefused(ValueError):
+    """The subject the student chose instead cannot take this change; the message says why. Nothing was decided."""
 
 
 # --- The registry ------------------------------------------------------------------------
@@ -751,6 +769,18 @@ class ApplicationTask:
         )
         return {"task_id": row["id"], "title": row["title"], "due_at": row["due_at"]}
 
+    def ledger(self, after: dict[str, Any]) -> dict[str, Any]:
+        """The task's link (an assessment login, a scheduling page) stays on the task; the ledger keeps its host."""
+        task = after.get("task")
+        if not isinstance(task, dict) or not task.get("link"):
+            return after
+        kept = {key: value for key, value in task.items() if key != "link"}
+        try:
+            kept["link_host"] = (urlsplit(str(task["link"])).hostname or "").lower()
+        except ValueError:
+            kept["link_host"] = ""
+        return {**after, "task": kept}
+
     def undo(
         self, conn: sqlite3.Connection, user_id: str, subject_id: str, before: dict[str, Any], after: dict[str, Any],
         *, source: str, timestamp: str,
@@ -806,6 +836,18 @@ def undoable(action_type: str) -> bool:
     return handler is not None and bool(getattr(handler, "undoable", True))
 
 
+def _kept(handler: Handler, after: dict[str, Any]) -> dict[str, Any]:
+    """What the ledger keeps of ``after`` (the handler's ``ledger`` rule, or all of it)."""
+    rule = getattr(handler, "ledger", None)
+    return rule(after) if rule is not None else after
+
+
+def ledger_after(action_type: str, after: dict[str, Any]) -> dict[str, Any]:
+    """What the ledger may keep of an action's ``after`` once it no longer needs all of it."""
+    handler = HANDLERS.get(action_type)
+    return _kept(handler, after) if handler is not None else after
+
+
 def _effective(handler: Handler, before: dict[str, Any], after: dict[str, Any], timestamp: str) -> dict[str, Any]:
     """What the handler's fields would hold once ``after`` is applied."""
     rule = getattr(handler, "effective", None)
@@ -823,7 +865,9 @@ def _decode(row: Any) -> dict[str, Any]:
     item = dict(row)
     for column, key in _JSON_COLUMNS.items():
         item[key] = json.loads(item.pop(column) or ("[]" if column == "fields_json" else "{}"))
-    item["undoable"] = undoable(str(item.get("action_type") or ""))
+    result = item["after"].get("_result") if isinstance(item["after"], dict) else None
+    # A correction that found the change already in place changed nothing, so there is nothing to undo.
+    item["undoable"] = undoable(str(item.get("action_type") or "")) and not (isinstance(result, dict) and result.get("unchanged"))
     return item
 
 
@@ -938,6 +982,7 @@ def perform(
             target = _effective(handler, before, after, timestamp)
             if target == before:
                 return None
+            # A proposal keeps all of ``after``, since approving it applies it; nothing else needs more than _kept.
             recorded_after: dict[str, Any] = dict(after)
             applied_at = None
             decided_by = ""
@@ -945,11 +990,12 @@ def perform(
                 status = "proposed"
             elif current_mode == "shadow":
                 status = "shadow"
+                recorded_after = _kept(handler, dict(after))
             else:
                 result = handler.apply(conn, user_id, subject_id, after, source=f"automation:{action_id}", timestamp=timestamp)
                 status, applied_at, decided_by = "applied", timestamp, "system"
                 # What the fields now hold, so undo compares against exactly that.
-                recorded_after = {**target, "_result": result or {}}
+                recorded_after = {**_kept(handler, target), "_result": result or {}}
             _insert_action(conn, {
                 "id": action_id, "user_id": user_id, "feature": definition.key, "action_type": action_type,
                 "subject_kind": subject_kind, "subject_id": subject_id, "status": status,
@@ -1002,8 +1048,9 @@ def approve(conn: sqlite3.Connection, action_id: str, user_id: str, *, subject_i
             what = "It no longer exists" if now_values is None else f"{_capitalized(_changed(action['before'], now_values))} changed"
             superseded = Superseded(f"{what} after this was proposed, so it was not applied")
             _settle(
-                conn, "UPDATE automation_actions SET status='superseded', note=?, decided_at=? WHERE id=? AND user_id=? AND status='proposed'",
-                (str(superseded), timestamp, action_id, user_id),
+                conn,
+                "UPDATE automation_actions SET status='superseded', note=?, after_json=?, decided_at=? WHERE id=? AND user_id=? AND status='proposed'",
+                (str(superseded), _dumps(_kept(handler, action["after"])), timestamp, action_id, user_id),
             )
         else:
             requested = {key: value for key, value in action["after"].items() if key != "_result"}
@@ -1015,32 +1062,78 @@ def approve(conn: sqlite3.Connection, action_id: str, user_id: str, *, subject_i
                 UPDATE automation_actions SET status='applied', after_json=?, applied_at=?, decided_at=?, decided_by='student'
                 WHERE id=? AND user_id=? AND status='proposed'
                 """,
-                (_dumps({**target, "_result": result or {}}), timestamp, timestamp, action_id, user_id),
+                (_dumps({**_kept(handler, target), "_result": result or {}}), timestamp, timestamp, action_id, user_id),
             )
     if superseded is not None:
         raise superseded
     return _decode(_row(conn, action_id, user_id))
 
 
-def _apply_corrected(
-    conn: sqlite3.Connection, action: dict[str, Any], handler: Handler, user_id: str, subject_id: str, timestamp: str,
-) -> None:
-    """approve()'s correction path, inside its transaction: apply the proposal to the subject the student chose."""
+# Per feature: correct(conn, user_id, action, subject_id, before) for a proposal approved for another
+# subject. It returns what to apply there ({"after", "summary", "note"}, each optional), or raises
+# CorrectionRefused when that subject cannot take the change.
+CORRECTIONS: dict[str, Callable[..., dict[str, Any]]] = {}
+
+
+def register_correction(feature: str, correct: Callable[..., dict[str, Any]]) -> None:
+    """How a feature's proposal is re-aimed at the subject the student chose (see CORRECTIONS)."""
+    CORRECTIONS[feature] = correct
+
+
+def _corrected(
+    conn: sqlite3.Connection, action: dict[str, Any], handler: Handler, user_id: str, subject_id: str,
+) -> tuple[dict[str, Any], dict[str, Any], str, str]:
+    """(before, requested after, summary, note) for applying ``action`` to ``subject_id``. Raises CorrectionRefused."""
     current = handler.read(conn, user_id, subject_id)
     before = {name: current.get(name) for name in handler.fields}
     requested = {key: value for key, value in action["after"].items() if key != "_result"}
+    fixed: dict[str, Any] = {}
+    correct = CORRECTIONS.get(str(action.get("feature") or ""))
+    if correct is not None:
+        fixed = correct(conn, user_id, action, subject_id, before) or {}
+    return (before, fixed.get("after", requested), str(fixed.get("summary") or action["summary"]),
+            str(fixed.get("note") or "You chose a different application than the one proposed"))
+
+
+def correction_refusal(conn: sqlite3.Connection, action_id: str, user_id: str, subject_id: str) -> str | None:
+    """Why approving this proposal for ``subject_id`` would be refused, or None. Reads only; approve() checks again."""
+    action = _decode(_row(conn, action_id, user_id))
+    if action["status"] != "proposed" or subject_id == action["subject_id"]:
+        return None
+    if action["subject_kind"] not in CORRECTABLE_SUBJECTS:
+        return "This proposal is not about an application, so another one cannot be chosen for it"
+    try:
+        _corrected(conn, action, _handler(action["action_type"]), user_id, subject_id)
+    except CorrectionRefused as exc:
+        return str(exc)
+    return None
+
+
+def _apply_corrected(
+    conn: sqlite3.Connection, action: dict[str, Any], handler: Handler, user_id: str, subject_id: str, timestamp: str,
+) -> None:
+    """approve()'s correction path, inside its transaction: apply the proposal to the subject the student chose.
+
+    The feature's rules are checked against that subject first (CORRECTIONS).
+    When the change is already in place there, the approval is recorded and
+    nothing is written (its result says unchanged, and it has no Undo).
+    """
+    before, requested, summary, note = _corrected(conn, action, handler, user_id, subject_id)
     target = _effective(handler, before, requested, timestamp)
-    result = handler.apply(conn, user_id, subject_id, requested, source=f"automation:{action['id']}", timestamp=timestamp)
-    evidence = {**action["evidence"], "corrected_from": action["subject_id"]}
-    note = "You chose a different application than the one proposed"
+    if target == before:
+        result: dict[str, Any] = {"unchanged": True}
+        note = f"{note}. It already had this, so nothing was changed"
+    else:
+        result = handler.apply(conn, user_id, subject_id, requested, source=f"automation:{action['id']}", timestamp=timestamp) or {}
+    evidence = {**action["evidence"], "corrected_from": action["subject_id"], "proposed_summary": action["summary"]}
     _settle(
         conn,
         """
-        UPDATE automation_actions SET status='applied', subject_id=?, before_json=?, after_json=?, evidence_json=?, note=?,
+        UPDATE automation_actions SET status='applied', subject_id=?, summary=?, before_json=?, after_json=?, evidence_json=?, note=?,
             applied_at=?, decided_at=?, decided_by='student'
         WHERE id=? AND user_id=? AND status='proposed'
         """,
-        (subject_id, _dumps(before), _dumps({**target, "_result": result or {}}), _dumps(evidence), note,
+        (subject_id, summary[:500], _dumps(before), _dumps({**_kept(handler, target), "_result": result}), _dumps(evidence), note[:500],
          timestamp, timestamp, action["id"], user_id),
     )
 
@@ -1055,8 +1148,9 @@ def reject(conn: sqlite3.Connection, action_id: str, user_id: str) -> dict[str, 
     with conn:
         row = _claim(conn, action_id, user_id, "proposed", "Only a proposed action can be rejected", timestamp)
         _settle(
-            conn, "UPDATE automation_actions SET status='rejected', decided_at=?, decided_by='student' WHERE id=? AND user_id=? AND status='proposed'",
-            (timestamp, action_id, user_id),
+            conn,
+            "UPDATE automation_actions SET status='rejected', after_json=?, decided_at=?, decided_by='student' WHERE id=? AND user_id=? AND status='proposed'",
+            (_dumps(ledger_after(str(row["action_type"]), json.loads(row["after_json"] or "{}"))), timestamp, action_id, user_id),
         )
         breaker = _trip_breaker(conn, user_id, row["feature"], action_id, timestamp)
     return {**_decode(_row(conn, action_id, user_id)), "feature_paused": breaker is not None, "breaker_notice": breaker}
@@ -1079,6 +1173,8 @@ def undo(conn: sqlite3.Connection, action_id: str, user_id: str) -> dict[str, An
         handler = _handler(action["action_type"])
         if not action["undoable"]:
             # Raised inside the transaction, so the claim above is rolled back with it.
+            if (action["after"].get("_result") or {}).get("unchanged"):
+                raise ValueError("Nothing was changed when this was approved, so there is nothing to undo")
             raise ValueError("This action can't be undone")
         try:
             extra = handler.undo(
@@ -1171,29 +1267,57 @@ def count_actions(conn: sqlite3.Connection, user_id: str, *, status: StatusFilte
     return int(conn.execute(f"SELECT COUNT(*) FROM automation_actions WHERE {where}", tuple(params)).fetchone()[0])
 
 
+# Per feature: (group, noun). group(row) names the piece of evidence an action came from (one email),
+# or None to leave the action out of the breaker; noun names that evidence in the notice.
+BREAKER_GROUPS: dict[str, tuple[Callable[[dict[str, Any]], str | None], str]] = {}
+# How many actions to read to find BREAKER_WINDOW groups.
+BREAKER_SCAN = 50
+
+
+def register_breaker_group(feature: str, group: Callable[[dict[str, Any]], str | None], noun: str) -> None:
+    """Count a feature's actions for the breaker by the evidence they came from (see BREAKER_GROUPS)."""
+    BREAKER_GROUPS[feature] = (group, noun)
+
+
 def _trip_breaker(conn: sqlite3.Connection, user_id: str, feature: str, action_id: str, timestamp: str) -> dict[str, str] | None:
     """After a student undo or reject: turn the feature off if they took back BREAKER_LIMIT of its last BREAKER_WINDOW actions.
 
-    Runs inside the caller's transaction. Returns the notice it left
-    ({title, body}) when it turned the feature off just now, else None.
+    For a feature with a breaker group, the window is its last BREAKER_WINDOW
+    pieces of evidence (emails), and one counts as taken back when any of its
+    actions was. Runs inside the caller's transaction. Returns the notice it
+    left ({title, body}) when it turned the feature off just now, else None.
     """
     definition = FEATURES.get(feature)
     if definition is None or mode(conn, user_id, feature) == "off":
         return None
+    grouping = BREAKER_GROUPS.get(feature)
     rows = conn.execute(
         """
-        SELECT status, decided_by FROM automation_actions
+        SELECT id, status, decided_by, action_type, subject_kind, idempotency_key FROM automation_actions
         WHERE user_id=? AND feature=? AND status IN ('applied', 'undone', 'rejected', 'superseded')
         ORDER BY created_at DESC, id DESC LIMIT ?
         """,
-        (user_id, feature, BREAKER_WINDOW),
+        (user_id, feature, BREAKER_WINDOW if grouping is None else BREAKER_SCAN),
     ).fetchall()
-    taken_back = sum(1 for row in rows if row["status"] in {"undone", "rejected"} and row["decided_by"] == "student")
+    taken: dict[str, bool] = {}
+    for row in rows:
+        key = str(row["id"]) if grouping is None else grouping[0](dict(row))
+        if key is None:
+            continue
+        if key not in taken:
+            if len(taken) >= BREAKER_WINDOW:
+                break
+            taken[key] = False
+        if row["status"] in {"undone", "rejected"} and row["decided_by"] == "student":
+            taken[key] = True
+    taken_back = sum(taken.values())
     if taken_back < BREAKER_LIMIT:
         return None
     _put_setting(conn, user_id, feature, "off", timestamp)
+    what = (f"{taken_back} of its last {len(taken)} actions" if grouping is None
+            else f"changes from {taken_back} of its last {len(taken)} {grouping[1]}s")
     notice = {
-        "title": f"Turned off {definition.label}: you undid or rejected {taken_back} of its last {len(rows)} actions",
+        "title": f"Turned off {definition.label}: you undid or rejected {what}",
         "body": "Turn it back on under Automation when you want it again.",
     }
     _insert_notice(conn, user_id, event_key=f"{BREAKER_NOTICE_PREFIX}{feature}:{action_id}", level="warning",
@@ -1403,6 +1527,8 @@ def health_summary(conn: sqlite3.Connection, user_id: str, *, now: datetime | No
         "unread_notices": int(unread),
         "counts": {key: int(counts[key]) for key in ("proposed", "shadow_unreviewed", "applied_last_24h")},
         "recent_applied": recent_applied(conn, user_id, since=since),
+        # How many there are in all, so the page can say "at least" when recent_applied was cut short.
+        "recent_applied_total": recent_applied_count(conn, user_id, since=since),
         "banner": banner,
     }
 
@@ -1429,6 +1555,17 @@ def recent_applied(conn: sqlite3.Connection, user_id: str, *, since: str) -> lis
          "applied_at": row["applied_at"], "undoable": undoable(str(row["action_type"]))}
         for row in rows
     ]
+
+
+def recent_applied_count(conn: sqlite3.Connection, user_id: str, *, since: str) -> int:
+    """How many changes recent_applied would list with no limit."""
+    return int(conn.execute(
+        """
+        SELECT COUNT(*) FROM automation_actions
+        WHERE user_id=? AND status='applied' AND decided_by='system' AND applied_at IS NOT NULL AND applied_at>=?
+        """,
+        (user_id, since),
+    ).fetchone()[0])
 
 
 PAUSED_BANNER = "Automation is paused. Nothing is sent and no switch acts on its own. Replies and bounces are still recorded."

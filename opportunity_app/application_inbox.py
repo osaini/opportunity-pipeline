@@ -32,11 +32,14 @@ link or sender is scheduling unless the text says more. Jev answers when the
 student turned Jev inbox suggestions on and has not paused automation. Jev
 cannot be measured here (no key, and .env is never read), so a Jev answer can
 make an automatic change only when it agrees with the rules; otherwise it
-proposes. The rules' confidence must reach AUTO_ACT_MIN_CONFIDENCE, which is
-the lowest value that makes no false automatic rejection or interview on the
-60 synthetic emails in tests/fixtures/application_mail_eval.json (labelled
+proposes, and when only one of the two finds a change in the email (Jev says
+"unknown", the rules say "rejected"), that change is proposed, never dropped.
+The rules' confidence must reach AUTO_ACT_MIN_CONFIDENCE, which is the lowest
+value that makes no false automatic rejection or interview on the 60
+synthetic emails in tests/fixtures/application_mail_eval.json (labelled
 before the rules ran on them; tests/test_application_mail_eval.py pins the
-per-label precision). The rules were written alongside that set, so its
+per-label precision), nor on the confirmations review later found the rules
+misreading (kept apart in the same file). The rules were written alongside that set, so its
 numbers are an optimistic description of it, not a promise about real mail.
 
 Which application. match_application tries, strongest first: an ATS job id or
@@ -60,10 +63,22 @@ with the missing ones named:
 - the student did not change the stage after the email arrived (manual wins);
 - it arrived after enabled_at, and its Date line is within 48 hours of when
   Gmail received it (internalDate, which orders everything);
-- it is not an offer: an offer is always proposed, with a notice.
+- it is not an offer: an offer is always proposed, with a notice (whatever
+  the application's stage, and when no application matched).
 Stages only move forward (applying, applied, interview, offer; a rejection
 closes anything before an offer), and the check is made inside the change's
-own transaction.
+own transaction. The same rules hold when the student approves a proposal for
+another application than the one proposed (_correct).
+
+A stated date counts as a deadline only right after its cue ("by October 3",
+"due on October 8", "before it expires on October 5"); "sent by the team on
+September 28" is not one. A date written with numbers only, whose day and
+month could be swapped (10/11/2026), or an email stating more than one date,
+only ever proposes.
+
+Sender wording. An email Gmail did not vouch for is described as "claiming to
+be from" its domain, in the proposal, the timeline, the email card, and
+Urgent, since anyone can write any From line.
 
 Privacy. Evidence keeps the sender, subject, Date line, Gmail ids, a hash of
 the text, and at most 500 characters of it with every link cut to its host.
@@ -75,6 +90,18 @@ Pause. A pass still reads and records mail while automation is paused, since
 reading changes nothing; a message it would have acted on is recorded as
 awaiting_resume, and decided again (with the same idempotency keys, so never
 twice) once the student resumes.
+
+Switching off. Every write a pass makes to the cursor, its queues, or a
+message's record checks, in its own transaction, that the switch is still on
+and was not reset since the pass began (note_off); a pass that finds it was
+stops there, so it never writes back a cursor that turning the switch on again
+would take for its own. A database that is busy (locked, a deadlock) stops the
+pass with the message still queued, to be decided on the next one; only a
+message that cannot be read or decided is set aside.
+
+The breaker. One email can make a stage change, a task and a deadline; taking
+all of them back counts once (automation.register_breaker_group), and turning
+down a role that is not tracked never counts.
 """
 
 from __future__ import annotations
@@ -104,6 +131,7 @@ from pipeline import identity_tokens, normalized
 
 from . import automation, mail_trust
 from .connections import classify_monitored_message
+from .database import is_transient_error
 from .extension_apply import _canonical_url
 from .inbox_classifiers import classify_email
 from .outreach_drafting import sender_account
@@ -146,6 +174,9 @@ ANY_TIER = {"job_id", "company_title", "company_single"}
 # The kinds of email that lead to a change, and so to a monitored_events row.
 ACTIONABLE = {"application_confirmation", "interview", "scheduling", "rejected", "offer", "assessment", "deadline"}
 BACKFILL_BASIS = "window:before_enabled"
+BEFORE_ENABLED = "it arrived before you turned this on"
+# The backfill's search ends this long after the live cursor was taken, so nothing falls between the two.
+BACKFILL_UNTIL_MARGIN = timedelta(minutes=1)
 PLATFORM_NAMES = {
     "hackerrank.com": "HackerRank", "hackerrankforwork.com": "HackerRank", "codesignal.com": "CodeSignal",
     "codility.com": "Codility", "hirevue.com": "HireVue",
@@ -590,9 +621,27 @@ _DATE = re.compile(
     r"|(?P<iso>20\d{2}-\d{2}-\d{2})|(?P<m>\d{1,2})/(?P<d>\d{1,2})(?:/(?P<y>20\d{2}))?)\b",
     re.IGNORECASE,
 )
-_DEADLINE_CUE = re.compile(
-    r"\b(by|before|no later than|deadline|due|expires?|until|complete by|submit by|return it)\b", re.IGNORECASE,
+# A deadline's cue comes right before its date, with at most three small words between:
+# "by October 3", "due by Friday, October 2", "by 11:59 PM PT on October 3", "before it expires on October 5".
+_FILLER = (r"(?:on|the|of|end|midnight|noon|[a-z]+day|it|\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)?"
+           r"|pt|pst|pdt|et|est|edt|ct|cst|cdt|mt|mst|mdt|utc|gmt)")
+_CUE_BEFORE = (
+    re.compile(
+        r"\b(?P<cue>by|before|no later than|until|due(?: on| by| date)?|expires?(?: on)?|expiring(?: on)?|closes?(?: on)?"
+        r"|deadline(?: is| of)?)[\s,:]+(?:" + _FILLER + r"[\s,]+){0,3}$",
+        re.IGNORECASE,
+    ),
+    # "The deadline to return it is October 14"
+    re.compile(r"\bdeadline\b[^.!?\n]{0,40}?\b(?:is|:)\s*(?:on\s+)?$", re.IGNORECASE),
 )
+# "Sent by", "posted by": who did something, not when anything is due.
+_NOT_A_CUE = re.compile(
+    r"\b(sent|posted|powered|provided|reviewed|signed|delivered|written|created|hosted|shared|managed|operated|made|built"
+    r"|submitted|approved|contacted|emailed|called)\s+by\b",
+    re.IGNORECASE,
+)
+TWO_READINGS = "the email's date could be read two ways (month/day or day/month)"
+MANY_DATES = "the email states more than one date"
 
 
 @dataclass(frozen=True)
@@ -600,48 +649,79 @@ class StatedDate:
     on: date
     quote: str
     year_stated: bool
+    # Why this date should only be proposed, beyond a missing year (TWO_READINGS, MANY_DATES).
+    doubts: tuple[str, ...] = ()
+
+
+def _cued(sentence: str, found: re.Match[str]) -> bool:
+    """Whether a date comes right after a deadline's cue in its sentence."""
+    before = sentence[:found.start()]
+    for cue in _CUE_BEFORE:
+        hit = cue.search(before)
+        if hit is None:
+            continue
+        if hit.groupdict().get("cue", "").lower() == "by" and _NOT_A_CUE.search(before[:hit.end("cue")]):
+            continue
+        return True
+    return False
 
 
 def stated_deadline(text: str, received: datetime) -> StatedDate | None:
     """A deadline the text states ("by October 3, 2026"), with the sentence it came from. None when there is none.
 
-    A date with no year is read as the first such date on or after the day the
-    email arrived, within YEARLESS_WINDOW_DAYS; the caller only proposes those.
-    A date before the email arrived is not a deadline for it.
+    Only a date right after its cue counts (_CUE_BEFORE). A date with no year
+    is read as the first such date on or after the day the email arrived,
+    within YEARLESS_WINDOW_DAYS; the caller only proposes those, and those
+    with doubts. A date before the email arrived is not a deadline for it.
     """
     received_day = received.date()
+    first: StatedDate | None = None
+    seen: set[date] = set()
     for sentence in re.split(r"(?<=[.!?])\s+|\n+", text[:TEXT_LIMIT]):
-        if not _DEADLINE_CUE.search(sentence):
-            continue
         for found in _DATE.finditer(sentence):
-            parsed, stated = _read_date(found, received_day)
+            if not _cued(sentence, found):
+                continue
+            parsed, stated, doubt = _read_date(found, received_day)
             if parsed is None or parsed < received_day or parsed > received_day + timedelta(days=400):
+                continue
+            seen.add(parsed)
+            if first is not None:
                 continue
             quote_text = " ".join(redact(sentence).split())
             if len(quote_text) > QUOTE_LIMIT:
                 middle = max(0, min(found.start(), len(quote_text)) - QUOTE_LIMIT // 2)
                 quote_text = quote_text[middle:middle + QUOTE_LIMIT - 1].strip() + "…"
-            return StatedDate(parsed, quote_text, stated)
-    return None
+            first = StatedDate(parsed, quote_text, stated, (doubt,) if doubt else ())
+    if first is not None and len(seen) > 1:
+        first = StatedDate(first.on, first.quote, first.year_stated, (*first.doubts, MANY_DATES))
+    return first
 
 
-def _read_date(found: re.Match[str], received: date) -> tuple[date | None, bool]:
+def _read_date(found: re.Match[str], received: date) -> tuple[date | None, bool, str]:
+    """(the date, whether its year was stated, a doubt about it or '')."""
+    doubt = ""
     try:
         if found.group("iso"):
-            return date.fromisoformat(found.group("iso")), True
+            return date.fromisoformat(found.group("iso")), True, ""
         if found.group("month"):
             month, day, year = _MONTHS[found.group("month").lower().rstrip(".")], int(found.group("day")), found.group("year")
         else:
-            month, day, year = int(found.group("m")), int(found.group("d")), found.group("y")
+            first, second, year = int(found.group("m")), int(found.group("d")), found.group("y")
+            if first > 12 >= second:
+                month, day = second, first  # 13/10: only day/month reads
+            else:
+                month, day = first, second
+                if first <= 12 and second <= 12 and first != second:
+                    doubt = TWO_READINGS
         if year:
-            return date(int(year), month, day), True
+            return date(int(year), month, day), True, doubt
         for candidate_year in (received.year, received.year + 1):
             candidate = date(candidate_year, month, day)
             if received <= candidate <= received + timedelta(days=YEARLESS_WINDOW_DAYS):
-                return candidate, False
-        return None, False
+                return candidate, False, doubt
+        return None, False, doubt
     except (KeyError, ValueError):
-        return None, False
+        return None, False, doubt
 
 
 # --- Deciding one message ----------------------------------------------------------------
@@ -735,11 +815,25 @@ def _tier_blocker(match: Match, needed: set[str], apps_open: int) -> str:
     return "no application matched"
 
 
+def origin_words(domain: str, verified: bool) -> str:
+    """How a change names the email behind it: never as from a domain Gmail did not vouch for."""
+    if not domain:
+        return "from an email"
+    return f"from an email by {domain}" if verified else f"from an email claiming to be from {domain} (sender not verified)"
+
+
+def _date_blockers(found: StatedDate) -> list[str]:
+    return ([] if found.year_stated else ["the email did not state the year of the deadline"]) + list(found.doubts)
+
+
 def plan(
     conn: sqlite3.Connection, user_id: str, mail: Mail, classification: Classification, match: Match,
-    auth: mail_trust.Authentication, *, enabled_at: datetime | None, now: datetime,
+    auth: mail_trust.Authentication, *, enabled_at: datetime | None, now: datetime, label: str | None = None,
 ) -> tuple[list[Planned], list[str]]:
-    """What this email should change, each with what stops it acting on its own; and the reasons common to all of it."""
+    """What this email should change, each with what stops it acting on its own; and the reasons common to all of it.
+
+    ``label`` is the kind of email acted on (decide's acting label); by default the classification's.
+    """
     common: list[str] = []
     domain = mail_trust.registrable_domain(mail.sender_domain) or mail.sender_domain
     sender_category = mail_trust.listed(mail.sender_domain, mail_trust.AUTHORIZING_CATEGORIES)
@@ -760,12 +854,12 @@ def plan(
     elif classification.rules_confidence < AUTO_ACT_MIN_CONFIDENCE:
         common.append(f"the app is not sure enough what it means ({round(classification.rules_confidence * 100)}%)")
     if enabled_at is None or mail.received_at < enabled_at:
-        common.append("it arrived before you turned this on")
+        common.append(BEFORE_ENABLED)
     if mail.sent_at is not None and abs(mail.sent_at - mail.received_at) > DATE_GAP_LIMIT:
         common.append("its Date line and when Gmail received it are more than 48 hours apart")
 
-    label = classification.label
-    origin = f"from an email by {domain}" if domain else "from an email"
+    label = label or classification.label
+    origin = origin_words(domain, auth.ok)
     planned: list[Planned] = []
     if not match.application_id:
         if label == "application_confirmation" and match.company:
@@ -814,9 +908,10 @@ def plan(
 
     def deadline(found: StatedDate) -> None:
         blockers = [blocker for blocker in [_tier_blocker(match, ANY_TIER, apps_open)] if blocker]
-        if not found.year_stated:
-            blockers.append("the email did not state the year of the deadline")
-        spec = {"deadline_on": found.on.isoformat(), "quote": found.quote, "sender_domain": domain,
+        blockers.extend(_date_blockers(found))
+        # Urgent's note reads "From <sender_domain>, received ...": never a domain Gmail did not vouch for, unmarked.
+        spec = {"deadline_on": found.on.isoformat(), "quote": found.quote,
+                "sender_domain": domain if auth.ok or not domain else f"{domain} (sender not verified)",
                 "gmail_id": mail.gmail_id, "received_at": received_iso}
         planned.append(Planned("application.deadline", "application", match.application_id, {"deadline": spec},
                                f"{who}: add the deadline {found.on:%b} {found.on.day}, {origin}", blockers))
@@ -834,16 +929,16 @@ def plan(
         task("Schedule interview", due, _first_link(mail, "scheduling"), ANY_TIER)
     elif label == "rejected" and stage in ("applying", "applied", "interview"):
         stage_change("rejected", STRONG_TIERS)
-    elif label == "offer" and stage in ("applying", "applied", "interview"):
-        stage_change("offer", ANY_TIER, ["an offer is always yours to confirm"])
+    elif label == "offer" and stage != "offer":
+        # Proposed whatever the stage: an offer for an application the student closed is theirs to judge.
+        stage_change("offer", ANY_TIER, ["an offer is always yours to confirm", *([f"the application is {stage}"] if closed else [])])
     elif label in ("assessment", "deadline") and not closed:
         found = stated_deadline(mail.text, mail.received_at)
         if label == "assessment":
             platform = _platform(mail)
             title = f"Complete the {platform} assessment" if platform else "Complete the assessment"
             due = f"{found.on.isoformat()}T23:59:00" if found else None
-            task(title, due, _first_link(mail, "assessment"), ANY_TIER,
-                 [] if found is None or found.year_stated else ["the email did not state the year of the deadline"])
+            task(title, due, _first_link(mail, "assessment"), ANY_TIER, [] if found is None else _date_blockers(found))
         if found:
             deadline(found)
     return planned, common
@@ -888,7 +983,10 @@ def _event_id(conn: sqlite3.Connection, user_id: str, gmail_id: str) -> str | No
     return str(row["id"]) if row else None
 
 
-def _insert_event(conn: sqlite3.Connection, user_id: str, event_id: str, mail: Mail, classification: Classification, match: Match) -> str:
+def _insert_event(
+    conn: sqlite3.Connection, user_id: str, event_id: str, mail: Mail, classification: Classification, match: Match,
+    *, label: str, verified: bool,
+) -> str:
     """The monitored_events row for this email (made once), which the email card and the ledger both point to."""
     connector = _connector(conn, user_id)
     connector_id = connector["id"] if connector is not None else None
@@ -898,6 +996,8 @@ def _insert_event(conn: sqlite3.Connection, user_id: str, event_id: str, mail: M
         "sender": mail.sender[:300], "sender_domain": mail_trust.registrable_domain(mail.sender_domain) or mail.sender_domain,
         "classified_by": classification.classified_by, "gmail_id": mail.gmail_id, "thread_id": mail.thread_id,
         "candidates": match.candidates, "matched_by": match.tier, "received_at": mail.received_at.isoformat(timespec="seconds"),
+        # Whether Gmail vouched for the sender, so the card never names an unverified domain as fact.
+        "sender_verified": verified,
     }
     with conn:
         conn.execute(
@@ -905,7 +1005,7 @@ def _insert_event(conn: sqlite3.Connection, user_id: str, event_id: str, mail: M
             INSERT INTO monitored_events(id, user_id, connector_id, external_id, event_type, confidence, payload_json, status, application_id, created_at)
             VALUES(?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?) ON CONFLICT(user_id, connector_id, external_id) DO NOTHING
             """,
-            (event_id, user_id, connector_id, external_id, classification.label, classification.confidence,
+            (event_id, user_id, connector_id, external_id, label, classification.confidence,
              json.dumps(payload, sort_keys=True), match.application_id or None, utc_now()),
         )
     return _event_id(conn, user_id, mail.gmail_id) or event_id
@@ -921,18 +1021,27 @@ def decide(
         return Outcome("skipped")
     classification = classify(mail, decisions)
     match = match_application(conn, user_id, mail)
-    kind = classification.label
+    # Linked to an application only when the match says which one; an ambiguous match is a guess
+    # until the student picks (after_decision, decide_event).
+    linked = match.application_id if match.tier in ANY_TIER else ""
+    kind = acting_label(classification)
     if kind not in ACTIONABLE:
-        return Outcome("done", kind, match.application_id, match.tier)
+        return Outcome("done", classification.label, linked, match.tier)
+    if kind == "offer":
+        # Always, whatever the match and the stage: the most consequential email never passes quietly.
+        automation.notice(
+            conn, user_id, event_key=f"offer:{mail.gmail_id}", level="info",
+            title=f"{match.company or named_company(mail) or 'A company'} may have sent an offer", body="Open Automation to review it.",
+        )
     if automation.paused(conn, user_id):
-        return Outcome("awaiting_resume", kind, match.application_id, match.tier)
+        return Outcome("awaiting_resume", kind, linked, match.tier)
     auth = mail_trust.authenticate(mail.message)
     enabled_at = _enabled_at(sync)
-    planned, common = plan(conn, user_id, mail, classification, match, auth, enabled_at=enabled_at, now=now)
+    planned, common = plan(conn, user_id, mail, classification, match, auth, enabled_at=enabled_at, now=now, label=kind)
     # Made only when there is something for the card: a change, or an email no application matched.
     existing_event = _event_id(conn, user_id, mail.gmail_id)
     event_id = existing_event or f"event-{uuid4().hex}"
-    outcome = Outcome("done", kind, match.application_id, match.tier, "", counts={"applied": 0, "proposed": 0, "shadow": 0})
+    outcome = Outcome("done", kind, linked, match.tier, "", counts={"applied": 0, "proposed": 0, "shadow": 0})
     backfill = enabled_at is None or mail.received_at < enabled_at
     basis_parts = [f"classify:{classification.classified_by.get('source', 'rules')}", f"match:{match.tier}"]
     if classification.prior:
@@ -959,15 +1068,11 @@ def decide(
             outcome.counts["applied"] += 1
         elif status in ("proposed", "shadow"):
             outcome.counts[status] += 1
-        if item.after.get("stage") == "offer" and status == "proposed":
-            automation.notice(
-                conn, user_id, event_key=f"offer:{mail.gmail_id}", level="info",
-                title=f"{match.company or 'A company'} may have sent an offer", body="Open Automation to review it.",
-            )
     # A card only for something to decide or already done: in shadow nothing was done, and its
-    # rows are reviewed under Would have done instead.
-    if applied_any or outcome.counts["proposed"] or not match.application_id or existing_event:
-        outcome.event_id = existing_event or _insert_event(conn, user_id, event_id, mail, classification, match)
+    # rows are reviewed under Would have done instead. An offer always gets one.
+    if applied_any or outcome.counts["proposed"] or not match.application_id or existing_event or kind == "offer":
+        outcome.event_id = existing_event or _insert_event(conn, user_id, event_id, mail, classification, match,
+                                                           label=kind, verified=auth.ok)
     if automation.paused(conn, user_id):
         # The pause landed while this email was being decided: decide it again after resume (same keys, never twice).
         outcome.state = "awaiting_resume"
@@ -984,6 +1089,16 @@ def decide(
                 (utc_now(), match.application_id or None, outcome.event_id, user_id),
             )
     return outcome
+
+
+def acting_label(classification: Classification) -> str:
+    """The kind of email to act on: Jev's, or when Jev found nothing to act on but the rules did, the rules'.
+
+    Either way a disagreement is one of plan()'s blockers, so it only proposes.
+    """
+    if classification.label in ACTIONABLE or classification.rules_label not in ACTIONABLE:
+        return classification.label
+    return classification.rules_label
 
 
 def _suggest_from_email(conn: sqlite3.Connection, user_id: str, mail: Mail, match: Match, auth: mail_trust.Authentication) -> None:
@@ -1033,10 +1148,30 @@ def _ids(value: Any) -> list[str]:
     return [str(item) for item in items if str(item)] if isinstance(items, list) else []
 
 
-def _queue_ids(conn: sqlite3.Connection, user_id: str, column: str, ids: list[str], **values: Any) -> int:
+class _Reset(Exception):
+    """The switch was turned off (and its cursor forgotten) while this pass ran: it stops, writing nothing back."""
+
+
+_ANY = object()
+
+
+def _pass_sync(conn: sqlite3.Connection, user_id: str, expect: Any) -> dict[str, Any]:
+    """_locked_sync, for a write a pass makes: raises _Reset when the switch is off or was reset since the pass began.
+
+    ``expect`` is the enabled_at the pass started from (_ANY skips the check).
+    Inside the caller's transaction, so note_off either lands first and is seen
+    here, or waits until this write commits and then clears it.
+    """
+    sync = _locked_sync(conn, user_id)
+    if expect is not _ANY and (sync.get("enabled_at") != expect or automation.mode(conn, user_id, FEATURE) == "off"):
+        raise _Reset()
+    return sync
+
+
+def _queue_ids(conn: sqlite3.Connection, user_id: str, column: str, ids: list[str], *, expect: Any = _ANY, **values: Any) -> int:
     """Append ids to a queue and set other sync columns (the cursor) in the same transaction. Returns how many were new."""
     with conn:
-        sync = _locked_sync(conn, user_id)
+        sync = _pass_sync(conn, user_id, expect)
         queued = _ids(sync[column])
         seen = set(queued)
         added = [item for item in ids if item and item not in seen and not seen.add(item)]
@@ -1045,10 +1180,10 @@ def _queue_ids(conn: sqlite3.Connection, user_id: str, column: str, ids: list[st
 
 
 def _record(conn: sqlite3.Connection, user_id: str, mail: Mail | None, gmail_id: str, outcome: Outcome, *,
-            queue: str | None, origin: str, received_at: str = "") -> None:
+            queue: str | None, origin: str, received_at: str = "", expect: Any = _ANY) -> None:
     """Record one message's outcome and take it off its queue, in one transaction."""
     with conn:
-        sync = _locked_sync(conn, user_id)
+        sync = _pass_sync(conn, user_id, expect)
         keep = outcome.state not in ("skipped", "gone", "outreach", "error") and mail is not None
         conn.execute(
             """
@@ -1112,7 +1247,7 @@ def _fetch(gmail: _Gmail, gmail_id: str) -> dict[str, Any] | None:
 
 def _drain(
     conn: sqlite3.Connection, gmail: _Gmail, user_id: str, queue: str, origin: str, budget: _Budget,
-    decisions: DecisionClient | None, now: datetime, totals: dict[str, int],
+    decisions: DecisionClient | None, now: datetime, totals: dict[str, int], *, expect: Any = _ANY,
 ) -> None:
     """Read and decide queued ids until the queue or the budget runs out."""
     sync = dict(conn.execute("SELECT * FROM application_mail_sync WHERE user_id=?", (user_id,)).fetchone())
@@ -1121,22 +1256,22 @@ def _drain(
             _dequeue(conn, user_id, queue, gmail_id)  # read already (by another pass, or found twice)
             continue
         if _outreach_owns(conn, user_id, gmail_id):
-            _record(conn, user_id, None, gmail_id, Outcome("outreach"), queue=queue, origin=origin)
+            _record(conn, user_id, None, gmail_id, Outcome("outreach"), queue=queue, origin=origin, expect=expect)
             continue
         if not budget.take():
             break
         data = _fetch(gmail, gmail_id)
         if data is None:
-            _record(conn, user_id, None, gmail_id, Outcome("gone"), queue=queue, origin=origin)
+            _record(conn, user_id, None, gmail_id, Outcome("gone"), queue=queue, origin=origin, expect=expect)
             continue
         mail, outcome = _decide_safely(conn, user_id, data, decisions=decisions, sync=sync, origin=origin, now=now)
-        _record(conn, user_id, mail, gmail_id, outcome, queue=queue, origin=origin)
+        _record(conn, user_id, mail, gmail_id, outcome, queue=queue, origin=origin, expect=expect)
         _tally(totals, outcome)
 
 
 def _rescan(
     conn: sqlite3.Connection, gmail: _Gmail, user_id: str, budget: _Budget, decisions: DecisionClient | None,
-    now: datetime, totals: dict[str, int],
+    now: datetime, totals: dict[str, int], *, expect: Any = _ANY,
 ) -> None:
     """Decide again the messages read while automation was paused."""
     if automation.paused(conn, user_id):
@@ -1151,10 +1286,10 @@ def _rescan(
             break
         data = _fetch(gmail, row["gmail_id"])
         if data is None:
-            _record(conn, user_id, None, row["gmail_id"], Outcome("gone"), queue=None, origin=row["origin"])
+            _record(conn, user_id, None, row["gmail_id"], Outcome("gone"), queue=None, origin=row["origin"], expect=expect)
             continue
         mail, outcome = _decide_safely(conn, user_id, data, decisions=decisions, sync=sync, origin=row["origin"], now=now)
-        _record(conn, user_id, mail, row["gmail_id"], outcome, queue=None, origin=row["origin"])
+        _record(conn, user_id, mail, row["gmail_id"], outcome, queue=None, origin=row["origin"], expect=expect)
         _tally(totals, outcome)
 
 
@@ -1162,14 +1297,22 @@ def _decide_safely(
     conn: sqlite3.Connection, user_id: str, data: dict[str, Any], *, decisions: DecisionClient | None, sync: dict[str, Any],
     origin: str, now: datetime,
 ) -> tuple[Mail | None, Outcome]:
-    """decide(), with one message that cannot be read or decided set aside instead of holding up every pass after it."""
+    """decide(), with one message that cannot be read or decided set aside instead of holding up every pass after it.
+
+    A busy database (locked, a deadlock) is not the message's fault: it is
+    raised, so the pass stops and the message stays queued for the next one.
+    Its changes made so far stand, and deciding it again finishes the rest
+    (the same idempotency keys).
+    """
     try:
         mail = parse_message(data)
         return mail, decide(conn, user_id, mail, decisions=decisions, sync=sync, origin=origin, now=now)
-    except Exception:  # noqa: BLE001 - one bad message never blocks the queue
-        LOGGER.warning("An application email could not be decided; it was set aside", exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - one bad message never blocks the queue
         if getattr(conn, "in_transaction", False):
             conn.rollback()
+        if is_transient_error(exc):
+            raise
+        LOGGER.warning("An application email could not be decided; it was set aside", exc_info=True)
         return None, Outcome("error")
 
 
@@ -1220,25 +1363,35 @@ def _profile_history(gmail: _Gmail) -> str:
     return history_id
 
 
-def _start(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, now: datetime) -> None:
-    """The first pass with the switch on: when it was turned on, the live cursor, and the backfill to run."""
+def _start(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, now: datetime) -> str:
+    """The first pass with the switch on: when it was turned on, the live cursor, and the backfill to run.
+
+    Returns the enabled_at it recorded. The backfill's search ends a minute
+    after the live cursor was taken (not when the pass began), so a message
+    that arrived while the pass was getting ready is in one or the other.
+    """
     history_id = _profile_history(gmail)
+    until = datetime.now(timezone.utc) + BACKFILL_UNTIL_MARGIN
     setting = conn.execute(
         "SELECT updated_at FROM user_settings WHERE user_id=? AND key=?", (user_id, FEATURE),
     ).fetchone()
     turned_on = automation._parse(setting["updated_at"]) if setting else None
     enabled = min(turned_on, now) if turned_on is not None else now
-    query = backfill_query(conn, user_id, enabled, now)
+    query = backfill_query(conn, user_id, enabled, until)
+    enabled_text = enabled.isoformat(timespec="seconds")
     with conn:
         _locked_sync(conn, user_id)
+        if automation.mode(conn, user_id, FEATURE) == "off":
+            raise _Reset()  # switched off while this pass was getting ready
         _update_sync(
-            conn, user_id, history_id=history_id, enabled_at=enabled.isoformat(timespec="seconds"),
+            conn, user_id, history_id=history_id, enabled_at=enabled_text,
             backfill_state="running", backfill_query=query, backfill_page_token="",
             backfill_ids_json="[]", pending_ids_json="[]", recovery_state="", recovery_page_token="", recovery_history_id="",
         )
+    return enabled_text
 
 
-def _collect_history(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, sync: dict[str, Any], now: datetime) -> None:
+def _collect_history(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, sync: dict[str, Any], now: datetime, *, expect: Any = _ANY) -> None:
     """Page through history.list from the cursor; store the new ids and the new cursor together. Starts recovery on a 404."""
     token = ""
     ids: list[str] = []
@@ -1250,7 +1403,7 @@ def _collect_history(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, sync
             params["pageToken"] = token
         response = gmail.request("GET", "/history", params=params)
         if response.status_code == 404:
-            _begin_recovery(conn, gmail, user_id, sync, now)
+            _begin_recovery(conn, gmail, user_id, sync, now, expect=expect)
             return
         if response.status_code != 200:
             raise _Stop(f"Gmail answered HTTP {response.status_code} for history")
@@ -1267,10 +1420,10 @@ def _collect_history(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, sync
             break
     # Cut short with pages left: resume from the last record read, never skipping the rest.
     cursor = last_record if token and last_record else (newest or sync["history_id"])
-    _queue_ids(conn, user_id, "pending_ids_json", ids, history_id=cursor)
+    _queue_ids(conn, user_id, "pending_ids_json", ids, expect=expect, history_id=cursor)
 
 
-def _begin_recovery(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, sync: dict[str, Any], now: datetime) -> None:
+def _begin_recovery(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, sync: dict[str, Any], now: datetime, *, expect: Any = _ANY) -> None:
     """Gmail forgot the cursor: take a fresh one first, then search from the last good pass (a day before, never before enabled_at)."""
     fresh = _profile_history(gmail)
     last_ok = automation._parse(sync.get("last_ok_at")) or automation._parse(sync.get("enabled_at")) or now
@@ -1279,26 +1432,26 @@ def _begin_recovery(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, sync:
     if enabled is not None and after < enabled:
         after = enabled
     with conn:
-        _locked_sync(conn, user_id)
+        _pass_sync(conn, user_id, expect)
         _update_sync(conn, user_id, recovery_state="running", recovery_after=str(_epoch(after)), recovery_page_token="",
                      recovery_history_id=fresh)
-    _recover(conn, gmail, user_id, now)
+    _recover(conn, gmail, user_id, now, expect=expect)
 
 
-def _recover(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, now: datetime) -> None:
+def _recover(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, now: datetime, *, expect: Any = _ANY) -> None:
     """Go on with a recovery search; when it is done, live reading resumes from the cursor taken before it began."""
     sync = dict(conn.execute("SELECT * FROM application_mail_sync WHERE user_id=?", (user_id,)).fetchone())
     query = f"in:inbox after:{sync['recovery_after']}"
     ids, token = _list_ids(gmail, query, sync["recovery_page_token"], MAX_LIST_PAGES)
     if token:
-        _queue_ids(conn, user_id, "pending_ids_json", ids, recovery_page_token=token)
+        _queue_ids(conn, user_id, "pending_ids_json", ids, expect=expect, recovery_page_token=token)
     else:
-        _queue_ids(conn, user_id, "pending_ids_json", ids, recovery_state="", recovery_page_token="",
+        _queue_ids(conn, user_id, "pending_ids_json", ids, expect=expect, recovery_state="", recovery_page_token="",
                    history_id=sync["recovery_history_id"] or sync["history_id"], recovery_history_id="")
 
 
 def _backfill(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, budget: _Budget, decisions: DecisionClient | None,
-              now: datetime, totals: dict[str, int]) -> None:
+              now: datetime, totals: dict[str, int], *, expect: Any = _ANY) -> None:
     """The first-run look at the 60 days before enabled_at: one page at a time into its own queue, proposal-only."""
     sync = dict(conn.execute("SELECT * FROM application_mail_sync WHERE user_id=?", (user_id,)).fetchone())
     if sync["backfill_state"] != "running" or budget.left <= 0:
@@ -1306,12 +1459,12 @@ def _backfill(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, budget: _Bu
     if not _ids(sync["backfill_ids_json"]):
         if sync["backfill_page_token"] == "done":
             with conn:
-                _locked_sync(conn, user_id)
+                _pass_sync(conn, user_id, expect)
                 _update_sync(conn, user_id, backfill_state="done", backfill_page_token="")
             return
         ids, token = _list_ids(gmail, sync["backfill_query"], sync["backfill_page_token"], 1)
-        _queue_ids(conn, user_id, "backfill_ids_json", ids, backfill_page_token=token or "done")
-    _drain(conn, gmail, user_id, "backfill_ids_json", "backfill", budget, decisions, now, totals)
+        _queue_ids(conn, user_id, "backfill_ids_json", ids, expect=expect, backfill_page_token=token or "done")
+    _drain(conn, gmail, user_id, "backfill_ids_json", "backfill", budget, decisions, now, totals, expect=expect)
 
 
 def backfill_query(conn: sqlite3.Connection, user_id: str, enabled_at: datetime, until: datetime) -> str:
@@ -1319,9 +1472,10 @@ def backfill_query(conn: sqlite3.Connection, user_id: str, enabled_at: datetime,
 
     from: terms for every listed sender domain and every domain suggested or
     trusted for a company, and quoted host terms for the listed domains, which
-    Gmail's full-text search finds in links. It ends when the live cursor was
-    taken (``until``), so nothing between turning the switch on and the first
-    pass falls between the two.
+    Gmail's full-text search finds in links. It ends at ``until``, which the
+    first pass takes a minute after the live cursor, so nothing between turning
+    the switch on and the first pass falls between the two (a message found by
+    both is read once).
     """
     lists = mail_trust.sender_lists()
     listed = sorted({domain for category in mail_trust.READ_CATEGORIES for domain in lists.get(category, ())})
@@ -1372,10 +1526,12 @@ def run_pass(
 ) -> dict[str, Any]:
     """One pass: read new mail (or recover, or start), decide what is queued, then the backfill.
 
-    ``state`` is ok, off, not_connected, needs_reconnect, throttled, or
-    unreachable, as the inbox watcher records it. ``skipped`` is True when a
-    pass ran less than ten minutes ago (unless ``force``). ``detail`` holds
-    counts only, never an address or a message's words.
+    ``state`` is ok, message_errors, off, not_connected, needs_reconnect,
+    throttled, unreachable, or database_busy, as the inbox watcher records
+    it. ``skipped`` is True when a pass ran less than ten minutes ago (unless
+    ``force``), when another pass holds the reader, or (with state off) when
+    the switch was turned off while this one ran. ``detail`` holds counts
+    only, never an address or a message's words.
     """
     now = now or datetime.now(timezone.utc)
     result: dict[str, Any] = {"state": "ok", "skipped": False, "detail": {}}
@@ -1392,23 +1548,32 @@ def run_pass(
         row = _connector(conn, user_id)
         if not row or row["status"] != "connected":
             return {**result, "state": "not_connected" if not row or row["status"] == "disconnected" else "needs_reconnect"}
-        with conn:
-            _locked_sync(conn, user_id)
-            _update_sync(conn, user_id, last_pass_at=now.isoformat(timespec="seconds"))
         totals: dict[str, int] = {}
         try:
+            with conn:
+                _locked_sync(conn, user_id)
+                _update_sync(conn, user_id, last_pass_at=now.isoformat(timespec="seconds"))
+            # A company's domain is looked out for from the pass after its application is added,
+            # not only once the student opens the Automation panel.
+            mail_trust.refresh_suggestions(conn, user_id)
             with client_factory() as client:
                 gmail = _Gmail(conn, client, user_id)
                 budget = _Budget(MAX_GETS_PER_PASS)
+                expect = sync["enabled_at"]
                 if not sync["history_id"]:
-                    _start(conn, gmail, user_id, now)
+                    expect = _start(conn, gmail, user_id, now)
                 elif sync["recovery_state"] == "running":
-                    _recover(conn, gmail, user_id, now)
+                    _recover(conn, gmail, user_id, now, expect=expect)
                 else:
-                    _collect_history(conn, gmail, user_id, sync, now)
-                _drain(conn, gmail, user_id, "pending_ids_json", "live", budget, decisions, now, totals)
-                _rescan(conn, gmail, user_id, budget, decisions, now, totals)
-                _backfill(conn, gmail, user_id, budget, decisions, now, totals)
+                    _collect_history(conn, gmail, user_id, sync, now, expect=expect)
+                _drain(conn, gmail, user_id, "pending_ids_json", "live", budget, decisions, now, totals, expect=expect)
+                _rescan(conn, gmail, user_id, budget, decisions, now, totals, expect=expect)
+                _backfill(conn, gmail, user_id, budget, decisions, now, totals, expect=expect)
+        except _Reset:
+            if getattr(conn, "in_transaction", False):
+                conn.rollback()
+            # Switched off while it ran: nothing more is written, and its last outcome stands.
+            return {**result, "state": "off", "skipped": True, "detail": totals}
         except GmailAuthError:
             return _failed(conn, user_id, {**result, "state": "needs_reconnect", "detail": totals}, "Gmail needs reconnecting")
         except GmailThrottled:
@@ -1418,6 +1583,12 @@ def run_pass(
         except (httpx.HTTPError, ValueError) as exc:
             return _failed(conn, user_id, {**result, "state": "unreachable", "detail": totals},
                            f"{type(exc).__name__}: {_strip_queries(str(exc))[:200]}")
+        except Exception as exc:
+            if not is_transient_error(exc):
+                raise
+            # Locked or deadlocked: every queued message stays queued for the next pass.
+            return _failed(conn, user_id, {**result, "state": "database_busy", "detail": totals},
+                           "The database was busy, so the check stopped; it tries again next time")
         current = dict(conn.execute("SELECT * FROM application_mail_sync WHERE user_id=?", (user_id,)).fetchone())
         with conn:
             _locked_sync(conn, user_id)
@@ -1446,13 +1617,8 @@ def _failed(conn: sqlite3.Connection, user_id: str, result: dict[str, Any], erro
 def status(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
     """The switch's state for the Automation panel: when it started, how reading stands, what the backfill found."""
     row = conn.execute("SELECT * FROM application_mail_sync WHERE user_id=?", (user_id,)).fetchone()
-    found = conn.execute(
-        """
-        SELECT COUNT(*) FROM automation_actions
-        WHERE user_id=? AND feature=? AND status='proposed' AND basis LIKE ?
-        """,
-        (user_id, FEATURE, f"%{BACKFILL_BASIS}%"),
-    ).fetchone()[0]
+    found = _backfill_proposals(conn, user_id)
+    approvable = [action for action in found if _approvable(action)]
     waiting = conn.execute(
         "SELECT COUNT(*) FROM application_mail_messages WHERE user_id=? AND state='awaiting_resume'", (user_id,),
     ).fetchone()[0]
@@ -1464,7 +1630,11 @@ def status(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
         "last_ok_at": sync.get("last_ok_at"),
         "last_error": sync.get("last_error") or "",
         "backfill_state": sync.get("backfill_state") or "",
-        "backfill_found": int(found),
+        # Every update the look back found, and the ones Approve all acts on: those that waited only
+        # because they arrived before the switch was on. The rest (offers, unverified senders, guessed
+        # applications, roles not tracked) are for one by one.
+        "backfill_found": len(found),
+        "backfill_approvable": len(approvable),
         "pending": len(_ids(sync.get("pending_ids_json"))),
         "awaiting_resume": int(waiting),
         "domain_check": mail_trust.psl_available(),
@@ -1472,10 +1642,16 @@ def status(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
 
 
 def application_emails(conn: sqlite3.Connection, user_id: str, application_id: str) -> list[dict[str, Any]]:
-    """The emails linked to one application, newest first, with a link that opens each thread in Gmail."""
+    """The emails linked to one application, newest first, with a link that opens each thread in Gmail.
+
+    ``matched_by`` says how sure the link is: job_id or company_title (the
+    email named the role), company_single (the company alone, its one open
+    application: a guess the page labels), or student (the student picked or
+    approved it). An ambiguous match is never linked until the student picks.
+    """
     rows = conn.execute(
         """
-        SELECT gmail_id, thread_id, subject, sender_domain, received_at, kind, state FROM application_mail_messages
+        SELECT gmail_id, thread_id, subject, sender_domain, received_at, kind, state, matched_by FROM application_mail_messages
         WHERE user_id=? AND application_id=? AND state IN ('done', 'awaiting_resume') ORDER BY received_at DESC LIMIT 100
         """,
         (user_id, application_id),
@@ -1511,8 +1687,9 @@ def after_decision(conn: sqlite3.Connection, user_id: str, action: dict[str, Any
         return
     with conn:
         if action.get("status") == "applied" and action.get("subject_kind") == "application":
+            # The student approved it for this application: the link is theirs now, not a guess.
             conn.execute(
-                "UPDATE application_mail_messages SET application_id=? WHERE user_id=? AND gmail_id=?",
+                "UPDATE application_mail_messages SET application_id=?, matched_by='student' WHERE user_id=? AND gmail_id=?",
                 (action["subject_id"], user_id, gmail_id),
             )
     _settle_event(conn, user_id, gmail_id, str((action.get("evidence") or {}).get("event_id") or ""),
@@ -1534,86 +1711,252 @@ def _settle_event(conn: sqlite3.Connection, user_id: str, gmail_id: str, event_i
         )
 
 
+def after_superseded(conn: sqlite3.Connection, user_id: str, action_id: str) -> None:
+    """After an approval found the application changed since: settle the email card if nothing else waits."""
+    try:
+        action = automation._decode(automation._row(conn, action_id, user_id))
+    except LookupError:
+        return
+    after_decision(conn, user_id, action)
+
+
+def _who(conn: sqlite3.Connection, user_id: str, application_id: str) -> str:
+    row = conn.execute(
+        "SELECT o.company, o.title FROM applications a JOIN opportunities o ON o.id=a.opportunity_id WHERE a.id=? AND a.user_id=?",
+        (application_id, user_id),
+    ).fetchone()
+    return f"{row['company']} ({row['title']})" if row else ""
+
+
+def _summary_for(conn: sqlite3.Connection, user_id: str, action: dict[str, Any], application_id: str) -> str:
+    """The action's summary, naming ``application_id`` instead of the application it was proposed for."""
+    old, new = _who(conn, user_id, action["subject_id"]), _who(conn, user_id, application_id) or "the application you chose"
+    summary = str(action.get("summary") or "")
+    if old and summary.startswith(f"{old}:"):
+        return f"{new}:{summary[len(old) + 1:]}"
+    return f"{new}: {summary}" if summary else new
+
+
+def _correct(conn: sqlite3.Connection, user_id: str, action: dict[str, Any], subject_id: str, before: dict[str, Any]) -> dict[str, Any]:
+    """automation.register_correction for this feature: plan()'s rules, held against the application the student chose.
+
+    Stages only move forward, nothing leaves a closed stage except to an
+    offer (always the student's call), and a rejection never overwrites an
+    offer or a withdrawal. A confirmation keeps a stage past Applied and sets
+    when they applied. A task or a deadline is never added to a closed
+    application. The summary names the chosen application.
+    """
+    row = conn.execute("SELECT stage FROM applications WHERE id=? AND user_id=?", (subject_id, user_id)).fetchone()
+    stage = str(row["stage"]) if row else ""
+    who = _who(conn, user_id, subject_id) or "That application"
+    old = _who(conn, user_id, action["subject_id"])
+    after = {key: value for key, value in action["after"].items() if key != "_result"}
+    if action["action_type"] == "application.stage":
+        target = str(after.get("stage") or "")
+        confirmation = "applied_at" in after
+        if target == "offer" or target == stage:
+            pass  # an offer is the student's call; the same stage changes nothing (approve records it so)
+        elif stage in CLOSED_STAGES:
+            raise automation.CorrectionRefused(f"{who} is {stage}, so this email cannot move it to {target}")
+        elif target == "rejected":
+            if stage == "offer":
+                raise automation.CorrectionRefused(f"{who} has an offer, and a rejection never overwrites an offer")
+        elif confirmation:
+            after["stage"] = "applied" if stage == "applying" else stage
+        elif STAGE_RANK.get(stage, -1) >= STAGE_RANK.get(target, len(STAGE_RANK)):
+            raise automation.CorrectionRefused(f"{who} is already at {stage}, and stages only move forward")
+    elif stage in CLOSED_STAGES:
+        raise automation.CorrectionRefused(f"{who} is {stage}, so this email's task or deadline is not added to it")
+    return {
+        "after": after, "summary": _summary_for(conn, user_id, action, subject_id),
+        "note": f"You chose a different application than the one proposed ({old})" if old else "",
+    }
+
+
+def _breaker_group(row: dict[str, Any]) -> str | None:
+    """automation.register_breaker_group for this feature: one email's changes count once; a capture never counts."""
+    if row.get("action_type") == "application.capture_proposal":
+        return None
+    key = str(row.get("idempotency_key") or "")
+    return f"gmail:{key.split(':')[1]}" if key.startswith("gmail:") and key.count(":") >= 2 else str(row.get("id") or key)
+
+
+automation.register_correction(FEATURE, _correct)
+automation.register_breaker_group(FEATURE, _breaker_group, "email")
+
+
+def _expire(conn: sqlite3.Connection, user_id: str, action: dict[str, Any], note: str, timestamp: str) -> None:
+    """Set a proposal aside without a verdict (the breaker never counts it), keeping only what the ledger may."""
+    kept = automation.ledger_after(str(action["action_type"]), {key: value for key, value in action["after"].items()})
+    with conn:
+        conn.execute(
+            """
+            UPDATE automation_actions SET status='expired', note=?, after_json=?, decided_at=?, decided_by='student'
+            WHERE id=? AND user_id=? AND status='proposed'
+            """,
+            (note, automation._dumps(kept), timestamp, action["id"], user_id),
+        )
+
+
+MOVABLE = ("application.task", "application.deadline")
+
+
+def _move_applied(conn: sqlite3.Connection, user_id: str, gmail_id: str, application_id: str) -> None:
+    """The student said the email is about ``application_id``: what it added on its own elsewhere moves there.
+
+    A task or deadline the app added to another application (the company
+    alone matched) is made again for the chosen one, approved by the student,
+    and taken back from the other while it is unchanged. One the student has
+    edited or finished since stays where it is.
+    """
+    for action in _message_actions(conn, user_id, gmail_id, "applied"):
+        if (action["subject_kind"] != "application" or action["subject_id"] == application_id
+                or action.get("decided_by") != "system" or action["action_type"] not in MOVABLE):
+            continue
+        after = {key: value for key, value in action["after"].items() if key != "_result"}
+        if action["action_type"] == "application.task":
+            # The ledger kept only the link's host; the task itself has the link.
+            task_id = (action["after"].get("_result") or {}).get("task_id")
+            row = conn.execute("SELECT link FROM application_tasks WHERE id=? AND user_id=?", (task_id, user_id)).fetchone()
+            task = {key: value for key, value in (after.get("task") or {}).items() if key != "link_host"}
+            after = {**after, "task": {**task, "link": str(row["link"] or "") if row else ""}}
+        moved = automation.perform(
+            conn, user_id=user_id, feature=FEATURE, action_type=action["action_type"], subject_kind="application",
+            subject_id=application_id, after=after, evidence={**action["evidence"], "moved_from": action["subject_id"]},
+            summary=_summary_for(conn, user_id, action, application_id), basis=action["basis"], confidence=action["confidence"],
+            idempotency_key=f"{_prefix(gmail_id)}{application_id}:{action['action_type']}", auto=False,
+            policy_version=action.get("policy_version") or POLICY_VERSION,
+        )
+        if moved is None or moved["status"] != "proposed":
+            continue  # off or paused, or already made for that application
+        try:
+            automation.approve(conn, moved["id"], user_id)
+        except (automation.Superseded, ValueError, LookupError):
+            continue
+        try:
+            automation.undo(conn, action["id"], user_id)
+        except (automation.Superseded, ValueError, LookupError):
+            continue  # edited or finished since: the student's own now
+
+
 def decide_event(
     conn: sqlite3.Connection, event: dict[str, Any], decision: str, application_id: str | None, *, user_id: str,
 ) -> dict[str, Any] | None:
-    """The email card's Confirm or Ignore for an email this feature read. None when it has no proposals (the plain path decides).
+    """The email card's Confirm or Ignore for an email this feature read. None when the plain path decides it.
+
+    The plain path (connections.decide_event_directly, which sets the stage
+    the email points to) is only for an email this feature changed nothing
+    about: none matched, or its only proposal was to capture an untracked role.
 
     Confirm approves each of the email's proposals for the application the
-    student picked (a correction when it is another one); a proposal to
-    capture an untracked role is set aside, since the student picked a tracked
-    one. Ignore sets every proposal aside as expired: ignoring an email is not
-    the feature getting something wrong, so it never trips the breaker.
+    student picked (a correction when it is another one, held to the same
+    rules as plan(): if any would be refused, nothing is decided and
+    CorrectionRefused says why). What the email already added on its own to
+    another application moves to the picked one (_move_applied). A proposal
+    to capture an untracked role is set aside, since the student picked a
+    tracked one. When a proposal finds its application changed since, it is
+    left as it is; if nothing of the email was applied, the card is settled
+    and Superseded says why. Ignore sets every proposal aside as expired:
+    ignoring an email is not the feature getting something wrong, so it never
+    trips the breaker.
     """
-    from .connections import monitored_event
+    from .connections import decide_event_directly, monitored_event
 
     gmail_id = str((event.get("payload") or {}).get("gmail_id") or "")
-    proposals = _message_actions(conn, user_id, gmail_id, "proposed") if gmail_id else []
-    if not proposals:
+    actions = _message_actions(conn, user_id, gmail_id) if gmail_id else []
+    tracked = [action for action in actions if action["subject_kind"] == "application"]
+    proposals = [action for action in actions if action["status"] == "proposed"]
+    if not tracked and not proposals:
         return None
-    from .connections import decide_event_directly
-
+    if decision == "confirm" and application_id:
+        for action in proposals:
+            if action["subject_kind"] == "application":
+                refusal = automation.correction_refusal(conn, action["id"], user_id, application_id)
+                if refusal:
+                    raise automation.CorrectionRefused(refusal)
     timestamp = utc_now()
-    approved = 0
+    superseded: list[str] = []
     for action in proposals:
         if decision == "confirm" and action["subject_kind"] == "application":
             try:
                 automation.approve(conn, action["id"], user_id, subject_id=application_id)
-                approved += 1
-            except automation.Superseded:
-                continue
+            except automation.Superseded as exc:
+                superseded.append(str(exc))
+            except automation.CorrectionRefused:
+                raise
             except ValueError:
                 continue  # decided somewhere else meanwhile
         else:
-            note = "You ignored this email" if decision == "ignore" else "You picked a tracked application for this email"
-            with conn:
-                conn.execute(
-                    "UPDATE automation_actions SET status='expired', note=?, decided_at=?, decided_by='student' WHERE id=? AND user_id=? AND status='proposed'",
-                    (note, timestamp, action["id"], user_id),
-                )
+            _expire(conn, user_id, action, "You ignored this email" if decision == "ignore" else "You picked a tracked application for this email",
+                    timestamp)
     if decision == "confirm" and application_id:
+        _move_applied(conn, user_id, gmail_id, application_id)
         with conn:
             conn.execute(
-                "UPDATE application_mail_messages SET application_id=? WHERE user_id=? AND gmail_id=?", (application_id, user_id, gmail_id),
+                "UPDATE application_mail_messages SET application_id=?, matched_by='student' WHERE user_id=? AND gmail_id=?",
+                (application_id, user_id, gmail_id),
             )
-    if decision == "confirm" and not approved:
-        # Nothing to approve for a tracked application (the email proposed capturing an untracked role):
-        # the application the student picked gets what the email says, as on any email card.
+    if decision == "confirm" and not tracked:
+        # The email only proposed capturing an untracked role, and the student picked a tracked
+        # application instead: it gets what the email says, as on any email card.
         return decide_event_directly(conn, event, decision, application_id, user_id=user_id)
+    applied = any(action["status"] == "applied" for action in _message_actions(conn, user_id, gmail_id))
     with conn:
         conn.execute(
             """
             UPDATE monitored_events SET status=?, application_id=?, decided_at=?, decided_by='student'
             WHERE id=? AND user_id=? AND status='pending'
             """,
-            ("confirmed" if decision == "confirm" else "ignored", application_id if decision == "confirm" else event.get("application_id"),
-             timestamp, event["id"], user_id),
+            ("confirmed" if decision == "confirm" and applied else "ignored",
+             application_id if decision == "confirm" else event.get("application_id"), timestamp, event["id"], user_id),
         )
+    if decision == "confirm" and superseded and not applied:
+        raise automation.Superseded(superseded[0])
     return monitored_event(conn, event["id"], user_id=user_id)
 
 
-def approve_backfill(conn: sqlite3.Connection, user_id: str) -> dict[str, int]:
-    """Approve every backfill proposal about a tracked application (Approve all). Capture proposals are left for one by one."""
+def _backfill_proposals(conn: sqlite3.Connection, user_id: str) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
-        SELECT id FROM automation_actions
-        WHERE user_id=? AND feature=? AND status='proposed' AND subject_kind='application' AND basis LIKE ?
+        SELECT * FROM automation_actions
+        WHERE user_id=? AND feature=? AND status='proposed' AND basis LIKE ?
         ORDER BY created_at, id
         """,
         (user_id, FEATURE, f"%{BACKFILL_BASIS}%"),
     ).fetchall()
+    return [automation._decode(row) for row in rows]
+
+
+def _approvable(action: dict[str, Any]) -> bool:
+    """Whether Approve all may approve it: about a tracked application, and waiting only because it came before the switch."""
+    reasons = (action.get("evidence") or {}).get("why_proposal")
+    return action["subject_kind"] == "application" and reasons == [BEFORE_ENABLED]
+
+
+def approve_backfill(conn: sqlite3.Connection, user_id: str) -> dict[str, int]:
+    """Approve all: the backfill proposals that would have acted on their own had the switch been on.
+
+    Everything else the look back found (an offer, a sender Gmail did not
+    vouch for, a guessed application, a newsletter, a date gap, a role not
+    tracked) waits for one by one; ``left`` counts those.
+    """
+    found = _backfill_proposals(conn, user_id)
     approved = superseded = 0
-    for row in rows:
+    for action in found:
+        if not _approvable(action):
+            continue
         try:
-            action = automation.approve(conn, row["id"], user_id)
+            result = automation.approve(conn, action["id"], user_id)
         except automation.Superseded:
             superseded += 1
+            after_superseded(conn, user_id, action["id"])
             continue
         except (ValueError, LookupError):
             continue
         approved += 1
-        after_decision(conn, user_id, action)
-    return {"approved": approved, "superseded": superseded}
+        after_decision(conn, user_id, result)
+    left = sum(1 for action in found if not _approvable(action))
+    return {"approved": approved, "superseded": superseded, "left": left}
 
 
 # --- Retention ---------------------------------------------------------------------------
@@ -1634,12 +1977,17 @@ def purge_excerpts(conn: sqlite3.Connection, *, now: datetime | None = None) -> 
     actions = events = 0
     with conn:
         for row in conn.execute(
-            "SELECT id, evidence_json FROM automation_actions WHERE feature=? AND created_at<?", (FEATURE, cutoff),
+            "SELECT id, action_type, evidence_json, after_json FROM automation_actions WHERE feature=? AND created_at<?", (FEATURE, cutoff),
         ).fetchall():
             try:
                 evidence = json.loads(row["evidence_json"] or "{}")
+                after = json.loads(row["after_json"] or "{}")
             except (TypeError, ValueError):
                 continue
+            # A proposal still waiting after all this time keeps a task's link no longer either.
+            kept = automation.ledger_after(str(row["action_type"]), after) if isinstance(after, dict) else after
+            if kept != after:
+                conn.execute("UPDATE automation_actions SET after_json=? WHERE id=?", (automation._dumps(kept), row["id"]))
             if not isinstance(evidence, dict) or not evidence.get("excerpt"):
                 continue
             evidence["excerpt"] = ""

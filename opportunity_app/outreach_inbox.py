@@ -427,6 +427,7 @@ STEP_ERRORS = {
     "unreachable": "Gmail could not be reached",
     "throttled": "Gmail asked the app to slow down",
     "message_errors": "Some job emails could not be read and were set aside",
+    "database_busy": "The database was busy, so the job-email check stopped; it tries again next time",
 }
 RECONNECT_ERROR = "Gmail needs reconnecting"
 CONNECTION = "inbox.connection"
@@ -594,16 +595,17 @@ class InboxWatcher:
         # Job-system mail after the replies, so a reply outreach owns is never read as one.
         # Only when the student turned it on (or into shadow); off, its cursor is forgotten.
         try:
-            reading = automation.mode(conn, user_id, application_inbox.FEATURE) != "off"
+            switch = automation.mode(conn, user_id, application_inbox.FEATURE)
         except Exception:  # noqa: BLE001 - the other steps still run
             _discard_open_transaction(conn)
             LOGGER.warning("Could not read the application mail switch", exc_info=True)
-            reading = False
-        if reading:
+            # Not knowing is not "off": the cursor is left alone, and the next pass asks again.
+            switch = None
+        if switch not in (None, "off"):
             steps.append((application_inbox.HEALTH_COMPONENT, lambda: application_inbox.run_pass(
                 conn, user_id=user_id, client_factory=factory, decisions=self._decisions_for(conn, user_id),
             )))
-        else:
+        elif switch == "off":
             application_inbox.note_off(conn, user_id)
         for component, step in steps:
             try:

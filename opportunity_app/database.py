@@ -21,6 +21,27 @@ def is_unique_violation(exc: BaseException) -> bool:
     return type(exc).__name__ == "UniqueViolation"
 
 
+# PostgreSQL error classes that mean "try again": a lost connection (08), a serialization failure or
+# deadlock (40), and a lock not available or a statement cancelled while waiting (55P03, 57014).
+_TRANSIENT_SQLSTATES = ("08", "40", "55P03", "57014")
+
+
+def is_transient_error(exc: BaseException) -> bool:
+    """A database that could not answer just now (locked, busy, a deadlock, a dropped connection), not a bad request.
+
+    On SQLite that is any OperationalError ("database is locked" after the
+    busy timeout, among others); on PostgreSQL, psycopg's OperationalError and
+    the error classes in _TRANSIENT_SQLSTATES.
+    """
+    if isinstance(exc, sqlite3.OperationalError):
+        return True
+    state = str(getattr(exc, "sqlstate", None) or getattr(exc, "pgcode", None) or "")
+    if state and state.startswith(_TRANSIENT_SQLSTATES):
+        return True
+    return type(exc).__name__ in {"OperationalError", "SerializationFailure", "DeadlockDetected", "TransactionRollbackError",
+                                  "LockNotAvailable", "QueryCanceled"}
+
+
 class HybridRow(dict):
     """Mapping row with sqlite.Row-compatible numeric lookup."""
 
