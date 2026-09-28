@@ -330,6 +330,36 @@ themselves (rule 3). The details:
   approved ones on its own; without it, the card's **Send through contact form**
   asks them to confirm first. A form wanting a picture CAPTCHA waits for them
   under **Finish in browser**.
+- **Update applications from job emails** (optional). Ask whether they want the
+  app to read job-system and assessment emails (Greenhouse, Lever, Workday,
+  HackerRank and the like) and keep their applications up to date from them. It
+  needs Gmail connected as above, with the read permission Connect Gmail asks for;
+  a connection made before the app asked to read mail must be reconnected first.
+  The switch is under Profile → Automation, and it is off until they choose.
+  Walk them through it:
+  - They start it in **Shadow**. For at least 48 hours it only logs what it
+    would have done, under **Would have done**, and changes nothing. They mark
+    each entry right or wrong. **On** unlocks only after 48 hours and at least
+    five entries, every one reviewed and none marked wrong; a wrong mark means
+    switching it off and back to shadow to start the 48 hours again.
+  - When on, an email that clearly confirms an application, rejects it, or
+    invites them to interview moves the application forward on its own (never
+    backward, and never over a change they made after the email), and adds a
+    task or a deadline. Each change shows on the application's timeline with
+    Undo, and the email is listed on the application.
+  - Anything unclear waits under **Waiting for you**, with the reason and a
+    picker to choose the right application: an offer (always), an email that
+    could be about two applications, a forwarded email, a newsletter, or an
+    email from a company's own domain until they trust that domain under
+    **Trusted company mail domains** (suggested from their job links and
+    outreach records; nothing is trusted without their click).
+  - The first time it runs it also looks back 60 days. What it finds there
+    only ever waits for them ("Found 14 updates from the last 60 days", with
+    **Approve all**).
+  - Email excerpts kept as evidence are dropped after 180 days
+    (`PIPELINE_MAIL_EVIDENCE_DAYS`). With Jev inbox suggestions on, the text of
+    these emails goes to TypeSafe too, and Jev's answer acts on its own only
+    when the keyword rules agree with it.
 
 ## 7. Resume (optional, recommended)
 

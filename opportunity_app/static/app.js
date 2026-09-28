@@ -318,7 +318,8 @@
   // write, writing how many writes are still waiting for their answer, and
   // overlapped whether two writes were on their way at once since the last
   // time none was.
-  const automationStatus = { lastChecked: 0, timer: null, controller: null, banner: "", ticket: 0, shown: 0, lastWrite: 0, writing: 0, overlapped: false };
+  // appliedSeen is the newest automatic change already on the page (null until the first answer after sign-in).
+  const automationStatus = { lastChecked: 0, timer: null, controller: null, banner: "", ticket: 0, shown: 0, lastWrite: 0, writing: 0, overlapped: false, appliedSeen: null };
 
   // The server answers in its own order, so an answer read before a Pause
   // committed can land after the Pause's own answer and put the old banner
@@ -439,6 +440,39 @@
     setProfileBadge(health);
     document.getElementById("automation-health-host")?.replaceChildren(automationHealthList(health));
     if (wasPaused !== automationPaused()) repaintPauseWords();
+    announceNewAutomatic(health);
+  }
+
+  // A change the app made on its own since the page last looked is announced
+  // once, with Undo when it can be taken back: at most one announcement per
+  // answer, naming how many more there are. What was already there when the
+  // student signed in is not news, so the first answer only sets the mark.
+  function announceNewAutomatic(health) {
+    const items = Array.isArray(health?.recent_applied) ? health.recent_applied : [];
+    const newest = items.reduce((latest, item) => (String(item.applied_at || "") > latest ? String(item.applied_at) : latest), "");
+    if (automationStatus.appliedSeen === null) {
+      automationStatus.appliedSeen = newest;
+      return;
+    }
+    const fresh = items.filter((item) => String(item.applied_at || "") > automationStatus.appliedSeen);
+    if (newest > automationStatus.appliedSeen) automationStatus.appliedSeen = newest;
+    if (!fresh.length) return;
+    const [first] = fresh;
+    const more = fresh.length > 1 ? `, and ${plural(fresh.length - 1, "more change", "more changes")} (see Automation on your Profile)` : "";
+    const message = `Automatic: ${String(first.summary || "a change").replace(/[.!?]+$/, "")}${more}.`;
+    if (!first.undoable) {
+      announce(message);
+      return;
+    }
+    announceWithUndo(message, async () => {
+      try {
+        const result = await automationWrite(() => api(`/api/v1/automation/actions/${encodeURIComponent(first.id)}/undo`, { method: "POST" }));
+        announce(withUndoNote(result.feature_paused ? automationBreakerMessage(first.feature, result.breaker_notice) : "Undid the automatic change.", result));
+      } catch (error) {
+        if (error.message !== "Authentication required") announce(error.message);
+      }
+      refreshAutomationStatus();
+    });
   }
 
   // { settings, health } from GET /api/v1/automation or a settings PUT. Every
@@ -451,6 +485,8 @@
       syncAutomationControls(payload.settings);
     }
     if (payload?.health) applyAutomationStatus(payload.health);
+    // The job-email block on the Profile page follows its switch at once.
+    if (payload?.application_mail) automationStatus.onMail?.(payload.application_mail);
   }
 
   async function setAutomationPaused(paused) {
@@ -492,6 +528,7 @@
     automationStatus.controller = null;
     automationStatus.lastChecked = 0;
     automationStatus.banner = "";
+    automationStatus.appliedSeen = null;
     state.automation = null;
     els.automationBanner.replaceChildren();
     els.automationBanner.hidden = true;
@@ -2041,7 +2078,21 @@
         });
         const taskCopy = element("span", "", task.title);
         if (task.due_at) taskCopy.appendChild(element("small", "", `Due ${formatDate(task.due_at)}`));
+        if (task.origin === "email") taskCopy.appendChild(element("small", "", "From an email"));
         label.append(checkbox, taskCopy);
+        const safeLink = typeof task.link === "string" && /^https?:\/\//i.test(task.link) ? task.link : "";
+        if (safeLink) {
+          // The assessment or scheduling page, kept only here in the app.
+          const row = element("div", "tracker-task-row");
+          const open = element("a", "text-button tracker-task-link", "Open");
+          open.href = safeLink;
+          open.target = "_blank";
+          open.rel = "noopener noreferrer";
+          open.setAttribute("aria-label", `Open the page for ${task.title}`);
+          row.append(label, open);
+          taskList.appendChild(row);
+          return;
+        }
         taskList.appendChild(label);
       });
       if (!payload.tasks?.length) taskList.appendChild(element("p", "empty-inline", "No tasks yet."));
@@ -2115,6 +2166,30 @@
       });
       contacts.append(contactList, contactForm);
 
+      // The job emails linked to this application (Update applications from job emails).
+      const emails = Array.isArray(payload.emails) ? payload.emails : [];
+      let emailSection = null;
+      if (emails.length) {
+        emailSection = element("section", "tracker-subsection tracker-emails");
+        emailSection.appendChild(element("h4", "", "Emails"));
+        const list = element("ul", "tracker-email-list");
+        emails.forEach((mail) => {
+          const row = element("li", "tracker-email");
+          row.appendChild(element("span", "tracker-email-subject", mail.subject || "(no subject)"));
+          row.appendChild(element("small", "", [mail.sender_domain, formatDate(mail.received_at)].filter(Boolean).join(" · ")));
+          if (typeof mail.gmail_url === "string" && mail.gmail_url.startsWith("https://mail.google.com/")) {
+            const open = element("a", "text-button", "Open in Gmail");
+            open.href = mail.gmail_url;
+            open.target = "_blank";
+            open.rel = "noopener noreferrer";
+            open.setAttribute("aria-label", `Open in Gmail: ${mail.subject || "this email"}`);
+            row.appendChild(open);
+          }
+          list.appendChild(row);
+        });
+        emailSection.appendChild(list);
+      }
+
       const timeline = element("section", "tracker-subsection");
       timeline.appendChild(element("h4", "", "Activity timeline"));
       const eventList = element("ol", "timeline-list");
@@ -2135,7 +2210,7 @@
         eventList.appendChild(row);
       });
       timeline.appendChild(eventList);
-      container.append(tasks, contacts, timeline);
+      container.append(...[tasks, contacts, emailSection, timeline].filter(Boolean));
       owner.dataset.loaded = "true";
       if (automatic.size) labelAutomaticChanges(applicationId, automatic);
     } catch (error) {
@@ -2212,7 +2287,17 @@
     dialog.showModal();
   }
 
-  function renderCaptureDraft(draft, host, dialog) {
+  // A capture draft made from an email proposal (application.capture_proposal), in
+  // the ordinary capture form: nothing enters the tracker until the student confirms.
+  async function openCaptureDraft(captureId, onConfirmed) {
+    const draft = await api(`/api/v1/opportunity-captures/${encodeURIComponent(captureId)}`);
+    openCaptureDialog();
+    const dialog = document.getElementById("capture-dialog");
+    dialog.querySelector(".capture-source-form").hidden = true;
+    renderCaptureDraft(draft, dialog.querySelector(".capture-draft-host"), dialog, onConfirmed);
+  }
+
+  function renderCaptureDraft(draft, host, dialog, onConfirmed = null) {
     const parsed = draft.parsed || {};
     const form = element("form", "capture-confirm-form");
     form.appendChild(element("p", "missing-note", parsed.extraction_note || "Review every extracted field before confirmation."));
@@ -2246,7 +2331,8 @@
           }),
         });
         dialog.close();
-        await Promise.all([loadApplications(), loadStats()]);
+        if (onConfirmed) await onConfirmed();
+        else await Promise.all([loadApplications(), loadStats()]);
       } catch (error) {
         statusLine.textContent = error.message;
         confirm.disabled = false;
@@ -4040,7 +4126,7 @@
       select.value = setting.enabled ? "jev" : "rules";
       select.disabled = false;
       help.textContent = setting.available
-        ? `${setting.sends} With Jev, both go to TypeSafe. When Jev is unsure or unreachable, the keyword rules suggest instead, and every suggestion says which one made it. You still confirm each change.`
+        ? `${setting.sends} With Jev, these go to TypeSafe. When Jev is unsure or unreachable, the keyword rules suggest instead, and every suggestion says which one made it. You still confirm each change, except that Update applications from job emails (under Automation on your Profile) may act on its own when Jev and the keyword rules agree.`
         : "Jev is not set up on this computer (TYPESAFE_API_KEY in .env), so the keyword rules make these suggestions. Nothing is sent anywhere.";
     }
     try {
@@ -4080,6 +4166,10 @@
   // The Automation section on the Profile page shows the same help for these
   // switches, so neither place leaves out what turning one off does not stop.
   const AUTOMATION_SWITCH_HELP = Object.fromEntries(AUTOMATION_SWITCHES.map(([key, , help]) => [key, help]));
+  // Longer help for automation features with no switch on the Outreach tab.
+  const AUTOMATION_FEATURE_HELP = {
+    application_mail: "Reads job-system and assessment emails in Gmail (and mail from company domains you trust below). An email that clearly confirms, rejects, or invites you moves that application forward and adds a task or a deadline; the email is shown on the application. Anything unclear, an offer, or an email from before you turned this on waits under Waiting for you, with the reason. Start it in shadow: for 48 hours it only logs what it would do, and you mark each one right or wrong before it can act. Needs Gmail connected.",
+  };
 
   async function automationFields() {
     const field = element("div", "settings-field automation-settings");
@@ -6155,19 +6245,23 @@
         const decidedBy = item.payload.classified_by?.source === "jev" ? "Jev suggestion" : "keyword rules";
         card.appendChild(element("strong", "", `${item.event_type.replaceAll("_", " ")} · ${Math.round(item.confidence * 100)}% · ${decidedBy}`));
         card.appendChild(element("p", "", item.payload.subject || item.payload.body_preview));
-        const select = document.createElement("select");
-        (applications.items || []).forEach((application) => {
-          const option = document.createElement("option");
-          option.value = application.id;
-          option.textContent = `${application.company} — ${application.title}`;
-          select.appendChild(option);
-        });
+        if (item.payload.sender_domain) card.appendChild(element("p", "automation-meta", `From ${item.payload.sender_domain}`));
+        const candidates = Array.isArray(item.payload.candidates) ? item.payload.candidates : [];
+        const select = applicationPicker(applications.items || [], candidates, item.application_id || candidates[0] || "");
+        select.setAttribute("aria-label", "Application this email is about");
         const controls = element("div", "preparation-actions");
         const confirm = element("button", "secondary-button", "Confirm tracker update");
         confirm.type = "button";
         const ignore = element("button", "danger-button", "Ignore");
         ignore.type = "button";
+        const cardStatus = element("p", "form-status");
+        cardStatus.setAttribute("aria-live", "polite");
         confirm.addEventListener("click", async () => {
+          if (!select.value) {
+            cardStatus.textContent = "Choose the application this email is about first.";
+            select.focus();
+            return;
+          }
           await api(`/api/v1/monitored-events/${encodeURIComponent(item.id)}/decision`, { method: "POST", body: JSON.stringify({ decision: "confirm", application_id: select.value }) });
           await loadProfile();
         });
@@ -6176,12 +6270,40 @@
           await loadProfile();
         });
         controls.append(confirm, ignore);
-        card.append(select, controls);
+        card.append(select, controls, cardStatus);
         eventList.appendChild(card);
       });
       section.appendChild(eventList);
     }
     return section;
+  }
+
+  // Applications for a picker: the ones an email or a proposal matched first, in
+  // their ranked order, then every other by company and role. ``selected`` is
+  // preselected; with none, the picker asks for a choice.
+  function applicationPicker(applications, candidates, selected) {
+    const select = document.createElement("select");
+    const rank = new Map((Array.isArray(candidates) ? candidates : []).map((id, index) => [id, index]));
+    const sorted = [...applications].sort((a, b) => {
+      const ra = rank.has(a.id) ? rank.get(a.id) : Infinity;
+      const rb = rank.has(b.id) ? rank.get(b.id) : Infinity;
+      if (ra !== rb) return ra - rb;
+      return `${a.company} ${a.title}`.localeCompare(`${b.company} ${b.title}`, undefined, { sensitivity: "base" });
+    });
+    if (!selected || !sorted.some((application) => application.id === selected)) {
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = "Choose an application";
+      select.appendChild(placeholder);
+    }
+    sorted.forEach((application) => {
+      const option = document.createElement("option");
+      option.value = application.id;
+      option.textContent = `${application.company} — ${application.title}${rank.has(application.id) ? " (matched)" : ""}`;
+      select.appendChild(option);
+    });
+    select.value = sorted.some((application) => application.id === selected) ? selected : "";
+    return select;
   }
 
   function humanizeKey(key) {
@@ -6397,7 +6519,12 @@
   const AUTOMATION_MODE_WORDS = { off: "off", shadow: "shadow, logging what it would do", on: "on" };
   // Action types whose change Undo can take back: every type the ledger has
   // today. A sent email or a submitted application will never be one.
-  const UNDOABLE_ACTION_TYPES = new Set(["application.stage", "opportunity.intent", "application.task"]);
+  const UNDOABLE_ACTION_TYPES = new Set(["application.stage", "opportunity.intent", "application.task", "application.deadline"]);
+
+  // Whether Undo can take this action back: the server says so (undoable), else by its type.
+  function canUndo(action) {
+    return typeof action?.undoable === "boolean" ? action.undoable : UNDOABLE_ACTION_TYPES.has(action?.action_type);
+  }
   const AUTOMATION_STATUS_CHIPS = {
     applied: ["Applied", "is-good"],
     undone: ["Undone", ""],
@@ -6599,7 +6726,7 @@
     field.dataset.automationFeature = feature.key;
     const id = `automation-mode-${feature.key}`;
     const head = element("div", "automation-feature-head");
-    const help = element("p", "profile-help", AUTOMATION_SWITCH_HELP[feature.key] || feature.description);
+    const help = element("p", "profile-help", AUTOMATION_SWITCH_HELP[feature.key] || AUTOMATION_FEATURE_HELP[feature.key] || feature.description);
     help.id = `${id}-help`;
     const external = feature.risk === "external" ? chip("External", "is-soon") : null;
     if ((feature.modes || []).includes("shadow")) {
@@ -6718,7 +6845,7 @@
     return AUTOMATION_LIST_KEYS.map((key) => api(`/api/v1/automation/actions?${AUTOMATION_LISTS[key].query}`));
   }
 
-  function automationSection(payload, actionsPayload) {
+  function automationSection(payload, actionsPayload, applicationsPayload = null) {
     const section = element("section", "profile-card automation-section");
     section.setAttribute("aria-labelledby", "automation-heading");
     section.appendChild(element("p", "eyebrow", "Automation"));
@@ -6792,6 +6919,160 @@
       features.appendChild(wrap);
     });
     section.appendChild(features);
+
+    const applicationList = Array.isArray(applicationsPayload?.items) ? applicationsPayload.items : [];
+    let mailState = payload.application_mail || null;
+
+    // Update applications from job emails: how reading stands, and what the first look back found.
+    const [mailBlock] = block("automation-application-mail", "Job emails", "automation-application-mail-heading");
+    const mailHost = element("div");
+    const mailStatus = liveStatus();
+    mailBlock.append(mailHost, mailStatus);
+    function paintMail() {
+      mailHost.replaceChildren();
+      const mail = mailState;
+      const on = mail && mail.mode && mail.mode !== "off";
+      mailBlock.hidden = !mail || (!on && !mail.backfill_found);
+      if (mailBlock.hidden) return;
+      const words = [];
+      if (on) words.push(mail.enabled_at ? `Reading job emails since ${formatDate(mail.enabled_at)}${mail.mode === "shadow" ? ", in shadow" : ""}.` : "Starts reading job emails at the next check.");
+      if (mail.last_ok_at) words.push(`Last checked ${timeAgo(mail.last_ok_at)}.`);
+      if (mail.awaiting_resume) words.push(`${plural(mail.awaiting_resume, "email waits", "emails wait")} for you to resume automation.`);
+      if (mail.last_error) words.push(`Last problem: ${String(mail.last_error).replace(/[.]+$/, "")}.`);
+      if (mail.domain_check === false) words.push("Company domains cannot be checked on this computer (publicsuffixlist is not installed), so their emails only propose.");
+      mailHost.appendChild(element("p", "profile-help", words.join(" ")));
+      const buttons = element("div", "automation-action-buttons");
+      if (mail.backfill_found) {
+        mailHost.appendChild(element("p", "automation-backfill", `Found ${plural(mail.backfill_found, "update", "updates")} from the last 60 days. Each is under Waiting for you; approve them one by one, or all at once.`));
+        const all = element("button", "secondary-button", "Approve all");
+        all.type = "button";
+        all.id = "automation-backfill-approve";
+        all.addEventListener("click", async () => {
+          all.disabled = true;
+          mailStatus.textContent = "Approving…";
+          try {
+            const result = await automationWrite(() => api("/api/v1/automation/application-mail/backfill/approve-all", { method: "POST" }));
+            await reload();
+            mailStatus.textContent = `Approved ${plural(result.approved, "update", "updates")}${result.superseded ? `; ${plural(result.superseded, "was", "were")} left as ${result.superseded === 1 ? "it was" : "they were"}, because the application changed since` : ""}.`;
+          } catch (error) {
+            if (error.message !== "Authentication required") mailStatus.textContent = error.message;
+          } finally {
+            all.disabled = false;
+          }
+        });
+        buttons.appendChild(all);
+      }
+      if (on) {
+        const check = element("button", "secondary-button", "Check now");
+        check.type = "button";
+        check.id = "automation-application-mail-check";
+        check.addEventListener("click", async () => {
+          check.disabled = true;
+          mailStatus.textContent = "Checking Gmail…";
+          try {
+            const result = await api("/api/v1/automation/application-mail/check", { method: "POST" });
+            const read = Number(result.detail?.read) || 0;
+            await reload();
+            mailStatus.textContent = result.state === "ok" || result.state === "message_errors"
+              ? `Checked: ${plural(read, "new email", "new emails")} read.`
+              : `Could not check Gmail (${String(result.state).replaceAll("_", " ")}).`;
+          } catch (error) {
+            if (error.message !== "Authentication required") mailStatus.textContent = error.message;
+          } finally {
+            check.disabled = false;
+          }
+        });
+        buttons.appendChild(check);
+      }
+      if (buttons.childElementCount) mailHost.appendChild(buttons);
+    }
+
+    // Trusted company mail domains: only the student's yes lets mail from one act.
+    const [domainBlock, domainHeading] = block("automation-domains", "Trusted company mail domains", "automation-domains-heading");
+    domainBlock.appendChild(element("p", "profile-help", "Mail from a company's own domain can update that company's applications only after you trust the domain here. Suggestions come from your applications' job links, your outreach records, and emails Gmail vouched for."));
+    const domainHost = element("div");
+    const domainStatus = liveStatus();
+    domainBlock.append(domainHost, domainStatus);
+    let domains = null;
+    function paintDomains() {
+      domainHost.replaceChildren();
+      if (domains === null) {
+        domainHost.appendChild(element("p", "empty-inline", "Loading…"));
+        return;
+      }
+      if (domains.error) {
+        domainHost.appendChild(element("p", "form-error", `Company domains could not be loaded: ${domains.error}`));
+        return;
+      }
+      if (!domains.items.length) {
+        domainHost.appendChild(element("p", "empty-inline", "No company domains to review yet."));
+        return;
+      }
+      const list = element("ul", "automation-actions automation-domain-list");
+      domains.items.forEach((item) => {
+        const row = element("li", "automation-action automation-domain");
+        row.dataset.domainId = item.id;
+        const trusted = item.status === "trusted";
+        row.appendChild(element("p", "automation-action-summary", trusted ? `Trusted: mail from @${item.domain} for ${item.company}` : `Trust mail from @${item.domain} for ${item.company}?`));
+        if (item.evidence) row.appendChild(element("p", "automation-evidence", item.evidence));
+        const buttons = element("div", "automation-action-buttons");
+        if (!trusted) {
+          const trust = element("button", "secondary-button", "Trust");
+          trust.type = "button";
+          trust.setAttribute("aria-label", `Trust mail from ${item.domain} for ${item.company}`);
+          trust.addEventListener("click", () => decideDomain(item, "trust"));
+          buttons.appendChild(trust);
+        }
+        const dismiss = element("button", trusted ? "secondary-button" : "danger-button", trusted ? "Stop trusting" : "Dismiss");
+        dismiss.type = "button";
+        dismiss.setAttribute("aria-label", `${trusted ? "Stop trusting" : "Dismiss"} ${item.domain} for ${item.company}`);
+        dismiss.addEventListener("click", () => decideDomain(item, "dismiss"));
+        buttons.appendChild(dismiss);
+        row.appendChild(buttons);
+        list.appendChild(row);
+      });
+      domainHost.appendChild(list);
+    }
+    async function loadDomains() {
+      try {
+        const answer = await api("/api/v1/automation/employer-domains");
+        domains = { items: Array.isArray(answer.items) ? answer.items : [], error: "" };
+      } catch (error) {
+        if (error.message === "Authentication required") return;
+        domains = { items: [], error: error.message };
+      }
+      paintDomains();
+    }
+    async function decideDomain(item, verb) {
+      domainHost.querySelectorAll("button").forEach((button) => { button.disabled = true; });
+      domainStatus.textContent = "Saving…";
+      try {
+        await api(`/api/v1/automation/employer-domains/${encodeURIComponent(item.id)}/${verb}`, { method: "POST" });
+        domainStatus.textContent = verb === "trust"
+          ? `Trusted @${item.domain} for ${item.company}. Its emails can now update ${item.company} applications on their own.`
+          : `${item.status === "trusted" ? "Stopped trusting" : "Dismissed"} @${item.domain} for ${item.company}.`;
+      } catch (error) {
+        if (error.message === "Authentication required") return;
+        domainStatus.textContent = error.message;
+      }
+      await loadDomains();
+      domainHeading.focus();
+    }
+    // Shown, and asked for, only while the job-email switch is not off: trusting a domain matters only to it.
+    const mailOn = () => Boolean(mailState && mailState.mode && mailState.mode !== "off");
+    function syncDomains() {
+      domainBlock.hidden = !mailOn();
+      if (mailOn()) loadDomains();
+    }
+    paintDomains();
+    syncDomains();
+    automationStatus.onMail = (mail) => {
+      if (!section.isConnected) return;
+      const wasOn = mailOn();
+      mailState = mail;
+      paintMail();
+      if (wasOn !== mailOn()) syncDomains();
+    };
 
     // Every newer answer repaints this host by its id (applyAutomationStatus).
     const [healthBlock] = block("", "Health", "automation-health-heading");
@@ -6889,6 +7170,10 @@
       row.appendChild(element("p", "automation-action-summary", action.summary || "An automatic change"));
       const evidence = automationEvidence(action.evidence);
       if (evidence) row.appendChild(element("p", "automation-evidence", `Evidence: ${evidence}`));
+      const reasons = Array.isArray(action.evidence?.why_proposal) ? action.evidence.why_proposal.filter((reason) => typeof reason === "string" && reason) : [];
+      if (action.status === "proposed" && reasons.length) {
+        row.appendChild(element("p", "automation-reasons", `Waiting for you because ${reasons.join("; ")}.`));
+      }
       const meta = metaParts.filter(Boolean).join(" · ");
       if (meta) row.appendChild(element("p", "automation-meta", meta));
       return row;
@@ -6901,6 +7186,11 @@
 
     function decisionMessage(verb, action, result, body) {
       const summary = String(action.summary || "the change").replace(/[.!?]+$/, "");
+      if (verb === "approve" && action.action_type === "application.capture_proposal") return "Opened a capture draft. Check the fields and confirm it to add the role.";
+      if (verb === "approve" && body?.subject_id && body.subject_id !== action.subject_id) {
+        const chosen = applicationList.find((application) => application.id === body.subject_id);
+        return `Approved for ${chosen ? `${chosen.company} (${chosen.title})` : "the application you chose"} instead: ${summary}.`;
+      }
       if (verb === "approve") return `Approved: ${summary}.`;
       if (verb === "reject") return result.feature_paused ? automationBreakerMessage(action.feature, result.breaker_notice) : `Rejected: ${summary}. Nothing was changed.`;
       if (verb === "undo") return withUndoNote(result.feature_paused ? automationBreakerMessage(action.feature, result.breaker_notice) : `Undone: ${summary}.`, result);
@@ -6921,6 +7211,13 @@
         }));
         decided.add(`${listKey}:${action.id}`);
         message = decisionMessage(verb, action, result, body);
+        const captureId = verb === "approve" ? result?.after?._result?.capture_id : null;
+        if (captureId) {
+          openCaptureDraft(captureId, async () => {
+            announce("Added to your tracker.");
+            await reload();
+          }).catch((error) => { if (error.message !== "Authentication required") entry.status.textContent = error.message; });
+        }
       } catch (error) {
         if (error.message === "Authentication required") {
           deciding.delete(action.id);
@@ -6968,9 +7265,27 @@
         ordered(key, items).forEach((action) => {
           if (key === "waiting") {
             const row = actionRow(action, reasoning(action));
+            let picker = null;
+            if (action.subject_kind === "application" && applicationList.length) {
+              // Approve applies to the application chosen here: the proposed one, unless the student picks another.
+              const candidates = Array.isArray(action.evidence?.match?.candidates) ? action.evidence.match.candidates : [action.subject_id];
+              picker = applicationPicker(applicationList, candidates, action.subject_id);
+              picker.classList.add("automation-picker");
+              picker.setAttribute("aria-label", `Application for: ${action.summary || "this change"}`);
+              row.appendChild(picker);
+            }
             const buttons = element("div", "automation-action-buttons");
+            const capture = action.action_type === "application.capture_proposal";
             buttons.append(
-              actionButton("Approve", "secondary-button", () => decide("waiting", action, "approve")),
+              actionButton(capture ? "Capture this role" : "Approve", "secondary-button", () => {
+                const chosen = picker?.value;
+                if (picker && !chosen) {
+                  entry.status.textContent = "Choose the application first.";
+                  picker.focus();
+                  return;
+                }
+                decide("waiting", action, "approve", chosen && chosen !== action.subject_id ? { subject_id: chosen } : null);
+              }),
               actionButton("Reject", "danger-button", () => decide("waiting", action, "reject")),
             );
             row.appendChild(buttons);
@@ -6996,7 +7311,7 @@
             const [text, tone] = AUTOMATION_STATUS_CHIPS[action.status] || [humanizeKey(action.status), ""];
             const buttons = element("div", "automation-action-buttons");
             buttons.appendChild(chip(text, tone));
-            if (action.status === "applied" && UNDOABLE_ACTION_TYPES.has(action.action_type)) {
+            if (action.status === "applied" && canUndo(action)) {
               const undo = actionButton("Undo", "secondary-button", () => decide("recent", action, "undo"));
               undo.setAttribute("aria-label", `Undo: ${action.summary || "this automatic change"}`);
               buttons.appendChild(undo);
@@ -7027,9 +7342,12 @@
         // answer, and has already been shown (applyAutomationRead drops it).
         applyAutomationRead(read, nextOverview);
         notices = Array.isArray(nextOverview.notices) ? nextOverview.notices : [];
+        mailState = nextOverview.application_mail || mailState;
         AUTOMATION_LIST_KEYS.forEach((key, index) => { data[key] = automationList(nextLists[index]); });
         paintNotices();
         paintLists();
+        paintMail();
+        syncDomains();
         return true;
       } catch (error) {
         if (ticket === reloads && error.message !== "Authentication required") showError(error.message);
@@ -7039,7 +7357,8 @@
 
     paintNotices();
     paintLists();
-    section.append(healthBlock, noticeBlock, lists.waiting.wrap, lists.shadow.wrap, lists.recent.wrap);
+    paintMail();
+    section.append(mailBlock, healthBlock, noticeBlock, lists.waiting.wrap, lists.shadow.wrap, lists.recent.wrap, domainBlock);
     return section;
   }
 
@@ -7099,12 +7418,14 @@
     automatic.forEach((hosts, actionId) => {
       const action = actions.get(actionId);
       if (!action) return;
+      const domain = typeof action.evidence?.sender_domain === "string" ? action.evidence.sender_domain : "";
+      const from = domain ? `Automatic: from an email by ${domain}` : "Automatic";
       hosts.forEach((host) => {
         const author = host.querySelector(".timeline-author");
-        if (author) author.textContent = approvedByStudent(action) ? "Automatic, approved by you" : "Automatic";
+        if (author) author.textContent = approvedByStudent(action) ? `${from}, approved by you` : from;
       });
       const [host] = hosts;
-      if (!host.isConnected || action.status !== "applied" || !UNDOABLE_ACTION_TYPES.has(action.action_type)) return;
+      if (!host.isConnected || action.status !== "applied" || !canUndo(action)) return;
       const undo = element("button", "text-button timeline-undo", "Undo");
       undo.type = "button";
       undo.setAttribute("aria-label", `Undo this automatic change: ${action.summary || action.action_type}`);
@@ -7147,7 +7468,7 @@
     signOutRow.appendChild(signOut);
     els.results.appendChild(signOutRow);
     els.results.appendChild(tagSection(renderProfileEditor(profilePayload), "profile", "Career profile"));
-    els.results.appendChild(tagSection(automationSection(automation, automationActions), "automation", "Automation"));
+    els.results.appendChild(tagSection(automationSection(automation, automationActions, applications), "automation", "Automation"));
 
     const resumeSection = element("section", "profile-card resume-section");
     resumeSection.appendChild(element("p", "eyebrow", "Private documents"));
@@ -7951,6 +8272,7 @@
     your_deadline: "Your deadline",
     program_deadline: "Program deadline",
     outreach_deadline: "Outreach deadline",
+    email_deadline: "Deadline from an email",
     task: "Task",
     application_follow_up: "Follow-up",
     outreach_follow_up: "Outreach follow-up",
@@ -8004,7 +8326,7 @@
         setView("programs");
       }];
     }
-    if (item.kind === "task" || item.kind === "application_follow_up") {
+    if (item.kind === "task" || item.kind === "application_follow_up" || item.kind === "email_deadline") {
       return ["Open application", `Open the application for ${item.company}`, () => {
         state.applicationFocus = item.application_id;
         setView("applications");
@@ -8028,7 +8350,9 @@
     body.appendChild(element("p", "urgent-kind", URGENT_KIND_LABELS[item.kind] || item.kind));
     body.appendChild(element("h4", "", headline));
     if (context) body.appendChild(element("p", "urgent-context", context));
-    body.appendChild(element("p", "urgent-source", item.source_name ? `${item.date_source} · ${item.source_name}` : item.date_source));
+    // Where the date came from, and for a task the app added, where the task came from.
+    const origin = item.kind === "task" && item.origin_label ? ` · ${item.origin_label}` : "";
+    body.appendChild(element("p", "urgent-source", `${item.source_name ? `${item.date_source} · ${item.source_name}` : item.date_source}${origin}`));
     // A researched date can carry its own caveat ("estimated", "rolling");
     // show it so an estimate never reads as a confirmed deadline.
     if (item.date_note) body.appendChild(element("p", "urgent-source urgent-date-note", item.date_note));
@@ -8051,7 +8375,7 @@
   const URGENT_TABS = [
     { id: "all", label: "Everything dated", test: () => true },
     ...URGENT_GROUPS.map(([key, label, test]) => ({ id: key, label, group: "When", tone: key === "overdue" ? "is-alert" : key === "today" ? "is-soon" : "", test })),
-    { id: "deadlines", label: "Deadlines", group: "Kind", test: (item) => ["posting_deadline", "your_deadline", "program_deadline", "outreach_deadline"].includes(item.kind) },
+    { id: "deadlines", label: "Deadlines", group: "Kind", test: (item) => ["posting_deadline", "your_deadline", "program_deadline", "outreach_deadline", "email_deadline"].includes(item.kind) },
     { id: "follow-ups", label: "Follow-ups", group: "Kind", test: (item) => ["application_follow_up", "outreach_follow_up", "outreach_revisit"].includes(item.kind) },
     { id: "tasks", label: "Tasks", group: "Kind", test: (item) => item.kind === "task" },
   ];
