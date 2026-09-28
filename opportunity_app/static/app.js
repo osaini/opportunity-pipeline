@@ -5225,7 +5225,9 @@
         const note = thankYou.note || "cancelled";
         // Closed after a try Gmail never confirmed: it may have gone, and the note says so.
         const what = /Sent folder/.test(note) ? "stopped" : "not sent";
-        section.appendChild(element("p", "outreach-thank-you-meta", `Thank-you to ${who} ${what}: ${note}`));
+        // The reply failed one of the rules for sending on its own; the note already says it was not thanked.
+        const text = /^Not thanked automatically:/.test(note) ? `${note}.` : `Thank-you to ${who} ${what}: ${note}`;
+        section.appendChild(element("p", "outreach-thank-you-meta", text));
       }
     } else {
       return null;

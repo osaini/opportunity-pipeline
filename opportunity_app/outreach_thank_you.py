@@ -18,6 +18,13 @@ automation is not paused, and Jev inbox suggestions are on):
   From:/Sent: header (which marks no line), no line that is not the
   student's own first email or follow-up (outreach_inbox.written_between_quotes).
   Anything there leaves it to the student.
+- It passes every rule in ``thank_you_blockers``, read from its own headers as
+  Gmail delivered them: in the student's thread or from the address they
+  wrote to (R1), found within a day of arriving (R2), addressed to the
+  student in To or Cc (R3), written by a person, not a system (R4), not sent,
+  relayed, signed or linked by a job system (R5), from one person rather than
+  a shared inbox or the company's own name (R6), and vouched for by Gmail's
+  sender check (R7). A reply whose headers are not on record fails them.
 - Both readings say declined: the keyword rules and Jev, each kept on the
   reply_logged event (inbox_classifiers.read_reply), Jev at least
   MIN_CONFIDENCE sure. With Jev off, paused, or unavailable at capture there is
@@ -65,7 +72,9 @@ weekday morning. Just before it goes (``gate``), every check fails closed:
 Gmail is read again (fresh_look); a new message from them (arrived after the
 decline, or logged after the thank-you was planned), or anything the student
 sent them, cancels it; a paused, moved-on, or bounced company cancels it; Jev
-inbox suggestions turned off holds it; a second model
+inbox suggestions turned off holds it; a reply that no longer passes
+thank_you_blockers cancels it, with the rule on the card ("Not thanked
+automatically: sent by an automated system"); a second model
 (outreach_review.review_choice, a different family when one is set up) must
 pass it, or it is held with the reason on the card and a notice (in fixed
 words, never the reviewer's); then the records are read again, and last the
@@ -79,6 +88,7 @@ automatic send), or send a held one anyway.
 
 from __future__ import annotations
 
+import email
 import hashlib
 import json
 import logging
@@ -86,6 +96,9 @@ import re
 import sqlite3
 import threading
 from datetime import datetime, time, timedelta, timezone
+from email import policy
+from email.message import EmailMessage
+from email.utils import getaddresses
 from typing import Any, Callable, Iterable
 from urllib.parse import quote
 
@@ -93,6 +106,7 @@ import httpx
 
 from . import automation
 from .inbox_classifiers import JEV_NOT_ASKED, MIN_CONFIDENCE
+from .mail_trust import READ_CATEGORIES
 from .outreach import (
     REPLY_PATTERNS,
     OutreachNotFoundError,
@@ -818,6 +832,185 @@ def _whole_text_kept(item: dict[str, Any]) -> bool:
     return data.get("source") != "gmail" or ("full_text" in data and len(str(data["full_text"])) <= FULL_TEXT_LIMIT)
 
 
+# --- Who a thank-you may go to: rules R1 to R7 ------------------------------------------------------
+#
+# A reply both readings call a decline can still be the wrong one to thank: a help desk's automatic
+# acknowledgement, a job system's rejection sent in a recruiter's name, a blast the student was Bcc'd on.
+# Each rule reads the reply's own headers as Gmail delivered them (outreach_inbox.KEPT_HEADERS, kept on
+# its reply_logged event); a reply whose headers are not on record, or cannot be read, fails them all.
+
+# The card's words for each rule, after NOT_THANKED. Plain and short.
+BLOCKER_WORDS = {
+    "headers": "its email headers are not on record",
+    "R1": "it was not in your thread or from the address you wrote to",
+    "R2": "it was found more than a day after it arrived",
+    "R3": "it was not addressed to you",
+    "R4": "sent by an automated system",
+    "R5": "sent through a job application system",
+    "R6": "sent from a shared inbox, not a person",
+    "R7": "Gmail could not confirm who sent it",
+}
+NOT_THANKED = "Not thanked automatically"
+# A reply the app found later than this after it arrived (a re-check surfacing old mail) is never thanked.
+DETECTION_LIMIT = timedelta(hours=24)
+# Links in the body that mark job-system mail (mail_trust's shipped list).
+_LINK_CATEGORIES = ("ats", "assessment")
+_BULK_PRECEDENCE = {"bulk", "list", "junk"}
+# Any of these, with any value, says a system sent it.
+_SYSTEM_HEADERS = ("X-Auto-Response-Suppress", "List-Unsubscribe", "List-Id")
+_HEADER_NAME = re.compile(r"[A-Za-z0-9-]+")
+_BARE_LINE = re.compile(r"\r(?![\n \t])|\r?\n(?![ \t])")
+_DKIM_DOMAIN = re.compile(r"(?:^|;)\s*d\s*=\s*([^;\s]+)", re.IGNORECASE)
+
+
+def blocker_note(blockers: list[str]) -> str:
+    """The card's note for a reply not thanked on its own: the first rule it failed, in plain words."""
+    return f"{NOT_THANKED}: {BLOCKER_WORDS.get(blockers[0], 'it did not pass the checks')}"
+
+
+def blocker_reason(blockers: list[str]) -> str:
+    """The debug log's words: the note, and every rule that failed by name."""
+    return f"{blocker_note(blockers)} (failed: {', '.join(blockers)})"
+
+
+def reply_headers(data: dict[str, Any]) -> EmailMessage | None:
+    """A reply's kept headers as a message with no body, or None when they are not on record or cannot be read."""
+    pairs = data.get("headers")
+    if not isinstance(pairs, list) or not pairs:
+        return None
+    lines = []
+    for pair in pairs:
+        if not (isinstance(pair, list) and len(pair) == 2 and all(isinstance(item, str) for item in pair)):
+            return None
+        name, value = pair
+        # A line that does not continue its header would be read as another header.
+        if not _HEADER_NAME.fullmatch(name) or _BARE_LINE.search(value):
+            return None
+        lines.append(f"{name}: {value}")
+    try:
+        return email.message_from_string("\n".join(lines) + "\n\n", policy=policy.default)
+    except Exception:  # noqa: BLE001 - headers that cannot be read fail closed
+        return None
+
+
+def _addresses(message: EmailMessage, *names: str) -> set[str]:
+    values = [str(value) for name in names for value in (message.get_all(name) or [])]
+    return {address.strip().casefold() for _name, address in getaddresses(values) if "@" in address}
+
+
+def _job_system(host: str, categories: tuple[str, ...] = READ_CATEGORIES) -> bool:
+    """A host, or its registrable domain, on mail_trust's shipped list of job systems."""
+    from .mail_trust import listed, registrable_domain
+
+    text = str(host or "").strip().strip("<>").rsplit("@", 1)[-1].rstrip(".").casefold()
+    return bool(text) and bool(listed(text, categories) or listed(registrable_domain(text) or "", categories))
+
+
+def _company_inbox(local: str, target: dict[str, Any]) -> bool:
+    """A local part that is the company's own name or slug ("acme", "acme-robotics", "acme.careers")."""
+    from pipeline import identity_tokens, normalized
+
+    from .mail_trust import registrable_domain
+    from .outreach import website_domain
+    from .outreach_contacts import GENERIC_LOCAL_PARTS, ROLE_INBOX_LOCAL_PARTS
+
+    company = str(target.get("company") or "")
+    tokens = identity_tokens(company)
+    words = [word for word in re.split(r"[^a-z0-9]+", local.casefold()) if word]
+    if not words:
+        return False
+    names = {"".join(word for word in normalized(company).split() if word in tokens), "".join(normalized(company).split())}
+    site = registrable_domain(website_domain(str(target.get("website") or ""))) or ""
+    names.add(site.split(".", 1)[0])
+    compact = "".join(words)
+    if compact in (names | tokens) - {""}:
+        return True
+    roles = GENERIC_LOCAL_PARTS | ROLE_INBOX_LOCAL_PARTS
+    return any(word in tokens for word in words) and all(word in tokens or word in roles for word in words)
+
+
+def thank_you_blockers(conn: sqlite3.Connection, target: dict[str, Any], reply: dict[str, Any]) -> list[str]:
+    """The rules a reply fails for a thank-you to go on its own: [] when it passes them all.
+
+    ``reply`` is one of ``replies()``. Every rule must hold:
+
+    - R1: in the student's thread (the Gmail thread of an email the app sent
+      them), or from the contact's own address or the Cc. A reply matched only
+      by the company's domain fails.
+    - R2: logged at most DETECTION_LIMIT after Gmail received it.
+    - R3: the student's sending address (PIPELINE_OUTREACH_ACCOUNT) is in To
+      or Cc; Bcc only, or undisclosed recipients, fails.
+    - R4: written by a person: Auto-Submitted absent or "no"; no
+      X-Auto-Response-Suppress, List-Unsubscribe or List-Id; no Precedence
+      bulk, list or junk; not an automatic reply (outreach_inbox.is_automatic).
+    - R5: not job-system mail: the From, Return-Path and every DKIM d= domain,
+      by registrable domain, are on none of mail_trust's READ_CATEGORIES
+      lists, and no link in it is to an ats or assessment host.
+    - R6: from one person: not a shared, role or no-reply inbox
+      (outreach_contacts.is_shared_inbox), and not the company's own name.
+    - R7: Gmail itself vouches for the sender (mail_trust.authenticate).
+
+    "headers" when its headers are not on record: every rule that reads them
+    fails closed.
+    """
+    # TODO(megrim): once the reply-capture rework merges, use its heard_back() here: add a blocker when "a
+    # possible reply is waiting", and read R1 from its match, via in ("thread", "address") with reason in
+    # ("thread", "written_to"), instead of recomputing it.
+    from .mail_trust import authenticate
+    from .outreach_contacts import is_shared_inbox
+    from .outreach_drafting import sender_account
+    from .outreach_forms import ALWAYS_AUTOMATIC
+    from .outreach_inbox import is_automatic
+
+    data = reply["data"]
+    sender = str(data.get("from") or "").strip().casefold()
+    failed: list[str] = []
+    # R1: the thread, or the exact address.
+    threads = {
+        str(_data(row["detail"]).get("thread_id") or "") for row in conn.execute(
+            "SELECT detail FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=?",
+            (target["id"], target["user_id"], SENT_EVENT),
+        ).fetchall()
+    } - {""}
+    written_to = {str(target.get(field) or "").strip().casefold() for field in ("contact_email", "contact_cc")} - {""}
+    if not ((data.get("thread_id") and str(data["thread_id"]) in threads) or (sender and sender in written_to)):
+        failed.append("R1")
+    # R2: found within a day of arriving.
+    detected, arrived = _parse(reply.get("created_at")), _parse(data.get("received_at"))
+    if detected is None or arrived is None or detected - arrived > DETECTION_LIMIT:
+        failed.append("R2")
+    message = reply_headers(data)
+    hosts = data.get("link_hosts")
+    if message is None or not isinstance(hosts, list):
+        return [*failed, "headers"]
+    # R3: to the student, in To or Cc.
+    student = sender_account().strip().casefold()
+    if not student or student not in _addresses(message, "To", "Cc"):
+        failed.append("R3")
+    # R4: a person wrote it.
+    auto = str(message.get("Auto-Submitted", "") or "").split(";", 1)[0].strip().casefold()
+    precedence = str(message.get("Precedence", "") or "").strip().casefold()
+    if (auto not in ("", "no") or any(message.get_all(name) is not None for name in _SYSTEM_HEADERS)
+            or precedence in _BULK_PRECEDENCE or is_automatic(message) or ALWAYS_AUTOMATIC.search(str(reply.get("text") or ""))):
+        failed.append("R4")
+    # R5: no job system sent it, relayed it, signed it, or is linked in it.
+    return_paths = [address for _name, address in getaddresses([str(value) for value in message.get_all("Return-Path") or []])
+                    if "@" in address]
+    signers = [found for value in message.get_all("DKIM-Signature") or [] for found in _DKIM_DOMAIN.findall(" ".join(str(value).split()))]
+    if (not return_paths or any(_job_system(host) for host in (sender, *return_paths, *signers))
+            or any(_job_system(str(host), _LINK_CATEGORIES) for host in hosts)):
+        failed.append("R5")
+    # R6: one person's own address.
+    local = sender.split("@", 1)[0]
+    if not local or is_shared_inbox(sender) or _NO_REPLY.match(local) or _company_inbox(local, target):
+        failed.append("R6")
+    # R7: Gmail vouches for who sent it.
+    verdict = authenticate(message)
+    if not verdict.ok or verdict.from_address != sender:
+        failed.append("R7")
+    return failed
+
+
 def eligibility(conn: sqlite3.Connection, target: dict[str, Any], user_id: str) -> tuple[dict[str, Any] | None, str]:
     """(the decline to thank them for, "") when the company qualifies, else (None, why not)."""
     if target["status"] not in ELIGIBLE_STATUSES:
@@ -835,6 +1028,9 @@ def eligibility(conn: sqlite3.Connection, target: dict[str, Any], user_id: str) 
         return None, "the latest reply has no thread or message id to answer in"
     if "full_text" not in data or len(str(data["full_text"])) > FULL_TEXT_LIMIT:
         return None, "the whole of their reply is not on record, so nothing typed between its quoted lines can be ruled out"
+    blockers = thank_you_blockers(conn, target, reply)
+    if blockers:
+        return None, blocker_reason(blockers)
     sender = str(data["from"]).casefold()
     if _NO_REPLY.match(sender.split("@", 1)[0]):
         return None, "their reply came from an address that takes no replies"
@@ -1301,6 +1497,13 @@ def problem_now(
     return None
 
 
+def blockers_now(conn: sqlite3.Connection, target_id: str, user_id: str, thank_you: dict[str, Any]) -> list[str]:
+    """thank_you_blockers for the reply a planned thank-you answers, read from the records now."""
+    target = get_target(conn, target_id, user_id=user_id)
+    decline = next((item for item in replies(conn, target_id, user_id) if item["data"].get("gmail_id") == thank_you["reply_gmail_id"]), None)
+    return ["headers"] if decline is None else thank_you_blockers(conn, target, decline)
+
+
 def hand_over_stop(conn: sqlite3.Connection, row: Any, now: datetime) -> tuple[str, str] | None:
     """What stops a thank-you at the hand-over, inside its transaction after the pause guard; None to hand it over.
 
@@ -1352,6 +1555,12 @@ def gate(
     if automation.requirement(conn, user_id, FEATURE):
         _finish(conn, row, "held", JEV_OFF)
         return "held"
+    # The reply's own rules (R1 to R7), read again: the student's address or the company may have changed.
+    blockers = blockers_now(conn, target_id, user_id, thank_you)
+    if blockers:
+        LOGGER.debug("Thank-you for outreach target %s not sent: %s", target_id, blocker_reason(blockers))
+        _finish(conn, row, "cancelled", blocker_note(blockers))
+        return "cancelled"
     try:
         name, run = (reviewer or (lambda: review_runner("thank_you")))()
         verdict = review(conn, target_id, user_id=user_id, runner=run, reviewer=name)

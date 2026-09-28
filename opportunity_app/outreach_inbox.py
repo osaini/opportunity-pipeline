@@ -424,8 +424,64 @@ def _remember(conn: sqlite3.Connection, user_id: str, gmail_id: str, target_id: 
 
 # What a reply_logged event keeps about where a Gmail reply came from, beside its text and readings.
 # full_text is the whole message, quoted lines and anything typed between them included (a thank-you
-# after a decline reads it: outreach_thank_you); reply_to is its Reply-To address, when it has one.
-REPLY_META = {"thread_id", "message_id", "subject", "from_name", "full_text", "reply_to"}
+# after a decline reads it: outreach_thank_you); reply_to is its Reply-To address, when it has one;
+# headers are the KEPT_HEADERS as they arrived, and link_hosts the host of every link in it (hosts only),
+# which outreach_thank_you.thank_you_blockers checks before anything is sent on its own.
+REPLY_META = {"thread_id", "message_id", "subject", "from_name", "full_text", "reply_to", "headers", "link_hosts"}
+# The headers kept with a Gmail reply: who it was to, whether a person or a system sent it, and Gmail's own sender
+# check. Headers only, never more of the body than full_text already keeps.
+KEPT_HEADERS = (
+    "From", "To", "Cc", "Subject", "Return-Path", "Auto-Submitted", "X-Auto-Response-Suppress", "List-Unsubscribe",
+    "List-Id", "Precedence", "X-Autoreply", "X-Autorespond", "DKIM-Signature", "Authentication-Results",
+)
+# A message with more of these, or a longer one, is not kept at all, so a check that reads them fails closed.
+KEPT_HEADER_LIMIT = 4_000
+KEPT_HEADER_COUNT = 40
+LINK_HOST_LIMIT = 50
+_LINK = re.compile(r"""https?://[^\s<>"'`]+""", re.IGNORECASE)
+
+
+def kept_headers(message: EmailMessage) -> list[list[str]] | None:
+    """The KEPT_HEADERS of a message, in the order they arrived and as they arrived ([name, raw value] pairs).
+
+    None when there are too many or one is too long to keep whole: a check
+    that reads them then finds none, and fails closed.
+    """
+    wanted = {name.casefold() for name in KEPT_HEADERS}
+    kept: list[list[str]] = []
+    for name, value in message.raw_items():
+        if str(name).casefold() not in wanted:
+            continue
+        text = str(value).encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+        if len(text) > KEPT_HEADER_LIMIT or len(kept) >= KEPT_HEADER_COUNT:
+            return None
+        kept.append([str(name), text])
+    return kept
+
+
+def link_hosts(message: EmailMessage) -> list[str]:
+    """The host of every link in a message's text parts, plain and HTML (href too), quoted parts included. Hosts only."""
+    from .mail_trust import host_of
+
+    hosts: list[str] = []
+    for part in message.walk():
+        if part.is_multipart() or part.get_content_maintype() != "text":
+            continue
+        try:
+            content = html.unescape(str(part.get_content()))
+        except (LookupError, ValueError):
+            continue
+        for url in _LINK.findall(content):
+            host = host_of(url.rstrip(".,;:!?)]}'\""))
+            if host and host not in hosts:
+                hosts.append(host)
+                if len(hosts) >= LINK_HOST_LIMIT:
+                    return hosts
+    return hosts
+
+
+def _meta_value(value: Any) -> Any:
+    return value if isinstance(value, list) or value is None else str(value)
 
 
 def _record_reply(
@@ -446,7 +502,7 @@ def _record_reply(
         suggestion = {**suggestion, "status": "replied"}
     data = {
         "source": "gmail", "gmail_id": gmail_id, "from": sender, "received_at": received, "readings": readings,
-        **{key: str(value) for key, value in (meta or {}).items() if key in REPLY_META},
+        **{key: _meta_value(value) for key, value in (meta or {}).items() if key in REPLY_META},
     }
     with conn:
         if not _remember(conn, user_id, gmail_id, target["id"], "reply", sender, received):
@@ -566,6 +622,8 @@ def capture_replies(
                             "reply_to": ", ".join(
                                 address.casefold() for _name, address in getaddresses([str(message.get("Reply-To", ""))]) if address
                             )[:300],
+                            "headers": kept_headers(message),
+                            "link_hosts": link_hosts(message),
                         },
                     )
                     if captured is None:

@@ -50,6 +50,33 @@ GENERIC_LOCAL_PARTS = {
     "press", "media", "inquiries", "enquiries", "office", "general", "recruiting", "talent",
     "internships", "people", "founders", "partners", "business",
 }
+# Beyond GENERIC_LOCAL_PARTS (which contact finding ranks and may write to), the local parts of a team,
+# role or system inbox: never one person. is_shared_inbox reads both; contact finding is unchanged.
+ROLE_INBOX_LOCAL_PARTS = frozenset({
+    "recruitment", "recruiting", "recruiter", "recruiters", "careers", "career", "jobs", "job", "hiring", "hiring-team",
+    "hiringteam", "talent", "talentacquisition", "acquisition", "ta", "hr", "people", "peopleops", "ops", "internships",
+    "internship", "interns", "intern", "university", "universityrecruiting", "campus", "campusrecruiting", "early",
+    "earlycareers", "apply", "applications", "application", "candidates", "candidate", "noreply", "no-reply", "donotreply",
+    "do-not-reply", "notifications", "notification", "notify", "mailer", "support", "help", "helpdesk", "info", "hello",
+    "contact", "team", "office", "admin", "service", "services",
+})
+
+
+def is_shared_inbox(address: str) -> bool:
+    """Whether an address is a shared, role or system inbox (info@, careers@, university-recruiting@), not one person's.
+
+    The whole local part (before any +tag) is one of GENERIC_LOCAL_PARTS or
+    ROLE_INBOX_LOCAL_PARTS, or every word of it is ("hiring-team",
+    "campus.recruiting").
+    """
+    local = str(address or "").rsplit("@", 1)[0].strip().casefold().split("+", 1)[0]
+    roles = GENERIC_LOCAL_PARTS | ROLE_INBOX_LOCAL_PARTS
+    if local in roles:
+        return True
+    words = [word for word in re.split(r"[._-]+", local) if word]
+    return bool(words) and all(word in roles for word in words)
+
+
 ROLE_PATTERN = re.compile(
     r"\b(co-?founder|founder|ceo|cto|coo|chief|president|vp|vice president|head of|director|"
     r"lead|manager|principal|engineer|recruit\w*|talent|hiring|people operations|hr)\b",

@@ -221,6 +221,17 @@ def test_cancel_on_a_card_a_check_already_stopped_says_so(owner_page, base_url, 
         "The thank-you to Dana had already stopped: They wrote again, so the thank-you was not sent. Read their reply.")
 
 
+def test_a_reply_that_fails_a_rule_says_so_plainly_on_the_card(owner_page, base_url, live_server):
+    target = declined_company(owner_page, base_url, live_server)
+    # The check before sending found the reply was sent by a system (outreach_thank_you.thank_you_blockers).
+    seed_thank_you(live_server, target["id"], state="cancelled", send_state="cancelled",
+                   note="Not thanked automatically: sent by an automated system")
+    open_outreach(owner_page, "closed")
+    box = thank_you_box(owner_page)
+    expect(box).to_have_text("Not thanked automatically: sent by an automated system.")
+    expect(box.get_by_role("button")).to_have_count(0)
+
+
 def test_the_history_names_each_step(owner_page, base_url, live_server):
     target = declined_company(owner_page, base_url, live_server)
     seed_thank_you(live_server, target["id"], state="sent", send_state="sent")

@@ -386,6 +386,17 @@ themselves (rule 3). The details:
     a thread where anyone there said more than no, or an answer typed into
     the quoted email is left for them too, so some plain declines will still
     be theirs to answer.
+  - It also reads the reply's own email headers, and leaves it for them unless
+    all of these hold: it is in the thread of their email or from the address
+    they wrote to (not just someone at the company), it was found within a day
+    of arriving, it was addressed to them in To or Cc (so check that
+    `PIPELINE_OUTREACH_ACCOUNT` is their address; a Bcc'd blast never counts),
+    a person wrote it (no auto-reply or mailing-list headers), no job system
+    sent, relayed, signed or linked it, it came from one person rather than a
+    shared inbox (careers@, info@, the company's own name), and Gmail's own
+    sender check passed. These are read again just before it goes; one that
+    no longer passes is not sent, and the card says why in plain words ("Not
+    thanked automatically: sent by an automated system").
   - A decline that arrives before 5 PM on a weekday in the recipient's time
     zone is answered after a normal delay the same day; otherwise the next
     weekday morning. There is no shadow period: the switch under Profile →
