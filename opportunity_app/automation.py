@@ -770,7 +770,10 @@ class ApplicationTask:
         return {"task_id": row["id"], "title": row["title"], "due_at": row["due_at"]}
 
     def ledger(self, after: dict[str, Any]) -> dict[str, Any]:
-        """The task's link (an assessment login, a scheduling page) stays on the task; the ledger keeps its host."""
+        """The task's link (an assessment login, a scheduling page) stays on the task; the ledger keeps its host.
+
+        That holds for a proposal too: perform() keeps the link in automation_held, and approve() adds it back.
+        """
         task = after.get("task")
         if not isinstance(task, dict) or not task.get("link"):
             return after
@@ -982,15 +985,17 @@ def perform(
             target = _effective(handler, before, after, timestamp)
             if target == before:
                 return None
-            # A proposal keeps all of ``after``, since approving it applies it; nothing else needs more than _kept.
-            recorded_after: dict[str, Any] = dict(after)
+            # The ledger keeps only _kept, a proposal included. What approving it needs beyond that
+            # (a task's link) waits in automation_held until the student decides (_with_held).
+            recorded_after: dict[str, Any] = _kept(handler, dict(after))
+            held = None
             applied_at = None
             decided_by = ""
             if not auto:
                 status = "proposed"
+                held = dict(after) if recorded_after != after else None
             elif current_mode == "shadow":
                 status = "shadow"
-                recorded_after = _kept(handler, dict(after))
             else:
                 result = handler.apply(conn, user_id, subject_id, after, source=f"automation:{action_id}", timestamp=timestamp)
                 status, applied_at, decided_by = "applied", timestamp, "system"
@@ -1005,6 +1010,11 @@ def perform(
                 "idempotency_key": idempotency_key, "created_at": timestamp, "applied_at": applied_at,
                 "decided_by": decided_by,
             })
+            if held is not None:
+                conn.execute(
+                    "INSERT INTO automation_held(action_id, user_id, after_json, created_at) VALUES(?, ?, ?, ?)",
+                    (action_id, user_id, _dumps(held), timestamp),
+                )
             return _decode(_row(conn, action_id, user_id))
     except Exception as exc:
         # Two passes raced on the same evidence: the other one's row stands.
@@ -1017,6 +1027,19 @@ def perform(
 
 
 CORRECTABLE_SUBJECTS = ("application",)
+
+
+def _with_held(conn: sqlite3.Connection, action: dict[str, Any]) -> dict[str, Any]:
+    """The proposal with the full ``after`` it was proposed with (the ledger's copy lacks a task's link)."""
+    row = conn.execute(
+        "SELECT after_json FROM automation_held WHERE action_id=? AND user_id=?", (action["id"], action["user_id"]),
+    ).fetchone()
+    return {**action, "after": json.loads(row["after_json"])} if row is not None else action
+
+
+def release_held(conn: sqlite3.Connection, action_id: str, user_id: str) -> None:
+    """Forget what a proposal held apart from the ledger, now that it is decided. Inside the caller's transaction."""
+    conn.execute("DELETE FROM automation_held WHERE action_id=? AND user_id=?", (action_id, user_id))
 
 
 def approve(conn: sqlite3.Connection, action_id: str, user_id: str, *, subject_id: str | None = None) -> dict[str, Any]:
@@ -1032,8 +1055,9 @@ def approve(conn: sqlite3.Connection, action_id: str, user_id: str, *, subject_i
     timestamp = utc_now()
     superseded: Superseded | None = None
     with conn:
-        action = _decode(_claim(conn, action_id, user_id, "proposed", "Only a proposed action can be approved", timestamp))
+        action = _with_held(conn, _decode(_claim(conn, action_id, user_id, "proposed", "Only a proposed action can be approved", timestamp)))
         handler = _handler(action["action_type"])
+        release_held(conn, action_id, user_id)
         if subject_id is not None and subject_id != action["subject_id"]:
             if action["subject_kind"] not in CORRECTABLE_SUBJECTS:
                 raise ValueError("This proposal is not about an application, so another one cannot be chosen for it")
@@ -1097,7 +1121,7 @@ def _corrected(
 
 def correction_refusal(conn: sqlite3.Connection, action_id: str, user_id: str, subject_id: str) -> str | None:
     """Why approving this proposal for ``subject_id`` would be refused, or None. Reads only; approve() checks again."""
-    action = _decode(_row(conn, action_id, user_id))
+    action = _with_held(conn, _decode(_row(conn, action_id, user_id)))
     if action["status"] != "proposed" or subject_id == action["subject_id"]:
         return None
     if action["subject_kind"] not in CORRECTABLE_SUBJECTS:
@@ -1152,6 +1176,7 @@ def reject(conn: sqlite3.Connection, action_id: str, user_id: str) -> dict[str, 
             "UPDATE automation_actions SET status='rejected', after_json=?, decided_at=?, decided_by='student' WHERE id=? AND user_id=? AND status='proposed'",
             (_dumps(ledger_after(str(row["action_type"]), json.loads(row["after_json"] or "{}"))), timestamp, action_id, user_id),
         )
+        release_held(conn, action_id, user_id)
         breaker = _trip_breaker(conn, user_id, row["feature"], action_id, timestamp)
     return {**_decode(_row(conn, action_id, user_id)), "feature_paused": breaker is not None, "breaker_notice": breaker}
 

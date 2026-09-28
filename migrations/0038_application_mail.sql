@@ -107,3 +107,19 @@ CREATE TABLE IF NOT EXISTS employer_domains (
     confirmed_at TEXT,
     UNIQUE(user_id, company_key, domain)
 );
+
+-- What a proposal needs in order to be applied but the ledger never keeps:
+-- a task's assessment or scheduling link, token and all, which PLAN 1.6 allows
+-- only on the task itself. automation_actions.after_json keeps the link's host
+-- (automation.ApplicationTask.ledger) for a proposal as for everything else;
+-- approve() applies the full after held here, and every decision (approve,
+-- reject, superseded, set aside) deletes the row, as does purge_excerpts for
+-- a proposal left waiting past the retention window. Not in the account
+-- export, like the Gmail tokens: once approved, the link is exported as the
+-- task's own.
+CREATE TABLE IF NOT EXISTS automation_held (
+    action_id TEXT PRIMARY KEY REFERENCES automation_actions(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    after_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);

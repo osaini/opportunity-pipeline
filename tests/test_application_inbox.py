@@ -25,7 +25,8 @@ from opportunity_app import STATIC_DIR, application_inbox, automation, mail_trus
 from opportunity_app.actions import record_intent, update_application
 from opportunity_app.api import create_app
 from opportunity_app.application_inbox import match_application, parse_message
-from opportunity_app.connections import classify_monitored_message, decide_monitored_event
+from opportunity_app.connections import classify_monitored_message, decide_monitored_event, monitored_event
+from opportunity_app.operations import export_account
 from opportunity_app.schema import connect_product, utc_now
 from opportunity_app.urgent import urgent_queue
 
@@ -925,7 +926,7 @@ class MigrationTests(unittest.TestCase):
                 schema.ensure_product_schema(conn)
                 for table, column in (("application_tasks", "link"), ("monitored_events", "decided_by")):
                     self.assertTrue(schema._has_column(conn, table, column), f"{table}.{column}")
-                for table in ("application_mail_sync", "application_mail_messages", "email_deadlines", "employer_domains"):
+                for table in ("application_mail_sync", "application_mail_messages", "email_deadlines", "employer_domains", "automation_held"):
                     self.assertIsNotNone(conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone(), table)
                 self.assertIsNotNone(conn.execute("SELECT 1 FROM schema_migrations WHERE name='0038_application_mail.sql'").fetchone())
             finally:
@@ -965,6 +966,27 @@ class ApiTests(MailCase):
         self.assertEqual(dismissed.json()["status"], "dismissed")
         self.assertEqual(self.client.get("/api/v1/automation/employer-domains", headers=AUTH).json()["items"], [], "a dismissal is not suggested again")
         self.assertEqual(self.client.post("/api/v1/automation/employer-domains/nope/trust", headers=AUTH).status_code, 404)
+
+    def test_a_waiting_task_proposal_shows_its_link_host_only_and_the_export_leaves_the_link_out(self):
+        self.started()
+        link = "https://www.hackerrank.com/test/api555/login?token=api555-secret"
+        self.deliver("m-158", job_mail(
+            sender="HackerRank <support@hackerrankforwork.com>", subject="Acme Robotics has invited you to take a test", headers="",
+            body=f"Acme Robotics invited you to the Mechanical Engineering Intern Coding Test. Please complete it by {spelled(in_days(30))}.\n\n{link}",
+        ))
+        self.pass_once()
+        listed = self.client.get("/api/v1/automation/actions?status=proposed", headers=AUTH)
+        [task] = [item for item in listed.json()["items"] if item["action_type"] == "application.task"]
+        self.assertEqual(task["after"]["task"]["link_host"], "www.hackerrank.com")
+        self.assertNotIn("api555", listed.text)
+        exported = self.client.get("/api/v1/account/export", headers=AUTH)
+        self.assertEqual(exported.status_code, 200)
+        self.assertNotIn("api555", exported.text)
+        approved = self.client.post(f"/api/v1/automation/actions/{task['id']}/approve", headers=AUTH)
+        self.assertEqual(approved.status_code, 200, approved.text)
+        self.assertNotIn("api555", approved.text)
+        [row] = self.client.get(f"/api/v1/applications/{self.acme}", headers=AUTH).json()["tasks"]
+        self.assertEqual(row["link"], link, "the task itself has the whole link")
 
     def test_a_shared_job_host_is_never_suggested(self):
         # Both seeded postings live on example.com, and reserved domains belong to no employer.
@@ -1052,6 +1074,14 @@ class ConfirmationWordingTests(unittest.TestCase):
         "We review every application and invite the strongest candidates to interview.",
         "We will invite selected candidates for an interview.",
         "If your background is a match, a recruiter will reach out to schedule a call.",
+        # A request or an invitation that waits on being chosen, or is made conditional after it.
+        "If you are selected for the next round, we would like to schedule an interview with you.",
+        "If selected, please book a time using the link below.",
+        "We will invite you to interview if your application is selected.",
+        "Should you be selected, we will contact you to schedule an interview.",
+        "Once we have reviewed your application, we will be in touch to schedule an interview.",
+        "If there is no match, we will not be moving forward with your application.",
+        "In the event that the position has been filled, we will let you know.",
     )
 
     def test_a_confirmation_that_mentions_the_process_stays_a_confirmation(self):
@@ -1081,9 +1111,50 @@ class ConfirmationWordingTests(unittest.TestCase):
 
     def test_offering_an_interview_is_never_an_offer(self):
         for body in ("Hi Sam, we are happy to offer you an interview slot next week for the Controls Intern role",
-                     "We are pleased to offer you a phone screen for the role."):
+                     "We are pleased to offer you a phone screen for the role.",
+                     "We are pleased to offer you the opportunity to interview for the Software Intern position."):
             with self.subTest(body=body):
                 self.assertNotEqual(classify_monitored_message("", body)[0], "offer")
+        self.assertEqual(classify_monitored_message("", "We are glad to offer you feedback on your application.")[0], "unknown")
+
+    # Real news whose sentence also holds a word the first hedge read as a condition: a modal in another
+    # clause, "once again", May the month, or a condition that sets up a request rather than a selection.
+    # Each was read right before the hedge and unknown (no proposal, no card) with it.
+    REAL_NEWS = {
+        "Unfortunately, we have decided to proceed with other candidates for this role.": "rejected",
+        "After careful consideration, we have decided to go with other candidates.": "rejected",
+        "The team has chosen to move ahead with other candidates.": "rejected",
+        "We have identified other candidates whose qualifications better match our needs.": "rejected",
+        "We know this may be disappointing, but we will not be moving forward with your application.": "rejected",
+        "Once again, we regret to inform you that the role has been filled.": "rejected",
+        "Thank you for interviewing with us on May 5; we regret to inform you that we will not be moving forward.": "rejected",
+        "Thank you for applying in May. We regret to inform you that we will not be moving forward.": "rejected",
+        "If you're available, we would like to schedule an interview with you this week.": "interview",
+        "If you\u2019re available, we\u2019d like to schedule an interview with you this week.": "interview",
+        "Following your application in May, we would like to invite you to interview for the Controls Intern role.": "interview",
+        "Congratulations! We will invite you to an onsite interview next week to meet the team.": "interview",
+        "Of all the qualified applicants, we'd like to invite you to interview.": "interview",
+        "If you are still interested, please let us know your availability for a call next week.": "scheduling",
+        "If it works for you, please schedule a time with the team using the link below.": "scheduling",
+        "If still interested, let us know your availability for a call next week.": "scheduling",
+        "You may now book a time with the team using the link below.": "scheduling",
+        "You have until October 5 to complete the online assessment.": "assessment",
+        "We are pleased to offer you the opportunity to join Acme Robotics as a Software Engineering Intern this summer.": "offer",
+        "We are pleased to offer the Software Intern position to you.": "offer",
+    }
+
+    def test_real_news_is_not_hedged_away(self):
+        for body, label in self.REAL_NEWS.items():
+            with self.subTest(body=body):
+                self.assertEqual(classify_monitored_message("An update", body)[0], label)
+                self.assertEqual(application_inbox.classify_rules("An update", body, "us.greenhouse-mail.io", [])[0], label)
+
+    def test_an_offer_always_gets_its_card(self):
+        # C2: an offer gets a notice and a card, so the wording the old rule caught still counts.
+        for body in ("We are pleased to offer you the opportunity to join Acme Robotics as a Software Engineering Intern this summer.",
+                     "We are pleased to offer the Software Intern position to you."):
+            with self.subTest(body=body):
+                self.assertEqual(classify_monitored_message("Your offer from Acme Robotics", body), ("offer", 0.95))
 
 
 class StatedDateTests(unittest.TestCase):
@@ -1154,6 +1225,30 @@ class ReviewFixMailTests(MailCase):
         self.assertEqual(self.stage(self.acme)[0], "applied", "never rejected or moved to interview")
         self.assertEqual({(action["action_type"], action["after"].get("stage")) for action in self.actions()}, {("application.stage", "applied")})
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM application_tasks WHERE application_id=?", (self.acme,)).fetchone()[0], 0)
+
+    def test_real_news_worded_around_a_hedge_word_gets_its_card_and_its_change(self):
+        self.started()
+        self.deliver("m-h1", job_mail(
+            subject="An update on your Acme Robotics application",
+            body="Hi Sam,\n\nThank you for your interest in the Mechanical Engineering Intern role at Acme Robotics. "
+                 "We know this may be disappointing, but we have decided to proceed with other candidates.",
+        ), minutes_ago=9)
+        self.deliver("m-h2", orbit_mail(
+            "Next steps with Orbit Systems",
+            "Hi Sam,\n\nFollowing your application in May, if you're available, we would like to schedule an interview with you this week.",
+        ), minutes_ago=8)
+        self.deliver("m-h3", job_mail(
+            sender="Nimbus Aero <notifications@ashbyhq.com>", subject="Welcome to Nimbus Aero",
+            body="Hi Sam,\n\nWe are pleased to offer you the opportunity to join Nimbus Aero as a Flight Software Intern this summer.",
+        ), minutes_ago=7)
+        self.pass_once()
+        events = dict(self.conn.execute("SELECT external_id, event_type FROM monitored_events WHERE external_id LIKE 'gmail:m-h%'").fetchall())
+        self.assertEqual(events, {"gmail:m-h1": "rejected", "gmail:m-h2": "interview", "gmail:m-h3": "offer"}, "each gets its card")
+        changes = {(action["evidence"]["gmail_id"], action["action_type"], action["after"].get("stage") or action["after"].get("task", {}).get("title"))
+                   for action in self.actions()}
+        self.assertLessEqual({("m-h1", "application.stage", "rejected"), ("m-h2", "application.stage", "interview"),
+                              ("m-h2", "application.task", "Schedule interview")}, changes)
+        self.assertEqual([notice["title"] for notice in automation.list_notices(self.conn, USER)], ["Nimbus Aero may have sent an offer"])
 
     def test_rejecting_every_proposal_from_one_email_counts_once_for_the_breaker(self):
         self.started()
@@ -1326,22 +1421,59 @@ class ReviewFixMailTests(MailCase):
             self.assertEqual(action["status"], "proposed", action_type)
             self.assertIn(application_inbox.TWO_READINGS, action["evidence"]["why_proposal"])
 
-    def test_a_proposed_task_drops_its_link_from_the_ledger_once_decided(self):
-        self.started()
-        link = "https://www.hackerrank.com/test/xyz789/login?token=another-secret"
-        self.deliver("m-152", job_mail(
+    def proposed_test_task(self, gmail_id, token):
+        """An unverified HackerRank invitation, so its task is only proposed; returns (task action, link)."""
+        link = f"https://www.hackerrank.com/test/{token}/login?token={token}-secret"
+        self.deliver(gmail_id, job_mail(
             sender="HackerRank <support@hackerrankforwork.com>", subject="Acme Robotics has invited you to take a test", headers="",
             body=f"Acme Robotics invited you to the Mechanical Engineering Intern Coding Test. Please complete it by {spelled(in_days(30))}.\n\n{link}",
         ))
         self.pass_once()
-        [task] = self.actions(action_type="application.task")
+        [task] = [action for action in self.actions(action_type="application.task") if action["evidence"]["gmail_id"] == gmail_id]
         self.assertEqual(task["status"], "proposed", "the sender was not verified")
+        return task, link
+
+    def assert_nowhere_but_the_task(self, token):
+        """PLAN 1.6: the link is on the task itself and nowhere else, not even while its proposal waits."""
+        for row in self.conn.execute("SELECT * FROM automation_actions").fetchall():
+            self.assertNotIn(token, json.dumps(dict(row)))
+        self.assertNotIn(token, json.dumps(export_account(self.conn, user_id=USER)["automation_actions"]))
+
+    def test_a_proposed_task_keeps_its_link_off_the_ledger_while_it_waits_and_once_decided(self):
+        self.started()
+        task, link = self.proposed_test_task("m-152", "xyz789")
+        self.assert_nowhere_but_the_task("xyz789")
+        self.assertEqual(task["after"]["task"]["link_host"], "www.hackerrank.com", "the ledger names the host")
         automation.approve(self.conn, task["id"], USER)
-        self.assertEqual(self.conn.execute("SELECT link FROM application_tasks WHERE application_id=?", (self.acme,)).fetchone()[0], link)
+        self.assertEqual(self.conn.execute("SELECT link FROM application_tasks WHERE application_id=?", (self.acme,)).fetchone()[0], link,
+                         "approving puts the whole link on the task")
         [deadline] = self.actions(action_type="application.deadline")
         automation.reject(self.conn, deadline["id"], USER)
-        for row in self.conn.execute("SELECT * FROM automation_actions").fetchall():
-            self.assertNotIn("another-secret", json.dumps(dict(row)))
+        self.assert_nowhere_but_the_task("xyz789")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM automation_held").fetchone()[0], 0, "nothing held once decided")
+
+    def test_every_other_decision_forgets_the_held_link(self):
+        self.started()
+        rejected, _ = self.proposed_test_task("m-154", "rej111")
+        automation.reject(self.conn, rejected["id"], USER)
+        ignored, _ = self.proposed_test_task("m-155", "ign222")
+        event = monitored_event(self.conn, application_inbox._event_id(self.conn, USER, "m-155"), user_id=USER)
+        application_inbox.decide_event(self.conn, event, "ignore", None, user_id=USER)
+        self.assertEqual(self.actions(id=ignored["id"])[0]["status"], "expired")
+        waiting, _ = self.proposed_test_task("m-156", "old333")
+        with self.conn:
+            self.conn.execute("UPDATE automation_actions SET created_at=? WHERE id=?", ((now_utc() - timedelta(days=400)).isoformat(), waiting["id"]))
+        application_inbox.purge_excerpts(self.conn)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM automation_held").fetchone()[0], 0)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM application_tasks WHERE application_id=?", (self.acme,)).fetchone()[0], 0)
+
+    def test_a_corrected_approval_puts_the_held_link_on_the_chosen_application(self):
+        self.started()
+        task, link = self.proposed_test_task("m-157", "cor444")
+        approved = automation.approve(self.conn, task["id"], USER, subject_id=self.orbit)
+        self.assertEqual((approved["status"], approved["subject_id"]), ("applied", self.orbit))
+        self.assertEqual(self.conn.execute("SELECT link FROM application_tasks WHERE application_id=?", (self.orbit,)).fetchone()[0], link)
+        self.assert_nowhere_but_the_task("cor444")
 
     def test_an_approved_deadline_from_an_unverified_sender_says_so_in_urgent(self):
         self.started()

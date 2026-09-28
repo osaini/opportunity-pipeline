@@ -1796,6 +1796,7 @@ def _expire(conn: sqlite3.Connection, user_id: str, action: dict[str, Any], note
             """,
             (note, automation._dumps(kept), timestamp, action["id"], user_id),
         )
+        automation.release_held(conn, str(action["id"]), user_id)
 
 
 MOVABLE = ("application.task", "application.deadline")
@@ -1976,18 +1977,18 @@ def purge_excerpts(conn: sqlite3.Connection, *, now: datetime | None = None) -> 
     cutoff = (now - timedelta(days=evidence_days())).isoformat(timespec="microseconds")
     actions = events = 0
     with conn:
+        # A proposal still waiting after all this time no longer holds a task's link either.
+        conn.execute(
+            "DELETE FROM automation_held WHERE action_id IN (SELECT id FROM automation_actions WHERE feature=? AND created_at<?)",
+            (FEATURE, cutoff),
+        )
         for row in conn.execute(
-            "SELECT id, action_type, evidence_json, after_json FROM automation_actions WHERE feature=? AND created_at<?", (FEATURE, cutoff),
+            "SELECT id, evidence_json FROM automation_actions WHERE feature=? AND created_at<?", (FEATURE, cutoff),
         ).fetchall():
             try:
                 evidence = json.loads(row["evidence_json"] or "{}")
-                after = json.loads(row["after_json"] or "{}")
             except (TypeError, ValueError):
                 continue
-            # A proposal still waiting after all this time keeps a task's link no longer either.
-            kept = automation.ledger_after(str(row["action_type"]), after) if isinstance(after, dict) else after
-            if kept != after:
-                conn.execute("UPDATE automation_actions SET after_json=? WHERE id=?", (automation._dumps(kept), row["id"]))
             if not isinstance(evidence, dict) or not evidence.get("excerpt"):
                 continue
             evidence["excerpt"] = ""
