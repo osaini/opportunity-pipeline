@@ -1314,3 +1314,24 @@ class MigrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MonotonicClockTests(unittest.TestCase):
+    """utc_now never repeats a stamp, even on a clock that ticks only every 15 ms."""
+
+    def test_a_coarse_clock_still_gives_strictly_later_stamps(self):
+        from datetime import datetime as real_datetime, timezone as real_timezone
+        from unittest import mock
+
+        frozen = real_datetime(2026, 9, 28, 12, 0, tzinfo=real_timezone.utc)
+
+        class CoarseClock(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return frozen
+
+        with mock.patch.object(schema, "datetime", CoarseClock), mock.patch.object(schema, "_LAST_NOW", real_datetime.min.replace(tzinfo=real_timezone.utc)):
+            stamps = [utc_now() for _ in range(50)]
+        self.assertEqual(stamps, sorted(stamps))
+        self.assertEqual(len(set(stamps)), 50)
+        self.assertEqual(stamps[0], frozen.isoformat(timespec="microseconds"))
