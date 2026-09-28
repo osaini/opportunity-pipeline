@@ -227,11 +227,14 @@
   function renderDocuments() {
     documentSelect.replaceChildren();
     fileFieldSelect.replaceChildren();
-    const allowedDocs = (applyContext.documents || []).filter((item) => !item.opportunity_id || item.opportunity_id === applyContext.application.opportunity_id);
+    // The résumé variant the tracker picked for this role starts selected (lib/documents.js).
+    const choices = globalThis.ApplyModeDocuments.documentChoices(applyContext.documents, applyContext.application.opportunity_id);
+    const allowedDocs = choices.map((choice) => choice.item);
     const fileFields = scanResult.fields.filter((item) => item.type === "file" && !item.prohibited);
-    for (const item of allowedDocs) {
-      const option = node("option", `${item.filename} (${item.document_type})`);
+    for (const { item, selected } of choices) {
+      const option = node("option", globalThis.ApplyModeDocuments.documentLabel(item));
       option.value = item.artifact_id;
+      option.selected = selected;
       documentSelect.append(option);
     }
     for (const item of fileFields) {

@@ -307,6 +307,24 @@ tests.unsupported_custom_widgets_are_visible_but_never_mutated = () => {
   assert.equal(ext.document.controls.find((item) => item.id === "custom-location").value, "");
 };
 
+tests.picked_resume_variant_is_preselected_without_reordering = () => {
+  const { documentChoices, documentLabel } = require(path.join(ROOT, "apps", "extension", "lib", "documents.js"));
+  const documents = [
+    { artifact_id: "resume-general", document_type: "resume", opportunity_id: null, filename: "general.pdf", preferred: false },
+    { artifact_id: "resume-hardware", document_type: "resume", opportunity_id: null, filename: "hardware.pdf", variant_label: "Hardware", preferred: true },
+    { artifact_id: "cover-other", document_type: "cover_letter", opportunity_id: "opp-other", filename: "other.md" },
+    { artifact_id: "cover-this", document_type: "cover_letter", opportunity_id: "opp-1", filename: "this.md" },
+  ];
+  const choices = documentChoices(documents, "opp-1");
+  assert.deepEqual(choices.map((choice) => choice.item.artifact_id), ["resume-general", "resume-hardware", "cover-this"],
+    "the tracker's order stays, and another role's documents are left out");
+  assert.deepEqual(choices.map((choice) => choice.selected), [false, true, false], "the picked variant starts selected");
+  assert.equal(documentLabel(documents[1]), "hardware.pdf (resume, Hardware variant, picked for this role)");
+  const none = documentChoices(documents.map((item) => ({ ...item, preferred: false })), "opp-1");
+  assert.deepEqual(none.map((choice) => choice.selected), [true, false, false], "with no pick, the first stays selected as before");
+  assert.deepEqual(documentChoices(undefined, "opp-1"), []);
+};
+
 let failed = 0;
 for (const [name, fn] of Object.entries(tests)) {
   try {
