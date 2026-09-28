@@ -1,9 +1,14 @@
 """Jev for two inbox judgments, with the keyword rules as the fallback.
 
-Both are suggestions the student confirms before anything changes:
+Both are suggestions the student confirms before anything changes, with one
+exception: when the student turns on "Update applications from job emails"
+(application_inbox.py), an application email may be acted on without asking,
+and a Jev answer counts toward that only when it agrees with the rules.
 
-- the status a pasted reply to a cold email points to (outreach.log_reply);
-- the kind of an application email a connector delivers (connections.ingest_message).
+- the status a reply to a cold email points to (outreach.log_reply, and the
+  replies the inbox check reads from Gmail);
+- the kind of an application email a connector delivers
+  (connections.ingest_message) or the app reads from Gmail (application_inbox).
 
 Jev answers only when all of these hold; otherwise the rules answer, and the
 result names which one did:
@@ -37,7 +42,9 @@ from .schema import utc_now
 from .typesafe_decisions import DecisionClient, TypeSafeClient, TypeSafeError
 
 SETTING_KEY = "jev_inbox_suggestions"
-QUESTION_SET_VERSION = "inbox-classifiers-v1"
+# v2 added the assessment and scheduling kinds (application mail). The
+# 2026-09-25 blind test below was run on v1, which had neither.
+QUESTION_SET_VERSION = "inbox-classifiers-v2"
 MIN_CONFIDENCE = 0.5
 # The student is waiting on a pasted reply, so a slow TypeSafe gives way to the rules quickly.
 TIMEOUT_SECONDS = 8.0
@@ -75,12 +82,17 @@ EMAIL_QUESTION = {
     "instructions": (
         "This email arrived in a student's inbox. Which kind of message is it, with respect to the student's job or "
         "internship applications? If the email fits more than one kind, use the first that applies in this order: "
-        "offer, rejected, interview, application_confirmation, deadline, recruiter_reply, unknown."
+        "offer, rejected, interview, assessment, scheduling, application_confirmation, deadline, recruiter_reply, unknown."
     ),
     "criteria": {
         "offer": "It extends a job or internship offer to the student.",
         "rejected": "It says the student's application will not move forward.",
-        "interview": "It invites the student to interview or asks for their availability to interview.",
+        "interview": "It invites the student to a live interview or asks for their availability to interview.",
+        "assessment": (
+            "It asks the student to complete an online assessment, coding challenge, take-home exercise, or recorded "
+            "video interview on a testing platform."
+        ),
+        "scheduling": "It asks the student to pick or book a time, for example through a scheduling link, and is none of the above.",
         "application_confirmation": "It confirms that the student's application was received.",
         "deadline": "It asks the student to complete something by a date (for example an assessment or a form), and is none of the above.",
         "recruiter_reply": "A personal message from a recruiter or someone on a hiring team that is none of the above.",
@@ -219,5 +231,8 @@ def status(conn: sqlite3.Connection, factory: ClientFactory, *, user_id: str) ->
         "available": bool(client is not None and client.configured),
         "enabled": enabled(conn, user_id=user_id),
         "min_confidence": MIN_CONFIDENCE,
-        "sends": "The text of replies you paste and of application emails a connector delivers.",
+        "sends": (
+            "The text of replies to your outreach, pasted or read from Gmail, and of application emails a connector "
+            "delivers or the app reads from Gmail when Update applications from job emails is on."
+        ),
     }

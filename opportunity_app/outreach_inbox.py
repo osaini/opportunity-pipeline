@@ -426,15 +426,21 @@ STEP_ERRORS = {
     "not_connected": "Gmail is not connected",
     "unreachable": "Gmail could not be reached",
     "throttled": "Gmail asked the app to slow down",
+    "message_errors": "Some job emails could not be read and were set aside",
+    "database_busy": "The database was busy, so the job-email check stopped; it tries again next time",
 }
 RECONNECT_ERROR = "Gmail needs reconnecting"
 CONNECTION = "inbox.connection"
 _ADDRESS = re.compile(r"""[^\s@<>"'(),;:]+@[^\s@<>"'(),;:]+""")
 
 
+_QUERY = re.compile(r"(https?://[^\s?#]+)[?#][^\s]*")
+
+
 def _step_error(exc: BaseException) -> str:
-    """An exception as a health error: its type and message, with any address taken out."""
-    return f"{type(exc).__name__}: {_ADDRESS.sub('[address]', str(exc))[:200]}"
+    """An exception as a health error: its type and message, with any address and any URL's query string taken out."""
+    words = _ADDRESS.sub("[address]", _QUERY.sub(lambda found: found.group(1), str(exc)))
+    return f"{type(exc).__name__}: {words[:200]}"
 
 
 def _record(
@@ -573,10 +579,11 @@ class InboxWatcher:
                 _save_gmail_health(conn, user_id)
 
     def _check(self, conn: sqlite3.Connection, user_id: str) -> None:
+        from . import application_inbox  # imported here: it imports this module
         from .outreach_gmail_sends import capture_gmail_sends  # imported here: it imports the scheduler
 
         factory = self._client_factory
-        steps: tuple[tuple[str, Callable[[], dict[str, Any]]], ...] = (
+        steps: list[tuple[str, Callable[[], dict[str, Any]]]] = [
             # A draft sent from Gmail first, so its bounce and replies are watched in the same pass.
             ("inbox.sends", lambda: capture_gmail_sends(conn, user_id=user_id, client_factory=factory)),
             ("inbox.deliveries", lambda: check_deliveries(conn, user_id=user_id, client_factory=factory)),
@@ -584,19 +591,39 @@ class InboxWatcher:
                 conn, user_id=user_id, client_factory=factory,
                 decisions=self._decisions_for(conn, user_id), on_reply=self._on_reply,
             )),
-        )
+        ]
+        # Job-system mail after the replies, so a reply outreach owns is never read as one.
+        # Only when the student turned it on (or into shadow); off, its cursor is forgotten.
+        try:
+            switch = automation.mode(conn, user_id, application_inbox.FEATURE)
+        except Exception:  # noqa: BLE001 - the other steps still run
+            _discard_open_transaction(conn)
+            LOGGER.warning("Could not read the application mail switch", exc_info=True)
+            # Not knowing is not "off": the cursor is left alone, and the next pass asks again.
+            switch = None
+        if switch not in (None, "off"):
+            steps.append((application_inbox.HEALTH_COMPONENT, lambda: application_inbox.run_pass(
+                conn, user_id=user_id, client_factory=factory, decisions=self._decisions_for(conn, user_id),
+            )))
+        elif switch == "off":
+            application_inbox.note_off(conn, user_id)
         for component, step in steps:
             try:
-                state = str((step() or {}).get("state", "ok"))
+                outcome = step() or {}
+                state = str(outcome.get("state", "ok"))
             except Exception as exc:  # noqa: BLE001 - one step failing never stops the others
                 LOGGER.warning("Inbox step %s failed", component, exc_info=True)
                 _discard_open_transaction(conn)
                 _record(conn, user_id, component, ok=False, error=_step_error(exc))
             else:
-                if state == "ok":
-                    _record(conn, user_id, component, ok=True)
+                detail = outcome.get("detail") if isinstance(outcome.get("detail"), dict) else None
+                if outcome.get("skipped"):
+                    pass  # it ran less than its interval ago; its last outcome stands
+                elif state == "ok":
+                    _record(conn, user_id, component, ok=True, detail=detail)
                 else:
-                    _record(conn, user_id, component, ok=False, error=STEP_ERRORS.get(state, f"Gmail check stopped: {state}"))
+                    _record(conn, user_id, component, ok=False, error=STEP_ERRORS.get(state, f"Gmail check stopped: {state}"),
+                            detail=detail)
             _save_gmail_health(conn, user_id)
         # A 401 during the checks can leave the connection broken (or the student may have disconnected meanwhile).
         row = _connector(conn, user_id)

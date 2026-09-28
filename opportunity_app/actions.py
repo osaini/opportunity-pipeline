@@ -415,22 +415,28 @@ def _add_application_task_tx(
     origin_ref: str = "",
     source: str = "user",
     timestamp: str | None = None,
+    link: str = "",
 ) -> dict[str, Any]:
     """add_application_task's writes, inside a transaction the caller owns. ``due_at`` is already normalized.
 
     A ``source`` other than the student's own is recorded on the task_added event.
+    ``link`` is a page the task opens (an assessment or a scheduling page), shown
+    in the app only; anything but an http(s) URL is dropped.
     """
     if not title.strip():
         raise ValueError("Task title is required")
     task_id = f"task-{uuid4().hex}"
     timestamp = timestamp or utc_now()
+    link = str(link or "").strip()
+    if not link.lower().startswith(("https://", "http://")) or len(link) > 2_000:
+        link = ""
     conn.execute(
         """
         INSERT INTO application_tasks(
-            id, application_id, user_id, title, due_at, status, created_at, updated_at, origin, origin_ref
-        ) VALUES(?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)
+            id, application_id, user_id, title, due_at, status, created_at, updated_at, origin, origin_ref, link
+        ) VALUES(?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)
         """,
-        (task_id, application_id, user_id, title.strip(), due_at or None, timestamp, timestamp, origin, origin_ref),
+        (task_id, application_id, user_id, title.strip(), due_at or None, timestamp, timestamp, origin, origin_ref, link),
     )
     detail: dict[str, Any] = {"task_id": task_id, "title": title.strip()}
     if source != "user":

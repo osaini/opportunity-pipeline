@@ -1,0 +1,57 @@
+{
+  "_about": "Domains that job systems send application email from (opportunity_app/application_inbox.py). Shipped and non-personal: the same for every student. A message is read when its sender's domain, or the host of any link in it, is one of these or a subdomain of one. Being listed only decides what is read; what may be acted on is decided by the sender's authentication, and only ats and assessment senders can authorize an automatic change. job_boards are never senders worth reading: they are left out of employer-domain suggestions, because a job URL on them says nothing about whose domain it is. reserved are the documentation domains, which belong to no employer either.",
+  "ats": [
+    "greenhouse-mail.io",
+    "greenhouse.io",
+    "hire.lever.co",
+    "lever.co",
+    "ashbyhq.com",
+    "myworkday.com",
+    "myworkdayjobs.com",
+    "smartrecruiters.com",
+    "icims.com",
+    "workablemail.com"
+  ],
+  "assessment": [
+    "hackerrank.com",
+    "hackerrankforwork.com",
+    "codesignal.com",
+    "codility.com",
+    "hirevue.com"
+  ],
+  "scheduling": [
+    "calendly.com",
+    "goodtime.io",
+    "modernloop.io"
+  ],
+  "job_boards": [
+    "linkedin.com",
+    "indeed.com",
+    "glassdoor.com",
+    "joinhandshake.com",
+    "wellfound.com",
+    "ziprecruiter.com",
+    "simplyhired.com",
+    "monster.com",
+    "dice.com",
+    "builtin.com",
+    "usajobs.gov",
+    "adzuna.com",
+    "workable.com",
+    "jobvite.com",
+    "taleo.net",
+    "successfactors.com",
+    "bamboohr.com",
+    "breezy.hr",
+    "recruitee.com",
+    "applytojob.com",
+    "paylocity.com",
+    "ultipro.com",
+    "adp.com"
+  ],
+  "reserved": [
+    "example.com",
+    "example.org",
+    "example.net"
+  ]
+}

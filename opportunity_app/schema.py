@@ -278,6 +278,23 @@ def _apply_automation(conn: sqlite3.Connection, sql: str) -> None:
         )
 
 
+# Columns application mail needs on existing tables: the assessment or
+# scheduling link a task opens (shown in the app only), and who decided a
+# monitored email ('system' when automation acted on it).
+_APPLICATION_MAIL_COLUMNS = (
+    ("application_tasks", "link", "TEXT NOT NULL DEFAULT ''"),
+    ("monitored_events", "decided_by", "TEXT NOT NULL DEFAULT ''"),
+)
+
+
+def _apply_application_mail(conn: sqlite3.Connection, sql: str) -> None:
+    # Guarded like _apply_automation, so a crash before the marker is repaired by running it again.
+    for table, column, definition in _APPLICATION_MAIL_COLUMNS:
+        if not _has_column(conn, table, column):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    conn.executescript(sql)
+
+
 # Migrations whose SQL alone cannot express the change: parsing timestamps is
 # not portable across SQLite and PostgreSQL, so a Python step owns it. Adding a
 # column is not repeatable, so a step owns that too.
@@ -285,6 +302,7 @@ _MIGRATION_STEPS: dict[str, Callable[[Any, str], None]] = {
     "0020_posted_at_utc.sql": _apply_posted_at_utc,
     "0021_company_sort_keys.sql": _apply_company_sort_keys,
     "0037_automation.sql": _apply_automation,
+    "0038_application_mail.sql": _apply_application_mail,
 }
 
 

@@ -37,7 +37,9 @@ from pipeline import load_env_file
 from pipeline_core import MAX_PER_COMPANY, OpportunityFilters, OpportunityRepository
 
 from . import DEFAULT_PLATFORM_DB, DEFAULT_PROFILE, STATIC_DIR
+from . import application_inbox
 from . import automation as automation_core
+from . import mail_trust
 from .actions import (
     APPLICATION_STAGES,
     ApplicationNotFoundError,
@@ -520,6 +522,14 @@ class AutomationReviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     verdict: Literal["right", "wrong"]
+
+
+class AutomationApproveRequest(BaseModel):
+    """Optional: the application the student chose instead of the proposed one."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    subject_id: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class AutomationNoticesReadRequest(BaseModel):
@@ -1979,9 +1989,11 @@ def create_app(
         user_id: str = Depends(require_auth),
     ) -> dict[str, Any]:
         try:
-            return application_detail(conn, application_id, user_id=user_id)
+            detail = application_detail(conn, application_id, user_id=user_id)
         except ApplicationNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found") from exc
+        # The job emails linked to it (application_inbox), each with a link to its Gmail thread.
+        return {**detail, "emails": application_inbox.application_emails(conn, user_id, application_id)}
 
     @app.post("/api/v1/applications/{application_id}/contacts", status_code=status.HTTP_201_CREATED)
     def create_contact(
@@ -2223,15 +2235,23 @@ def create_app(
         return {
             "settings": automation_core.settings_payload(conn, user_id),
             "health": automation_core.health_summary(conn, user_id),
+            "application_mail": application_inbox.status(conn, user_id),
         }
 
     def automation_decision(decide: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         """Run a student's decision on one action and map what it refuses to an HTTP status."""
         try:
             return decide()
+        except ApplicationNotFoundError as exc:
+            # The application a student chose for a proposal is not theirs, or is gone.
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found") from exc
         except automation_core.Superseded as exc:
             # Recorded as superseded before this was raised; the message names what changed.
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        except automation_core.CorrectionRefused as exc:
+            # The application the student chose cannot take this change. Nothing was decided, so they
+            # can choose another (422, not 409: the action is still open).
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
         except LookupError as exc:
             if isinstance(exc, KeyError):
                 raise  # a bug, not a missing action
@@ -2268,6 +2288,9 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
         if payload.paused is not None or modes:
             automation_worker.wake()
+        if modes.get(application_inbox.FEATURE) == "off":
+            # Off forgets where reading stood, so turning it on again starts afresh.
+            application_inbox.note_off(conn, user_id)
         response = automation_view(conn, user_id)
         if applied["in_flight"] is not None:
             response["in_flight"] = applied["in_flight"]
@@ -2314,10 +2337,24 @@ def create_app(
     @app.post("/api/v1/automation/actions/{action_id}/approve")
     def approve_automation_action(
         action_id: str,
+        payload: AutomationApproveRequest | None = None,
         conn: sqlite3.Connection = Depends(writable_connection),
         user_id: str = Depends(require_auth),
     ) -> dict[str, Any]:
-        return automation_decision(lambda: automation_core.approve(conn, action_id, user_id))
+        # subject_id: the student picked another application than the one proposed (automation.approve records it).
+        subject_id = payload.subject_id if payload is not None else None
+
+        def approve() -> dict[str, Any]:
+            try:
+                return automation_core.approve(conn, action_id, user_id, subject_id=subject_id)
+            except automation_core.Superseded:
+                # Nothing is left to approve on its email card either, so it is settled before the 409.
+                application_inbox.after_superseded(conn, user_id, action_id)
+                raise
+
+        result = automation_decision(approve)
+        application_inbox.after_decision(conn, user_id, result)
+        return result
 
     @app.post("/api/v1/automation/actions/{action_id}/reject")
     def reject_automation_action(
@@ -2325,7 +2362,9 @@ def create_app(
         conn: sqlite3.Connection = Depends(writable_connection),
         user_id: str = Depends(require_auth),
     ) -> dict[str, Any]:
-        return automation_decision(lambda: automation_core.reject(conn, action_id, user_id))
+        result = automation_decision(lambda: automation_core.reject(conn, action_id, user_id))
+        application_inbox.after_decision(conn, user_id, result)
+        return result
 
     @app.post("/api/v1/automation/actions/{action_id}/review")
     def review_automation_action(
@@ -2336,6 +2375,76 @@ def create_app(
     ) -> dict[str, Any]:
         # The verdict is checked by the request model (422); a ValueError here is the wrong status (409).
         return automation_decision(lambda: automation_core.review(conn, action_id, user_id, payload.verdict))
+
+    # Company mail domains the student trusts for application mail (mail_trust.py).
+    @app.get("/api/v1/automation/employer-domains")
+    def get_employer_domains(
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        mail_trust.refresh_suggestions(conn, user_id)
+        items = mail_trust.list_domains(conn, user_id)
+        return {"items": items, "total": len(items), "domain_check": mail_trust.psl_available()}
+
+    def decide_employer_domain(conn: sqlite3.Connection, user_id: str, domain_id: str, decision: str) -> dict[str, Any]:
+        try:
+            return mail_trust.decide(conn, user_id, domain_id, decision)
+        except LookupError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such domain") from exc
+
+    @app.post("/api/v1/automation/employer-domains/{domain_id}/trust")
+    def trust_employer_domain(
+        domain_id: str,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        return decide_employer_domain(conn, user_id, domain_id, "trusted")
+
+    @app.post("/api/v1/automation/employer-domains/{domain_id}/untrust")
+    def untrust_employer_domain(
+        domain_id: str,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        # Back to a suggestion: its mail is still read, and only ever proposes.
+        return decide_employer_domain(conn, user_id, domain_id, "suggested")
+
+    @app.post("/api/v1/automation/employer-domains/{domain_id}/dismiss")
+    def dismiss_employer_domain(
+        domain_id: str,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        return decide_employer_domain(conn, user_id, domain_id, "dismissed")
+
+    # Update applications from job emails (application_inbox.py).
+    @app.get("/api/v1/automation/application-mail")
+    def get_application_mail(
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        return application_inbox.status(conn, user_id)
+
+    @app.post("/api/v1/automation/application-mail/check")
+    def check_application_mail(
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """Read job emails now instead of at the next pass. Does nothing while the switch is off; never raises for Gmail trouble."""
+        result = application_inbox.run_pass(
+            conn, user_id=user_id, client_factory=resolved_gmail_client_factory,
+            decisions=inbox_client_for(conn, resolved_inbox_client_factory, user_id=user_id), force=True,
+        )
+        return {**result, "status": application_inbox.status(conn, user_id)}
+
+    @app.post("/api/v1/automation/application-mail/backfill/approve-all")
+    def approve_application_mail_backfill(
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """Approve the updates found in the 60 days before the switch was on that waited only for that; the rest stay one by one."""
+        counts = application_inbox.approve_backfill(conn, user_id)
+        return {**counts, **automation_view(conn, user_id)}
 
     @app.post("/api/v1/automation/notices/read")
     def read_automation_notices(
@@ -3766,6 +3875,12 @@ def create_app(
             return decide_monitored_event(conn, event_id, payload.decision, payload.application_id, user_id=user_id)
         except (ConnectionNotFoundError, ApplicationNotFoundError) as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event or application not found") from exc
+        except automation_core.CorrectionRefused as exc:
+            # The application picked cannot take what the email says; nothing was decided, so pick another.
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        except automation_core.Superseded as exc:
+            # The application changed after the email's proposals were made: the card is settled, nothing applied.
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 

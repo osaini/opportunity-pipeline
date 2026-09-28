@@ -75,7 +75,8 @@ class SettingsTests(AutomationApiCase):
         response = self.get("/api/v1/automation")
         self.assertEqual(response.status_code, 200, response.text)
         payload = response.json()
-        self.assertEqual(set(payload), {"settings", "health", "notices"})
+        # application_mail: the job-email switch's own state (application_inbox.status), for its panel line.
+        self.assertEqual(set(payload), {"settings", "health", "notices", "application_mail"})
         self.assertEqual(payload["settings"]["paused"], False)
         feature = self.feature(payload, "auto_drafts")
         self.assertEqual(set(feature), {"key", "label", "description", "group", "risk", "modes", "mode", "shadow_since",
@@ -93,7 +94,7 @@ class SettingsTests(AutomationApiCase):
         response = self.put("/api/v1/automation/settings", {"modes": {"auto_drafts": "on", SHADOWED.key: "shadow"}})
         self.assertEqual(response.status_code, 200, response.text)
         payload = response.json()
-        self.assertEqual(set(payload), {"settings", "health"}, "in_flight is only reported for a pause")
+        self.assertEqual(set(payload), {"settings", "health", "application_mail"}, "in_flight is only reported for a pause")
         self.assertEqual(self.feature(payload, "auto_drafts")["mode"], "on")
         self.assertEqual(self.feature(payload, SHADOWED.key)["mode"], "shadow")
         self.assertTrue(self.feature(payload, SHADOWED.key)["shadow_since"])

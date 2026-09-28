@@ -1233,6 +1233,18 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 .automation-evidence { color: var(--ink-soft); font-style: italic; }
 .automation-action-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-top: 4px; }
 .automation-verdict { color: var(--accent-strong); font-weight: 700; }
+.automation-reasons { color: var(--ink-soft); }
+/* The application picker in Waiting for you, themed like every other select on the Profile page. */
+.automation-picker { max-width: 100%; min-height: var(--control-md); margin-top: 4px; padding: var(--space-3) var(--field-pad-x); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); color: var(--ink); font-size: 12px; font-weight: 400; }
+.automation-picker:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; border-color: var(--accent); }
+.automation-picker:disabled { opacity: 0.6; }
+.automation-backfill { margin: 0 0 var(--space-2); color: var(--ink); font-size: 12px; font-weight: 700; }
+.tracker-task-row { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 4px 8px; }
+.tracker-task-link, .tracker-email .text-button { min-height: 24px; color: var(--accent-strong); font-size: 11px; font-weight: 700; text-decoration: underline; }
+.tracker-email-list { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.tracker-email { display: grid; gap: 2px; color: var(--ink); font-size: 11px; }
+.tracker-email-subject { font-weight: 700; overflow-wrap: anywhere; }
+.tracker-email small { color: var(--ink-muted); font-size: 10px; }
 .timeline-list .timeline-who { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; }
 .timeline-list .timeline-author { color: var(--ink-soft); font-weight: 700; }
 .timeline-list .timeline-undo { min-height: 24px; color: var(--accent-strong); font-weight: 700; text-decoration: underline; }
