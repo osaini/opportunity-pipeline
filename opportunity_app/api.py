@@ -502,6 +502,7 @@ class OutreachReplyRequest(BaseModel):
 class OutreachAutomationRequest(BaseModel):
     auto_drafts: bool | None = None
     bounce_recovery: bool | None = None
+    bounce_auto_resend: bool | None = None
     scheduled_sending: bool | None = None
     follow_up_review: bool | None = None
     form_submission: bool | None = None

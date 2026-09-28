@@ -26,7 +26,7 @@ class RegistryTests(unittest.TestCase):
     def test_both_phases_share_one_registry(self):
         groups = {key: feature.group for key, feature in automation.FEATURES.items()}
         self.assertEqual(groups, {
-            "auto_drafts": "outreach", "bounce_recovery": "outreach", "scheduled_sending": "outreach",
+            "auto_drafts": "outreach", "bounce_recovery": "outreach", "bounce_auto_resend": "outreach", "scheduled_sending": "outreach",
             "follow_up_review": "outreach", "form_submission": "outreach", "outreach_auto_close": "outreach",
             "auto_follow_up_drafts": "outreach",
             "jev_inbox_suggestions": "applications", "application_mail": "applications", "resume_variant_pick": "applications",

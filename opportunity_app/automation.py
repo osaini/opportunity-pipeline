@@ -151,6 +151,11 @@ FEATURES: dict[str, Feature] = {
                 "Write a draft for every company with a contact and a location", "outreach", "internal"),
         Feature("bounce_recovery", "Find a new contact after a bounce",
                 "After a bounce, find another contact and fix the greeting", "outreach", "internal"),
+        # No shadow, at the student's choice (2026-09-28): the words are ones they approved,
+        # and only the greeting and the recipient change (outreach_automation.resend_refusal).
+        Feature("bounce_auto_resend", "Resend automatically after a bounce",
+                "After a bounce, send the approved email again to the new contact when only the greeting changed",
+                "outreach", "external"),
         # The student approved and scheduled every email this sends, so it has no shadow.
         Feature("scheduled_sending", "Send on their weekday morning",
                 "Send approved emails on the recipient's next weekday morning", "outreach", "external"),
