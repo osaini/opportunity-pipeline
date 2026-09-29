@@ -28,7 +28,7 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(groups, {
             "auto_drafts": "outreach", "bounce_recovery": "outreach", "bounce_auto_resend": "outreach", "scheduled_sending": "outreach",
             "follow_up_review": "outreach", "form_submission": "outreach", "outreach_auto_close": "outreach",
-            "auto_follow_up_drafts": "outreach",
+            "auto_follow_up_drafts": "outreach", "decline_thank_you": "outreach",
             "jev_inbox_suggestions": "applications", "application_mail": "applications", "resume_variant_pick": "applications",
             "application_silence": "applications", "archive_silent_applications": "applications",
             "auto_save": "discovery", "auto_pass": "discovery",
@@ -39,9 +39,12 @@ class RegistryTests(unittest.TestCase):
             "application.stage", "application.task", "opportunity.intent",  # Phase 0
             "application.deadline", "application.capture_proposal",  # application mail
             "outreach.status", "outreach.follow_up_draft", "resume.pick",  # internal automation
+            "outreach.thank_you",  # the thank-you after a decline
         })
-        self.assertEqual({key for key in automation.HANDLERS if not automation.undoable(key)}, {"application.capture_proposal"})
-        self.assertEqual(set(automation.BREAKER_GROUPS), {"application_mail"}, "only an email's changes are counted together")
+        self.assertEqual({key for key in automation.HANDLERS if not automation.undoable(key)},
+                         {"application.capture_proposal", "outreach.thank_you"}, "an email that went cannot be taken back")
+        self.assertEqual(set(automation.BREAKER_GROUPS), {"application_mail", "decline_thank_you"},
+                         "only one email's changes (a job email's, or a decline's) are counted together")
         self.assertEqual(set(automation.CORRECTIONS), {"application_mail"})
 
 

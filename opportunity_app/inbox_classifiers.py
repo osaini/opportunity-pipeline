@@ -130,6 +130,8 @@ def build_client() -> DecisionClient | None:
 
 
 PAUSED_REASON = "Automation is paused, so Jev was not asked"
+# A reading with no Jev answer and no other reason: Jev was off, or the check that read it had no client to ask.
+JEV_NOT_ASKED = "Jev was not asked"
 
 
 class _Paused:
@@ -194,18 +196,38 @@ def _ask(
     return {"label": label, "confidence": confidence, "model": model}, ""
 
 
-def classify_reply(text: str, rules: Callable[[str], dict[str, str]], client: DecisionClient | None) -> dict[str, Any]:
-    """The status a reply suggests, from Jev when it can answer and the rules otherwise."""
+def read_reply(
+    text: str, rules: Callable[[str], dict[str, str]], client: DecisionClient | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The status a reply suggests (classify_reply's answer), and both readings of it, kept apart.
+
+    The readings are what the rules say, always worked out, and what Jev said
+    ({label, confidence, model}) or, when Jev did not answer, why not
+    (jev_fallback). Jev is asked once: the suggestion and the readings come from
+    the same answer. A thank-you after a decline (outreach_thank_you) acts only
+    when both readings say declined.
+    """
     answer, fallback = _ask(client, {"reply": text[:20_000]}, REPLY_QUESTION)
+    by_rules = dict(rules(text))
+    readings = {
+        "rules": {"status": str(by_rules.get("status") or ""), "reason": str(by_rules.get("reason") or "")},
+        "jev": dict(answer) if answer is not None else None,
+        # With no client (Jev off, or a check that had none to ask) there is no other reason to give.
+        "jev_fallback": fallback or ("" if answer is not None else JEV_NOT_ASKED),
+    }
     if answer is None:
-        suggestion = dict(rules(text))
-        return {**suggestion, "source": "rules", "confidence": None, "model": "", "fallback_reason": fallback}
+        return {**by_rules, "source": "rules", "confidence": None, "model": "", "fallback_reason": fallback}, readings
     percent = round(answer["confidence"] * 100)
     return {
         "status": answer["label"],
         "reason": f"{REPLY_REASONS[answer['label']]} (Jev suggestion, {percent}% sure)",
         "source": "jev", "confidence": answer["confidence"], "model": answer["model"], "fallback_reason": "",
-    }
+    }, readings
+
+
+def classify_reply(text: str, rules: Callable[[str], dict[str, str]], client: DecisionClient | None) -> dict[str, Any]:
+    """The status a reply suggests, from Jev when it can answer and the rules otherwise."""
+    return read_reply(text, rules, client)[0]
 
 
 def classify_email(

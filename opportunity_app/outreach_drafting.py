@@ -164,14 +164,16 @@ def sender_account() -> str:
 PURPOSE_ENV = {
     "follow_up": "PIPELINE_OUTREACH_FOLLOW_UP_PROVIDER",
     "call_prep": "PIPELINE_OUTREACH_CALL_PREP_PROVIDER",
+    # The thank-you after a decline (outreach_thank_you); empty means the first-email writer.
+    "thank_you": "PIPELINE_OUTREACH_THANK_YOU_PROVIDER",
 }
 
 
 def resolve_provider(requested: str | None = None, purpose: str = "initial") -> tuple[str, str]:
     """Pick the provider and model for one kind of writing.
 
-    Explicit, then the setting for this purpose (follow-ups and call prep have
-    their own), then PIPELINE_OUTREACH_PROVIDER, then the first provider that
+    Explicit, then the setting for this purpose (follow-ups, call prep, and the
+    thank-you after a decline have their own), then PIPELINE_OUTREACH_PROVIDER, then the first provider that
     is set up on this computer.
     """
     own = os.environ.get(PURPOSE_ENV[purpose], "") if purpose in PURPOSE_ENV else ""

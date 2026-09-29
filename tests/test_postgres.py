@@ -594,3 +594,88 @@ class PostgresAutomationContractTests(unittest.TestCase):
         self.assertEqual(summary["unread_notices"], 1)
         [component] = summary["components"]
         self.assertEqual((component["component"], component["detail"]), ("inbox.replies", {"read": 2}))
+
+    def test_migration_0040_and_a_thank_you_scheduled_handed_over_and_settled(self):
+        from opportunity_app import outreach, outreach_thank_you
+        from opportunity_app.outreach_gmail import thank_you_fingerprint
+
+        # The switch needs the address the student sends from (automation.REQUIREMENTS), as it does in every student's .env.
+        sending = mock.patch.dict("os.environ", {"PIPELINE_OUTREACH_ACCOUNT": "student@school.example"})
+        sending.start()
+        self.addCleanup(sending.stop)
+        self.assertTrue(schema._has_column(self.conn, "outreach_events", "detail_json"))
+        with self.conn:
+            self.conn.execute("ALTER TABLE outreach_events DROP COLUMN detail_json")
+            self.conn.execute("DELETE FROM schema_migrations WHERE name='0040_decline_thank_you.sql'")
+        ensure_product_schema(self.conn)
+        self.assertTrue(schema._has_column(self.conn, "outreach_events", "detail_json"), "a half-applied 0040 is repaired")
+        self.conn.commit()
+        self.outreach_target("t-1", "Bovi")
+        with self.conn:
+            self.conn.execute("UPDATE outreach_targets SET status='replied', sent_at='2026-09-20', contact_email='greg@bovi.example', "
+                              "location='Austin, TX' WHERE id='t-1'")
+            outreach._log(self.conn, "t-1", AUTOMATION_USER, "reply_logged", detail="We're not hiring right now.",
+                          data={"source": "gmail", "gmail_id": "g-1", "readings": {"rules": {"status": "declined"}}})
+        stored = self.conn.execute("SELECT detail_json FROM outreach_events WHERE target_id='t-1' AND event_type='reply_logged'").fetchone()
+        self.conn.commit()
+        self.assertEqual(json.loads(stored["detail_json"])["readings"]["rules"]["status"], "declined")
+        automation.set_mode(self.conn, AUTOMATION_USER, "jev_inbox_suggestions", "on")
+        automation.set_mode(self.conn, AUTOMATION_USER, "decline_thank_you", "on")
+        body = "Hi Greg,\n\nThank you for considering it.\n\nBest,\nTest Student"
+        fingerprint = thank_you_fingerprint("greg@bovi.example", "Greg", "Re: Hello", body, "<g-1@bovi.example>", "thread-1")
+        planned = {
+            "reply_gmail_id": "g-1", "reply_message_id": "<g-1@bovi.example>", "thread_id": "thread-1", "to_email": "greg@bovi.example",
+            "to_name": "Greg", "subject": "Re: Hello", "body": body, "generated_by": "template", "fingerprint": fingerprint,
+            "send_at": utc_now(), "label": "Tue, Sep 29, 11:32 AM CDT (their time, from Austin, TX)", "timezone": "America/Chicago",
+        }
+        with self.conn:
+            marker = automation.perform_in(
+                self.conn, user_id=AUTOMATION_USER, feature="decline_thank_you", action_type="outreach.thank_you",
+                subject_kind="outreach_target", subject_id="t-1", after={"thank_you": planned}, evidence={"reply_gmail_id": "g-1"},
+                summary="Thank-you to Greg at Bovi scheduled for Tue 11:32 AM (their time)", basis="decline:rules+jev",
+                confidence=0.9, idempotency_key="thank-you:t-1:g-1", auto=True,
+            )
+            status = automation.perform_in(
+                self.conn, user_id=AUTOMATION_USER, feature="decline_thank_you", action_type="outreach.status",
+                subject_kind="outreach_target", subject_id="t-1", after={"status": "declined", "only_from": "replied"},
+                evidence={}, summary="Marked Bovi Declined", basis="decline:rules+jev", confidence=0.9,
+                idempotency_key="thank-you-status:t-1:g-1", auto=True,
+            )
+        self.assertEqual((marker["status"], marker["undoable"], status["undoable"]), ("applied", False, True))
+        card = outreach.get_target(self.conn, "t-1", user_id=AUTOMATION_USER)
+        self.conn.commit()
+        self.assertEqual((card["status"], card["thank_you"]["state"], card["thank_you"]["send_state"]), ("declined", "scheduled", "scheduled"))
+        self.assertEqual(card["thank_you"]["label"], planned["label"])
+        # A second one for the same company is never scheduled: the change is already in place.
+        with self.conn:
+            again = automation.perform_in(
+                self.conn, user_id=AUTOMATION_USER, feature="decline_thank_you", action_type="outreach.thank_you",
+                subject_kind="outreach_target", subject_id="t-1", after={"thank_you": planned}, evidence={},
+                summary="again", basis="decline:rules+jev", confidence=0.9, idempotency_key="thank-you:t-1:g-2", auto=True,
+            )
+        self.assertIsNone(again)
+        automation.undo(self.conn, status["id"], AUTOMATION_USER)
+        with self.assertRaises(ValueError):
+            automation.undo(self.conn, marker["id"], AUTOMATION_USER)
+        with self.conn:
+            self.conn.execute("UPDATE outreach_scheduled_sends SET state='sending' WHERE target_id='t-1' AND kind='thank_you'")
+        row = self.conn.execute("SELECT * FROM outreach_scheduled_sends WHERE target_id='t-1' AND kind='thank_you'").fetchone()
+        self.conn.commit()
+        # 11:00 in Austin on a Tuesday: inside the thank-you's window, whenever this test runs.
+        self.assertEqual(outreach_schedule._hand_over(self.conn, row, now=datetime(2026, 9, 29, 16, 0, tzinfo=timezone.utc)), "handed_over")
+        state = self.conn.execute("SELECT state FROM outreach_thank_yous WHERE target_id='t-1'").fetchone()["state"]
+        self.conn.commit()
+        self.assertEqual(state, "transmitting")
+        [flight] = automation.in_flight(self.conn, AUTOMATION_USER)
+        self.conn.commit()
+        self.assertEqual((flight["kind"], flight["action"]), ("thank_you", "send"))
+        outreach_schedule._finish(self.conn, row, "failed", "Gmail did not confirm it (HTTP 503)")
+        stored = self.conn.execute("SELECT state, note FROM outreach_thank_yous WHERE target_id='t-1'").fetchone()
+        self.conn.commit()
+        self.assertEqual((stored["state"], stored["note"]), ("failed", "Gmail did not confirm it (HTTP 503)"))
+        self.assertEqual([notice["title"] for notice in automation.list_notices(self.conn, AUTOMATION_USER)],
+                         ["Thank-you to Bovi stopped: it may have gone out, so check your Gmail Sent folder"])
+        self.assertTrue(outreach_thank_you.cancel(self.conn, "t-1", user_id=AUTOMATION_USER, reason="You dismissed it"))
+        stored = self.conn.execute("SELECT state FROM outreach_thank_yous WHERE target_id='t-1'").fetchone()
+        self.conn.commit()
+        self.assertEqual(stored["state"], "cancelled")

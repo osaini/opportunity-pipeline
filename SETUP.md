@@ -294,6 +294,8 @@ themselves (rule 3). The details:
   use. One is enough. Show them Outreach → Settings, where each AI feature has
   its own choice listing only what is set up; with two (say Claude Code and
   Codex), the follow-up reviewer picks the one that did not write the email.
+  **Who writes thank-yous after a decline** (`PIPELINE_OUTREACH_THANK_YOU_PROVIDER`)
+  is there too; left on "Same as first-email drafts", the draft writer writes them.
 - **Jev** (`TYPESAFE_API_KEY`): optional and waitlisted; skip it freely. If they
   set it, tell them Jev inbox suggestions are a separate switch under Outreach →
   Outreach settings, off until they turn it on, because it sends reply and email
@@ -367,6 +369,52 @@ themselves (rule 3). The details:
     (`PIPELINE_MAIL_EVIDENCE_DAYS`). With Jev inbox suggestions on, the text of
     these emails goes to TypeSafe too, and Jev's answer acts on its own only
     when the keyword rules agree with it.
+- **Send a thank-you when someone declines** (optional; needs Jev). Ask whether
+  they want the app to answer a plain "no" to their cold outreach with a short
+  thank-you, sent on its own in the same thread. It is the one email the app
+  sends without their approval, so explain it before they choose:
+  - It needs Jev inbox suggestions on (and so `TYPESAFE_API_KEY`),
+    `PIPELINE_OUTREACH_ACCOUNT` set to the Gmail address they send from (the
+    switch cannot be turned on without it, and a scheduled one is held if it
+    is cleared), Gmail connected with read access, and a model set up to
+    review it (the AI step above; Outreach → Settings → **Who reviews
+    follow-ups and thank-yous**).
+    Without a reviewer every thank-you is held on the card for them. It acts
+    only when both the keyword rules and Jev read the reply as a plain decline;
+    with Jev off, paused, or unavailable nothing goes, and turning Jev or the
+    switch off holds one already scheduled for them to send or dismiss. A reply about a call, an offer, a question, a referral, or
+    "maybe later" is always left for them, and so is a rejection from a job
+    system (those come from no-reply addresses). The check fails closed: a
+    reply that says anything beyond a stock "no" with thanks and good wishes,
+    a thread where anyone there said more than no, or an answer typed into
+    the quoted email is left for them too, so some plain declines will still
+    be theirs to answer.
+  - It also reads the reply's own email headers, and leaves it for them unless
+    all of these hold: it is in the thread of their email or from the address
+    they wrote to (not just someone at the company), it was found within a day
+    of arriving, it was addressed to them in To or Cc (so check that
+    `PIPELINE_OUTREACH_ACCOUNT` is their address; a Bcc'd blast never counts),
+    a person wrote it (no auto-reply or mailing-list headers), no job system,
+    job board or applicant-tracking system sent, relayed, signed or linked it
+    (a link from their own email, quoted back, does not count), it came from
+    one person rather than a shared inbox (careers@, recruitingteam@, info@,
+    the company's own name), and Gmail's own sender check passed. Headers or
+    links it cannot read leave it for them too. These are read again just before it goes; one that
+    no longer passes is not sent, and the card says why in plain words ("Not
+    thanked automatically: sent by an automated system").
+  - A decline that arrives before 5 PM on a weekday in the recipient's time
+    zone is answered after a normal delay the same day; otherwise the next
+    weekday morning. There is no shadow period: the switch under Profile →
+    Automation is off until they turn it on, and it cannot be turned on while
+    Jev is off.
+  - The words are theirs: it greets the person who wrote with the greeting from
+    step 3 (`greeting_word`, `unnamed_greeting`) and signs with their confirmed
+    name. Plain rules refuse anything but thanks (no question, no ask, no
+    number, no dash), and a second model reads it just before it goes; anything
+    unclear holds it on the card with **Send it anyway** and **Dismiss**. While
+    it waits the card offers **Cancel** and **Edit** (which puts it in their
+    Gmail Drafts instead). Pausing automation holds it, and a new message from
+    the contact, or one of theirs to the contact, stops it.
 
 ## 7. Resume (optional, recommended)
 

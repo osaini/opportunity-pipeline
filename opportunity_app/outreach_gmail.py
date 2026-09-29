@@ -34,7 +34,7 @@ import sqlite3
 import threading
 from dataclasses import dataclass
 from email.message import EmailMessage
-from email.utils import parsedate_to_datetime
+from email.utils import formataddr, parsedate_to_datetime
 from pathlib import Path
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -1043,6 +1043,236 @@ def send_gmail_message(
         current = get_target(conn, target_id, user_id=user_id)
         return {**detail, "account": account, "status": current["status"], "follow_up_at": current["follow_up_at"], "marked": False}
     return {**detail, "account": account, "status": updated["status"], "follow_up_at": updated["follow_up_at"], "marked": True}
+
+
+# --- The thank-you after a decline -------------------------------------------------
+#
+# The one email the app writes and sends on its own (outreach_thank_you.py). It
+# answers the person who declined, in their thread: Gmail's threadId, and
+# In-Reply-To and References set to their Message-ID. Plain text with its HTML
+# twin, never an attachment. It goes out once, under the same claim as every
+# send (kind 'thank_you'), settled the same way: released when Gmail certainly
+# did nothing, kept 'unconfirmed' when it may have sent it.
+
+THANK_YOU_KIND = "thank_you"
+THANK_YOU_SENT_EVENT = "thank_you_sent"
+THANK_YOU_DRAFT_EVENT = "thank_you_draft_created"
+
+
+class ThankYouChanged(ValueError):
+    """The thank-you is no longer the one shown or scheduled: its words, recipient, or state moved."""
+
+
+def thank_you_fingerprint(to_email: str, to_name: str, subject: str, body: str, reply_message_id: str, thread_id: str) -> str:
+    """What a thank-you is: who it goes to, its words, and the message and thread it answers."""
+    fields = ["thank_you", str(to_email or "").casefold(), to_name or "", subject or "", body or "", reply_message_id or "", thread_id or ""]
+    canonical = json.dumps(fields, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def thank_you_row(conn: sqlite3.Connection, target_id: str, user_id: str) -> dict[str, Any] | None:
+    row = conn.execute("SELECT * FROM outreach_thank_yous WHERE target_id=? AND user_id=?", (target_id, user_id)).fetchone()
+    return dict(row) if row is not None else None
+
+
+def _thank_you_ready(
+    conn: sqlite3.Connection, target_id: str, user_id: str, fingerprint: str, states: tuple[str, ...],
+) -> dict[str, Any]:
+    """The stored thank-you, once every check for leaving the app has passed on a fresh read."""
+    target = get_target(conn, target_id, user_id=user_id)
+    row = thank_you_row(conn, target_id, user_id)
+    if row is None:
+        raise ThankYouChanged("There is no thank-you for this company")
+    if row["state"] not in states:
+        raise ThankYouChanged(f"The thank-you is {row['state']}, so it was not sent")
+    expected = thank_you_fingerprint(
+        row["to_email"], row["to_name"], row["subject"], row["body"], row["reply_message_id"], row["thread_id"],
+    )
+    if fingerprint != row["fingerprint"] or expected != row["fingerprint"]:
+        raise ThankYouChanged("The thank-you changed after it was shown. Reload and check it before sending")
+    if not row["to_email"] or not row["thread_id"] or not row["body"].strip():
+        raise ValueError("The thank-you has no recipient, words, or thread to answer, so it was not sent")
+    if row["to_email"].casefold() in target["bounced_addresses"]:
+        raise ValueError(f"Email to {row['to_email']} bounced, so the thank-you was not sent")
+    if conn.execute(
+        "SELECT 1 FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=?", (target_id, user_id, THANK_YOU_SENT_EVENT),
+    ).fetchone() is not None:
+        raise ValueError("The thank-you was already sent")
+    from .outreach_thank_you import problem_now  # imported here: it imports this module
+
+    # Read under the claim's write lock: a reply, or a send of the student's, logged since the last check
+    # (while the reviewer ran, say) still stops it. The student's own Send it anyway is not stopped by the
+    # company's status, only by their newer message or the student's.
+    stop = problem_now(conn, target_id, user_id, row, manual=states != ("transmitting",))
+    if stop is not None:
+        raise ThankYouChanged(stop[1])
+    return {**row, "target": target}
+
+
+def _thank_you_claim_reason(row: sqlite3.Row) -> str:
+    if row["action"] == "draft":
+        return ("Gmail may have put this thank-you in your Drafts without the app hearing back. Check your Gmail Drafts "
+                "and Sent folders, and delete any copy there, before sending it from here.")
+    return "Gmail may already have sent this thank-you. Check your Gmail Sent folder before sending it again."
+
+
+def thank_you_mime(account: str, row: dict[str, Any]) -> str:
+    """The reply as Gmail sends it: in their thread by its headers, plain text and HTML, no attachment."""
+    message = EmailMessage()
+    if account:
+        message["From"] = account
+    message["To"] = formataddr((row["to_name"], row["to_email"])) if row.get("to_name") else row["to_email"]
+    message["Subject"] = row["subject"]
+    if row.get("reply_message_id"):
+        message["In-Reply-To"] = row["reply_message_id"]
+        message["References"] = row["reply_message_id"]
+    message.set_content(row["body"])
+    message.add_alternative(html_body(row["body"]), subtype="html")
+    return base64.urlsafe_b64encode(message.as_bytes()).decode()
+
+
+def thread_url(account: str, thread_id: str) -> str:
+    authuser = quote(account) if account else "0"
+    return f"https://mail.google.com/mail/?authuser={authuser}#all/{quote(thread_id)}"
+
+
+def send_thank_you(
+    conn: sqlite3.Connection,
+    target_id: str,
+    *,
+    user_id: str,
+    fingerprint: str,
+    client_factory: ClientFactory = default_client_factory,
+    sent_folder_check: str | None = None,
+    automatic: bool = True,
+) -> dict[str, Any]:
+    """Send the stored thank-you once, in the thread it answers, and record it.
+
+    ``automatic`` is the scheduler's hand-over (the row is 'transmitting');
+    otherwise it is the student's own confirmed Send it anyway (the row is
+    'sending'). Like send_gmail_message: the fingerprint must still match what
+    was stored, the claim is taken before the one call that sends, and an
+    earlier send Gmail may have carried out (an unconfirmed claim) stops it
+    until the student has looked and sends again with ``sent_folder_check``.
+    The scheduler never vouches for that, so for it this always stops.
+    """
+    states = ("transmitting",) if automatic else ("sending",)
+    _thank_you_ready(conn, target_id, user_id, fingerprint, states)
+    reasons: dict[str, str] = {}
+    stale_token = ""
+    existing = _claim(conn, target_id, user_id, THANK_YOU_KIND)
+    if existing is not None:
+        if _claim_held(existing):
+            raise SendConflictError(IN_PROGRESS)
+        stale_token = existing["token"]
+        if existing["state"] == "sent":
+            raise ValueError("The thank-you was already sent from Gmail")
+        reasons[f"claim:{stale_token}"] = _thank_you_claim_reason(existing)
+    if reasons:
+        check = hashlib.sha256(json.dumps(sorted(reasons)).encode()).hexdigest()[:32]
+        if automatic or sent_folder_check != check:
+            raise SendNeedsCheckError(" ".join(dict.fromkeys(reasons.values())), check)
+    account = sender_account()
+    with client_factory() as client:
+        gmail = _Gmail(conn, client, user_id, wait_out_backoff=False)
+        _require_account(gmail, account)
+
+        def revalidate() -> tuple[dict[str, Any], str]:
+            fresh = _thank_you_ready(conn, target_id, user_id, fingerprint, states)
+            return fresh, thank_you_mime(account, fresh)
+
+        with _claimed(conn, target_id, user_id, THANK_YOU_KIND, "send", revalidate, stale_token=stale_token) as (token, (row, raw)):
+            sent = _post_under_claim(
+                conn, gmail, target_id, THANK_YOU_KIND, token, "/messages/send", {"raw": raw, "threadId": row["thread_id"]},
+                refused="Gmail did not send the thank-you",
+                uncertain="it may have gone out. Check your Gmail Sent folder before sending it again",
+            )
+            # What Gmail sent is recorded before anything else, so it is never lost.
+            try:
+                detail = {
+                    "to": row["to_email"], "message_id": str(sent.get("id", "")),
+                    "thread_id": str(sent.get("threadId", "") or row["thread_id"]),
+                    "reply_gmail_id": row["reply_gmail_id"], "fingerprint": row["fingerprint"],
+                }
+                stamp = utc_now()
+                with conn:
+                    conn.execute("UPDATE outreach_send_claims SET state='sent' WHERE target_id=? AND kind=? AND token=?",
+                                 (target_id, THANK_YOU_KIND, token))
+                    _log(conn, target_id, user_id, THANK_YOU_SENT_EVENT, detail=json.dumps(detail, sort_keys=True))
+                    conn.execute(
+                        "UPDATE outreach_thank_yous SET state='sent', note='', updated_at=? WHERE target_id=? AND user_id=?",
+                        (stamp, target_id, user_id),
+                    )
+            except BaseException:
+                _settle_claim(conn, target_id, THANK_YOU_KIND, token, "sent")
+                raise
+    return {**detail, "account": account, "sent_at": stamp, "url": thread_url(account, detail["thread_id"])}
+
+
+def create_thank_you_draft(
+    conn: sqlite3.Connection, target_id: str, *, user_id: str, client_factory: ClientFactory = default_client_factory,
+) -> dict[str, Any]:
+    """Write the thank-you into the student's Gmail Drafts, in their thread, for the student to edit and send.
+
+    Nothing is sent. The caller has already stopped the automatic send. The
+    one call that makes the draft runs under the thank-you's claim (action
+    'draft'), as a first email's draft does: a call that got no clear answer
+    leaves it 'unconfirmed', so a later Send it anyway asks the student to
+    look in Drafts first. An earlier try Gmail may have carried out stops a
+    draft being made at all, since a copy in Drafts could then go twice.
+    """
+    row = thank_you_row(conn, target_id, user_id)
+    if row is None:
+        raise ThankYouChanged("There is no thank-you for this company")
+    existing = _claim(conn, target_id, user_id, THANK_YOU_KIND)
+    if existing is not None:
+        if _claim_held(existing):
+            raise SendConflictError(IN_PROGRESS)
+        if existing["state"] == "sent":
+            raise ValueError("The thank-you was already sent from Gmail")
+        raise SendConflictError(f"{_thank_you_claim_reason(existing)} Until then no draft of it is made.")
+    account = sender_account()
+
+    def revalidate() -> dict[str, Any]:
+        fresh = thank_you_row(conn, target_id, user_id)
+        if fresh is None or fresh["fingerprint"] != row["fingerprint"]:
+            raise ThankYouChanged("The thank-you changed while its draft was being made. Reload and try again")
+        return fresh
+
+    with _claimed(conn, target_id, user_id, THANK_YOU_KIND, "draft", revalidate) as (token, fresh):
+        try:
+            client = client_factory()
+        except BaseException:
+            _settle_claim(conn, target_id, THANK_YOU_KIND, token, None)
+            raise
+        with client:
+            try:
+                # The student asked for this draft, so its checks go to Gmail even while background reads wait.
+                gmail = _Gmail(conn, client, user_id, wait_out_backoff=False)
+                _require_account(gmail, account)
+                raw = thank_you_mime(account, fresh)
+            except BaseException:
+                _settle_claim(conn, target_id, THANK_YOU_KIND, token, None)
+                raise
+            created = _post_under_claim(
+                conn, gmail, target_id, THANK_YOU_KIND, token, "/drafts", {"message": {"raw": raw, "threadId": fresh["thread_id"]}},
+                refused="Gmail did not create the draft",
+                uncertain="the draft may be in your Gmail Drafts. Check Drafts before trying again",
+            )
+            try:
+                message = created.get("message") or {}
+                detail = {
+                    "draft_id": str(created.get("id", "")), "message_id": str(message.get("id", "")),
+                    "thread_id": str(message.get("threadId", "") or fresh["thread_id"]),
+                }
+                with conn:
+                    _log(conn, target_id, user_id, THANK_YOU_DRAFT_EVENT, detail=json.dumps(detail, sort_keys=True))
+                    conn.execute("DELETE FROM outreach_send_claims WHERE target_id=? AND kind=? AND token=?", (target_id, THANK_YOU_KIND, token))
+            except BaseException:
+                # The draft exists but is not recorded, so the next send asks first.
+                _settle_claim(conn, target_id, THANK_YOU_KIND, token, "unconfirmed")
+                raise
+    return {**detail, "url": draft_url(account, detail["message_id"])}
 
 
 # --- Notices about the connection ---------------------------------------------------
