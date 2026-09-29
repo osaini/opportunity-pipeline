@@ -353,27 +353,42 @@ def full_reply_text(message: EmailMessage) -> str:
     return _body_text(message, whole=True).replace("\r\n", "\n").strip()
 
 
+def _header(message: EmailMessage, name: str, raw: str) -> Any:
+    """One header as the message's policy parses it, or its raw text when the parser fails on it (a stray ":;")."""
+    try:
+        return message.policy.header_fetch_parse(name, raw)
+    except Exception:  # noqa: BLE001 - the header parser raises IndexError and others on odd headers
+        return raw
+
+
 def _addresses(message: EmailMessage, *names: str) -> list[str]:
-    """Every address in these headers, lowercased. Reads the parsed header, which copes with 'Reyes, Dana <…>'."""
+    """Every address in these headers, lowercased. Reads the parsed header, which copes with 'Reyes, Dana <…>'.
+
+    Each header is parsed on its own, so one the parser cannot read (a Cc of
+    "a@b.com, :;") falls back to its raw text instead of failing the message.
+    """
     found: list[str] = []
     for name in names:
-        for value in message.get_all(name) or []:
+        for header, raw in message.raw_items():
+            if str(header).casefold() != name.casefold():
+                continue
+            value = _header(message, header, raw)
             try:
                 parsed = [str(address.addr_spec) for address in getattr(value, "addresses", ())]
-            except (AttributeError, TypeError, ValueError):
+            except Exception:  # noqa: BLE001 - as above
                 parsed = []
             if not parsed:
-                parsed = [address for _name, address in getaddresses([str(value)])]
+                parsed = [address for _name, address in getaddresses([str(raw)])]
             found += [address.strip().casefold() for address in parsed if "@" in address]
     return found
 
 
 def _sender(message: EmailMessage) -> tuple[str, str]:
     """(display name, address) of the one who wrote it. Copes with 'Lee, Greg <greg@…>', where a comma splits the name."""
-    value = message.get("From")
+    value = next((_header(message, name, raw) for name, raw in message.raw_items() if str(name).casefold() == "from"), None)
     try:
         parsed = list(getattr(value, "addresses", ()))
-    except (TypeError, ValueError):
+    except Exception:  # noqa: BLE001 - the header parser raises IndexError and others on odd headers
         parsed = []
     for address in parsed:
         if "@" in str(address.addr_spec):

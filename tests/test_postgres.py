@@ -37,7 +37,7 @@ AUTOMATION_COLUMNS = [
 ]
 # The columns 0041 adds to outreach_inbox_messages, each by a guarded Python step, and its index.
 REPLY_RULES_COLUMNS = ("via", "rules", "candidates_json", "thread_id", "message_id", "from_name", "subject", "text", "reason", "in_spam",
-                       "decided_at")
+                       "decided_at", "meta_json")
 REPLY_RULES_INDEX = "idx_outreach_inbox_messages_target"
 RECEIVED = "2026-09-25T15:00:00+00:00"
 
@@ -757,7 +757,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
         old = self.inbox_row("old-ignored")
         self.assertEqual({column: old[column] for column in REPLY_RULES_COLUMNS},
                          {"via": "", "rules": 0, "candidates_json": "[]", "thread_id": "", "message_id": "", "from_name": "",
-                          "subject": "", "text": "", "reason": "", "in_spam": 0, "decided_at": None})
+                          "subject": "", "text": "", "reason": "", "in_spam": 0, "decided_at": None, "meta_json": "{}"})
         self.assertEqual((old["kind"], old["sender"], old["received_at"]), ("ignored", "dana@bovi.example", RECEIVED))
         self.assertEqual((self.inbox_row("old-automatic")["kind"], self.inbox_row("old-reply")["kind"]), ("automatic", "reply"))
         seen = {gmail_id: outreach_inbox._seen(self.conn, AUTOMATION_USER, gmail_id) for gmail_id in ("old-ignored", "old-automatic", "old-reply")}

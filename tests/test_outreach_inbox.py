@@ -917,14 +917,23 @@ class ReplyCaptureTests(unittest.TestCase):
         self.assertEqual([(item["from"], item["reason"]) for item in result["possible"]], [("pat.home@gmail.com", "mentions_company")])
         self.assertEqual(self.target(target)["possible_reply_count"], 1)
 
-    def test_an_email_from_the_company_with_a_header_python_cannot_parse_is_shown(self):
+    def test_an_email_from_the_company_with_a_header_python_cannot_parse_is_still_read(self):
         target = self.sent_target()
         self.arrive("bad-1", mail("Yes, let's talk.", subject="Talk?", headers='Reply-To: "Greg Lee" <greg@bovi.example>, "\n'))
         result = self.check()
         self.assertEqual(result["state"], "ok")
-        self.assertEqual([(item["target_id"], item["reason"]) for item in result["possible"]], [(target["id"], "unreadable")],
+        # The Reply-To the parser fails on is read from its raw text; the rest of the email is judged as usual.
+        self.assertEqual([item["target_id"] for item in result["replies"]], [target["id"]],
                          "never set aside: it is from the address written to")
-        self.assertTrue(self.target(target)["possible_reply_count"])
+        self.assertEqual(self.inbox_row("bad-1")["reason"], "written_to")
+
+    def test_an_email_whose_from_python_cannot_parse_is_shown_in_its_thread(self):
+        target = self.sent_target()
+        self.arrive_in_thread("bad-2", mail("Yes, let's talk.", subject="Re: Hello", sender='"Greg, Lee" <greg@bovi.example>, :;'))
+        result = self.check()
+        self.assertEqual(result["state"], "ok")
+        self.assertEqual([item["target_id"] for item in result["replies"] + result["possible"]], [target["id"]],
+                         "never set aside: it is in the student's thread")
 
     def test_the_background_watcher_captures_replies(self):
         target = self.sent_target()

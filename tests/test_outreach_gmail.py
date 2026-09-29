@@ -11,7 +11,7 @@ import unittest
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from email import policy
-from email.utils import parseaddr
+from email.utils import getaddresses, parseaddr
 from pathlib import Path
 from unittest import mock
 from urllib.parse import parse_qs, urlparse
@@ -200,8 +200,10 @@ class FakeGmail:
         terms = re.search(r"\bfrom:\(([^)]*)\)", query)
         if terms is not None:
             wanted = {term.strip().casefold() for term in terms.group(1).split(" OR ") if term.strip()}
-            found = [str(address.addr_spec) for address in getattr(message.get("From"), "addresses", ()) if "@" in str(address.addr_spec)]
-            sender = (found[0] if found else parseaddr(str(message.get("From", "")))[1]).casefold()
+            # Gmail matches the From's address, from its raw text: it never fails on a header Python cannot parse.
+            raw_from = next((str(value) for name, value in message.raw_items() if name.casefold() == "from"), "")
+            found = [address for _name, address in getaddresses([raw_from]) if "@" in address]
+            sender = (found[0] if found else parseaddr(raw_from)[1]).casefold()
             domain = sender.rsplit("@", 1)[-1]
             return sender in wanted or any(domain == term or domain.endswith("." + term) for term in wanted if "@" not in term)
         either = re.match(r"^\{(.*)\}", query)
@@ -282,7 +284,8 @@ class FakeGmail:
                     placed.append({"id": message_id, "labelIds": list(self.labels.get(message_id, ["INBOX"])),
                                    "internalDate": str(self.raw[message_id][1]), "snippet": "",
                                    "payload": {"mimeType": message.get_content_type(),
-                                               "headers": [{"name": key, "value": str(value)} for key, value in message.items()]}})
+                                               "headers": [{"name": key, "value": " ".join(str(value).split())}
+                                                           for key, value in message.raw_items()]}})
             messages = []
             for message in (sent, *self.replies.get(thread_id, []), *placed):
                 message = {**message, "threadId": thread_id}
