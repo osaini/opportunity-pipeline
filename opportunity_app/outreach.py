@@ -555,9 +555,16 @@ def _record(
     today: date | None = None,
     regions: list[dict[str, Any]] | None = None,
     home: dict[str, Any] | None = None,
+    possible: list[dict[str, Any]] | None = None,
+    gmail_reply: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     item = dict(row)
     item["source_urls"] = json.loads(item.pop("source_urls_json") or "[]")
+    # The latest reply found in Gmail, and how it was matched to the company; None when none was.
+    item["gmail_reply"] = gmail_reply
+    # Emails from the company that may be replies, waiting for the student to say (outreach_inbox.py).
+    item["possible_replies"] = list(possible or [])
+    item["possible_reply_count"] = len(item["possible_replies"])
     draft_claims_json = item.pop("draft_claims_json", None) or "[]"
     follow_up_claims_json = item.pop("follow_up_claims_json", None) or "[]"
     item["draft_claims"] = json.loads(draft_claims_json)
@@ -597,8 +604,9 @@ def _record(
         item["mail_domain_ok"] = bool(item["mail_domain_ok"])
     today = today or date.today()
     due = item.get("follow_up_at")
+    # Not while an email from them may be a reply: the card asks about that first.
     item["follow_up_due"] = bool(
-        due and item["status"] == "sent" and date.fromisoformat(due) <= today
+        due and item["status"] == "sent" and date.fromisoformat(due) <= today and not item["possible_reply_count"]
     )
     item["revisit_due"] = bool(
         due and item["status"] in REVISIT_STATUSES and date.fromisoformat(due) <= today
@@ -618,6 +626,138 @@ def _record(
         {"status": reply["status"], "reason": reply["reason"]} if item["reply_suggestion"] else lifecycle_suggestion(item, today)
     )
     return item
+
+
+def _candidates(value: Any) -> list[str]:
+    try:
+        return [str(other) for other in json.loads(value or "[]") if str(other)]
+    except (TypeError, ValueError):
+        return []
+
+
+def heard_back(item: dict[str, Any]) -> bool:
+    """Whether the company may have answered: a reply logged, one waiting as a suggestion, or a possible reply to settle.
+
+    Every automatic step that assumes silence (a follow-up, closing as No
+    response) checks this, so an email the student has not looked at yet holds it.
+    """
+    return bool(item.get("reply_count") or item.get("reply_suggestion") or item.get("possible_reply_count"))
+
+
+POSSIBLE_REPLY_PREVIEW = 400
+# Why a message found in Gmail was taken as it was (outreach_inbox_messages.reason), in the student's words.
+# {sender} is who wrote, {local} the part of their address before the @.
+REPLY_REASONS = {
+    # Logged as replies.
+    "thread": "{sender} answered in the Gmail thread of your email",
+    "written_to": "{sender} is an address you wrote to",
+    "domain_person": "{sender} wrote to you from the company's own domain, as themselves and verified by Gmail",
+    "confirmed": "you said {sender}'s email is their reply",
+    # Possible replies.
+    "thread_outsider": "{sender} wrote in the thread of your email, but is not an address at the company",
+    "before_marked_sent": "{sender} wrote before the day you marked the email sent",
+    "mailing_tool": "it was sent through a mailing or sales tool",
+    "spam": "Gmail put it in Spam",
+    "ambiguous": "more than one company you wrote to could have sent it",
+    "mentions_company": "it names the company or your email's subject, from an address that is not the company's",
+    "reply_to": "only its reply-to address is one you wrote to",
+    "job_mail": "it looks like mail from a job-application system",
+    "shared_address": "{local}@ is a shared inbox, not one person",
+    "not_verified": "Gmail could not verify it came from the company's domain",
+    "not_addressed": "you were not in its To or Cc line",
+    "name_mismatch": "the sender's name does not match the address",
+    "weak_domain": "its domain is only linked to the company through your contact's address",
+    "found_late": "it arrived before this check existed, so the app did not count it then",
+    "unreadable": "the app could not read its headers; open it in Gmail",
+    "auto_generated": "it is marked as sent by an automated system",
+    "copied_outsider": "{sender} is someone you copied, not an address at the company",
+    # Set aside.
+    "own": "your own email",
+    "delivery": "a delivery notice",
+    "trash": "you moved it to Trash",
+    "before": "it arrived before your first email",
+    "list": "a mailing-list email",
+    "out_of_office": "an automatic reply",
+    "acknowledgement": "an automatic receipt",
+    "receipt": "a read receipt",
+    "spam_unverified": "Gmail put it in Spam and could not verify the sender",
+    "automated_sender": "an automated sender at the company's domain",
+    "no_company": "from no company you wrote to",
+    "gone": "no longer in Gmail",
+}
+
+
+def reply_reason(code: str, sender: str) -> str:
+    """A reason code as a sentence about this sender."""
+    template = REPLY_REASONS.get(code, code or "")
+    return template.format(sender=sender or "They", local=str(sender or "").split("@", 1)[0])
+
+
+def _possible_replies(conn: sqlite3.Connection, user_id: str, target_id: str | None = None) -> dict[str, list[dict[str, Any]]]:
+    """Emails that may be replies, by target, oldest first, as the card shows them (outreach_inbox.py keeps them).
+
+    One that more than one company could have sent is listed for each of them
+    (candidates_json), so it holds all of them until the student says.
+    """
+    from .outreach_drafting import sender_account  # imported here: drafting imports this module
+
+    account = sender_account()
+    found: dict[str, list[dict[str, Any]]] = {}
+    rows = conn.execute(
+        "SELECT target_id, gmail_id, sender, subject, text, reason, received_at, candidates_json, in_spam FROM outreach_inbox_messages "
+        "WHERE user_id=? AND kind='possible' ORDER BY received_at, gmail_id",
+        (user_id,),
+    ).fetchall()
+    names = {str(row["id"]): str(row["company"]) for row in conn.execute(
+        "SELECT id, company FROM outreach_targets WHERE user_id=?", (user_id,),
+    ).fetchall()} if rows else {}
+    # Which companies have a follow-up in line that saying "not a reply" would let go.
+    waiting = {str(row[0]) for row in conn.execute(
+        "SELECT target_id FROM outreach_scheduled_sends WHERE user_id=? AND kind='follow_up' AND state IN ('scheduled', 'sending')",
+        (user_id,),
+    ).fetchall()} if rows else set()
+    for row in rows:
+        try:
+            others = [str(other) for other in json.loads(row["candidates_json"] or "[]") if str(other)]
+        except (TypeError, ValueError):
+            others = []
+        owners = [str(row["target_id"]), *[other for other in others if other != row["target_id"]]]
+        if target_id and target_id not in owners:
+            continue
+        words = " ".join(str(row["text"] or "").split())
+        # All Mail leaves Spam out, so a link to one found there opens Spam.
+        folder = "spam" if row["in_spam"] else "all"
+        entry = {
+            "gmail_id": row["gmail_id"], "from": row["sender"], "subject": row["subject"],
+            "preview": words if len(words) <= POSSIBLE_REPLY_PREVIEW else f"{words[:POSSIBLE_REPLY_PREVIEW].rstrip()}…",
+            "reason": row["reason"], "reason_text": reply_reason(row["reason"], row["sender"]),
+            "in_spam": bool(row["in_spam"]), "received_at": row["received_at"],
+            "holds_follow_up": any(owner in waiting for owner in owners),
+            "companies": [{"id": owner, "company": names.get(owner, "")} for owner in owners if owner in names],
+            "gmail_url": f"https://mail.google.com/mail/?authuser={quote(account) if account else '0'}#{folder}/{quote(str(row['gmail_id']))}",
+        }
+        for owner in owners:
+            found.setdefault(owner, []).append(entry)
+    return found
+
+
+def _gmail_replies(conn: sqlite3.Connection, user_id: str, target_id: str | None = None) -> dict[str, dict[str, Any]]:
+    """Each company's latest reply found in Gmail, with how it was matched to the company (outreach_inbox.py)."""
+    sql = (
+        "SELECT target_id, sender, received_at, reason, via FROM outreach_inbox_messages "
+        "WHERE user_id=? AND kind='reply' AND reason<>''"
+    )
+    params: list[Any] = [user_id]
+    if target_id:
+        sql += " AND target_id=?"
+        params.append(target_id)
+    latest: dict[str, dict[str, Any]] = {}
+    for row in conn.execute(f"{sql} ORDER BY received_at", params).fetchall():
+        latest[str(row["target_id"])] = {
+            "from": row["sender"], "received_at": row["received_at"], "reason": row["reason"], "via": row["via"],
+            "reason_text": reply_reason(row["reason"], row["sender"]),
+        }
+    return latest
 
 
 def _event_time(conn: sqlite3.Connection, target_id: str) -> str:
@@ -1037,8 +1177,11 @@ def list_targets(
     home = user_home(conn, user_id, regions)
     schedules = _schedules(conn, user_id)
     thank_yous = _thank_yous(conn, user_id)
+    possible = _possible_replies(conn, user_id)
+    found = _gmail_replies(conn, user_id)
     return [
-        {**_record(row, today, regions, home), "scheduled": schedules.get(row["id"], {}), "thank_you": thank_yous.get(row["id"])}
+        {**_record(row, today, regions, home, possible.get(row["id"]), found.get(row["id"])), "scheduled": schedules.get(row["id"], {}),
+         "thank_you": thank_yous.get(row["id"])}
         for row in rows
     ]
 
@@ -1091,7 +1234,10 @@ def get_target(
     if not row:
         raise OutreachNotFoundError(target_id)
     regions = user_regions(conn, user_id)
-    item = _record(row, today or local_today(conn, user_id), regions, user_home(conn, user_id, regions))
+    item = _record(
+        row, today or local_today(conn, user_id), regions, user_home(conn, user_id, regions),
+        _possible_replies(conn, user_id, target_id).get(target_id), _gmail_replies(conn, user_id, target_id).get(target_id),
+    )
     item["scheduled"] = _schedules(conn, user_id, target_id).get(target_id, {})
     item["thank_you"] = _thank_yous(conn, user_id, target_id).get(target_id)
     if include_events:
@@ -1352,6 +1498,28 @@ def delete_target(conn: sqlite3.Connection, target_id: str, *, user_id: str) -> 
         return False
     with conn:
         conn.execute("DELETE FROM outreach_targets WHERE id=? AND user_id=?", (target_id, user_id))
+        # An email waiting as a possible reply moves to another company it could be from, or goes with this one.
+        for message in conn.execute(
+            "SELECT gmail_id, target_id, kind, candidates_json FROM outreach_inbox_messages WHERE user_id=? AND kind='possible'",
+            (user_id,),
+        ).fetchall():
+            gmail_id, owner, _kind, candidates = message[0], message[1], message[2], message[3]
+            others = _candidates(candidates)
+            if owner == target_id and others:
+                conn.execute(
+                    "UPDATE outreach_inbox_messages SET target_id=?, candidates_json=? WHERE user_id=? AND gmail_id=?",
+                    (others[0], json.dumps(others[1:]), user_id, gmail_id),
+                )
+            elif target_id in others:
+                conn.execute(
+                    "UPDATE outreach_inbox_messages SET candidates_json=? WHERE user_id=? AND gmail_id=?",
+                    (json.dumps([other for other in others if other != target_id]), user_id, gmail_id),
+                )
+        conn.execute(
+            "UPDATE outreach_inbox_messages SET kind=CASE kind WHEN 'possible' THEN 'dismissed' ELSE kind END, text='', meta_json='{}', "
+            "subject='', message_id='', from_name='' WHERE user_id=? AND target_id=?",
+            (user_id, target_id),
+        )
         conn.execute(
             """
             INSERT INTO outreach_dismissed(user_id, company_key, company, domain, dismissed_at) VALUES(?, ?, ?, ?, ?)
@@ -1627,6 +1795,7 @@ def log_reply(
     if suggestion["status"] == BOUNCED:
         # The student said a person wrote it, whatever it says about a failed delivery.
         suggestion = {**suggestion, "status": "replied", "reason": "They replied; you said this is a reply, not a failure notice"}
+    plain = lambda text: " ".join(str(text or "").split()).casefold()[:300]
     with conn:
         # A pasted reply has no Gmail thread, so nothing automatic ever answers it.
         _log(conn, target_id, user_id, "reply_logged", detail=body, data={"source": "pasted", "readings": readings})
@@ -1634,6 +1803,20 @@ def log_reply(
         from .outreach_thank_you import on_new_reply  # imported here: it imports this module
 
         on_new_reply(conn, target_id, user_id)
+        # A pasted reply that is an email waiting as a possible reply (outreach_inbox.py) settles it:
+        # it is their reply, and it is not asked about again or logged twice. The event stays "pasted":
+        # the student logged it themselves, so nothing automatic answers it either.
+        for row in conn.execute(
+            "SELECT gmail_id, target_id, text, candidates_json FROM outreach_inbox_messages WHERE user_id=? AND kind='possible'",
+            (user_id,),
+        ).fetchall():
+            owners = {row["target_id"], *_candidates(row["candidates_json"])}
+            if target_id in owners and plain(row["text"]) and plain(row["text"]) == plain(body):
+                conn.execute(
+                    "UPDATE outreach_inbox_messages SET kind='reply', target_id=?, text='', meta_json='{}', candidates_json='[]', "
+                    "decided_at=?, reason='confirmed' WHERE user_id=? AND gmail_id=? AND kind='possible'",
+                    (target_id, utc_now(), user_id, row["gmail_id"]),
+                )
     return {"suggestion": suggestion, "logged": True, "target": get_target(conn, target["id"], user_id=user_id, include_events=True)}
 
 
@@ -1651,9 +1834,9 @@ NO_RESPONSE_AFTER_DAYS = 14
 
 
 def lifecycle_suggestion(item: dict[str, Any], today: date | None = None) -> dict[str, str] | None:
-    """Suggest closing a target that never answered a follow-up."""
+    """Suggest closing a target that never answered a follow-up (not while an email from them may be a reply)."""
     today = today or date.today()
-    if item["status"] != "followed_up" or not item.get("follow_up_at"):
+    if item["status"] != "followed_up" or not item.get("follow_up_at") or item.get("possible_reply_count"):
         return None
     try:
         due = date.fromisoformat(item["follow_up_at"])
@@ -1684,6 +1867,11 @@ def queue_follow_up_reminders(
         row for row in rows
         if date.fromisoformat(row["follow_up_at"]) <= (today or local_today(conn, row["user_id"], now))
     ]
+    # No "Follow up with them" while an email from them may be a reply: the card asks about that instead.
+    waiting = {(row["user_id"], owner) for row in conn.execute(
+        "SELECT user_id, target_id, candidates_json FROM outreach_inbox_messages WHERE kind='possible'"
+    ).fetchall() for owner in [row["target_id"], *_candidates(row["candidates_json"])]}
+    rows = [row for row in rows if row["status"] != "sent" or (row["user_id"], row["id"]) not in waiting]
     queued = 0
     for row in rows:
         revisit = row["status"] in REVISIT_STATUSES

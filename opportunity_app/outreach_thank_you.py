@@ -178,6 +178,8 @@ NO_ACCOUNT = (
     "PIPELINE_OUTREACH_ACCOUNT is not set, so their reply could not be confirmed as addressed to you and it was "
     "not sent automatically"
 )
+# An email from the company that may be a reply (outreach_inbox.py) waits for the student: it may say more than no.
+MAY_HAVE_REPLIED = "An email from them that may be a reply is waiting for you to check, so the thank-you was held"
 EDITED = "You chose to edit it yourself, so it went to your Gmail Drafts and was not sent automatically"
 STUCK_SENDING = "The app stopped while sending this. Check your Gmail Sent folder before sending it again"
 # What a notice may say about why a thank-you stopped: fixed words only, never the reviewer's or an email's.
@@ -187,6 +189,7 @@ _NOTICE_REASONS = (
     (SWITCHED_OFF, "the switch was turned off"),
     (JEV_OFF, "Jev inbox suggestions was turned off"),
     (NO_ACCOUNT, "your sending address is not set"),
+    (MAY_HAVE_REPLIED, "an email from them may be a reply"),
     ("Could not check Gmail", "Gmail could not be checked first"),
     ("Could not read their thread", "Gmail could not be checked first"),
 )
@@ -1029,7 +1032,10 @@ def thank_you_blockers(conn: sqlite3.Connection, target: dict[str, Any], reply: 
 
     - R1: in the student's thread (the Gmail thread of an email the app sent
       them), or from the contact's own address or the Cc. A reply matched only
-      by the company's domain fails.
+      by the company's domain fails. A reply read under outreach_inbox's reply
+      rules says how it was matched (data "reason", outreach.REPLY_REASONS):
+      it must also be "thread" or "written_to", so one the student confirmed
+      from a possible reply ("confirmed") never passes.
     - R2: logged at most DETECTION_LIMIT after Gmail received it.
     - R3: the student's sending address (PIPELINE_OUTREACH_ACCOUNT) is a
       mailbox in To or Cc (``mailboxes``); Bcc only, undisclosed recipients,
@@ -1054,9 +1060,6 @@ def thank_you_blockers(conn: sqlite3.Connection, target: dict[str, Any], reply: 
     "headers" when its headers are not on record or one cannot be read:
     every rule that reads them fails closed.
     """
-    # TODO(megrim): once the reply-capture rework merges, use its heard_back() here: add a blocker when "a
-    # possible reply is waiting", and read R1 from its match, via in ("thread", "address") with reason in
-    # ("thread", "written_to"), instead of recomputing it.
     from .mail_trust import authenticate
     from .outreach_contacts import is_shared_inbox
     from .outreach_drafting import sender_account
@@ -1074,7 +1077,9 @@ def thank_you_blockers(conn: sqlite3.Connection, target: dict[str, Any], reply: 
         ).fetchall()
     } - {""}
     written_to = {str(target.get(field) or "").strip().casefold() for field in ("contact_email", "contact_cc")} - {""}
-    if not ((data.get("thread_id") and str(data["thread_id"]) in threads) or (sender and sender in written_to)):
+    # Both must agree: the match outreach_inbox made (a reply logged before its reply rules has none), and the records.
+    matched = data.get("reason") in ("thread", "written_to") if "reason" in data else True
+    if not matched or not ((data.get("thread_id") and str(data["thread_id"]) in threads) or (sender and sender in written_to)):
         failed.append("R1")
     # R2: found within a day of arriving.
     detected, arrived = _parse(reply.get("created_at")), _parse(data.get("received_at"))
@@ -1193,6 +1198,8 @@ def eligibility(conn: sqlite3.Connection, target: dict[str, Any], user_id: str) 
     suggestion = target.get("reply_suggestion")
     if suggestion and suggestion.get("status") not in (None, "declined"):
         return None, f"a suggestion of {str(suggestion['status']).replace('_', ' ')} is waiting for you"
+    if target.get("possible_reply_count"):
+        return None, "an email from them that may be a reply is waiting for you to check"
     since = _parse(data.get("received_at")) or reply["at"]
     # Only a decline that arrived while the switch was on: turning it on never thanks an old one.
     switched_on = _parse(automation.on_since(conn, user_id, FEATURE))
@@ -1612,6 +1619,9 @@ def problem_now(
         return "cancelled", f"The company is now marked {target['status'].replace('_', ' ')}, so the thank-you was not sent"
     if target["contact_bounced"] or thank_you["to_email"].casefold() in target["bounced_addresses"] or target.get("bounced_at"):
         return "cancelled", "An email to them bounced, so the thank-you was not sent"
+    if not manual and target.get("possible_reply_count"):
+        # Held, not cancelled: when the student says it is not a reply, Send it anyway still offers it.
+        return "held", MAY_HAVE_REPLIED
     return None
 
 

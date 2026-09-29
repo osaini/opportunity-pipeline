@@ -64,6 +64,20 @@ NO_DOMAIN_CHECK = "this computer cannot check sender domains (publicsuffixlist i
 FREEMAIL = {
     "gmail.com", "googlemail.com", "yahoo.com", "outlook.com", "hotmail.com", "live.com", "msn.com", "icloud.com",
     "me.com", "aol.com", "proton.me", "protonmail.com", "gmx.com", "mail.com", "yandex.com", "zoho.com",
+    # Regional and national free mail.
+    "yahoo.co.uk", "yahoo.ca", "yahoo.co.in", "yahoo.com.au", "yahoo.fr", "yahoo.de", "yahoo.co.jp", "ymail.com",
+    "rocketmail.com", "hotmail.co.uk", "hotmail.ca", "hotmail.fr", "hotmail.de", "hotmail.it", "hotmail.es",
+    "outlook.fr", "outlook.de", "outlook.es", "outlook.it", "outlook.co.uk", "live.ca", "live.co.uk", "live.fr",
+    "mac.com", "pm.me", "protonmail.ch", "tutanota.com", "tuta.io", "fastmail.com", "fastmail.fm", "hey.com",
+    "gmx.de", "gmx.net", "gmx.at", "web.de", "t-online.de", "freenet.de", "orange.fr", "free.fr", "laposte.net",
+    "libero.it", "virgilio.it", "mail.ru", "yandex.ru", "rambler.ru", "qq.com", "163.com", "126.com", "sina.com",
+    "naver.com", "daum.net", "hanmail.net", "rediffmail.com", "inbox.com", "zohomail.com", "duck.com",
+    # Internet providers' mail.
+    "comcast.net", "verizon.net", "att.net", "sbcglobal.net", "bellsouth.net", "cox.net", "charter.net",
+    "earthlink.net", "optonline.net", "frontier.com", "windstream.net", "shaw.ca", "rogers.com", "sympatico.ca",
+    "btinternet.com", "sky.com", "virginmedia.com", "bigpond.com", "optusnet.com.au",
+    # Relays that hide an address.
+    "privaterelay.appleid.com", "mozmail.com", "simplelogin.com", "anonaddy.me",
 }
 DOMAIN_STATUSES = ("suggested", "trusted", "dismissed")
 

@@ -1098,14 +1098,53 @@ without a model call, you approve the draft again, and it can be sent once to
 the new address. A notice pasted into **Log a reply** is caught too, and is
 never logged as a reply.
 
-Replies are read from Gmail too, so there is nothing to paste. The app searches
-for mail from each company you wrote to: the contact, the Cc, and anyone at the
-company's own domain who is answering (a newsletter is not a reply). Each new
-reply is logged as a pasted one would be, starts call prep, and moves a company
-that was waiting (or marked No response) to **Replied**. What the reply means
-(declined, a call, an offer) is shown as a suggestion you apply or dismiss. An
-out-of-office reply is noted and changes nothing. The app checks every few
-minutes in the background while it runs, and whenever the Outreach list loads.
+Replies are read from Gmail too, so there is nothing to paste, and a reply
+from someone other than the address you wrote to is not missed. For each
+company you wrote to in the last six months, the app looks at mail from the
+addresses you wrote to, from anyone at the company's own domains (its
+website's, others its site shows it mailing from, and your contact's when it
+shares the website's name), in the Gmail thread of any email you sent them
+whoever wrote it, and mail from a person writing to you that names the
+company (when its name is specific enough: two words, or one of six letters
+or more) or your email's exact subject. Spam is looked in too; Trash is not.
+
+What it finds is sorted by how sure the app can be:
+
+- **A reply** is logged as a pasted one would be, starts call prep, and moves a
+  company that was waiting (or marked No response, or back to Drafted after a
+  bounce) to **Replied**. That is someone at the company answering in the
+  thread of your email, an address you wrote to writing back to you (not a
+  blast you were blind-copied on), or a person at the company's own website
+  domain writing to you: Gmail verified the sender, you were in the To or Cc
+  line, and their name matches their address. The card and the history say
+  how each one was matched ("Found in Gmail").
+- **A possible reply** is anything weaker a person may have written: a shared
+  or team inbox (careers@, recruitment@), a colleague Gmail could not verify,
+  someone outside the company writing in your thread or someone you copied,
+  mail in Spam or sent through a mailing or sales tool, mail an applicant
+  system sent (even in your contact's name), mail that could be from two
+  companies you wrote to, mail naming the company from a personal address,
+  and anything the app found that arrived before these checks existed. It shows on the company's card with why,
+  in **Urgent**, and as a notice. Say **It's a reply, log it** or **Not a
+  reply**. Until you do, nothing automatic treats the company as silent: a
+  scheduled follow-up waits (it is not cancelled), closing as No response and
+  automatic follow-up drafts hold, an automatic resend after a bounce waits
+  for you, and a resend you had scheduled is cancelled.
+- **Set aside**, with the reason kept: your own mail, delivery notices, mail
+  from before your first email, mailing-list mail from a shared or automated
+  sender, automated senders at the company that are not answering you (account
+  and security mail), and mail in Spam that Gmail could not verify, unless it
+  is from a person at the company or an address you wrote to.
+
+What a reply means (declined, a call, an offer) is shown as a suggestion you
+apply or dismiss. An out-of-office reply (in any of the common languages) is
+noted and changes nothing. For research outreach to a university, the same
+person's other address there counts as the one you wrote to, and others in
+their department are possible replies at most. The app
+checks every few minutes in the background while it runs, and whenever the
+Outreach list loads. It still cannot see a reply sent to another mailbox than
+the Gmail you connected, or a fresh email from a personal address, outside
+your thread, that names neither the company nor your subject.
 
 With **Send on their weekday morning** switched on under Outreach settings →
 Automation, the confirmed click schedules the approved email instead of sending
@@ -1141,11 +1180,14 @@ unchecked.
 
 The app requests two scopes. `gmail.compose` covers drafts and sending.
 `gmail.readonly` covers bounces and replies. With it the app reads the headers
-of its own sent threads, delivery failure notices, and mail from the companies
-you wrote to, and nothing else. The app calls only `drafts.create`,
-`drafts.get`, `messages.send`, `threads.get` (metadata format),
-`messages.list` (searches for notices from `mailer-daemon` or `postmaster`, and
-for mail from those companies), `messages.get` (for what those searches find),
+of its own sent threads, delivery failure notices, mail from the companies you
+wrote to (Spam included), mail in the threads of the emails you sent them, and
+mail naming those companies or your emails' subjects, and nothing else. It
+lists recent mail by id to find what is in those threads, reading only those
+messages. The app calls only `drafts.create`, `drafts.get`, `messages.send`,
+`threads.get` (metadata format), `messages.list` (searches for notices from
+`mailer-daemon` or `postmaster`, for mail from or naming those companies, and
+recent mail by id and thread), `messages.get` (for what those searches find),
 and `profile`. A connection made before the bounce check existed
 still sends; the tab asks you to reconnect once to turn the check on. The
 connection is refused if Google signs in as an account other than

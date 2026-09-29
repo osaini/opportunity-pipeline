@@ -827,6 +827,38 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(first, {"due": 1, "queued": 1})
         self.assertEqual(second, {"due": 1, "queued": 0})
 
+    def possible_reply(self, target_id, *, gmail_id="m-possible", candidates=()):
+        """An email outreach_inbox kept as a possible reply, waiting for the student to say."""
+        now = utc_now()
+        self.conn.execute(
+            "INSERT INTO outreach_inbox_messages(user_id, gmail_id, target_id, kind, sender, received_at, recorded_at, "
+            "via, rules, reason, subject, text, candidates_json) "
+            "VALUES(?, ?, ?, 'possible', 'careers@align.example', ?, ?, 'domain', 2, 'shared_address', 'Re: Hello', 'Thanks!', ?)",
+            (USER, gmail_id, target_id, now, now, json.dumps(list(candidates))),
+        )
+        self.conn.commit()
+
+    def test_no_follow_up_reminder_while_a_possible_reply_waits(self):
+        target = create_target(self.conn, {"company": "Align", "status": "sent"}, user_id=USER, today=date(2026, 9, 1))
+        self.possible_reply(target["id"])
+        self.assertEqual(queue_follow_up_reminders(self.conn, today=date(2026, 9, 9)), {"due": 0, "queued": 0})
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM notification_outbox").fetchone())
+        # The student says it is not a reply: the follow-up is due again.
+        self.conn.execute("UPDATE outreach_inbox_messages SET kind='dismissed', text='' WHERE gmail_id='m-possible'")
+        self.conn.commit()
+        self.assertEqual(queue_follow_up_reminders(self.conn, today=date(2026, 9, 9)), {"due": 1, "queued": 1})
+        payload = json.loads(self.conn.execute("SELECT payload_json FROM notification_outbox").fetchone()[0])
+        self.assertEqual(payload["subject"], "Follow up with Align")
+
+    def test_an_email_either_company_could_have_sent_holds_both_reminders(self):
+        filed = create_target(self.conn, {"company": "Align", "status": "sent"}, user_id=USER, today=date(2026, 9, 1))
+        candidate = create_target(self.conn, {"company": "Westmag", "status": "sent"}, user_id=USER, today=date(2026, 9, 1))
+        create_target(self.conn, {"company": "Quiet", "status": "sent"}, user_id=USER, today=date(2026, 9, 1))
+        self.possible_reply(filed["id"], candidates=[candidate["id"]])
+        self.assertEqual(queue_follow_up_reminders(self.conn, today=date(2026, 9, 9)), {"due": 1, "queued": 1})
+        subjects = [json.loads(row[0])["subject"] for row in self.conn.execute("SELECT payload_json FROM notification_outbox")]
+        self.assertEqual(subjects, ["Follow up with Quiet"])
+
     def test_revisit_dates_queue_their_own_reminder(self):
         create_target(self.conn, {"company": "Westmag", "status": "paused", "follow_up_at": "2027-01-05"}, user_id=USER)
         create_target(self.conn, {"company": "Gone", "status": "declined", "follow_up_at": "2027-01-05"}, user_id=USER)

@@ -305,6 +305,10 @@ def _watched(conn: sqlite3.Connection, user_id: str, now: datetime, every_send_o
         if not isinstance(detail, dict) or not detail.get("message_id") or not detail.get("thread_id"):
             continue
         item = {"target_id": row["target_id"], "sent_at": datetime.fromisoformat(row["created_at"]), "detail": detail}
+        # A send made in Gmail is recorded when the app notices it, which can be hours after Gmail sent it.
+        sent_ms = detail.get("sent_ms")
+        if isinstance(sent_ms, (int, float)) and sent_ms > 0:
+            item["sent_at"] = min(item["sent_at"], datetime.fromtimestamp(sent_ms / 1000, tz=timezone.utc))
         if not _bounced_since(conn, user_id, item):
             watched.append(item)
     return watched

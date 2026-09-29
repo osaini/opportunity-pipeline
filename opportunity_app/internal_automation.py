@@ -438,13 +438,13 @@ def _auto_close_key(target: dict[str, Any]) -> str:
 def auto_close_due(conn: sqlite3.Connection, user_id: str, *, today: date | None = None) -> list[dict[str, Any]]:
     """Companies whose follow-up went unanswered long enough that lifecycle_suggestion says no_response.
 
-    A company with any reply on record (logged, or waiting as a suggestion) is
-    left alone: someone wrote back, so closing it as No response would be wrong.
+    A company with any reply on record (logged, waiting as a suggestion, or an
+    email that may be a reply the student has not settled) is left alone: someone wrote back, so closing it as No response would be wrong.
     One tried before (its ledger row exists, whatever became of it, such as an
     undo) is not tried again for the same follow-up date, so an undo sticks and
     costs no Gmail read on later passes.
     """
-    from .outreach import lifecycle_suggestion, list_targets, local_today
+    from .outreach import heard_back, lifecycle_suggestion, list_targets, local_today
 
     today = today or local_today(conn, user_id)
     due = []
@@ -452,7 +452,7 @@ def auto_close_due(conn: sqlite3.Connection, user_id: str, *, today: date | None
         suggestion = lifecycle_suggestion(item, today)
         if not suggestion or suggestion["status"] != "no_response":
             continue
-        if item["reply_count"] or item["reply_suggestion"]:
+        if heard_back(item):
             continue
         if automation._by_key(conn, user_id, _auto_close_key(item)) is not None:
             continue
@@ -474,7 +474,7 @@ def auto_close(
 
     Returns one entry per company it looked at: closed, or held with the reason.
     """
-    from .outreach import NO_RESPONSE_AFTER_DAYS, get_target, lifecycle_suggestion, local_today
+    from .outreach import NO_RESPONSE_AFTER_DAYS, get_target, heard_back, lifecycle_suggestion, local_today
     from .outreach_gmail import _connector
     from .outreach_inbox import REPLY_WINDOW, watched_ids
     from .outreach_review import FRESH_LOOK_REASONS, fresh_look
@@ -529,7 +529,7 @@ def auto_close(
         target = get_target(conn, target_id, user_id=user_id, today=today)
         suggestion = lifecycle_suggestion(target, today)
         if target["status"] != "followed_up" or not suggestion or suggestion["status"] != "no_response" \
-                or target["reply_count"] or target["reply_suggestion"]:
+                or heard_back(target):
             results.append({"target_id": target_id, "closed": False, "reason": "It is no longer waiting on a reply"})
             continue
         days = (today - date.fromisoformat(target["follow_up_at"])).days
@@ -544,11 +544,31 @@ def auto_close(
             summary=f"Closed {target['company']} as No response: no reply {days} days after the follow-up",
             basis=AUTO_CLOSE_BASIS, confidence=None,
             idempotency_key=_auto_close_key(target), auto=True,
+            # Checked again inside the write: a reply, or an email that may be one, found meanwhile stops it.
+            guard=lambda check, _before, target_id=target_id: not _answered_since_check(check, target_id, user_id),
         )
         closed = row is not None and row.get("status") == "applied" and row.get("created_at") == row.get("applied_at")
         results.append({"target_id": target_id, "company": target["company"], "closed": closed,
                         "reason": "" if closed else "Nothing was changed"})
     return results
+
+
+def _answered_since_check(conn: sqlite3.Connection, target_id: str, user_id: str) -> bool:
+    """Whether a reply is logged for the company, or an email from it waits as a possible reply."""
+    if conn.execute(
+        "SELECT 1 FROM outreach_events WHERE target_id=? AND user_id=? AND event_type='reply_logged' LIMIT 1", (target_id, user_id),
+    ).fetchone():
+        return True
+    for row in conn.execute(
+        "SELECT target_id, candidates_json FROM outreach_inbox_messages WHERE user_id=? AND kind='possible'", (user_id,),
+    ).fetchall():
+        try:
+            others = [str(other) for other in json.loads(row[1] or "[]")]
+        except (TypeError, ValueError):
+            others = []
+        if target_id in {str(row[0]), *others}:
+            return True
+    return False
 
 
 # --- Automatic follow-up drafts ------------------------------------------------------------
@@ -573,7 +593,7 @@ def follow_up_draft_due(conn: sqlite3.Connection, user_id: str, *, now: datetime
     undo) is not written again for the same follow-up date, and one that failed
     waits FOLLOW_UP_RETRY_AFTER.
     """
-    from .outreach import list_targets, local_today
+    from .outreach import heard_back, list_targets, local_today
 
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     today = local_today(conn, user_id, now)
@@ -583,7 +603,7 @@ def follow_up_draft_due(conn: sqlite3.Connection, user_id: str, *, now: datetime
             continue
         if item["follow_up_body"] or item["follow_up_subject"] or item["follow_up_status"] != "none":
             continue
-        if item["reply_count"] or item["reply_suggestion"] or item["contact_bounced"] or item.get("bounced_at"):
+        if heard_back(item) or item["contact_bounced"] or item.get("bounced_at"):
             continue
         if automation._by_key(conn, user_id, _follow_up_key(item)) is not None:
             continue

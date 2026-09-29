@@ -357,6 +357,101 @@ class UrgentRuleTests(UrgentFixture):
             self.assertIn("unparseable", skipped["reason"])
 
 
+class UrgentPossibleReplyTests(UrgentFixture):
+    """An email that may be a reply (outreach_inbox) waits in Urgent for the student, in place of the follow-up it holds."""
+
+    def possible(self, target_id: str, received_at: str, *, gmail_id: str | None = None, candidates: tuple[str, ...] = (),
+                 kind: str = "possible", user_id: str = LOCAL_USER_ID) -> str:
+        """A message as outreach_inbox stores one it kept (``kind`` possible) or settled."""
+        gmail_id = gmail_id or f"m-{target_id}-{received_at}"
+        self.conn.execute(
+            """INSERT INTO outreach_inbox_messages(user_id, gmail_id, target_id, kind, sender, received_at, recorded_at,
+                   via, rules, reason, subject, text, candidates_json)
+               VALUES(?, ?, ?, ?, 'careers@bovi.example', ?, ?, 'domain', 2, 'shared_address', 'Re: Hello',
+                   'Thanks for writing. Could you send your resume?', ?)""",
+            (user_id, gmail_id, target_id, kind, received_at, STAMP, json.dumps(list(candidates))),
+        )
+        self.conn.commit()
+        return gmail_id
+
+    @staticmethod
+    def rows(result: dict) -> list[tuple[str, str, str]]:
+        return sorted((item["outreach_target_id"], item["kind"], item["date"]) for item in result["items"])
+
+    def test_it_takes_the_place_of_the_follow_up_dated_when_the_email_arrived(self):
+        sent = self.outreach(follow_up=date(2026, 9, 18), status="sent")
+        # 03:30 UTC on the 17th is 22:30 on the 16th in Chicago.
+        self.possible(sent, "2026-09-17T03:30:00+00:00")
+        result = self.queue()
+        self.assertEqual([(item["kind"], item["outreach_target_id"]) for item in result["items"]],
+                         [("outreach_possible_reply", sent)], "no follow-up row while the email waits")
+        item = result["items"][0]
+        self.assertEqual(item["date"], "2026-09-16", "dated by when it arrived, on the student's own calendar")
+        self.assertEqual(item["days_until"], -1)
+        self.assertEqual(item["date_source"], "Possible reply found in Gmail")
+        self.assertEqual((item["key"], item["company"], item["title"], item["stage"]),
+                         (f"outreach_possible_reply:{sent}", "Startup 1", "Startup 1", "sent"))
+        self.assertEqual(result["skipped_count"], 0)
+
+    def test_the_follow_up_comes_back_once_the_student_says_it_is_not_a_reply(self):
+        sent = self.outreach(follow_up=date(2026, 9, 18), status="sent")
+        gmail_id = self.possible(sent, "2026-09-16T15:00:00+00:00")
+        self.conn.execute("UPDATE outreach_inbox_messages SET kind='dismissed', text='' WHERE gmail_id=?", (gmail_id,))
+        self.conn.commit()
+        self.assertEqual(self.rows(self.queue()), [(sent, "outreach_follow_up", "2026-09-18")])
+
+    def test_only_an_email_still_waiting_holds_the_follow_up(self):
+        for kind in ("reply", "automatic", "dismissed", "ignored"):
+            with self.subTest(kind=kind):
+                sent = self.outreach(follow_up=date(2026, 9, 18), status="sent")
+                self.possible(sent, "2026-09-16T15:00:00+00:00", kind=kind)
+                shown = {item["kind"] for item in self.queue()["items"] if item["outreach_target_id"] == sent}
+                self.assertEqual(shown, {"outreach_follow_up"})
+
+    def test_every_company_it_could_be_from_waits_on_it(self):
+        filed = self.outreach(follow_up=date(2026, 9, 18), status="sent")
+        candidate = self.outreach(follow_up=date(2026, 9, 19), status="sent")
+        unrelated = self.outreach(follow_up=date(2026, 9, 20), status="sent")
+        # A candidate the student has since deleted is simply not shown.
+        self.possible(filed, "2026-09-16T15:00:00+00:00", candidates=(candidate, "outreach-deleted"))
+        result = self.queue()
+        self.assertEqual(self.rows(result), sorted([
+            (filed, "outreach_possible_reply", "2026-09-16"),
+            (candidate, "outreach_possible_reply", "2026-09-16"),
+            (unrelated, "outreach_follow_up", "2026-09-20"),
+        ]))
+        self.assertEqual(result["skipped_count"], 0)
+
+    def test_a_closed_company_still_shows_it(self):
+        closed = {status: self.outreach(status=status) for status in ("replied", "declined", "no_response", "call_scheduled", "offer")}
+        for target in closed.values():
+            self.possible(target, "2026-09-16T15:00:00+00:00")
+        paused = self.outreach(follow_up=date(2026, 9, 19), status="paused")
+        self.possible(paused, "2026-09-16T15:00:00+00:00")
+        items = self.queue()["items"]
+        possible = {item["outreach_target_id"]: item["stage"] for item in items if item["kind"] == "outreach_possible_reply"}
+        self.assertEqual(possible, {**{target: status for status, target in closed.items()}, paused: "paused"},
+                         "a reply may change a closed company's status, so the student is asked whatever it is")
+
+    def test_one_row_per_company_dated_by_the_first_email_still_waiting(self):
+        sent = self.outreach(follow_up=date(2026, 9, 18), status="sent")
+        other = self.outreach(status="sent")
+        self.possible(sent, "2026-09-15T15:00:00+00:00", gmail_id="m-later")
+        self.possible(sent, "2026-09-12T15:00:00+00:00", gmail_id="m-earlier")
+        # Filed under the other company, with this one as a candidate: it waits on both.
+        self.possible(other, "2026-09-10T15:00:00+00:00", gmail_id="m-first", candidates=(sent,))
+        mine = [item for item in self.queue()["items"] if item["outreach_target_id"] == sent]
+        self.assertEqual([(item["kind"], item["date"]) for item in mine], [("outreach_possible_reply", "2026-09-10")])
+
+    def test_another_students_email_holds_nothing_of_yours(self):
+        mine = self.outreach(follow_up=date(2026, 9, 18), status="sent")
+        theirs = self.outreach(follow_up=date(2026, 9, 18), status="sent", user_id=OTHER)
+        # Even an email of theirs that names your company's id as a candidate stays theirs.
+        self.possible(theirs, "2026-09-16T15:00:00+00:00", user_id=OTHER, candidates=(mine,))
+        self.assertEqual(self.rows(self.queue()), [(mine, "outreach_follow_up", "2026-09-18")])
+        self.assertEqual(self.rows(self.queue(user_id=OTHER)), [(theirs, "outreach_possible_reply", "2026-09-16")])
+
+
 class UrgentTenancyTests(UrgentFixture):
     def test_shared_posting_deadlines_are_shared_and_everything_else_is_private(self):
         self.listed_deadline("job-a", "2026-09-20T00:00:00+00:00")

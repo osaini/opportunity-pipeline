@@ -2667,6 +2667,10 @@
     partly_bounced: "Partly bounced",
     greeting_updated: "Greeting updated for the new contact",
     auto_reply: "Automatic reply (out of office)",
+    possible_reply: "Possible reply found in Gmail",
+    possible_reply_dismissed: "Not a reply, you said",
+    possible_reply_confirmed: "A reply, you said",
+    reply_found: "Found in Gmail",
     contact_recovery: "Looked for another contact after the bounce",
     send_scheduled: "Send scheduled",
     send_cancelled: "Scheduled send cancelled",
@@ -3057,6 +3061,11 @@
         const names = result.replies.map((entry) => `${entry.company} (${entry.from})`).join("; ");
         news.push(`New ${result.replies.length === 1 ? "reply" : "replies"} from ${names}, logged from Gmail.`);
       }
+      if (result.possible?.length) {
+        // One that more than one company could have sent names them all, never the app's guess.
+        const names = result.possible.map((entry) => `${entry.companies?.length > 1 ? entry.companies.join(" or ") : entry.company} (${entry.from})`).join("; ");
+        news.push(`Maybe a reply from ${names}. Say whether it is on the company's card; follow-ups wait until you do.`);
+      }
       if (!news.length) return;
       if (state.view === "outreach") await loadOutreach();
       announce(news.join(" "));
@@ -3275,7 +3284,7 @@
     panel.appendChild(element("p", "profile-help", expiring
       ? gmailExpiryLine(gmail.likely_expires_at)
       : gmail.connected
-      ? "Reconnect Gmail once so the app can catch bounces and log replies for you. It asks for one more permission, to read mail; the app reads only delivery failure notices and mail from the companies you wrote to."
+      ? "Reconnect Gmail once so the app can catch bounces and log replies for you. It asks for one more permission, to read mail; the app reads only delivery failure notices, mail from the companies you wrote to (Spam included), mail in the threads of the emails you sent them, and mail that names those companies or your emails' subjects. To find replies in those threads it lists recent mail by id, reading only what is in them."
       : gmail.needs_reconnect
         ? "Gmail stopped accepting the connection. Reconnect it to keep creating drafts with attachments."
         : `Connect Gmail to send approved emails${what} from here, or open them as drafts in Gmail first. Nothing sends until you press Send and confirm the recipient.`));
@@ -4580,6 +4589,10 @@
   // The one thing to do next, in the words the bar and the list row use.
   // `tab` is where that work happens; the bar offers to go there.
   function outreachNextStep(item) {
+    if (item.possible_reply_count) {
+      const one = item.possible_reply_count === 1;
+      return { label: one ? "Check a possible reply" : "Check possible replies", hint: `${one ? "An email" : "Emails"} from them may be a reply. Say whether ${one ? "it is" : "each is"} on the card; follow-ups wait until you do.`, tab: null, tone: "is-warning" };
+    }
     if (item.revisit_due) return { label: "Get back in touch", hint: `You planned to revisit on ${formatCalendarDate(item.follow_up_at)}. Write to them, then log it here.`, tab: "history", tone: "is-warning" };
     if (item.status === "paused") {
       return item.follow_up_at
@@ -5235,6 +5248,99 @@
     return section;
   }
 
+  // Emails from the company that may be replies (outreach_inbox.py). Not
+  // counted until the student says; follow-ups and closing as No response wait.
+  function outreachPossibleReplies(item) {
+    const waiting = item.possible_replies || [];
+    if (!waiting.length) return null;
+    const box = element("div", "outreach-possible-replies");
+    waiting.forEach((mail) => {
+      const entry = element("section", "outreach-possible-reply");
+      const subject = mail.subject || "(no subject)";
+      entry.setAttribute("aria-label", `Possible reply from ${mail.from}`);
+      const head = element("p", "outreach-possible-reply-head");
+      head.appendChild(element("strong", "", "Possible reply: "));
+      head.appendChild(document.createTextNode(`${mail.from} wrote ${formatDate(mail.received_at)}, “${subject}”.${mail.in_spam ? " Gmail put it in Spam." : ""}`));
+      entry.appendChild(head);
+      if (mail.preview) entry.appendChild(element("blockquote", "outreach-possible-reply-text", mail.preview));
+      const others = (mail.companies || []).filter((company) => company.id !== item.id).map((company) => company.company);
+      const also = others.length ? ` It could also be from ${others.join(", ")}; saying it is a reply here logs it for ${item.company}.` : "";
+      entry.appendChild(element("p", "outreach-possible-reply-why", `Not counted as a reply yet: ${mail.reason_text || mail.reason}. Follow-ups and closing as No response wait until you say.${also}`));
+      const actions = element("div", "outreach-possible-reply-actions");
+      const decide = async (decision, button) => {
+        actions.querySelectorAll("button").forEach((control) => { control.disabled = true; });
+        try {
+          await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/possible-replies/${encodeURIComponent(mail.gmail_id)}`, {
+            method: "POST",
+            body: JSON.stringify({ decision }),
+          });
+          state.outreachOpen = item.id;
+          await loadOutreach();
+          refocusOutreach(item.id, ".outreach-possible-reply-actions button", ".outreach-next select");
+          announce(decision === "reply"
+            ? `Logged ${mail.from}'s email as ${item.company}'s reply.`
+            : `Set aside ${mail.from}'s email; it is not a reply.`);
+        } catch (error) {
+          // Settled already (another tab) or gone: the card is stale, so it is shown again as it is now.
+          if (error.status === 409 || error.status === 404) {
+            state.outreachOpen = item.id;
+            await loadOutreach();
+            refocusOutreach(item.id, ".outreach-possible-reply-actions button", ".outreach-next select");
+          } else {
+            actions.querySelectorAll("button").forEach((control) => { control.disabled = false; });
+            button.focus();
+          }
+          showError(error.message);
+        }
+      };
+      const about = `${mail.from}'s email “${subject}”`;
+      const yes = element("button", "primary-button", "It's a reply, log it");
+      yes.type = "button";
+      yes.setAttribute("aria-label", `It's a reply, log it: ${about}, for ${item.company}`);
+      yes.addEventListener("click", () => decide("reply", yes));
+      const no = element("button", "secondary-button", "Not a reply");
+      no.type = "button";
+      no.setAttribute("aria-label", `Not a reply: ${about}`);
+      // A follow-up is in line for this company, or for another it could be from: a misclick here would
+      // let it go to someone who may have answered, so the button asks once more, as Send does.
+      const releases = Boolean(mail.holds_follow_up) || ["scheduled", "sending"].includes(item.scheduled?.follow_up?.state);
+      let timer = null;
+      const disarm = () => {
+        clearTimeout(timer);
+        timer = null;
+        delete no.dataset.confirming;
+        no.textContent = "Not a reply";
+        no.setAttribute("aria-label", `Not a reply: ${about}`);
+      };
+      no.addEventListener("click", () => {
+        if (releases && !no.dataset.confirming) {
+          no.dataset.confirming = "1";
+          no.textContent = "Not a reply: let the follow-up go?";
+          no.setAttribute("aria-label", `Not a reply: let the follow-up go? ${about}`);
+          announce("Press Not a reply again to let the follow-up go.");
+          timer = setTimeout(disarm, SEND_CONFIRM_MS);
+          return;
+        }
+        clearTimeout(timer);
+        decide("not_reply", no);
+      });
+      no.addEventListener("blur", () => { if (no.dataset.confirming) disarm(); });
+      no.addEventListener("keydown", (event) => { if (event.key === "Escape" && no.dataset.confirming) disarm(); });
+      actions.append(yes, no);
+      if (typeof mail.gmail_url === "string" && mail.gmail_url.startsWith("https://mail.google.com/")) {
+        const open = element("a", "text-button", "Open in Gmail");
+        open.href = mail.gmail_url;
+        open.target = "_blank";
+        open.rel = "noopener noreferrer";
+        open.setAttribute("aria-label", `Open in Gmail: ${subject}`);
+        actions.appendChild(open);
+      }
+      entry.appendChild(actions);
+      box.appendChild(entry);
+    });
+    return box;
+  }
+
   function createOutreachCard(item, context = {}) {
     const card = element("article", "application-card outreach-card outreach-pane");
     card.dataset.outreachId = item.id;
@@ -5257,8 +5363,15 @@
       const label = OUTREACH_STATUS_LABELS[reply.status] || reply.status;
       identity.appendChild(element("p", "outreach-fit", `${reply.from || "They"} replied ${formatDate(reply.received_at)}, found in Gmail. It reads as ${label}: ${reply.reason}.`));
     }
+    // How the latest reply found in Gmail was matched to the company, always: it may not be from the address written to.
+    if (item.gmail_reply) {
+      const found = item.gmail_reply;
+      identity.appendChild(element("p", "outreach-fit", `Latest reply found in Gmail ${formatDate(found.received_at)}: ${found.reason_text}.`));
+    }
     const thanks = thankYouSection(item);
     if (thanks) identity.appendChild(thanks);
+    const possible = outreachPossibleReplies(item);
+    if (possible) identity.appendChild(possible);
     if (item.bounced_at) {
       const failed = item.bounced_addresses.join(", ");
       const why = item.bounce_reason ? ` Gmail said: "${item.bounce_reason}"` : "";
@@ -8876,6 +8989,7 @@
     application_follow_up: "Follow-up",
     outreach_follow_up: "Outreach follow-up",
     outreach_revisit: "Outreach revisit",
+    outreach_possible_reply: "Outreach possible reply",
     application_silence: "No reply yet",
   };
   const URGENT_GROUPS = [
@@ -8976,7 +9090,7 @@
     { id: "all", label: "Everything dated", test: () => true },
     ...URGENT_GROUPS.map(([key, label, test]) => ({ id: key, label, group: "When", tone: key === "overdue" ? "is-alert" : key === "today" ? "is-soon" : "", test })),
     { id: "deadlines", label: "Deadlines", group: "Kind", test: (item) => ["posting_deadline", "your_deadline", "program_deadline", "outreach_deadline", "email_deadline"].includes(item.kind) },
-    { id: "follow-ups", label: "Follow-ups", group: "Kind", test: (item) => ["application_follow_up", "application_silence", "outreach_follow_up", "outreach_revisit"].includes(item.kind) },
+    { id: "follow-ups", label: "Follow-ups", group: "Kind", test: (item) => ["application_follow_up", "application_silence", "outreach_follow_up", "outreach_revisit", "outreach_possible_reply"].includes(item.kind) },
     { id: "tasks", label: "Tasks", group: "Kind", test: (item) => item.kind === "task" },
   ];
 

@@ -22,7 +22,11 @@ What is read. A message is read in full when its sender's domain, or the host
 of any link in it, is on the shipped list (data/application_senders.json), or
 its sender is at a domain suggested or trusted for a company the student has
 applied to. Anything else is recorded as skipped, with nothing about it kept.
-A message outreach already owns (outreach_inbox_messages with a company) is
+A message outreach holds (outreach_inbox.owned_sql: a company's reply or
+automatic reply matched by its thread or an address the student wrote to, or a
+possible reply waiting for the student) is left to outreach. One outreach only
+set aside, matched to a company by its domain alone, or the student dismissed
+is read here too; _reclaim takes back any such message this reader had once
 left to outreach.
 
 What it means. The keyword rules (connections.classify_monitored_message) plus
@@ -161,6 +165,8 @@ from .user_time import user_timezone
 LOGGER = logging.getLogger(__name__)
 
 FEATURE = "application_mail"
+# The origin of a message outreach held and then let go (_reclaim): only ever proposed.
+RECLAIMED = "reclaimed"
 HEALTH_COMPONENT = "inbox.applications"
 POLICY_VERSION = "application-mail-v1"
 # The lowest rules confidence that made no false automatic rejection or
@@ -1151,6 +1157,8 @@ def decide(
     auth = mail_trust.authenticate(mail.message)
     enabled_at = _enabled_at(sync)
     planned, common = plan(conn, user_id, mail, classification, match, auth, enabled_at=enabled_at, now=now, label=kind)
+    if origin == RECLAIMED:
+        common.append("it was read late, after outreach stopped holding it as a reply")
     # Made only when there is something for the card: a change, or an email no application matched.
     existing_event = _event_id(conn, user_id, mail.gmail_id)
     event_id = existing_event or f"event-{uuid4().hex}"
@@ -1305,7 +1313,11 @@ def _record(conn: sqlite3.Connection, user_id: str, mail: Mail | None, gmail_id:
             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, gmail_id) DO UPDATE SET application_id=excluded.application_id, event_id=excluded.event_id,
                 action_id=excluded.action_id, kind=excluded.kind, matched_by=excluded.matched_by, state=excluded.state,
-                recorded_at=excluded.recorded_at
+                recorded_at=excluded.recorded_at,
+                thread_id=CASE WHEN ? THEN excluded.thread_id ELSE application_mail_messages.thread_id END,
+                subject=CASE WHEN ? THEN excluded.subject ELSE application_mail_messages.subject END,
+                sender_domain=CASE WHEN ? THEN excluded.sender_domain ELSE application_mail_messages.sender_domain END,
+                received_at=CASE WHEN ? THEN excluded.received_at ELSE application_mail_messages.received_at END
             WHERE application_mail_messages.state='awaiting_resume'
             """,
             (
@@ -1314,6 +1326,8 @@ def _record(conn: sqlite3.Connection, user_id: str, mail: Mail | None, gmail_id:
                 outcome.state, origin, redact(mail.subject)[:300] if mail and keep else "",
                 (mail_trust.registrable_domain(mail.sender_domain) or mail.sender_domain) if mail and keep else "",
                 mail.received_at.isoformat(timespec="seconds") if mail else (received_at or utc_now()), utc_now(),
+                # A row set aside unread (left to outreach, read while paused) gets what reading it found.
+                bool(mail and keep), bool(mail and keep), bool(mail and keep), mail is not None,
             ),
         )
         if queue:
@@ -1328,9 +1342,51 @@ def _known(conn: sqlite3.Connection, user_id: str, gmail_id: str) -> Any:
 
 
 def _outreach_owns(conn: sqlite3.Connection, user_id: str, gmail_id: str) -> bool:
+    """Whether outreach holds this message as a company's reply, automatic reply, or possible reply (outreach_inbox.owned_sql).
+
+    A message outreach only set aside, or matched to a company by its domain
+    alone, is still this reader's to judge: a recruiter at a company the
+    student also wrote to may be writing about the application.
+    """
+    from .outreach_inbox import owned_sql  # imported here: outreach_inbox's watcher imports this module
+
     return conn.execute(
-        "SELECT 1 FROM outreach_inbox_messages WHERE user_id=? AND gmail_id=? AND target_id<>''", (user_id, gmail_id),
+        f"SELECT 1 FROM outreach_inbox_messages WHERE user_id=? AND gmail_id=? AND target_id<>'' AND {owned_sql()}",
+        (user_id, gmail_id),
     ).fetchone() is not None
+
+
+def _reclaim(conn: sqlite3.Connection, user_id: str, *, expect: Any) -> int:
+    """Take back what this reader left to outreach that outreach no longer holds, to read it on its own rules.
+
+    Outreach once set aside mail from a company's domain while still owning it,
+    and a student can dismiss a possible reply or confirm one matched only by
+    domain. Once outreach has judged the message under its current rules and
+    does not hold it, its 'outreach' record here becomes one waiting to be
+    decided again (as mail read while paused is, _rescan), with the origin
+    'reclaimed': read late, so what it says is only ever proposed (decide).
+    One transaction, with the sync row locked. Returns how many.
+    """
+    from .outreach_inbox import RULES, owned_sql
+
+    with conn:
+        _pass_sync(conn, user_id, expect)
+        ids = [str(row[0]) for row in conn.execute(
+            f"""
+            SELECT a.gmail_id FROM application_mail_messages a
+            JOIN outreach_inbox_messages o ON o.user_id=a.user_id AND o.gmail_id=a.gmail_id
+            WHERE a.user_id=? AND a.state='outreach' AND o.rules >= ? AND NOT {owned_sql('o')}
+            ORDER BY a.gmail_id
+            """,
+            (user_id, RULES),
+        ).fetchall()]
+        if not ids:
+            return 0
+        conn.executemany(
+            "UPDATE application_mail_messages SET state='awaiting_resume', origin=? WHERE user_id=? AND gmail_id=? AND state='outreach'",
+            [(RECLAIMED, user_id, gmail_id) for gmail_id in ids],
+        )
+    return len(ids)
 
 
 class _Stop(Exception):
@@ -1679,6 +1735,7 @@ def run_pass(
                     _recover(conn, gmail, user_id, now, expect=expect)
                 else:
                     _collect_history(conn, gmail, user_id, sync, now, expect=expect)
+                _reclaim(conn, user_id, expect=expect)
                 _drain(conn, gmail, user_id, "pending_ids_json", "live", budget, decisions, now, totals, expect=expect)
                 _rescan(conn, gmail, user_id, budget, decisions, now, totals, expect=expect)
                 _backfill(conn, gmail, user_id, budget, decisions, now, totals, expect=expect)

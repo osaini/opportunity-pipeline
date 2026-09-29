@@ -17,12 +17,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, auto_triage, automation, internal_automation, migrate, resume_variants, schema
+from opportunity_app import STATIC_DIR, auto_triage, automation, internal_automation, migrate, outreach_inbox, resume_variants, schema
 from opportunity_app.actions import record_intent, update_application
 from opportunity_app.api import create_app
 from opportunity_app.automation import Superseded
 from opportunity_app.extension_apply import apply_context
-from opportunity_app.outreach import create_target, get_target, log_reply, update_target
+from opportunity_app.outreach import (
+    create_target, delete_target, get_target, lifecycle_suggestion, list_targets, log_reply, update_target,
+)
 from opportunity_app.outreach_automation import AutomationWorker
 from opportunity_app.outreach_delivery import record_bounce
 from opportunity_app.outreach_drafting import draft_versions
@@ -837,6 +839,28 @@ class OutreachCase(Case):
             "email_subject": "Internship question", "email_body": "Hi Bovi team,\n\nA short note.\n\nSam", **values,
         }, user_id=USER)
 
+    def possible(self, owner, *others, gmail_id=None, text="Thanks for writing. Could you send a few times for a call?"):
+        """An email reply capture kept as a possible reply: filed under ``owner``, and ``others`` could have sent it too.
+
+        Written the way outreach_inbox writes one (the row, its history events, its notice).
+        """
+        gmail_id = gmail_id or f"possible-{uuid4().hex[:8]}"
+        kept = outreach_inbox._record_possible(
+            self.conn, [owner, *others], user_id=USER, gmail_id=gmail_id, sender="careers@bovi.test", received=utc_now(),
+            via="domain", reason="ambiguous" if others else "shared_address", thread_id="", subject="Re: Internship question",
+            text=text, message_id=f"<{gmail_id}@bovi.test>", from_name="Careers",
+        )
+        self.assertIsNotNone(kept, "the possible reply was recorded")
+        return gmail_id
+
+    def settle(self, target, gmail_id, decision="not_reply"):
+        """The student answers a possible reply on ``target``'s card."""
+        return outreach_inbox.decide_possible_reply(self.conn, target["id"], gmail_id, decision, user_id=USER)
+
+    def company(self, name, **values):
+        slug = name.lower().replace(" ", "")
+        return {"company": name, "website": f"https://{slug}.test", "contact_email": f"hi@{slug}.test", **values}
+
 
 class AutoCloseTests(OutreachCase):
     def setUp(self):
@@ -1011,6 +1035,148 @@ class AutoCloseTests(OutreachCase):
             results = internal_automation.auto_close(self.conn, USER, client_factory=lambda: None)
         self.assertEqual(sum(1 for result in results if result["closed"]), 5)
 
+    # --- An email that may be a reply holds the close until the student says ---
+
+    def test_a_possible_reply_waiting_holds_the_company_even_when_it_is_only_a_candidate(self):
+        held = self.quiet()
+        owner = self.quiet(**self.company("Kiva"))
+        candidate = self.quiet(**self.company("Mako"))
+        free = self.quiet(**self.company("Tarn"))
+        self.possible(held)
+        # Filed under Kiva; Mako could have sent it too (candidates_json), so it holds Mako as well.
+        self.possible(owner, candidate)
+        self.assertEqual([item["id"] for item in internal_automation.auto_close_due(self.conn, USER)], [free["id"]])
+        self.on("outreach_auto_close")
+        with mock.patch("opportunity_app.outreach_review.fresh_look", return_value={"ok": True, "reason": ""}) as look:
+            results = internal_automation.auto_close(self.conn, USER, client_factory=lambda: None)
+        self.assertEqual([(result["target_id"], result["closed"]) for result in results], [(free["id"], True)])
+        self.assertEqual([call.args[1] for call in look.call_args_list], [free["id"]], "Gmail is not read for a held company")
+        self.assertEqual([self.status(target) for target in (held, owner, candidate, free)],
+                         ["followed_up", "followed_up", "followed_up", "no_response"])
+        self.assertEqual(len(automation.list_actions(self.conn, USER, feature="outreach_auto_close")), 1)
+
+    def test_only_a_possible_reply_holds_not_an_email_set_aside(self):
+        target = self.quiet()
+        now = utc_now()
+        with self.conn:
+            for kind in ("dismissed", "automatic", "ignored"):
+                self.conn.execute(
+                    "INSERT INTO outreach_inbox_messages(user_id, gmail_id, target_id, kind, sender, received_at, recorded_at, "
+                    "via, rules, reason, candidates_json) VALUES(?, ?, ?, ?, 'careers@bovi.test', ?, ?, 'domain', 2, 'x', '[]')",
+                    (USER, f"{kind}-1", target["id"], kind, now, now),
+                )
+        self.assertEqual([item["id"] for item in internal_automation.auto_close_due(self.conn, USER)], [target["id"]])
+
+    def test_once_the_student_settles_a_possible_reply_the_hold_lifts_for_every_candidate(self):
+        owner = self.quiet(**self.company("Kiva"))
+        candidate = self.quiet(**self.company("Mako"))
+        dismissed = self.possible(owner, candidate)
+        self.assertEqual(internal_automation.auto_close_due(self.conn, USER), [], "both held while it waits")
+        self.settle(candidate, dismissed, "not_reply")  # said on the candidate's card
+        self.assertEqual({item["id"] for item in internal_automation.auto_close_due(self.conn, USER)}, {owner["id"], candidate["id"]})
+
+        other_owner = self.quiet(**self.company("Orla"))
+        other_candidate = self.quiet(**self.company("Pell"))
+        confirmed = self.possible(other_owner, other_candidate)
+        released = {item["id"] for item in internal_automation.auto_close_due(self.conn, USER)} & {other_owner["id"], other_candidate["id"]}
+        self.assertEqual(released, set(), "both held while it waits")
+        self.settle(other_candidate, confirmed, "reply")  # Pell's reply: Orla is free, Pell has heard back
+        due = {item["id"] for item in internal_automation.auto_close_due(self.conn, USER)}
+        self.assertIn(other_owner["id"], due)
+        self.assertNotIn(other_candidate["id"], due)
+        self.assertEqual(get_target(self.conn, other_candidate["id"], user_id=USER)["reply_count"], 1)
+
+    def test_a_possible_reply_the_fresh_look_finds_holds_the_close(self):
+        owner = self.quiet()
+        candidate = self.quiet(**self.company("Kiva"))
+        self.on("outreach_auto_close")
+
+        def finds_one(conn, target_id, **_kwargs):
+            # Found for the first company looked at, and Kiva could have sent it too.
+            if not conn.execute("SELECT 1 FROM outreach_inbox_messages WHERE kind='possible'").fetchone():
+                self.possible(get_target(conn, target_id, user_id=USER),
+                              *[get_target(conn, other, user_id=USER) for other in (owner["id"], candidate["id"]) if other != target_id])
+            return {"ok": True, "reason": ""}
+
+        with mock.patch("opportunity_app.outreach_review.fresh_look", side_effect=finds_one):
+            results = internal_automation.auto_close(self.conn, USER, client_factory=lambda: None)
+        self.assertEqual({(result["target_id"], result["closed"], result["reason"]) for result in results},
+                         {(owner["id"], False, "It is no longer waiting on a reply"),
+                          (candidate["id"], False, "It is no longer waiting on a reply")})
+        self.assertEqual((self.status(owner), self.status(candidate)), ("followed_up", "followed_up"))
+        self.assertEqual(automation.list_actions(self.conn, USER, feature="outreach_auto_close"), [])
+
+    def test_the_close_checks_again_inside_its_write(self):
+        # Found after the re-read and before the write (another tab, the background check): the guard stops it.
+        arrivals = {
+            "possible reply": lambda target, other: self.possible(target),
+            "possible reply filed under another company": lambda target, other: self.possible(other, target),
+            "pasted reply": lambda target, other: log_reply(self.conn, target["id"], "Thanks, we will get back to you.", user_id=USER),
+        }
+        self.on("outreach_auto_close")
+        original = automation.perform
+        for index, (name, arrive) in enumerate(arrivals.items()):
+            with self.subTest(name):
+                target = self.quiet(**self.company(f"Quiet {index}"))
+                other = self.target(**self.company(f"Other {index}"), status="sent",
+                                    sent_at=(date.today() - timedelta(days=3)).isoformat())
+
+                def arrives_first(*args, target=target, other=other, arrive=arrive, **kwargs):
+                    arrive(target, other)
+                    return original(*args, **kwargs)
+
+                with mock.patch("opportunity_app.outreach_review.fresh_look", return_value={"ok": True, "reason": ""}), \
+                        mock.patch.object(automation, "perform", side_effect=arrives_first) as perform:
+                    [result] = internal_automation.auto_close(self.conn, USER, client_factory=lambda: None)
+                self.assertEqual(perform.call_count, 1, "the re-read saw nothing, so the write was reached")
+                self.assertEqual((result["target_id"], result["closed"], result["reason"]), (target["id"], False, "Nothing was changed"))
+                self.assertEqual(self.status(target), "followed_up")
+                self.assertEqual(automation.list_actions(self.conn, USER, feature="outreach_auto_close"), [])
+
+    def test_no_no_response_suggestion_while_a_possible_reply_waits(self):
+        owner = self.quiet()
+        candidate = self.quiet(**self.company("Kiva"))
+        today = date.today()
+
+        def suggested():
+            listed = {item["id"]: item for item in list_targets(self.conn, user_id=USER, today=today)}
+            seen = []
+            for target in (owner, candidate):
+                card = get_target(self.conn, target["id"], user_id=USER, today=today)
+                seen.append(tuple((suggestion or {}).get("status") for suggestion in (
+                    lifecycle_suggestion(card, today), card["suggestion"], lifecycle_suggestion(listed[target["id"]], today),
+                    listed[target["id"]]["suggestion"],
+                )))
+            return seen
+
+        self.assertEqual(suggested(), [("no_response",) * 4] * 2)
+        gmail_id = self.possible(owner, candidate)
+        self.assertEqual(suggested(), [(None,) * 4] * 2, "neither the company it is filed under nor the other candidate")
+        self.settle(owner, gmail_id, "not_reply")
+        self.assertEqual(suggested(), [("no_response",) * 4] * 2)
+
+    def test_deleting_the_company_a_possible_reply_is_filed_under_keeps_holding_the_other_candidate(self):
+        # The email could still be from Kiva: deleting Bovi must not settle it for Kiva without asking.
+        owner = self.quiet()
+        candidate = self.quiet(**self.company("Kiva"))
+        self.possible(owner, candidate)
+        self.assertTrue(delete_target(self.conn, owner["id"], user_id=USER))
+        card = get_target(self.conn, candidate["id"], user_id=USER)
+        self.assertEqual(card["possible_reply_count"], 1, "the email is still asked about on Kiva's card")
+        self.assertEqual(internal_automation.auto_close_due(self.conn, USER), [], "and it still holds Kiva")
+
+    def test_pasting_a_possible_reply_on_another_candidates_card_settles_it_for_every_candidate(self):
+        text = "Thanks for writing. Could you send a few times for a call?"
+        owner = self.quiet()
+        candidate = self.quiet(**self.company("Kiva"))
+        gmail_id = self.possible(owner, candidate, text=text)
+        log_reply(self.conn, candidate["id"], text, user_id=USER)  # Kiva's reply, pasted on Kiva's card
+        self.assertEqual(get_target(self.conn, candidate["id"], user_id=USER)["possible_replies"], [], "never asked about again")
+        row = self.conn.execute("SELECT kind, target_id FROM outreach_inbox_messages WHERE gmail_id=?", (gmail_id,)).fetchone()
+        self.assertEqual((row[0], row[1]), ("reply", candidate["id"]), "settled as Kiva's reply")
+        self.assertEqual([item["id"] for item in internal_automation.auto_close_due(self.conn, USER)], [owner["id"]],
+                         "Bovi no longer waits on an email that was Kiva's")
+
 
 class FollowUpDraftTests(OutreachCase):
     def due(self, **values):
@@ -1110,6 +1276,71 @@ class FollowUpDraftTests(OutreachCase):
         self.assertEqual(len(report["follow_up_drafts"]), 1)
         self.assertEqual(len(worker.run_once()["follow_up_drafts"]), 1)
         self.assertEqual(internal_automation.follow_up_draft_due(self.conn, USER), [])
+
+    # --- An email that may be a reply holds the follow-up until the student says ---
+
+    def test_not_while_a_possible_reply_waits_even_when_it_is_only_a_candidate(self):
+        held = self.due()
+        owner = self.due(**self.company("Kiva"))
+        candidate = self.due(**self.company("Mako"))
+        free = self.due(**self.company("Tarn"))
+        self.possible(held)
+        self.possible(owner, candidate)
+        self.assertEqual([item["id"] for item in internal_automation.follow_up_draft_due(self.conn, USER)], [free["id"]])
+        self.on("auto_follow_up_drafts")
+        worker = AutomationWorker(self.platform_path, fetcher_factory=lambda: None, provider_factory=legacy, draft_provider="legacy")
+        self.assertEqual([item["target_id"] for item in worker.run_once()["follow_up_drafts"]], [free["id"]])
+        self.assertEqual(worker.run_once().get("follow_up_drafts", []), [], "nothing else is due")
+        self.assertEqual([get_target(self.conn, target["id"], user_id=USER)["follow_up_body"] for target in (held, owner, candidate)],
+                         ["", "", ""])
+
+    def test_a_possible_reply_found_while_the_draft_is_written_stops_it_and_is_not_a_failure(self):
+        self.on("auto_follow_up_drafts")
+        from opportunity_app import outreach_drafting
+
+        original = outreach_drafting.compose_draft
+        for index, filed_under_another in enumerate((False, True)):
+            with self.subTest(filed_under_another=filed_under_another):
+                target = self.due(**self.company(f"Due {index}"))
+                other = self.target(**self.company(f"Other {index}"), status="sent",
+                                    sent_at=(date.today() - timedelta(days=3)).isoformat())
+                found = []
+
+                def found_meanwhile(*args, target=target, other=other, filed_under_another=filed_under_another, found=found, **kwargs):
+                    prepared = original(*args, **kwargs)
+                    found.append(self.possible(other, target) if filed_under_another else self.possible(target))
+                    return prepared
+
+                with mock.patch.object(outreach_drafting, "compose_draft", found_meanwhile):
+                    result = self.write(target)
+                self.assertEqual(result, {"target_id": target["id"], "drafted": False, "skipped": True,
+                                          "error": "The company is no longer waiting on a follow-up, so no draft was saved"})
+                after = get_target(self.conn, target["id"], user_id=USER, include_events=True)
+                self.assertEqual((after["follow_up_body"], after["follow_up_status"]), ("", "none"))
+                self.assertEqual(draft_versions(self.conn, target["id"], user_id=USER, kind="follow_up"), [])
+                self.assertNotIn(internal_automation.AUTO_FOLLOW_UP_DRAFT_FAILED, [event["event_type"] for event in after["events"]])
+                self.assertEqual(automation.list_actions(self.conn, USER, feature="auto_follow_up_drafts"), [])
+                self.assertNotIn(target["id"], [item["id"] for item in internal_automation.follow_up_draft_due(self.conn, USER)])
+                # Held, not tried: once the student says it is not a reply, the draft is written on the next pass.
+                self.settle(target, found[0], "not_reply")
+                self.assertIn(target["id"], [item["id"] for item in internal_automation.follow_up_draft_due(self.conn, USER)])
+
+    def test_the_draft_handler_refuses_while_a_possible_reply_waits(self):
+        self.on("auto_follow_up_drafts")
+        owner = self.due()
+        candidate = self.due(**self.company("Kiva"))
+        self.possible(owner, candidate)
+        draft = {"kind": "follow_up", "subject": "Following up", "body": "Hi team,\n\nFollowing up on my note.\n\nSam"}
+        for target in (owner, candidate):
+            with self.subTest(company=target["company"]):
+                with self.assertRaisesRegex(automation.NotApplicable, "no longer waiting on a follow-up"):
+                    automation.perform(
+                        self.conn, user_id=USER, feature="auto_follow_up_drafts", action_type="outreach.follow_up_draft",
+                        subject_kind="outreach_target", subject_id=target["id"], after={"draft": draft}, evidence={},
+                        summary="x", basis="test", confidence=None, idempotency_key=f"guard:{target['id']}", auto=True,
+                    )
+                self.assertEqual(get_target(self.conn, target["id"], user_id=USER)["follow_up_body"], "")
+        self.assertEqual(automation.list_actions(self.conn, USER, feature="auto_follow_up_drafts"), [])
 
 
 # --- Auto-save and auto-pass ----------------------------------------------------------------

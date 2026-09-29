@@ -132,7 +132,7 @@ def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
     if getattr(conn, "backend", "sqlite") == "postgresql":
         row = conn.execute(
             "SELECT 1 FROM information_schema.columns "
-            "WHERE table_name=? AND column_name=?",
+            "WHERE table_schema=current_schema() AND table_name=? AND column_name=?",
             (table, column),
         ).fetchone()
         return row is not None
@@ -324,6 +324,36 @@ def _apply_decline_thank_you(conn: sqlite3.Connection, sql: str) -> None:
     conn.executescript(sql)
 
 
+# What a message outreach read keeps beyond its kind: how it was matched to a
+# company (via) and under which version of the rules (rules), why it was set
+# aside or is only a possible reply, the other companies that could have sent
+# it, where it sits in Gmail, and, for a reply or a possible reply, its subject,
+# its Message-ID and sender's name (to answer it in its thread), and while a
+# possible reply waits, its words (outreach_inbox.py).
+_OUTREACH_REPLY_RULES_COLUMNS = (
+    ("outreach_inbox_messages", "via", "TEXT NOT NULL DEFAULT ''"),
+    ("outreach_inbox_messages", "rules", "INTEGER NOT NULL DEFAULT 0"),
+    ("outreach_inbox_messages", "candidates_json", "TEXT NOT NULL DEFAULT '[]'"),
+    ("outreach_inbox_messages", "thread_id", "TEXT NOT NULL DEFAULT ''"),
+    ("outreach_inbox_messages", "message_id", "TEXT NOT NULL DEFAULT ''"),
+    ("outreach_inbox_messages", "from_name", "TEXT NOT NULL DEFAULT ''"),
+    ("outreach_inbox_messages", "subject", "TEXT NOT NULL DEFAULT ''"),
+    ("outreach_inbox_messages", "text", "TEXT NOT NULL DEFAULT ''"),
+    ("outreach_inbox_messages", "reason", "TEXT NOT NULL DEFAULT ''"),
+    ("outreach_inbox_messages", "in_spam", "INTEGER NOT NULL DEFAULT 0"),
+    ("outreach_inbox_messages", "decided_at", "TEXT"),
+    ("outreach_inbox_messages", "meta_json", "TEXT NOT NULL DEFAULT '{}'"),
+)
+
+
+def _apply_outreach_reply_rules(conn: sqlite3.Connection, sql: str) -> None:
+    # Guarded like _apply_automation: running it again after a crash repairs it.
+    for table, column, definition in _OUTREACH_REPLY_RULES_COLUMNS:
+        if not _has_column(conn, table, column):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    conn.executescript(sql)
+
+
 # Migrations whose SQL alone cannot express the change: parsing timestamps is
 # not portable across SQLite and PostgreSQL, so a Python step owns it. Adding a
 # column is not repeatable, so a step owns that too.
@@ -334,6 +364,7 @@ _MIGRATION_STEPS: dict[str, Callable[[Any, str], None]] = {
     "0038_application_mail.sql": _apply_application_mail,
     "0039_internal_automation.sql": _apply_internal_automation,
     "0040_decline_thank_you.sql": _apply_decline_thank_you,
+    "0041_outreach_reply_rules.sql": _apply_outreach_reply_rules,
 }
 
 

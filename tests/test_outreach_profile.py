@@ -179,6 +179,71 @@ class CompanyDedupeTests(ProfileTestCase):
         self.assertIsNone(self.conn.execute("SELECT 1 FROM outreach_dismissed").fetchone(), "adding it back undoes the deletion")
 
 
+class DeletedCompanyMailTests(ProfileTestCase):
+    """Deleting a company settles the emails that waited as its possible replies (outreach_inbox.py), and only those."""
+
+    WORDS = "Thanks for writing. Could you send your resume?"
+
+    def setUp(self):
+        super().setUp()
+        self.bovi = create_target(self.conn, {"company": "Bovi Robotics", "website": "https://bovi.example", "status": "sent"}, user_id=USER)
+        self.kite = create_target(self.conn, {"company": "Kite Labs", "website": "https://kite.example", "status": "sent"}, user_id=USER)
+
+    def mail(self, gmail_id, target_id, *, kind="possible", candidates=(), text=WORDS):
+        """A message as outreach_inbox stores one: a possible reply keeps its words while it waits."""
+        stamp = "2026-09-17T15:00:00+00:00"
+        self.conn.execute(
+            "INSERT INTO outreach_inbox_messages(user_id, gmail_id, target_id, kind, sender, received_at, recorded_at, "
+            "via, rules, reason, subject, text, candidates_json) "
+            "VALUES(?, ?, ?, ?, 'careers@bovi.example', ?, ?, 'domain', 2, 'ambiguous', 'Re: Hello', ?, ?)",
+            (USER, gmail_id, target_id, kind, stamp, stamp, text, json.dumps(list(candidates))),
+        )
+        self.conn.commit()
+
+    def row(self, gmail_id):
+        return dict(self.conn.execute(
+            "SELECT kind, target_id, text, candidates_json FROM outreach_inbox_messages WHERE user_id=? AND gmail_id=?", (USER, gmail_id),
+        ).fetchone())
+
+    def test_its_possible_replies_are_dismissed_and_their_words_go(self):
+        self.mail("m-possible", self.bovi["id"])
+        self.mail("m-reply", self.bovi["id"], kind="reply", text="")
+        self.mail("m-kite", self.kite["id"])
+        self.assertTrue(delete_target(self.conn, self.bovi["id"], user_id=USER))
+        gone = self.row("m-possible")
+        self.assertEqual((gone["kind"], gone["text"]), ("dismissed", ""))
+        self.assertEqual(self.row("m-reply")["kind"], "reply", "a reply already logged stays one")
+        kept = self.row("m-kite")
+        self.assertEqual((kept["kind"], kept["text"]), ("possible", self.WORDS), "another company's possible reply is untouched")
+        self.assertEqual(get_target(self.conn, self.kite["id"], user_id=USER)["possible_reply_count"], 1)
+
+    def test_deleting_a_company_that_was_only_a_candidate_leaves_the_email_waiting(self):
+        self.mail("m-either", self.bovi["id"], candidates=[self.kite["id"]])
+        delete_target(self.conn, self.kite["id"], user_id=USER)
+        row = self.row("m-either")
+        self.assertEqual((row["kind"], row["target_id"], row["text"]), ("possible", self.bovi["id"], self.WORDS))
+        self.assertEqual(get_target(self.conn, self.bovi["id"], user_id=USER)["possible_reply_count"], 1)
+
+    def test_deleting_the_company_an_unclear_email_was_filed_under_keeps_it_waiting_on_the_other(self):
+        """The row sits on the company written to most recently; every other one it could be from is a candidate.
+
+        The design holds every candidate until the student says. Deleting the
+        company the row happens to sit on must not settle it for Kite Labs,
+        which may well have sent it: its follow-up would go out on its own and
+        the email would never be shown to the student again.
+        """
+        from opportunity_app.outreach import heard_back
+
+        self.mail("m-either", self.bovi["id"], candidates=[self.kite["id"]])
+        self.assertEqual(get_target(self.conn, self.kite["id"], user_id=USER)["possible_reply_count"], 1)
+        delete_target(self.conn, self.bovi["id"], user_id=USER)
+        kite = get_target(self.conn, self.kite["id"], user_id=USER)
+        self.assertEqual(kite["possible_reply_count"], 1, "Kite Labs may still have sent it, so it still waits for the student")
+        self.assertTrue(heard_back(kite), "and it still holds Kite Labs' automatic follow-up")
+        self.assertEqual(kite["possible_replies"][0]["preview"], self.WORDS, "its words stay while it waits")
+        self.assertEqual(self.row("m-either")["kind"], "possible")
+
+
 class DiscoveryExclusionTests(ProfileTestCase):
     def setUp(self):
         super().setUp()

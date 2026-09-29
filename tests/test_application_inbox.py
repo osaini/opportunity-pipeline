@@ -897,6 +897,83 @@ class RetentionTests(MailCase):
         self.assertEqual(payload["body_preview"], "")
 
 
+class OutreachPossibleReplyRecordTests(MailCase):
+    """What outreach read for a reply (outreach_inbox_messages) leaves with the account; a possible reply's words have a time limit."""
+
+    WORDS = "Thanks for writing. Could you send your resume?"
+
+    def setUp(self):
+        super().setUp()
+        from opportunity_app.outreach import create_target
+
+        self.bovi = create_target(self.conn, {"company": "Bovi Robotics", "website": "https://bovi.example", "status": "sent"}, user_id=USER)
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO users(id, email, display_name, role, created_at, updated_at) VALUES('student-b', 'b@example.com', 'B', 'student', ?, ?)",
+                (utc_now(), utc_now()),
+            )
+
+    def mail(self, gmail_id, received, *, user_id=USER, target_id=None, kind="possible", reason="shared_address", text=WORDS):
+        """A message as outreach_inbox stores it, found as it arrived: the words only while a possible reply waits.
+
+        Retention ages the words by when outreach recorded them (recorded_at), so a reply found late keeps them.
+        """
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO outreach_inbox_messages(user_id, gmail_id, target_id, kind, sender, received_at, recorded_at, "
+                "via, rules, reason, subject, text) VALUES(?, ?, ?, ?, 'careers@bovi.example', ?, ?, 'domain', 2, ?, 'Re: Hello', ?)",
+                (user_id, gmail_id, self.bovi["id"] if target_id is None else target_id, kind,
+                 received.isoformat(timespec="seconds"), received.isoformat(timespec="microseconds"), reason, text),
+            )
+
+    def text(self, gmail_id, user_id=USER):
+        row = self.conn.execute("SELECT kind, text FROM outreach_inbox_messages WHERE user_id=? AND gmail_id=?", (user_id, gmail_id)).fetchone()
+        return row["kind"], row["text"]
+
+    def test_the_words_of_a_possible_reply_waiting_past_the_evidence_days_go_and_it_keeps_waiting(self):
+        import os
+
+        from opportunity_app.operations import run_retention
+        from opportunity_app.outreach import get_target, heard_back
+
+        now = datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
+        self.mail("m-old", now - timedelta(days=31))
+        self.mail("m-new", now - timedelta(days=29))
+        self.mail("m-theirs", now - timedelta(days=31), user_id="student-b", target_id="t-theirs")
+        with mock.patch.dict("os.environ"):
+            os.environ.pop("PIPELINE_MAIL_EVIDENCE_DAYS", None)
+            self.assertEqual(run_retention(self.conn, now=now)["possible_reply_words"], 0, "the default keeps them 180 days")
+            os.environ["PIPELINE_MAIL_EVIDENCE_DAYS"] = "30"
+            counts = run_retention(self.conn, now=now)
+            self.assertEqual(counts["possible_reply_words"], 2, "every account's, older than the evidence days")
+            self.assertEqual(run_retention(self.conn, now=now)["possible_reply_words"], 0, "counted once")
+        self.assertEqual(self.text("m-old"), ("possible", ""), "the words go; the email still waits for the student")
+        self.assertEqual(self.text("m-theirs", "student-b"), ("possible", ""))
+        self.assertEqual(self.text("m-new"), ("possible", self.WORDS))
+        bovi = get_target(self.conn, self.bovi["id"], user_id=USER)
+        self.assertEqual(bovi["possible_reply_count"], 2)
+        self.assertTrue(heard_back(bovi), "it still holds every automatic step")
+        self.assertEqual(sorted(item["preview"] for item in bovi["possible_replies"]), ["", self.WORDS])
+
+    def test_the_account_export_holds_what_outreach_read_and_why_and_only_the_students(self):
+        from opportunity_app.operations import ACCOUNT_QUERIES, delete_account
+
+        self.mail("m-possible", now_utc() - timedelta(days=1))
+        self.mail("m-set-aside", now_utc() - timedelta(days=2), kind="ignored", reason="list", text="")
+        self.mail("m-theirs", now_utc() - timedelta(days=1), user_id="student-b", target_id="t-theirs")
+        self.assertIn("outreach_inbox_messages", ACCOUNT_QUERIES)
+        exported = export_account(self.conn, user_id=USER)["outreach_inbox_messages"]
+        self.assertEqual(
+            sorted((row["gmail_id"], row["target_id"], row["kind"], row["reason"], row["text"]) for row in exported),
+            [("m-possible", self.bovi["id"], "possible", "shared_address", self.WORDS),
+             ("m-set-aside", self.bovi["id"], "ignored", "list", "")],
+        )
+        root = Path(self.tempdir.name)
+        delete_account(self.conn, [root / "resumes", root / "captures", root / "interviews"], user_id=USER)
+        left = [tuple(row) for row in self.conn.execute("SELECT user_id, gmail_id FROM outreach_inbox_messages")]
+        self.assertEqual(left, [("student-b", "m-theirs")], "they go with the account, and no one else's do")
+
+
 class WatcherTests(MailCase):
     def test_the_watcher_runs_it_as_a_fourth_step_only_when_it_is_not_off(self):
         from opportunity_app.outreach_inbox import InboxWatcher
@@ -1998,6 +2075,316 @@ class AutomaticArchiveTests(MailCase):
 
     def test_the_reply_kinds_are_the_kinds_that_lead_to_a_change(self):
         self.assertEqual(set(internal_automation.REPLY_KINDS), application_inbox.ACTIONABLE)
+
+
+# --- What outreach holds, and what it hands back (_outreach_owns, _reclaim) ----------------------------
+
+
+class OutreachHandoffTests(MailCase):
+    """Mail outreach holds as a company's reply is left to it; what it does not hold, or no longer holds, is read here.
+
+    The student applied to Acme Robotics and also wrote to Dana there, so an email from acme.com may be both
+    an answer to the outreach email and job mail. The reader reads acme.com because the outreach record lists
+    the company's website (mail_trust.refresh_suggestions). Rows are written as outreach_inbox writes them.
+    """
+
+    RECRUITER = "Acme Robotics Recruiting <careers@acme.com>"
+
+    def setUp(self):
+        super().setUp()
+        from opportunity_app.outreach import create_target
+
+        self.target = create_target(self.conn, {
+            "company": "Acme Robotics", "website": "https://acme.com", "contact_email": "dana@acme.com", "status": "sent",
+        }, user_id=USER)["id"]
+
+    def recruiter_mail(self, sender=RECRUITER):
+        return job_mail(sender=sender, subject="Application received",
+                        body="We have received your application for the Mechanical Engineering Intern role at Acme Robotics.")
+
+    def outreach_took(self, gmail_id, kind, *, via, reason, sender="careers@acme.com", target_id=None, received=None, text=""):
+        """Record the message in outreach_inbox_messages as outreach's capture does, under its current rules."""
+        from opportunity_app import outreach_inbox
+
+        stamp = (received or now_utc()).isoformat(timespec="seconds")
+        with self.conn:
+            claimed = outreach_inbox._remember(
+                self.conn, USER, gmail_id, self.target if target_id is None else target_id, kind, sender, stamp,
+                via=via, reason=reason, text=text,
+            )
+        self.assertTrue(claimed, f"outreach recorded {gmail_id}")
+
+    def possible(self, gmail_id, *, via="domain", reason="shared_address", **kwargs):
+        self.outreach_took(gmail_id, "possible", via=via, reason=reason, text="Could you send your transcript?", **kwargs)
+
+    def read_here(self, gmail_id):
+        """What the job-mail reader did about the email: the actions it recorded (applied, proposed or shadow)."""
+        return [action for action in self.actions(feature=FEATURE) if action["evidence"].get("gmail_id") == gmail_id]
+
+    def queued(self):
+        return json.loads(self.sync()["pending_ids_json"])
+
+    def test_what_outreach_holds_from_its_thread_or_an_address_written_to_or_as_a_possible_reply_is_left_to_it(self):
+        self.started()
+        dana = "Dana Reyes <dana@acme.com>"
+        held = {
+            "m-thread": ("reply", "thread", "thread", self.RECRUITER),
+            "m-address": ("reply", "address", "written_to", dana),
+            "m-away": ("automatic", "address", "out_of_office", dana),
+            "m-receipt": ("automatic", "thread", "acknowledgement", "Acme Robotics <no-reply@acme.com>"),
+            "m-shared": ("possible", "domain", "shared_address", self.RECRUITER),
+            "m-outsider": ("possible", "thread", "thread_outsider", "Pat Kim <pat@talent.example>"),
+            "m-named": ("possible", "name", "mentions_company", "Pat Kim <pat@talent.example>"),
+            "m-two": ("possible", "domain", "ambiguous", self.RECRUITER),
+        }
+        for gmail_id, (kind, via, reason, sender) in held.items():
+            self.deliver(gmail_id, self.recruiter_mail(sender=sender), thread_id="thread-of-the-email" if via == "thread" else None)
+            self.outreach_took(gmail_id, kind, via=via, reason=reason, sender=sender.rsplit("<", 1)[1].rstrip(">"))
+        self.pass_once()
+        for gmail_id in held:
+            with self.subTest(gmail_id=gmail_id):
+                self.assertEqual(self.message_row(gmail_id)["state"], "outreach")
+        self.assertEqual(self.gmail.message_gets, 0, "not even read")
+        self.assertEqual(self.actions(), [])
+        self.assertEqual(self.queued(), [])
+        self.pass_once()
+        self.assertEqual(self.gmail.message_gets, 0, "and not taken back while outreach holds them")
+
+    def test_mail_outreach_matched_by_domain_alone_set_aside_or_saw_dismissed_is_read_as_job_mail(self):
+        self.started()
+        read = {
+            "m-domain": ("reply", "domain", "domain_person", None),
+            # Possible replies the student said were replies, matched by the company's name or a Reply-To only.
+            "m-named": ("reply", "name", "mentions_company", None),
+            "m-reply-to": ("reply", "reply_to", "reply_to", None),
+            "m-away": ("automatic", "domain", "out_of_office", None),
+            "m-machine": ("ignored", "domain", "automated_sender", None),
+            "m-nobody": ("ignored", "", "no_company", ""),
+            "m-dismissed": ("dismissed", "domain", "shared_address", None),
+            "m-job": ("possible", "domain", "job_mail", None),
+        }
+        for gmail_id, (kind, via, reason, target_id) in read.items():
+            self.deliver(gmail_id, self.recruiter_mail())
+            self.outreach_took(gmail_id, kind, via=via, reason=reason, target_id=target_id)
+        self.pass_once()
+        for gmail_id in read:
+            with self.subTest(gmail_id=gmail_id):
+                self.assertEqual(self.message_row(gmail_id)["state"], "done")
+                self.assertTrue(self.read_here(gmail_id), "read and decided here")
+        self.assertEqual(self.gmail.message_gets, len(read))
+
+    def test_a_row_the_old_rules_set_aside_keeps_the_email_with_outreach_until_outreach_reads_it_again(self):
+        from opportunity_app import outreach_inbox
+
+        self.started()
+        received = now_utc() - timedelta(minutes=30)
+        emails = {"m-old-machine": "Acme Robotics <no-reply@acme.com>", "m-old-dana": "Dana Reyes <dana@acme.com>"}
+        stamp = received.isoformat(timespec="seconds")
+        for gmail_id, sender in emails.items():
+            self.gmail.store(gmail_id, self.recruiter_mail(sender=sender), received)
+            with self.conn:
+                # As the reader before these rules left it (any company's row was outreach's), and as the old
+                # outreach rules set it aside: no via, no reason, rules 0.
+                self.conn.execute(
+                    "INSERT INTO application_mail_messages(user_id, gmail_id, state, origin, received_at, recorded_at) "
+                    "VALUES(?, ?, 'outreach', 'live', ?, ?)", (USER, gmail_id, stamp, utc_now()),
+                )
+                self.conn.execute(
+                    "INSERT INTO outreach_inbox_messages(user_id, gmail_id, target_id, kind, sender, received_at, recorded_at) "
+                    "VALUES(?, ?, ?, 'ignored', ?, ?, ?)", (USER, gmail_id, self.target, sender, stamp, utc_now()),
+                )
+        rules = lambda: {row[0] for row in self.conn.execute("SELECT rules FROM outreach_inbox_messages")}  # noqa: E731
+        self.assertEqual(rules(), {0})
+        self.pass_once()
+        for gmail_id in emails:
+            with self.subTest(gmail_id=gmail_id):
+                self.assertEqual(self.message_row(gmail_id)["state"], "outreach", "an old set-aside says nothing yet")
+        self.assertEqual((self.gmail.message_gets, self.queued()), (0, []))
+        # Outreach reads both again under its current rules: the no-reply email is set aside again, and Dana's
+        # turns out to be her reply (an address the student wrote to).
+        self.outreach_took("m-old-machine", "ignored", via="domain", reason="automated_sender", sender="no-reply@acme.com", received=received)
+        self.outreach_took("m-old-dana", "reply", via="address", reason="written_to", sender="dana@acme.com", received=received)
+        self.assertEqual(rules(), {outreach_inbox.RULES}, "both claimed by the read again")
+        self.pass_once()
+        self.assertEqual(self.message_row("m-old-machine")["state"], "done", "taken back and read")
+        self.assertTrue(self.read_here("m-old-machine"))
+        self.assertEqual(self.message_row("m-old-dana")["state"], "outreach", "a reply outreach holds stays with it")
+        self.assertEqual(self.read_here("m-old-dana"), [])
+        self.assertEqual((self.gmail.message_gets, self.queued()), (1, []))
+        self.pass_once()
+        self.assertEqual(self.gmail.message_gets, 1, "taken back once, read once")
+
+    def test_a_possible_reply_the_student_says_is_not_one_is_read_on_the_next_pass(self):
+        from opportunity_app import outreach_inbox
+
+        self.started()
+        self.deliver("m-p", self.recruiter_mail())
+        self.possible("m-p")
+        self.pass_once()
+        self.assertEqual((self.message_row("m-p")["state"], self.gmail.message_gets), ("outreach", 0), "held while it waits")
+        outreach_inbox.decide_possible_reply(self.conn, self.target, "m-p", "not_reply", user_id=USER)
+        self.pass_once()
+        row = self.message_row("m-p")
+        self.assertEqual((row["state"], row["application_id"]), ("done", self.acme))
+        [action] = [action for action in self.read_here("m-p") if action["action_type"] == "application.stage"]
+        self.assertEqual(action["after"]["stage"], "applied")
+        self.assertEqual((self.gmail.message_gets, self.queued()), (1, []))
+        self.pass_once()
+        self.assertEqual(self.gmail.message_gets, 1, "not read twice")
+
+    def test_a_possible_reply_the_student_confirms_stays_with_outreach_only_when_it_came_in_the_thread(self):
+        from opportunity_app import outreach_inbox
+
+        self.started()
+        self.deliver("m-in-thread", self.recruiter_mail(sender="Pat Kim <pat@talent.example>"), thread_id="thread-of-the-email")
+        self.deliver("m-by-domain", self.recruiter_mail())
+        self.possible("m-in-thread", via="thread", reason="thread_outsider", sender="pat@talent.example")
+        self.possible("m-by-domain")
+        self.pass_once()
+        self.assertEqual({self.message_row(gmail_id)["state"] for gmail_id in ("m-in-thread", "m-by-domain")}, {"outreach"})
+        for gmail_id in ("m-in-thread", "m-by-domain"):
+            outreach_inbox.decide_possible_reply(self.conn, self.target, gmail_id, "reply", user_id=USER)
+        kinds = {row["gmail_id"]: (row["kind"], row["via"]) for row in self.conn.execute("SELECT gmail_id, kind, via FROM outreach_inbox_messages")}
+        self.assertEqual(kinds, {"m-in-thread": ("reply", "thread"), "m-by-domain": ("reply", "domain")})
+        self.pass_once()
+        self.assertEqual(self.message_row("m-in-thread")["state"], "outreach")
+        self.assertEqual(self.read_here("m-in-thread"), [])
+        self.assertEqual(self.message_row("m-by-domain")["state"], "done", "matched by the domain alone, it may be job mail too")
+        self.assertTrue(self.read_here("m-by-domain"))
+        self.assertEqual(self.gmail.message_gets, 1)
+
+    def test_deleting_the_company_in_outreach_hands_its_waiting_possible_reply_to_this_reader(self):
+        from opportunity_app.outreach import delete_target
+
+        self.started()
+        self.deliver("m-p", self.recruiter_mail())
+        self.possible("m-p")
+        self.pass_once()
+        self.assertEqual(self.message_row("m-p")["state"], "outreach")
+        self.assertTrue(delete_target(self.conn, self.target, user_id=USER))
+        self.pass_once()
+        self.assertEqual(self.message_row("m-p")["state"], "done")
+        self.assertTrue(self.read_here("m-p"))
+        self.assertEqual(self.gmail.message_gets, 1)
+
+    def trust_acme(self):
+        """acme.com trusted for Acme Robotics: an email from it may act on its own."""
+        mail_trust.refresh_suggestions(self.conn, USER)
+        suggestion = self.conn.execute("SELECT id FROM employer_domains WHERE domain='acme.com'").fetchone()
+        mail_trust.decide(self.conn, USER, suggestion["id"], "trusted")
+
+    def test_an_email_taken_back_from_outreach_is_only_ever_proposed_even_from_a_trusted_sender(self):
+        from opportunity_app import outreach_inbox
+
+        self.trust_acme()
+        self.started()
+        self.deliver("m-p", self.recruiter_mail(), minutes_ago=20)
+        self.possible("m-p")
+        self.pass_once()
+        outreach_inbox.decide_possible_reply(self.conn, self.target, "m-p", "not_reply", user_id=USER)
+        self.pass_once()
+        self.assertEqual(self.message_row("m-p")["origin"], application_inbox.RECLAIMED)
+        [move] = [action for action in self.read_here("m-p") if action["action_type"] == "application.stage"]
+        self.assertEqual((move["status"], move["after"]["stage"]), ("proposed", "applied"))
+        self.assertIn("it was read late, after outreach stopped holding it as a reply", move["evidence"]["why_proposal"])
+        self.assertEqual(self.stage(self.acme)[0], "applying")
+        # The same email that outreach never held acts on its own: what waits is the one read late.
+        automation.reject(self.conn, move["id"], USER)
+        self.deliver("m-fresh", self.recruiter_mail(), minutes_ago=1)
+        self.pass_once()
+        [fresh] = [action for action in self.read_here("m-fresh") if action["action_type"] == "application.stage"]
+        self.assertEqual((fresh["status"], fresh["evidence"]["why_proposal"]), ("applied", []))
+        self.assertEqual(self.stage(self.acme)[0], "applied")
+
+    def test_an_email_taken_back_is_read_on_a_later_pass_when_this_one_is_cut_short(self):
+        from opportunity_app import outreach_inbox
+
+        self.started()
+        for gmail_id in ("m-p1", "m-p2"):
+            self.deliver(gmail_id, self.recruiter_mail())
+            self.possible(gmail_id)
+        self.pass_once()
+        for gmail_id in ("m-p1", "m-p2"):
+            outreach_inbox.decide_possible_reply(self.conn, self.target, gmail_id, "not_reply", user_id=USER)
+        self.gmail.throttle_after = 1
+        self.assertEqual(self.pass_once()["state"], "throttled")
+        self.assertEqual(self.message_row("m-p1")["state"], "done")
+        waiting = self.message_row("m-p2")
+        # Not lost, not back with outreach, and still marked as read late, so reading it later only proposes.
+        self.assertEqual((waiting["state"], waiting["origin"]), ("awaiting_resume", application_inbox.RECLAIMED))
+        # Gmail's hold is over.
+        outreach_gmail._BACKOFF.clear()
+        with self.conn:
+            self.conn.execute("UPDATE connector_accounts SET backoff_until=NULL")
+        self.gmail.throttle_after = None
+        self.assertEqual(self.pass_once()["state"], "ok")
+        self.assertEqual(self.message_row("m-p2")["state"], "done")
+        self.assertEqual({action["status"] for action in self.read_here("m-p2")}, {"proposed"})
+        self.assertEqual(self.gmail.message_gets, 3, "one read throttled, then one read each")
+
+    def test_while_automation_is_paused_an_email_taken_back_waits_like_the_rest(self):
+        from opportunity_app import outreach_inbox
+
+        self.started()
+        self.deliver("m-p", self.recruiter_mail())
+        self.possible("m-p")
+        self.pass_once()
+        automation.set_paused(self.conn, USER, True)
+        outreach_inbox.decide_possible_reply(self.conn, self.target, "m-p", "not_reply", user_id=USER)
+        self.pass_once()
+        self.assertEqual(self.message_row("m-p")["state"], "awaiting_resume")
+        self.assertEqual(self.read_here("m-p"), [], "nothing decided while paused")
+        automation.set_paused(self.conn, USER, False)
+        self.pass_once()
+        row = self.message_row("m-p")
+        self.assertEqual((row["state"], row["origin"]), ("done", application_inbox.RECLAIMED), "read late, whenever it is read")
+        self.assertEqual({action["status"] for action in self.read_here("m-p")}, {"proposed"})
+
+    def test_an_email_taken_back_is_recorded_like_any_email_this_reader_reads(self):
+        from opportunity_app import outreach_inbox
+
+        self.started()
+        # Arrived four hours ago; outreach held it from then until the student said it is not a reply.
+        received = self.deliver("m-p", self.recruiter_mail(), minutes_ago=240, thread_id="thread-careers")
+        self.possible("m-p", received=received)
+        self.pass_once()
+        outreach_inbox.decide_possible_reply(self.conn, self.target, "m-p", "not_reply", user_id=USER)
+        self.pass_once()
+        row = self.message_row("m-p")
+        self.assertEqual(row["state"], "done")
+        self.assertEqual(
+            (row["subject"], row["sender_domain"], row["thread_id"], datetime.fromisoformat(row["received_at"])),
+            ("Application received", "acme.com", "thread-careers", received),
+            "its subject, sender and thread for the application's Emails list, and when it arrived, not when it was first set aside",
+        )
+        [listed] = application_inbox.application_emails(self.conn, USER, self.acme)
+        self.assertEqual((listed["gmail_id"], listed["subject"]), ("m-p", "Application received"))
+        self.assertTrue(listed["gmail_url"].endswith("/thread-careers"))
+
+    def test_an_email_from_before_the_switch_taken_back_from_outreach_is_still_only_proposed(self):
+        from opportunity_app import outreach_inbox
+
+        self.trust_acme()
+        received = now_utc() - timedelta(days=10)
+        self.gmail.store("b-1", self.recruiter_mail(), received)
+        self.gmail.backfill_found = ["b-1"]
+        self.possible("b-1", received=received)
+        self.switch("on")
+        self.pass_once()
+        row = self.message_row("b-1")
+        self.assertEqual((row["state"], row["origin"]), ("outreach", "backfill"))
+        outreach_inbox.decide_possible_reply(self.conn, self.target, "b-1", "not_reply", user_id=USER)
+        self.pass_once()
+        self.assertEqual(self.message_row("b-1")["state"], "done")
+        actions = self.read_here("b-1")
+        self.assertTrue(actions)
+        for action in actions:
+            with self.subTest(action=action["action_type"]):
+                self.assertEqual(action["status"], "proposed")
+                self.assertIn(application_inbox.BEFORE_ENABLED, action["evidence"]["why_proposal"])
+                self.assertIn(application_inbox.BACKFILL_BASIS, action["basis"])
+        self.assertEqual(self.stage(self.acme)[0], "applying")
+        self.assertEqual(application_inbox.status(self.conn, USER)["backfill_found"], len(actions), "listed with the look back")
 
 
 if __name__ == "__main__":

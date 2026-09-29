@@ -42,7 +42,7 @@ from typing import Any, Callable
 import httpx
 
 from . import automation, internal_automation, outreach_thank_you
-from .outreach import _log, get_target, greeting_style, greets_contact, list_targets, without_greeting
+from .outreach import _log, get_target, greeting_style, greets_contact, heard_back, list_targets, without_greeting
 from .outreach_contacts import SafeFetcher, apply_choice, choose_contact, find_contacts, list_candidates
 from .outreach_forms import form_due
 from .outreach_gmail import last_bounce
@@ -109,7 +109,7 @@ def recovery_due(conn: sqlite3.Connection, *, user_id: str) -> list[str]:
     """Companies whose contact bounced and that have not been searched again since."""
     due = []
     for item in list_targets(conn, user_id=user_id):
-        if not item["contact_bounced"] or item["sent_at"] or item["status"] not in {"not_started", "drafted"}:
+        if not item["contact_bounced"] or item["sent_at"] or item["status"] not in {"not_started", "drafted"} or heard_back(item):
             continue
         bounced = last_bounce(conn, item["id"], user_id)
         tried = _latest(conn, item["id"], user_id, RECOVERY_EVENT)
@@ -197,6 +197,8 @@ def resend_refusal(
     """
     if resent_before:
         return "It was already resent once automatically, so this time it waits for you"
+    if heard_back(before) or heard_back(after):
+        return "They may have answered the earlier email (a reply, or an email that may be one), so it waits for you"
     if before["draft_status"] != "approved":
         return "The email that bounced was not an approved draft"
     if choice["basis"] in {"strong_guess", "weak_guess"} and not choice.get("cc"):
