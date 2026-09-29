@@ -11,7 +11,11 @@ None of these values is secret:
   (outreach_review.review_choice, per purpose).
 - PIPELINE_OUTREACH_DISCOVERY_PROVIDER: which CLI does the web research (the
   deep search, placing companies, Find people, and searching other sites).
+- PIPELINE_OUTREACH_COMPANY_RESEARCH_PROVIDER: which CLI researches one
+  company for call prep; empty means the same as above.
 - PIPELINE_OUTREACH_ATTACHMENT: the file attached to Gmail drafts.
+- PIPELINE_LINKEDIN_ACCOUNT: the LinkedIn test account call prep may read
+  interviewers' profiles as (outreach_linkedin.py); empty means LinkedIn is off.
 
 Every choice lists what this computer can run, and says what is not set up.
 
@@ -31,11 +35,13 @@ from typing import Any
 
 from . import ROOT
 from .agent_providers import default_provider, provider_catalog
+from .outreach_linkedin import username_from
 from .outreach_gmail import attachment_path, attachment_problem
 from .resumes import DEFAULT_STORAGE, ResumeNotFoundError, list_resumes, resume_file_path
 
 DRAFT_ENV = "PIPELINE_OUTREACH_PROVIDER"
 RESEARCH_ENV = "PIPELINE_OUTREACH_DISCOVERY_PROVIDER"
+COMPANY_RESEARCH_ENV = "PIPELINE_OUTREACH_COMPANY_RESEARCH_PROVIDER"
 FOLLOW_UP_ENV = "PIPELINE_OUTREACH_FOLLOW_UP_PROVIDER"
 CALL_PREP_ENV = "PIPELINE_OUTREACH_CALL_PREP_PROVIDER"
 REVIEW_ENV = "PIPELINE_OUTREACH_REVIEW_PROVIDER"
@@ -43,6 +49,7 @@ THANK_YOU_ENV = "PIPELINE_OUTREACH_THANK_YOU_PROVIDER"
 # Writers that fall back to the first-email setting when left empty.
 FOLLOWING_DRAFTS = {"follow_up_provider": FOLLOW_UP_ENV, "call_prep_provider": CALL_PREP_ENV, "thank_you_provider": THANK_YOU_ENV}
 ATTACHMENT_ENV = "PIPELINE_OUTREACH_ATTACHMENT"
+LINKEDIN_ENV = "PIPELINE_LINKEDIN_ACCOUNT"
 RESEARCH_AGENTS = ("claude-code", "codex-cli")
 LEGACY_OPTION = {
     "id": "legacy", "label": "Grounded template (no AI)", "available": True,
@@ -109,6 +116,13 @@ class OutreachSettings:
                 "value": os.environ.get(RESEARCH_ENV, "").strip() or "claude-code",
                 "options": research,
             },
+            # Empty is the same agent as the deep search (outreach_research.research_agent).
+            "company_research_agent": {
+                "value": os.environ.get(COMPANY_RESEARCH_ENV, "").strip(),
+                "options": research,
+            },
+            # Only the username is ever shown or kept: it is what the account check compares.
+            "linkedin_account": {"value": username_from(os.environ.get(LINKEDIN_ENV, ""))},
             "attachment": {
                 "name": attached.name if attached else "",
                 "problem": attachment_problem(attached),
@@ -141,6 +155,17 @@ class OutreachSettings:
             if value and value not in known:
                 raise ValueError("Unknown reviewer")
             updates[REVIEW_ENV] = value
+        if "company_research_agent" in changes:
+            value = str(changes["company_research_agent"] or "").strip()
+            if value and value not in RESEARCH_AGENTS:
+                raise ValueError("The company research agent must be claude-code, codex-cli, or empty")
+            updates[COMPANY_RESEARCH_ENV] = value
+        if "linkedin_account" in changes:
+            raw = str(changes["linkedin_account"] or "").strip()
+            value = username_from(raw)
+            if raw and not re.fullmatch(r"[a-z0-9][a-z0-9_-]{1,99}", value):
+                raise ValueError("Give the LinkedIn account as its profile link or username, or leave it empty to turn LinkedIn off")
+            updates[LINKEDIN_ENV] = value
         if "research_agent" in changes:
             value = str(changes["research_agent"] or "").strip()
             if value not in RESEARCH_AGENTS:

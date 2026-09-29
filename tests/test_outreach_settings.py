@@ -97,6 +97,24 @@ class OutreachSettingsApiTests(unittest.TestCase):
             self.assertEqual(client.put("/api/v1/outreach/settings", headers=headers, json={"draft_provider": "legacy"}).status_code, 409)
         self.assertEqual(self.env_path.read_text(encoding="utf-8"), ENV)
 
+    def test_the_linkedin_account_is_one_username_and_can_never_write_another_key(self):
+        from contextlib import closing
+
+        from opportunity_app.schema import connect_product, ensure_product_schema
+
+        settings = OutreachSettings(env_path=self.env_path, attachment_dir=self.attachments, resume_storage=self.root / "resumes")
+        with closing(connect_product(self.platform_path)) as conn, mock.patch.dict(os.environ, {"PIPELINE_LINKEDIN_ACCOUNT": ""}):
+            ensure_product_schema(conn)
+            for bad in (
+                "jane\nPIPELINE_WEB_TOKEN=stolen", "jane\r\nAUTO_IMPORT_FROM_BROWSER=true", "jane doe", "a", "-jane", "jane;rm",
+            ):
+                with self.subTest(bad), self.assertRaises(ValueError):
+                    settings.update(conn, {"linkedin_account": bad}, user_id="local-user")
+            self.assertEqual(self.env_path.read_text(encoding="utf-8"), ENV, "nothing was written")
+            settings.update(conn, {"linkedin_account": "https://www.linkedin.com/in/Jane-Doe_2/?trk=x"}, user_id="local-user")
+            self.assertIn("PIPELINE_LINKEDIN_ACCOUNT=jane-doe_2\n", self.env_path.read_text(encoding="utf-8"))
+            settings.update(conn, {"linkedin_account": ""}, user_id="local-user")
+
 
 if __name__ == "__main__":
     unittest.main()

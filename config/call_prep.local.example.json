@@ -1,0 +1,28 @@
+{
+  "questions": [
+    {
+      "lead_in": "At <where you worked>, <who> set the use case for <your project>, and it guided how I designed it.",
+      "ask": "What's the use case of the project I'd be working on?",
+      "research": ["customers", "product"],
+      "blank": "Use case of the project:"
+    },
+    {
+      "lead_in": "",
+      "ask": "Where are you looking to expand?",
+      "research": ["growth"],
+      "blank": "Where they're expanding:"
+    },
+    {
+      "lead_in": "",
+      "ask": "As an intern, how could I help you ship faster?",
+      "research": ["hiring", "engineering"],
+      "blank": "How I can help them move faster:"
+    },
+    {
+      "lead_in": "",
+      "ask": "Where are you short-staffed?",
+      "research": ["hiring"],
+      "blank": "Where they're short-staffed:"
+    }
+  ]
+}

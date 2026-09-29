@@ -1274,3 +1274,14 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 .timeline-list .timeline-who { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; }
 .timeline-list .timeline-author { color: var(--ink-soft); font-weight: 700; }
 .timeline-list .timeline-undo { min-height: 24px; color: var(--accent-strong); font-weight: 700; text-decoration: underline; }
+/* Technical research from the web, in a company's Research tab. */
+.outreach-brief-section { display: grid; gap: 4px; }
+.outreach-brief-section > h4 { margin: 0; color: var(--ink); font-size: 11px; font-weight: 750; }
+.outreach-brief-list { display: grid; gap: 4px; margin: 0; padding-left: 18px; color: var(--ink-soft); font-size: 12px; line-height: 1.5; }
+.outreach-brief-list a { margin-left: 6px; font-size: 10px; white-space: nowrap; }
+.outreach-brief-list small { margin-left: 6px; color: var(--warn-ink); font-size: 10px; }
+.outreach-brief-actions { display: grid; gap: 8px; }
+.outreach-brief-actions .form-status { margin: 0; }
+.outreach-interviewer { display: grid; gap: 6px; }
+.outreach-interviewer-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; }
+@media (max-width: 720px) { .outreach-interviewer-fields { grid-template-columns: 1fr; } }

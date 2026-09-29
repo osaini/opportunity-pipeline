@@ -1,0 +1,22 @@
+-- Technical research on a company, from the web (opportunity_app/outreach_research.py):
+-- what they build and how it works, what they build it with, who built it,
+-- and where the company stands, each fact tied to the page that states it.
+--
+-- The columns are added to outreach_targets by a Python step
+-- (schema._apply_tech_brief), guarded, so a crash before the migration is
+-- marked cannot make the next start fail on a duplicate column:
+--
+-- tech_brief_json   the brief: kept facts (with source, quote, and whether the
+--                   page could be checked), gaps, and the facts left out with why
+-- tech_brief_at     when it was written; call prep researches again once stale
+-- tech_brief_by     the research agent that wrote it
+-- tech_brief_error  why the last try failed, '' when it did not
+-- tech_brief_tried_at when research last started, so a failed or empty try waits a day
+-- tech_brief_job_id the durable job researching it in the background
+--
+-- interviewer_json  who the call is with (from the mailbox or the student),
+--                   and notes from their LinkedIn profile, each with its quote
+-- interviewer_at, interviewer_error, interviewer_tried_at  when it was read, why
+--                   the last read failed, and when one last started
+-- interviewer_name, interviewer_linkedin  the student's own entry, which wins
+SELECT 1;

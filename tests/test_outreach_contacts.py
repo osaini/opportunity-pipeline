@@ -13,15 +13,19 @@ import email
 import hashlib
 import json
 import shutil
+import socket
 import sqlite3
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import httpcore
 import httpx
 
 from opportunity_app import schema
@@ -36,6 +40,11 @@ from opportunity_app.outreach_contacts import (
     find_contacts,
     guess_strength,
     list_candidates,
+    SafeFetcher,
+    _DeadlineBackend,
+    _DeadlineStream,
+    _FETCH_CLOCK,
+    default_client,
 )
 from opportunity_app.outreach_discovery import run_discovery
 from opportunity_app.outreach_email_search import check_person, search_emails
@@ -832,6 +841,141 @@ class MigrationTests(unittest.TestCase):
                 self.assertEqual(conn.execute("SELECT contact_cc FROM outreach_targets").fetchone()[0], "")
             finally:
                 conn.close()
+
+
+class FetchDeadlineTests(unittest.TestCase):
+    """The client's timeout limits each wait, so a server that trickles bytes needs a deadline of its own."""
+
+    def fetcher(self, now, cost):
+        def handler(request):
+            now[0] += cost
+            if request.url.path == "/hop":
+                return httpx.Response(302, headers={"location": "https://slow.test/page"})
+            return httpx.Response(200, text="<html><body>ok</body></html>", headers={"content-type": "text/html"})
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        return SafeFetcher(client, resolve=lambda _host: ["93.184.216.34"], clock=lambda: now[0])
+
+    def test_a_fetch_that_outlasts_its_deadline_gives_up_with_a_timeout(self):
+        now = [0.0]
+        with self.fetcher(now, 20) as fetcher:
+            result = fetcher.fetch("https://slow.test/hop", same_host_only=False, deadline_seconds=30)
+            self.assertEqual(result.error, "timeout", "the page arrives after the deadline")
+            self.assertEqual(fetcher.fetch("https://slow.test/page", same_host_only=False, deadline_seconds=30).error, None)
+            self.assertEqual(fetcher.fetch("https://slow.test/hop", same_host_only=False).error, None, "no deadline, no limit")
+
+
+class TrickledHeadersTests(unittest.TestCase):
+    """A server that sends its status line a byte at a time gets no more of the worker thread than the deadline.
+
+    Everything stays on 127.0.0.1: the client talks to a local stand-in for a proxy that answers every
+    request itself, and the host lookup is faked.
+    """
+
+    def serve(self, pause, head=b"HTTP/1.1 200 OK\r\nX-Pad: aaaaaaaaaa\r\n"):
+        server = socket.socket()
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        self.addCleanup(server.close)
+
+        def answer():
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                return
+            with conn:
+                try:
+                    conn.recv(65536)
+                    for byte in head:
+                        conn.sendall(bytes([byte]))
+                        time.sleep(pause)
+                    body = b"<html><body><p>hello</p></body></html>"
+                    conn.sendall(b"Content-Type: text/html\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
+                    time.sleep(0.2)
+                except OSError:
+                    pass
+
+        threading.Thread(target=answer, daemon=True).start()
+        client = httpx.Client(timeout=10.0, follow_redirects=False, proxy=f"http://127.0.0.1:{server.getsockname()[1]}")
+        return SafeFetcher(client, resolve=lambda _host: ["93.184.216.34"])
+
+    def test_headers_sent_a_byte_at_a_time_hit_the_deadline_not_the_clients_per_read_timeout(self):
+        # 34 bytes at 0.2 s each is about 7 s of trickling; each single read is far inside the client's 10 s.
+        with self.serve(0.2) as fetcher:
+            started = time.monotonic()
+            result = fetcher.fetch("http://example.com/", same_host_only=False, deadline_seconds=1)
+            took = time.monotonic() - started
+        self.assertEqual(result.error, "timeout")
+        self.assertLess(took, 3, "the fetch ended at its deadline, not when the headers finished")
+
+    def test_the_same_server_answering_in_time_is_read_normally(self):
+        with self.serve(0.0) as fetcher:
+            result = fetcher.fetch("http://example.com/", same_host_only=False, deadline_seconds=10)
+        self.assertEqual((result.status, result.error), (200, None))
+        self.assertIn("hello", result.text)
+
+    def test_the_deadline_is_cleared_when_a_fetch_ends_so_the_next_request_is_not_cut_short(self):
+        with self.serve(0.0) as fetcher:
+            fetcher.fetch("http://example.com/", same_host_only=False, deadline_seconds=10)
+            self.assertIsNone(_FETCH_CLOCK.until)
+
+    def test_every_real_client_is_bound_by_the_deadline_once(self):
+        client = default_client()
+        fetcher = SafeFetcher(client)
+        SafeFetcher(client)
+        backend = client._transport._pool._network_backend
+        self.assertIsInstance(backend, _DeadlineBackend)
+        self.assertNotIsInstance(backend._inner, _DeadlineBackend, "wrapped once, however many fetchers share the client")
+        client.close()
+        proxied = httpx.Client(proxy="http://127.0.0.1:9")
+        SafeFetcher(proxied)
+        self.assertTrue(all(isinstance(t._pool._network_backend, _DeadlineBackend) for t in proxied._mounts.values() if t is not None))
+        proxied.close()
+        SafeFetcher(httpx.Client(transport=httpx.MockTransport(lambda request: httpx.Response(200))))
+
+    def test_a_socket_wait_is_cut_to_what_is_left_and_refused_when_none_is_left(self):
+        waits = []
+
+        class Inner(httpcore.NetworkStream):
+            def read(self, max_bytes, timeout=None):
+                waits.append(timeout)
+                return b"x"
+
+            def write(self, buffer, timeout=None):
+                waits.append(timeout)
+
+            def close(self):
+                pass
+
+            def start_tls(self, ssl_context, server_hostname=None, timeout=None):
+                waits.append(timeout)
+                return self
+
+            def get_extra_info(self, info):
+                return info
+
+        stream = _DeadlineStream(Inner())
+        _FETCH_CLOCK.until = None
+        stream.read(1, 10.0)
+        stream.read(1, None)
+        self.assertEqual(waits, [10.0, None], "no deadline, no change")
+        waits.clear()
+        _FETCH_CLOCK.until = time.monotonic() + 2
+        try:
+            stream.read(1, 10.0)
+            stream.write(b"x", None)
+            stream.start_tls(None, "example.com", 10.0)
+            self.assertTrue(all(0 < wait <= 2 for wait in waits), waits)
+            _FETCH_CLOCK.until = time.monotonic() - 1
+            with self.assertRaises(httpcore.ReadTimeout):
+                stream.read(1, 10.0)
+            with self.assertRaises(httpcore.WriteTimeout):
+                stream.write(b"x", 10.0)
+            with self.assertRaises(httpcore.ConnectTimeout):
+                stream.start_tls(None, "example.com", 10.0)
+            self.assertEqual(stream.get_extra_info("socket"), "socket")
+        finally:
+            _FETCH_CLOCK.until = None
 
 
 if __name__ == "__main__":

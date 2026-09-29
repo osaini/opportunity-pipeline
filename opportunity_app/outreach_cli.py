@@ -3,6 +3,7 @@
     python -m opportunity_app.outreach_cli discover [--scopes local-accelerators us-startups]
                                                    [--max 10] [--dry-run] [--trigger scheduled]
     python -m opportunity_app.outreach_cli locate [--limit 20] [--batch 8] [--provider claude-code]
+    python -m opportunity_app.outreach_cli research [--all] [--target ID ...] [--limit 5] [--provider claude-code]
     python -m opportunity_app.outreach_cli recontact [--apply] [--redraft] [--limit 20] [--no-email-search]
     python -m opportunity_app.outreach_cli enrich [--all] [--force] [--limit 20] [--no-sec] [--no-render]
     python -m opportunity_app.outreach_cli remind
@@ -22,6 +23,14 @@ placed, through the same headless CLI the deep search uses. Python opens the
 page the search cites and keeps the location only when that page loads, names
 the company, and states the place (see outreach_locate.py). A deep search runs
 this for its new companies too.
+``research`` reads the web for each company: what they build and how it
+works, what they build it with, who built it, and where the company stands (see
+outreach_research.py). A fact is kept only when its quote is found on the page
+it cites and it says no more than the quote and the lines around it. By default
+it researches the companies that replied and have no research from the last 30
+days, which call prep does on its own too; --all covers every tracked company,
+and --target names some. Each company is one run of the research CLI, a few
+minutes apiece.
 ``recontact`` looks again for a person to write to at targets that have only a
 shared inbox or no address, and are not sent or approved (see
 outreach_recontact.py): it re-reads their site, asks the mail server about
@@ -53,6 +62,7 @@ from .outreach_discovery import DEFAULT_SCOPES, MAX_PER_SCOPE, RUNNERS, SCOPES, 
 from .outreach_locate import BATCH_SIZE, locate_targets
 from .outreach_profile import SEC_USER_AGENT_ENV, enrich_targets, sec_fetcher
 from .outreach_recontact import recontact_targets
+from .outreach_research import available_agent, due_for_research, research_company, research_runner, text_model
 from .outreach_render import default_renderer
 from .outreach_smtp import default_verifier
 from .schema import LOCAL_USER_ID, connect_product, ensure_product_schema
@@ -106,6 +116,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.environ.get("PIPELINE_OUTREACH_DISCOVERY_PROVIDER", "claude-code"),
         help="CLI that performs the web research",
     )
+    research = commands.add_parser("research", help="Research companies from the web")
+    research.add_argument("--all", action="store_true", dest="all_targets", help="Every tracked company, not only those that replied")
+    research.add_argument("--target", nargs="+", default=None, dest="target_ids", help="Only these target ids, however fresh")
+    research.add_argument("--limit", type=int, default=None, help="Research at most this many companies")
+    research.add_argument("--no-render", action="store_true", help="Never render JavaScript-built pages in a browser")
+    research.add_argument(
+        "--provider", choices=sorted(RUNNERS), default=None,
+        help="CLI that performs the web research (default: the one chosen in Outreach settings)",
+    )
     commands.add_parser("remind", help="Queue in-app reminders for due follow-ups")
     return parser
 
@@ -126,6 +145,8 @@ def main(argv: list[str] | None = None) -> int:
             return _locate(conn, args)
         if args.command == "recontact":
             return _recontact(conn, args)
+        if args.command == "research":
+            return _research(conn, args)
         try:
             with ExitStack() as stack:
                 fetcher = stack.enter_context(default_fetcher())
@@ -165,6 +186,41 @@ def _locate(conn, args: argparse.Namespace) -> int:
             limit=args.limit, batch_size=args.batch,
         )
     print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _research(conn, args: argparse.Namespace) -> int:
+    due = args.target_ids or due_for_research(conn, user_id=args.user, only_replied=not args.all_targets)
+    if args.limit is not None:
+        due = due[:max(0, args.limit)]
+    try:
+        agent, note = available_agent(args.provider)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if note:
+        print(note, file=sys.stderr)
+    results = []
+    renderer = None if args.no_render else default_renderer()
+    with ExitStack() as stack:
+        fetcher = stack.enter_context(default_fetcher())
+        if renderer is not None:
+            stack.enter_context(renderer)
+        for target_id in due:
+            try:
+                target = research_company(
+                    conn, target_id, user_id=args.user, runner=research_runner(agent), fetcher=fetcher,
+                    renderer=renderer, agent=agent, note=note, judge=text_model(build_provider, None, agent),
+                )
+                brief = target["tech_brief"]
+                results.append({
+                    "target_id": target_id, "company": target["company"], "kept": len(brief.get("facts") or []),
+                    "left_out": len(brief.get("refused") or []), "error": target["tech_brief_error"],
+                })
+            except Exception as exc:  # noqa: BLE001 - one company's failure is reported, the rest still run
+                results.append({"target_id": target_id, "error": str(exc)[:500]})
+            print(json.dumps(results[-1], ensure_ascii=False), file=sys.stderr)
+    print(json.dumps({"researched": len(due), "results": results}, indent=2, ensure_ascii=False))
     return 0
 
 

@@ -354,6 +354,33 @@ def _apply_outreach_reply_rules(conn: sqlite3.Connection, sql: str) -> None:
     conn.executescript(sql)
 
 
+# Research for call prep: the company from the web (outreach_research.py), and the interviewer.
+_TECH_BRIEF_COLUMNS = (
+    ("outreach_targets", "tech_brief_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ("outreach_targets", "tech_brief_at", "TEXT"),
+    ("outreach_targets", "tech_brief_by", "TEXT NOT NULL DEFAULT ''"),
+    ("outreach_targets", "tech_brief_error", "TEXT NOT NULL DEFAULT ''"),
+    ("outreach_targets", "tech_brief_tried_at", "TEXT"),
+    ("outreach_targets", "tech_brief_job_id", "TEXT"),
+    # Who the call is with and notes from their LinkedIn (outreach_interviewer.py);
+    # the student's own entry for who it is, and their profile link.
+    ("outreach_targets", "interviewer_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ("outreach_targets", "interviewer_at", "TEXT"),
+    ("outreach_targets", "interviewer_error", "TEXT NOT NULL DEFAULT ''"),
+    ("outreach_targets", "interviewer_tried_at", "TEXT"),
+    ("outreach_targets", "interviewer_name", "TEXT NOT NULL DEFAULT ''"),
+    ("outreach_targets", "interviewer_linkedin", "TEXT NOT NULL DEFAULT ''"),
+)
+
+
+def _apply_tech_brief(conn: sqlite3.Connection, sql: str) -> None:
+    # Guarded like _apply_automation: running it again after a crash repairs it.
+    for table, column, definition in _TECH_BRIEF_COLUMNS:
+        if not _has_column(conn, table, column):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    conn.executescript(sql)
+
+
 # Migrations whose SQL alone cannot express the change: parsing timestamps is
 # not portable across SQLite and PostgreSQL, so a Python step owns it. Adding a
 # column is not repeatable, so a step owns that too.
@@ -365,6 +392,7 @@ _MIGRATION_STEPS: dict[str, Callable[[Any, str], None]] = {
     "0039_internal_automation.sql": _apply_internal_automation,
     "0040_decline_thank_you.sql": _apply_decline_thank_you,
     "0041_outreach_reply_rules.sql": _apply_outreach_reply_rules,
+    "0042_outreach_tech_brief.sql": _apply_tech_brief,
 }
 
 

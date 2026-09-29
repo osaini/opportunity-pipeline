@@ -275,6 +275,8 @@ from .outreach_contacts import (
 from .outreach_call_prep import (
     CallPrepWorker, NotReplied, ReplyRequired, auto_queue_call_prep, queue_call_prep,
 )
+from .outreach_interviewer import web_interviewer
+from .outreach_research import queue_research as queue_company_research, web_researcher
 from .outreach_render import default_renderer
 from .outreach_smtp import default_verifier as default_smtp_verifier
 from .outreach_discovery import scope_definitions as discovery_scope_definitions, DiscoveryBusy, DiscoveryManager, last_runs as last_discovery_runs
@@ -445,6 +447,10 @@ class OutreachTargetRequest(BaseModel):
     follow_up_body: str | None = Field(default=None, max_length=20_000)
     call_prep: str | None = Field(default=None, max_length=20_000)
     contact_evidence_url: str | None = Field(default=None, max_length=500)
+    # Who the call is with, when it is not the person emailed (call prep reads
+    # their LinkedIn); the tracker checks the link is a linkedin.com/in/ page.
+    interviewer_name: str | None = Field(default=None, max_length=200)
+    interviewer_linkedin: str | None = Field(default=None, max_length=300)
     # PATCH only: the student vouches for a location nothing has checked yet.
     # It carries the location the page showed, so a place that changed between
     # the render and the click is refused instead of silently confirmed. A bare
@@ -588,6 +594,8 @@ class OutreachSettingsRequest(BaseModel):
     thank_you_provider: str | None = Field(default=None, max_length=40)
     review_provider: str | None = Field(default=None, max_length=40)
     research_agent: str | None = Field(default=None, max_length=40)
+    company_research_agent: str | None = Field(default=None, max_length=40)
+    linkedin_account: str | None = Field(default=None, max_length=300)
     attachment_resume_id: str | None = Field(default=None, max_length=100)
 
 
@@ -1079,12 +1087,26 @@ def create_app(
 
     # Call prep is written by a background thread from durable jobs, so it
     # survives a restart or a sleeping laptop. Tests run the jobs themselves.
+    # Researching a company browses the web and spends the research agent's
+    # quota, so like the deep search it is wired up only for the real database.
     if call_prep_worker is None:
         call_prep_worker = CallPrepWorker(
             database_target, provider_factory=resolved_outreach_provider_factory, provider=outreach_draft_provider,
+            researcher=web_researcher(
+                resolved_contact_client_factory, resolved_renderer_factory, resolved_outreach_provider_factory, outreach_draft_provider,
+            ) if real_product_db else None,
+            interviewer=web_interviewer(resolved_outreach_provider_factory, outreach_draft_provider) if real_product_db else None,
         )
     if start_call_prep_worker is None:
         start_call_prep_worker = real_product_db
+
+    def research_problem() -> str:
+        """Why company research cannot run on this computer right now, or "" when it can.
+
+        The researcher says (outreach_research.web_researcher's ``problem``): with
+        no research CLI installed, offering it would queue a job that can only fail.
+        """
+        return call_prep_worker.research_problem() if call_prep_worker.can_research else ""
 
     resolved_gmail_client_factory = outreach_gmail_client_factory or default_gmail_client_factory
 
@@ -2194,6 +2216,10 @@ def create_app(
             else everything
         )
         items, tags = decorate_outreach_with_tags(conn, items, user_id=user_id)
+        # Not available when no agent is installed here, and why, so the pane can say so.
+        company_research: dict[str, Any] = {"available": call_prep_worker.can_research}
+        if call_prep_worker.can_research and (problem := research_problem()):
+            company_research = {"available": False, "reason": problem}
         return {
             "items": items,
             "total": len(items),
@@ -2207,6 +2233,7 @@ def create_app(
             "automation": automation_settings(conn, user_id=user_id),
             "discovery": outreach_discovery_payload(conn, user_id),
             "recontact": outreach_recontact_payload(conn, user_id),
+            "company_research": company_research,
         }
 
     @app.post("/api/v1/outreach", status_code=status.HTTP_201_CREATED)
@@ -2634,6 +2661,34 @@ def create_app(
         except ReplyRequired as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         except (NotReplied, ValueError) as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        call_prep_worker.wake()
+        return target
+
+    @app.post("/api/v1/outreach/{target_id}/research", status_code=status.HTTP_202_ACCEPTED)
+    def research_outreach_company(
+        target_id: str,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """Queue research on the company from the web, run in the background.
+
+        Every fact kept has its quote found on the page it cites (outreach_research.py).
+        409 when this app has no research agent wired up (it runs only against
+        the student's own database), or when none is installed on this computer.
+        """
+        if not call_prep_worker.can_research:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Company research is not available in this app. It runs in the app on your own database.",
+            )
+        if problem := research_problem():
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=problem)
+        try:
+            target = queue_company_research(conn, target_id, user_id=user_id, reason="You asked for research")
+        except OutreachNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
         call_prep_worker.wake()
         return target

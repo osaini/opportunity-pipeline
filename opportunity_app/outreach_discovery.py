@@ -175,7 +175,7 @@ class DiscoveryBusy(RuntimeError):
     """Another deep search is already running."""
 
 
-def claude_runner(prompt: str) -> str:
+def claude_runner(prompt: str, *, timeout: float = RUNNER_TIMEOUT_SECONDS) -> str:
     """Headless Claude Code with web search and fetch only, outside the project."""
     command = [
         _cli_binary("claude-code"), "-p", "--output-format", "text",
@@ -185,7 +185,7 @@ def claude_runner(prompt: str) -> str:
     with tempfile.TemporaryDirectory(prefix="outreach-discovery-") as workdir:
         completed = subprocess.run(
             command, input=prompt, capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=RUNNER_TIMEOUT_SECONDS, cwd=workdir,
+            timeout=timeout, cwd=workdir,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     if completed.returncode != 0:
@@ -194,7 +194,7 @@ def claude_runner(prompt: str) -> str:
     return completed.stdout
 
 
-def codex_runner(prompt: str) -> str:
+def codex_runner(prompt: str, *, timeout: float = RUNNER_TIMEOUT_SECONDS) -> str:
     """Fallback: Codex CLI with web search, read-only sandbox, outside the project."""
     command = [
         _cli_binary("codex-cli"), "exec", "--skip-git-repo-check", "--sandbox", "read-only",
@@ -203,7 +203,7 @@ def codex_runner(prompt: str) -> str:
     with tempfile.TemporaryDirectory(prefix="outreach-discovery-") as workdir:
         completed = subprocess.run(
             command, input=prompt, capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=RUNNER_TIMEOUT_SECONDS, cwd=workdir,
+            timeout=timeout, cwd=workdir,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     if completed.returncode != 0:
@@ -331,7 +331,8 @@ def _mentions_company(text: str, company: str, domain: str) -> bool:
     stripped = _LEGAL_SUFFIX_RE.sub("", full).strip(" ,.")
     if stripped:
         names.add(stripped)
-    return any(name and name in haystack for name in names) or domain.casefold() in haystack
+    # An empty domain (no website on file) is in every string, so it proves nothing.
+    return any(name and name in haystack for name in names) or bool(domain) and domain.casefold() in haystack
 
 
 def validate_proposals(

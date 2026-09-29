@@ -171,7 +171,13 @@ def read_env(path: Path) -> dict[str, str]:
 
 
 def set_env_values(path: Path, updates: dict[str, str], *, overwrite: bool = False) -> list[str]:
-    """Write KEY=value lines in place, keeping comments and order; return the keys changed."""
+    """Write KEY=value lines in place, keeping comments and order; return the keys changed.
+
+    A key or a value with a line break in it would write a second line, so it is refused.
+    """
+    for key, value in updates.items():
+        if re.search(r"[\r\n]", f"{key}{value}"):
+            raise ValueError(f"The value for {key or 'a setting'} cannot contain a line break")
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
