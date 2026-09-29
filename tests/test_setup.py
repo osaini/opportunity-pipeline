@@ -130,6 +130,23 @@ class ProfileValidationTests(unittest.TestCase):
             warnings = setup.validate_profile({"break_location": home, "regions": atlanta})["warnings"]
             self.assertEqual(any("break_location" in warning for warning in warnings), flagged, home)
 
+    def test_a_line_break_in_a_setting_can_never_write_another_key(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        env = Path(folder.name) / ".env"
+        env.write_text("# mine\nPIPELINE_WEB_TOKEN=keep\n", encoding="utf-8")
+        before = env.read_text(encoding="utf-8")
+        for updates in (
+            {"PIPELINE_LINKEDIN_ACCOUNT": "jane\nPIPELINE_WEB_TOKEN=stolen"},
+            {"PIPELINE_LINKEDIN_ACCOUNT": "jane\rPIPELINE_WEB_TOKEN=stolen"},
+            {"PIPELINE_LINKEDIN_ACCOUNT\nEVIL": "x"},
+        ):
+            with self.subTest(updates), self.assertRaisesRegex(ValueError, "line break"):
+                setup.set_env_values(env, updates, overwrite=True)
+        self.assertEqual(env.read_text(encoding="utf-8"), before, "nothing was written")
+        setup.set_env_values(env, {"PIPELINE_LINKEDIN_ACCOUNT": "jane-doe"}, overwrite=True)
+        self.assertEqual(setup.read_env(env)["PIPELINE_LINKEDIN_ACCOUNT"], "jane-doe")
+
 
 if __name__ == "__main__":
     unittest.main()

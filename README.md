@@ -1000,9 +1000,10 @@ patents, papers, grants, GitHub, and news, plus the research agent's own list
 of what the web does not say (worth asking on the call). The agent cites a page
 and the words on it for every fact. The app opens each page and keeps the fact
 only when those words are on it, word for word, with every number, unit, and
-name in the fact in them or the lines around them; then a second model, which
-did not write the fact, reads it beside a passage the app cut from the page and
-confirms it says exactly that (the same company or person, the same numbers on
+name in the fact in them or the lines around them; then a separate read of the
+page's own passage (a fresh call that does not see the agent's reasoning; it may
+be the same model as the one that wrote the fact) takes the fact beside a passage
+the app cut from the page and confirms it says exactly that (the same company or person, the same numbers on
 the same things, the same "not"). A kept fact means the page says it, not that
 the page is right. A fact that could not be confirmed (a company site that
 turns automated readers away, or no second read) is kept marked *not checked*

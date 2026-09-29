@@ -4443,7 +4443,7 @@
     linkedinInput.value = settings.linkedin_account?.value || "";
     linkedinField.appendChild(linkedinInput);
     linkedinField.appendChild(element("p", "profile-help",
-      "Use a separate test account, never your everyday one. Before every read the app checks that LinkedIn is signed in as exactly this account, with importing your browser's sign-in turned off, and it only ever reads. See SETUP.md, LinkedIn for call prep."));
+      "Use a separate test account, never your everyday one. Before every read the app checks that LinkedIn is signed in as exactly this account, with importing your browser's sign-in turned off, and it only ever reads. See SETUP.md step 7b, Call prep."));
     linkedinInput.addEventListener("change", () => save({ linkedin_account: linkedinInput.value }, "LinkedIn account"));
 
     const [attachField, attachSelect] = selectField("settings-attachment", "Attach to Gmail drafts",
@@ -4957,9 +4957,25 @@
   // looks them up again.
   function outreachInterviewer(item) {
     const box = element("div", "outreach-interviewer is-wide");
-    const record = item.interviewer || {};
+    let record = item.interviewer || {};
+    // What was stored was looked up for whoever was named then. When you name someone else, it is not theirs.
+    const plainName = (value) => String(value || "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+    const linkedinUser = (value) => (String(value || "").match(/\/in\/([^/?#\s]+)/i) || [])[1]?.toLowerCase() || String(value || "").trim().toLowerCase();
+    const namedName = plainName(item.interviewer_name);
+    const namedLink = linkedinUser(item.interviewer_linkedin);
+    const otherPerson = Boolean(record.name || record.linkedin) && (
+      (namedName && namedName !== plainName(record.name))
+      || (namedLink && record.linkedin?.url && namedLink !== linkedinUser(record.linkedin.url))
+    );
+    let namedNow = "";
+    if (otherPerson) {
+      namedNow = String(item.interviewer_name || "").trim();
+      record = {};
+    }
     const said = element("p", "outreach-note");
-    if (record.name) {
+    if (namedNow) {
+      said.textContent = `Talking to ${namedNow} (you named them); LinkedIn not read yet. It is read when call prep next runs.`;
+    } else if (record.name) {
       said.textContent = `Talking to ${record.name}${record.email ? ` (${record.email})` : ""}: ${record.evidence || ""}.${record.meeting ? ` Call: ${record.meeting}.` : ""}`;
     } else {
       said.textContent = "Who you are talking to is not known yet. It comes from your inbox once someone at the company writes, or name them below.";
@@ -4968,7 +4984,7 @@
     const linkedin = record.linkedin;
     if (linkedin) {
       const line = element("p", "outreach-note");
-      line.append(`LinkedIn read ${formatDate(linkedin.read_at)} through your test account${linkedin.confirmed ? "" : "; it never names the company, so check it is them"}. `);
+      line.append(`LinkedIn read ${formatDate(linkedin.read_at)} through your test account${linkedin.confirmed ? "" : `; ${linkedin.why || "it is not confirmed as this person"}, so check it is them`}. `);
       const href = safeExternalUrl(linkedin.url);
       if (href) {
         const link = element("a", "", "Profile ↗");
@@ -5437,7 +5453,7 @@
     ["traction", "Funding, customers, and partners"],
     ["news", "Recent news"],
   ];
-  const TECH_BRIEF_RESEARCHING = "Researching this company on the web in the background. It takes a few minutes and keeps going if you leave this page. A fact is kept only when its quote is found on the page it cites and a second model confirms the page says it.";
+  const TECH_BRIEF_RESEARCHING = "Researching this company on the web in the background. It takes a few minutes and keeps going if you leave this page. A fact is kept only when its quote is found on the page it cites and a separate read of that page's own passage confirms the page says it.";
 
   function sourceHost(url) {
     try {
@@ -5469,15 +5485,19 @@
     const brief = item.tech_brief || {};
     const facts = brief.facts || [];
     const job = item.tech_brief_job;
-    const active = CALL_PREP_ACTIVE.includes(job?.state);
+    // Call prep researches the company first when there is no fresh brief, so the job that is writing it counts too.
+    const briefAge = item.tech_brief_at ? Date.now() - new Date(item.tech_brief_at).getTime() : Infinity;
+    const freshBrief = facts.some((fact) => fact.checked) && briefAge < 30 * 24 * 3600 * 1000;
+    const preppingFirst = !freshBrief && CALL_PREP_ACTIVE.includes(item.call_prep_job?.state);
+    const active = CALL_PREP_ACTIVE.includes(job?.state) || preppingFirst;
     if (facts.length) {
       const unchecked = facts.filter((fact) => !fact.checked).length;
       const by = item.tech_brief_by ? ` by ${DRAFT_PROVIDER_LABELS[item.tech_brief_by] || item.tech_brief_by}` : "";
       group.appendChild(element("p", "outreach-note is-wide",
-        `From the web, ${formatDate(item.tech_brief_at)}${by}. Each fact's quote was found on the page it links to, and a second model confirmed the page says it${unchecked ? `, except the ${unchecked} marked not checked` : ""}. That shows the page says it, not that the page is right. Call prep is built from this.`));
+        `From the web, ${formatDate(item.tech_brief_at)}${by}. Each fact's quote was found on the page it links to, and a separate read of the page's own passage confirmed the page says it${unchecked ? `, except the ${unchecked} marked not checked` : ""}. That shows the page says it, not that the page is right. Call prep is built from this.`));
     } else {
       group.appendChild(element("p", "outreach-note is-wide",
-        "No research yet. It reads the company's site, job posts, patents, papers, grants, and news for what they build, how it works, what they build it with, and who built it, and keeps a fact only when its quote is found on the page it cites and a second model confirms the page says it. Call prep runs it on its own when a company replies."));
+        "No research yet. It reads the company's site, job posts, patents, papers, grants, and news for what they build, how it works, what they build it with, and who built it, and keeps a fact only when its quote is found on the page it cites and a separate read of that page's own passage confirms the page says it. Call prep runs it on its own when a company replies."));
     }
     if (brief.note) group.appendChild(element("p", "outreach-note is-wide", brief.note));
     if (item.tech_brief_error) group.appendChild(element("p", "outreach-note form-error is-wide", `Last try: ${item.tech_brief_error}`));

@@ -50,10 +50,12 @@ talking point lands, and the reading. Each line lists the facts and interviewer
 notes it builds on. A number those do not carry is refused outright. Then the
 same second read the research uses checks each line against what it cites
 (LINE_CHECK_INSTRUCTIONS), and a line that states more than its sources is left
-out: a question, a hook, or a "lands on" is optional, and the notes stand
-without it. Talking points cite the sent email or a confirmed profile field.
+out (as is one it did not answer): a question, a hook, a "lands on" or a
+reading line is optional, and the notes stand without it. Talking points cite the sent email or a confirmed profile field.
 The reading is the one place for inference, printed as "my read". A competitor
-only the research agent picked is never called a competitor or rival. The
+only the research agent picked is never called a competitor or rival, by
+citing it or by naming it in any line. A line built only on what the research
+could not find must ask, not state. The
 research agent's list of what it could not find is shown to the model as
 topics to ask about, and a number in that list does not count as found.
 Profile entries the student marked "omit" for outreach are never shown to the
@@ -121,6 +123,7 @@ REPLY_REQUIRED = "Paste their reply under Replies and history first. Call prep i
 # How often a job held by the student's pause is looked at again, so it starts about this soon after they resume.
 PAUSE_RECHECK = timedelta(minutes=1)
 PAUSED_WAIT = "Waiting: automation is paused, so call prep starts after you resume"
+RESEARCH_CUT_OFF = "Research was cut off when the app stopped. Press Research this company to run it again."
 RESEARCH_WAIT = "Waiting: the company research you asked for is still to run, so call prep starts after it"
 
 # Researches one company and stores its brief: (conn, target_id, user_id).
@@ -189,6 +192,11 @@ PICK_BASIS = "the research agent's pick; the page does not say they compete"
 PICK_MARK = "the research agent's pick of a competitor"
 UNCONFIRMED_MARK = "(profile not confirmed as them)"
 _COMPETES = re.compile(r"\b(?:compet\w*|rival\w*)\b", re.IGNORECASE)
+# A line that states something about the company or the person, as against asking about it.
+_STATES = re.compile(
+    r"\b(?:i (?:read|saw|noticed|found|know|heard)|you(?:'re|'ve| are| have| built| lead| run| make| use)|they(?:'re| are| have| built| lead| use))\b",
+    re.IGNORECASE,
+)
 # Where a number in the notes may come from: what the student, the research, and the reply say. Not ids, links,
 # dates, the agent's list of gaps (it states nothing), or the research on file the model is not sent.
 _NOT_A_SOURCE = frozenset({"id", "source_urls", "sent_on", "logged_on", "research_gaps", "unverified_research", "status"})
@@ -253,6 +261,29 @@ def check_can_prep(target: dict[str, Any]) -> None:
         raise ReplyRequired(REPLY_REQUIRED)
 
 
+def reply_read_as_declined(conn: sqlite3.Connection, target: dict[str, Any], user_id: str) -> bool:
+    """Whether the newest reply reads as a decline: a suggestion still waiting on the company, or the reading kept with the reply.
+
+    A pasted reply's suggestion is returned to the student and not stored on the
+    company, so the reading kept with the reply event is the one to ask. Jev's
+    answer stands when it gave one; the rules' otherwise, as when the reply was logged.
+    """
+    if (target.get("reply_suggestion") or {}).get("status") == "declined":
+        return True
+    row = conn.execute(
+        "SELECT detail_json FROM outreach_events WHERE target_id=? AND user_id=? AND event_type='reply_logged' "
+        "ORDER BY created_at DESC LIMIT 1",
+        (target["id"], user_id),
+    ).fetchone()
+    try:
+        readings = (json.loads(row[0] or "{}") if row else {}).get("readings") or {}
+        jev = readings.get("jev")
+        status = (jev or {}).get("label") if isinstance(jev, dict) else None
+        return (status or (readings.get("rules") or {}).get("status")) == "declined"
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
 def current_interviewer(conn: sqlite3.Connection, target: dict[str, Any], user_id: str) -> dict[str, Any]:
     """The target with its interviewer record only when the record is about the person named now.
 
@@ -269,7 +300,7 @@ def current_interviewer(conn: sqlite3.Connection, target: dict[str, Any], user_i
         return target
     if not who["name"]:
         return {**target, "interviewer": {}, "interviewer_error": who["evidence"]}
-    stand_in = {**who, "key": key, "linkedin": None, "notes": [], "refused": [], "candidates": []}
+    stand_in = {**who, "key": key, "linkedin": None, "notes": [], "refused": [], "candidate_count": 0}
     return {**target, "interviewer": stand_in, "interviewer_error": ""}
 
 
@@ -299,7 +330,7 @@ def call_prep_inputs(conn: sqlite3.Connection, target: dict[str, Any], user_id: 
         "technical_research": [
             {"id": f"{FACT_ID}{index}", "section": fact["section"], "text": fact["text"],
              # A rival only the agent picked: the page does not say the two compete.
-             **({"competitor_basis": PICK_BASIS} if _is_pick(fact) else {})}
+             **({"competitor_basis": PICK_BASIS, "competitor": str(fact.get("competitor") or "")} if _is_pick(fact) else {})}
             for index, fact in enumerate(checked_facts(target), start=1)
         ],
         "interviewer": interviewer_input(target),
@@ -366,13 +397,39 @@ def _picks(inputs: dict[str, Any]) -> set[str]:
     return {fact["id"] for fact in inputs["technical_research"] if fact.get("competitor_basis")}
 
 
-def _reading_problems(entry: dict[str, Any], by_id: dict[str, dict[str, Any]]) -> list[str]:
+def _pick_names(inputs: dict[str, Any]) -> list[str]:
+    """The names of the companies only the research agent picked as competitors."""
+    return [name for name in (str(fact.get("competitor") or "").strip() for fact in inputs["technical_research"] if fact.get("competitor_basis")) if name]
+
+
+def _calls_pick_a_competitor(text: str, cited: set[str], inputs: dict[str, Any]) -> bool:
+    """Whether a line uses a competition word about a pick: by citing one, or by naming one whatever it cites.
+
+    A model that cites another fact but writes a pick's name beside "competitor"
+    has still called it one, so the name is looked for in every line.
+    """
+    if not _COMPETES.search(text):
+        return False
+    if _picks(inputs) & cited:
+        return True
+    return any(re.search(rf"(?<!\w){re.escape(name)}(?!\w)", text, re.IGNORECASE) for name in _pick_names(inputs))
+
+
+def _gap_only(hooks: list[str], inputs: dict[str, Any]) -> bool:
+    """Whether a line builds only on the research agent's list of what it could not find."""
+    gaps = {gap["id"] for gap in inputs["research_gaps"]}
+    return bool(hooks) and all(item in gaps for item in hooks)
+
+
+def _reading_problems(entry: dict[str, Any], by_id: dict[str, dict[str, Any]], inputs: dict[str, Any] | None = None) -> list[str]:
     """Why one line of the reading cannot stand on the facts it cites."""
     text = entry["text"]
     cited = [by_id[number] for number in entry["facts"]]
     if not cited:
         return [f"reading {entry['about']} cites no technical_research fact"]
-    if any(fact.get("competitor_basis") for fact in cited) and _COMPETES.search(text):
+    if (any(fact.get("competitor_basis") for fact in cited) and _COMPETES.search(text)) or (
+        inputs is not None and _calls_pick_a_competitor(text, set(entry["facts"]), inputs)
+    ):
         return [f"reading {entry['about']} calls a company a competitor that only the research agent's pick says is one"]
     numbers = _numbers_beyond(text, " ".join(fact["text"] for fact in cited))
     return [f"reading {entry['about']} states {', '.join(numbers)}, which its facts do not"] if numbers else []
@@ -389,7 +446,7 @@ def _validate_reading(value: Any, inputs: dict[str, Any]) -> tuple[list[dict[str
         if not text or any(item["about"] == entry["about"] for item in kept):
             continue
         item = {"about": entry["about"], "text": text, "facts": [number for number in _id_list(entry.get("facts")) if number in by_id]}
-        found = _reading_problems(item, by_id)
+        found = _reading_problems(item, by_id, inputs)
         # A line that goes past its facts is left out, never printed.
         problems += found
         if not found:
@@ -415,7 +472,7 @@ def _validate_questions(entries: list[Any], inputs: dict[str, Any]) -> tuple[lis
     or calls the agent's pick of a competitor a competitor, is left out. One
     that builds on nothing is sent back, when there was anything to build on.
     """
-    known, said, picks = _hook_ids(inputs), _said_by_id(inputs), _picks(inputs)
+    known, said = _hook_ids(inputs), _said_by_id(inputs)
     kept, problems = [], []
     for entry in entries:
         text = _text(entry.get("text") if isinstance(entry, dict) else entry, MAX_QUESTION_CHARS)
@@ -426,8 +483,12 @@ def _validate_questions(entries: list[Any], inputs: dict[str, Any]) -> tuple[lis
         if numbers:
             problems.append(f"{DROPPED_QUESTION}{text[:60]!r} states {', '.join(numbers)}, which the facts and notes it builds on do not")
             continue
-        if picks & set(hooks) and _COMPETES.search(text):
+        if _calls_pick_a_competitor(text, set(hooks), inputs):
             problems.append(f"{DROPPED_QUESTION}{text[:60]!r} calls a company a competitor that only the research agent's pick says is one")
+            continue
+        if _gap_only(hooks, inputs) and ("?" not in text or _STATES.search(text)):
+            # What the web does not say is something to ask about: a line built only on it that states something states a guess.
+            problems.append(f"{DROPPED_QUESTION}{text[:60]!r} states something about what the research could not find")
             continue
         if known and not hooks:
             problems.append(f"the question {text[:60]!r} builds on nothing in the research or the interviewer notes")
@@ -438,7 +499,7 @@ def _validate_questions(entries: list[Any], inputs: dict[str, Any]) -> tuple[lis
 def _validate_standing(value: Any, inputs: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], list[str]]:
     """Each standing question's hook and sharper ask, by its id. The student's lead-in is never the model's."""
     ids = {item["id"] for item in inputs["standing_questions"]}
-    known, said, picks = _hook_ids(inputs), _said_by_id(inputs), _picks(inputs)
+    known, said = _hook_ids(inputs), _said_by_id(inputs)
     kept: dict[str, dict[str, Any]] = {}
     problems: list[str] = []
     for entry in value if isinstance(value, list) else []:
@@ -447,7 +508,8 @@ def _validate_standing(value: Any, inputs: dict[str, Any]) -> tuple[dict[str, di
         hook, ask = _text(entry.get("hook"), MAX_HOOK_CHARS), _text(entry.get("ask"), MAX_QUESTION_CHARS)
         hooks = [item for item in _id_list(entry.get("from")) if item in known]
         numbers = _numbers_beyond(f"{hook} {ask}", " ".join(said[item] for item in hooks if item in said))
-        if (hook or ask) and (numbers or not hooks or (picks & set(hooks) and _COMPETES.search(f"{hook} {ask}"))):
+        stated = _gap_only(hooks, inputs) and any(part and ("?" not in part or _STATES.search(part)) for part in (hook, ask))
+        if (hook or ask) and (numbers or not hooks or stated or _calls_pick_a_competitor(f"{hook} {ask}", set(hooks), inputs)):
             problems.append(f"{DROPPED_HOOK}for {entry['id']} goes past what it builds on")
             continue
         if hook or ask:
@@ -471,7 +533,10 @@ def _validate_talking_points(entries: list[Any], inputs: dict[str, Any]) -> tupl
         elif basis not in allowed:
             problems.append(f"talking_points cites {basis or 'nothing'} for {text[:60]!r}, which is not in the inputs")
         lands, lands_from = _text(entry.get("lands_on"), MAX_LANDS_CHARS), [item for item in _id_list(entry.get("from")) if item in by_id]
-        if lands and (not lands_from or _numbers_beyond(lands, " ".join(by_id[item] for item in lands_from))):
+        if lands and (
+            not lands_from or _numbers_beyond(lands, " ".join(by_id[item] for item in lands_from))
+            or _calls_pick_a_competitor(lands, set(lands_from), inputs)
+        ):
             problems.append(f"{DROPPED_LANDS}for {text[:40]!r} goes past the facts it cites")
             lands, lands_from = "", []
         kept.append({"text": text, "basis": basis, "lands_on": lands, "from": lands_from})
@@ -555,9 +620,11 @@ def second_read_lines(sections: dict[str, Any], inputs: dict[str, Any], judge: C
 
     A question or a reading line that goes past its sources is dropped; a
     standing question falls back to the student's own wording; a talking point
-    keeps its text without "lands on". An item the second read does not answer
-    is kept: every one already passed the number check, and the notes should
-    not lose their questions to a model that is down.
+    keeps its text without "lands on". An optional line the second read does not
+    answer is left out too: the word checks cannot tell a claim from a question,
+    so a line nothing has read against its sources is not printed as if it had
+    been. The student's own standing questions and the sent email's talking
+    points do not depend on it.
     """
     said = _said_by_id(inputs)
     gaps = {gap["id"]: gap["text"] for gap in inputs["research_gaps"]}
@@ -576,15 +643,15 @@ def second_read_lines(sections: dict[str, Any], inputs: dict[str, Any], judge: C
     for index, entry in enumerate(sections["reading"]):
         items.append({"id": f"r{index}", "line": entry["text"], "cites": cited(entry["facts"])})
     verdicts = research._second_read(items, judge, LINE_CHECK_INSTRUCTIONS)
-    no = {key for key, (supported, _why) in verdicts.items() if not supported}
+    yes = {key for key, (supported, _why) in verdicts.items() if supported}
     return {
-        "questions": [entry for index, entry in enumerate(sections["questions"]) if f"q{index}" not in no],
-        "standing": {key: entry for key, entry in sections["standing"].items() if f"s:{key}" not in no},
+        "questions": [entry for index, entry in enumerate(sections["questions"]) if f"q{index}" in yes],
+        "standing": {key: entry for key, entry in sections["standing"].items() if f"s:{key}" in yes},
         "talking_points": [
-            {**entry, "lands_on": "", "from": []} if f"t{index}" in no else entry
+            entry if not entry["lands_on"] or f"t{index}" in yes else {**entry, "lands_on": "", "from": []}
             for index, entry in enumerate(sections["talking_points"])
         ],
-        "reading": [entry for index, entry in enumerate(sections["reading"]) if f"r{index}" not in no],
+        "reading": [entry for index, entry in enumerate(sections["reading"]) if f"r{index}" in yes],
     }
 
 
@@ -999,10 +1066,25 @@ class CallPrepWorker:
 
     def recover_interrupted(self) -> int:
         with closing(connect_product(self.platform_target)) as conn:
-            return recover_stale_jobs(
+            cut_off = conn.execute(
+                "SELECT id, payload_json FROM job_queue WHERE state='running' AND job_type=?", (research.JOB_TYPE,),
+            ).fetchall()
+            recovered = recover_stale_jobs(
                 conn, stale_before="9999-12-31T00:00:00+00:00", job_types=JOB_TYPES,
                 reason="Interrupted when the app stopped; trying again",
             )
+            # A research job the shutdown cut off already spent its day's try; it is marked so it does not search again.
+            with conn:
+                for row in cut_off:
+                    try:
+                        payload = json.loads(row[1] or "{}")
+                    except ValueError:
+                        payload = {}
+                    conn.execute(
+                        "UPDATE job_queue SET payload_json=? WHERE id=? AND state='retry'",
+                        (json.dumps({**payload, "recovered": True}), row[0]),
+                    )
+            return recovered
 
     def _run(self, payload: dict[str, Any]) -> None:
         with closing(connect_product(self.platform_target)) as conn:
@@ -1048,11 +1130,11 @@ class CallPrepWorker:
         if not research.brief_is_fresh(target) and (target.get("tech_brief_job") or {}).get("state") in research.ACTIVE_JOB_STATES:
             # The student's Research this company is already on its way: the notes wait for it, so they
             # are written from what it finds, not from a brief it is about to replace.
-            if not (is_automatic(payload) and (target.get("reply_suggestion") or {}).get("status") == "declined"):
+            if not (is_automatic(payload) and reply_read_as_declined(conn, target, payload["user_id"])):
                 raise JobDeferred(RESEARCH_WAIT, datetime.now(timezone.utc) + PAUSE_RECHECK)
         if not research.research_due(target):
             return
-        if is_automatic(payload) and (target.get("reply_suggestion") or {}).get("status") == "declined":
+        if is_automatic(payload) and reply_read_as_declined(conn, target, payload["user_id"]):
             return
         try:
             self._researcher(conn, payload["target_id"], payload["user_id"])
@@ -1065,10 +1147,12 @@ class CallPrepWorker:
         if self._interviewer is None:
             return
         target = get_target(conn, payload["target_id"], user_id=payload["user_id"], include_events=True)
+        # The research before this can take minutes, and the company may have been marked Declined meanwhile.
+        check_can_prep(target)
         if (not payload.get("replace") and target.get("call_prep")) or not interviewer_due(conn, target, payload["user_id"]):
             return
         if is_automatic(payload) and (
-            (target.get("reply_suggestion") or {}).get("status") == "declined" or automation.paused(conn, payload["user_id"])
+            reply_read_as_declined(conn, target, payload["user_id"]) or automation.paused(conn, payload["user_id"])
         ):
             return
         try:
@@ -1092,6 +1176,19 @@ class CallPrepWorker:
         if self._researcher is None:
             raise research.ResearchUnavailable("Company research is not set up in this app")
         with closing(connect_product(self.platform_target)) as conn:
+            if payload.get("recovered"):
+                # Cut off by the app stopping: its try was spent (the day's one is on the company), so it is not run again on its own.
+                try:
+                    target = get_target(conn, payload["target_id"], user_id=payload["user_id"])
+                except OutreachNotFoundError:
+                    return
+                if not research.research_due({**target, "tech_brief_job": None}):
+                    if not research.brief_is_fresh(target):
+                        research.record_error(
+                            conn, payload["target_id"], user_id=payload["user_id"],
+                            error=RuntimeError(RESEARCH_CUT_OFF),
+                        )
+                    return
             try:
                 self._researcher(conn, payload["target_id"], payload["user_id"])
             except (OutreachNotFoundError, research.ResearchUnavailable):

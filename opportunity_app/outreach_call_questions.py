@@ -4,7 +4,7 @@ Some questions belong in every call: what the project they would work on is
 for, where the company is heading, where it is short of people. Each student
 phrases them their own way, often leading with something from their own work,
 so they live in the student's gitignored ``config/call_prep.local.json``
-(SETUP.md step "Call prep questions"), never in shipped code:
+(SETUP.md step 7b, Call prep), never in shipped code:
 
     {"questions": [
       {"lead_in": "At my last internship, my manager set the use case for our project, and it guided my design choices.",

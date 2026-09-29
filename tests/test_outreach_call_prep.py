@@ -52,9 +52,9 @@ class ScriptedProvider(DraftProvider):
     ``refuse``, and is kept apart from ``prompts``, which hold only the notes'.
     """
 
-    def __init__(self, replies, refuse=()):
+    def __init__(self, replies, refuse=(), silent=()):
         super().__init__(replies)
-        self.refuse, self.line_checks = set(refuse), []
+        self.refuse, self.silent, self.line_checks = set(refuse), set(silent), []
 
     def create(self, *, instructions, messages, tools, max_output_tokens):
         if instructions == outreach_call_prep.LINE_CHECK_INSTRUCTIONS:
@@ -62,7 +62,7 @@ class ScriptedProvider(DraftProvider):
             self.line_checks += items
             text = json.dumps({"verdicts": [
                 {"id": item["id"], "supported": not any(line in item["line"] for line in self.refuse), "why": "checked"}
-                for item in items
+                for item in items if not any(line in item["line"] for line in self.silent)
             ]})
             return ProviderReply(text=text)
         return super().create(instructions=instructions, messages=messages, tools=tools, max_output_tokens=max_output_tokens)
@@ -610,6 +610,64 @@ class CallPrepTests(unittest.TestCase):
         self.assertEqual([(item["ask"], item["blank"]) for item in questions], [("Where are you looking to expand?", "")])
         self.assertIn("<placeholders>", note)
 
+    def test_a_line_the_second_read_did_not_answer_is_left_out_not_printed_as_checked(self):
+        self.reply_and_mark()
+        store_brief(self.conn, self.target["id"])
+        provider = ScriptedProvider([prep_json()], silent=["What would a first project be?"])
+        notes = self.generate(provider)["call_prep"]
+        self.assertIn("I read that the arm finds the port with a camera", notes, "the answered line stands")
+        self.assertNotIn("What would a first project be?", notes, "nothing read it against its facts")
+        self.assertIn("TALKING POINTS", notes, "the notes stand without it")
+
+    def test_the_students_own_question_and_the_sent_emails_points_do_not_depend_on_the_second_read(self):
+        self.questions_file.write_text(json.dumps({"questions": [{"ask": "Where are you short-staffed?", "research": ["hiring"]}]}), encoding="utf-8")
+        self.reply_and_mark()
+        store_brief(self.conn, self.target["id"])
+        provider = ScriptedProvider([prep_json()], silent=["Where are you short-staffed?", "Cut our drone"])
+        notes = self.generate(provider)["call_prep"]
+        self.assertIn("Where are you short-staffed?", notes)
+        self.assertIn("Cut our drone's weight from 1.5 kg to 500 g", notes)
+
+    def test_a_pick_named_beside_competitor_is_caught_whatever_fact_the_line_cites(self):
+        self.reply_and_mark()
+        rival = {
+            "section": "competitors", "text": "Voltarm sells charging robots with lidar", "source_url": "https://news.example/voltarm",
+            "quote": "Voltarm builds charging robots with lidar", "person": "", "competitor": "Voltarm", "checked": True,
+            "note": "picked as a competitor by the research agent",
+        }
+        store_brief(self.conn, self.target["id"], brief={**BRIEF, "facts": [*BRIEF["facts"], rival]})
+        cites_another = {"text": "I read the arm uses a camera: is Voltarm a competitor you watch?", "from": ["f1"]}
+        clean = {"text": "What would a first project be?", "from": ["f2"]}
+        reading = [{"about": "direction", "text": "Voltarm is their main competitor", "facts": ["f1"]}]
+        provider = ScriptedProvider([prep_json(questions=[cites_another, clean], reading=reading)] * 2)
+        notes = self.generate(provider)["call_prep"]
+        self.assertIn("calls a company a competitor", provider.prompts[1])
+        self.assertNotIn("competitor you watch", notes)
+        self.assertNotIn("main competitor", notes)
+        self.assertIn("What would a first project be?", notes)
+
+    def test_a_hook_built_only_on_what_the_web_did_not_say_must_ask_not_state(self):
+        self.reply_and_mark()
+        store_brief(self.conn, self.target["id"])
+        standing = [
+            {"id": "s1", "hook": "I know you have no motor supplier yet.", "ask": "", "from": ["g1"]},
+            {"id": "s2", "hook": "I could not find which motors the arm uses.", "ask": "Which motors does it use?", "from": ["g1"]},
+        ]
+        self.questions_file.write_text(json.dumps({"questions": [
+            {"ask": "Where do you need hands most?", "research": ["hiring"]},
+            {"ask": "What is the bottleneck?", "research": ["growth"]},
+        ]}), encoding="utf-8")
+        provider = ScriptedProvider([prep_json(standing=standing)] * 2)
+        notes = self.generate(provider)["call_prep"]
+        self.assertIn("goes past what it builds on", provider.prompts[1])
+        self.assertNotIn("no motor supplier", notes, "a guess about what the web did not say is not printed as a hook")
+        gap_question = {"text": "You have no motor supplier yet, right?", "from": ["g1"]}
+        asks = {"text": "Which motors does the arm use?", "from": ["g1"]}
+        provider = ScriptedProvider([prep_json(questions=[gap_question, asks])] * 2)
+        notes = self.generate(provider)["call_prep"]
+        self.assertNotIn("no motor supplier yet", notes, "a statement in question form built only on a gap is left out")
+        self.assertIn("Which motors does the arm use?", notes, "a real question on a gap stands")
+
 
 class FailingProvider:
     """A model call cut off mid-flight, as a sleeping laptop cuts one off."""
@@ -858,6 +916,90 @@ class CallPrepJobTests(unittest.TestCase):
         update_target(self.conn, self.target["id"], {"status": "replied"}, user_id=USER)
         log_reply(self.conn, self.target["id"], REPLY, user_id=USER)
 
+    def interviewer_lookup(self):
+        calls = []
+
+        def lookup(conn, target_id, user_id):
+            calls.append(target_id)
+
+        return lookup, calls
+
+    def test_an_automatic_job_on_a_pasted_decline_researches_nothing_and_reads_no_linkedin(self):
+        update_target(self.conn, self.target["id"], {"status": "replied"}, user_id=USER)
+        pasted = log_reply(
+            self.conn, self.target["id"],
+            "Thank you for your interest, but we are not hiring interns and will not be moving forward with your application.",
+            user_id=USER,
+        )
+        self.assertEqual(self.target_now().get("reply_suggestion") or {}, {}, "the pasted reply's suggestion is not kept on the company")
+        self.assertEqual(pasted["suggestion"]["status"], "declined")
+        researcher, calls = self.researcher()
+        lookup, looked = self.interviewer_lookup()
+        auto_queue_call_prep(self.conn, self.target["id"], user_id=USER, reason="Reply pasted")
+        CallPrepWorker(
+            self.platform_path, provider_factory=lambda *_: self.provider, provider="anthropic", researcher=researcher, interviewer=lookup,
+        ).run_pending()
+        self.assertEqual((calls, looked), ([], []), "a no needs neither a web search nor a LinkedIn read")
+        # Asking for notes is the student's own act, and still researches.
+        queue_call_prep(self.conn, self.target["id"], user_id=USER, replace=True, reason="You asked for new call prep")
+        CallPrepWorker(
+            self.platform_path, provider_factory=lambda *_: self.provider, provider="anthropic", researcher=researcher, interviewer=lookup,
+        ).run_pending()
+        self.assertEqual(calls, [self.target["id"]])
+
+    def test_a_company_marked_declined_during_research_is_not_read_on_linkedin(self):
+        self.replied()
+        researched, calls = self.researcher()
+        lookup, looked = self.interviewer_lookup()
+
+        def research_then_decline(conn, target_id, user_id):
+            researched(conn, target_id, user_id)
+            update_target(conn, target_id, {"status": "declined"}, user_id=user_id)
+
+        queue_call_prep(self.conn, self.target["id"], user_id=USER, replace=True, reason="t")
+        CallPrepWorker(
+            self.platform_path, provider_factory=lambda *_: self.provider, provider="anthropic",
+            researcher=research_then_decline, interviewer=lookup,
+        ).run_pending()
+        target = self.target_now()
+        self.assertEqual((calls, looked), ([self.target["id"]], []))
+        self.assertEqual((target["call_prep_job"]["state"], target["call_prep"]), ("succeeded", ""))
+        self.assertEqual(self.provider.prompts, [])
+
+    def test_a_research_job_cut_off_by_a_restart_is_not_run_again_on_its_own(self):
+        researcher, calls = self.researcher()
+        queue_research(self.conn, self.target["id"], user_id=USER, reason="You asked for research")
+        self.conn.execute("UPDATE outreach_targets SET tech_brief_tried_at=? WHERE id=?",
+                          (datetime.now(timezone.utc).isoformat(), self.target["id"]))
+        # The server died mid-search: the row still says running, and its day's try was spent.
+        self.conn.execute("UPDATE job_queue SET state='running', locked_at='2026-01-01T00:00:00+00:00' WHERE job_type=?", (outreach_call_prep.research.JOB_TYPE,))
+        self.conn.commit()
+        worker = self.worker(researcher=researcher)
+        self.assertEqual(worker.recover_interrupted(), 1)
+        self.conn.execute("UPDATE job_queue SET next_attempt_at='2000-01-01T00:00:00+00:00'")
+        self.conn.commit()
+        worker.run_pending()
+        self.assertEqual(calls, [], "the search it cut off is not started again")
+        self.assertIn("cut off when the app stopped", self.target_now()["tech_brief_error"])
+        # Pressing the button again is the student's own act, and runs.
+        queue_research(self.conn, self.target["id"], user_id=USER, reason="You asked for research")
+        worker.run_pending()
+        self.assertEqual(calls, [self.target["id"]])
+
+    def test_research_is_not_queued_by_a_click_while_call_prep_researches_inline(self):
+        self.replied()
+        self.conn.execute("UPDATE outreach_targets SET tech_brief_tried_at=? WHERE id=?",
+                          (datetime.now(timezone.utc).isoformat(), self.target["id"]))
+        self.conn.commit()
+        queue_call_prep(self.conn, self.target["id"], user_id=USER, replace=True, reason="t")
+        self.conn.execute("UPDATE job_queue SET state='running' WHERE job_type=?", (JOB_TYPE,))
+        self.conn.commit()
+        self.assertEqual(self.target_now()["call_prep_job"]["state"], "running")
+        queue_research(self.conn, self.target["id"], user_id=USER, reason="You asked for research")
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) FROM job_queue WHERE job_type=?", (outreach_call_prep.research.JOB_TYPE,)).fetchone()[0], 0,
+        )
+
     def job_row(self):
         return self.conn.execute("SELECT state, attempts, last_error, payload_json FROM job_queue WHERE job_type=?", (JOB_TYPE,)).fetchone()
 
@@ -1063,6 +1205,27 @@ class CallPrepApiTests(unittest.TestCase):
         self.assertIn("visibilitychange", script)
         self.assertIn("/research`", script)
         self.assertIn("function outreachTechBrief", script)
+
+    def test_the_panes_say_what_is_happening_and_do_not_overstate_the_second_read(self):
+        script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        # Call prep researching inline shows as Researching, not as a live Research button.
+        tech = script[script.index("function outreachTechBrief"):]
+        self.assertIn("preppingFirst", tech[:2500])
+        self.assertIn("item.call_prep_job?.state", tech[:2500])
+        # The interviewer pane never shows a stored person after the student named someone else.
+        pane = script[script.index("function outreachInterviewer"):]
+        self.assertIn("(you named them); LinkedIn not read yet", pane[:3000])
+        self.assertIn("record = {};", pane[:3000], "the old profile link is dropped")
+        self.assertIn("linkedin.why", pane[:4500], "the reason comes from the record, not hardcoded copy")
+        self.assertNotIn("it never names the company", script)
+        # A separate read of a passage is not a different model, so no copy says it is.
+        self.assertNotIn("a second model confirm", script)
+        for name in ("outreach_research.py", "outreach_interviewer.py", "outreach_call_prep.py"):
+            text = (Path(outreach_call_prep.__file__).parent / name).read_text(encoding="utf-8").casefold()
+            self.assertNotIn("second model", text, name)
+        readme = (Path(outreach_call_prep.__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+        self.assertNotIn("second model confirms", readme)
+        self.assertNotIn("a second model which did not write", readme)
 
 
 if __name__ == "__main__":

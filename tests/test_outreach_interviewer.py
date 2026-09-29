@@ -55,6 +55,17 @@ def notes_reply(*notes):
     return json.dumps({"notes": list(notes)})
 
 
+def judged(reply, seen=None):
+    """A writer that writes ``reply`` for the notes and answers every second-read item as supported."""
+    def model(instructions, content):
+        if instructions == NOTES_INSTRUCTIONS:
+            if seen is not None:
+                seen.append(content)
+            return reply
+        return json.dumps({"verdicts": [{"id": item["id"], "supported": True, "why": ""} for item in json.loads(content)["items"]]})
+    return model
+
+
 class LinkedInGuardTests(unittest.TestCase):
     def client(self, fake, config=GOOD_CONFIG):
         return LinkedInClient(call=fake, config=lambda: config, sleep=lambda _seconds: None)
@@ -289,7 +300,7 @@ class InterviewerTests(unittest.TestCase):
         target = read_interviewer(
             self.conn, self.target["id"], user_id=USER,
             client=LinkedInClient(call=fake, config=lambda: GOOD_CONFIG, sleep=lambda _s: None),
-            writer=lambda instructions, content: (prompts.append(content), reply)[1],
+            writer=judged(reply, prompts),
         )
         record = target["interviewer"]
         self.assertEqual(record["name"], "Dana Ortiz")
@@ -330,7 +341,9 @@ class InterviewerTests(unittest.TestCase):
         target = read_interviewer(self.conn, self.target["id"], user_id=USER,
                                   client=LinkedInClient(call=fake, config=lambda: GOOD_CONFIG, sleep=lambda _s: None), writer=None)
         self.assertIn("several people", target["interviewer_error"])
-        self.assertEqual([person["username"] for person in target["interviewer"]["candidates"]], ["dana1", "dana2"])
+        self.assertEqual(target["interviewer"]["candidate_count"], 2)
+        self.assertNotIn("candidates", target["interviewer"], "other people's names and links are not stored, since nothing shows them")
+        self.assertNotIn("dana1", json.dumps(target["interviewer"]))
         self.assertNotIn("get_person_profile", [tool for tool, _ in fake.calls])
 
 
@@ -349,7 +362,7 @@ class InterviewerTests(unittest.TestCase):
         update_target(self.conn, self.target["id"], {"interviewer_linkedin": "https://www.linkedin.com/in/riley-park/"}, user_id=USER)
         fake = FakeLinkedIn(profile="Riley Park\nStaff Engineer at Chargebot\nExperience\nStaff Engineer\nChargebot\n2024 - Present\nLeads the perception team building the lidar stack.\n")
         reply = notes_reply({"topic": "now", "text": "Leads the perception team building the lidar stack", "quote": "Leads the perception team building the lidar stack"})
-        record = self.read(fake, lambda instructions, content: reply)["interviewer"]
+        record = self.read(fake, judged(reply))["interviewer"]
         self.assertEqual((record["name"], record["basis"], record["email"]), ("Riley Park", "student", ""))
         self.assertIn("Rita Chen", record["evidence"], "both names are shown when they differ")
         self.assertTrue(record["linkedin"]["confirmed"])
@@ -446,11 +459,12 @@ class InterviewerTests(unittest.TestCase):
     def test_no_result_naming_the_company_says_so_and_offers_only_people_by_that_name(self):
         self.inbox("1", "dana@chargebot.example", "Dana Ortiz", "Re: call", "2026-09-28T18:30:00+00:00")
         target = self.read(FakeLinkedIn(people=[("Priya Patel", "priya", "Nurse")]))
-        self.assertEqual(target["interviewer"]["candidates"], [])
+        self.assertEqual(target["interviewer"]["candidate_count"], 0)
         self.assertIn("no one found as Dana Ortiz", target["interviewer_error"])
         self.assertNotIn("several", target["interviewer_error"])
         target = self.read(FakeLinkedIn(people=[("Dana Ortiz", "dana-rn", "Nurse at City Hospital"), ("Priya Patel", "priya", "Nurse")]))
-        self.assertEqual([person["username"] for person in target["interviewer"]["candidates"]], ["dana-rn"])
+        self.assertEqual(target["interviewer"]["candidate_count"], 1)
+        self.assertNotIn("dana-rn", json.dumps(target["interviewer"]))
         self.assertIn("one person named Dana Ortiz, but their result does not name Chargebot", target["interviewer_error"])
 
     def test_the_contact_is_not_said_to_be_the_only_one_when_a_reply_was_not_read(self):
@@ -590,7 +604,7 @@ class InterviewerTests(unittest.TestCase):
     def test_a_failed_lookup_never_leaves_the_previous_person_in_place(self):
         self.inbox("1", "dana@chargebot.example", "Dana Ortiz", "Re: call", "2026-09-27T18:00:00+00:00")
         note = {"topic": "now", "text": "Leads the controls team building the charging arm", "quote": "Leads the controls team building the charging arm"}
-        record = self.read(FakeLinkedIn(), lambda instructions, content: notes_reply(note))["interviewer"]
+        record = self.read(FakeLinkedIn(), judged(notes_reply(note)))["interviewer"]
         self.assertEqual((record["name"], len(record["notes"])), ("Dana Ortiz", 1))
         self.inbox("2", "sam@chargebot.example", "Sam Lee", "Re: call", "2026-09-28T18:00:00+00:00")
 
@@ -615,6 +629,74 @@ class InterviewerTests(unittest.TestCase):
                 self.assertEqual(target["interviewer"]["name"], "Sam Lee", "the new person, not Dana")
                 self.assertEqual(target["interviewer"]["notes"], [])
                 self.assertTrue(target["interviewer_error"])
+
+    def test_a_confirmed_profile_holds_no_other_peoples_links(self):
+        self.inbox("1", "dana@chargebot.example", "Dana Ortiz", "Re: call", "2026-09-28T18:30:00+00:00")
+        record = self.read(FakeLinkedIn(), judged(notes_reply()))["interviewer"]
+        self.assertTrue(record["linkedin"]["confirmed"])
+        self.assertEqual(record["candidate_count"], 0, "one result matched and was used, so nobody was left to choose from")
+        self.assertNotIn("candidates", record)
+
+    def test_the_profile_is_checked_a_line_at_a_time(self):
+        """A name or number on a far-off line does not back a note about another line."""
+        self.inbox("1", "dana@chargebot.example", "Dana Ortiz", "Re: call", "2026-09-28T18:30:00+00:00")
+        filler = ["Worked on sensors and drives and firmware for many machines across several labs and plants."] * 8
+        profile = "\n".join([
+            "Dana Ortiz", "Head of Controls at Chargebot", "Austin, Texas", "Experience", "Head of Controls", "Chargebot", "2024 - Present",
+            "Leads the controls team building the charging arm.", *filler, "Volunteered with 9 mentors and Stanford alumni at a shelter.",
+        ])
+        reply = notes_reply(
+            {"topic": "now", "text": "Leads the controls team building the charging arm with 9 mentors", "quote": "Leads the controls team building the charging arm"},
+            {"topic": "now", "text": "Leads the controls team building the charging arm with Stanford alumni", "quote": "Leads the controls team building the charging arm"},
+            {"topic": "now", "text": "Leads the controls team building the charging arm", "quote": "Leads the controls team building the charging arm"},
+        )
+        record = self.read(FakeLinkedIn(profile=profile), judged(reply))["interviewer"]
+        self.assertEqual([note["text"] for note in record["notes"]], ["Leads the controls team building the charging arm"])
+        self.assertEqual(len(record["refused"]), 2)
+
+    def test_the_second_read_sees_the_notes_own_line_not_the_whole_profile(self):
+        self.inbox("1", "dana@chargebot.example", "Dana Ortiz", "Re: call", "2026-09-28T18:30:00+00:00")
+        seen = []
+
+        def model(instructions, content):
+            if instructions == NOTES_INSTRUCTIONS:
+                return notes_reply({"topic": "now", "text": "Leads the controls team building the charging arm",
+                                    "quote": "Leads the controls team building the charging arm"})
+            seen.extend(json.loads(content)["items"])
+            return json.dumps({"verdicts": [{"id": item["id"], "supported": True, "why": ""} for item in json.loads(content)["items"]]})
+
+        self.read(FakeLinkedIn(), model)
+        self.assertEqual(len(seen), 1)
+        self.assertIn("Leads the controls team building the charging arm.", seen[0]["passage"].splitlines(), "its own line stands whole")
+        self.assertNotIn("Education", seen[0]["top"], "the top is the first lines, not the profile")
+
+    def test_a_note_the_second_read_did_not_answer_is_not_kept_as_checked(self):
+        self.inbox("1", "dana@chargebot.example", "Dana Ortiz", "Re: call", "2026-09-28T18:30:00+00:00")
+        note = {"topic": "now", "text": "Leads the controls team building the charging arm", "quote": "Leads the controls team building the charging arm"}
+        for answer in ("not json at all", json.dumps({"verdicts": []})):
+            with self.subTest(answer):
+                def model(instructions, content, answer=answer):
+                    return notes_reply(note) if instructions == NOTES_INSTRUCTIONS else answer
+
+                record = self.read(FakeLinkedIn(), model)["interviewer"]
+                self.assertEqual(record["notes"], [])
+                self.assertIn("gave no answer", record["refused"][0]["reason"])
+
+    def test_the_company_renamed_during_the_lookup_is_not_given_the_old_ones_profile(self):
+        self.inbox("1", "dana@chargebot.example", "Dana Ortiz", "Re: call", "2026-09-28T18:30:00+00:00")
+        fake = FakeLinkedIn()
+        real = fake.__call__
+
+        def renaming(tool, arguments):
+            if tool == "get_person_profile":
+                update_target(self.conn, self.target["id"], {"company": "Different Motors", "website": "https://different.example"}, user_id=USER)
+            return real(tool, arguments)
+
+        before = self.now()["interviewer"]
+        target = self.read(renaming, judged(notes_reply()))
+        self.assertEqual(target["company"], "Different Motors")
+        self.assertEqual(target["interviewer"], before, "nothing about the old company's person was written")
+        self.assertNotIn("Chargebot", json.dumps(target["interviewer"]))
 
 
 if __name__ == "__main__":

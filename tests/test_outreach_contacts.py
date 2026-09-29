@@ -36,6 +36,7 @@ from opportunity_app.outreach_contacts import (
     find_contacts,
     guess_strength,
     list_candidates,
+    SafeFetcher,
 )
 from opportunity_app.outreach_discovery import run_discovery
 from opportunity_app.outreach_email_search import check_person, search_emails
@@ -832,6 +833,28 @@ class MigrationTests(unittest.TestCase):
                 self.assertEqual(conn.execute("SELECT contact_cc FROM outreach_targets").fetchone()[0], "")
             finally:
                 conn.close()
+
+
+class FetchDeadlineTests(unittest.TestCase):
+    """The client's timeout limits each wait, so a server that trickles bytes needs a deadline of its own."""
+
+    def fetcher(self, now, cost):
+        def handler(request):
+            now[0] += cost
+            if request.url.path == "/hop":
+                return httpx.Response(302, headers={"location": "https://slow.test/page"})
+            return httpx.Response(200, text="<html><body>ok</body></html>", headers={"content-type": "text/html"})
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        return SafeFetcher(client, resolve=lambda _host: ["93.184.216.34"], clock=lambda: now[0])
+
+    def test_a_fetch_that_outlasts_its_deadline_gives_up_with_a_timeout(self):
+        now = [0.0]
+        with self.fetcher(now, 20) as fetcher:
+            result = fetcher.fetch("https://slow.test/hop", same_host_only=False, deadline_seconds=30)
+            self.assertEqual(result.error, "timeout", "the page arrives after the deadline")
+            self.assertEqual(fetcher.fetch("https://slow.test/page", same_host_only=False, deadline_seconds=30).error, None)
+            self.assertEqual(fetcher.fetch("https://slow.test/hop", same_host_only=False).error, None, "no deadline, no limit")
 
 
 if __name__ == "__main__":

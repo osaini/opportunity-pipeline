@@ -163,7 +163,7 @@ class OutreachSettings:
         if "linkedin_account" in changes:
             raw = str(changes["linkedin_account"] or "").strip()
             value = username_from(raw)
-            if raw and not value:
+            if raw and not re.fullmatch(r"[a-z0-9][a-z0-9_-]{1,99}", value):
                 raise ValueError("Give the LinkedIn account as its profile link or username, or leave it empty to turn LinkedIn off")
             updates[LINKEDIN_ENV] = value
         if "research_agent" in changes:

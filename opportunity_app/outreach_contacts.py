@@ -207,9 +207,12 @@ def _resolve_host(host: str) -> list[str]:
 class SafeFetcher:
     """Fetch public web pages with bounded bodies and checked redirect hops."""
 
-    def __init__(self, client: httpx.Client, resolve: Resolver = _resolve_host) -> None:
+    def __init__(
+        self, client: httpx.Client, resolve: Resolver = _resolve_host, clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self.client = client
         self.resolve = resolve
+        self.clock = clock
 
     def __enter__(self) -> "SafeFetcher":
         self.client.__enter__()
@@ -220,11 +223,20 @@ class SafeFetcher:
 
     def fetch(
         self, url: str, *, same_host_only: bool, hop_check: Callable[[str], str | None] | None = None,
+        deadline_seconds: float | None = None,
     ) -> FetchResult:
-        """hop_check, when given, is asked about every URL before it is requested, redirects included."""
+        """hop_check, when given, is asked about every URL before it is requested, redirects included.
+
+        The client's timeout limits each wait for the server, not the whole
+        fetch: a server that sends a byte every few seconds never trips it.
+        ``deadline_seconds`` bounds the whole fetch, redirects and body together.
+        """
         start_host = (urlsplit(url).hostname or "").lower().removeprefix("www.")
         current = url
+        stop_at = self.clock() + deadline_seconds if deadline_seconds is not None else None
         for redirects in range(6):
+            if stop_at is not None and self.clock() >= stop_at:
+                return FetchResult(current, 0, "", "timeout")
             policy = public_web_url_error(current)
             if policy:
                 return FetchResult(current, 0, "", policy)
@@ -259,6 +271,8 @@ class SafeFetcher:
                         size += len(chunk)
                         if size > MAX_PAGE_BYTES:
                             return FetchResult(str(response.url), status, "", "too_large")
+                        if stop_at is not None and self.clock() >= stop_at:
+                            return FetchResult(str(response.url), status, "", "timeout")
                         chunks.append(chunk)
                     encoding = response.encoding or "utf-8"
                     return FetchResult(

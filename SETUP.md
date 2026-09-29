@@ -523,9 +523,17 @@ keyboard (they type the password; never ask for it):
 
 ```bash
 npm install -g mcporter
-mcporter config add linkedin-scraper --stdio "uvx mcp-server-linkedin@latest --no-auto-import" --env AUTO_IMPORT_FROM_BROWSER=false
-AUTO_IMPORT_FROM_BROWSER=false uvx mcp-server-linkedin@latest --login --no-auto-import
+mcporter config add linkedin-scraper --scope home --stdio "uvx mcp-server-linkedin==4.26.1 --no-auto-import" --env AUTO_IMPORT_FROM_BROWSER=false
+AUTO_IMPORT_FROM_BROWSER=false uvx mcp-server-linkedin==4.26.1 --login --no-auto-import
 ```
+
+The version is pinned on purpose: `@latest` would run whatever was published
+last, with the LinkedIn sign-in in reach, every time it starts. Use the same
+number in both commands. To upgrade, choose the new version yourself after
+reading its release notes, then run `mcporter config remove linkedin-scraper`
+and both commands again with it. `--scope home` keeps the entry in mcporter's
+own folder in the home directory, so no `config/mcporter.json` appears in the
+project (it would be committed by accident).
 
 Both `--no-auto-import` and `AUTO_IMPORT_FROM_BROWSER=false` must stay: without
 them the server copies the browser's LinkedIn sign-in. Then, in Outreach →

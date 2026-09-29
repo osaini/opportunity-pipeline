@@ -605,6 +605,170 @@ class CheckBriefTests(unittest.TestCase):
             brief = research.check_brief(reply(STACK), TARGET, fetcher=fetcher, renderer=Renderer(), judge=SecondRead())
         self.assertEqual(len(brief["facts"]), 1)
 
+    def test_a_persons_own_page_backs_only_a_team_fact(self):
+        """A thesis names its author, not the company: it may not carry a claim about the company's technology."""
+        about_company = fact(
+            "technology", "Dana Ortiz showed a stereo camera can guide a plug into a port", THESIS_FACT["source_url"],
+            THESIS_FACT["quote"], person="Dana Ortiz",
+        )
+        brief = self.check(about_company, THESIS_FACT, CTO)
+        self.assertEqual({item["section"] for item in brief["facts"]}, {"team"}, "the thesis stays a team fact")
+        self.assertIn("belongs in team, not technology", self.refused(brief)[about_company["text"]])
+        # A team fact from a person's page says whose page it is.
+        anonymous = {**THESIS_FACT, "text": "A stereo camera can guide a plug into a port with sub-millimeter error"}
+        brief = self.check(anonymous, CTO)
+        self.assertIn("must name Dana Ortiz", self.refused(brief)[anonymous["text"]])
+
+    def test_a_fact_outside_the_team_section_is_asked_about_the_company_whoever_it_names(self):
+        named = fact("technology", CAMERA["text"], CAMERA["source_url"], CAMERA["quote"], person="Dana Ortiz")
+        self.check(named)
+        self.assertEqual(self.second.shown(CAMERA["text"])["about"], "Chargebot, Inc.")
+        team = {**CTO, "person": "Dana Ortiz"}
+        self.check(team)
+        self.assertEqual(self.second.shown(team["text"])["about"], "Dana Ortiz")
+
+    def test_naming_two_companies_is_not_proof_they_compete(self):
+        partner = "<html><body><p>Chargebot partners with Voltarm to deploy chargers at fleets.</p></body></html>"
+        rivals = "<html><body><p>Chargebot competes with Voltarm in fleet charging.</p></body></html>"
+        customers = "<html><body><h1>Partners</h1><p>Chargebot works with Voltarm on charging.</p></body></html>"
+        sites = {
+            **SITES,
+            "news.example": {**SITES["news.example"], "/partner": (200, partner), "/rivals": (200, rivals)},
+            "chargebot.example": {**SITES["chargebot.example"], "/partners": (200, customers)},
+        }
+
+        def pair(url, quote):
+            return fact("competitors", quote, url, quote, competitor="Voltarm")
+
+        together = pair("https://news.example/partner", "Chargebot partners with Voltarm to deploy chargers at fleets")
+        own = pair("https://chargebot.example/partners", "Chargebot works with Voltarm on charging")
+        says = pair("https://news.example/rivals", "Chargebot competes with Voltarm in fleet charging")
+        notes = {item["source_url"]: item["note"] for item in self.check(together, own, says, sites=sites)["facts"]}
+        self.assertEqual(notes["https://news.example/partner"], "picked as a competitor by the research agent")
+        self.assertEqual(notes["https://chargebot.example/partners"], "picked as a competitor by the research agent",
+                         "the company's own site listing a name is not the company calling it a competitor")
+        self.assertEqual(notes["https://news.example/rivals"], "the quoted sentence says the two compete")
+
+    def test_a_short_piece_of_a_trimmed_quote_must_be_on_the_page_too(self):
+        page = "https://news.example/chargebot-seed"
+        text = "Raised a seed round led by Northgate Ventures"
+        real = fact("traction", text, page, "the Austin robotics company, today announced a $4.5M ... seed round led by Northgate Ventures")
+        swapped = {**real, "quote": "the Austin robotics company, today announced a $60M ... seed round led by Northgate Ventures"}
+        far = {**real, "quote": "the Austin robotics company, today announced a $4.5M ... seed round led by Northgate Ventures ... and $60M"}
+        self.assertEqual(len(self.check(real)["facts"]), 1, "a short piece that is on the page is fine")
+        for quote in (swapped["quote"], far["quote"]):
+            with self.subTest(quote):
+                brief = self.check({**real, "quote": quote})
+                self.assertEqual(brief["facts"], [])
+                self.assertEqual(self.refused(brief), {text: "the quoted words are not on its source page"})
+
+    def test_a_shared_host_website_stands_for_its_own_path_only(self):
+        for website, company, expected in (
+            ("https://chargebot.example", "Chargebot", ("chargebot.example", "")),
+            ("https://www.uni.example/bovi-lab/", "Bovi Lab", ("uni.example", "/bovi-lab")),
+            ("https://sites.google.com/view/acme", "Acme", ("sites.google.com", "/view/acme")),
+            ("https://github.com", "Acme", ("", "")),
+            ("", "Acme", ("", "")),
+        ):
+            with self.subTest(website):
+                self.assertEqual(research._site_scope(website, company), expected)
+        scope = ("uni.example", "/bovi-lab")
+        self.assertTrue(research._own_site("https://uni.example/bovi-lab/people", scope))
+        self.assertTrue(research._own_site("https://uni.example/bovi-lab", scope))
+        self.assertFalse(research._own_site("https://uni.example/other-lab", scope), "another page on the host is not the lab's")
+        self.assertFalse(research._own_site("https://uni.example/bovi-lab-two", scope))
+        self.assertTrue(research._own_site("https://news.chargebot.example/x", ("chargebot.example", "")))
+
+    def test_another_page_on_a_shared_host_is_not_the_companys_own_site(self):
+        sites = {"uni.example": {"/bovi-lab/pubs": (403, "Forbidden"), "/other-lab/pubs": (403, "Forbidden")}}
+        target = {"company": "Bovi Lab", "website": "https://uni.example/bovi-lab"}
+        mine = fact("technology", "Builds soft robot grippers from silicone", "https://uni.example/bovi-lab/pubs", "builds soft robot grippers from silicone")
+        other = {**mine, "text": "Builds soft robot grippers from silicone rubber", "source_url": "https://uni.example/other-lab/pubs"}
+        brief = self.check(mine, other, target=target, sites=sites)
+        self.assertEqual([item["source_url"] for item in brief["facts"]], [mine["source_url"]])
+        self.assertFalse(brief["facts"][0]["checked"])
+        self.assertIn("is not the company's own", self.refused(brief)[other["text"]])
+
+    def test_a_page_the_browser_ends_on_is_held_to_the_same_source_rules_as_a_link(self):
+        class Renderer:
+            unavailable = ""
+
+            def __init__(self, ends_on):
+                self.ends_on = ends_on
+
+            def render(self, url):
+                return self.ends_on, CAREERS
+
+        walled = {"chargebot.example": {"/careers": (403, "Forbidden")}}
+
+        def brief(ends_on):
+            fetcher, _ = fetcher_for(walled)
+            with fetcher:
+                return research.check_brief(reply(STACK), TARGET, fetcher=fetcher, renderer=Renderer(ends_on), judge=SecondRead())
+
+        self.assertEqual(len(brief("https://chargebot.example/careers")["facts"]), 1)
+        refused = brief("https://www.linkedin.com/company/chargebot/jobs")
+        self.assertEqual(refused["facts"], [])
+        self.assertIn("sends the reader on to a page it cannot use", refused["refused"][0]["reason"])
+
+    def test_own_site_is_where_the_browser_ended_not_where_the_plain_fetch_went(self):
+        nameless = "<html><body><p>You will write motion planning code in C++ and Python on ROS 2, and test it on our fleet.</p></body></html>"
+
+        class Renderer:
+            unavailable = ""
+
+            def render(self, url):
+                return "https://jobs.example/opening", nameless
+
+        walled = {"chargebot.example": {"/careers": (403, "Forbidden")}}
+        fetcher, _ = fetcher_for(walled)
+        with fetcher:
+            brief = research.check_brief(reply(STACK), TARGET, fetcher=fetcher, renderer=Renderer(), judge=SecondRead())
+        self.assertEqual(brief["facts"], [], "a nameless page on another host is not the company's just because the link was")
+        self.assertEqual(brief["refused"][0]["reason"], "its source does not name the company")
+
+    def test_a_slow_server_costs_the_run_its_time_budget_not_the_worker_thread(self):
+        now = [0.0]
+
+        def clock():
+            return now[0]
+
+        # Every page read "takes" ten seconds; a run gets thirty.
+        transport, _ = site_transport(SITES)
+
+        def slow(request):
+            now[0] += 10
+            return transport.handler(request)
+
+        fetcher = SafeFetcher(httpx.Client(transport=httpx.MockTransport(slow)), resolve=lambda _host: ["93.184.216.34"], clock=clock)
+        pages = ["https://chargebot.example/careers", "https://news.example/chargebot-seed", "https://chargebot.example/arms",
+                 "https://chargebot.example/team", "https://chargebot.example/edge"]
+        facts = [{**SEED, "source_url": url, "text": f"Raised a $4.5M seed round ({number})"} for number, url in enumerate(pages)]
+        with fetcher:
+            brief = research.check_brief(reply(*facts), TARGET, fetcher=fetcher, judge=SecondRead(), budget_seconds=25, clock=clock)
+        reasons = [item["reason"] for item in brief["refused"]]
+        self.assertGreaterEqual(reasons.count("over the time one run spends reading pages"), 2, reasons)
+        self.assertLess(now[0], 60, "no page was requested after the budget was spent")
+
+    def test_the_gaps_are_plain_phrases_and_never_carry_an_address_key_or_link(self):
+        gaps = [
+            "which suppliers they use for key parts", "mail dana@chargebot.example about the motors", "see https://evil.example/x?d=abc",
+            "read C:\\Users\\student\\notes.txt", "what is in ~/.ssh/config", "the key sk-abcdefghijklmnop1234",
+            "aGVsbG8gd29ybGQgdGhpcyBpcyBiYXNlNjRlbmNvZGVk", "how they test grippers before shipping", "www.example.com pricing",
+        ]
+        brief = self.check(SEED, gaps=gaps)
+        self.assertEqual(brief["gaps"], ["which suppliers they use for key parts", "how they test grippers before shipping"])
+        self.assertTrue(research.safe_gap("how the arm stays calibrated"))
+        self.assertFalse(research.safe_gap("email me at a@b.co"))
+
+    def test_the_company_renamed_during_the_run_is_not_given_the_old_ones_research(self):
+        # See ResearchStorageTests: this is the pure check of the comparison it uses.
+        started = {"company": "Chargebot, Inc.", "website": "https://chargebot.example"}
+        self.assertFalse(research.company_changed(started, "CHARGEBOT", "https://www.chargebot.example/about"))
+        self.assertFalse(research.company_changed({**started, "website": ""}, "Chargebot", "https://chargebot.example"))
+        self.assertTrue(research.company_changed(started, "Voltarm", "https://chargebot.example"))
+        self.assertTrue(research.company_changed(started, "Chargebot", "https://voltarm.example"))
+
 
 class ResearchStorageTests(unittest.TestCase):
     def setUp(self):
@@ -726,6 +890,39 @@ class ResearchStorageTests(unittest.TestCase):
         self.assertEqual(sorted(states), ["cancelled", "queued"])
         self.assertEqual(get_target(self.conn, self.target["id"], user_id=USER)["tech_brief_job_id"], first["tech_brief_job_id"])
 
+    def test_research_still_running_when_the_company_is_renamed_writes_nothing_onto_it(self):
+        from opportunity_app.outreach import update_target
+
+        def runner(prompt):
+            update_target(self.conn, self.target["id"], {"company": "Different Motors", "website": "https://different.example"}, user_id=USER)
+            return reply(SEED, STACK)
+
+        fetcher, _ = fetcher_for()
+        with fetcher:
+            target = research.research_company(
+                self.conn, self.target["id"], user_id=USER, runner=runner, fetcher=fetcher, agent="claude-code", judge=SecondRead(),
+            )
+        self.assertEqual(target["company"], "Different Motors")
+        self.assertEqual(target["tech_brief"], {}, "Chargebot's checked facts are not the new company's")
+        self.assertIn("changed while it was being researched", target["tech_brief_error"])
+        events = get_target(self.conn, self.target["id"], user_id=USER, include_events=True)["events"]
+        self.assertNotIn("tech_brief_written", [event["event_type"] for event in events])
+
+    def test_research_is_not_queued_while_call_prep_is_researching_the_same_company(self):
+        self.conn.execute("UPDATE outreach_targets SET tech_brief_tried_at=? WHERE id=?",
+                          (datetime.now(timezone.utc).isoformat(), self.target["id"]))
+        self.conn.commit()
+        running = {**get_target(self.conn, self.target["id"], user_id=USER), "call_prep_job": {"state": "running"}}
+        with mock.patch.object(research, "get_target", return_value=running):
+            queued = research.queue_research(self.conn, self.target["id"], user_id=USER, reason="button")
+        self.assertIsNone(queued.get("tech_brief_job"))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM job_queue WHERE job_type=?", (research.JOB_TYPE,)).fetchone()[0], 0)
+        # A day later, or with call prep not running, a click queues as before.
+        idle = {**running, "call_prep_job": {"state": "succeeded"}}
+        with mock.patch.object(research, "get_target", return_value=idle):
+            research.queue_research(self.conn, self.target["id"], user_id=USER, reason="button")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM job_queue WHERE job_type=?", (research.JOB_TYPE,)).fetchone()[0], 1)
+
     def test_the_prompt_follows_the_students_field_with_no_field_assumed(self):
         confirm_facts(self.conn, degree="History", interest_keywords=["archives"])
         self.research(reply(SEED))
@@ -748,6 +945,16 @@ class AgentChoiceTests(unittest.TestCase):
         with mock.patch.object(research, "_cli_available", return_value=False):
             with self.assertRaises(research.ResearchUnavailable):
                 research.available_agent("claude-code")
+
+    def test_codex_is_swapped_for_claude_code_when_both_are_installed(self):
+        """Codex's read-only sandbox can still read local files, and research reads untrusted pages."""
+        with mock.patch.object(research, "_cli_available", return_value=True):
+            agent, note = research.available_agent("codex-cli")
+            self.assertEqual(agent, "claude-code")
+            self.assertIn("can read files on this computer", note)
+            self.assertEqual(research.available_agent("claude-code"), ("claude-code", ""))
+        with mock.patch.object(research, "_cli_available", side_effect=lambda binary: "codex" in binary):
+            self.assertEqual(research.available_agent("codex-cli"), ("codex-cli", ""), "with nothing else installed it is still used")
 
     def test_the_setting_is_offered_and_checked(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -46,6 +46,7 @@ is the text of a refused note.
 
 from __future__ import annotations
 
+import html
 import json
 import re
 import sqlite3
@@ -452,7 +453,13 @@ def pick_profile(people: list[dict[str, str]], name: str, company: str) -> tuple
 
 
 def _profile_page(profile: dict[str, Any]) -> research._Page:
-    return research._Page(FetchResult(profile["url"], 200, "\n".join(profile["sections"].values())))
+    """The profile as a page with one line for each of its lines.
+
+    The word checks hold a note to the lines around its quote, so a profile fed
+    in as one long line would let a name or a number anywhere in it back any note.
+    """
+    lines = [line.strip() for text in profile["sections"].values() for line in str(text).splitlines() if line.strip()]
+    return research._Page(FetchResult(profile["url"], 200, "".join(f"<p>{html.escape(line)}</p>" for line in lines)))
 
 
 def _header(profile: dict[str, Any]) -> list[str]:
@@ -487,9 +494,10 @@ def check_notes(
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     """The notes whose words are in the profile and that say no more than those words; and the rest, with why.
 
-    ``judge`` is the second read outreach_research uses for company facts: it
+    ``judge`` is the second read outreach_research uses for company facts (a separate call on the page's own
+    passage, possibly the same model as the writer): it
     reads each note beside the profile's own lines around its quote, and a note
-    it says no to is refused (two jobs merged into one, a title put on the
+    it says no to, or gives no answer for, is not kept (two jobs merged into one, a title put on the
     wrong company). Without one, the word checks alone decide, as the notes are
     only hooks for the student's own questions.
 
@@ -530,7 +538,10 @@ def check_notes(
         confirmed = []
         for index, note in enumerate(kept):
             verdict = verdicts.get(f"n{index}")
-            if verdict is not None and not verdict[0]:
+            if verdict is None:
+                # A note nothing has read against the profile is a model's claim, so it is not kept as one that was checked.
+                refused.append({"topic": note["topic"], "reason": "the second read of the profile gave no answer for it, so it was not kept"})
+            elif not verdict[0]:
                 refused.append({"topic": note["topic"], "reason": f"a second read of the profile says it does not state this: {verdict[1] or 'no reason given'}"})
             else:
                 confirmed.append(note)
@@ -582,7 +593,8 @@ def read_interviewer(
         conn.execute("UPDATE outreach_targets SET interviewer_tried_at=? WHERE id=? AND user_id=?", (utc_now(), target_id, user_id))
     who = find_interviewer(conn, target, user_id)
     key = _who_key(who["name"], target.get("interviewer_linkedin") or "")
-    record: dict[str, Any] = {**who, "key": key, "linkedin": None, "notes": [], "refused": [], "candidates": []}
+    # Only how many people LinkedIn offered is kept: their names and profile links are other people's, and nothing shows them.
+    record: dict[str, Any] = {**who, "key": key, "linkedin": None, "notes": [], "refused": [], "candidate_count": 0}
     error = ""
     try:
         link = username_from(target.get("interviewer_linkedin") or "")
@@ -592,11 +604,12 @@ def read_interviewer(
             raise LinkedInUnavailable("Not searched on LinkedIn until you say who it is: add their name under Call prep")
         username = link
         if not username:
-            username, record["candidates"] = pick_profile(
+            username, candidates = pick_profile(
                 client.search_people(f"{who['name']} {target['company']}"), who["name"], target["company"],
             )
+            record["candidate_count"] = len(candidates)
         if not username:
-            count = len(record["candidates"])
+            count = record["candidate_count"]
             found = (
                 f"LinkedIn has several people named {who['name']}" if count > 1
                 else f"LinkedIn has one person named {who['name']}, but their result does not name {target['company']}" if count
@@ -625,6 +638,11 @@ def read_interviewer(
     except Exception as exc:  # noqa: BLE001 - whatever a client or a model writer does, the new person is stored, never the last one
         error = f"LinkedIn could not be read ({type(exc).__name__}): its answer was not one this understands"
     with conn:
+        now = conn.execute("SELECT company, website FROM outreach_targets WHERE id=? AND user_id=?", (target_id, user_id)).fetchone()
+        if now is not None and research.company_changed(target, now[0], now[1]):
+            # Renamed while LinkedIn was read: the profile was matched to the old company, so it is not kept.
+            _log(conn, target_id, user_id, "interviewer_read", detail="The company changed during the look-up, so it was not kept")
+            return get_target(conn, target_id, user_id=user_id)
         conn.execute(
             "UPDATE outreach_targets SET interviewer_json=?, interviewer_at=?, interviewer_error=?, updated_at=? WHERE id=? AND user_id=?",
             (json.dumps(record, ensure_ascii=False), utc_now(), error, utc_now(), target_id, user_id),

@@ -3,7 +3,7 @@
 Call prep reads the interviewer's profile so the student can ask about the
 interviewer's own path (outreach_interviewer.py). LinkedIn is behind a login,
 so this goes through ``mcp-server-linkedin`` run by ``mcporter``, signed in as
-an account the student set up for this (SETUP.md, "LinkedIn for call prep"),
+an account the student set up for this (SETUP.md step 7b, Call prep),
 never the account in their everyday browser. Every read checks, first:
 
 - ``PIPELINE_LINKEDIN_ACCOUNT`` names the account this may use (its profile
@@ -97,7 +97,7 @@ def mcporter_command() -> list[str]:
         fallback = Path(os.environ.get("APPDATA", "")) / "fnm" / "aliases" / "default" / "mcporter"
         found = str(fallback) if fallback.parent.exists() else ""
     if not found:
-        raise LinkedInUnavailable("mcporter is not installed here, so LinkedIn cannot be read (SETUP.md, LinkedIn for call prep)")
+        raise LinkedInUnavailable("mcporter is not installed here, so LinkedIn cannot be read (SETUP.md step 7b, Call prep)")
     folder = Path(found).parent
     script = folder / "node_modules" / "mcporter" / "dist" / "cli.js"
     if not script.exists() and Path(found).suffix.casefold() in {".cmd", ".bat"}:
