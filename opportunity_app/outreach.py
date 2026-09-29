@@ -105,6 +105,10 @@ SELECT_TARGETS = """
         (SELECT j.last_error FROM job_queue j WHERE j.id=t.call_prep_job_id) AS call_prep_job_error,
         (SELECT j.next_attempt_at FROM job_queue j WHERE j.id=t.call_prep_job_id) AS call_prep_job_next_attempt_at,
         (SELECT j.attempts FROM job_queue j WHERE j.id=t.call_prep_job_id) AS call_prep_job_attempts,
+        (SELECT j.state FROM job_queue j WHERE j.id=t.tech_brief_job_id) AS tech_brief_job_state,
+        (SELECT j.last_error FROM job_queue j WHERE j.id=t.tech_brief_job_id) AS tech_brief_job_error,
+        (SELECT j.next_attempt_at FROM job_queue j WHERE j.id=t.tech_brief_job_id) AS tech_brief_job_next_attempt_at,
+        (SELECT j.attempts FROM job_queue j WHERE j.id=t.tech_brief_job_id) AS tech_brief_job_attempts,
         (SELECT f.page_url FROM outreach_contact_forms f WHERE f.target_id=t.id) AS contact_form_page_url,
         (SELECT f.captcha FROM outreach_contact_forms f WHERE f.target_id=t.id) AS contact_form_captcha,
         (SELECT f.accepts_file FROM outreach_contact_forms f WHERE f.target_id=t.id) AS contact_form_accepts_file,
@@ -119,12 +123,13 @@ TEXT_FIELDS = (
     "company", "channel", "website", "location", "summary", "fit_rationale", "activity_signal",
     "contact_name", "contact_role", "contact_email", "contact_cc", "contact_linkedin", "contact_route",
     "deadline_label", "email_subject", "email_body", "follow_up_subject", "follow_up_body", "notes",
-    "contact_evidence_url", "call_prep",
+    "contact_evidence_url", "call_prep", "interviewer_name", "interviewer_linkedin",
 )
 MULTILINE_FIELDS = {"email_body", "follow_up_body", "call_prep"}
 TEXT_LIMITS = {
     "email_body": 20_000, "follow_up_body": 20_000, "call_prep": 20_000, "notes": 10_000, "summary": 5_000,
     "fit_rationale": 5_000, "activity_signal": 5_000, "location": 200,
+    "interviewer_name": 200, "interviewer_linkedin": 300,
 }
 US_STATES = {
     "AL": "alabama", "AK": "alaska", "AZ": "arizona", "AR": "arkansas", "CA": "california", "CO": "colorado",
@@ -199,6 +204,16 @@ def _validate_web_url(value: str, field: str) -> None:
         raise ValueError(f"{field} must be a public http(s) URL without credentials")
 
 
+def _validate_linkedin_profile(value: str, field: str) -> None:
+    """A link to one person's LinkedIn profile (linkedin.com/in/name), with or without https://."""
+    text = value if "//" in value else f"https://{value}"
+    _validate_web_url(text, field)
+    parsed = urlsplit(text)
+    host = (parsed.hostname or "").lower()
+    if not (host == "linkedin.com" or host.endswith(".linkedin.com")) or not re.match(r"^/in/[^/]+", parsed.path):
+        raise ValueError(f"{field} must be a link to a LinkedIn profile, like https://www.linkedin.com/in/name")
+
+
 def _normalize(payload: dict[str, Any], *, partial: bool) -> dict[str, Any]:
     values: dict[str, Any] = {}
     for field in TEXT_FIELDS:
@@ -219,6 +234,8 @@ def _normalize(payload: dict[str, Any], *, partial: bool) -> dict[str, Any]:
     for field in ("website", "contact_linkedin", "contact_evidence_url"):
         if values.get(field):
             _validate_web_url(values[field], field)
+    if values.get("interviewer_linkedin"):
+        _validate_linkedin_profile(values["interviewer_linkedin"], "interviewer_linkedin")
     for field, allowed in (("priority", OUTREACH_PRIORITIES), ("status", OUTREACH_STATUSES), ("contact_confidence", CONTACT_CONFIDENCE)):
         if field in payload and payload[field] is not None and str(payload[field]).strip():
             value = str(payload[field]).strip()
@@ -578,6 +595,17 @@ def _record(
         "attempts": int(item.pop("call_prep_job_attempts", None) or 0),
     }
     item["call_prep_job"] = job if job_state else None
+    # Technical research from the web (outreach_research.py), and the job writing it.
+    item["tech_brief"] = json.loads(item.pop("tech_brief_json", None) or "{}")
+    item["interviewer"] = json.loads(item.pop("interviewer_json", None) or "{}")
+    brief_state = item.pop("tech_brief_job_state", None)
+    brief_job = {
+        "state": brief_state,
+        "error": item.pop("tech_brief_job_error", None) or "",
+        "next_attempt_at": item.pop("tech_brief_job_next_attempt_at", None),
+        "attempts": int(item.pop("tech_brief_job_attempts", None) or 0),
+    }
+    item["tech_brief_job"] = brief_job if brief_state else None
     item["reply_count"] = int(item.get("reply_count") or 0)
     # The contact form on the company's site, for a company with no email (outreach_forms.py).
     form = {column: item.pop(f"contact_form_{column}", None) for column in CONTACT_FORM_COLUMNS}
@@ -1365,7 +1393,31 @@ def _plan_target_update(
     return {
         "values": values, "typed_location": typed_location, "confirming": confirming,
         "readdressed": readdressed, "withdrawn": withdrawn,
+        "research_reset": _research_reset(values, previous),
     }
+
+
+def _research_reset(values: dict[str, Any], previous: dict[str, Any]) -> str:
+    """Why the stored web research and interviewer notes no longer apply, or "" when they still do.
+
+    Both were checked against one company's pages and one company's people. A
+    different company name or website means they describe someone else, and
+    keeping them would print another company's checked facts as this one's.
+    A change of case, punctuation, or legal ending is the same company, and so
+    is a first website for a company that had none: the research found its
+    pages by name, and each fact's page had to name it.
+    """
+    stored = (
+        previous.get("tech_brief") or previous.get("tech_brief_at") or previous.get("interviewer")
+        or previous.get("interviewer_at") or previous.get("tech_brief_error") or previous.get("interviewer_error")
+    )
+    if not stored:
+        return ""
+    if "company" in values and company_key(values["company"]) != company_key(previous["company"]):
+        return f"The company changed from {previous['company']} to {values['company']}"
+    if "website" in values and website_domain(previous["website"]) and website_domain(values["website"]) != website_domain(previous["website"]):
+        return f"The website changed from {previous['website'] or 'none'} to {values['website'] or 'none'}"
+    return ""
 
 
 def _write_target_update(
@@ -1399,6 +1451,16 @@ def _write_target_update(
         raise _ConfirmRaced()
     if "status" in values and values["status"] != previous["status"]:
         _log(conn, target_id, user_id, "status", from_status=previous["status"], to_status=values["status"], detail=status_detail)
+    if plan["research_reset"]:
+        # Research and interviewer notes checked against the old company are dropped, not
+        # printed as checked facts about the new one; call prep researches again.
+        conn.execute(
+            "UPDATE outreach_targets SET tech_brief_json='{}', tech_brief_at=NULL, tech_brief_by='', tech_brief_error='', "
+            "tech_brief_tried_at=NULL, interviewer_json='{}', interviewer_at=NULL, interviewer_error='', "
+            "interviewer_tried_at=NULL WHERE id=? AND user_id=?",
+            (target_id, user_id),
+        )
+        _log(conn, target_id, user_id, "research_cleared", detail=f"{plan['research_reset']}, so the web research and interviewer notes on file were cleared")
     if confirming:
         _log(conn, target_id, user_id, "location_confirmed", detail=f"You confirmed {previous['location']}")
     if plan["typed_location"] and values["location"]:

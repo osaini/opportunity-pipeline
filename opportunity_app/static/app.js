@@ -2689,6 +2689,10 @@
     call_prep_queued: "Call prep started",
     call_prep_generated: "Call prep written",
     call_prep_replaced: "Call prep replaced",
+    tech_brief_queued: "Company research started",
+    tech_brief_written: "Company research written",
+    tech_brief_failed: "Company research failed",
+    research_cleared: "Company research cleared",
     thank_you_scheduled: "Thank-you scheduled",
     thank_you_reviewed: "Thank-you reviewed",
     thank_you_sent: "Thank-you sent",
@@ -4418,6 +4422,30 @@
     research.options.forEach((option) => researchSelect.appendChild(providerOption(option, research.value)));
     researchSelect.addEventListener("change", () => save({ research_agent: researchSelect.value }, "Research agent"));
 
+    const companyResearch = settings.company_research_agent;
+    const [companyResearchField, companyResearchSelect] = selectField("settings-company-research-agent", "Who researches a company for call prep",
+      "Reads a company's site, job posts, patents, papers, and news for what they build and how; a fact is kept only when its quote is found on the page it cites. Runs when a company replies, or when you press Research this company.");
+    const sameResearch = document.createElement("option");
+    sameResearch.value = "";
+    sameResearch.textContent = "Same as the web research above";
+    sameResearch.selected = !companyResearch.value;
+    companyResearchSelect.appendChild(sameResearch);
+    companyResearch.options.forEach((option) => companyResearchSelect.appendChild(providerOption(option, companyResearch.value)));
+    companyResearchSelect.addEventListener("change", () => save({ company_research_agent: companyResearchSelect.value }, "Company research agent"));
+
+    // The one LinkedIn account call prep may read interviewers' profiles as.
+    const linkedinField = element("label", "profile-field");
+    linkedinField.appendChild(element("span", "", "LinkedIn test account for reading interviewers' profiles"));
+    const linkedinInput = document.createElement("input");
+    linkedinInput.type = "text";
+    linkedinInput.id = "settings-linkedin-account";
+    linkedinInput.placeholder = "Profile link or username; empty keeps LinkedIn off";
+    linkedinInput.value = settings.linkedin_account?.value || "";
+    linkedinField.appendChild(linkedinInput);
+    linkedinField.appendChild(element("p", "profile-help",
+      "Use a separate test account, never your everyday one. Before every read the app checks that LinkedIn is signed in as exactly this account, with importing your browser's sign-in turned off, and it only ever reads. See SETUP.md, LinkedIn for call prep."));
+    linkedinInput.addEventListener("change", () => save({ linkedin_account: linkedinInput.value }, "LinkedIn account"));
+
     const [attachField, attachSelect] = selectField("settings-attachment", "Attach to Gmail drafts",
       "A copy is attached under its original file name. Drafts are only created; you send them yourself.");
     const attachState = element("p", "profile-help");
@@ -4450,7 +4478,7 @@
       save({ attachment_resume_id: attachSelect.value }, "Attachment");
     });
 
-    body.append(draftField, followField, prepField, thanksField, reviewField, researchField, attachField, status);
+    body.append(draftField, followField, prepField, thanksField, reviewField, researchField, companyResearchField, linkedinField, attachField, status);
     return panel;
   }
 
@@ -4607,7 +4635,7 @@
       if (!item.reply_count) {
         return { label: "Log their reply", hint: "Paste their reply. Call prep is written from it, and starts as soon as it is logged.", tab: "history", tone: "is-soon" };
       }
-      return { label: "Prep for the call", hint: "Write call prep: what they do, talking points, what you can bring, and questions to ask.", tab: "prep", tone: "is-region" };
+      return { label: "Prep for the call", hint: "Write call prep: the company from web research, what they said, and questions to ask.", tab: "prep", tone: "is-region" };
     }
     if (OUTREACH_CALL_PREP.includes(item.status)) {
       const revisit = item.status === "replied" && item.follow_up_at ? ` Revisit on ${formatCalendarDate(item.follow_up_at)}.` : "";
@@ -4710,7 +4738,7 @@
   // ends. The job's state is on the server, so a reload or a laptop waking up
   // finds it again; a hidden tab is checked the moment it is shown.
   const CALL_PREP_ACTIVE = ["queued", "running", "retry"];
-  const CALL_PREP_WRITING = "Writing call prep in the background. It keeps going if you leave this page, and picks back up if your laptop sleeps or the app restarts.";
+  const CALL_PREP_WRITING = "Writing call prep in the background. When the company has no recent research, it researches them on the web first, which takes a few minutes. It keeps going if you leave this page, and picks back up if your laptop sleeps or the app restarts.";
   const callPrepWatches = new Map();
 
   function watchCallPrep(id, delay = 5000) {
@@ -4723,7 +4751,7 @@
     let active = true;
     try {
       const target = await api(`/api/v1/outreach/${encodeURIComponent(id)}`);
-      active = CALL_PREP_ACTIVE.includes(target.call_prep_job?.state);
+      active = CALL_PREP_ACTIVE.includes(target.call_prep_job?.state) || CALL_PREP_ACTIVE.includes(target.tech_brief_job?.state);
     } catch (error) {
       active = error.status !== 404;
     }
@@ -4924,6 +4952,41 @@
     return line;
   }
 
+  // Who the call is with (outreach_interviewer.py): found in your inbox, or
+  // named here. A name or LinkedIn link typed here wins, and the next call prep
+  // looks them up again.
+  function outreachInterviewer(item) {
+    const box = element("div", "outreach-interviewer is-wide");
+    const record = item.interviewer || {};
+    const said = element("p", "outreach-note");
+    if (record.name) {
+      said.textContent = `Talking to ${record.name}${record.email ? ` (${record.email})` : ""}: ${record.evidence || ""}.${record.meeting ? ` Call: ${record.meeting}.` : ""}`;
+    } else {
+      said.textContent = "Who you are talking to is not known yet. It comes from your inbox once someone at the company writes, or name them below.";
+    }
+    box.appendChild(said);
+    const linkedin = record.linkedin;
+    if (linkedin) {
+      const line = element("p", "outreach-note");
+      line.append(`LinkedIn read ${formatDate(linkedin.read_at)} through your test account${linkedin.confirmed ? "" : "; it never names the company, so check it is them"}. `);
+      const href = safeExternalUrl(linkedin.url);
+      if (href) {
+        const link = element("a", "", "Profile ↗");
+        link.href = href;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        line.appendChild(link);
+      }
+      box.appendChild(line);
+    }
+    if (item.interviewer_error) box.appendChild(element("p", "outreach-note form-error", `Last look: ${item.interviewer_error}`));
+    const fields = element("div", "outreach-interviewer-fields");
+    outreachField(fields, "Talking to someone else? Their name", "interviewer_name", item.interviewer_name || "", { placeholder: record.name || "Full name" });
+    outreachField(fields, "Their LinkedIn link", "interviewer_linkedin", item.interviewer_linkedin || "", { placeholder: "https://www.linkedin.com/in/…" });
+    box.appendChild(fields);
+    return box;
+  }
+
   // Notes for the call once a company writes back. The text is part of the
   // pane's form, so Save keeps hand edits; writing new prep replaces it, and the
   // server keeps the replaced notes in the history.
@@ -4933,8 +4996,9 @@
     group.appendChild(element("p", "outreach-note is-wide", item.call_prep
       ? "Edit freely and fill in the blanks on the call. Save changes keeps your edits."
       : item.reply_count
-        ? "Call prep covers what they do, what they said, talking points, what you can bring, and questions to ask. It starts on its own when a company replies."
+        ? "Call prep opens with what to ask, in call order, and your talking points, then what to know: who you're talking to, a reading of the company, and web research with numbered sources. Lines are short, for copying out by hand. It starts on its own when a company replies."
         : "Call prep is written from their reply. Paste it under Replies and history, and the notes start writing as soon as it is logged."));
+    group.appendChild(outreachInterviewer(item));
     const notes = outreachField(group, "Notes", "call_prep", item.call_prep || "", { multiline: true, wide: true });
     notes.rows = 24;
     notes.placeholder = "Call prep notes appear here. You can also write your own.";
@@ -5012,7 +5076,7 @@
       const details = element("details", "outreach-claims");
       details.appendChild(element("summary", "", `What these notes are based on (${claims.length})`));
       if (item.call_prep_generated_by && item.call_prep_generated_by !== "template") {
-        details.appendChild(element("p", "outreach-note", "The model's own citations. Lines marked (my guess) are its inference about the fit, not facts."));
+        details.appendChild(element("p", "outreach-note", "Company facts link to the page each was confirmed on. Talking points carry the model's own citations."));
       }
       const list = element("ul");
       claims.forEach((claim) => {
@@ -5035,6 +5099,21 @@
             sent_email: "the email you sent",
             inference: "inference, not from your profile or research",
           }[where] || claim.basis;
+          if (claim.section === "reading") {
+            // The reading is built only on the checked research facts it cites, and is still not a fact itself.
+            row.appendChild(element("small", "", "my read of the research (inference, not a checked fact)"));
+            (Array.isArray(claim.sources) ? claim.sources : []).forEach((url) => {
+              const href = safeExternalUrl(url);
+              if (!href) return;
+              const from = element("a", "", "source ↗");
+              from.href = href;
+              from.target = "_blank";
+              from.rel = "noopener noreferrer";
+              row.appendChild(from);
+            });
+            list.appendChild(row);
+            return;
+          }
           row.appendChild(element("small", "", `${label}${field ? `: ${field.replace(/_/g, " ")}` : ""}`));
         }
         list.appendChild(row);
@@ -5339,6 +5418,151 @@
       box.appendChild(entry);
     });
     return box;
+  }
+
+  // Research from the web (outreach_research.py). Every fact's quote was found
+  // on the page it cites, and the fact says no more than the quote and the
+  // lines around it; one from the company's own site that turned the check away
+  // is kept but says it was not checked.
+  const TECH_BRIEF_SECTIONS = [
+    ["product", "What they build"],
+    ["customers", "Who they sell to"],
+    ["edge", "What they say sets them apart"],
+    ["competitors", "Competitors"],
+    ["technology", "How it works"],
+    ["engineering", "What they build it with"],
+    ["growth", "Where they're expanding"],
+    ["hiring", "Where they're hiring"],
+    ["team", "Who builds it"],
+    ["traction", "Funding, customers, and partners"],
+    ["news", "Recent news"],
+  ];
+  const TECH_BRIEF_RESEARCHING = "Researching this company on the web in the background. It takes a few minutes and keeps going if you leave this page. A fact is kept only when its quote is found on the page it cites and a second model confirms the page says it.";
+
+  function sourceHost(url) {
+    try {
+      return new URL(url).hostname.replace(/^www\./, "");
+    } catch (_error) {
+      return "source";
+    }
+  }
+
+  // Only a quote found on the page is shown as the page's words.
+  function briefSourceLink(url, quote, found) {
+    const href = safeExternalUrl(url);
+    if (!href) return null;
+    const link = element("a", "", `${sourceHost(url)} ↗`);
+    link.href = href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    if (quote) {
+      link.title = found
+        ? `The page says: "${quote}"`
+        : `The research agent's quote, not checked: "${quote}"`;
+    }
+    return link;
+  }
+
+  function outreachTechBrief(item, context = {}) {
+    const group = element("fieldset", "outreach-group is-brief");
+    group.appendChild(element("legend", "", "Company research"));
+    const brief = item.tech_brief || {};
+    const facts = brief.facts || [];
+    const job = item.tech_brief_job;
+    const active = CALL_PREP_ACTIVE.includes(job?.state);
+    if (facts.length) {
+      const unchecked = facts.filter((fact) => !fact.checked).length;
+      const by = item.tech_brief_by ? ` by ${DRAFT_PROVIDER_LABELS[item.tech_brief_by] || item.tech_brief_by}` : "";
+      group.appendChild(element("p", "outreach-note is-wide",
+        `From the web, ${formatDate(item.tech_brief_at)}${by}. Each fact's quote was found on the page it links to, and a second model confirmed the page says it${unchecked ? `, except the ${unchecked} marked not checked` : ""}. That shows the page says it, not that the page is right. Call prep is built from this.`));
+    } else {
+      group.appendChild(element("p", "outreach-note is-wide",
+        "No research yet. It reads the company's site, job posts, patents, papers, grants, and news for what they build, how it works, what they build it with, and who built it, and keeps a fact only when its quote is found on the page it cites and a second model confirms the page says it. Call prep runs it on its own when a company replies."));
+    }
+    if (brief.note) group.appendChild(element("p", "outreach-note is-wide", brief.note));
+    if (item.tech_brief_error) group.appendChild(element("p", "outreach-note form-error is-wide", `Last try: ${item.tech_brief_error}`));
+    TECH_BRIEF_SECTIONS.forEach(([key, label]) => {
+      const chosen = facts.filter((fact) => fact.section === key);
+      if (!chosen.length) return;
+      const section = element("section", "outreach-brief-section is-wide");
+      section.appendChild(element("h4", "", label));
+      const list = element("ul", "outreach-brief-list");
+      chosen.forEach((fact) => {
+        const row = element("li");
+        row.appendChild(element("span", "", fact.text));
+        const link = briefSourceLink(fact.source_url, fact.quote, fact.checked);
+        if (link) row.appendChild(link);
+        if (!fact.checked) row.appendChild(element("small", "", `not checked: ${fact.note || "it could not be checked"}`));
+        if (key === "competitors" && String(fact.note || "").startsWith("picked")) row.appendChild(element("small", "", "the research agent's pick of a competitor"));
+        list.appendChild(row);
+      });
+      section.appendChild(list);
+      group.appendChild(section);
+    });
+    const gaps = brief.gaps || [];
+    if (gaps.length) {
+      const section = element("section", "outreach-brief-section is-wide");
+      section.appendChild(element("h4", "", "Not found online (the research agent's list, not checked; worth asking)"));
+      const list = element("ul", "outreach-brief-list");
+      gaps.forEach((gap) => list.appendChild(element("li", "", gap)));
+      section.appendChild(list);
+      group.appendChild(section);
+    }
+    const refused = brief.refused || [];
+    if (refused.length) {
+      const details = element("details", "outreach-rejected is-wide");
+      details.appendChild(element("summary", "", `Left out (${refused.length}): facts the checks did not keep, each with why`));
+      const list = element("ul");
+      refused.forEach((fact) => {
+        const row = element("li", "", `${fact.text} (${fact.reason})`);
+        const link = briefSourceLink(fact.source_url);
+        if (link) row.append(" ", link);
+        list.appendChild(row);
+      });
+      details.appendChild(list);
+      group.appendChild(details);
+    }
+    const assistant = element("div", "outreach-brief-actions is-wide");
+    const buttons = element("div", "outreach-draft-buttons");
+    const run = element("button", facts.length ? "secondary-button" : "primary-button",
+      active ? "Researching…" : facts.length ? "Research again" : "Research this company");
+    run.type = "button";
+    const available = context.research?.available !== false;
+    run.disabled = active || !available;
+    const message = element("p", "form-status");
+    message.setAttribute("aria-live", "polite");
+    if (!available) message.textContent = context.research?.reason || "Research is not available in this app. It runs in the app on your own database.";
+    run.addEventListener("click", async () => {
+      run.disabled = true;
+      try {
+        await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/research`, { method: "POST" });
+        state.outreachOpen = item.id;
+        announce(`Researching ${item.company} in the background.`);
+        await loadOutreach();
+      } catch (error) {
+        run.disabled = false;
+        message.textContent = error.message;
+      }
+    });
+    buttons.appendChild(run);
+    assistant.append(buttons, message);
+    if (job && job.state !== "succeeded") {
+      const when = job.next_attempt_at ? formatDate(job.next_attempt_at) : "soon";
+      const text = {
+        queued: TECH_BRIEF_RESEARCHING,
+        running: TECH_BRIEF_RESEARCHING,
+        retry: `The last try did not finish (${job.error || "no reason given"}). Trying again ${when}.`,
+        dead: `Could not research after ${job.attempts} tries: ${job.error || "no reason given"}. Press the button to try again.`,
+        cancelled: "The last research request was cancelled.",
+      }[job.state];
+      if (text) {
+        // Drawn fresh on each load, so it is announced where it changes, not here.
+        assistant.appendChild(element("p", `outreach-note${job.state === "dead" ? " form-error" : ""}`, text));
+      }
+    }
+    if (active) watchCallPrep(item.id);
+    group.appendChild(assistant);
+    return group;
   }
 
   function createOutreachCard(item, context = {}) {
@@ -5784,7 +6008,7 @@
     draftPanel.append(draftMain, aside);
 
     const researchPanel = panel("research");
-    researchPanel.append(research, notesGroup);
+    researchPanel.append(research, outreachTechBrief(item, context), notesGroup);
     const contactsSection = outreachContactsSection(item);
     const contactPanel = panel("contact");
     contactPanel.append(contact, outreachManualContactSection(item), outreachContactFormSection(item), contactsSection.element);
@@ -6187,7 +6411,9 @@
                 : "Pick another tab beside the page."));
           els.results.appendChild(empty);
         } else {
-          els.results.appendChild(outreachSplitView(items, tab, { compose: payload.compose, gmail: payload.gmail_drafts, automation: payload.automation }));
+          els.results.appendChild(outreachSplitView(items, tab, {
+            compose: payload.compose, gmail: payload.gmail_drafts, automation: payload.automation, research: payload.company_research,
+          }));
         }
         els.resultCount.textContent = `${plural(items.length, "company", "companies")} · ${tab.label}`;
       }

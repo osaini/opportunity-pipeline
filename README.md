@@ -978,6 +978,7 @@ PIPELINE_OUTREACH_CALL_PREP_PROVIDER=      # optional call prep writer; empty = 
 PIPELINE_OUTREACH_THANK_YOU_PROVIDER=      # optional writer of the thank-you after a decline; empty = same as first emails
 PIPELINE_OUTREACH_REVIEW_PROVIDER=         # optional reviewer of follow-ups and thank-yous; empty = automatic
 PIPELINE_OUTREACH_DISCOVERY_PROVIDER=claude-code  # or codex-cli: deep search, locating, Find people
+PIPELINE_OUTREACH_COMPANY_RESEARCH_PROVIDER=      # optional company research agent; empty = same as above
 PIPELINE_OUTREACH_ATTACHMENT=data/outreach-attachments/resume.pdf  # attached to Gmail drafts
 PIPELINE_SEC_USER_AGENT="Your Name you@example.com"  # enables SEC Form D lookups
 ```
@@ -985,10 +986,66 @@ PIPELINE_SEC_USER_AGENT="Your Name you@example.com"  # enables SEC Form D lookup
 Every AI feature has its own choice under Outreach → Settings, and each list
 shows what this computer can run (a provider not set up says so, with how to
 set it up): first-email drafts, follow-ups, call prep, the follow-up reviewer,
-the web research, and reply and email suggestions (the keyword rules or Jev).
+the web research, company research, and reply and email suggestions (the
+keyword rules or Jev).
 The Agent and Preparation pages pick per thread and per document from the same
 list, subscriptions included. With only one model set up, everything uses it,
 and the reviewer says it is from the same company as the writer.
+
+### Company research and call prep
+
+When a company replies, call prep researches it on the web first: its product
+and spec pages, customers, what it says sets it apart, competitors, job posts,
+patents, papers, grants, GitHub, and news, plus the research agent's own list
+of what the web does not say (worth asking on the call). The agent cites a page
+and the words on it for every fact. The app opens each page and keeps the fact
+only when those words are on it, word for word, with every number, unit, and
+name in the fact in them or the lines around them; then a second model, which
+did not write the fact, reads it beside a passage the app cut from the page and
+confirms it says exactly that (the same company or person, the same numbers on
+the same things, the same "not"). A kept fact means the page says it, not that
+the page is right. A fact that could not be confirmed (a company site that
+turns automated readers away, or no second read) is kept marked *not checked*
+and never used for questions; one that fails is listed under *Left out* with
+the reason.
+
+Call prep also finds who you are talking to: whoever sent the calendar
+invitation, else whoever wrote last, from your outreach inbox. With a LinkedIn
+test account set under Outreach → Settings (SETUP.md), it reads their profile
+for notes on their path, each checked against the profile the same way.
+
+The notes are written to be copied out by hand, with short lines that keep
+every specific:
+
+- **ASK**, in call order: questions that get the interviewer talking about
+  themselves (rapport, their path, then the product), each opening with
+  something you read, then your standing questions in your own words
+  (`config/call_prep.local.json`, SETUP.md), each with a research hook when
+  there is one and what to have ready;
+- **TALKING POINTS** from the email you sent, each with where it lands for them;
+- **KNOW**: who you are talking to, a reading of the company marked as a
+  reading, and the research, each fact numbered to its source;
+- **DURING THE CALL**: blanks for the answers, and a short source list.
+
+Every line the model writes names what it builds on, and a second read leaves
+out any line that states more than that. If the call is with someone other
+than the person the inbox shows, name them (and paste their LinkedIn profile
+link, a linkedin.com/in/ page) under **Talking to someone else?** in the Call
+prep tab; what you enter always wins over the inbox.
+
+Research older than 30 days is redone before new notes are written, at most
+once a day, and not for a reply the inbox read as a decline. Press **Research
+this company** under a company's Research tab to research any company, or run
+it for many at once. It needs Claude Code or Codex CLI installed and signed in
+here; without one the button says so instead of starting a job that cannot
+run. Changing a company's name or website clears its research and interviewer
+notes (the history records it), because they were checked against the old
+company's pages; call prep researches again:
+
+```bash
+python -m opportunity_app.outreach_cli research          # replied companies without recent research
+python -m opportunity_app.outreach_cli research --all    # every tracked company, a few minutes each
+```
 
 ### Company locations and SEC Form D
 

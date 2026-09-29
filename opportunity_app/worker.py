@@ -18,7 +18,7 @@ from .schema import connect_product
 
 STAGES = ("fetch", "enrich", "score", "liveness", "report")
 # Run by a thread inside the web app, which recovers its own interrupted jobs.
-WEB_APP_JOB_TYPES = ("outreach_call_prep",)
+WEB_APP_JOB_TYPES = ("outreach_call_prep", "outreach_company_research")
 
 
 def _scheduled_stages() -> dict[str, float]:
