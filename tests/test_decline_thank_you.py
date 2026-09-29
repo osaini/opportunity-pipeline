@@ -1119,6 +1119,20 @@ class ThankYouRulesTests(DeclineCase):
         self.assertIn("R7", self.blockers(raw_reply(sender="Kim <kim@cato.example>"), target=target, thread="t-cato"),
                       "a domain the public suffix list does not know")
 
+    def test_a_group_with_more_after_it_is_unreadable_on_every_python(self):
+        # What Python before 3.14.7 raises on, which later versions parse: held to one rule, so both decide alike.
+        for header in ("undisclosed-recipients:;;", "x:y@z.com;;", "team: a@b.com; c@d.com", '"Team": a@b.com; <c@d.com>',
+                       "a@b.com, x:; junk", "x:; ,a@b.com", "x:;(c)", "undisclosed-recipients:;\t", "x: a@b.com, c@d.com; e@f.com",
+                       'x: a@b.com; "q"', 'aa:"'):
+            with self.subTest(loose=header):
+                self.assertTrue(outreach_thank_you._unreadable_address(header))
+        # What every version reads: a group closed at a comma or the end, a mailbox and whatever follows it, no group at all.
+        for header in ("undisclosed-recipients:;", f"Everyone: dana@acme.com, {ACCOUNT};", "x: ;  ", "x:(c);", "x: a@b.com; (c)",
+                       "x:;, a@b.com", f"dana@acme.com; {ACCOUNT}", "a@b.com; x: c@d.com;;", "a@b.com: x;;",
+                       "Dana: Lee <d@a.com>", f"Test Student <mailto:{ACCOUNT}>", f'"Student, Test" <{ACCOUNT}>, dana@acme.com'):
+            with self.subTest(read=header):
+                self.assertFalse(outreach_thank_you._unreadable_address(header))
+
     def test_missing_or_unreadable_headers_fail_closed(self):
         self.assertEqual(self.blockers(drop=("headers",)), ["headers"], "a reply logged before headers were kept")
         self.assertEqual(self.blockers(headers=None), ["headers"], "headers too long to keep whole")
@@ -1132,6 +1146,10 @@ class ThankYouRulesTests(DeclineCase):
             with self.subTest(to=to, cc=cc):
                 self.assertEqual(self.blockers(raw_reply(to=to, cc=cc)), ["headers"])
         self.assertEqual(self.blockers(raw_reply(extra="Sender: x:y@z.com;;\n")), ["headers"], "the Sender too")
+        # A From every Python parses is held to the same rule as the To, Cc and Sender: no quote or comment left open.
+        for sender in ('"Dana Lee <dana@acme.com>', "Dana Lee (Acme <dana@acme.com>"):
+            with self.subTest(sender=sender):
+                self.assertEqual(self.blockers(raw_reply(sender=sender, delivered=gmail_headers("Dana Lee <dana@acme.com>"))), ["headers"])
         # Whatever else goes wrong reading them fails closed too, and is never raised into the worker's pass.
         with mock.patch("opportunity_app.mail_trust.authenticate", side_effect=AttributeError("'Group' object has no attribute")):
             self.assertEqual(self.blockers(), ["headers"])
