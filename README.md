@@ -650,8 +650,14 @@ as-is:
 Scores are deliberately simple: preferred role type (+18), degree match (up to
 +15), interests (+20), demonstrated skills (+15), preferred location (+10),
 term availability (+8), recency (+10), and penalties for seniority, experience,
-relocation, discipline, or explicit availability mismatches. Matches in a title
-count more than incidental words in a long description. List
+relocation, discipline, degree level, or explicit availability mismatches.
+Matches in a title count more than incidental words in a long description. A
+title that names the degree levels it takes ("MS/PhD", "Intern, BS",
+"Bachelor's", "MBA") and none of the student's takes -35, the same as a senior
+title; the student's level comes from `degree` ("B.S. ...", "M.S. ...",
+"Ph.D. ..."). "Graduate" and "New Grad" name no level, a description is never
+read for one, and a `degree` that names no level changes nothing
+(`setup validate` warns about it). List
 disciplines you don't want in `deprioritize_title_keywords` if their titles are
 ranking too high, and remove entries there if they are ranking too low. Citizenship and sponsorship language is
 flagged for human verification; a sponsorship penalty is applied only when the

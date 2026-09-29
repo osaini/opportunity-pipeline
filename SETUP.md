@@ -105,7 +105,7 @@ into `config/profile.json`. The field names are the keys in
 
 | Ask | Field | Notes |
 | --- | --- | --- |
-| Name, school, degree | `name`, `school`, `degree` | e.g. "B.S. Chemical Engineering" |
+| Name, school, degree | `name`, `school`, `degree` | e.g. "B.S. Chemical Engineering". Start with the level (B.S., M.S., Ph.D., MBA): a posting whose title asks only for another level, such as "MS/PhD", scores lower. |
 | Graduation year | `graduation_year` | a number |
 | Words that name their field in a posting | `degree_keywords` | e.g. `["chemical engineering", "process engineering"]`. Postings that match rank higher. |
 | Kinds of roles they want | `preferred_role_types` | from `internship`, `externship`, `co-op`, `research`, `part_time`, `early_career` |

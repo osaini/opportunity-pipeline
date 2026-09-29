@@ -3148,6 +3148,81 @@ _EXPERIENCE_YEARS_RE = re.compile(
     r"(?:(?!(?:age|old|degree|degrees|diploma)\b)[\w/+-]+\s+){0,3}?experience",
     re.IGNORECASE,
 )
+# Degree levels a posting's title asks for ("2027 Summer Intern, MS/PhD, ...",
+# "Layout Intern, BS - Summer 2027", "Buyer Intern- Bachelor's"), compared with
+# the level the profile's `degree` names. Only words that name a degree count:
+# "Graduate" and "New Grad" say nothing certain about one, and "Scrum Master"
+# is not one. A bare "BS" or "MS" counts in a title only beside another level
+# ("BS/MS") or right after the role ("Intern, MS"), because "Jackson, MS" is a
+# place; in the student's own degree every abbreviation counts.
+DEGREE_LEVEL_LABELS = {"bachelor": "bachelor's", "master": "master's", "mba": "MBA", "doctorate": "PhD"}
+_DEGREE_LEVEL_RE = re.compile(
+    r"(?<![\w.])(?:"
+    r"(?P<doctorate>ph\.?\s?d\.?s?|doctoral|doctorate|doctor\s+of\s+philosophy)"
+    r"|(?P<mba>mba|m\.b\.a\.?)"
+    r"|(?P<master>master(?:['’]s|s)|master\s+(?:of|students?|thesis|degree|program)"
+    r"|m\.\s?s\.?|m\.\s?sc\.?|m\.\s?eng\.?)"
+    r"|(?P<bachelor>bachelor(?:['’]s|s)|bachelor\s+(?:of|students?|thesis|degree|program)"
+    r"|undergrad(?:uate)?s?|b\.\s?s\.?(?:\s?e\.?)?|b\.\s?a\.|b\.\s?sc\.?|b\.\s?eng\.?)"
+    r"|(?P<bare>bse|beng|bsc|bs|ba|mse|meng|msc|ms|ma)"
+    r")(?!\w)",
+    re.IGNORECASE,
+)
+_BARE_DEGREE_LEVELS = {
+    **dict.fromkeys(("bs", "ba", "bsc", "bse", "beng"), "bachelor"),
+    **dict.fromkeys(("ms", "ma", "msc", "mse", "meng"), "master"),
+}
+# "BA" (business analyst) and "MA" (Massachusetts) mean something else too often in a title.
+_TITLE_BARE_DEGREES = {"bs", "ms"}
+_DEGREE_JOIN_RE = re.compile(r"\s*(?:[/&+]|,?\s*\b(?:or|and)\b|,)\s*", re.IGNORECASE)
+_DEGREE_AFTER_ROLE_RE = re.compile(
+    r"\b(?:interns?|internships?|co-?ops?|students?|fellows?|fellowships?)\s*[-–—,:(]\s*$",
+    re.IGNORECASE,
+)
+
+
+def _degree_match_level(match: re.Match[str]) -> str:
+    if match.lastgroup == "bare":
+        return _BARE_DEGREE_LEVELS[match.group(0).lower()]
+    return str(match.lastgroup)
+
+
+def degree_levels(degree: Any) -> set[str]:
+    """The levels a profile's `degree` names: "B.S. Chemistry" is a bachelor's, "B.S./M.S. EE" both."""
+    levels = {_degree_match_level(match) for match in _DEGREE_LEVEL_RE.finditer(str(degree or ""))}
+    if "mba" in levels:
+        levels.add("master")  # an MBA is a master's degree
+    return levels
+
+
+def title_degree_levels(title: str) -> set[str]:
+    """The degree levels a posting's title asks for, or none when it names no level."""
+    title = title or ""
+    matches = list(_DEGREE_LEVEL_RE.finditer(title))
+    levels: set[str] = set()
+    for index, match in enumerate(matches):
+        if match.lastgroup != "bare":
+            levels.add(str(match.lastgroup))
+            continue
+        if match.group(0).lower() not in _TITLE_BARE_DEGREES:
+            continue
+        before = title[: match.start()]
+        gaps = []
+        if index > 0:
+            gaps.append(title[matches[index - 1].end() : match.start()])
+        if index + 1 < len(matches):
+            gaps.append(title[match.end() : matches[index + 1].start()])
+        if (
+            any(_DEGREE_JOIN_RE.fullmatch(gap) for gap in gaps)
+            or _DEGREE_AFTER_ROLE_RE.search(before)
+            or (before.rstrip().endswith("(") and title[match.end() :].lstrip().startswith(")"))
+        ):
+            levels.add(_degree_match_level(match))
+    return levels
+
+
+def _degree_level_names(levels: set[str]) -> str:
+    return " or ".join(label for level, label in DEGREE_LEVEL_LABELS.items() if level in levels)
 
 
 def _profile_list(profile: dict[str, Any], key: str) -> list[Any]:
@@ -3286,6 +3361,16 @@ def score_job(job: sqlite3.Row, profile: dict[str, Any]) -> tuple[int, list[str]
     if senior_hit and not _ENTRY_TITLE_RE.search(title):
         score -= 35
         reasons.append(f"-35 seniority mismatch: {senior_hit.group(0).lower()}")
+
+    # Only the title is read: "BS, MS, or PhD" in a description is usually inclusive.
+    student_levels = degree_levels(profile.get("degree"))
+    title_levels = title_degree_levels(title) if student_levels else set()
+    if title_levels and not title_levels & student_levels:
+        score -= 35
+        reasons.append(
+            f"-35 degree level: title asks for {_degree_level_names(title_levels)}, "
+            f"not {_degree_level_names(student_levels)}"
+        )
 
     year_matches = [int(value) for value in _EXPERIENCE_YEARS_RE.findall(description)]
     max_experience = _profile_int(profile, "max_years_experience", 1)

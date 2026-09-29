@@ -417,6 +417,15 @@ def validate_profile(profile: Any) -> dict[str, Any]:
                 f"break_location {home!r} is neither one of the regions nor a \"City, ST\"; "
                 "outreach emails cannot say the student lives near a company"
             )
+    degree = profile.get("degree")
+    if isinstance(degree, str) and degree.strip():
+        from pipeline import degree_levels
+
+        if not degree_levels(degree):
+            warnings.append(
+                f"degree {degree!r} names no level such as B.S., M.S., or Ph.D., so a posting whose title "
+                "asks for a degree level is not adjusted"
+            )
     if profile.get("requires_sponsorship") is True and profile.get("work_authorized_us") is True:
         warnings.append("requires_sponsorship and work_authorized_us are both true; confirm with the student")
     _validate_automation_settings(profile, errors, warnings)
