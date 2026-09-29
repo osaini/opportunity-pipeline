@@ -58,23 +58,64 @@ ROLE_INBOX_LOCAL_PARTS = frozenset({
     "internship", "interns", "intern", "university", "universityrecruiting", "campus", "campusrecruiting", "early",
     "earlycareers", "apply", "applications", "application", "candidates", "candidate", "noreply", "no-reply", "donotreply",
     "do-not-reply", "notifications", "notification", "notify", "mailer", "support", "help", "helpdesk", "info", "hello",
-    "contact", "team", "office", "admin", "service", "services",
+    "contact", "team", "office", "admin", "service", "services", "relations", "staffing", "sourcing", "resourcing",
+    "resources", "human", "operations", "graduate", "graduates", "student", "students", "joinus", "workwithus",
+    "mailerdaemon", "postmaster", "bounce", "bounces",
 })
+# Words a role inbox adds for where or when it hires ("recruiting-us", "emea-recruiting", "internships2026" once its
+# digits go): never a role on their own, and never enough without a role word beside them.
+ROLE_INBOX_QUALIFIERS = frozenset({
+    "us", "usa", "uk", "eu", "emea", "apac", "amer", "americas", "na", "latam", "anz", "global", "intl", "international",
+})
+
+
+def local_words(address: str) -> list[str]:
+    """The words of an address's local part: casefolded, before any +tag, split at anything not a letter or digit,
+    with digits dropped ("Careers2+x@" -> ["careers"], "recruiting-us" -> ["recruiting", "us"])."""
+    local = str(address or "").rsplit("@", 1)[0].strip().casefold().split("+", 1)[0]
+    return [word for word in (re.sub(r"\d+", "", part) for part in re.split(r"[^a-z0-9]+", local)) if word]
+
+
+def made_of(compact: str, words: frozenset[str] | set[str], needed: frozenset[str] | set[str]) -> bool:
+    """Whether ``compact`` splits wholly into ``words``, at least one of them from ``needed`` ("recruitingteam")."""
+    # For each position: 0 unreached, 1 reached, 2 reached with a needed word on the way.
+    reached = [0] * (len(compact) + 1)
+    reached[0] = 1
+    longest = max((len(word) for word in words), default=0)
+    for start in range(len(compact)):
+        if not reached[start]:
+            continue
+        for end in range(start + 1, min(len(compact), start + longest) + 1):
+            piece = compact[start:end]
+            if piece in words:
+                reached[end] = max(reached[end], 2 if reached[start] == 2 or piece in needed else 1)
+    return reached[-1] == 2
 
 
 def is_shared_inbox(address: str) -> bool:
     """Whether an address is a shared, role or system inbox (info@, careers@, university-recruiting@), not one person's.
 
-    The whole local part (before any +tag) is one of GENERIC_LOCAL_PARTS or
-    ROLE_INBOX_LOCAL_PARTS, or every word of it is ("hiring-team",
-    "campus.recruiting").
+    Its local part's words (``local_words``: no +tag, no digits) are each a
+    role word (GENERIC_LOCAL_PARTS or ROLE_INBOX_LOCAL_PARTS) ("hiring-team",
+    "campus.recruiting", "no.reply", "careers2"), or a role word and places
+    (ROLE_INBOX_QUALIFIERS: "recruiting-us", "emea-recruiting"); or, run
+    together, they split wholly into such words with at least one role word
+    of four letters or more ("recruitingteam", "hrteam", "earlytalent",
+    "universityrelations"). Short words alone ("hina", "hi.na") are a name,
+    never read as one.
     """
-    local = str(address or "").rsplit("@", 1)[0].strip().casefold().split("+", 1)[0]
     roles = GENERIC_LOCAL_PARTS | ROLE_INBOX_LOCAL_PARTS
-    if local in roles:
+    words = local_words(address)
+    if not words:
+        return False
+    if all(word in roles for word in words):
         return True
-    words = [word for word in re.split(r"[._-]+", local) if word]
-    return bool(words) and all(word in roles for word in words)
+    # A place beside a role only with a role that is no one's name ("hi.na" is a person; "hr-us" is not).
+    anchors = {word for word in roles if len(word) >= 3} | {"hr"}
+    if all(word in roles or word in ROLE_INBOX_QUALIFIERS for word in words) and any(word in anchors for word in words):
+        return True
+    compact = "".join(words)
+    return compact in roles or made_of(compact, roles | ROLE_INBOX_QUALIFIERS, {word for word in roles if len(word) >= 4})
 
 
 ROLE_PATTERN = re.compile(

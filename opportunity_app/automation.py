@@ -166,7 +166,7 @@ FEATURES: dict[str, Feature] = {
         Feature("form_submission", "Send through contact forms",
                 "Send approved first messages through the company's contact form when it has no email", "outreach", "external"),
         # Phase 6 (preliminary): the one email the app writes and sends on its own. No shadow, as the
-        # student chose: it is off until they turn it on, and needs Jev (REQUIREMENTS). outreach_thank_you.py.
+        # student chose: it is off until they turn it on, and needs Jev and the sending address (REQUIREMENTS). outreach_thank_you.py.
         Feature("decline_thank_you", "Send a thank-you when someone declines",
                 "When a contact replies with a plain no, and both the rules and Jev read it that way, send a short "
                 "thank-you in the same thread. It goes out after a normal delay before 5pm their time, otherwise the "
@@ -231,11 +231,26 @@ def _resume_variant_requirement(conn: Any, user_id: str) -> str:
     return setup_requirement(conn, user_id)
 
 
-def _jev_requirement(conn: Any, user_id: str) -> str:
-    """decline_thank_you acts only on a reply both the rules and Jev read as a decline, so Jev must be on."""
-    if mode(conn, user_id, "jev_inbox_suggestions") == "on":
-        return ""
-    return "it needs Jev inbox suggestions on, since a thank-you goes only when both the rules and Jev read a reply as a decline"
+THANK_YOU_NEEDS_JEV = (
+    "it needs Jev inbox suggestions on, since a thank-you goes only when both the rules and Jev read a reply as a decline"
+)
+THANK_YOU_NEEDS_ACCOUNT = (
+    "it needs PIPELINE_OUTREACH_ACCOUNT in your .env set to the Gmail address you send from, since a thank-you goes "
+    "only to a reply addressed to you"
+)
+
+
+def _thank_you_requirement(conn: Any, user_id: str) -> str:
+    """decline_thank_you acts only on a reply both the rules and Jev read as a decline, so Jev must be on; and
+    only on one addressed to the student's own sending address (outreach_thank_you's R3), so that must be set.
+    Without it Gmail still sends as the connected account, but no reply could ever be confirmed as to them."""
+    from .outreach_drafting import sender_account  # imported here: outreach_drafting imports modules that import this one
+
+    if mode(conn, user_id, "jev_inbox_suggestions") != "on":
+        return THANK_YOU_NEEDS_JEV
+    if not sender_account():
+        return THANK_YOU_NEEDS_ACCOUNT
+    return ""
 
 
 # What a feature needs before it can act, beyond its switch: a function that
@@ -246,7 +261,7 @@ REQUIREMENTS: dict[str, Callable[[Any, str], str]] = {
     "auto_save": _triage_requirement("auto_save"),
     "auto_pass": _triage_requirement("auto_pass"),
     "resume_variant_pick": _resume_variant_requirement,
-    "decline_thank_you": _jev_requirement,
+    "decline_thank_you": _thank_you_requirement,
 }
 
 

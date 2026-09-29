@@ -599,6 +599,10 @@ class PostgresAutomationContractTests(unittest.TestCase):
         from opportunity_app import outreach, outreach_thank_you
         from opportunity_app.outreach_gmail import thank_you_fingerprint
 
+        # The switch needs the address the student sends from (automation.REQUIREMENTS), as it does in every student's .env.
+        sending = mock.patch.dict("os.environ", {"PIPELINE_OUTREACH_ACCOUNT": "student@school.example"})
+        sending.start()
+        self.addCleanup(sending.stop)
         self.assertTrue(schema._has_column(self.conn, "outreach_events", "detail_json"))
         with self.conn:
             self.conn.execute("ALTER TABLE outreach_events DROP COLUMN detail_json")

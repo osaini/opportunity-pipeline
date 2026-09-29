@@ -425,14 +425,15 @@ def _remember(conn: sqlite3.Connection, user_id: str, gmail_id: str, target_id: 
 # What a reply_logged event keeps about where a Gmail reply came from, beside its text and readings.
 # full_text is the whole message, quoted lines and anything typed between them included (a thank-you
 # after a decline reads it: outreach_thank_you); reply_to is its Reply-To address, when it has one;
-# headers are the KEPT_HEADERS as they arrived, and link_hosts the host of every link in it (hosts only),
-# which outreach_thank_you.thank_you_blockers checks before anything is sent on its own.
+# headers are the KEPT_HEADERS as they arrived, and link_hosts the host of every link in it (hosts only;
+# None when they could not all be read), which outreach_thank_you.thank_you_blockers checks before anything
+# is sent on its own.
 REPLY_META = {"thread_id", "message_id", "subject", "from_name", "full_text", "reply_to", "headers", "link_hosts"}
 # The headers kept with a Gmail reply: who it was to, whether a person or a system sent it, and Gmail's own sender
 # check. Headers only, never more of the body than full_text already keeps.
 KEPT_HEADERS = (
-    "From", "To", "Cc", "Subject", "Return-Path", "Auto-Submitted", "X-Auto-Response-Suppress", "List-Unsubscribe",
-    "List-Id", "Precedence", "X-Autoreply", "X-Autorespond", "DKIM-Signature", "Authentication-Results",
+    "From", "Sender", "To", "Cc", "Subject", "Return-Path", "Auto-Submitted", "X-Auto-Response-Suppress",
+    "List-Unsubscribe", "List-Id", "Precedence", "X-Autoreply", "X-Autorespond", "DKIM-Signature", "Authentication-Results",
 )
 # A message with more of these, or a longer one, is not kept at all, so a check that reads them fails closed.
 KEPT_HEADER_LIMIT = 4_000
@@ -459,24 +460,40 @@ def kept_headers(message: EmailMessage) -> list[list[str]] | None:
     return kept
 
 
-def link_hosts(message: EmailMessage) -> list[str]:
-    """The host of every link in a message's text parts, plain and HTML (href too), quoted parts included. Hosts only."""
+def _hosts(text: str) -> Iterable[str]:
     from .mail_trust import host_of
 
+    for url in _LINK.finditer(html.unescape(str(text or ""))):
+        host = host_of(url.group(0).rstrip(".,;:!?)]}'\""))
+        if host:
+            yield host
+
+
+def hosts_in(text: str) -> set[str]:
+    """The host of every link in a text. Hosts only."""
+    return set(_hosts(text))
+
+
+def link_hosts(message: EmailMessage) -> list[str] | None:
+    """The host of every link in a message's text parts, plain and HTML (href too), quoted parts included. Hosts only.
+
+    None when a text part cannot be read (a charset Python does not know) or
+    it links more than LINK_HOST_LIMIT hosts: like kept_headers, a check that
+    reads them then fails closed rather than missing a link it never saw.
+    """
     hosts: list[str] = []
     for part in message.walk():
         if part.is_multipart() or part.get_content_maintype() != "text":
             continue
         try:
-            content = html.unescape(str(part.get_content()))
-        except (LookupError, ValueError):
-            continue
-        for url in _LINK.findall(content):
-            host = host_of(url.rstrip(".,;:!?)]}'\""))
-            if host and host not in hosts:
-                hosts.append(host)
+            content = str(part.get_content())
+        except Exception:  # noqa: BLE001 - a part that cannot be read hides its links, so none are vouched for
+            return None
+        for host in _hosts(content):
+            if host not in hosts:
                 if len(hosts) >= LINK_HOST_LIMIT:
-                    return hosts
+                    return None
+                hosts.append(host)
     return hosts
 
 

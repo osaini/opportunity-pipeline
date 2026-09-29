@@ -373,9 +373,12 @@ themselves (rule 3). The details:
   they want the app to answer a plain "no" to their cold outreach with a short
   thank-you, sent on its own in the same thread. It is the one email the app
   sends without their approval, so explain it before they choose:
-  - It needs Jev inbox suggestions on (and so `TYPESAFE_API_KEY`), Gmail
-    connected with read access, and a model set up to review it (the AI step
-    above; Outreach → Settings → **Who reviews follow-ups and thank-yous**).
+  - It needs Jev inbox suggestions on (and so `TYPESAFE_API_KEY`),
+    `PIPELINE_OUTREACH_ACCOUNT` set to the Gmail address they send from (the
+    switch cannot be turned on without it, and a scheduled one is held if it
+    is cleared), Gmail connected with read access, and a model set up to
+    review it (the AI step above; Outreach → Settings → **Who reviews
+    follow-ups and thank-yous**).
     Without a reviewer every thank-you is held on the card for them. It acts
     only when both the keyword rules and Jev read the reply as a plain decline;
     with Jev off, paused, or unavailable nothing goes, and turning Jev or the
@@ -391,10 +394,12 @@ themselves (rule 3). The details:
     they wrote to (not just someone at the company), it was found within a day
     of arriving, it was addressed to them in To or Cc (so check that
     `PIPELINE_OUTREACH_ACCOUNT` is their address; a Bcc'd blast never counts),
-    a person wrote it (no auto-reply or mailing-list headers), no job system
-    sent, relayed, signed or linked it, it came from one person rather than a
-    shared inbox (careers@, info@, the company's own name), and Gmail's own
-    sender check passed. These are read again just before it goes; one that
+    a person wrote it (no auto-reply or mailing-list headers), no job system,
+    job board or applicant-tracking system sent, relayed, signed or linked it
+    (a link from their own email, quoted back, does not count), it came from
+    one person rather than a shared inbox (careers@, recruitingteam@, info@,
+    the company's own name), and Gmail's own sender check passed. Headers or
+    links it cannot read leave it for them too. These are read again just before it goes; one that
     no longer passes is not sent, and the card says why in plain words ("Not
     thanked automatically: sent by an automated system").
   - A decline that arrives before 5 PM on a weekday in the recipient's time

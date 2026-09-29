@@ -314,6 +314,15 @@ class PublicSuffixTests(unittest.TestCase):
         self.assertEqual(mail_trust.listed("us.greenhouse-mail.io"), "ats")
         self.assertIsNone(mail_trust.listed("greenhouse-mail.io.evil.com"))
         self.assertIsNone(mail_trust.listed("calendly.com", mail_trust.AUTHORIZING_CATEGORIES), "a scheduling tool authorizes nothing")
+        # Applicant-tracking systems filed apart from ats: their mail is not read and authorizes nothing, and they are
+        # never an employer's domain (outreach_thank_you's R5 reads them as job systems).
+        for domain in ("workable.com", "jobvite.com", "taleo.net", "successfactors.com", "bamboohr.com", "breezy.hr", "recruitee.com",
+                       "applytojob.com", "paylocity.com", "ultipro.com", "adp.com"):
+            with self.subTest(applicant_tracking=domain):
+                self.assertIn(domain, lists["applicant_tracking"])
+                self.assertNotIn(domain, lists["job_boards"])
+                self.assertIsNone(mail_trust.listed(f"acme.{domain}"), "not read")
+                self.assertTrue(mail_trust.not_an_employer(f"acme.{domain}"))
 
 
 class AuthenticationTests(unittest.TestCase):

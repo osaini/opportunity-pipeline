@@ -609,6 +609,31 @@ class EligibilityTests(DeclineCase):
         feature = automation.FEATURES["decline_thank_you"]
         self.assertEqual((feature.group, feature.risk, feature.modes), ("outreach", "external", automation.OFF_ON), "no shadow")
 
+    def test_it_needs_the_sending_address_to_confirm_a_reply_was_to_the_student(self):
+        # Gmail sends as the connected account without it, but no reply could ever be confirmed as addressed to them.
+        automation.set_mode(self.conn, USER, "decline_thank_you", "off")
+        with mock.patch.dict(os.environ, {"PIPELINE_OUTREACH_ACCOUNT": ""}):
+            with self.assertRaises(automation.AutomationGateError) as refused:
+                automation.set_mode(self.conn, USER, "decline_thank_you", "on")
+            self.assertEqual(str(refused.exception), automation.THANK_YOU_NEEDS_ACCOUNT)
+            settings = {item["key"]: item for item in automation.settings_payload(self.conn, USER)["features"]}
+            self.assertIn("PIPELINE_OUTREACH_ACCOUNT", settings["decline_thank_you"]["requirement"])
+        automation.set_mode(self.conn, USER, "decline_thank_you", "on")
+        target = self.sent_target()
+        self.decline()
+        # Cleared after it was turned on: nothing is planned, and the switch's health says why.
+        with mock.patch.dict(os.environ, {"PIPELINE_OUTREACH_ACCOUNT": ""}):
+            report = {}
+            outreach_thank_you.run_for_user(self.conn, USER, report, provider_factory=None)
+            self.assertEqual(report, {})
+            health = {item["component"]: item for item in automation.health_summary(self.conn, USER)["components"]}
+            self.assertIn("needs PIPELINE_OUTREACH_ACCOUNT", health["outreach.thank_you"]["last_error"])
+        self.assertIsNone(thank_you_row(self.conn, target["id"], USER))
+        # Set again, the same decline is thanked.
+        report = {}
+        outreach_thank_you.run_for_user(self.conn, USER, report, provider_factory=None)
+        self.assertEqual([item["target_id"] for item in report["thank_yous"]], [target["id"]])
+
     def test_a_call_an_offer_a_later_or_a_plain_reply_does_nothing(self):
         for number, label in enumerate(("call_scheduled", "offer", "paused", "replied")):
             with self.subTest(label=label):
@@ -720,6 +745,19 @@ ROLE_INBOXES = (
     "recruitment", "recruiting", "careers", "jobs", "hiring", "hiring-team", "talent", "hr", "people", "internships",
     "university", "campus", "apply", "noreply", "no-reply", "notifications", "support", "help", "info", "hello", "contact",
     "team", "office", "university-recruiting", "campus.recruiting", "careers+interns",
+    # Words run together, a number, a year or a place added, a dotted no-reply.
+    "recruitingteam", "talentteam", "careersteam", "hrteam", "careers2", "recruiting-us", "emea-recruiting", "hr-us",
+    "internships2026", "universityrelations", "university.relations", "earlytalent", "campusjobs", "recruitingops",
+    "talentacquisitionteam", "no.reply", "do.not.reply", "noreply-jobs", "Recruiting_Team",
+)
+# One person each, though some are made of short role words ("hi", "na") or end in one ("early", "jobs").
+PEOPLE = ("dana", "dana.lee", "dlee", "sam.park+work", "dana2", "hina", "hi.na", "jearly", "stevejobs", "peoples", "hr.dana")
+# Relayed by an applicant-tracking system the shipped list files apart from the ats it reads (Recruitee):
+# sent as the recruiter, signed by the company, with the system's envelope and its careers link.
+RECRUITEE_HTML = (
+    "<p>Hi Test,</p><p>Thanks for reaching out. Unfortunately we're not hiring interns right now, so we won't be able to take "
+    "you on.</p><p>Best of luck with your search.</p><p>Greg Lee</p>"
+    '<p><a href="https://bovi.recruitee.com/?utm_source=email">Bovi careers</a></p>'
 )
 
 
@@ -862,6 +900,10 @@ class ThankYouRulesTests(DeclineCase):
         self.assertEqual(self.blockers(colleague, thread=self.thread), [], "in the thread of the student's email")
         self.assertEqual(self.blockers(raw_reply(), thread="t-elsewhere"), [], "from the address written to")
         self.assertEqual(self.blockers(raw_reply(sender="Dana Lee <DANA@Acme.com>"), thread="t-elsewhere"), [], "in any case")
+        # The contact as the student typed it: the address on record is kept as typed, and still matches.
+        self.contact("DANA@Acme.com")
+        self.assertEqual(self.blockers(raw_reply(), thread="t-elsewhere"), [], "the address on record, in any case")
+        self.contact("dana@acme.com")
         with self.conn:
             self.conn.execute("UPDATE outreach_targets SET contact_cc='cto@acme.com' WHERE id=?", (self.acme["id"],))
         self.assertEqual(self.blockers(raw_reply(sender="Chris <cto@acme.com>"), thread="t-elsewhere"), [], "from the Cc")
@@ -877,8 +919,26 @@ class ThankYouRulesTests(DeclineCase):
         self.assertEqual(self.blockers(raw_reply(to="dana@acme.com", cc=ACCOUNT)), [], "Cc")
         self.assertEqual(self.blockers(raw_reply(to="team@acme.com", extra=f"Bcc: {ACCOUNT}\n")), ["R3"], "Bcc only")
         self.assertEqual(self.blockers(raw_reply(to="undisclosed-recipients:;")), ["R3"], "undisclosed recipients")
+        # Forms real mail uses that Python's strict parser drops or mangles: the student is still the mailbox.
+        for to in (f"'{ACCOUNT}' <{ACCOUNT}>", f"Test Student [Acme] <{ACCOUNT}>", f"dana@acme.com; {ACCOUNT}",
+                   f"Test Student <mailto:{ACCOUNT}>", f'"Student, Test" <{ACCOUNT}>, dana@acme.com', f"{ACCOUNT} (Test Student)",
+                   f"Everyone: dana@acme.com, {ACCOUNT};", f"=?UTF-8?Q?Test_Student?= <{ACCOUNT}>"):
+            with self.subTest(to=to):
+                self.assertEqual(self.blockers(raw_reply(to=to)), [])
+        # The student's address only as a display name or a comment: the mailbox it went to is someone else's.
+        for to in (f"{ACCOUNT} <careers@acme.com>", f'"{ACCOUNT}" <careers@acme.com>', f"careers@acme.com ({ACCOUNT})",
+                   f"<careers@acme.com> {ACCOUNT}"):
+            with self.subTest(display_name=to):
+                self.assertEqual(self.blockers(raw_reply(to=to)), ["R3"])
+        with mock.patch.dict(os.environ, {"PIPELINE_OUTREACH_ACCOUNT": ACCOUNT.upper()}):
+            self.assertEqual(self.blockers(), [], "the sending address as typed, in any case")
         with mock.patch.dict(os.environ, {"PIPELINE_OUTREACH_ACCOUNT": ""}):
-            self.assertEqual(self.blockers(), ["R3"], "with no sending address set up, nobody can be confirmed")
+            self.assertEqual(self.blockers(), ["account"], "with no sending address set up, nobody can be confirmed")
+        self.assertEqual(
+            outreach_thank_you.blocker_note(["account"]),
+            "Not thanked automatically: your sending address (PIPELINE_OUTREACH_ACCOUNT) is not set, so it could not be "
+            "confirmed as addressed to you",
+        )
 
     def test_r4_written_by_a_person(self):
         self.assertEqual(self.blockers(raw_reply(extra="Auto-Submitted: no\n")), [], "Auto-Submitted: no is a person")
@@ -892,7 +952,10 @@ class ThankYouRulesTests(DeclineCase):
         self.assertEqual(self.blockers(raw_reply(f"{DECLINE}\n\nThis is an automated message.")), ["R4"])
 
     def test_r5_no_job_system_sent_relayed_signed_or_linked_it(self):
-        self.assertIn("R5", self.blockers(raw_reply(sender="Greg <greg@hire.lever.co>"), thread=self.thread), "the From domain")
+        # The From domain alone: the envelope and the signature are the company's own.
+        lever = "Greg <greg@hire.lever.co>"
+        from_only = raw_reply(sender=lever, delivered=gmail_headers(lever, return_path="bounce@acme.com", signer="acme.com"))
+        self.assertEqual(self.blockers(from_only, thread=self.thread), ["R5"], "the From domain")
         for return_path in ("bounce@us.greenhouse-mail.io", "x@em.ashbyhq.com", "noreply@mail.calendly.com"):
             with self.subTest(return_path=return_path):
                 delivered = gmail_headers("Dana Lee <dana@acme.com>", return_path=return_path)
@@ -905,14 +968,79 @@ class ThankYouRulesTests(DeclineCase):
         unrouted = gmail_headers("Dana Lee <dana@acme.com>").split("\n", 1)[1]
         self.assertEqual(self.blockers(raw_reply(delivered=unrouted)), ["R5"], "no Return-Path: no envelope to check")
 
+    def test_r5_applicant_tracking_systems_and_job_boards_count_too(self):
+        dana = "Dana Lee <dana@acme.com>"
+        for return_path in ("bounce@bamboohr.com", "x@jobvite.com", "x@taleo.net", "x@applytojob.com", "x@recruitee.com",
+                            "x@breezy.hr", "x@workable.com", "x@successfactors.com", "x@mail.linkedin.com", "x@joinhandshake.com"):
+            with self.subTest(return_path=return_path):
+                self.assertEqual(self.blockers(raw_reply(delivered=gmail_headers(dana, return_path=return_path))), ["R5"])
+        self.assertEqual(self.blockers(raw_reply(delivered=gmail_headers(dana, signer="recruitee.com"))), ["R5"], "signed by one")
+        self.assertEqual(self.blockers(raw_reply(extra="Sender: Breezy <notifications@app.breezy.hr>\n")), ["R5"],
+                         "relayed by one, which says so in Sender")
+        self.assertEqual(self.blockers(raw_reply(extra="Sender: dana@acme.com\n")), [], "a Sender of their own")
+        for link in ("https://acme.bamboohr.com/careers/12", "https://apply.workable.com/acme/j/ABC/", "https://bovi.recruitee.com/o/intern",
+                     "https://acme.applytojob.com/apply", "https://jobs.jobvite.com/acme"):
+            with self.subTest(link=link):
+                self.assertEqual(self.blockers(raw_reply(f"{DECLINE}\n\n{link}")), ["R5"])
+        # A job board in a recruiter's signature, or a time to talk, is no job system's template.
+        signed = f"{DECLINE}\n\nDana Lee\nhttps://www.linkedin.com/in/danalee\nhttps://calendly.com/danalee"
+        self.assertEqual(self.blockers(raw_reply(signed)), [])
+        # A careers page on a job system is not the company's own domain.
+        with self.conn:
+            self.conn.execute("UPDATE outreach_targets SET website='https://acme.bamboohr.com' WHERE id=?", (self.acme["id"],))
+        self.assertEqual(self.blockers(raw_reply(delivered=gmail_headers(dana, return_path="bounce@bamboohr.com"))), ["R5"])
+
+    def test_r5_a_rejection_relayed_by_an_applicant_tracking_system_is_never_thanked(self):
+        greg = self.sent_target(company="Bovi", contact_email="greg@bovi.com", website="https://bovi.com")
+        relayed = gmail_headers("Greg Lee <greg@bovi.com>", return_path="bounce+71c2@mailer.recruitee.com")
+        raw = raw_reply(GREENHOUSE_REJECTION, sender="Greg Lee <greg@bovi.com>", delivered=relayed, html=RECRUITEE_HTML,
+                        gmail_id="rt-1")
+        self.deliver(raw, message_id="rt-1", thread="t-rt")
+        self.assert_not_thanked(greg["id"], "Not thanked automatically: sent through a job application system", "(failed: R5)")
+        target = outreach.get_target(self.conn, greg["id"], user_id=USER)
+        envelope = raw_reply(GREENHOUSE_REJECTION, sender="Greg Lee <greg@bovi.com>", delivered=relayed)
+        link = raw_reply(GREENHOUSE_REJECTION, sender="Greg Lee <greg@bovi.com>", html=RECRUITEE_HTML)
+        for name, raw in (("envelope", envelope), ("link", link)):
+            with self.subTest(name=name):
+                self.assertEqual(thank_you_blockers(self.conn, target, self.record(raw, thread="t-rt")), ["R5"])
+
+    def test_r5_someone_at_a_job_system_written_to_at_their_own_company_is_a_person(self):
+        adp = self.sent_target(company="ADP, Inc.", contact_email="dana@adp.com", contact_name="Dana Lee", website="https://adp.com")
+        target = outreach.get_target(self.conn, adp["id"], user_id=USER)
+        thread = self.sent_thread(adp["id"])
+        dana = "Dana Lee <dana@adp.com>"
+        self.assertEqual(self.blockers(raw_reply(sender=dana), target=target, thread=thread), [])
+        relayed = gmail_headers(dana, return_path="bounce@us.greenhouse-mail.io")
+        self.assertEqual(self.blockers(raw_reply(sender=dana, delivered=relayed), target=target, thread=thread), ["R5"],
+                         "another job system still counts")
+        # The same address at another company is still a job system's.
+        self.assertIn("R5", self.blockers(raw_reply(sender=dana), thread=self.thread))
+        # Named like it, but with a website of its own: the job system is not theirs.
+        with self.conn:
+            self.conn.execute("UPDATE outreach_targets SET website='https://adpfoods.com' WHERE id=?", (adp["id"],))
+        target = outreach.get_target(self.conn, adp["id"], user_id=USER)
+        self.assertEqual(self.blockers(raw_reply(sender=dana), target=target, thread=thread), ["R5"])
+
+    def test_r5_a_link_the_students_own_email_has_is_theirs_quoted_back(self):
+        posting = "https://jobs.ashbyhq.com/acme/123"
+        with self.conn:
+            self.conn.execute("UPDATE outreach_targets SET email_body=? WHERE id=?",
+                              (f"Hi Dana,\n\nI applied at {posting} and wanted to say hello.\n\nTest Student", self.acme["id"]))
+        quoted = f"{DECLINE}\n\nOn Mon, Test Student <{ACCOUNT}> wrote:\n> Hi Dana,\n> I applied at {posting} and wanted to say hello."
+        html = f'<p>{DECLINE}</p><blockquote class="gmail_quote">I applied at <a href="{posting}">{posting}</a></blockquote>'
+        self.assertEqual(self.blockers(raw_reply(quoted, html=html)), [])
+        # A job-system link the student never sent still counts.
+        self.assertEqual(self.blockers(raw_reply(f"{quoted}\n\nhttps://app.hackerrank.com/test/abc")), ["R5"])
+
     def test_r6_one_persons_address_not_a_role_inbox_or_the_company(self):
         for local in ROLE_INBOXES:
             with self.subTest(local=local):
                 self.assertEqual(self.blockers(raw_reply(sender=f"Acme <{local}@acme.com>")), ["R6"])
-        for local in ("acme", "acmerobotics", "acme-robotics", "acme.careers", "robotics"):
+        for local in ("acme", "acmerobotics", "acme-robotics", "acme.careers", "robotics", "acmecareers", "acmejobs", "acmehr",
+                      "acmerecruiting", "careersacme", "teamacme", "joinacme", "workatacme", "acme2", "acmeroboticsus"):
             with self.subTest(company_local=local):
                 self.assertEqual(self.blockers(raw_reply(sender=f"Acme Robotics <{local}@acme.com>")), ["R6"])
-        for local in ("dana", "dana.lee", "dlee", "sam.park+work"):
+        for local in PEOPLE:
             with self.subTest(person=local):
                 self.assertEqual(self.blockers(raw_reply(sender=f"Dana <{local}@acme.com>")), [])
 
@@ -931,7 +1059,19 @@ class ThankYouRulesTests(DeclineCase):
         self.assertEqual(self.blockers(headers=None), ["headers"], "headers too long to keep whole")
         self.assertEqual(self.blockers(headers=[["From", "dana@acme.com", "extra"]]), ["headers"])
         self.assertEqual(self.blockers(headers=[["From", "Dana <dana@acme.com>\nTo: student@school.example"]]), ["headers"])
-        self.assertEqual(self.blockers(drop=("link_hosts",)), ["headers"])
+        self.assertEqual(self.blockers(drop=("link_hosts",)), ["links"])
+        self.assertEqual(self.blockers(link_hosts=[1]), ["links"])
+        # Address headers Python cannot parse fail closed, never raise.
+        for to, cc in (("undisclosed-recipients:;;", ""), ('aa:"', ""), (ACCOUNT, "a@b.com, :;"), ("x:y@z.com;;", ""),
+                       (f'"Test Student <{ACCOUNT}>', "")):
+            with self.subTest(to=to, cc=cc):
+                self.assertEqual(self.blockers(raw_reply(to=to, cc=cc)), ["headers"])
+        self.assertEqual(self.blockers(raw_reply(extra="Sender: x:y@z.com;;\n")), ["headers"], "the Sender too")
+        # Whatever else goes wrong reading them fails closed too, and is never raised into the worker's pass.
+        with mock.patch("opportunity_app.mail_trust.authenticate", side_effect=AttributeError("'Group' object has no attribute")):
+            self.assertEqual(self.blockers(), ["headers"])
+        colleague = raw_reply(sender="Sam Park <sam@acme.com>", to="x:y@z.com;;")
+        self.assertEqual(self.blockers(colleague, thread="t-elsewhere"), ["R1", "headers"], "the rules that read no header still say")
         no_check = "\n".join(line for line in gmail_headers("Dana Lee <dana@acme.com>").split("\n")
                              if line and not line.startswith(("Authentication-Results", "       "))) + "\n"
         self.assertEqual(self.blockers(raw_reply(delivered=no_check)), ["R7"], "no sender check from Gmail")
@@ -947,6 +1087,44 @@ class ThankYouRulesTests(DeclineCase):
         with self.conn:
             self.conn.execute("UPDATE outreach_events SET detail_json=? WHERE id=?", (json.dumps(data), row["id"]))
         self.assert_not_thanked(self.acme["id"], "(failed: headers)")
+
+    def test_links_that_cannot_all_be_read_fail_closed(self):
+        def parsed(raw):
+            return BytesParser(policy=policy.default).parsebytes(raw)
+
+        many = " ".join(f"https://site{number}.com/" for number in range(outreach_inbox.LINK_HOST_LIMIT + 10))
+        crowded = raw_reply(f"{DECLINE}\n\n{many}\nhttps://boards.greenhouse.io/acme")
+        self.assertIsNone(outreach_inbox.link_hosts(parsed(crowded)), "more hosts than are kept")
+        self.assertEqual(self.blockers(crowded), ["links"])
+        bogus = raw_reply(GREENHOUSE_REJECTION, html=GREENHOUSE_HTML).replace(
+            b"Content-Type: text/html; charset=UTF-8", b"Content-Type: text/html; charset=x-bogus")
+        self.assertIsNone(outreach_inbox.link_hosts(parsed(bogus)), "a part in a charset Python does not know")
+        self.assertEqual(self.blockers(bogus), ["links"])
+        enough = raw_reply(f"{DECLINE}\n\n" + " ".join(f"https://site{number}.com/" for number in range(outreach_inbox.LINK_HOST_LIMIT)))
+        self.assertEqual(len(outreach_inbox.link_hosts(parsed(enough))), outreach_inbox.LINK_HOST_LIMIT, "up to the limit, all kept")
+        self.assertEqual(self.blockers(enough), [])
+        self.assertEqual(outreach_thank_you.blocker_note(["links"]), "Not thanked automatically: the links in it could not all be read")
+        # From Gmail: kept as not readable, and never thanked.
+        self.deliver(bogus.replace(b"<r-1@acme.com>", b"<links-1@acme.com>"), message_id="links-1", thread=self.thread)
+        data = json.loads(self.conn.execute(
+            "SELECT detail_json FROM outreach_events WHERE target_id=? AND event_type='reply_logged'", (self.acme["id"],),
+        ).fetchone()[0])
+        self.assertIsNone(data["link_hosts"])
+        self.assert_not_thanked(self.acme["id"], "Not thanked automatically: the links in it could not all be read", "(failed: links)")
+
+    def test_a_reply_whose_headers_cannot_be_read_never_stops_the_pass(self):
+        # A reply Python cannot parse the Cc of is logged like any other (the capture never parses it).
+        self.deliver(raw_reply(cc="a@b.com, :;", gmail_id="odd-1"), message_id="odd-1", thread=self.thread)
+        self.assertEqual(len(self.events(self.acme["id"], "reply_logged")), 1)
+        bovi = self.sent_target(company="Bovi", contact_email="greg@bovi.com", contact_name="Greg Lee", website="https://bovi.com")
+        self.deliver(raw_reply(sender="Greg Lee <greg@bovi.com>", gmail_id="bovi-1"), message_id="bovi-1", thread="t-bovi")
+        self.assertEqual(outreach_thank_you.due(self.conn, USER), [self.acme["id"], bovi["id"]], "the unreadable one first")
+        report = {}
+        outreach_thank_you.run_for_user(self.conn, USER, report, provider_factory=None)
+        self.assertEqual([item["target_id"] for item in report["thank_yous"]], [bovi["id"]], "the next company is still thanked")
+        health = {item["component"]: item for item in automation.health_summary(self.conn, USER)["components"]}
+        self.assertEqual((health["outreach.thank_you"]["last_error"], health["outreach.thank_you"]["detail"]), ("", {"planned": 1}))
+        self.assert_not_thanked(self.acme["id"], "Not thanked automatically: its email headers are missing or could not be read", "(failed: headers)")
 
     # Where the rules are read, and what they leave.
 
@@ -987,10 +1165,11 @@ class ThankYouRulesTests(DeclineCase):
     def test_the_shared_inbox_check_lives_with_contact_finding_and_leaves_it_unchanged(self):
         from opportunity_app.outreach_contacts import _is_generic, is_shared_inbox
 
-        for address in ("careers@acme.com", "university-recruiting@acme.com", "Hiring.Team@acme.com", "no-reply@acme.com"):
+        for address in ("careers@acme.com", "university-recruiting@acme.com", "Hiring.Team@acme.com", "no-reply@acme.com",
+                        *(f"{local}@acme.com" for local in ROLE_INBOXES)):
             with self.subTest(address=address):
                 self.assertTrue(is_shared_inbox(address))
-        for address in ("dana@acme.com", "dana.lee@acme.com", "hr.dana@acme.com"):
+        for address in (f"{local}@acme.com" for local in PEOPLE):
             with self.subTest(address=address):
                 self.assertFalse(is_shared_inbox(address))
         self.assertFalse(_is_generic("no-reply@acme.com"), "contact finding never picks a no-reply inbox to write to")
@@ -1823,6 +2002,14 @@ class ReviewFindingGateTests(DeclineCase):
         self.assertEqual(automation.mode(self.conn, USER, "decline_thank_you"), "on", "the switch itself stays on")
         self.assert_stopped(target_id, self.run_due(target_id), "held", outreach_thank_you.JEV_OFF)
         self.assertEqual(self.notices(), ["Thank-you to Acme Robotics held: Jev inbox suggestions was turned off"])
+        self.assertEqual(self.events(target_id, "thank_you_reviewed"), [], "held before the reviewer was asked")
+
+    def test_clearing_the_sending_address_holds_a_waiting_thank_you(self):
+        target_id = self.planned()
+        with mock.patch.dict(os.environ, {"PIPELINE_OUTREACH_ACCOUNT": ""}):
+            self.assertIn("needs PIPELINE_OUTREACH_ACCOUNT", self.target(target_id)["thank_you"]["will_hold"])
+            self.assert_stopped(target_id, self.run_due(target_id), "held", outreach_thank_you.NO_ACCOUNT)
+        self.assertEqual(self.notices(), ["Thank-you to Acme Robotics held: your sending address is not set"])
         self.assertEqual(self.events(target_id, "thank_you_reviewed"), [], "held before the reviewer was asked")
 
     def test_turning_jev_off_while_the_reviewer_runs_holds_it_at_the_hand_over(self):
