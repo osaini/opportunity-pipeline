@@ -100,7 +100,7 @@ import re
 import sqlite3
 import threading
 from datetime import datetime, time, timedelta, timezone
-from email import policy
+from email import headerregistry, policy
 from email.message import EmailMessage
 from typing import Any, Callable, Iterable
 from urllib.parse import quote
@@ -881,6 +881,9 @@ _QUOTED = re.compile(r'"(?:[^"\\]|\\.)*"')
 _COMMENT = re.compile(r"\([^()]*\)")
 _ANGLE = re.compile(r"<([^<>]*)>")
 _MAILBOX = re.compile(r"""[^\s@<>()\[\]",;:]+@[^\s@<>()\[\]",;:']+""")
+# An address that is a group: its name (no "@" or "<", so never a mailbox), ":", its members, ";", and whatever
+# follows up to the next comma.
+_GROUP = re.compile(r"[^<>@,;:\[\]]*:([^;]*);([^,]*)")
 # Words that join a company's name into an inbox of its own ("joinacme", "workatacme", "teamacme").
 _COMPANY_INBOX_WORDS = frozenset({"join", "work", "at", "with", "the", "go", "get", "meet", "hi", "hey"})
 
@@ -895,12 +898,54 @@ def blocker_reason(blockers: list[str]) -> str:
     return f"{blocker_note(blockers)} (failed: {', '.join(blockers)})"
 
 
+def _blanked(text: str) -> str | None:
+    """An address header with its quoted strings and comments blanked out; None when one is left open."""
+    text = _QUOTED.sub(" ", text)
+    for _ in range(5):  # nested comments, innermost first
+        stripped = _COMMENT.sub(" ", text)
+        if stripped == text:
+            break
+        text = stripped
+    return None if any(mark in text for mark in '"()') else text
+
+
+def _unreadable_address(raw: str) -> bool:
+    """An address header with a quote or comment left open, or a group followed by more than a comma or its end.
+
+    Python before 3.14.7 raises on such a group ("undisclosed-recipients:;;",
+    "team: a@b.com; c@d.com") and later versions read what follows as another
+    address, so reply_headers holds address headers to this rather than to
+    the parser. A group's own whitespace and comments may follow it, though
+    not an empty group's written with nothing between ":" and ";" (Python
+    does not skip them there), and a quoted string never may. What follows a
+    mailbox, as in "a@b.com; c@d.com", is part of it.
+    """
+    text = _blanked(_QUOTED.sub("q", "".join(raw.splitlines())))
+    if text is None:
+        return True
+    rest = _ANGLE.sub("<>", text)
+    while True:
+        group = _GROUP.match(rest)
+        if group:
+            members, tail = group.groups()
+            if tail.strip() if members else tail:
+                return True
+            end = group.end()
+        else:
+            end = rest.find(",")
+            if end < 0:
+                return False
+        rest = rest[end + 1:]
+
+
 def reply_headers(data: dict[str, Any]) -> EmailMessage | None:
     """A reply's kept headers as a message with no body, or None when they are not on record or cannot be read.
 
     Every header is parsed here (Python parses one only when it is first
-    read), so one that cannot be, such as the address list
-    "undisclosed-recipients:;;", fails closed here instead of raising in a rule.
+    read), so one that cannot be fails closed here instead of raising in a
+    rule. An address header also fails closed on a quote or comment left
+    open, or a group with more after it (``_unreadable_address``), whether or
+    not this Python can parse it, so every version reads a reply the same way.
     """
     pairs = data.get("headers")
     if not isinstance(pairs, list) or not pairs:
@@ -916,8 +961,10 @@ def reply_headers(data: dict[str, Any]) -> EmailMessage | None:
         lines.append(f"{name}: {value}")
     try:
         message = email.message_from_string("\n".join(lines) + "\n\n", policy=policy.default)
-        for _name, value in message.items():
+        for (_name, value), (_raw_name, raw) in zip(message.items(), message.raw_items()):
             str(value)
+            if isinstance(value, headerregistry.AddressHeader) and _unreadable_address(str(raw)):
+                return None
         return message
     except Exception:  # noqa: BLE001 - headers that cannot be read fail closed
         return None
@@ -942,13 +989,8 @@ def mailboxes(message: EmailMessage, *names: str) -> set[str] | None:
     for name, raw in message.raw_items():
         if str(name).casefold() not in wanted:
             continue
-        text = _QUOTED.sub(" ", " ".join(str(raw).split()))
-        for _ in range(5):  # nested comments, innermost first
-            stripped = _COMMENT.sub(" ", text)
-            if stripped == text:
-                break
-            text = stripped
-        if any(mark in text for mark in '"()'):
+        text = _blanked(" ".join(str(raw).split()))
+        if text is None:
             return None
         for part in re.split(r"[,;]", text):
             angles = _ANGLE.findall(part)
