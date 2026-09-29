@@ -20,16 +20,26 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: requirements-web.lock
-      - run: pip install -r requirements-web.lock pip-audit
+          cache-dependency-path: |
+            requirements-web.lock
+            requirements-test.txt
+      - run: pip install -r requirements-web.lock -r requirements-test.txt pip-audit
       - run: python -m compileall -q .
-      - run: python -m unittest discover -s tests -v
+      # The unit suite in parallel: the same tests `python -m unittest discover -s tests`
+      # runs, minus the two files pytest-unit.ini leaves out (checked 2026-09-29: 2150
+      # collected here + 39 in those two = the 2189 unittest finds). About 17 minutes
+      # serially on this runner; the portability jobs below keep running the serial
+      # command, so the primary way to run the suite stays exercised on every OS.
+      - run: python -m pytest -c pytest-unit.ini -n auto -q -p no:cacheprovider
+      # The two files the parallel run leaves out (a shared schema reset, and a real
+      # process tree killed on a timer); test_postgres skips here and runs in its own job.
+      - run: python -m unittest tests.test_scheduled_tasks tests.test_postgres -v
       - run: node --check opportunity_app/static/app.js
       - run: node --check opportunity_app/static/ops.js
       - run: node --check apps/extension/adapters.js && node --check apps/extension/field-engine.js && node --check apps/extension/content.js && node --check apps/extension/sidepanel.js && node --check apps/extension/service-worker.js
       - run: node --check apps/extension/lib/base64.js
       - run: node tests/extension/run_tests.mjs
-      - run: pip-audit -r requirements-web.lock
+      - run: pip-audit -r requirements-web.lock -r requirements-test.txt
   portability:
     # Students run their own copies on Windows 10/11 and macOS, not only Linux.
     # This covers the unit suite, first-run setup, and the extension tests on
