@@ -38,8 +38,10 @@ is built on it.
 
 A competitor fact is about another company, so its passage must name that
 competitor (or the page is the competitor's own site). Whether the two compete
-is the research agent's judgment unless the quote's sentence names both, and
-the brief says which (the fact's note).
+is the research agent's judgment unless the quote's own sentence names both and
+uses a word of competition, and the second read, which is asked about exactly
+that, finds the two selling against each other (not a customer, partner, or
+investor). The brief says which (the fact's note).
 
 What passes is "quote found on the page, and a second read confirms the fact
 says what it says". It is not a judgment that the page is right.
@@ -93,6 +95,9 @@ JOB_TYPE = "outreach_company_research"
 MAX_ATTEMPTS = 3
 ACTIVE_JOB_STATES = {"queued", "running", "retry"}
 AGENT_ENV = "PIPELINE_OUTREACH_COMPANY_RESEARCH_PROVIDER"
+# Codex's read-only sandbox can still read files on this computer, and research reads pages nobody vetted.
+# Company research therefore never runs on Codex unless the student says, in .env, that they accept that.
+ALLOW_CODEX_ENV = "PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX"
 DISCOVERY_ENV = "PIPELINE_OUTREACH_DISCOVERY_PROVIDER"
 # One company, read closely: longer than a location search, far shorter than a deep search.
 RUNNER_TIMEOUT_SECONDS = 20 * 60
@@ -171,8 +176,11 @@ For each item, answer supported=true only when the passage itself states everyth
 - the same yes or no: a fact that drops or adds a "not", "no", or "without" is not supported.
 Paraphrase, shortening, and note style are fine. Adding anything the passage does not say, even something true, is not. When unsure, answer false.
 
+An item with a "competitor" field is about that other company, and needs a second answer, "rivals": true only when the passage itself says the item's company and that competitor sell against each other: they compete for the same customers, or one is an alternative to the other. It is false when the passage shows the competitor as the company's customer, partner, supplier, investor, or acquirer, when the two are only named together, or when "competing" is about someone else (a customer choosing one of several vendors, a third company). If the passage shows the competitor is the company's customer, partner, supplier, investor, or acquirer, answer supported=false too.
+
 Reply with exactly one JSON object and nothing else:
-{"verdicts": [{"id": "...", "supported": true, "why": "under 15 words"}]}"""
+{"verdicts": [{"id": "...", "supported": true, "rivals": false, "why": "under 15 words"}]}
+("rivals" only on an item with a "competitor" field.)"""
 
 PROMPT = """You are researching one company for a university student who has a call with them soon. The student wants to understand the company's actual work and its market, not a sales pitch: what they build and who buys it, what they say sets them apart and who they compete with, how it works and what they build it with, where they are expanding and hiring, who built it, and where the company stands. Write only about the company and its competitors. Do not write anything about the student.
 
@@ -219,6 +227,9 @@ Reply with exactly one JSON object and nothing else:
 
 
 CLAUDE_AGENT, CODEX_AGENT = "claude-code", "codex-cli"
+# Why a competitor fact is kept: its sentence says the two compete and the second read agrees, or only the agent picked it.
+COMPETE_NOTE = "the quoted sentence says the two compete"
+PICK_NOTE = "picked as a competitor by the research agent"
 # A gap is a short phrase about what no page states. These are what a page could have talked an agent into
 # copying out of this computer instead: an address, a link, a path, a key, or a long unbroken token.
 _GAP_UNSAFE = re.compile(
@@ -227,11 +238,32 @@ _GAP_UNSAFE = re.compile(
     re.IGNORECASE,
 )
 _LONG_TOKEN = re.compile(r"[A-Za-z0-9+/=_-]{24,}")
+MAX_GAP_WORDS = 14
+
+
+def _leaks(text: str) -> bool:
+    return bool(_GAP_UNSAFE.search(text) or _LONG_TOKEN.search(text))
 
 
 def safe_gap(text: str) -> bool:
-    """Whether a gap is a plain phrase: no address, link, path, key, or long token in it."""
-    return not _GAP_UNSAFE.search(text) and not _LONG_TOKEN.search(text)
+    """Whether a gap is a plain phrase: no address, link, path, key, or long token in it.
+
+    The prompt asks for short phrases with no numbers, so a digit is out: that
+    also rules out a phone number, a street address, and a token in groups
+    ("3f9a1c 77be20"). A run of four same-length words ("abcd efgh ijkl mnop",
+    the shape of an app password) and a long sentence are out too. This is a
+    second line of defense: the research agent cannot read this computer's
+    files at all (available_agent), and no filter catches every way to spell out a secret.
+    """
+    words = re.findall(r"[^\W_]+", text)
+    if len(words) > MAX_GAP_WORDS or any(char.isdigit() for char in text):
+        return False
+    run = 1
+    for before, word in zip(words, words[1:]):
+        run = run + 1 if len(word) == len(before) and len(word) >= 4 else 1
+        if run >= 4:
+            return False
+    return not _leaks(text)
 
 
 class ResearchUnavailable(RuntimeError):
@@ -247,18 +279,33 @@ def research_agent() -> str:
     return "claude-code"
 
 
+def _codex_allowed() -> bool:
+    return os.environ.get(ALLOW_CODEX_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def available_agent(preferred: str | None = None) -> tuple[str, str]:
-    """The agent to run and a note when it is not the one chosen, because that one is not installed."""
+    """The agent to run and a note when it is not the one chosen, because that one is not installed.
+
+    Company research reads web pages, which are not trusted, and Codex's read-only
+    sandbox can still read files on this computer. Claude Code runs here with only
+    web search and fetch, so it is preferred, and Codex runs only when the student
+    has allowed it (ALLOW_CODEX_ENV) and Claude Code is not installed.
+    """
     chosen = preferred or research_agent()
-    if chosen == CODEX_AGENT and _cli_available(_cli_binary(CLAUDE_AGENT)):
-        # Company research reads web pages, which are not trusted, and Codex's read-only sandbox can still
-        # read files on this computer. Claude Code runs here with only web search and fetch, so it is preferred.
+    claude_here = _cli_available(_cli_binary(CLAUDE_AGENT))
+    if chosen == CODEX_AGENT and claude_here:
         return CLAUDE_AGENT, f"{CODEX_AGENT} can read files on this computer, so {CLAUDE_AGENT} (web search and fetch only) did the research"
-    if _cli_available(_cli_binary(chosen)):
-        return chosen, ""
-    for other in RUNNERS:
-        if other != chosen and _cli_available(_cli_binary(other)):
-            return other, f"{chosen} is not installed here, so {other} did the research"
+    candidates = [chosen, *(other for other in RUNNERS if other != chosen)]
+    for agent in candidates:
+        if agent == CODEX_AGENT and not _codex_allowed():
+            continue
+        if _cli_available(_cli_binary(agent)):
+            return agent, "" if agent == chosen else f"{chosen} is not installed here, so {agent} did the research"
+    if not claude_here and _cli_available(_cli_binary(CODEX_AGENT)):
+        raise ResearchUnavailable(
+            "Only Codex CLI is installed here, and it can read files on this computer while it reads web pages. "
+            f"Install Claude Code, or set {ALLOW_CODEX_ENV}=1 in .env to accept that."
+        )
     raise ResearchUnavailable(
         "No research agent is set up on this computer. Install and sign in to Claude Code or Codex CLI."
     )
@@ -786,8 +833,11 @@ class _Reader:
     def fetch(self, url: str) -> FetchResult:
         if url not in self._plain:
             # Every redirect is checked like the cited link: a page may not send the reader to a search or data-broker site.
+            # Never longer than what is left of the run's time, so CHECK_SECONDS holds to within a second.
+            left = max(1.0, self._stop_at - self.clock())
             self._plain[url] = self.fetcher.fetch(
-                url, same_host_only=False, hop_check=lambda hop: _refused_source(hop) or None, deadline_seconds=FETCH_SECONDS,
+                url, same_host_only=False, hop_check=lambda hop: _refused_source(hop) or None,
+                deadline_seconds=min(FETCH_SECONDS, left),
             )
         return self._plain[url]
 
@@ -896,16 +946,19 @@ def _check_one(
         # Being named beside each other says nothing about competing (a partner, a customer, an investor),
         # and neither does the company's own site listing them. The quote's sentence must say it.
         says = page.sentence_says_compete(span, _company_names(company), names)
-        return "passed", "the quoted sentence says the two compete" if says else "picked as a competitor by the research agent", page, False, span
+        return "passed", COMPETE_NOTE if says else PICK_NOTE, page, False, span
     if own_site or page.names_company(company, *scope):
         return "passed", "", page, True, span
     return "unlinked", "its source does not name the company", page, False, span
 
 
-def _second_read(items: list[dict[str, Any]], judge: Judge | None, instructions: str = JUDGE_INSTRUCTIONS) -> dict[str, tuple[bool, str]]:
+def _second_read(
+    items: list[dict[str, Any]], judge: Judge | None, instructions: str = JUDGE_INSTRUCTIONS, rivals: dict[str, bool] | None = None,
+) -> dict[str, tuple[bool, str]]:
     """The judge's verdict on each item it answered: (supported, why). An item it did not answer is missing.
 
     Call prep uses it too, with its own instructions, for the lines a model writes.
+    ``rivals``, when given, gets each answered item's "rivals" answer (only ever true when it said true).
     """
     verdicts: dict[str, tuple[bool, str]] = {}
     if judge is None:
@@ -921,7 +974,11 @@ def _second_read(items: list[dict[str, Any]], judge: Judge | None, instructions:
             if isinstance(answers, list):
                 for answer in answers:
                     if isinstance(answer, dict) and str(answer.get("id")) in {item["id"] for item in batch}:
-                        verdicts[str(answer["id"])] = (answer.get("supported") is True, _clean(answer.get("why"), 200))
+                        # What the judge says is kept on the student's screen, so it may not carry an address, link, path, or key either.
+                        why = _clean(answer.get("why"), 200)
+                        verdicts[str(answer["id"])] = (answer.get("supported") is True, why if not _leaks(why) else "")
+                        if rivals is not None:
+                            rivals[str(answer["id"])] = answer.get("rivals") is True
                 break
     return verdicts
 
@@ -1014,8 +1071,12 @@ def check_brief(
     for index, (fact, _note, page, _names, span, _unlinked) in enumerate(waiting):
         # Only a team fact is about a person; any other fact is asked of the company, whoever it names.
         about = fact["competitor"] or (fact["person"] if fact["section"] == TEAM else "") or company
-        items.append({"id": f"f{index}", "fact": fact["text"], "about": about, "page": page.url, **page.passage(span)})
-    verdicts = _second_read(items, judge)
+        items.append({
+            "id": f"f{index}", "fact": fact["text"], "about": about, "page": page.url,
+            **({"competitor": fact["competitor"]} if fact["section"] == COMPETITORS else {}), **page.passage(span),
+        })
+    rivals: dict[str, bool] = {}
+    verdicts = _second_read(items, judge, rivals=rivals)
     confirmed: list[tuple[dict[str, Any], str, bool, bool]] = []
     for index, (fact, note, _page, names_company, _span, only_person) in enumerate(waiting):
         verdict = verdicts.get(f"f{index}")
@@ -1032,6 +1093,9 @@ def check_brief(
                             "reason": f"a second read of the page says it does not state this: {verdict[1] or 'no reason given'}"})
             counts[fact["section"]] -= 1
         else:
+            if note == COMPETE_NOTE and not rivals.get(f"f{index}"):
+                # The sentence has both names and a word of competition; the second read did not find the two selling against each other.
+                note = PICK_NOTE
             confirmed.append((fact, note, names_company, only_person))
     # A founder's paper names the founder, not the company. It stays when a
     # confirmed fact about the company's team, from a page that does name the

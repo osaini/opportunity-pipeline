@@ -1,6 +1,7 @@
 """Technical research on a company, and the pages that have to back up every fact."""
 
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -180,8 +181,8 @@ class SecondRead:
     shown, so a test can see that the words that decide a fact reached it.
     """
 
-    def __init__(self, refuse=(), fail=False):
-        self.refuse, self.fail = set(refuse), fail
+    def __init__(self, refuse=(), fail=False, not_rivals=()):
+        self.refuse, self.fail, self.not_rivals = set(refuse), fail, set(not_rivals)
         self.items, self.calls = [], 0
 
     def __call__(self, instructions, content):
@@ -192,7 +193,9 @@ class SecondRead:
         self.items += items
         return json.dumps({"verdicts": [
             {"id": item["id"], "supported": item["fact"] not in self.refuse,
-             "why": "the passage says otherwise" if item["fact"] in self.refuse else "stated"}
+             "why": "the passage says otherwise" if item["fact"] in self.refuse else "stated",
+             # Asked only about a competitor fact, and by default the passage does say the two sell against each other.
+             **({"rivals": item["fact"] not in self.not_rivals} if "competitor" in item else {})}
             for item in items
         ]})
 
@@ -649,6 +652,60 @@ class CheckBriefTests(unittest.TestCase):
                          "the company's own site listing a name is not the company calling it a competitor")
         self.assertEqual(notes["https://news.example/rivals"], "the quoted sentence says the two compete")
 
+    def test_a_sentence_with_both_names_and_a_word_of_competition_still_needs_the_second_read_to_call_them_rivals(self):
+        customer = "<html><body><h1>Case study</h1><p>Voltarm, a fleet operator, chose Chargebot over competing chargers.</p></body></html>"
+        partner = "<html><body><p>Chargebot partners with Voltarm to compete with Tesla in fleet charging.</p></body></html>"
+        rivals = "<html><body><p>Chargebot competes with Voltarm in fleet charging.</p></body></html>"
+        sites = {
+            **SITES,
+            "chargebot.example": {**SITES["chargebot.example"], "/customers": (200, customer)},
+            "news.example": {**SITES["news.example"], "/partner2": (200, partner), "/rivals": (200, rivals)},
+        }
+        cust = fact("competitors", "Voltarm, a fleet operator, chose Chargebot over competing chargers",
+                    "https://chargebot.example/customers", "Voltarm, a fleet operator, chose Chargebot over competing chargers", competitor="Voltarm")
+        part = fact("competitors", "Chargebot partners with Voltarm to compete with Tesla in fleet charging",
+                    "https://news.example/partner2", "Chargebot partners with Voltarm to compete with Tesla in fleet charging", competitor="Voltarm")
+        real = fact("competitors", "Chargebot competes with Voltarm in fleet charging",
+                    "https://news.example/rivals", "Chargebot competes with Voltarm in fleet charging", competitor="Voltarm")
+        # Python finds a word of competition in all three sentences; only the second read can say who sells against whom.
+        second = SecondRead(not_rivals=[cust["text"], part["text"]])
+        brief = self.check(cust, part, real, sites=sites, second=second)
+        notes = {item["source_url"]: item["note"] for item in brief["facts"]}
+        self.assertEqual(notes["https://chargebot.example/customers"], research.PICK_NOTE)
+        self.assertEqual(notes["https://news.example/partner2"], research.PICK_NOTE)
+        self.assertEqual(notes["https://news.example/rivals"], research.COMPETE_NOTE)
+        self.assertEqual(second.shown(real["text"])["competitor"], "Voltarm", "the judge is told which company the fact is about")
+        # No second read: the fact is kept "not checked", and never as a rival the page says.
+        brief = self.check(cust, real, sites=sites, second=SecondRead(fail=True))
+        self.assertTrue(all(not item["checked"] and item["note"] != research.COMPETE_NOTE for item in brief["facts"]))
+        # A judge that says the passage shows a customer or partner refuses the fact outright.
+        brief = self.check(cust, sites=sites, second=SecondRead(refuse=[cust["text"]]))
+        self.assertEqual(brief["facts"], [])
+        self.assertIn("does not state this", self.refused(brief)[cust["text"]])
+
+    def test_the_second_read_is_asked_whether_the_two_compete_and_only_of_a_competitor_fact(self):
+        self.assertIn('"rivals"', research.JUDGE_INSTRUCTIONS)
+        for relation in ("customer", "partner", "supplier", "investor", "acquirer"):
+            self.assertIn(relation, research.JUDGE_INSTRUCTIONS)
+        second = SecondRead()
+        self.check(SEED, second=second)
+        self.assertNotIn("competitor", second.shown(SEED["text"]), "only a competitor fact carries the question")
+
+    def test_what_the_second_read_says_may_not_carry_an_address_or_link_onto_the_screen(self):
+        def judge(instructions, content):
+            items = json.loads(content)["items"]
+            return json.dumps({"verdicts": [
+                {"id": item["id"], "supported": False, "why": "see https://evil.example/x or mail dana@evil.example"} for item in items
+            ]})
+
+        brief = self.check(SEED, second=judge)
+        self.assertEqual(self.refused(brief)[SEED["text"]], "a second read of the page says it does not state this: no reason given")
+        digits = {}
+        self.assertEqual(
+            research._second_read([{"id": "f0"}], lambda i, c: json.dumps({"verdicts": [{"id": "f0", "supported": False, "why": "quote says 4.5M, fact says 45M"}]}), rivals=digits),
+            {"f0": (False, "quote says 4.5M, fact says 45M")}, "a reason may carry numbers: it is not a gap",
+        )
+
     def test_a_short_piece_of_a_trimmed_quote_must_be_on_the_page_too(self):
         page = "https://news.example/chargebot-seed"
         text = "Raised a seed round led by Northgate Ventures"
@@ -760,6 +817,37 @@ class CheckBriefTests(unittest.TestCase):
         self.assertEqual(brief["gaps"], ["which suppliers they use for key parts", "how they test grippers before shipping"])
         self.assertTrue(research.safe_gap("how the arm stays calibrated"))
         self.assertFalse(research.safe_gap("email me at a@b.co"))
+
+    def test_a_gap_may_not_spell_a_secret_out_in_groups_digits_or_a_long_sentence(self):
+        for text in (
+            "abcd efgh ijkl mnop",  # the shape of a Gmail app password
+            "PIPELINE WEB TOKEN is 3f9a1c 77be20 d4e81f 09aa53",
+            "the office is at 12 Main Street", "call 415 555 0100", "whether they plan a 2027 launch",
+            " ".join(["word"] * 3 + ["thing"] * 12),
+        ):
+            with self.subTest(text):
+                self.assertFalse(research.safe_gap(text))
+        for text in ("which suppliers they use for key parts", "how the arm stays calibrated", "whether they hire interns in the summer"):
+            with self.subTest(text):
+                self.assertTrue(research.safe_gap(text))
+        brief = self.check(SEED, gaps=["abcd efgh ijkl mnop", "how they test grippers before shipping"])
+        self.assertEqual(brief["gaps"], ["how they test grippers before shipping"])
+
+    def test_a_fetch_never_gets_longer_than_the_time_the_run_has_left(self):
+        deadlines = []
+        fetcher, _ = fetcher_for()
+        real = fetcher.fetch
+
+        def spy(url, **kwargs):
+            deadlines.append(kwargs["deadline_seconds"])
+            return real(url, **kwargs)
+
+        fetcher.fetch = spy
+        with fetcher:
+            research.check_brief(reply(SEED), TARGET, fetcher=fetcher, judge=SecondRead(), budget_seconds=5)
+            research.check_brief(reply(SEED), TARGET, fetcher=fetcher, judge=SecondRead(), budget_seconds=900)
+        self.assertAlmostEqual(deadlines[0], 5, delta=0.5, msg="the run has five seconds left, not the usual thirty")
+        self.assertEqual(deadlines[1], research.FETCH_SECONDS)
 
     def test_the_company_renamed_during_the_run_is_not_given_the_old_ones_research(self):
         # See ResearchStorageTests: this is the pure check of the comparison it uses.
@@ -940,7 +1028,8 @@ class AgentChoiceTests(unittest.TestCase):
             self.assertEqual(research.research_agent(), "claude-code")
 
     def test_a_missing_cli_falls_back_to_the_other_and_says_so(self):
-        with mock.patch.object(research, "_cli_available", side_effect=lambda binary: "codex" in binary):
+        with mock.patch.dict("os.environ", {research.ALLOW_CODEX_ENV: "1"}), \
+                mock.patch.object(research, "_cli_available", side_effect=lambda binary: "codex" in binary):
             self.assertEqual(research.available_agent("claude-code"), ("codex-cli", "claude-code is not installed here, so codex-cli did the research"))
         with mock.patch.object(research, "_cli_available", return_value=False):
             with self.assertRaises(research.ResearchUnavailable):
@@ -953,8 +1042,32 @@ class AgentChoiceTests(unittest.TestCase):
             self.assertEqual(agent, "claude-code")
             self.assertIn("can read files on this computer", note)
             self.assertEqual(research.available_agent("claude-code"), ("claude-code", ""))
-        with mock.patch.object(research, "_cli_available", side_effect=lambda binary: "codex" in binary):
-            self.assertEqual(research.available_agent("codex-cli"), ("codex-cli", ""), "with nothing else installed it is still used")
+        with mock.patch.dict("os.environ", {research.ALLOW_CODEX_ENV: "1"}), \
+                mock.patch.object(research, "_cli_available", side_effect=lambda binary: "codex" in binary):
+            self.assertEqual(research.available_agent("codex-cli"), ("codex-cli", ""), "with nothing else installed it is used only when the student allowed it")
+
+    def test_codex_does_not_research_untrusted_pages_unless_the_student_allowed_it(self):
+        """Codex's read-only sandbox can read local files; the pages it reads are not trusted."""
+        only_codex = mock.patch.object(research, "_cli_available", side_effect=lambda binary: "codex" in binary)
+        for value in (None, "", "0", "no"):
+            for preferred in ("codex-cli", "claude-code"):
+                env = {} if value is None else {research.ALLOW_CODEX_ENV: value}
+                with self.subTest(value=value, preferred=preferred), mock.patch.dict("os.environ", env), only_codex:
+                    os.environ.pop(research.ALLOW_CODEX_ENV, None) if value is None else None
+                    with self.assertRaises(research.ResearchUnavailable) as raised:
+                        research.available_agent(preferred)
+                    self.assertIn(research.ALLOW_CODEX_ENV, str(raised.exception))
+                    self.assertIn("Install Claude Code", str(raised.exception))
+        # The Research button is not offered either, and no job is queued to fail.
+        with mock.patch.dict("os.environ", {research.ALLOW_CODEX_ENV: ""}), only_codex:
+            researcher = research.web_researcher(lambda: None)
+            self.assertIn("can read files", researcher.problem())
+        with mock.patch.dict("os.environ", {research.ALLOW_CODEX_ENV: "yes"}), only_codex:
+            self.assertEqual(research.web_researcher(lambda: None).problem(), "")
+        # With Claude Code installed nothing changes, allowed or not.
+        with mock.patch.dict("os.environ", {research.ALLOW_CODEX_ENV: ""}), mock.patch.object(research, "_cli_available", side_effect=lambda binary: "claude" in binary):
+            self.assertEqual(research.available_agent("codex-cli")[0], "claude-code")
+            self.assertEqual(research.available_agent("claude-code"), ("claude-code", ""))
 
     def test_the_setting_is_offered_and_checked(self):
         with tempfile.TemporaryDirectory() as folder:
