@@ -412,6 +412,12 @@ def _stems(word: str) -> set[str]:
     return stems
 
 
+def _phrase_in(phrase: list[str], *runs: list[str]) -> bool:
+    """Whether the words stand together, in order, within one of the runs (never across two of them)."""
+    needle = f" {' '.join(phrase)} "
+    return any(needle in f" {' '.join(run)} " for run in runs)
+
+
 def _verb_on_page(word: str, page_stems: set[str]) -> bool:
     """A sentence's opening verb ("Builds", "Studied") the page uses in another form ("building", "studies").
 
@@ -565,7 +571,10 @@ class _Page:
         # Every word on the page in its plain forms, for a sentence's opening word.
         self.stems = {stem for token in set(self.tokens) for stem in _stems(token)}
         # The page's title and dateline, which every fact on it may lean on.
-        self.top = set(self.tokens[: self._line_spans[min(TOP_LINES, len(self._line_spans)) - 1][1]]) if self._line_spans else set()
+        # Kept in page order too: a phrase is looked for in words that stand together on the page, never across the
+        # seam between the lines near a quote and the title (a set's order would put unrelated words side by side).
+        self.top_words = self.tokens[: self._line_spans[min(TOP_LINES, len(self._line_spans)) - 1][1]] if self._line_spans else []
+        self.top = set(self.top_words)
 
     def _index(self, offset: int) -> int:
         """The token at a match found at ``offset`` (the space before it) in ``joined``."""
@@ -725,7 +734,7 @@ class _Page:
             ]
             # "First Round Capital" is one name: what follows its first word must stand together.
             tail = [word for token in tokens[1:] for word in _tokens(token)]
-            if grammar and len(tokens) >= 3 and not set(tail) <= own and f" {' '.join(tail)} " not in f" {' '.join(local_words)} ":
+            if grammar and len(tokens) >= 3 and not set(tail) <= own and not _phrase_in(tail, window, self.top_words):
                 absent.append(" ".join(tokens[1:]))
         if absent:
             return f"the quote and the lines around it do not name {', '.join(dict.fromkeys(absent[:4]))}"

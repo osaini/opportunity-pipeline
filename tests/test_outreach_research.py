@@ -517,6 +517,21 @@ class CheckBriefTests(unittest.TestCase):
         northgate = {**first_round, "text": "Northgate Capital led the $4.5M seed round"}
         self.assertEqual(len(self.check(northgate)["facts"]), 1)
 
+    def test_a_name_is_never_pieced_together_across_the_title_and_the_lines_near_the_quote(self):
+        # The title ends "... Capital" words and the body says "seed round": read as one run, "round capital"
+        # would appear to stand on the page. It must be looked for within each run in page order, whatever
+        # the hash seed (this failed about one run in fifteen when the title words were a set).
+        self.assertFalse(research._phrase_in(["round", "capital"], ["seed", "round"], ["capital", "weekly"]))
+        self.assertTrue(research._phrase_in(["round", "capital"], ["first", "round", "capital", "led"], []))
+        page = ("<html><body><h1>Capital Weekly</h1>"
+                "<p>Chargebot today announced a $4.5M seed round led by Northgate Ventures.</p></body></html>")
+        sites = {**SITES, "news.example": {**SITES["news.example"], "/capital-weekly": (200, page)}}
+        first_round = fact("traction", "First Round Capital led the $4.5M seed round", "https://news.example/capital-weekly",
+                           "today announced a $4.5M seed round led by Northgate Ventures")
+        brief = self.check(first_round, sites=sites)
+        self.assertEqual(brief["facts"], [])
+        self.assertIn("do not name Round Capital", self.refused(brief)[first_round["text"]])
+
     def test_a_competitors_staff_do_not_tie_a_paper_to_the_company(self):
         rival = fact("competitors", "Voltarm is led by CEO Sam Lee, who founded it in 2019", "https://news.example/voltarm-ceo",
                      "Voltarm is led by CEO Sam Lee, who founded it in 2019", competitor="Voltarm")
