@@ -1,0 +1,97 @@
+{
+  "_comment": "Question-key parity vectors (docs/phase5-apply-agent-spec.md 6.5, 12.3, 12.5). 'key' is what OpportunityApplyEngine.questionKey(text) returns and what apply_policy.question_key(text) must return: lowercase, every run of characters outside [a-z0-9'] becomes one space, then trim. Node checks it in tests/extension/run_tests.mjs; the Python suites reuse this file.",
+  "vectors": [
+    {
+      "text": "Why do you want to work at Acme?",
+      "key": "why do you want to work at acme"
+    },
+    {
+      "text": "  Why   do you want\tto work at Acme?  ",
+      "key": "why do you want to work at acme"
+    },
+    {
+      "text": "WHY DO YOU WANT TO WORK AT ACME",
+      "key": "why do you want to work at acme"
+    },
+    {
+      "text": "Email *",
+      "key": "email"
+    },
+    {
+      "text": "First Name",
+      "key": "first name"
+    },
+    {
+      "text": "Are you legally authorized to work in the U.S.?",
+      "key": "are you legally authorized to work in the u s"
+    },
+    {
+      "text": "What's your favorite programming language?",
+      "key": "what's your favorite programming language"
+    },
+    {
+      "text": "What\u2019s your favorite programming language?",
+      "key": "what s your favorite programming language"
+    },
+    {
+      "text": "LinkedIn Profile (optional)",
+      "key": "linkedin profile optional"
+    },
+    {
+      "text": "GitHub / Portfolio URL",
+      "key": "github portfolio url"
+    },
+    {
+      "text": "Expected graduation year (YYYY)",
+      "key": "expected graduation year yyyy"
+    },
+    {
+      "text": "Phone: +1 (512) 555-0123",
+      "key": "phone 1 512 555 0123"
+    },
+    {
+      "text": "Why \ud83c\udf89 us?",
+      "key": "why us"
+    },
+    {
+      "text": "Pr\u00e9nom",
+      "key": "pr nom"
+    },
+    {
+      "text": "\u5fd7\u671b\u52d5\u6a5f",
+      "key": ""
+    },
+    {
+      "text": "K\u0130ng \u212a",
+      "key": "ki ng k"
+    },
+    {
+      "text": "Stra\u00dfe und Hausnummer",
+      "key": "stra e und hausnummer"
+    },
+    {
+      "text": "",
+      "key": ""
+    },
+    {
+      "text": "***",
+      "key": ""
+    },
+    {
+      "text": "Line one\nLine two",
+      "key": "line one line two"
+    },
+    {
+      "text": "don't  won't  can't",
+      "key": "don't won't can't"
+    },
+    {
+      "text": "Question 10215389004",
+      "key": "question 10215389004"
+    },
+    {
+      "text": "a-b_c.d/e",
+      "key": "a b c d e"
+    }
+  ]
+}

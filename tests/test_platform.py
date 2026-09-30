@@ -1035,12 +1035,17 @@ class PlatformTests(unittest.TestCase):
         )
         self.assertEqual(manifest["side_panel"]["default_path"], "sidepanel.html")
         self.assertIn("service_worker", manifest["background"])
-        content_script = (extension / "content.js").read_text(encoding="utf-8")
-        self.assertIn('"submit"', content_script)
-        self.assertIn("SENSITIVE", content_script)
-        self.assertNotIn(".click(", content_script)
-        self.assertNotIn("requestSubmit", content_script)
-        self.assertNotIn(".submit(", content_script)
+        # The field rules live in apply-engine.js, so the positive assertions follow them;
+        # the negative ones cover both files, since every click the agent makes is in Python.
+        engine_script = (extension / "apply-engine.js").read_text(encoding="utf-8")
+        self.assertIn('"submit"', engine_script)
+        self.assertIn("SENSITIVE", engine_script)
+        for name in ("content.js", "apply-engine.js"):
+            source = (extension / name).read_text(encoding="utf-8")
+            for forbidden in (
+                ".click(", "requestSubmit", ".submit(", "new MouseEvent", "new PointerEvent", "dispatchEvent",
+            ):
+                self.assertNotIn(forbidden, source, f"{name} must not contain {forbidden}")
 
         self.migrate()
         app = create_app(

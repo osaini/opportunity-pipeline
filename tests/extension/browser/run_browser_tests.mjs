@@ -106,7 +106,7 @@ try {
   await ats.bringToFront();
   const scan = await panel.evaluate(async () => {
     const [target] = await chrome.tabs.query({ active: true, currentWindow: true });
-    await chrome.scripting.executeScript({ target: { tabId: target.id }, files: ["adapters.js", "field-engine.js", "content.js"] });
+    await chrome.scripting.executeScript({ target: { tabId: target.id }, files: ["adapters.js", "field-engine.js", "apply-engine.js", "content.js"] });
     return chrome.tabs.sendMessage(target.id, {
       type: "SCAN_FIELDS",
       profile: { name: "Confirmed Student", "contact.email": "confirmed@example.com" },

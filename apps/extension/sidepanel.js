@@ -79,7 +79,7 @@
     try {
       return await chrome.tabs.sendMessage(activeTabId, message);
     } catch (_) {
-      await chrome.scripting.executeScript({ target: { tabId: activeTabId }, files: ["adapters.js", "field-engine.js", "content.js"] });
+      await chrome.scripting.executeScript({ target: { tabId: activeTabId }, files: ["adapters.js", "field-engine.js", "apply-engine.js", "content.js"] });
       return chrome.tabs.sendMessage(activeTabId, message);
     }
   }
@@ -209,7 +209,7 @@
             try {
               await api("/api/v1/extension/answers", {
                 method: "POST",
-                body: JSON.stringify({ question: field.label, answer: editor.value, company: applyContext.application.company, tags: [scanResult.ats_type] })
+                body: JSON.stringify({ question: field.question || field.label, answer: editor.value, company: applyContext.application.company, tags: [scanResult.ats_type] })
               });
               status.textContent = "Reviewed answer saved for future exact-question matches.";
             } catch (error) { status.textContent = error.message; }

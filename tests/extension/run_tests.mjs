@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
+import vm from "node:vm";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadContentScript } from "./dom_stub.mjs";
@@ -166,11 +167,20 @@ tests.fill_reports_when_framework_reverts_value = () => {
 };
 
 tests.content_script_preserves_no_submit_guarantee = () => {
-  const source = readFileSync(path.join(ROOT, "apps", "extension", "content.js"), "utf8");
-  assert.match(source, /"submit"/);
-  assert.doesNotMatch(source, /\.click\(/);
-  assert.doesNotMatch(source, /requestSubmit/);
-  assert.doesNotMatch(source, /\.submit\(/);
+  // The rules now live in apply-engine.js, so the positive assertions follow them there;
+  // the negative ones cover both files (every click the agent makes lives in Python).
+  const engineSource = readFileSync(path.join(ROOT, "apps", "extension", "apply-engine.js"), "utf8");
+  assert.match(engineSource, /"submit"/);
+  assert.match(engineSource, /SENSITIVE/);
+  for (const file of ["content.js", "apply-engine.js"]) {
+    const source = readFileSync(path.join(ROOT, "apps", "extension", file), "utf8");
+    assert.doesNotMatch(source, /\.click\(/, `${file} must not click`);
+    assert.doesNotMatch(source, /requestSubmit/, `${file} must not requestSubmit`);
+    assert.doesNotMatch(source, /\.submit\(/, `${file} must not submit`);
+    assert.doesNotMatch(source, /new MouseEvent/, `${file} must not build a MouseEvent`);
+    assert.doesNotMatch(source, /new PointerEvent/, `${file} must not build a PointerEvent`);
+    assert.doesNotMatch(source, /dispatchEvent/, `${file} must not dispatch events itself`);
+  }
   // Fill results may never include a submit-type target even if forged.
   const page = loadFixture("lever.json");
   const ext = loadContentScript(page);
@@ -323,6 +333,247 @@ tests.picked_resume_variant_is_preselected_without_reordering = () => {
   const none = documentChoices(documents.map((item) => ({ ...item, preferred: false })), "opp-1");
   assert.deepEqual(none.map((choice) => choice.selected), [true, false, false], "with no pick, the first stays selected as before");
   assert.deepEqual(documentChoices(undefined, "opp-1"), []);
+};
+
+// --- The shared engine (apps/extension/apply-engine.js), Phase 5 M1 ---
+
+const APPLY_FIXTURES = path.join(ROOT, "tests", "fixtures", "apply");
+
+function loadApplyFixture(name) {
+  return JSON.parse(readFileSync(path.join(APPLY_FIXTURES, name), "utf8"));
+}
+
+function pageOf(...controls) {
+  return { hostname: "job-boards.greenhouse.io", url: "https://job-boards.greenhouse.io/acme/jobs/1", controls };
+}
+
+function fieldById(scan, id) {
+  const field = scan.fields.find((item) => item.id === id);
+  assert.ok(field, `expected a scanned field with id ${id}`);
+  return field;
+}
+
+tests.engine_loads_without_chrome_and_exposes_the_agent_surface = () => {
+  const ext = loadContentScript(pageOf({ tag: "input", type: "text", id: "first_name", label: "First Name" }), { contentScript: false });
+  const engine = ext.engine;
+  assert.equal(engine.version, "1");
+  assert.deepEqual(Object.keys(engine).sort(), ["attachDocumentFromBytes", "fill", "questionKey", "questionText", "scan", "version"]);
+  assert.ok(Object.isFrozen(engine));
+  assert.equal(engine.scan({ name: "Test Student" }, []).fields[0].proposed_value, "Test");
+  // A second injection of the same source keeps the first engine.
+  const source = readFileSync(path.join(ROOT, "apps", "extension", "apply-engine.js"), "utf8");
+  vm.runInContext(source, ext.context, { filename: "apply-engine.js" });
+  assert.strictEqual(ext.context.OpportunityApplyEngine, engine);
+  assert.equal(ext.context.chrome, undefined, "the agent's page has no chrome.*");
+};
+
+tests.clean_question_excludes_name_id_and_placeholder = () => {
+  const page = {
+    ...pageOf(
+      { tag: "input", type: "text", id: "question_4000000101", name: "question_4000000101", placeholder: "Type here", label: "Why do you want to work here? *" },
+      { tag: "select", id: "team", name: "team_pick", wrapped: true, label: "Preferred team (required)", text: "Backend Frontend" },
+      { tag: "input", type: "text", id: "portfolio", ariaLabelledby: "lbl1 lbl2" },
+      { tag: "input", type: "text", id: "nickname", ariaLabel: "Nickname   required" },
+      { tag: "input", type: "text", id: "anon", name: "anon_name", placeholder: "Only a placeholder" },
+    ),
+    texts: { lbl1: "Portfolio", lbl2: "link" },
+  };
+  const scan = loadContentScript(page).scan(profile);
+  const why = fieldById(scan, "question_4000000101");
+  assert.equal(why.question, "Why do you want to work here?");
+  assert.match(why.label, /question_4000000101/, "label stays exactly as before, name and id included");
+  assert.match(why.label, /Type here/);
+  assert.equal(fieldById(scan, "team").question, "Preferred team", "a wrapping label without the control's own text");
+  assert.equal(fieldById(scan, "portfolio").question, "Portfolio link");
+  assert.equal(fieldById(scan, "nickname").question, "Nickname");
+  const anon = fieldById(scan, "anon");
+  assert.equal(anon.question, "", "name, id and placeholder are never the question");
+  assert.match(anon.label, /anon_name/);
+  assert.equal(anon.name, "anon_name");
+  assert.equal(anon.id, "anon");
+};
+
+tests.question_text_strips_only_trailing_required_markers = () => {
+  const cases = [
+    ["Email*", "Email"],
+    ["Email *", "Email"],
+    ["Email (required)", "Email"],
+    ["Email  required", "Email"],
+    ["Phone * (required)", "Phone"],
+    ["Why  us?\n  *", "Why us?"],
+    ["Required documents for review", "Required documents for review"],
+    ["Rate 1-5 (5 is best)", "Rate 1-5 (5 is best)"],
+    ["*", ""],
+  ];
+  for (const [text, expected] of cases) {
+    const ext = loadContentScript(pageOf({ tag: "input", type: "text", id: "field", label: text }));
+    assert.equal(fieldById(ext.scan(profile), "field").question, expected, JSON.stringify(text));
+  }
+};
+
+tests.required_markers_are_reported_and_required_is_unchanged = () => {
+  const scan = loadContentScript(pageOf(
+    { tag: "input", type: "text", id: "m_attr", label: "Attr", required: true },
+    { tag: "input", type: "text", id: "m_aria", label: "Aria", ariaRequired: true },
+    { tag: "input", type: "text", id: "m_group", label: "Group", group: { ariaRequired: true } },
+    { tag: "input", type: "text", id: "m_star", label: "Star *" },
+    { tag: "input", type: "text", id: "m_mirror", label: "Mirror", container: { hiddenMirror: true } },
+    { tag: "input", type: "file", id: "m_span", label: "Resume", container: { spanRequired: true } },
+    { tag: "input", type: "text", id: "m_shared", label: "Shared", container: { hiddenMirror: true, spanRequired: true, others: 1 } },
+    { tag: "input", type: "text", id: "m_all", label: "All *", required: true, ariaRequired: true, container: { hiddenMirror: true, spanRequired: true } },
+    { tag: "input", type: "text", id: "m_none", label: "Optional" },
+  )).scan(profile);
+  const expected = {
+    m_attr: [["attr"], true],
+    m_aria: [["aria"], true],
+    m_group: [["aria"], false],
+    m_star: [["asterisk"], false],
+    m_mirror: [["hidden_required_sibling"], false],
+    m_span: [["span_required"], false],
+    m_shared: [[], false],
+    m_all: [["attr", "aria", "asterisk", "hidden_required_sibling", "span_required"], true],
+    m_none: [[], false],
+  };
+  for (const [id, [markers, required]] of Object.entries(expected)) {
+    const field = fieldById(scan, id);
+    assert.deepEqual([...field.required_markers], markers, id);
+    assert.equal(field.required_any, markers.length > 0, id);
+    // `required` is still only the attribute and the control's own aria-required.
+    assert.equal(field.required, required, `${id}: required must not change`);
+  }
+};
+
+tests.combobox_input_is_custom_select_and_never_filled = () => {
+  const ext = loadContentScript(pageOf(
+    { tag: "input", type: "text", role: "combobox", id: "school", label: "School" },
+    { tag: "input", type: "text", role: "combobox", id: "candidate-location", label: "Location (City)" },
+    { tag: "input", type: "file", id: "resume", label: "Resume/CV" },
+    { tag: "input", type: "text", id: "plain", label: "Plain" },
+  ));
+  const scan = ext.scan(profile);
+  const school = fieldById(scan, "school");
+  assert.equal(school.type, "custom_select");
+  assert.equal(school.unsupported, true);
+  assert.equal(school.widget, "react_select");
+  assert.equal(school.proposed_value, "", "no value is proposed for a widget the extension cannot fill");
+  assert.match(school.reason, /manual/);
+  assert.equal(fieldById(scan, "candidate-location").widget, "location");
+  assert.equal(fieldById(scan, "resume").widget, "file_group");
+  assert.equal(fieldById(scan, "plain").widget, "native");
+  const result = ext.fill([{ ...school, proposed_value: "Somewhere University", approved: true }]);
+  assert.equal(result.results[0].filled, false);
+  assert.match(result.results[0].reason, /manual/);
+  assert.equal(ext.document.controls.find((item) => item.id === "school").value, "");
+};
+
+tests.visible_css_is_reported_not_used_to_filter = () => {
+  const scan = loadContentScript(pageOf(
+    { tag: "input", type: "text", id: "v_unknown", label: "Unknown" },
+    { tag: "input", type: "text", id: "v_ok", label: "Ok", rect: { width: 200, height: 30 } },
+    { tag: "input", type: "text", id: "v_tiny", label: "Tiny", rect: { width: 1, height: 30 } },
+    { tag: "input", type: "text", id: "v_none", label: "None", rect: { width: 200, height: 30 }, style: { display: "none" } },
+    { tag: "input", type: "text", id: "v_hidden", label: "Hidden", rect: { width: 200, height: 30 }, style: { visibility: "hidden" } },
+    { tag: "input", type: "text", id: "v_clear", label: "Clear", rect: { width: 200, height: 30 }, style: { opacity: "0" } },
+    { tag: "input", type: "text", id: "v_off", label: "Off", rect: { width: 200, height: 30, right: -5 } },
+  )).scan(profile);
+  const seen = Object.fromEntries(scan.fields.map((field) => [field.id, field.visible_css]));
+  assert.deepEqual(seen, { v_unknown: null, v_ok: true, v_tiny: false, v_none: false, v_hidden: false, v_clear: false, v_off: false });
+  assert.equal(scan.fields.length, 7, "a control that fails the CSS test is still listed");
+};
+
+tests.tag_option_marks_controls_only_when_asked = () => {
+  const ext = loadContentScript(pageOf(
+    { tag: "input", type: "text", id: "first_name", label: "First Name" },
+    { tag: "input", type: "text", id: "school", role: "combobox", label: "School" },
+  ));
+  ext.scan(profile);
+  ext.engine.scan(profile, []);
+  ext.engine.scan(profile, [], { tag: false });
+  assert.ok(ext.document.controls.every((control) => !("data-opportunity-field" in control.attrs)), "untagged by default");
+  const tagged = ext.engine.scan(profile, [], { tag: true });
+  for (const field of tagged.fields) {
+    const control = ext.document.controls.find((item) => item.id === field.id);
+    assert.equal(control.attrs["data-opportunity-field"], field.key);
+  }
+};
+
+tests.saved_clean_question_matches_exactly_and_legacy_label_rows_still_do = () => {
+  const page = pageOf({ tag: "textarea", id: "question_4000000101", name: "question_4000000101", label: "Why do you want to work here? *" });
+  const first = loadContentScript(page).scan(profile);
+  const field = first.fields[0];
+  const clean = { id: "clean-1", question: field.question, answer: "Because I like the mission." };
+  const exact = loadContentScript(page).scan(profile, [clean]).fields[0];
+  assert.equal(exact.provenance, "answer_library:clean-1");
+  assert.equal(exact.confidence, 0.9);
+  assert.match(exact.reason, /Exact saved-question match/);
+  assert.equal(exact.proposed_value, "Because I like the mission.");
+
+  // A row saved before the side panel kept the clean question holds the whole label.
+  const legacy = { id: "legacy-1", question: field.label, answer: "Legacy answer." };
+  const old = loadContentScript(page).scan(profile, [legacy]).fields[0];
+  assert.equal(old.provenance, "answer_library:legacy-1");
+  assert.equal(old.confidence, 0.9);
+
+  // The clean question is compared first, so it wins when both kinds of row exist.
+  const both = loadContentScript(page).scan(profile, [legacy, clean]).fields[0];
+  assert.equal(both.provenance, "answer_library:clean-1");
+
+  // The same question on another posting (new name and id) still matches; the legacy row does not.
+  const other = pageOf({ tag: "textarea", id: "question_4000000999", name: "question_4000000999", label: "Why do you want to work here? *" });
+  const carried = loadContentScript(other).scan(profile, [legacy, clean]).fields[0];
+  assert.equal(carried.provenance, "answer_library:clean-1");
+  assert.equal(carried.confidence, 0.9);
+  const notCarried = loadContentScript(other).scan(profile, [legacy]).fields[0];
+  assert.notEqual(notCarried.confidence, 0.9, "a label-keyed row is not an exact match on another posting");
+};
+
+tests.extended_sensitive_flags_the_shared_vectors = () => {
+  const { vectors } = loadApplyFixture("sensitive_vectors.json");
+  assert.ok(vectors.length >= 30);
+  for (const vector of vectors) {
+    const scan = loadContentScript(pageOf({ tag: "input", type: "text", id: "q", label: vector.question })).scan(profile, [
+      { id: "lib", question: vector.question, answer: "should never be proposed" },
+    ]);
+    const field = scan.fields[0];
+    assert.equal(field.requires_review, vector.extension_flags, `${vector.question}: extension_flags`);
+    if (vector.extension_flags) {
+      assert.equal(field.provenance, "unmapped", `${vector.question}: never filled from the library`);
+      assert.equal(field.proposed_value, "");
+    }
+    // The agent must never be looser than the extension.
+    if (vector.extension_flags) assert.notEqual(vector.expected, null, `${vector.question}: flagged by the extension, so never null`);
+  }
+  // The terms step 6 adds, each on its own.
+  for (const term of ["immigration", "clearance", "felony", "criminal", "convicted", "non-compete", "at least 18 years of age", "F-1", "H-1B", "STEM OPT", "visa sponsorship"]) {
+    const scan = loadContentScript(pageOf({ tag: "input", type: "text", id: "t", label: `Question about ${term}` })).scan(profile);
+    assert.equal(scan.fields[0].requires_review, true, term);
+  }
+  // And what it must not catch.
+  for (const text of ["How did you hear about us?", "Would you like to opt in to updates?", "Do you accept the terms and opt out later?", "Why Visa?", "Expected graduation year"]) {
+    const scan = loadContentScript(pageOf({ tag: "input", type: "text", id: "t", label: text })).scan(profile);
+    assert.equal(scan.fields[0].requires_review, false, text);
+  }
+};
+
+tests.question_keys_match_the_shared_parity_vectors = () => {
+  const { vectors } = loadApplyFixture("question_keys.json");
+  const ext = loadContentScript(pageOf({ tag: "input", type: "text", id: "q", label: "Q" }), { contentScript: false });
+  assert.ok(vectors.length >= 20);
+  for (const { text, key } of vectors) {
+    assert.equal(ext.engine.questionKey(text), key, JSON.stringify(text));
+  }
+};
+
+tests.injection_lists_and_the_answer_save_follow_the_split = () => {
+  const files = '["adapters.js", "field-engine.js", "apply-engine.js", "content.js"]';
+  const sidepanel = readFileSync(path.join(ROOT, "apps", "extension", "sidepanel.js"), "utf8");
+  assert.ok(sidepanel.includes(files), "the side panel injects all four files, in order");
+  assert.match(sidepanel, /question: field\.question \|\| field\.label/, "the side panel saves the clean question");
+  assert.doesNotMatch(sidepanel, /question: field\.label,/);
+  const browserTest = readFileSync(path.join(ROOT, "tests", "extension", "browser", "run_browser_tests.mjs"), "utf8");
+  assert.ok(browserTest.includes(files), "the MV3 browser test injects the same four files");
+  const ci = readFileSync(path.join(ROOT, ".github", "workflows", "ci.yml"), "utf8");
+  assert.match(ci, /node --check apps\/extension\/apply-engine\.js/);
 };
 
 let failed = 0;
