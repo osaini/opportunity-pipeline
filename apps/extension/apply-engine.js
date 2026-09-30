@@ -189,13 +189,30 @@
     return normalizedQuestion(text);
   }
 
-  // Questions whose truth depends on the employer or on the question above them. A saved answer
-  // to one never carries to another company, even when the row is tagged reusable.
+  // Text that takes its meaning from the question above it, not from the company: an opener
+  // ("If yes, please explain", "Other") or anything under three words. Such a key is never matched
+  // on the clean question at any company, so it falls back to the per-posting label tier.
   const CONTEXT_OPENER = /^(?:if yes|if so|if no|if other|please specify|please explain|please describe|other|explain)\b/;
+  // Questions whose truth depends on the employer. A saved answer to one never carries to
+  // another company, even when the row is tagged reusable.
   const CONTEXT_WORDING = /previously (?:worked|been employed|applied)|worked (?:here|for us|for this company|at)|applied (?:here|before|previously)|referr|who referred|know (?:anyone|someone)|how did you hear|where did you (?:hear|find)|current(?:ly)? (?:an )?employee/;
 
+  function needsLabelKey(key) {
+    return key.split(" ").filter(Boolean).length < 3 || CONTEXT_OPENER.test(key);
+  }
+
   function contextDependent(key) {
-    return key.split(" ").filter(Boolean).length < 3 || CONTEXT_OPENER.test(key) || CONTEXT_WORDING.test(key);
+    return needsLabelKey(key) || CONTEXT_WORDING.test(key);
+  }
+
+  // Whether a field's saved answer is matched and saved on its label, not its question. A radio
+  // or checkbox option shares its group's question with every sibling, and an opener shares its
+  // words with every other opener, so both key on the per-posting label (the `answer_key` a
+  // scanned field reports), as they did before the clean question existed. `question` stays the
+  // group text for anything that joins on it.
+  function labelKeyed(type, question) {
+    const key = questionKey(question);
+    return !key || type === "radio" || type === "checkbox" || needsLabelKey(key);
   }
 
   // A clean-question match is exact only for a row saved at this company, or tagged reusable
@@ -213,7 +230,7 @@
     const cleanKey = questionKey(question);
     const normalizedLabel = normalizedQuestion(label);
     const companyKey = normalizedQuestion(company || "");
-    const cleanMatches = cleanKey ? (answers || []).filter((entry) => normalizedQuestion(entry.question) === cleanKey) : [];
+    const cleanMatches = cleanKey && !needsLabelKey(cleanKey) ? (answers || []).filter((entry) => normalizedQuestion(entry.question) === cleanKey) : [];
     const exact = cleanMatches.find((entry) => mayUseAtCompany(entry, cleanKey, companyKey))
       || (answers || []).find((entry) => normalizedQuestion(entry.question) === normalizedLabel);
     if (exact) return { entry: exact, confidence: 0.9, exact: true };
@@ -297,6 +314,7 @@
       const type = controlType(control);
       const rawText = rawQuestion(control);
       const question = questionText(control);
+      const labelKey = labelKeyed(type, question);
       const screened = screenText(control, question);
       const requiresReview = SENSITIVE.test(screened);
       const prohibited = PROHIBITED.test(screened);
@@ -319,7 +337,7 @@
         confidence = value !== "" ? 0.95 : 0;
         reason = value !== "" ? "Mapped from an explicit label" : "Confirmed profile value is unavailable";
       } else {
-        const match = matchAnswer(question, label, answers, options?.company);
+        const match = matchAnswer(labelKey ? "" : question, label, answers, options?.company);
         if (match) {
           value = String(match.entry.answer || "");
           provenance = `answer_library:${match.entry.id}`;
@@ -338,7 +356,7 @@
         unsupported: type === "custom_select",
         required: Boolean(control.required || control.getAttribute?.("aria-required") === "true"),
         reason, proposed_value: String(value),
-        question, required_markers: markers, required_any: markers.length > 0,
+        question, answer_key: labelKey ? label : question, required_markers: markers, required_any: markers.length > 0,
         widget: widgetKind(control, type), visible_css: visibleCss(control),
         name: String(control.name || ""), id: String(control.id || "") };
     });

@@ -608,9 +608,9 @@ tests.radio_and_checkbox_options_are_never_the_question = () => {
     { tag: "input", type: "radio", id: "woman", name: "gender", label: "Woman", groupQuestion: { ariaLabel: "Gender" } },
   );
   page.texts = { g1: "Please review and acknowledge the policy" };
-  // What the side panel would have saved from each option: field.question || field.label.
+  // What the side panel would have saved from each option: field.answer_key || field.question || field.label.
   const first = loadContentScript(page).scan(profile, []);
-  const saved = (id) => fieldById(first, id).question || fieldById(first, id).label;
+  const saved = (id) => fieldById(first, id).answer_key || fieldById(first, id).question || fieldById(first, id).label;
   assert.equal(fieldById(first, "yes_a").question, "Will you require visa sponsorship?");
   assert.equal(fieldById(first, "yes_b").question, "Do you like robots?");
   assert.equal(fieldById(first, "yes_c").question, "", "no group text, so no question");
@@ -648,24 +648,111 @@ tests.saved_answers_do_not_cross_companies_unless_reusable = () => {
     { id: "l", question: "Tell us what you would like to learn", answer: "Controls", company: "Acme Robotics", ...extra },
   ];
   const at = (company, extra) => loadContentScript(page).scan(profile, rows(extra), company);
-  // The same company: exact.
-  for (const id of ["worked", "explain", "learn"]) {
+  // The same company: exact for a question whose truth depends only on the company. An opener
+  // takes its meaning from the question above it, so it is never exact on its bare words.
+  for (const id of ["worked", "learn"]) {
     assert.equal(fieldById(at("Acme Robotics"), id).confidence, 0.9, `${id} at the company it was saved for`);
   }
+  assert.notEqual(fieldById(at("Acme Robotics"), "explain").confidence, 0.9, "an if-yes opener is not exact on its bare words");
   assert.equal(fieldById(at("acme  robotics"), "worked").confidence, 0.9, "company is compared normalized");
   // Another company, or none named: shown, but not exact and never pre-tickable.
   for (const company of ["Orbit Systems", undefined, ""]) {
-    for (const id of ["worked", "explain", "learn"]) {
+    for (const id of ["worked", "learn"]) {
       const field = fieldById(at(company), id);
       assert.equal(field.confidence, 0.7, `${id} for ${JSON.stringify(company)}`);
       assert.match(field.reason, /another company/);
     }
+    assert.equal(fieldById(at(company), "explain").confidence, 0.7, `explain for ${JSON.stringify(company)}`);
   }
   // Reusable carries an ordinary question, never a context-dependent one.
   const reusable = at("Orbit Systems", { tags: ["reusable"] });
   assert.equal(fieldById(reusable, "learn").confidence, 0.9);
   assert.equal(fieldById(reusable, "worked").confidence, 0.7, "previously worked here never crosses companies");
   assert.equal(fieldById(reusable, "explain").confidence, 0.7, "an if-yes opener never crosses companies");
+};
+
+tests.openers_and_short_keys_never_match_another_parent_question = () => {
+  const page = pageOf(
+    { tag: "textarea", id: "question_601", name: "question_601", label: "If yes, please explain" },
+    { tag: "textarea", id: "question_602", name: "question_602", label: "If yes, please explain" },
+    { tag: "input", type: "text", id: "question_700", name: "question_700", label: "Other" },
+    { tag: "input", type: "text", id: "question_701", name: "question_701", label: "Other" },
+  );
+  const first = loadContentScript(page).scan(profile, [], "Acme Robotics");
+  const explain = fieldById(first, "question_601");
+  assert.equal(explain.question, "If yes, please explain", "question keeps the form's words");
+  assert.notEqual(explain.answer_key, explain.question, "an opener is saved on its per-posting label");
+  assert.equal(explain.answer_key, explain.label);
+  assert.equal(fieldById(first, "question_700").answer_key, fieldById(first, "question_700").label, "a one-word key too");
+  assert.equal(fieldById(first, "question_602").answer_key, fieldById(first, "question_602").label);
+  // What the side panel saves from the first fields is exact for them and for nothing else.
+  const rows = [
+    { id: "i", question: explain.answer_key, answer: "I interned here in 2025.", company: "Acme Robotics" },
+    { id: "o", question: fieldById(first, "question_700").answer_key, answer: "Robotics club", company: "Acme Robotics" },
+    // Hand-made rows on the bare words, at the same company and reusable.
+    { id: "b", question: "If yes, please explain", answer: "bare", company: "Acme Robotics", tags: ["reusable"] },
+    { id: "c", question: "Other", answer: "bare other", company: "Acme Robotics", tags: ["reusable"] },
+  ];
+  for (const company of ["Acme Robotics", "Orbit Systems"]) {
+    const scan = loadContentScript(page).scan(profile, rows, company);
+    const one = fieldById(scan, "question_601");
+    assert.equal(one.confidence, 0.9, "the field it was saved from");
+    assert.equal(one.provenance, "answer_library:i");
+    for (const id of ["question_602", "question_701"]) {
+      const other = fieldById(scan, id);
+      assert.notEqual(other.confidence, 0.9, `${id} at ${company}: another parent question is not an exact match`);
+      assert.doesNotMatch(other.reason, /Exact saved-question/, id);
+    }
+    assert.equal(fieldById(scan, "question_700").provenance, "answer_library:o");
+  }
+};
+
+tests.checkbox_and_radio_siblings_never_share_a_saved_answer = () => {
+  const legend = "Which programming languages have you used professionally?";
+  const teams = "Do you enjoy working in small teams?";
+  const page = pageOf(
+    { tag: "input", type: "checkbox", id: "lang_py", name: "question_800[]", value: "Python", label: "Python", groupQuestion: { legend } },
+    { tag: "input", type: "checkbox", id: "lang_java", name: "question_800[]", value: "Java", label: "Java", groupQuestion: { legend } },
+    { tag: "input", type: "checkbox", id: "lang_c", name: "question_800[]", value: "C++", label: "C++", groupQuestion: { legend } },
+    { tag: "input", type: "radio", id: "rel_yes", name: "question_801", value: "Yes", label: "Yes", groupQuestion: { legend: teams } },
+    { tag: "input", type: "radio", id: "rel_no", name: "question_801", value: "No", label: "No", groupQuestion: { legend: teams } },
+  );
+  const first = loadContentScript(page).scan(profile, [], "Acme Robotics");
+  const py = fieldById(first, "lang_py");
+  assert.equal(py.question, legend, "question stays the group text");
+  assert.equal(py.answer_key, py.label, "an option is saved on its own label, not the group text");
+  assert.notEqual(fieldById(first, "lang_java").answer_key, py.answer_key);
+  // What the side panel saves from Python at Acme, then rescans at Acme and at another company.
+  for (const answer of ["yes", "no", "Python"]) {
+    for (const tags of [[], ["reusable"]]) {
+      const rows = [{ id: "py", question: py.answer_key, answer, company: "Acme Robotics", tags }];
+      for (const company of ["Acme Robotics", "Orbit Systems"]) {
+        const scan = loadContentScript(page).scan(profile, rows, company);
+        assert.equal(fieldById(scan, "lang_py").confidence, 0.9, "the option it was saved from");
+        for (const id of ["lang_java", "lang_c", "rel_yes", "rel_no"]) {
+          const sibling = fieldById(scan, id);
+          assert.notEqual(sibling.confidence, 0.9, `${id} (${answer}, ${company}) is not an exact match`);
+          assert.doesNotMatch(sibling.reason, /Exact saved-question/, id);
+        }
+      }
+    }
+  }
+  // Even a group-keyed row from before this change is never exact for an option.
+  const legacy = [{ id: "leg", question: legend, answer: "yes", company: "Acme Robotics", tags: ["reusable"] },
+    { id: "leg2", question: teams, answer: "No", company: "Acme Robotics" }];
+  const scan = loadContentScript(page).scan(profile, legacy, "Acme Robotics");
+  for (const id of ["lang_py", "lang_java", "lang_c", "rel_yes", "rel_no"]) {
+    assert.notEqual(fieldById(scan, id).confidence, 0.9, `${id}: a group-keyed row is never exact for an option`);
+  }
+  // Filling everything the side panel would pre-tick (0.9 and up) touches no sibling.
+  const rows = [{ id: "py", question: py.answer_key, answer: "no", company: "Acme Robotics" }];
+  const ext = loadContentScript(page);
+  const pre = ext.scan(profile, rows, "Acme Robotics").fields.filter((field) => field.confidence >= 0.9 && field.proposed_value !== "");
+  assert.deepEqual([...pre.map((field) => field.id)], ["lang_py"]);
+  const java = ext.document.controls.find((item) => item.id === "lang_java");
+  java.checked = true;
+  ext.fill(pre.map((field) => ({ ...field, approved: true })));
+  assert.equal(java.checked, true, "a box the student ticked by hand stays ticked");
 };
 
 tests.extended_sensitive_flags_the_shared_vectors = () => {
@@ -711,7 +798,7 @@ tests.injection_lists_and_the_answer_save_follow_the_split = () => {
   const files = '["adapters.js", "field-engine.js", "apply-engine.js", "content.js"]';
   const sidepanel = readFileSync(path.join(ROOT, "apps", "extension", "sidepanel.js"), "utf8");
   assert.ok(sidepanel.includes(files), "the side panel injects all four files, in order");
-  assert.match(sidepanel, /question: field\.question \|\| field\.label/, "the side panel saves the clean question");
+  assert.match(sidepanel, /question: field\.answer_key \|\| field\.question \|\| field\.label/, "the side panel saves the engine's answer key");
   assert.doesNotMatch(sidepanel, /question: field\.label,/);
   const browserTest = readFileSync(path.join(ROOT, "tests", "extension", "browser", "run_browser_tests.mjs"), "utf8");
   assert.ok(browserTest.includes(files), "the MV3 browser test injects the same four files");

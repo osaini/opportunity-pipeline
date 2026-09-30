@@ -209,7 +209,7 @@
             try {
               await api("/api/v1/extension/answers", {
                 method: "POST",
-                body: JSON.stringify({ question: field.question || field.label, answer: editor.value, company: applyContext.application.company, tags: [scanResult.ats_type] })
+                body: JSON.stringify({ question: field.answer_key || field.question || field.label, answer: editor.value, company: applyContext.application.company, tags: [scanResult.ats_type] })
               });
               status.textContent = "Reviewed answer saved for future exact-question matches.";
             } catch (error) { status.textContent = error.message; }
