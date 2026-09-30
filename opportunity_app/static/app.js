@@ -10615,9 +10615,139 @@
     return form;
   }
 
+  // The addresses a statement points to, as links the student can read before agreeing. Only web addresses become links.
+  function applyLinkList(links) {
+    const safe = (links || []).filter((address) => /^https?:\/\//i.test(address));
+    if (!safe.length) return null;
+    const line = element("p", "profile-help");
+    line.append("This statement links to ");
+    safe.forEach((address, index) => {
+      if (index) line.append(", ");
+      const link = element("a", "", address);
+      link.href = address;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      line.appendChild(link);
+    });
+    return line;
+  }
+
+  // Needs you, for a sensitive question the student allowed the app to answer (apply_sensitive.py). Only the answer and the
+  // consent tick go to the server: it takes the category, the wording and the options from the form it read.
+  function applySensitiveForm(problem, company, onSaved) {
+    const action = problem.action;
+    const form = element("form", "apply-answer-form apply-sensitive-form");
+    const id = `apply-sensitive-${problem.key}`;
+    let read;
+    let write;
+    if (action.control === "checkbox") {
+      form.appendChild(element("p", "apply-statement", action.statement || problem.question));
+      const links = applyLinkList(action.links);
+      if (links) form.appendChild(links);
+      const row = element("label", "confirmation-row");
+      const agree = document.createElement("input");
+      agree.type = "checkbox";
+      row.append(agree, element("span", "", "Yes, tick this statement for me on the form"));
+      form.appendChild(row);
+      read = () => (agree.checked ? true : "");
+      write = (value) => { agree.checked = Boolean(value); };
+    } else if (action.control === "select" || action.control === "multiselect") {
+      const group = element("fieldset", "apply-options");
+      group.appendChild(element("legend", "", action.decline_only ? "The app stores only a decline answer here" : "Your answer"));
+      const boxes = action.options.map((option) => {
+        const row = element("label", "confirmation-row");
+        const box = document.createElement("input");
+        box.type = action.control === "select" ? "radio" : "checkbox";
+        box.name = id;
+        box.value = option;
+        row.append(box, element("span", "", option));
+        group.appendChild(row);
+        return box;
+      });
+      form.appendChild(group);
+      read = () => {
+        const chosen = boxes.filter((box) => box.checked).map((box) => box.value);
+        return action.control === "select" ? (chosen[0] || "") : chosen;
+      };
+      write = (value) => boxes.forEach((box) => { box.checked = [].concat(value).includes(box.value); });
+    } else {
+      const label = element("label", "profile-field");
+      label.appendChild(element("span", "", "Your answer"));
+      const control = document.createElement("input");
+      control.type = "text";
+      control.id = id;
+      control.maxLength = 500;
+      label.appendChild(control);
+      form.appendChild(label);
+      read = () => control.value;
+      write = (value) => { control.value = value; };
+    }
+    let everyone = null;
+    if (action.company_only) {
+      form.appendChild(element("p", "profile-help", `This is saved for ${company} only.`));
+    } else {
+      const row = element("label", "confirmation-row");
+      everyone = document.createElement("input");
+      everyone.type = "checkbox";
+      row.append(everyone, element("span", "", "Use for any company"));
+      form.appendChild(row);
+    }
+    // The consent is its own tick, never on by default, and it says what the answer may be used for.
+    const consent = element("label", "confirmation-row apply-consent");
+    const consentBox = document.createElement("input");
+    consentBox.type = "checkbox";
+    consent.append(consentBox, element("span", "", action.consent_text));
+    form.appendChild(consent);
+    const save = element("button", "secondary-button", "Save this answer");
+    save.type = "submit";
+    const status = element("p", "form-status");
+    status.setAttribute("role", "status");
+    form.append(save, status);
+    form.applyDraft = {
+      read() {
+        const answer = read();
+        return (Array.isArray(answer) ? answer.length : answer) ? { answer, everyone: Boolean(everyone?.checked), consent: consentBox.checked } : null;
+      },
+      write(draft) {
+        write(draft.answer);
+        if (everyone) everyone.checked = draft.everyone;
+        consentBox.checked = draft.consent;
+      },
+    };
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const answer = read();
+      if (!answer || (Array.isArray(answer) && !answer.length)) {
+        status.textContent = action.control === "checkbox" ? "Tick the statement first." : "Give an answer first.";
+        return;
+      }
+      if (!consentBox.checked) {
+        status.textContent = "Tick the box that says how the app may use this answer.";
+        return;
+      }
+      save.disabled = true;
+      status.textContent = "Saving…";
+      try {
+        const saved = await api(`/api/v1/apply-agent/opportunities/${encodeURIComponent(problem.opportunityId)}/sensitive-answers`, {
+          method: "POST",
+          body: JSON.stringify({
+            key: problem.key, answer, consent: true, any_company: Boolean(everyone?.checked),
+            posting_confirmed: Boolean(problem.postingConfirmed?.()),
+          }),
+        });
+        onSaved(saved.check, "Saved.");
+      } catch (error) {
+        save.disabled = false;
+        if (error.message !== "Authentication required") status.textContent = error.message;
+      }
+    });
+    return form;
+  }
+
   function applyProblemAction(problem, company, onSaved) {
     const action = problem.action || {};
     if (action.type === "answer") return applyAnswerForm(problem, company, onSaved);
+    if (action.type === "sensitive") return applySensitiveForm(problem, company, onSaved);
     if (action.type === "ats_label" && action.field) return applyLabelForm(problem, onSaved);
     if (action.type === "profile") {
       const open = element("button", "secondary-button", action.field === "name_parts" ? "Add your name for applications" : "Open your profile");
@@ -10762,6 +10892,8 @@
           row.dataset.applyKey = problem.key;
           row.appendChild(element("strong", "", problem.required ? problem.question : `${problem.question} (optional)`));
           row.appendChild(element("p", "profile-help", problem.message));
+          // A kind of question the student could let the app answer says where, so it is not mistaken for a never.
+          if (problem.action?.allowable) row.appendChild(element("p", "profile-help", "You can let the app answer this kind of question, once you add the answer yourself, in Apply for me settings under Automation."));
           const control = applyProblemAction({ ...problem, opportunityId: item.id, postingConfirmed: () => postingConfirmed }, result.company, (fresh, message) => {
             if (fresh) paint(fresh, message);
             else load(message);
@@ -10774,6 +10906,29 @@
         });
         body.appendChild(list);
       });
+      // Optional sensitive questions (voluntary self-identification, mostly) the student allowed the app to answer and has not yet.
+      const optional = result.optional_sensitive || [];
+      if (optional.length) {
+        const details = element("details", "apply-fields apply-optional");
+        details.open = optional.some((entry) => drafts.has(entry.key));
+        details.appendChild(element("summary", "", `${optional.length} optional question${optional.length === 1 ? "" : "s"} the app could answer for you`));
+        const list = element("ul", "apply-problems");
+        optional.forEach((entry) => {
+          const row = element("li", "apply-problem");
+          row.dataset.applyKey = entry.key;
+          row.appendChild(element("strong", "", `${entry.question} (optional)`));
+          row.appendChild(element("p", "profile-help", "The app leaves this blank unless you add an answer here."));
+          const control = applySensitiveForm({ ...entry, opportunityId: item.id, postingConfirmed: () => postingConfirmed }, result.company, (fresh, message) => {
+            if (fresh) paint(fresh, message);
+            else load(message);
+          });
+          if (drafts.has(entry.key)) control.applyDraft?.write(drafts.get(entry.key));
+          row.appendChild(control);
+          list.appendChild(row);
+        });
+        details.appendChild(list);
+        body.appendChild(details);
+      }
       const fields = result.fields || [];
       if (fields.length) {
         const details = element("details", "apply-fields");
@@ -10781,7 +10936,18 @@
         const list = element("ul", "reason-list");
         fields.forEach((field) => {
           const words = field.source ? `from ${field.source.charAt(0).toLowerCase()}${field.source.slice(1)}` : (field.note || "left blank");
-          list.appendChild(element("li", "", `${field.question}${field.required ? "" : " (optional)"}: ${words}`));
+          const line = element("li", "", `${field.question}${field.required ? "" : " (optional)"}: ${words}`);
+          // A ticked statement shows the address of the document it links to, so the student can see what is agreed to.
+          const links = (field.links || []).filter((address) => /^https?:\/\//i.test(address));
+          links.forEach((address, index) => {
+            line.append(index ? ", " : " · links to ");
+            const link = element("a", "", address);
+            link.href = address;
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+            line.appendChild(link);
+          });
+          list.appendChild(line);
         });
         details.appendChild(list);
         body.appendChild(details);
@@ -10812,6 +10978,179 @@
     return section;
   }
 
+  // The answers the app may give on sensitive questions (apply_sensitive.py): which kinds the student switched on, what they
+  // stored, and a form to add one. Nothing here is answered for the student until they switch a kind on and add the answer.
+  function applySensitiveSettings() {
+    const host = element("div", "apply-sensitive-settings");
+    const status = element("p", "form-status");
+    status.setAttribute("role", "status");
+
+    function paint(data) {
+      host.replaceChildren();
+      host.appendChild(element("h5", "", "Answers for sensitive questions"));
+      host.appendChild(element("p", "profile-help", "Some questions ask about work authorization, visa sponsorship, being 18 or older, or voluntary self-identification (EEO), or ask you to agree to a legal statement. The app never answers these on its own. Switch a kind on, then add the answer yourself. The app uses an answer only to fill in application forms, and never sends it anywhere else."));
+      host.appendChild(element("p", "profile-help", "It never answers export control, citizenship, security clearance or salary questions, or any other personal question such as age or birth date. For voluntary self-identification it keeps only a decline answer, never a real one."));
+      const kinds = element("fieldset", "apply-kinds");
+      kinds.appendChild(element("legend", "", "Kinds of answer the app may give"));
+      data.groups.forEach((group) => {
+        const row = element("label", "confirmation-row");
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.checked = group.on;
+        box.addEventListener("change", async () => {
+          const next = new Set(data.groups.filter((other) => other.on).flatMap((other) => other.categories));
+          group.categories.forEach((category) => (box.checked ? next.add(category) : next.delete(category)));
+          box.disabled = true;
+          try {
+            paint(await api("/api/v1/apply-agent/sensitive-categories", { method: "PUT", body: JSON.stringify({ categories: [...next] }) }));
+          } catch (error) {
+            box.disabled = false;
+            box.checked = group.on;
+            if (error.message !== "Authentication required") status.textContent = error.message;
+          }
+        });
+        row.append(box, element("span", "", group.label));
+        kinds.appendChild(row);
+      });
+      host.appendChild(kinds);
+      host.appendChild(element("h5", "", "Answers you added"));
+      if (!data.entries.length) host.appendChild(element("p", "empty-inline", "No answers added yet."));
+      const list = element("ul", "reason-list apply-sensitive-list");
+      data.entries.forEach((entry) => {
+        const row = element("li", "apply-sensitive-entry");
+        row.appendChild(element("strong", "", entry.question));
+        const shown = entry.answer_kind === "checkbox" ? "Ticked" : entry.answer.split("\n").join(", ");
+        const when = entry.consented_at ? entry.consented_at.slice(0, 10) : "";
+        row.appendChild(element("span", "", `${entry.words}. ${shown}. For ${entry.any_company ? "any company" : entry.company}. You agreed to its use on ${when}.${entry.switched_on ? "" : " Switched off, so the app is not using it."}`));
+        const links = applyLinkList(entry.links);
+        if (links) row.appendChild(links);
+        const remove = element("button", "secondary-button", "Remove");
+        remove.type = "button";
+        remove.setAttribute("aria-label", `Remove the stored answer for ${entry.question}`);
+        remove.addEventListener("click", async () => {
+          remove.disabled = true;
+          try {
+            await api(`/api/v1/apply-agent/sensitive-answers/${encodeURIComponent(entry.id)}`, { method: "DELETE" });
+            status.textContent = "Removed.";
+            await load();
+          } catch (error) {
+            remove.disabled = false;
+            if (error.message !== "Authentication required") status.textContent = error.message;
+          }
+        });
+        row.appendChild(remove);
+        list.appendChild(row);
+      });
+      host.appendChild(list);
+      const on = data.categories.filter((kind) => data.groups.some((group) => group.on && group.categories.includes(kind.category)));
+      if (!on.length) {
+        host.append(element("p", "profile-help", "Switch a kind on to add an answer."), status);
+        return;
+      }
+      host.appendChild(element("h5", "", "Add an answer"));
+      host.appendChild(element("p", "profile-help", "Type the question exactly as the form shows it. The app fills an answer only when the words are the same. Or open a role and answer the question from its list."));
+      const form = element("form", "apply-answer-form");
+      const kindLabel = element("label", "profile-field");
+      kindLabel.appendChild(element("span", "", "Kind"));
+      const kind = document.createElement("select");
+      on.forEach((entry) => {
+        const option = document.createElement("option");
+        option.value = entry.category;
+        option.textContent = entry.label;
+        kind.appendChild(option);
+      });
+      kindLabel.appendChild(kind);
+      const questionLabel = element("label", "profile-field");
+      const questionCaption = element("span", "", "Question, or the statement word for word");
+      const question = document.createElement("textarea");
+      question.rows = 2;
+      question.maxLength = 4000;
+      questionLabel.append(questionCaption, question);
+      const answerLabel = element("label", "profile-field");
+      answerLabel.appendChild(element("span", "", "Answer"));
+      const answer = document.createElement("input");
+      answer.type = "text";
+      answer.maxLength = 500;
+      answer.setAttribute("list", "apply-decline-examples");
+      const examples = document.createElement("datalist");
+      examples.id = "apply-decline-examples";
+      answerLabel.append(answer, examples);
+      const companyLabel = element("label", "profile-field");
+      const companyCaption = element("span", "", "Company (leave empty for any company)");
+      const company = document.createElement("input");
+      company.type = "text";
+      company.maxLength = 200;
+      companyLabel.append(companyCaption, company);
+      const linksLabel = element("label", "profile-field");
+      linksLabel.appendChild(element("span", "", "Addresses the statement links to, one per line (optional)"));
+      const links = document.createElement("textarea");
+      links.rows = 2;
+      linksLabel.appendChild(links);
+      const help = element("p", "profile-help");
+      const consent = element("label", "confirmation-row apply-consent");
+      const consentBox = document.createElement("input");
+      consentBox.type = "checkbox";
+      consent.append(consentBox, element("span", "", data.consent_text));
+      const add = element("button", "secondary-button", "Save this answer");
+      add.type = "submit";
+      function adapt() {
+        const chosen = data.categories.find((entry) => entry.category === kind.value) || {};
+        answerLabel.hidden = Boolean(chosen.statement);
+        linksLabel.hidden = !chosen.statement;
+        companyCaption.textContent = chosen.statement ? "Company (required when the statement mentions a notice or a document)" : "Company (leave empty for any company)";
+        examples.replaceChildren(...(chosen.decline_only ? data.decline_examples : []).map((label) => {
+          const option = document.createElement("option");
+          option.value = label;
+          return option;
+        }));
+        help.textContent = chosen.decline_only ? "For this kind the app keeps only a decline answer, such as Decline To Self Identify. Use the words the form uses." : "";
+      }
+      kind.addEventListener("change", adapt);
+      adapt();
+      form.append(kindLabel, questionLabel, answerLabel, linksLabel, companyLabel, help, consent, add);
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!question.value.trim()) {
+          status.textContent = "Type the question first.";
+          return;
+        }
+        if (!consentBox.checked) {
+          status.textContent = "Tick the box that says how the app may use this answer.";
+          return;
+        }
+        add.disabled = true;
+        try {
+          const chosen = data.categories.find((entry) => entry.category === kind.value) || {};
+          await api("/api/v1/apply-agent/sensitive-answers", {
+            method: "POST",
+            body: JSON.stringify({
+              category: kind.value, question: question.value, answer: chosen.statement ? "checked" : answer.value, company: company.value,
+              links: links.value.split("\n").map((line) => line.trim()).filter(Boolean), consent: true,
+            }),
+          });
+          status.textContent = "Saved.";
+          await load();
+        } catch (error) {
+          add.disabled = false;
+          if (error.message !== "Authentication required") status.textContent = error.message;
+        }
+      });
+      host.append(form, status);
+    }
+
+    async function load() {
+      try {
+        paint(await api("/api/v1/apply-agent/sensitive-answers"));
+      } catch (error) {
+        host.replaceChildren(element("p", "form-error", `Answers for sensitive questions could not be loaded: ${error.message}`));
+      }
+    }
+
+    host.appendChild(element("p", "empty-inline", "Loading…"));
+    load();
+    return host;
+  }
+
   // The Apply for me settings, in the Automation panel: the limits in force (read only), and the exact option labels
   // for the lists only the form knows (school, location, degree).
   function applyAgentSettingsBlock() {
@@ -10820,7 +11159,7 @@
     heading.id = "automation-apply-agent-heading";
     heading.tabIndex = -1;
     const host = element("div", "apply-settings");
-    wrap.append(heading, host);
+    wrap.append(heading, host, applySensitiveSettings());
     const status = element("p", "form-status");
     status.setAttribute("role", "status");
     const LIMIT_WORDS = {
