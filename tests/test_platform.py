@@ -5,6 +5,7 @@ import io
 import hashlib
 import hmac
 import sqlite3
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -12,6 +13,8 @@ from unittest import mock
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 from PIL import Image
