@@ -41,7 +41,7 @@ import uvicorn  # noqa: E402
 from opportunity_app import STATIC_DIR  # noqa: E402
 from opportunity_app.api import create_app  # noqa: E402
 
-from helpers_platform import build_and_migrate  # noqa: E402
+from helpers_platform import build_and_migrate_fresh  # noqa: E402
 import outreach_fakes  # noqa: E402
 from apply_fake_ats import FakeApplyAgentFactory, FakeSchemaClient, JOB_URL  # noqa: E402
 
@@ -114,7 +114,7 @@ def main() -> int:
         raise SystemExit("serve_for_testing binds loopback only: it uses well-known tokens.")
 
     root = Path(tempfile.mkdtemp(prefix="opportunity-sandbox-"))
-    _, platform_path = build_and_migrate(root)
+    _, platform_path = build_and_migrate_fresh(root)
     # A fixed compose account, set before the app reads .env (which never
     # overrides a variable already set), keeps personal settings out of the sandbox.
     os.environ["PIPELINE_OUTREACH_COMPOSE"] = "gmail"

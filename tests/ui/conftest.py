@@ -35,7 +35,7 @@ if str(REPO_ROOT / "tests") not in sys.path:
 from opportunity_app import STATIC_DIR  # noqa: E402
 from opportunity_app.api import create_app  # noqa: E402
 
-from helpers_platform import build_and_migrate  # noqa: E402
+from helpers_platform import build_and_migrate_fresh  # noqa: E402
 
 import outreach_fakes  # noqa: E402
 from apply_fake_ats import FakeApplyAgentFactory, FakeSchemaClient  # noqa: E402
@@ -136,7 +136,7 @@ class LiveServer:
 def live_server(tmp_path_factory: pytest.TempPathFactory):
     """Serve the real app over HTTP against a seeded temporary database."""
     root = tmp_path_factory.mktemp("ui-platform")
-    _, platform_path = build_and_migrate(root)
+    _, platform_path = build_and_migrate_fresh(root)
     pristine_path = root / "pristine.db"
     shutil.copyfile(platform_path, pristine_path)
     # Approved outreach drafts open a Gmail compose link for this account. Set

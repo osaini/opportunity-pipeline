@@ -1,12 +1,21 @@
 """Shared fixtures for platform-side unit tests."""
 
+import atexit
+import gc
+import hashlib
 import json
+import os
+import shutil
 import sqlite3
+import tempfile
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
 PROFILE_REGIONS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "profile_regions.json"
 
+from opportunity_app import schema
 from opportunity_app.schema import migrate_legacy_database
 
 LEGACY_SCHEMA = """
@@ -115,10 +124,7 @@ def build_profile(root: Path) -> Path:
     return profile_path
 
 
-def build_and_migrate(root: Path) -> tuple[Path, Path]:
-    """Create a minimal legacy pipeline database and migrate it to the product schema."""
-    legacy_path = root / "pipeline.db"
-    platform_path = root / "platform.db"
+def _write_legacy_database(legacy_path: Path) -> None:
     conn = sqlite3.connect(legacy_path)
     try:
         conn.executescript(LEGACY_SCHEMA)
@@ -129,8 +135,212 @@ def build_and_migrate(root: Path) -> tuple[Path, Path]:
         conn.commit()
     finally:
         conn.close()
-    migrate_legacy_database(legacy_path, platform_path, build_profile(root))
+
+
+@contextmanager
+def fast_throwaway_databases():
+    """Open every product database made inside the block with ``synchronous=OFF``.
+
+    A test database is deleted with its temp directory, so surviving a crash is
+    worth nothing there, and each migration commits (and so fsyncs) once: turning
+    the fsync off cuts a full migration roughly fourfold. This patches
+    ``opportunity_app.schema.connect_product`` only for the duration of the block
+    and only from test code; production connections keep SQLite's default
+    ``synchronous=FULL``.
+    """
+    real_connect = schema.connect_product
+
+    def connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        if isinstance(conn, sqlite3.Connection):
+            conn.execute("PRAGMA synchronous = OFF")
+        return conn
+
+    with mock.patch.object(schema, "connect_product", connect):
+        yield
+
+
+def build_and_migrate_fresh(root: Path) -> tuple[Path, Path]:
+    """Create a minimal legacy pipeline database and really migrate it to the product schema.
+
+    Use this (rather than ``build_and_migrate``) when a test patches anything the
+    migration reads (``schema.MIGRATIONS_DIR``, the company-tag rules, the legacy
+    fixture rows), asserts on template-time stamps, or runs in a process that
+    builds a database once (the UI suite's server, the sandbox server, the
+    fuzzer): such a process gains nothing from a cache and must not leave a temp
+    directory behind when it is terminated without running its exit handlers.
+    """
+    legacy_path = root / "pipeline.db"
+    platform_path = root / "platform.db"
+    _write_legacy_database(legacy_path)
+    with fast_throwaway_databases():
+        migrate_legacy_database(legacy_path, platform_path, build_profile(root))
     return legacy_path, platform_path
+
+
+# --- process-wide migrated templates ------------------------------------------------
+#
+# Replaying every migration takes ~1 s and used to run in nearly every test's setUp.
+# A template is migrated once per process, into a private temp directory that is
+# removed at exit, and each caller gets a copy. Templates are keyed by the content of
+# their inputs, so a caller with different rows or a different profile gets its own.
+#
+# Nothing may patch what a migration reads around the first call that builds a
+# template (use ``build_and_migrate_fresh`` for that): the template would bake it in.
+# Set PIPELINE_TEST_FRESH_DB=1 to bypass every template and migrate for real each time.
+
+_TEMPLATE_LOCK = threading.Lock()
+_TEMPLATE_ROOT: Path | None = None
+_TEMPLATES: dict[tuple, "_Template"] = {}
+
+
+class _Template:
+    def __init__(self, directory: Path):
+        self.directory = directory
+        self.legacy = directory / "pipeline.db"
+        self.platform = directory / "platform.db"
+        self.profile = directory / "profile.json"
+
+
+def _fresh_requested() -> bool:
+    return os.environ.get("PIPELINE_TEST_FRESH_DB", "") not in ("", "0")
+
+
+def _template_root() -> Path:
+    global _TEMPLATE_ROOT
+    if _TEMPLATE_ROOT is None:
+        root = Path(tempfile.mkdtemp(prefix="pipeline-test-template-"))
+        atexit.register(shutil.rmtree, root, ignore_errors=True)
+        _TEMPLATE_ROOT = root
+    return _TEMPLATE_ROOT
+
+
+def _legacy_fingerprint(path: Path) -> str:
+    conn = sqlite3.connect(path)
+    try:
+        return hashlib.sha256("\n".join(conn.iterdump()).encode("utf-8")).hexdigest()
+    finally:
+        conn.close()
+
+
+def _checkpoint_and_close(db_path: Path) -> None:
+    """Fold the WAL into the main file so the file alone is a whole database."""
+    gc.collect()  # a connection dropped without close() would keep the WAL open
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+    finally:
+        conn.close()
+    wal = db_path.with_name(db_path.name + "-wal")
+    if wal.exists() and wal.stat().st_size:
+        raise RuntimeError(f"{wal} still holds committed pages; copying {db_path} alone would lose them")
+
+
+def _template_for(key: tuple, build) -> _Template:
+    with _TEMPLATE_LOCK:
+        template = _TEMPLATES.get(key)
+        if template is None:
+            directory = Path(tempfile.mkdtemp(prefix="t-", dir=_template_root()))
+            template = _Template(directory)
+            build(template)
+            _checkpoint_and_close(template.platform)
+            _TEMPLATES[key] = template
+        return template
+
+
+def _restamp(platform_path: Path, legacy_path: Path | None) -> None:
+    """Make a copied template read as if it had just been migrated from ``legacy_path``.
+
+    ``migration_runs.source_path`` names the legacy database that was migrated,
+    and ``schema_migrations.applied_at`` is read as "when this feature was
+    switched on" (outreach_inbox._activated_at), so both must describe the copy,
+    not the template.
+    """
+    conn = sqlite3.connect(platform_path)
+    try:
+        conn.execute("PRAGMA synchronous = OFF")
+        if legacy_path is not None:
+            conn.execute("UPDATE migration_runs SET source_path=?", (str(legacy_path.resolve()),))
+        conn.execute("UPDATE schema_migrations SET applied_at=?", (schema.utc_now(),))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def migrate_cached(legacy_path: Path, platform_path: Path, profile_path: Path) -> None:
+    """``migrate_legacy_database(legacy_path, platform_path, profile_path)`` from a copied template.
+
+    For callers that start with no ``platform_path`` and ignore the returned
+    MigrationResult. A caller that asserts on that result, or migrates a second
+    time to test re-migration, should call ``migrate_legacy_database`` itself.
+    ``profile_path`` is given the modification time the template's profile had,
+    as on a real run (the file is older than ``profiles.updated_at``), so a later
+    migration resolves file-versus-database profile precedence the same way.
+    """
+    if _fresh_requested() or platform_path.exists():
+        with fast_throwaway_databases():
+            migrate_legacy_database(legacy_path, platform_path, profile_path)
+        return
+    profile_bytes = profile_path.read_bytes()
+    key = ("legacy", _legacy_fingerprint(legacy_path), hashlib.sha256(profile_bytes).hexdigest())
+
+    def build(template: _Template) -> None:
+        shutil.copyfile(legacy_path, template.legacy)
+        template.profile.write_bytes(profile_bytes)
+        with fast_throwaway_databases():
+            migrate_legacy_database(template.legacy, template.platform, template.profile)
+
+    template = _template_for(key, build)
+    shutil.copyfile(template.platform, platform_path)
+    stat = template.profile.stat()
+    os.utime(profile_path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    _restamp(platform_path, legacy_path)
+
+
+def build_and_migrate(root: Path) -> tuple[Path, Path]:
+    """Create a minimal legacy pipeline database and migrate it to the product schema.
+
+    Leaves the same files at the same paths as a real migration (``pipeline.db``,
+    ``platform.db`` and ``profile.json`` in ``root``), but the migration itself
+    runs once per process and is copied; see ``migrate_cached``. Use
+    ``build_and_migrate_fresh`` for a real migration every time.
+    """
+    legacy_path = root / "pipeline.db"
+    platform_path = root / "platform.db"
+    _write_legacy_database(legacy_path)
+    migrate_cached(legacy_path, platform_path, build_profile(root))
+    return legacy_path, platform_path
+
+
+def migrated_empty_db(path: Path) -> None:
+    """Create ``path`` as an empty database with every migration applied, from a copied template.
+
+    For tests that open a fresh file with ``connect_product`` and call
+    ``ensure_product_schema`` themselves. Call it before any connection to
+    ``path`` opens. A test that patches migrations or builds a partial schema
+    must keep running the real ``ensure_product_schema``.
+    """
+    if _fresh_requested() or path.exists():
+        with fast_throwaway_databases():
+            conn = schema.connect_product(path)
+            try:
+                schema.ensure_product_schema(conn)
+            finally:
+                conn.close()
+        return
+
+    def build(template: _Template) -> None:
+        with fast_throwaway_databases():
+            conn = schema.connect_product(template.platform)
+            try:
+                schema.ensure_product_schema(conn)
+            finally:
+                conn.close()
+
+    template = _template_for(("empty",), build)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(template.platform, path)
+    _restamp(path, None)
 
 
 def use_profile_regions(case, path: Path = PROFILE_REGIONS_FIXTURE) -> None:
