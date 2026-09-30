@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import html
 import json
 import os
 import re
@@ -44,9 +45,9 @@ from .extension_apply import SENSITIVE_FIELD, ExtensionApplyError, confirmed_res
 
 __all__ = [
     "ALLOWED_ATS_LABEL_FIELDS", "ATS_GREENHOUSE", "CATEGORY_WORDS", "Plan", "PlanField", "SchemaField", "Source", "Sources",
-    "build_plan", "canonical_url", "classify_sensitive", "company_matches", "context_dependent", "control_of", "cover_letter_for",
+    "build_plan", "canonical_url", "classify_item", "classify_sensitive", "company_matches", "context_dependent", "control_of", "cover_letter_for",
     "identify", "mac_key", "match_options", "name_parts", "needs_label_key", "parse_schema", "plan_entries", "plan_hash",
-    "question_key", "resume_for", "schema_url", "sources_for", "stored_sensitive_answer", "value_mac", "with_page_labels",
+    "question_key", "resume_for", "schema_url", "sources_for", "statement_of", "stored_sensitive_answer", "value_mac", "with_page_labels",
     "without_enumeration",
 ]
 
@@ -312,16 +313,21 @@ _CONTEXT_WORDING = re.compile(
     r"previously (?:worked|been employed|applied)|worked (?:here|for us|for this company|at)|applied (?:here|before|previously)|referr|who referred"
     r"|know (?:anyone|someone)|how did you hear|where did you (?:hear|find)|current(?:ly)? (?:an )?employee"
     r"|worked (?:for|with|at) (?:us|this|our|the company)|employed (?:by|at|with)|interviewed (?:with|at|here)|relatives?\b|family members?\b"
+    r"|related to\b|spouse|immediate family|former employee|employed here\b|relations? working"
     r"|this (?:organi[sz]ation|firm|company|employer)"
 )
 
 
 def without_enumeration(key: str) -> str:
-    """The key with a leading enumeration or bullet ("b.", "1a)", "(ii)", "Question 3:", "Follow-up:") taken off."""
+    """The key with leading tags taken off, in any order: a bullet or number ("b.", "1a)", "(ii)"), "Question 3:",
+    "Question no. 3:", "Follow-up:", "Follow-on question:", "Sub-question:" and "(Optional)"."""
     text = re.sub(r"'+(?=\s|$)", "", re.sub(r"(^|\s)'+", r"\1", key)).strip()
-    text = re.sub(r"^follow ?up(?: question)?\s+(?=\S)", "", text)
-    for _ in range(4):
-        following = re.sub(r"^(?:question|part|step|section|item|no|number)\s+(?:\d{1,3}[a-z]?|[a-z]|[ivx]{1,4})\s+(?=\S)", "", text)
+    for _ in range(6):
+        following = re.sub(r"^(?:follow ?(?:up|on)s?|sub ?questions?)(?: questions?)?\s+(?=\S)", "", text)
+        following = re.sub(r"^optional\s+(?=\S)", "", following)
+        following = re.sub(
+            r"^(?:question|part|step|section|item|no|number)(?:\s+(?:no|number))?\s+(?:\d{1,3}[a-z]?|[a-z]|[ivx]{1,4})\s+(?=\S)", "", following,
+        )
         following = re.sub(r"^(?:[a-z]|[ivx]{1,4}|\d{1,3}[a-z]?|[a-z]\d{1,3}[a-z]?)\s+(?=\S)", "", following)
         if following == text:
             break
@@ -355,31 +361,38 @@ _OPT_NOT_MARKETING = r"\bopt\b(?! (?:in|out)\b(?! (?:the )?(?:us|u s|usa|united 
 _AGE_TAIL = r"(?: years?)?(?: (?:of age|old|or older|or over|and older|and over))*"
 _AGE_18 = re.compile(
     rf"\b(?:(?:at least|over|above|older than) (?:the age of )?18{_AGE_TAIL}|(?:the )?age of 18{_AGE_TAIL}"
-    rf"|18(?: years?)?(?: (?:of age|old|or older|or over|and older|and over))+)"
+    rf"|18(?: years?)?(?: (?:of age|old|or older|or over|and older|and over))+"
+    # "Are you 18+?" loses its plus sign in the normalized text, so it reads "are you 18".
+    rf"|(?:are you|you are|must be) 18(?!\d){_AGE_TAIL})"
 )
 _PATTERNS: dict[str, re.Pattern[str]] = {
     "work_authorization": re.compile(
         r"authori[sz]ed to work|authori[sz]ation to work|work authori[sz]ation|legally (?:eligible|authori[sz]ed)|right to work|eligible to work"
+        r"|legally (?:(?:able|permitted|allowed) to )?work|eligib\w* (?:for|to) (?:employment|work)|work permit"
     ),
     "sponsorship": re.compile(
         r"sponsor|immigration|petition|employment based|visa (?:sponsor|status|support|type|holder|transfer)"
         rf"|(?:require|need|hold)\w* (?:a )?visa|work visa|student visa|\b(?:f ?1|j ?1|h ?1 ?b|tn|e ?3)\b|\bstem opt\b|{_OPT_NOT_MARKETING}|\bcpt\b|practical training"
+        # "What type of visa do you hold?", "Which visa are you on?", "Do you have a visa?". The company Visa is not caught.
+        r"|type of visa|\b(?:hold|have|has|current\w*|which) (?:(?:a|an|your|any|the) )?(?:\w+ )?visa\b"
     ),
     "age_18": _AGE_18,
     "export_control": re.compile(
         r"u s person|us person|\bitar\b|export administration regulations|export control|citizen|permanent resident|green card|clearance"
+        r"|nationalit|\b(?:u s|us|united states|american) national\b|\bnational of\b"
     ),
     "eeo_gender": re.compile(r"\bgender\b|\bsex\b"),
     "eeo_hispanic": re.compile(r"hispanic|latin[oax]"),
     "eeo_race": re.compile(r"\brace\b|ethnic"),
-    "eeo_veteran": re.compile(r"veteran|military service"),
+    "eeo_veteran": re.compile(r"veteran|military|armed forces"),
     "eeo_disability": re.compile(r"disab"),
-    "acknowledgment": re.compile(r"i (?:certify|attest|acknowledge|confirm|understand|agree)|accura|truthful|have read|privacy (?:notice|policy)"),
+    "acknowledgment": re.compile(r"i (?:certify|attest|acknowledge|confirm|understand|agree)|accura|truthful|have read|privacy (?:notice|policy|statement)|acknowledg"),
     "consent": re.compile(r"consent|retain|retention|process(?:ing)? (?:of )?(?:my|your) (?:personal )?(?:data|information)|gdpr"),
-    "salary": re.compile(r"salary|compensation|pay (?:expectation|range)|desired pay|expected pay|hourly rate"),
+    "salary": re.compile(r"salary|compensation|pay (?:expectation|range)|desired pay|expected pay|hourly rate|wages?\b|base pay|pay rate"),
 }
 _NEVER_STORABLE = re.compile(
-    r"\bage\b|birth|pronoun|marital|religio|genetic|pregnan|criminal|convict|felony|misdemeanor|arrest|background check|sexual orientation|transgender|non ?compete"
+    r"\bage\b|birth|pronoun|marital|religio|genetic|pregnan|criminal|convict|felony|misdemeanor|arrest|background check|sexual|transgender|non ?compete"
+    r"|crimes?\b|offen[cs]es?\b|lgbt|queer"
 )
 # Most restrictive first (7.3 step 3).
 _RESTRICTION = (
@@ -388,7 +401,7 @@ _RESTRICTION = (
 )
 _OPTION_FLAGS = (
     ("export_control", re.compile(r"citizen|clearance|green card|permanent resident")),
-    ("sponsorship", re.compile(rf"visa|h ?1 ?b|{_OPT_NOT_MARKETING}|sponsor")),
+    ("sponsorship", re.compile(rf"visa|h ?1 ?b|{_OPT_NOT_MARKETING}|sponsor|\b(?:f ?1|j ?1)\b|\bcpt\b")),
 )
 _DECLINE = re.compile(
     r"decline to (?:self identify|answer|state|identify|disclose)|do(?: not|n t) wish to (?:answer|disclose|identify|say)"
@@ -419,7 +432,7 @@ def classify_sensitive(question: str, options: Iterable[str] = (), section: str 
     The rules run in the order of spec 7.3. The result can only be stricter than the extension's own
     ``SENSITIVE`` rule: anything that rule flags and nothing here places is ``"uncategorized"``.
     """
-    text = _words(question)
+    text = re.sub(r"\beighteen\b", "18", _words(question))
     # 1. Never storable, for every section. An 18-or-older phrase goes first, or "years of age" would trip \bage\b.
     if _NEVER_STORABLE.search(_AGE_18.sub(" ", text)):
         return "uncategorized"
@@ -442,6 +455,47 @@ def classify_sensitive(question: str, options: Iterable[str] = (), section: str 
     if result is None and SENSITIVE_FIELD.search(str(question or "")):
         return "uncategorized"
     return result
+
+
+# A box or a Yes/No question that asks the student to agree to something is an acknowledgment, whatever its
+# heading says ("Candidate Privacy Statement"): the statement is in the option's text or the description. The
+# short list is read on both; the longer one only on a checkbox, whose whole job is to agree.
+_AGREE_WORDS = re.compile(r"acknowledg|\bterms\b|privacy (?:statement|notice|policy)")
+_AGREE_BOX_WORDS = re.compile(r"\bagree|\baccept|\bpolicy\b|\bcertif")
+_TAGS = re.compile(r"<[^>]*>")
+
+
+def _yes_no(options: Iterable[str]) -> bool:
+    words = {_words(option) for option in options}
+    return bool(words) and words <= {"yes", "no"}
+
+
+def statement_of(item: SchemaField, control: str) -> str:
+    """The text a stored answer to this field is matched on: a checkbox's own statement, else its question."""
+    return item.options[0] if control == "checkbox" and item.options else item.label
+
+
+def classify_item(item: SchemaField, control: str, parent: str | None = None, follows: bool = False) -> str | None:
+    """The category of one form field: its question, and for what has no wording of its own, what it depends on.
+
+    A checkbox and a Yes/No question are read on their heading, their option text and their description
+    together. ``follows`` says the field is filed under the question above it (a follow-up such as "If yes,
+    please explain"), which passes that question's own category on: ``parent`` is that question's category, and
+    its label is read as well, for a parent the listing does not carry. The most restrictive result wins.
+    """
+    found = [classify_sensitive(item.label, item.options, item.section, item.name)]
+    if item.section == "custom":
+        agreeing = control == "checkbox"
+        if agreeing or (control == "select" and _yes_no(item.options)):
+            statement = item.options[0] if agreeing and item.options else ""
+            description = html.unescape(_TAGS.sub(" ", item.description))
+            found.extend(classify_sensitive(text) for text in (statement, description) if text.strip())
+            words = _words(f"{item.label} {statement} {description}")
+            if _AGREE_WORDS.search(words) or (agreeing and _AGREE_BOX_WORDS.search(words)):
+                found.append("acknowledgment")
+        if follows and item.parent:
+            found.extend((classify_sensitive(item.parent), parent))
+    return _most_restrictive(category for category in found if category)
 
 
 def stored_sensitive_answer(
@@ -804,17 +858,24 @@ def company_matches(row_company: str, company: str) -> bool:
 
 
 def _saved_answer(item: SchemaField, text: str, dependent: bool, ctx: _Context) -> tuple[dict[str, Any] | None, str, str]:
-    """(the usable saved answer, problem_kind, problem) under the company rule and the one-answer rule (7.1)."""
+    """(the usable saved answer, problem_kind, problem) under the company rule and the one-answer rule (7.1).
+
+    A row saved for this company is the student's answer for this company and wins over a reusable row saved
+    elsewhere, so answering a question here settles it. The one-answer rule then applies within the tier that wins.
+    """
     key = question_key(text)
     rows = [row for row in ctx.sources.answers if question_key(row["question"]) == key and str(row["answer"]).strip()]
-    usable, elsewhere = [], []
+    here, reusable_rows, elsewhere = [], [], []
     for row in rows:
         same = company_matches(str(row["company"] or ""), ctx.company)
         reusable = any(str(tag).lower() == "reusable" for tag in row["tags"])
-        if same or (reusable and not dependent and not context_dependent(key)):
-            usable.append(row)
+        if same:
+            here.append(row)
+        elif reusable and not dependent and not context_dependent(key):
+            reusable_rows.append(row)
         else:
             elsewhere.append(row)
+    usable = here or reusable_rows
     answers = {str(row["answer"]).strip() for row in usable}
     if len(answers) > 1:
         return None, "conflicting_answers", f'You have two different saved answers for "{item.label}". Keep one'
@@ -828,7 +889,12 @@ def _saved_answer(item: SchemaField, text: str, dependent: bool, ctx: _Context) 
 
 
 def _plan_file(item: SchemaField, entry: PlanField, ctx: _Context) -> PlanField:
-    if item.name.startswith("cover_letter"):
+    if item.name not in ("resume", "cover_letter"):
+        # Row U: only the two documents the app holds are ever attached. A transcript, a writing sample or a
+        # custom "Cover letter" question is some other upload, and the résumé is not the answer to it.
+        entry.problem_kind, entry.problem = "unsupported", f'The app doesn\'t fill this kind of field ("{item.label}")'
+        return entry
+    if item.name == "cover_letter":
         letter = ctx.sources.cover_letter
         if not item.required:
             entry.note = "Optional cover letters are left empty"
@@ -851,13 +917,17 @@ def _plan_file(item: SchemaField, entry: PlanField, ctx: _Context) -> PlanField:
     return entry
 
 
-def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Context) -> PlanField:
+def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Context, *, follows: bool = False) -> PlanField:
     words = CATEGORY_WORDS.get(category, "a personal question")
     sources = ctx.sources
-    key = question_key(item.label)
+    # A checkbox is matched on its own statement, a follow-up on its parent's question too: neither on the bare heading.
+    key = question_key(statement_of(item, entry.control) if entry.control == "checkbox" else entry.answer_key or item.label)
     if category == "uncategorized" or category not in sources.sensitive_allowed:
         entry.problem_kind = "sensitive_never" if category == "uncategorized" else "sensitive_not_allowed"
-        entry.problem = f"The app doesn't answer this kind of question for you ({words}). Finish in browser leaves it for you"
+        entry.problem = (
+            f"This follows a question the app doesn't answer for you ({words}), so it is left for you too. Finish in browser leaves it for you"
+            if follows else f"The app doesn't answer this kind of question for you ({words}). Finish in browser leaves it for you"
+        )
         return entry
     stored = sources.sensitive_lookup(category=category, question_key=key, company_key=" ".join(sorted(identity_tokens(ctx.company))), mode=ctx.mode)
     if not stored:
@@ -985,12 +1055,24 @@ def build_plan(
     ctx = _Context(sources, company, mode, repeated, uploads_on_attach)
     entries: list[PlanField] = []
     problems: list[Problem] = []
+    # What each question is on its own words, by label, for the follow-ups filed under it (one step, never a chain).
+    own: dict[str, str | None] = {}
     for item in fields:
         control = control_of(item)
         if control == "hidden" or item.name in ALTERNATE_TEXT_FIELDS:
             continue
         text, dependent = texts[item.name]
-        category = None if control == "file" else classify_sensitive(item.label, item.options, item.section, item.name)
+        category = None
+        follows = False
+        if control != "file":
+            category = classify_item(item, control)
+            own[item.label] = _most_restrictive(found for found in (own.get(item.label), category) if found)
+            # A follow-up takes its meaning from the question above it, so it is as sensitive as that one.
+            follows = item.section == "custom" and bool(item.parent) and text != item.label
+            if follows:
+                inherited = classify_item(item, control, own.get(item.parent), True)
+                follows = inherited is not None and inherited != category
+                category = inherited
         entry = PlanField(
             key=item.name, question=item.label, control=control, required=item.required, options=item.options, section=item.section,
             sensitive=category, answer_key=text, context_dependent=dependent,
@@ -998,7 +1080,7 @@ def build_plan(
         if control == "file":
             _plan_file(item, entry, ctx)
         elif category:
-            _plan_sensitive(item, entry, category, ctx)
+            _plan_sensitive(item, entry, category, ctx, follows=follows)
         elif item.section == "custom" and filed.get(question_key(text), 0) > 1:
             entry.problem_kind = "ambiguous_question"
             entry.problem = f'The form asks "{item.label}" more than once, so the app cannot tell the answers apart'

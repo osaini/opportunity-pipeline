@@ -117,6 +117,14 @@ class CheckRouteTests(ApplyApiCase):
         self.assertEqual(self.check().json()["detail"], "Apply for me is off. Turn it on under Automation")
         self.assertEqual(self.schema.calls, [], "nothing was fetched while it was off")
 
+    def test_the_fake_factory_turns_the_switch_on_even_on_a_linux_box_with_no_display(self):
+        # The display is the factory's to answer (12.6): CI runs the browserless suites headless on Linux.
+        self.greenhouse_role()
+        with mock.patch.object(apply_runs.sys, "platform", "linux"), mock.patch.dict("os.environ", {"DISPLAY": "", "WAYLAND_DISPLAY": ""}):
+            self.turn_on()
+            self.assertEqual(self.check().status_code, 200)
+            self.assertEqual(apply_runs.setup_requirement(self.conn, USER), "")
+
     def test_it_needs_a_sign_in(self):
         self.assertEqual(self.client.get(f"/api/v1/apply-agent/opportunities/{ACME}/check").status_code, 401)
         self.assertEqual(self.client.get("/api/v1/apply-agent/settings").status_code, 401)

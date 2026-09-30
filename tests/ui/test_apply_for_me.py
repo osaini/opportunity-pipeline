@@ -130,6 +130,21 @@ def test_the_reusable_tick_is_hidden_for_a_question_that_depends_on_the_company(
     expect(section.locator('[data-apply-key="question_4000000101"]').get_by_label("Use for any company")).to_have_count(1)
 
 
+def test_two_saved_answers_that_disagree_offer_a_way_to_the_answer_library(apply_ready, owner_page, live_server):
+    from opportunity_app import preparation
+
+    with db(live_server) as conn:
+        for answer in ("Controls", "Perception"):
+            preparation.save_answer(conn, "Which team are you most interested in?", answer, "Acme Robotics", [], user_id=USER)
+    open_saved_role(owner_page)
+    section = owner_page.locator(".apply-for-me")
+    expect(section).to_be_visible()
+    team = section.locator('[data-apply-key="question_4000000103"]')
+    expect(team).to_contain_text("two different saved answers")
+    team.get_by_role("button", name="Open your saved answers").click()
+    expect(owner_page.locator("h3", has_text="Answer library")).to_be_focused()
+
+
 def test_a_wrong_option_is_refused_in_words_and_nothing_is_saved(apply_ready, owner_page, live_server):
     open_saved_role(owner_page)
     section = owner_page.locator(".apply-for-me")

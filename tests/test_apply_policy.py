@@ -56,6 +56,15 @@ def F(name, label, kind="input_text", *, required=True, options=(), section="cus
 
 SINGLE = "multi_value_single_select"
 MULTI = "multi_value_multi_select"
+
+
+def vector_field(row):
+    """The form field a row of sensitive_vectors.json describes: a checkbox, a select when it has options, else text."""
+    kind = MULTI if row.get("control") == "checkbox" else SINGLE if row.get("options") else "input_text"
+    return SchemaField(
+        name=row.get("field_name") or "question_1", label=row["question"], required=True, type=kind, options=tuple(row.get("options", ())),
+        section=row.get("section") or "custom", parent=row.get("parent", ""), description=row.get("description", ""),
+    )
 RESUME_OK = {"kind": "confirmed", "version_id": "v1", "label": "Your confirmed résumé", "original_name": "Sam Rivera Resume.pdf",
              "sha256": "a" * 64, "problem_kind": "", "problem": ""}
 LETTER_NONE = {"problem_kind": "cover_letter_missing", "problem": "No cover letter is approved for this role. Draft one"}
@@ -115,11 +124,14 @@ def kinds(result):
 class ClassifierTests(unittest.TestCase):
     def test_every_shared_vector_gets_its_expected_category(self):
         rows = vectors("sensitive_vectors.json")
-        self.assertGreaterEqual(len(rows), 40)
+        self.assertGreaterEqual(len(rows), 70)
         for row in rows:
             with self.subTest(question=row["question"], section=row.get("section", "")):
-                got = classify_sensitive(row["question"], row.get("options", ()), row.get("section", ""), row.get("field_name", ""))
+                item = vector_field(row)
+                got = apply_policy.classify_item(item, apply_policy.control_of(item), None, follows=bool(row.get("parent")))
                 self.assertEqual(got, row["expected"])
+                if not (row.get("control") or row.get("description") or row.get("parent")):
+                    self.assertEqual(classify_sensitive(row["question"], row.get("options", ()), row.get("section", ""), row.get("field_name", "")), row["expected"])
 
     def test_the_agent_is_never_looser_than_the_extension(self):
         for row in vectors("sensitive_vectors.json"):
@@ -127,6 +139,8 @@ class ClassifierTests(unittest.TestCase):
             self.assertEqual(flagged, row["extension_flags"], row["question"])
             if flagged:
                 self.assertIsNotNone(classify_sensitive(row["question"], (), row.get("section", ""), row.get("field_name", "")), row["question"])
+                item = vector_field(row)
+                self.assertIsNotNone(apply_policy.classify_item(item, apply_policy.control_of(item)), row["question"])
 
     def test_the_extension_rule_is_a_floor_for_anything_the_rows_do_not_place(self):
         for text in ("Do you have authorization?", "Are you a Green Card holder or on a TN visa?", "Please confirm your clearance level"):
@@ -609,6 +623,80 @@ class TruthTablePlanRows(unittest.TestCase):
         self.assertEqual(plan(BASE + [field], src, "submit").get("q").disposition, "fill")
         self.assertEqual(plan(BASE + [field], src, "handoff").get("q").disposition, "fill")
         self.assertEqual(plan(BASE + [field], src, "rehearse").get("first_name").disposition, "fill", "only the sensitive ones wait")
+
+    def test_row_u_an_upload_that_is_not_the_resume_or_the_cover_letter_is_never_given_the_resume(self):
+        transcript = F("question_9", "Unofficial transcript", "input_file")
+        sample = F("question_10", "Writing sample", "input_file", required=False)
+        custom_letter = F("question_11", "Cover letter", "input_file", required=False)
+        submit, handoff = self.both(BASE + [transcript], sources(letter=LETTER_OK))
+        self.assertEqual((kinds(submit)["question_9"], submit.status), ("unsupported", "needs_you"))
+        for result in (submit, handoff):
+            self.assertEqual((result.get("question_9").source.kind, result.get("question_9").value, result.get("question_9").file_sha256), ("none", None, ""))
+        self.assertEqual(handoff.get("question_9").disposition, "left_for_you")
+        self.assertEqual(submit.get("resume").source.kind, "resume", "the field named resume still takes it")
+        optional = plan(BASE + [sample, custom_letter], sources(letter=LETTER_OK), "submit")
+        self.assertEqual((optional.status, optional.problems), ("ready", []), "an optional one is left blank")
+        for key in ("question_10", "question_11"):
+            self.assertEqual((optional.get(key).disposition, optional.get(key).source.kind), ("blank", "none"), key)
+            self.assertIn("doesn't fill this kind of field", optional.get(key).note)
+        # The cover letter goes only to the field named cover_letter, and only when D11 allows it.
+        letter = F("cover_letter", "Cover Letter", "input_file", section="standard")
+        self.assertEqual(plan(BASE + [letter], sources(letter=LETTER_OK)).get("cover_letter").source.kind, "cover_letter")
+        self.assert_needs(BASE + [letter], sources(), "cover_letter_missing", "cover_letter")
+
+    def test_a_follow_up_of_a_sensitive_question_is_as_sensitive_as_its_parent(self):
+        for parent, category in (("Have you ever been convicted of a felony?", "uncategorized"), ("Will you now or in the future require sponsorship?", "sponsorship")):
+            with self.subTest(parent=parent):
+                first = F("question_20", parent, SINGLE, options=("Yes", "No"))
+                follow = F("question_21", "If yes, please explain", "textarea", parent=parent)
+                rows = [answer(f"{parent} / If yes, please explain", "Details", tags=["reusable"])]
+                for mode in ("submit", "handoff"):
+                    result = plan(BASE + [first, follow], sources(answers=rows), mode)
+                    self.assertEqual((result.get("question_21").sensitive, result.get("question_21").source.kind, result.get("question_21").value), (category, "none", None))
+                    self.assertIn("This follows a question", result.get("question_21").problem)
+                self.assertEqual(plan(BASE + [first, follow], sources(answers=rows), "handoff").get("question_21").disposition, "left_for_you")
+        # The same words under an ordinary question stay ordinary, and a question that is not a follow-up inherits nothing.
+        ordinary = [F("question_20", "Are you willing to relocate?", SINGLE, options=("Yes", "No")), F("question_21", "If yes, please explain", "textarea", parent="Are you willing to relocate?")]
+        got = plan(BASE + ordinary, sources(answers=[answer("Are you willing to relocate? / If yes, please explain", "Details")]))
+        self.assertEqual((got.get("question_21").sensitive, got.get("question_21").value), (None, "Details"))
+        after = [F("question_20", "Are you legally authorized to work in the US?", SINGLE, options=("Yes", "No")), F("question_21", "Which team are you most interested in this summer?", parent=AUTH)]
+        self.assertIsNone(plan(BASE + after, sources()).get("question_21").sensitive, "a standalone question that only sits below one is not a follow-up")
+
+    def test_a_privacy_box_is_an_acknowledgment_whatever_its_heading_says(self):
+        statement = "I have read and agree to the Candidate Privacy Statement"
+        for heading in ("Candidate Privacy Statement", "Privacy Acknowledgment", "Acknowledgement", "Terms and conditions"):
+            with self.subTest(heading=heading):
+                box = F("question_2", heading, MULTI, options=(statement,))
+                # An ordinary saved "Yes", even one marked reusable at another company, never ticks it.
+                rows = [answer(heading, "Yes", company=OTHER, tags=["reusable"]), answer(heading, "Yes")]
+                for mode in ("submit", "handoff"):
+                    got = plan(BASE + [box], sources(answers=rows), mode).get("question_2")
+                    self.assertEqual((got.sensitive, got.source.kind, got.value), ("acknowledgment", "none", None))
+                self.assertEqual(kinds(plan(BASE + [box], sources(answers=rows)))["question_2"], "sensitive_not_allowed")
+        # It is ticked from the store only on the exact statement, not on the heading.
+        box = F("question_2", "Candidate Privacy Statement", MULTI, options=(statement,))
+        allowed = {"acknowledgment"}
+        on_heading = Store(entry("acknowledgment", "Candidate Privacy Statement", "checked", kind="checkbox", company_key="example robotics"))
+        on_statement = Store(entry("acknowledgment", statement, "checked", kind="checkbox", company_key="example robotics"))
+        self.assert_needs(BASE + [box], sources(allowed=allowed, store=on_heading), "sensitive_missing", "question_2")
+        self.assertIs(plan(BASE + [box], sources(allowed=allowed, store=on_statement)).get("question_2").value, True)
+        # An acknowledgment in a Yes/No question's description counts too; a marketing box does not.
+        described = SchemaField(name="question_3", label="Data sharing", required=True, type=SINGLE, options=("Yes", "No"), description="<p>Choosing Yes means you acknowledge the notice.</p>")
+        self.assertEqual(plan(BASE + [described], sources()).get("question_3").sensitive, "acknowledgment")
+        marketing = F("question_4", "Keep me informed about future openings", MULTI, required=False, options=("Keep me informed about future openings",))
+        self.assertIsNone(plan(BASE + [marketing], sources()).get("question_4").sensitive)
+
+    def test_this_companys_saved_answer_wins_over_a_reusable_one_from_another_company(self):
+        field = F("q", "Which team are you most interested in?", SINGLE, options=("Perception", "Controls", "Robotics"))
+        elsewhere = answer("Which team are you most interested in?", "Robotics", company=OTHER, tags=["reusable"])
+        here = answer("Which team are you most interested in?", "Controls")
+        got = plan(BASE + [field], sources(answers=[elsewhere, here])).get("q")
+        self.assertEqual((got.value, got.source.company), ("Controls", COMPANY))
+        # Two different answers for this company are still a conflict, and so are two reusable ones with none of its own.
+        other_here = answer("Which team are you most interested in?", "Perception", tags=["reusable"])
+        self.assertEqual(kinds(plan(BASE + [field], sources(answers=[here, other_here])))["q"], "conflicting_answers")
+        second = answer("Which team are you most interested in?", "Perception", company="Third Co", tags=["reusable"])
+        self.assertEqual(kinds(plan(BASE + [field], sources(answers=[elsewhere, second])))["q"], "conflicting_answers")
 
     def test_a_board_that_uploads_as_you_attach_defers_the_resume(self):
         result = plan(BASE, sources(), "rehearse", uploads_on_attach=True)
@@ -1213,6 +1301,35 @@ class AnswerMissingTests(PolicyCase):
         self.answer("question_9", "I interned here in 2025")
         self.assertEqual(self.conn.execute("SELECT question FROM answer_library WHERE answer LIKE 'I interned%'").fetchone()[0], f"{WORKED} / If yes, please explain")
 
+    def test_answering_from_the_options_settles_a_reusable_answer_that_did_not_fit(self):
+        self.role("gh-1")
+        # Saved as reusable at another company, and not one of this form's options.
+        preparation.save_answer(self.conn, "Which team are you most interested in?", "Robotics", OTHER, ["reusable"], user_id=USER)
+        problem = next(item for item in self.run_check()["problems"] if item["key"] == "question_2")
+        self.assertEqual(problem["kind"], "answer_mismatch")
+        self.assertEqual(problem["action"]["type"], "answer")
+        done = self.answer("question_2", "Controls")
+        self.assertNotIn("question_2", [item["key"] for item in done["check"]["problems"]], "the student's own answer settles it")
+        fresh = self.run_check()
+        self.assertNotIn("conflicting_answers", [item["kind"] for item in fresh["problems"]])
+        field = next(item for item in fresh["fields"] if item["key"] == "question_2")
+        self.assertEqual(field["source"], f"Saved answer for {runs_tests.BLUEFIN}")
+        # Ticking "use for any company" over an older reusable answer elsewhere is settled here the same way.
+        self.answer("question_2", "Perception", reusable=True)
+        self.assertNotIn("conflicting_answers", [item["kind"] for item in self.run_check()["problems"]])
+
+    def test_a_privacy_box_gets_no_answer_form_and_no_reusable_tick(self):
+        listing = copy.deepcopy(SIMPLE)
+        statement = "I have read and agree to the Candidate Privacy Statement"
+        listing["questions"].append({"label": "Candidate Privacy Statement", "required": True, "fields": [{"name": "question_9", "type": MULTI, "values": [{"label": statement, "value": 1}]}]})
+        self.client = StaticClient(listing)
+        self.role("gh-1")
+        preparation.save_answer(self.conn, "Candidate Privacy Statement", "Yes", OTHER, ["reusable"], user_id=USER)
+        problem = next(item for item in self.run_check()["problems"] if item["key"] == "question_9")
+        self.assertEqual((problem["kind"], problem["action"]["type"], problem["action"]["category"]), ("sensitive_not_allowed", "manual", "acknowledgment"))
+        with self.assertRaisesRegex(apply_preflight.AnswerRefused, "kind of question"):
+            self.answer("question_9", "Yes", reusable=True)
+
     def test_a_question_the_form_does_not_ask_or_a_role_that_is_not_greenhouse_is_refused(self):
         self.role("gh-1")
         with self.assertRaisesRegex(apply_preflight.AnswerRefused, "no longer asks"):
@@ -1242,10 +1359,17 @@ class RequirementTests(runs_tests.ApplyCase):
         self.assertEqual(apply_runs.setup_requirement(self.conn, USER), "Install Playwright and Chromium: python -m playwright install chromium")
         self.factory.missing = ""
         self.confirm(name="Ana María de la Cruz")
+        # The display is the factory's to answer: the real probe says it, the fake never does, so a headless
+        # Linux CI job or sandbox can still turn the switch on with the fake (12.6).
         with mock.patch.object(sys, "platform", "linux"), mock.patch.dict(os.environ, {"DISPLAY": "", "WAYLAND_DISPLAY": ""}, clear=False):
+            self.assertEqual(apply_runs.setup_requirement(self.conn, USER), apply_runs.NEEDS_NAME, "the fake factory needs no display")
+            apply_runs.configure_agent_factory(apply_runs.PlaywrightProbe())
+            self.addCleanup(apply_runs._PROBE_CACHE.update, at=0.0, answer="")
+            apply_runs._PROBE_CACHE.update(at=apply_runs.monotonic(), answer="")
             self.assertIn("systemctl --user import-environment DISPLAY WAYLAND_DISPLAY", apply_runs.setup_requirement(self.conn, USER))
             with mock.patch.dict(os.environ, {"DISPLAY": ":0"}):
                 self.assertEqual(apply_runs.setup_requirement(self.conn, USER), apply_runs.NEEDS_NAME)
+            apply_runs.configure_agent_factory(self.factory)
         self.assertEqual(apply_runs.setup_requirement(self.conn, USER), apply_runs.NEEDS_NAME, "a long name is not split")
         self.confirm(name_parts={"first": "Ana María", "last": "de la Cruz"})
         self.assertEqual(apply_runs.setup_requirement(self.conn, USER), apply_runs.NEEDS_EMAIL)

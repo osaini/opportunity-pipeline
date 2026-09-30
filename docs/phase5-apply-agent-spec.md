@@ -2076,16 +2076,32 @@ key is context-dependent when:
   "please describe", "other" or "explain";
 - or it matches `previously (worked|been employed|applied)|worked (here|for us|for this
   company|at)|applied (here|before|previously)|referr|who referred|know (anyone|someone)|how did
-  you hear|where did you (hear|find)|current(ly)? (an )?employee`.
+  you hear|where did you (hear|find)|current(ly)? (an )?employee|related to|spouse|immediate
+  family|former employee|employed here|relations? working` (and the other wordings in
+  `CONTEXT_WORDING`, which the engine and `apply_policy` share).
+
+A leading "Follow-up:", "Follow-on question:", "Sub-question:", "(Optional)", "Question no. 3:" or
+a number or letter is taken off, in any order and up to six times, before the opener test.
+`tests/fixtures/apply/context_keys.json` is run by both the engine and `apply_policy`, so the two
+cannot drift apart.
 
 For a sub-question that starts with one of those openers, the key is prefixed with its parent: the
 nearest fieldset legend, or else the preceding schema question's label (`"{parent} / {question}"`),
 so "If yes, please explain" under two different questions are two different keys. The Needs you
 flow saves such answers for this company only and hides the reusable tick.
 
+**A follow-up is as sensitive as its parent.** A field filed under its parent is classified on
+its parent's own category too (7.3): "If yes, please explain" under "Have you ever been convicted
+of a felony?" is `uncategorized`, and under a sponsorship question it is `sponsorship`. It is
+never saved to the answer library or filled from it. The step is one question deep: the parent's
+own words and options decide, and the category does not travel on to the next question.
+
 **The one-answer rule.** If several `answer_library` rows share the key and, after the company
 rule, have different answers, it is a problem: "You have two different saved answers for
-"{question}". Keep one".
+"{question}". Keep one". A row saved for this company is the student's answer for this
+company and wins over a `reusable` row saved elsewhere, so answering a question in the "what's
+missing" view settles it; the rule applies within the tier that wins (this company's rows, else
+the reusable ones). The problem's action opens the answer library, where the student keeps one.
 
 **The submit-mode mapping list** lives in the adapter. Adding to it is a code change with a test.
 
@@ -2133,12 +2149,12 @@ tier at confidence 0.7 (content.js:96-110). Only exact equality of keys counts.
 | S | Single select, radio | The answer text must equal exactly **one** option **label** after normalization. Option values are never matched: a hidden value such as "1" or "0" says nothing about which label it stands for. Zero or several matches is a problem. |
 | M | Multi select | The answer is split on newlines or ";". Each part must equal exactly one option label. The order does not matter. |
 | C | Checkbox (non-consent) | An exact answer under the company rule that is "yes"/"true"/"checked", or "no"/"false". |
-| A | Acknowledgment or consent checkbox | D9 A: never ticked (left for you, or a problem). D9 B: **only** `sensitive` with category `acknowledgment`/`consent` and an exact statement key; a statement that cites a document needs an entry for this company. |
+| A | Acknowledgment or consent checkbox | D9 A: never ticked (left for you, or a problem). D9 B: **only** `sensitive` with category `acknowledgment`/`consent` and an exact statement key; a statement that cites a document needs an entry for this company. The statement is the checkbox's own option text, not its heading. A checkbox, or a Yes/No question, is read on its heading, its option text and its description together: `acknowledg`, `terms` or a privacy statement, notice or policy in any of them (and `agree`, `accept`, `policy` or `certif` on a checkbox) makes it an acknowledgment, so it never gets the ordinary answer form or the reusable tick. |
 | E | Anything sensitive (7.3) | **Only** `sensitive` (D5 B to E). It is never filled from `answer`, `profile` or `ats_label`. Required and not in the store: a problem in a submit, left for you in a handoff. Optional and not in the store: left blank (D13). Category `uncategorized`: never filled. |
-| F | File: résumé | `resume_for` (6.9). An `unsure` pick opens the chooser. |
-| L | File: cover letter | D11. |
+| F | File: résumé | `resume_for` (6.9), only for the field named `resume`. An `unsure` pick opens the chooser. |
+| L | File: cover letter | D11, only for the field named `cover_letter`. |
 | H | `input_hidden` | Never touched. |
-| U | Anything else unrecognized | A problem if required; left blank if optional. |
+| U | Anything else unrecognized | A problem if required; left blank if optional. This includes every other upload (a transcript, a writing sample, a custom "Cover letter" question): the résumé is never the answer to one. |
 
 **Legacy saved answers.** Rows saved by the extension before M1 contain field ids in their
 question text, so they will not match exactly. That is intended. The first run lists them as
@@ -2168,8 +2184,8 @@ the normalized question, case-insensitively, in this order:
    permissive `work_authorization`.
 4. **Options fail closed.** A select or radio whose option labels match
    `visa|citizen|clearance|green card|permanent resident|h ?1 ?b|\bopt\b|sponsor` is sensitive
-   even if its question is vague; its category is the most restrictive of the option matches and
-   the question's own. Options that include "Decline to self-identify" or "I don't wish to answer"
+   even if its question is vague (the pattern also reads visa status lists such as `f ?1|j ?1|cpt`);
+   its category is the most restrictive of the option matches and the question's own. Options that include "Decline to self-identify" or "I don't wish to answer"
    make the field `"uncategorized"`, unless step 2 already mapped it to an EEO category by name.
 5. **Superset check.** Anything the extension's `SENSITIVE` regex (content.js:6, repeated in
    extension_apply.py:24-29) matches, and steps 1 to 4 leave as None, is `"uncategorized"`. For
@@ -2185,23 +2201,31 @@ the normalized question, case-insensitively, in this order:
 
 | Category | Pattern (on the normalized question) |
 | --- | --- |
-| work_authorization | `authori[sz]ed to work\|authori[sz]ation to work\|work authori[sz]ation\|legally (eligible\|authori[sz]ed)\|right to work\|eligible to work` |
-| sponsorship | `sponsor\|immigration\|petition\|employment based\|visa (sponsor\|status\|support\|type\|holder\|transfer)\|(require\|need\|hold)\w* (a )?visa\|work visa\|student visa\|\b(f ?1\|j ?1\|h ?1 ?b\|tn\|e ?3)\b\|\bstem opt\b\|\bopt\b(?! (in\|out))\|\bcpt\b\|practical training` |
-| age_18 | `\b18 (years )?(or older\|of age)\|over (the age of )?18\|at least 18\|age of 18` |
-| export_control | `u s person\|us person\|itar\|export administration regulations\|export control\|citizen\|permanent resident\|green card\|clearance` |
+| work_authorization | `authori[sz]ed to work\|authori[sz]ation to work\|work authori[sz]ation\|legally (eligible\|authori[sz]ed)\|right to work\|eligible to work\|legally ((able\|permitted\|allowed) to )?work\|eligib\w* (for\|to) (employment\|work)\|work permit` |
+| sponsorship | `sponsor\|immigration\|petition\|employment based\|visa (sponsor\|status\|support\|type\|holder\|transfer)\|(require\|need\|hold)\w* (a )?visa\|work visa\|student visa\|\b(f ?1\|j ?1\|h ?1 ?b\|tn\|e ?3)\b\|\bstem opt\b\|\bopt\b(?! (in\|out))\|\bcpt\b\|practical training\|type of visa\|\b(hold\|have\|has\|current\w*\|which) ((a\|an\|your\|any\|the) )?(\w+ )?visa\b` |
+| age_18 | `\b18 (years )?(or older\|of age)\|over (the age of )?18\|at least 18\|age of 18\|(are you\|you are\|must be) 18` (\"eighteen\" is read as 18, and \"18+\" has lost its plus sign by then) |
+| export_control | `u s person\|us person\|itar\|export administration regulations\|export control\|citizen\|permanent resident\|green card\|clearance\|nationalit\|\b(u s\|us\|united states\|american) national\b\|\bnational of\b` |
 | eeo_gender | `\bgender\b\|\bsex\b` |
 | eeo_hispanic | `hispanic\|latin[oax]` |
 | eeo_race | `\brace\b\|ethnic` |
-| eeo_veteran | `veteran\|military service` |
+| eeo_veteran | `veteran\|military\|armed forces` |
 | eeo_disability | `disab` |
-| acknowledgment | `i (certify\|attest\|acknowledge\|confirm\|understand\|agree)\|accura\|truthful\|have read\|privacy (notice\|policy)` |
+| acknowledgment | `i (certify\|attest\|acknowledge\|confirm\|understand\|agree)\|accura\|truthful\|have read\|privacy (notice\|policy\|statement)\|acknowledg` (and, for a checkbox or a Yes/No question, the words in 7.2 row A) |
 | consent | `consent\|retain\|retention\|process(ing)? (of )?(my\|your) (personal )?(data\|information)\|gdpr` |
-| salary | `salary\|compensation\|pay (expectation\|range)\|desired pay\|expected pay\|hourly rate` |
-| *never storable* (`uncategorized`) | `\bage\b\|birth\|pronoun\|marital\|religio\|genetic\|pregnan\|criminal\|convict\|felony\|misdemeanor\|arrest\|background check\|sexual orientation\|transgender\|non ?compete` |
+| salary | `salary\|compensation\|pay (expectation\|range)\|desired pay\|expected pay\|hourly rate\|wages?\b\|base pay\|pay rate` |
+| *never storable* (`uncategorized`) | `\bage\b\|birth\|pronoun\|marital\|religio\|genetic\|pregnan\|criminal\|convict\|felony\|misdemeanor\|arrest\|background check\|sexual\|transgender\|non ?compete\|crimes?\b\|offen[cs]es?\b\|lgbt\|queer` |
 
 Changes from revision 1, each pinned by a vector: `ear\b` (which matched "hear" and "year") is
 replaced by "export administration regulations"; bare `visa` (which matched the company Visa) is
 tied to sponsorship wording; `authori[sz]ation to work` is added.
+
+Changes after the M4 review, each pinned by a vector: everyday wordings of work authorization ("legally
+work", "eligible for employment", "work permit"), visa ("type of visa", "which visa", "have a visa"),
+nationality, criminal history ("crime", "offence", LGBTQ), wage and base pay, "18+" and "eighteen", and
+military service or the armed forces are placed, and the same terms (apart from the acknowledgment words,
+which the extension deliberately leaves to its own consent rule) are mirrored into the extension's
+`SENSITIVE` and `extension_apply.SENSITIVE_FIELD`. A vector may also carry `parent` (a follow-up's
+own words come back as its parent's category), `control` (`checkbox`) and `description`.
 
 `tests/fixtures/apply/sensitive_vectors.json` holds, with the expected result:
 

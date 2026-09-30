@@ -27,16 +27,20 @@ SENSITIVE_FIELD = re.compile(
     r"\b(gender|sex|sexual orientation|race|ethnic(?:ity)?|disab(?:ility|led)?|veteran|age|"
     r"birth|sponsor(?:ship)?|authori[sz](?:ed|ation)|citizen(?:ship)?|salary|compensation|"
     r"pronoun|marital|religio\w*|genetic|pregnan(?:cy|t)|eeo|transgender|immigration|petition|"
-    r"employment[- ]based|green card|permanent resident|"
-    r"visa[- ](?:sponsor\w*|status|support|type|holder|transfer)|"
-    r"(?:require|need|hold)\w*\s+(?:a\s+)?visa|work visa|student visa|f[- ]?1|j[- ]?1|"
-    r"h[- ]?1[- ]?b|tn|e[- ]?3|stem opt|"
-    r"opt(?!-(?:in|out)\b)(?! (?:in|out)\b(?! (?:the )?(?:us|u\.s\.|usa|united states|20\d\d)(?!\w)))|"
-    r"cpt|practical training|clearance|right to work|eligible to work|"
-    r"legally (?:eligible|authori[sz]ed)|18\+?(?: years)? (?:or older|of age)|"
-    r"over (?:the age of )?18|at least 18|age of 18|u\.? ?s\.? person|itar|export control|"
-    r"export administration regulations|felony|misdemeanor|arrest\w*|criminal|convict\w*|"
-    r"background check|non[- ]?compete)\b",
+    r"employment[- ]based|green card|permanent resident|visa[- ](?:sponsor\w*|status|support|"
+    r"type|holder|transfer)|(?:require|need|hold)\w*\s+(?:a\s+)?visa|work visa|student visa|"
+    r"f[- ]?1|j[- ]?1|h[- ]?1[- ]?b|tn|e[- ]?3|stem opt|opt(?!-(?:in|out)\b)(?! (?:in|"
+    r"out)\b(?! (?:the )?(?:us|u\.s\.|usa|united states|20\d\d)(?!\w)))|cpt|"
+    r"practical training|clearance|right to work|eligible to work|legally (?:eligible|"
+    r"authori[sz]ed)|(?:18|eighteen)\+?(?: years)? (?:or older|of age)|"
+    r"over (?:the age of )?(?:18|eighteen)|at least (?:18|eighteen)|age of (?:18|eighteen)|"
+    r"(?:are you|you are|must be)\s+(?:18|eighteen)|u\.? ?s\.? person|itar|export control|"
+    r"export administration regulations|legally\s+(?:(?:able|permitted|allowed)\s+to\s+)?work|"
+    r"eligib\w*\s+(?:for|to)\s+(?:employment|work)|work permit|type of visa|(?:hold|have|has|"
+    r"current\w*|which)\s+(?:(?:a|an|your|any|the)\s+)?(?:\w+\s+)?visa|nationalit\w*|"
+    r"(?:u\.? ?s\.?|united states|american)\s+national|national of|crimes?|offen[cs]es?|"
+    r"lgbt\w*|queer|sexual\w*|military|armed forces|wages?|base pay|pay rate|felony|"
+    r"misdemeanor|arrest\w*|criminal|convict\w*|background check|non[- ]?compete)\b",
     re.IGNORECASE,
 )
 PROHIBITED_CONTROL = re.compile(

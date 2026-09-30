@@ -1455,12 +1455,21 @@ def configure_agent_factory(factory: Any) -> None:
 class PlaywrightProbe:
     """The agent factory the real app has until the agent itself is built: it can say whether a window could open.
 
-    ``available()`` returns "" when Playwright and its Chromium are present, else the sentence saying what to
-    install. It reads the installed package and never the network, and answers from a five minute cache
-    because the requirement runs on every settings render.
+    ``available()`` returns "" when Playwright and its Chromium are present and, on Linux, a display is set,
+    else the sentence saying what is missing. It reads the installed package and never the network, and
+    answers the Playwright half from a five minute cache because the requirement runs on every settings
+    render. The display is asked here, not by the requirement, so a fake factory answers it too (12.6).
     """
 
     def available(self) -> str:
+        installed = self._installed()
+        if installed:
+            return installed
+        if sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+            return LINUX_DISPLAY
+        return ""
+
+    def _installed(self) -> str:
         now = monotonic()
         if _PROBE_CACHE["at"] and now - _PROBE_CACHE["at"] < _PROBE_SECONDS:
             return str(_PROBE_CACHE["answer"])
@@ -1489,8 +1498,8 @@ def _probe_playwright() -> str:
 def setup_requirement(conn: sqlite3.Connection, user_id: str) -> str:
     """What Apply for me still needs before it can be turned on, or "" (automation.REQUIREMENTS). Reads only, no network.
 
-    The first that applies: Playwright and Chromium are missing, a Linux server has no display, no first and
-    last name for applications, no confirmed email, no confirmed résumé. The confirmation-email checks (D12)
+    The first that applies: the agent factory's own probe (Playwright and Chromium missing, or a Linux server
+    with no display), no first and last name for applications, no confirmed email, no confirmed résumé. The confirmation-email checks (D12)
     belong to a one-click submit, not to the switch.
     """
     from . import apply_policy, preparation
@@ -1501,8 +1510,6 @@ def setup_requirement(conn: sqlite3.Connection, user_id: str) -> str:
     missing = str(probe() or "") if callable(probe) else ""
     if missing:
         return missing
-    if sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
-        return LINUX_DISPLAY
     facts = preparation.confirmed_facts(conn, user_id)
     first, last, _preferred = apply_policy.name_parts(facts)
     if not (first and last):

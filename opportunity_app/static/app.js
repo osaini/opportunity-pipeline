@@ -10592,6 +10592,28 @@
       open.addEventListener("click", () => els.profileNav.click());
       return open;
     }
+    if (action.type === "library") {
+      // Two saved answers disagree, and only the student can say which one is right: the answer library is where they are kept.
+      const open = element("button", "secondary-button", "Open your saved answers");
+      open.type = "button";
+      open.addEventListener("click", () => {
+        els.profileNav.click();
+        // The profile page loads its sections after it opens, so look for the heading for a couple of seconds.
+        let tries = 0;
+        const look = () => {
+          const heading = [...document.querySelectorAll("h3")].find((node) => node.textContent === "Answer library");
+          if (heading) {
+            heading.tabIndex = -1;
+            heading.scrollIntoView({ block: "start" });
+            heading.focus({ preventScroll: true });
+          } else if ((tries += 1) < 10) {
+            setTimeout(look, 200);
+          }
+        };
+        setTimeout(look, 200);
+      });
+      return open;
+    }
     if (action.type === "resume") {
       const open = element("button", "secondary-button", action.chooser ? "Choose a résumé for this role" : "Go to the résumé section");
       open.type = "button";
