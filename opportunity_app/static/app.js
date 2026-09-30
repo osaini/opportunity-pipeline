@@ -6612,6 +6612,10 @@
 
     const form = element("form", "profile-form");
     const name = profileField(form, "Name", "name", profile.name);
+    // Apply for me types these into an employer's application form, and it will not run without a confirmed email.
+    const contactSaved = profile.contact && typeof profile.contact === "object" && !Array.isArray(profile.contact) ? profile.contact : {};
+    const contactEmail = profileField(form, "Email for applications", "contact_email", contactSaved.email, { type: "email", placeholder: "you@example.com" });
+    const contactPhone = profileField(form, "Phone for applications (optional)", "contact_phone", contactSaved.phone, { type: "tel" });
     // How your name is typed into an employer's application form (Apply for me). A name of more than two words is never split for you.
     const nameParts = profile.name_parts && typeof profile.name_parts === "object" ? profile.name_parts : {};
     const nameForApplications = element("fieldset", "profile-fieldset");
@@ -6673,8 +6677,16 @@
         places: [regionName.toLowerCase()],
       });
       const namePartsValue = { first: firstForApplications.value.trim(), last: lastForApplications.value.trim(), preferred: preferredForApplications.value.trim() };
+      // Anything else already saved under contact (from a résumé) is kept; only the email and phone are edited here.
+      const contactValue = { ...contactSaved };
+      [["email", contactEmail], ["phone", contactPhone]].forEach(([key, input]) => {
+        if (input.value.trim()) contactValue[key] = input.value.trim();
+        else delete contactValue[key];
+      });
       const updates = {
         name: name.value.trim(),
+        // Sent only when there is something to say, or something already saved to clear.
+        ...(Object.keys(contactValue).length || profile.contact ? { contact: contactValue } : {}),
         // Sent only when there is something to say, or something already saved to clear.
         ...(Object.values(namePartsValue).some(Boolean) || profile.name_parts ? { name_parts: namePartsValue } : {}),
         school: school.value.trim(),
@@ -10471,6 +10483,7 @@
     const label = element("label", "profile-field");
     label.appendChild(element("span", "", "Your answer"));
     let read;
+    let write;
     if (action.control === "select" || action.control === "checkbox") {
       const select = document.createElement("select");
       select.id = id;
@@ -10487,6 +10500,7 @@
       label.appendChild(select);
       form.appendChild(label);
       read = () => select.value;
+      write = (value) => { select.value = value; };
     } else if (action.control === "multiselect") {
       const group = element("fieldset", "apply-options");
       group.appendChild(element("legend", "", "Your answer (choose every option that applies)"));
@@ -10501,6 +10515,7 @@
       });
       form.appendChild(group);
       read = () => boxes.filter((box) => box.checked).map((box) => box.value);
+      write = (value) => boxes.forEach((box) => { box.checked = value.includes(box.value); });
     } else {
       const control = action.control === "text" ? document.createElement("input") : document.createElement("textarea");
       if (action.control === "text") control.type = "text";
@@ -10509,6 +10524,7 @@
       label.appendChild(control);
       form.appendChild(label);
       read = () => control.value;
+      write = (value) => { control.value = value; };
     }
     let reusable = null;
     if (action.reusable_allowed) {
@@ -10525,6 +10541,18 @@
     const status = element("p", "form-status");
     status.setAttribute("role", "status");
     form.append(save, status);
+    // What is typed and not yet saved, so the list can be rebuilt after another answer is saved without losing it.
+    form.applyDraft = {
+      read() {
+        const answer = read();
+        const ticked = Boolean(reusable?.checked);
+        return (Array.isArray(answer) ? answer.length : answer) || ticked ? { answer, ticked } : null;
+      },
+      write(draft) {
+        write(draft.answer);
+        if (reusable) reusable.checked = draft.ticked;
+      },
+    };
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const answer = read();
@@ -10537,7 +10565,7 @@
       try {
         const saved = await api(`/api/v1/apply-agent/opportunities/${encodeURIComponent(problem.opportunityId)}/answers`, {
           method: "POST",
-          body: JSON.stringify({ key: problem.key, answer, reusable: Boolean(reusable?.checked) }),
+          body: JSON.stringify({ key: problem.key, answer, reusable: Boolean(reusable?.checked), posting_confirmed: Boolean(problem.postingConfirmed?.()) }),
         });
         onSaved(saved.check, `Saved for ${company}.`);
       } catch (error) {
@@ -10563,6 +10591,11 @@
     const status = element("p", "form-status");
     status.setAttribute("role", "status");
     form.append(label, element("p", "profile-help", "You typed this, so the app has not checked it against the form yet. It only uses an option the form really lists, word for word."), save, status);
+    // Kept across a rebuild of the list, but only when the student changed it from the suggestion.
+    form.applyDraft = {
+      read: () => (input.value !== (action.suggestion || "") ? { answer: input.value } : null),
+      write: (draft) => { input.value = draft.answer; },
+    };
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       if (!input.value.trim()) {
@@ -10589,7 +10622,24 @@
     if (action.type === "profile") {
       const open = element("button", "secondary-button", action.field === "name_parts" ? "Add your name for applications" : "Open your profile");
       open.type = "button";
-      open.addEventListener("click", () => els.profileNav.click());
+      // The Profile page opens behind the role, so leave the role first, then land on the box that is missing.
+      const target = { name_parts: 'input[name="name_parts_first"]', contact: 'input[name="contact_email"]' }[action.field];
+      open.addEventListener("click", () => {
+        closeDetail();
+        els.profileNav.click();
+        // The page loads its form after it opens, so look for the box for a few seconds.
+        let tries = 0;
+        const look = () => {
+          const field = target ? document.querySelector(`.profile-form ${target}`) : null;
+          if (field) {
+            field.scrollIntoView({ block: "center" });
+            field.focus({ preventScroll: true });
+          } else if ((tries += 1) < 25) {
+            setTimeout(look, 200);
+          }
+        };
+        setTimeout(look, 200);
+      });
       return open;
     }
     if (action.type === "library") {
@@ -10629,6 +10679,38 @@
     return null;
   }
 
+  // Which Greenhouse posting the check read and when, and a warning (with a tick to go on) when it does not look like the saved role.
+  function applyPostingLine(body, result, remember, confirmed) {
+    const posting = result.posting;
+    if (!posting || !(posting.title || posting.company)) return;
+    const line = element("p", "apply-source profile-help");
+    const words = [posting.title, posting.company].filter(Boolean).join(" at ");
+    line.append("Read from ");
+    if (posting.url) {
+      const link = element("a", "", words);
+      link.href = posting.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      line.appendChild(link);
+    } else {
+      line.append(words);
+    }
+    const when = result.from_cache ? "a copy kept for up to an hour" : relativeWhen(result.checked_at);
+    line.append(` on Greenhouse${when ? `, ${when}` : ""}.`);
+    body.appendChild(line);
+    if (!posting.differs) return;
+    const warning = element("div", "apply-mismatch");
+    warning.appendChild(element("p", "apply-limit", `This may not be your role. ${posting.difference}.`));
+    const row = element("label", "confirmation-row");
+    const tick = document.createElement("input");
+    tick.type = "checkbox";
+    tick.checked = confirmed;
+    tick.addEventListener("change", () => remember(tick.checked));
+    row.append(tick, element("span", "", "This is the right posting"));
+    warning.appendChild(row);
+    body.appendChild(warning);
+  }
+
   function applyForMeSection(item) {
     // Only a saved role, and only for a student who turned Apply for me on: nobody else's page asks Greenhouse anything.
     if (item.intent_state !== "saved" || savedAutomationMode("apply_agent") !== "on") return null;
@@ -10644,6 +10726,8 @@
     const stale = () => state.detailItem !== item || !section.isConnected;
     let settled = false;
     const slow = setTimeout(() => { if (!settled && !stale()) section.hidden = false; }, 400);
+    // The student's word that the form Greenhouse returned is this role's, when it did not look like it.
+    let postingConfirmed = false;
 
     function paint(result, saved = "") {
       settled = true;
@@ -10654,28 +10738,42 @@
         summary.tabIndex = -1;
         summary.focus({ preventScroll: true });
       }
+      // Whatever is typed into another question and not yet saved comes back after the list is rebuilt below.
+      const drafts = new Map();
+      body.querySelectorAll("li[data-apply-key]").forEach((row) => {
+        const draft = row.querySelector("form")?.applyDraft?.read();
+        if (draft) drafts.set(row.dataset.applyKey, draft);
+      });
       body.replaceChildren();
       if (result.status === "unavailable" || result.status === "failed") return;
       (result.asks || []).forEach((ask) => body.appendChild(element("p", "apply-limit", `Before you go on: ${ask.message}`)));
       const stopped = result.eligibility?.handoff;
       if (stopped && !stopped.allowed && stopped.reason) body.appendChild(element("p", "apply-limit", `Not right now: ${stopped.reason}`));
+      applyPostingLine(body, result, (confirmed) => { postingConfirmed = confirmed; }, postingConfirmed);
+      // Questions the app has a control for come first. The ones it never answers for the student are grouped apart as hers to do on the form.
       const problems = result.problems || [];
-      if (problems.length) {
+      const groups = [[problems.filter((problem) => problem.action?.type !== "manual"), ""], [problems.filter((problem) => problem.action?.type === "manual"), "Left for you"]];
+      groups.forEach(([group, heading]) => {
+        if (!group.length) return;
+        if (heading) body.appendChild(element("p", "apply-group", `${heading}: the app leaves these to you on the Greenhouse form.`));
         const list = element("ul", "apply-problems");
-        problems.forEach((problem) => {
+        group.forEach((problem) => {
           const row = element("li", "apply-problem");
           row.dataset.applyKey = problem.key;
           row.appendChild(element("strong", "", problem.required ? problem.question : `${problem.question} (optional)`));
           row.appendChild(element("p", "profile-help", problem.message));
-          const control = applyProblemAction({ ...problem, opportunityId: item.id }, result.company, (fresh, message) => {
+          const control = applyProblemAction({ ...problem, opportunityId: item.id, postingConfirmed: () => postingConfirmed }, result.company, (fresh, message) => {
             if (fresh) paint(fresh, message);
             else load(message);
           });
-          if (control) row.appendChild(control);
+          if (control) {
+            if (drafts.has(problem.key)) control.applyDraft?.write(drafts.get(problem.key));
+            row.appendChild(control);
+          }
           list.appendChild(row);
         });
         body.appendChild(list);
-      }
+      });
       const fields = result.fields || [];
       if (fields.length) {
         const details = element("details", "apply-fields");

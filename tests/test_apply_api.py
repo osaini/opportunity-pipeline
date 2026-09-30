@@ -144,6 +144,47 @@ class CheckRouteTests(ApplyApiCase):
         self.assertNotIn("question_4000000112", keys, "an optional follow-up is not a problem")
         self.assertNotIn("Sam", json.dumps(payload))
 
+    def test_the_check_names_the_posting_it_read_and_flags_a_form_that_is_another_companys(self):
+        self.greenhouse_role()
+        self.turn_on()
+        posting = self.check().json()["posting"]
+        # The sandbox's fake board answers every job with Example Robotics' listing, so the saved Acme role does not match it.
+        self.assertEqual((posting["title"], posting["company"]), ("Robotics Software Intern", "Example Robotics"))
+        self.assertTrue(posting["differs"])
+        self.assertIn("Example Robotics, not Acme Robotics", posting["difference"])
+        self.assertTrue(posting["url"].endswith("/examplerobotics/jobs/4000000001"))
+        with self.conn:
+            self.conn.execute("UPDATE opportunities SET company='Example Robotics, Inc.', title='Robotics Intern' WHERE id=?", (ACME,))
+        posting = self.check().json()["posting"]
+        self.assertFalse(posting["differs"], "the employer's own words match, and the titles share a word besides intern")
+        with self.conn:
+            self.conn.execute("UPDATE opportunities SET title='Marketing Intern' WHERE id=?", (ACME,))
+        self.assertIn("not Marketing Intern", self.check().json()["posting"]["difference"])
+
+    def test_a_form_that_looks_like_another_role_waits_for_the_students_word_before_an_answer_is_saved(self):
+        self.greenhouse_role()
+        self.turn_on()
+        url = f"/api/v1/apply-agent/opportunities/{ACME}/answers"
+        refused = self.post(url, {"key": "question_4000000101", "answer": "I build robot arms"})
+        self.assertEqual(refused.status_code, 422, refused.text)
+        self.assertIn("Confirm it is the right posting", refused.json()["detail"])
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM answer_library").fetchone()[0], 0)
+        self.assertEqual(self.post(url, {"key": "question_4000000101", "answer": "I build robot arms", "posting_confirmed": True}).status_code, 200)
+
+    def test_questions_the_app_leaves_to_the_student_are_counted_apart(self):
+        self.greenhouse_role()
+        self.turn_on()
+        first = self.check().json()
+        self.assertEqual(first["counts"]["needs_answer"], 3)
+        self.assertGreaterEqual(first["counts"]["left_for_you"], 1)
+        self.assertRegex(first["message"], r"^3 questions need an answer first\. \d+ more are left for you to answer on the Greenhouse form$")
+        url = f"/api/v1/apply-agent/opportunities/{ACME}/answers"
+        for key, answer in (("question_4000000101", "I build robot arms"), ("question_4000000103", "Controls"), ("question_4000000111", "No")):
+            last = self.post(url, {"key": key, "answer": answer, "posting_confirmed": True}).json()["check"]
+        self.assertEqual(last["counts"]["needs_answer"], 0)
+        self.assertRegex(last["message"], r"^The app has everything it can fill\. \d+ questions are yours to answer on the Greenhouse form$")
+        self.assertNotIn("answer first", last["message"])
+
     def test_a_role_that_is_not_greenhouse_says_so_and_a_role_that_does_not_exist_is_404(self):
         self.turn_on()
         payload = self.check("job-b").json()
@@ -187,7 +228,7 @@ class CheckRouteTests(ApplyApiCase):
         with mock.patch("socket.socket.connect", side_effect=boom), mock.patch("socket.create_connection", side_effect=boom), \
                 mock.patch("urllib.request.urlopen", side_effect=boom):
             self.assertEqual(self.check().status_code, 200)
-            response = self.post(f"/api/v1/apply-agent/opportunities/{ACME}/answers", {"key": "question_4000000103", "answer": "Controls"})
+            response = self.post(f"/api/v1/apply-agent/opportunities/{ACME}/answers", {"key": "question_4000000103", "answer": "Controls", "posting_confirmed": True})
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual(self.get("/api/v1/apply-agent/settings").status_code, 200)
 
@@ -202,7 +243,7 @@ class AnswerRouteTests(ApplyApiCase):
         return f"/api/v1/apply-agent/opportunities/{ACME}/answers"
 
     def test_an_answer_is_saved_for_this_company_and_the_fresh_check_comes_back(self):
-        response = self.post(self.url(), {"key": "question_4000000101", "answer": "I build robot arms", "reusable": False})
+        response = self.post(self.url(), {"key": "question_4000000101", "answer": "I build robot arms", "reusable": False, "posting_confirmed": True})
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
         self.assertNotIn("question_4000000101", [item["key"] for item in body["check"]["problems"]])
@@ -219,7 +260,7 @@ class AnswerRouteTests(ApplyApiCase):
             ({"key": "question_4000000101", "answer": "   "}, "Type an answer"),
         ):
             with self.subTest(body=body):
-                response = self.post(self.url(), body)
+                response = self.post(self.url(), {**body, "posting_confirmed": True})
                 self.assertEqual(response.status_code, 422, response.text)
                 self.assertIn(needle, response.json()["detail"])
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM answer_library").fetchone()[0], 0)

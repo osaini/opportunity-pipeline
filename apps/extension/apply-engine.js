@@ -233,7 +233,7 @@
   // smarter: a question worded some other way is not caught, and only the student not tagging it
   // reusable keeps it at one company. A saved answer to one of these never carries to another
   // company, even when the row is tagged reusable.
-  const CONTEXT_WORDING = /previously (?:worked|been employed|applied)|worked (?:here|for us|for this company|at)|applied (?:here|before|previously)|referr|who referred|know (?:anyone|someone)|how did you hear|where did you (?:hear|find)|current(?:ly)? (?:an )?employee|worked (?:for|with|at) (?:us|this|our|the company)|employed (?:by|at|with)|interviewed (?:with|at|here)|relatives?\b|family members?\b|related to\b|spouse|immediate family|former employee|employed here\b|relations? working|this (?:organi[sz]ation|firm|company|employer)/;
+  const CONTEXT_WORDING = /previously (?:worked|been employed|applied)|worked (?:here|for us|for this company|at)|applied (?:here|before|previously)|referr|who referred|know (?:anyone|someone)|how did you hear|where did you (?:hear|find)|current(?:ly)? (?:an )?employee|worked (?:for|with|at) (?:us|this|our|the company)|employed (?:by|at|with)|interviewed (?:with|at|here)|relatives?\b|family members?\b|related to\b|spouse|immediate family|former employee|employed here\b|relations? working|this (?:organi[sz]ation|firm|company|employer)|\bwork (?:here|for us|with us)\b|\bour (?:company|team|organi[sz]ation|mission|products?)\b|\bthis (?:role|position|opportunity|team)\b|\binterest(?:ed|s)? (?:you )?(?:in|about) this\b|\bjoin (?:us|our)\b/;
 
   function needsLabelKey(key) {
     const text = withoutEnumeration(key);

@@ -474,6 +474,66 @@
       "key": "part time availability when can you start working in the summer",
       "needs_label_key": false,
       "context_dependent": false
+    },
+    {
+      "text": "Why do you want to work here?",
+      "key": "why do you want to work here",
+      "needs_label_key": false,
+      "context_dependent": true
+    },
+    {
+      "text": "Why are you interested in our company?",
+      "key": "why are you interested in our company",
+      "needs_label_key": false,
+      "context_dependent": true
+    },
+    {
+      "text": "Why are you interested in this role?",
+      "key": "why are you interested in this role",
+      "needs_label_key": false,
+      "context_dependent": true
+    },
+    {
+      "text": "What interests you about this position?",
+      "key": "what interests you about this position",
+      "needs_label_key": false,
+      "context_dependent": true
+    },
+    {
+      "text": "Tell us what excites you about joining our team",
+      "key": "tell us what excites you about joining our team",
+      "needs_label_key": false,
+      "context_dependent": true
+    },
+    {
+      "text": "Why do you want to join us?",
+      "key": "why do you want to join us",
+      "needs_label_key": false,
+      "context_dependent": true
+    },
+    {
+      "text": "What draws you to our mission?",
+      "key": "what draws you to our mission",
+      "needs_label_key": false,
+      "context_dependent": true
+    },
+    {
+      "text": "Why do you want to work for us?",
+      "key": "why do you want to work for us",
+      "needs_label_key": false,
+      "context_dependent": true
+    },
+    {
+      "text": "Why are you interested in this internship?",
+      "key": "why are you interested in this internship",
+      "needs_label_key": false,
+      "context_dependent": true
+    },
+    {
+      "text": "Are you comfortable working in a team environment?",
+      "key": "are you comfortable working in a team environment",
+      "needs_label_key": false,
+      "context_dependent": false
     }
   ]
 }

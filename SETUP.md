@@ -537,7 +537,8 @@ for them, and set up these things with the student:
    Profile page. A confirmed name of exactly two words works without it; a
    longer name does not, on purpose, and the switch says so until it is set.
 2. **A confirmed email and a confirmed résumé** (step 7). The email is
-   `contact.email`, confirmed on the Profile page.
+   `contact.email`, confirmed on the Profile page in **Email for applications**
+   (the phone box under it is optional).
 3. **Playwright and Chromium**, the same install as PDF export and contact
    forms: `python -m playwright install chromium`. On Linux the app also needs
    a display: run `systemctl --user import-environment DISPLAY WAYLAND_DISPLAY`

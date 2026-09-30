@@ -183,6 +183,7 @@ def _prepare(
         "opportunity_id": opportunity_id, "title": str(opportunity["title"] or ""), "company": company, "ats": "", "status": "unavailable",
         "message": NOT_GREENHOUSE, "problems": [], "asks": [], "fields": [], "counts": {}, "eligibility": {}, "application": {"exists": False, "stage": ""},
         "checked_at": moment.isoformat(timespec="seconds"), "from_cache": False,
+        "posting": {"title": "", "company": "", "url": "", "differs": False, "difference": ""},
     }
     ident = apply_policy.identify(conn, opportunity_id)
     if ident is None:
@@ -200,7 +201,13 @@ def _prepare(
     if listing is None:
         return {**result, "status": "failed", "message": sentence}, None, None
     result["from_cache"] = cached
-    sources = apply_policy.sources_for(conn, user_id, opportunity_id, company=company, storage_root=resume_root)
+    # Which posting was read, so the student can see it, and whether it looks like the role they saved (source integrity).
+    difference = apply_policy.posting_difference(company, str(opportunity["title"] or ""), listing)
+    result["posting"] = {
+        "title": str(listing.get("title") or ""), "company": str(listing.get("company_name") or ""), "url": result["canonical_url"],
+        "differs": bool(difference), "difference": difference,
+    }
+    sources =apply_policy.sources_for(conn, user_id, opportunity_id, company=company, storage_root=resume_root)
     plan = apply_policy.build_plan(
         apply_policy.parse_schema(listing), None, sources, company, "check",
         canonical_url=result["canonical_url"], adapter_version=apply_runs.ADAPTER_VERSION,
@@ -260,10 +267,23 @@ def check(
         return result
     problems, counts, fields = _view(plan, sources.facts)
     required = [item for item in problems if item["required"]]
+    # A question with no control in the app (a sensitive one) is the student's to answer on the form: it is counted apart,
+    # so "need an answer first" only counts what the student can do something about here.
+    yours = {item["key"] for item in required if item["action"]["type"] == "manual"}
+    open_here = {item["key"] for item in required} - yours
+    counts.update(needs_answer=len(open_here), left_for_you=len(yours))
     result.update(problems=problems, counts=counts, fields=fields)
-    if required:
-        count = len({item["key"] for item in required})
-        result.update(status="needs_you", message=f"{count} question{'s' if count != 1 else ''} need{'' if count != 1 else 's'} an answer first")
+    if open_here:
+        count = len(open_here)
+        message = f"{count} question{'s' if count != 1 else ''} need{'' if count != 1 else 's'} an answer first"
+        if yours:
+            message += f". {len(yours)} more {'is' if len(yours) == 1 else 'are'} left for you to answer on the Greenhouse form"
+        result.update(status="needs_you", message=message)
+    elif yours:
+        count = len(yours)
+        result.update(status="needs_you", message=f"The app has everything it can fill. {count} question{'s are' if count != 1 else ' is'} yours to answer on the Greenhouse form")
+    elif result["posting"]["differs"]:
+        result.update(status="needs_you", message=f"Check the posting first. {result['posting']['difference']}")
     else:
         filled, blank = counts["filled"], counts["left_blank"]
         tail = f"; {blank} optional field{'s' if blank != 1 else ''} left blank" if blank else ""
@@ -309,18 +329,23 @@ def _stored_answer(entry: apply_policy.PlanField, answer: Any) -> str:
 def answer_missing(
     conn: sqlite3.Connection, user_id: str, opportunity_id: str, *, key: str, answer: Any, reusable: bool = False,
     client: SchemaClient, cache: SchemaCache | None = None, resume_root: Path | None = None, now: datetime | None = None,
+    posting_confirmed: bool = False,
 ) -> dict[str, Any]:
     """Save the student's answer to one question the check listed as missing. The one write of the missing-answers view.
 
     The answer goes to the answer library for this role's company, filed under the question's own words (or, for a
     follow-up, under its parent's as well), with no field id in it. The "use for any company" tick adds the
     ``reusable`` tag, and is refused for a question that depends on the company. A sensitive question is never saved
-    here: it has no ordinary answer. Returns the fresh check.
+    here: it has no ordinary answer. When the form Greenhouse returned does not look like the saved role, the answer is
+    refused until the student says it is the right posting (``posting_confirmed``), because it is filed under the
+    role's company. Returns the fresh check.
     """
     moment = _now(now)
     result, plan, _sources = _prepare(conn, user_id, opportunity_id, client=client, cache=cache, resume_root=resume_root, moment=moment)
     if plan is None:
         raise AnswerRefused(result["message"])
+    if result["posting"]["differs"] and not posting_confirmed:
+        raise AnswerRefused(f"{result['posting']['difference']}. Confirm it is the right posting before saving an answer for {result['company']}")
     entry = plan.get(key)
     if entry is None:
         raise AnswerRefused("The form no longer asks that question")

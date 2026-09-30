@@ -783,9 +783,9 @@ tests.exact_label_and_legacy_rows_need_the_company_too = () => {
     assert.notEqual(fieldById(loadContentScript(page).scan(profile, reusable, "Orbit Systems"), id).confidence, 0.9, `${wording}: reusable does not carry a follow-up`);
   }
   // Repro (b): a field with no name or id, whose label is its question, and a row on those words.
-  const bare = pageOf({ tag: "textarea", wrapped: true, label: "Why do you want to work here?" });
-  assert.equal(only(loadContentScript(bare).scan(profile, [], "Acme Robotics")).answer_key, "Why do you want to work here?", "the label is the question and there is no name or id");
-  const row = { id: "lib", question: "Why do you want to work here?", answer: "The mission.", company: "Acme Robotics" };
+  const bare = pageOf({ tag: "textarea", wrapped: true, label: "Tell us about a project you are proud of" });
+  assert.equal(only(loadContentScript(bare).scan(profile, [], "Acme Robotics")).answer_key, "Tell us about a project you are proud of", "the label is the question and there is no name or id");
+  const row = { id: "lib", question: "Tell us about a project you are proud of", answer: "The mission.", company: "Acme Robotics" };
   assert.equal(only(loadContentScript(bare).scan(profile, [row], "Acme Robotics")).confidence, 0.9);
   const orbit = only(loadContentScript(bare).scan(profile, [row], "Orbit Systems"));
   assert.equal(orbit.confidence, 0.7, "the same words saved at another company are not exact");
@@ -850,8 +850,13 @@ tests.standalone_questions_stay_exact_at_their_company = () => {
     const away = loadContentScript(at("question_82")).scan(profile, rows, "Orbit Systems").fields[0];
     assert.equal(away.confidence, 0.7, `${question}: not exact at another company`);
     const reusable = loadContentScript(at("question_82")).scan(profile, [{ ...rows[0], tags: ["reusable"] }], "Orbit Systems").fields[0];
-    assert.equal(reusable.confidence, 0.9);
-    assert.equal(reusable.reason, "Same question, saved as reusable; verify before filling");
+    // Wording about the employer itself ("work here", "this role") never travels, even when reusable.
+    if (/work here|this role/.test(question)) {
+      assert.equal(reusable.confidence, 0.7, `${question}: about the employer, so it does not travel`);
+    } else {
+      assert.equal(reusable.confidence, 0.9);
+      assert.equal(reusable.reason, "Same question, saved as reusable; verify before filling");
+    }
   }
 };
 
@@ -1079,7 +1084,9 @@ tests.a_reusable_option_row_never_travels_to_another_company = () => {
 
 tests.employer_relative_questions_never_travel_even_when_reusable = () => {
   for (const question of ["Have you ever worked for this organization?", "Do you have relatives employed by us?", "Have you interviewed with us before?",
-    "Are any of your family members employed by this company?", "Were you previously employed by this firm?"]) {
+    "Are any of your family members employed by this company?", "Were you previously employed by this firm?",
+    "Why do you want to work here?", "Why are you interested in our company?", "Why are you interested in this role?", "What interests you about this position?",
+    "Why do you want to join us?"]) {
     const page = pageOf({ tag: "textarea", id: "question_31", name: "question_31", label: question });
     const rows = [{ id: "r", question, answer: "No", company: "Acme Robotics", tags: ["reusable"] }];
     const away = loadContentScript(page).scan(profile, rows, "Orbit Systems").fields[0];
@@ -1087,7 +1094,7 @@ tests.employer_relative_questions_never_travel_even_when_reusable = () => {
     assert.equal(loadContentScript(page).scan(profile, rows, "Acme Robotics").fields[0].confidence, 0.9, `${question}: exact at its own company`);
   }
   // Questions that are not about the employer still travel when reusable.
-  for (const question of ["Why are you interested in this role?", "Tell us about yourself", "Describe a time you worked on a team"]) {
+  for (const question of ["Tell us about yourself", "Describe a time you worked on a team", "Are you comfortable working in a team environment?"]) {
     const page = pageOf({ tag: "textarea", id: "question_32", name: "question_32", label: question });
     const rows = [{ id: "r", question, answer: "Answer", company: "Acme Robotics", tags: ["reusable"] }];
     assert.equal(loadContentScript(page).scan(profile, rows, "Orbit Systems").fields[0].confidence, 0.9, question);

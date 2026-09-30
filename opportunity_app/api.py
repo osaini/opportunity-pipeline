@@ -670,6 +670,7 @@ class ApplyAnswerRequest(BaseModel):
     key: str = Field(min_length=1, max_length=200)
     answer: str | list[str] = Field(max_length=10_000)
     reusable: bool = False
+    posting_confirmed: bool = False
 
 
 class ApplyLabelRequest(BaseModel):
@@ -1957,7 +1958,7 @@ def create_app(
         require_apply_agent(conn, user_id)
         try:
             return apply_preflight.answer_missing(
-                conn, user_id, opportunity_id, key=payload.key, answer=payload.answer, reusable=payload.reusable,
+                conn, user_id, opportunity_id, key=payload.key, answer=payload.answer, reusable=payload.reusable, posting_confirmed=payload.posting_confirmed,
                 client=client, cache=apply_schema_cache, resume_root=resume_storage,
             )
         except OpportunityNotFoundError as exc:
