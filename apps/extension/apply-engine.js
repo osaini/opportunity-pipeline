@@ -259,6 +259,8 @@
       /(?<!\bone )(?<!\btwo )(?<!\bthree )(?<!\bsingle )(?<!\bfew )\bsentenc(?:e|ed|es|ing)\b/, /\bprobation/, /\bparole/,
       /\bmisdemeanou?r/, /\bbackground check/, /\bpending case/, /\bincarcerat/, /\bimprison/,
       /\bguilty/, /\bno contest/, /\bnolo\b/, /\bplea(?:d|ded)?\b/, /\bpled\b/, /\bwarrant/, /\bdui\b/, /\bdwi\b/, /\bjail/, /\bprison/, /\bpolice/, /\bindict/, /\blegal proceeding/, /\badjudicat/, /\bexpunge/, /\bsealed\b/, /\bdetained\b/,
+      /\blegal matters?/, /\brestraining order/, /\blicen[sc]e\b.{0,40}\b(?:suspen|revo)/, /\blitigation/, /\blaw enforcement/,
+      /\bcaution(?:ed|s)?\b/, /\boffender/,
     ],
     demographic: [
       /\bgender/, /\bsex/, /\bfemales?\b/, /\bmales?\b/, /\bwom[ae]n\b/, /\bnon ?binary\b/, /\brace\b/, /\bracial/, /\bethnic/, /\bhispanic/, /\blatin[oax]/, /\bveteran/, /\bmilitary/,
@@ -266,14 +268,18 @@
       /\bmarital/, /\bmarried/, /\bpregnan/, /\bgenetic/, /\bage\b/, /\bbirth/, /\bdob\b/, /\byears old\b/, /\bhow old\b/, /\beeoc?\b/,
       /\bself identif/,
       /\bperson of colou?r/, /\bpeople of colou?r/, /\bbipoc/, /\bblack\b/, /\bindigenous/, /\bnative american/, /\balaska native/, /\bpacific islander/, /\bunderrepresent/, /\bminorit/, /\bover 40\b/, /\bborn\b/, /\bnational origin/, /\bmedical/, /\bhealth condition/, /\baccommodat/, /\bnational guard/, /\breserves\b/, /\bneurodiver/, /\bhe him\b/, /\bshe her\b/, /\bthey them\b/, /\braces\b/,
+      /\blearning (?:difference|disabilit)/, /\badhd\b/, /\bdyslex/, /\bautis/, /\bdeaf/, /\bhard of hearing/, /\bchronic/, /\bcaregiver/,
+      /\bchildren\b/, /\bcaste\b/, /\baboriginal/, /\btorres strait/, /\bfirst language/, /\bmother tongue/,
     ],
     money: [
       /\bsalar/, /\bcompensat/, /\bpay\b/, /\bpaid\b/, /\bwages?\b/, /\bstipend/, /\bhourly\b/, /\bremunerat/,
       /\bearnings?\b/, /\bbonus/, /\b(?:pay|hourly|hour|day|week|wage|salary|desired|expected|minimum|target|base|starting|billing|annual) rate\b/,
       /\brate of pay\b/, /\b(?:expected|desired) (?:salary|compensation|pay|rate|wages?|earnings?|hourly|stipend)/,
       /\bincome/, /\bctc\b/, /\bote\b/, /\bper hour\b/, /\bhow much (?:do you |are you )?(?:currently |now )?(?:make|earn|paid)/, /\b(?:are|were|was) you (?:currently |now |still )?(?:making|earning)\b/,
+      /\bcomp\b(?! (?:sci|science|eng|engineering|arch|architecture|org|bio|lit|vision|geometry|neuro|networks?|theory|systems?)\b)/,
+      /\bfixed component/, /\blast drawn/, /\bvariable (?:pay|component)/, /\byour ask\b/, /\bbankrupt/, /\bcredit (?:score|check|history|report)/,
     ],
-    security: [/\bclearance/, /\bexport/, /\bitar\b/, /\bear\b/, /\bu s person/, /\bus person/, /\bsecurity/, /\bpolygraph/, /\btop secret/, /\bts sci\b/, /\bdod\b/, /\bpublic trust/, /\bbackground investigation/, /\bsanction/, /\bofac\b/, /\bsecret clearance/],
+    security: [/\bclearance/, /\bexport/, /\bitar\b/, /\bear\b/, /\bu s person/, /\bus person/, /\bsecurity/, /\bpolygraph/, /\btop secret/, /\bts sci\b/, /\bdod\b/, /\bpublic trust/, /\bbackground investigation/, /\bsanction/, /\bofac\b/, /\bsecret clearance/, /\bvetting/, /\bpoly\b/, /\baccess authori/, /\bnato\b/],
     agreement: [
       /\bagree/, /\backnowledg/, /\bconsent/, /\bcertif/, /\battest/, /\baffirm/, /\bdeclar/, /\bconfirm/, /\bunderstand that/,
       /\bunderstood\b/, /\baccept/, /\bterms\b/, /\bpolic(?:y|ies)\b/, /\bprivacy/, /\bnotice/, /\bdisclos/, /\bstatement/,
@@ -376,7 +382,7 @@
   // for every tier: the clean question, the whole label, and rows saved before the clean
   // question existed. An answer saved at another employer is never assumed true here, and a row
   // with no company is exact only when it is reusable.
-  function mayUseAtCompany(entry, keys, company, optionRow, previousText) {
+  function mayUseAtCompany(entry, keys, company, optionRow, blocked) {
     if (company && normalizedQuestion(entry.company || "") === company) return true;
     // An option row is saved on the option's own label and does not carry its group question, so
     // nothing shows it is the same question anywhere else: it never travels, reusable or not. A checkbox is an option row, so a
@@ -384,10 +390,12 @@
     if (optionRow) return false;
     const reusable = (entry.tags || []).some((tag) => String(tag).toLowerCase() === "reusable");
     // The broad net too: a question that might be immigration, criminal, demographic, pay, security, an agreement or about the
-    // employer's own people never carries to another company, whatever the row says or however the wording is phrased. So does a
-    // question that comes right after one the net finds something in: "Please tell us what happened" under a felony question, or
-    // "What is the expiration date?" under a visa question, is that question's continuation whatever its own words say.
-    if (previousText && possiblySensitive(previousText)) return false;
+    // employer's own people never carries to another company, whatever the row says or however the wording is phrased. ``blocked``
+    // says the field itself hits the net (its question, its help text, a select's options, or a select whose options or heading
+    // agree to something) or follows a question that does, directly or through a chain of follow-ups: "Please tell us what
+    // happened" under a felony question, "What is the expiration date?" under a visa question, or the story two fields below a
+    // probation question, is that question's continuation whatever its own words say (see netReadings).
+    if (blocked) return false;
     return reusable && !keys.some((key) => key && (contextDependent(key) || possiblySensitive(key)));
   }
 
@@ -395,7 +403,7 @@
   // so answers saved before the side panel kept the clean question still match. `fieldQuestion`
   // is the field's own question, which a radio, checkbox or opener does not pass as `question`
   // but which still decides whether a reusable row may travel.
-  function matchAnswer(question, label, answers, company, fieldQuestion, fieldType, previousText) {
+  function matchAnswer(question, label, answers, company, fieldQuestion, fieldType, blocked) {
     const cleanKey = questionKey(question);
     const normalizedLabel = normalizedQuestion(label);
     // No words at all (an option with no label source): nothing can be an exact match.
@@ -403,7 +411,7 @@
     const companyKey = normalizedQuestion(company || "");
     const ownKey = questionKey(fieldQuestion === undefined ? question : fieldQuestion);
     const optionRow = fieldType === "radio" || fieldType === "checkbox";
-    const usable = (entry) => mayUseAtCompany(entry, [normalizedQuestion(entry.question), ownKey], companyKey, optionRow, previousText);
+    const usable = (entry) => mayUseAtCompany(entry, [normalizedQuestion(entry.question), ownKey], companyKey, optionRow, blocked);
     const cleanMatches = cleanKey && !needsLabelKey(cleanKey) ? (answers || []).filter((entry) => normalizedQuestion(entry.question) === cleanKey) : [];
     const labelMatches = normalizedLabel ? (answers || []).filter((entry) => normalizedQuestion(entry.question) === normalizedLabel) : [];
     const exact = cleanMatches.find(usable) || labelMatches.find(usable);
@@ -481,11 +489,86 @@
     }
   }
 
+  // What the broad net reads on a field beyond its question: its help text (aria-describedby), and for a select its option labels.
+  // apply_policy._field_net reads the same: the options only for the topics a person's own status is answered in and a few narrow
+  // phrases (pay, clearance, race), so a plain choice list ("Security" as one team among several) is not read as a question about it.
+  const NET_OPTION_TOPICS = ["immigration", "work_authorization", "criminal", "demographic"];
+  const OPTION_EXTRA = {
+    security: /clearance|top secret|ts sci|\bsecret\b|public trust|polygraph/,
+    money: /\bsalar|\bcompensat|\bhourly\b|\bper hour\b|\bper year\b|\b\d+ ?k\b|\bhr\b|\bincome|\b\d{2,3} 000\b/,
+    demographic: /\basian\b|\bwhite\b|\bcaucasian|\bafrican american|\bmiddle eastern/,
+  };
+  // An option, heading or description that agrees to, accepts, acknowledges, consents to, certifies or confirms something.
+  const AGREEMENT_OPTION = /\bagree|\baccept|\backnowledg|\bconsent|\bcertif|\battest|\bconfirm|\bi have read\b|\bi ve read\b|\bunderstand/;
+  // A field that asks for a typed signature or initials is an agreement whatever else it says.
+  const SIGNATURE = /\bsignature\b|\be ?sign|\bsign here\b|\btype your (?:full )?(?:legal )?name\b|\binitials?\b|\b(?:type|enter|print|write|input)\b.{0,60}\b(?:to|as|in) (?:agree|accept|confirm|acknowledge|consent|certify|attest)/;
+
+  function plainWords(text) {
+    return String(text ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  }
+
+  function optionLabels(control) {
+    try {
+      return [...(control.options || [])].map((option) => collapse(option.textContent)).filter(Boolean);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function optionTopics(options) {
+    const words = options.map(plainWords);
+    if (!words.length) return [];
+    const topics = new Set(netTopics(words.join(" ")).filter((topic) => NET_OPTION_TOPICS.includes(topic)));
+    for (const [topic, pattern] of Object.entries(OPTION_EXTRA)) if (words.some((option) => pattern.test(option))) topics.add(topic);
+    return [...topics];
+  }
+
+  // A question that takes its meaning from the one above it: a follow-up wording, a short phrase, or one that opens with a question word.
+  function followUpShaped(question) {
+    const key = questionKey(question);
+    if (!key) return true;
+    return needsLabelKey(key) || key.split(" ").filter(Boolean).length < 6 || CONTEXT_WH.test(withoutEnumeration(key));
+  }
+
+  // One reading per control, in page order. hit: the field itself may be sensitive (its words, its help text, a select's options, a
+  // signature). never: it hits a never-storable topic. follows: the field above it hit, or was itself a follow-up of one that did, so it
+  // is that question's continuation ("Year it happened", then "Please tell us what happened"); this mirrors the own chain in
+  // apply_policy.build_plan. followsNever: the same for a never-storable question, only when this field is follow-up shaped, so an
+  // independent question after one is still offered for saving.
+  function netReadings(controls) {
+    const readings = [];
+    let passes = false;
+    let passesNever = false;
+    for (const control of controls) {
+      const type = controlType(control);
+      const question = questionText(control);
+      const screened = screenText(control, question);
+      const owner = control.ownerDocument || document;
+      const described = textOfIds(owner, control.getAttribute?.("aria-describedby"));
+      const choice = type === "select" ? optionLabels(control) : [];
+      const fromOptions = optionTopics(choice);
+      const read = `${screened} ${described}`;
+      const agrees = type === "select" && AGREEMENT_OPTION.test(plainWords([read, ...choice].join(" ")));
+      const typed = !["select", "radio", "checkbox", "file", "custom_select"].includes(type);
+      const hit = SENSITIVE.test(screened) || SENSITIVE.test(question) || possiblySensitive(read) || fromOptions.length > 0 || agrees
+        || (typed && SIGNATURE.test(plainWords(read)));
+      const never = neverStorable(`${question} ${described}`) || fromOptions.some((topic) => NEVER_STORABLE_TOPICS.includes(topic));
+      const shaped = followUpShaped(question);
+      const follows = passes;
+      const followsNever = passesNever && shaped;
+      readings.push({ hit, never, follows, followsNever });
+      passes = hit || (follows && shaped);
+      passesNever = never || followsNever;
+    }
+    return readings;
+  }
+
   function scan(profile, answers, options) {
     profile = profile || {};
     const tag = options?.tag === true;
     const controls = visibleControls();
     const repeated = repeatedQuestionKeys(controls);
+    const readings = netReadings(controls);
     const fields = controls.map((control, index) => {
       const label = labelFor(control);
       const type = controlType(control);
@@ -515,10 +598,9 @@
         confidence = value !== "" ? 0.95 : 0;
         reason = value !== "" ? "Mapped from an explicit label" : "Confirmed profile value is unavailable";
       } else {
-        // The field right before this one on the form: a reusable row never carries when either of them hits the broad net.
-        const before = index > 0 ? controls[index - 1] : null;
-        const previousText = before ? screenText(before, questionText(before)) : "";
-        let match = matchAnswer(labelKey ? "" : question, label, answers, options?.company, question, type, previousText);
+        // A reusable row never carries onto a field that hits the broad net, or that follows one that does (netReadings).
+        const blocked = readings[index].hit || readings[index].follows;
+        let match = matchAnswer(labelKey ? "" : question, label, answers, options?.company, question, type, blocked);
         // A label-keyed field with no name and no id has only its wording for a label, and that
         // wording repeats under any parent question, so nothing may call it an exact match (Save
         // refuses it for the same reason).
@@ -549,7 +631,7 @@
         reason, proposed_value: String(value),
         question, answer_key: saveKey,
         // The words hit a topic no answer may be saved for (criminal, demographic, pay, security): the panel offers no Save, and the API refuses it.
-        never_storable: neverStorable(question) || neverStorable(saveKey), required_markers: markers, required_any: markers.length > 0,
+        never_storable: neverStorable(question) || neverStorable(saveKey) || readings[index].never || readings[index].followsNever, required_markers: markers, required_any: markers.length > 0,
         widget: widgetKind(control, type), visible_css: visibleCss(control),
         name: String(control.name || ""), id: String(control.id || "") };
     });

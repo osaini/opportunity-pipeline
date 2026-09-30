@@ -1223,6 +1223,109 @@ tests.a_question_the_net_calls_never_storable_is_marked_so_the_panel_offers_no_s
   assert.match(sidepanel, /!field\.requires_review && !field\.never_storable/, "the panel hides Save for a never-storable question");
 };
 
+// --- Round 4: a select's options and help text are read, and a chain of follow-ups carries the topic to the end ---
+
+tests.a_reusable_select_whose_options_or_help_text_agree_never_travels_or_pre_ticks = () => {
+  const selects = [
+    ["Keep my details in the talent pool for future roles", ["I consent", "I do not consent"], "I consent"],
+    ["Interview recording for training purposes", ["I accept", "I decline"], "I accept"],
+    ["Our arbitration agreement for disputes", ["Opt in", "Opt out"], "Opt in"],
+    ["Do you certify that your answers are true?", ["Yes I do", "No I do not"], "Yes I do"],
+  ];
+  for (const [question, labels, answer] of selects) {
+    const page = pageOf({ tag: "select", id: "question_7", name: "question_7", label: question, options: labels.map((label) => ({ value: label, label })) });
+    const rows = [{ id: "r", question, answer, company: "Acme Robotics", tags: ["reusable"] }];
+    for (const company of ["Orbit Systems", "", undefined]) {
+      const scan = loadContentScript(page).scan(profile, rows, company);
+      assert.notEqual(fieldById(scan, "question_7").confidence, 0.9, `${question} at ${JSON.stringify(company)}: not exact`);
+      assert.equal(preTicked(scan, "question_7"), false, `${question} at ${JSON.stringify(company)}: not pre-ticked`);
+    }
+    // At the company it was saved for it is still that company's own answer.
+    assert.equal(fieldById(loadContentScript(page).scan(profile, rows, "Acme Robotics"), "question_7").confidence, 0.9, `${question}: own company`);
+  }
+  // A help text that carries the real question (aria-describedby) is read like the question itself.
+  const help = "Please list any criminal convictions here";
+  const page = Object.assign(pageOf({ tag: "textarea", id: "question_8", name: "question_8", label: "Anything else we should know about you?", ariaDescribedby: "help_8" }), { texts: { help_8: help } });
+  const rows = [{ id: "r", question: "Anything else we should know about you?", answer: "Answer", company: "Acme Robotics", tags: ["reusable"] }];
+  const away = loadContentScript(page).scan(profile, rows, "Orbit Systems");
+  assert.equal(preTicked(away, "question_8"), false, "a criminal ask in the help text: not pre-ticked at another company");
+  assert.equal(fieldById(away, "question_8").never_storable, true, "and the panel offers no Save for it");
+  // A plain select, and a plain textarea with harmless help text, still travel when reusable.
+  const plain = pageOf({ tag: "select", id: "question_9", name: "question_9", label: "Which team are you most interested in?", options: [{ value: "a", label: "Perception" }, { value: "b", label: "Security" }] });
+  const plainRow = [{ id: "p", question: "Which team are you most interested in?", answer: "Perception", company: "Acme Robotics", tags: ["reusable"] }];
+  assert.equal(fieldById(loadContentScript(plain).scan(profile, plainRow, "Orbit Systems"), "question_9").confidence, 0.9, "a plain choice list is not read as a clearance question");
+  const harmless = Object.assign(pageOf({ tag: "textarea", id: "question_10", name: "question_10", label: "Tell us about yourself", ariaDescribedby: "help_10" }), { texts: { help_10: "A few lines is plenty" } });
+  const harmlessRow = [{ id: "h", question: "Tell us about yourself", answer: "Answer", company: "Acme Robotics", tags: ["reusable"] }];
+  assert.equal(fieldById(loadContentScript(harmless).scan(profile, harmlessRow, "Orbit Systems"), "question_10").confidence, 0.9);
+};
+
+tests.a_race_or_pay_range_select_is_never_storable_and_a_typed_signature_never_travels = () => {
+  const race = pageOf({ tag: "select", id: "question_12", name: "question_12", label: "How do you describe yourself?", options: [{ value: "a", label: "Asian" }, { value: "w", label: "White" }, { value: "o", label: "Other" }] });
+  assert.equal(fieldById(loadContentScript(race).scan(profile, [], "Acme Robotics"), "question_12").never_storable, true, "a race list");
+  const pay = pageOf({ tag: "select", id: "question_13", name: "question_13", label: "Range", options: [{ value: "a", label: "$40,000-$50,000" }, { value: "b", label: "$50,000-$60,000" }] });
+  assert.equal(fieldById(loadContentScript(pay).scan(profile, [], "Acme Robotics"), "question_13").never_storable, true, "a pay-range list");
+  for (const question of ["Type your initials to agree", "Initials (to show you accept the terms above)", "Your initials"]) {
+    const page = pageOf({ tag: "input", type: "text", id: "question_11", name: "question_11", label: question });
+    const rows = [{ id: "r", question, answer: "SR", company: "Acme Robotics", tags: ["reusable"] }];
+    assert.equal(preTicked(loadContentScript(page).scan(profile, rows, "Orbit Systems"), "question_11"), false, question);
+  }
+};
+
+tests.a_reusable_row_never_carries_a_field_two_or_more_below_a_sensitive_question = () => {
+  const felony = { legend: "Have you ever been convicted of a felony?" };
+  const yesNo = [{ value: "y", label: "Yes" }, { value: "n", label: "No" }];
+  const chains = [
+    [
+      { tag: "input", type: "radio", id: "f_yes", name: "question_1", value: "Yes", label: "Yes", groupQuestion: felony },
+      { tag: "input", type: "radio", id: "f_no", name: "question_1", value: "No", label: "No", groupQuestion: felony },
+      { tag: "input", type: "text", id: "question_2", name: "question_2", label: "Year it happened" },
+      { tag: "textarea", id: "question_3", name: "question_3", label: "Please tell us what happened" },
+    ],
+    [
+      { tag: "select", id: "question_1", name: "question_1", label: "Do you now or will you in the future require visa sponsorship?", options: yesNo },
+      { tag: "input", type: "text", id: "question_2", name: "question_2", label: "Which type?" },
+      { tag: "input", type: "text", id: "question_3", name: "question_3", label: "What is the expiration date of your current status?" },
+    ],
+    [
+      { tag: "select", id: "question_1", name: "question_1", label: "Are you currently on probation or parole?", options: yesNo },
+      { tag: "input", type: "text", id: "question_2", name: "question_2", label: "When does it end?" },
+      { tag: "textarea", id: "question_3", name: "question_3", label: "What conditions were imposed on you by the judge" },
+    ],
+  ];
+  for (const controls of chains) {
+    const page = pageOf(...controls);
+    const last = controls[controls.length - 1];
+    const rows = [{ id: "r", question: last.label, answer: "2027", company: "Acme Robotics", tags: ["reusable"] }];
+    const away = loadContentScript(page).scan(profile, rows, "Orbit Systems");
+    assert.notEqual(fieldById(away, "question_3").confidence, 0.9, `${last.label}: not exact at another company`);
+    assert.equal(preTicked(away, "question_3"), false, `${last.label}: not pre-ticked`);
+    const home = loadContentScript(page).scan(profile, rows, "Acme Robotics");
+    assert.equal(fieldById(home, "question_3").confidence, 0.9, `${last.label}: the same company's own row is still exact`);
+  }
+  // An ordinary chain is left alone.
+  const ordinary = pageOf(
+    { tag: "textarea", id: "question_1", name: "question_1", label: "Tell us about yourself" },
+    { tag: "input", type: "text", id: "question_2", name: "question_2", label: "Which languages?" },
+    { tag: "textarea", id: "question_3", name: "question_3", label: "What did you learn from that experience?" },
+  );
+  const row = { id: "r", question: "What did you learn from that experience?", answer: "Answer", company: "Acme Robotics", tags: ["reusable"] };
+  assert.equal(fieldById(loadContentScript(ordinary).scan(profile, [row], "Orbit Systems"), "question_3").confidence, 0.9);
+};
+
+tests.a_follow_up_of_a_never_storable_question_offers_no_save_and_an_independent_one_does = () => {
+  const yesNo = [{ value: "y", label: "Yes" }, { value: "n", label: "No" }];
+  const probation = { tag: "select", id: "question_1", name: "question_1", label: "Are you currently on probation or parole?", options: yesNo };
+  const scanned = (...rest) => loadContentScript(pageOf(probation, ...rest)).scan(profile, [], "Acme Robotics");
+  assert.equal(fieldById(scanned({ tag: "textarea", id: "question_2", name: "question_2", label: "Please tell us what happened" }), "question_2").never_storable, true, "a direct follow-up");
+  const chain = scanned(
+    { tag: "input", type: "text", id: "question_2", name: "question_2", label: "When does it end?" },
+    { tag: "textarea", id: "question_3", name: "question_3", label: "What conditions were imposed on you by the judge" },
+  );
+  assert.equal(fieldById(chain, "question_3").never_storable, true, "a follow-up two fields down");
+  const independent = scanned({ tag: "textarea", id: "question_2", name: "question_2", label: "Describe your experience with distributed systems in detail" });
+  assert.equal(fieldById(independent, "question_2").never_storable, false, "an independent question after one is still offered for saving");
+};
+
 let failed = 0;
 for (const [name, fn] of Object.entries(tests)) {
   try {

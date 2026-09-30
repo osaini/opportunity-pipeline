@@ -7,6 +7,7 @@
 //   wrapped, text          a wrapping <label>, and the control's own text inside it
 //   ariaRequired, group    aria-required on the control, or on a [role=group] ancestor
 //   ariaLabelledby         ids resolved through page.texts
+//   ariaDescribedby        the same, for the field's help text
 //   container              {hiddenMirror, spanRequired, others}: the field container
 //   style, rect            computed style and box; without rect, visible_css is unknown
 //   tabIndex, ariaHiddenAncestor   for the visible_css checks beyond the box (rect.left too)
@@ -99,6 +100,7 @@ class StubElement {
     this.placeholder = descriptor.placeholder || "";
     this.ariaLabel = descriptor.ariaLabel || "";
     this.ariaLabelledby = descriptor.ariaLabelledby || "";
+    this.ariaDescribedby = descriptor.ariaDescribedby || "";
     this.role = descriptor.role || "";
     this.disabled = Boolean(descriptor.disabled);
     this.value = "";
@@ -144,6 +146,7 @@ class StubElement {
   getAttribute(name) {
     if (name === "aria-label") return this.ariaLabel;
     if (name === "aria-labelledby") return this.ariaLabelledby || null;
+    if (name === "aria-describedby") return this.ariaDescribedby || null;
     if (name === "role") return this.role;
     if (name === "aria-required") return this.ariaRequired ? "true" : null;
     return this.attrs[name] ?? null;

@@ -626,6 +626,44 @@ class NoBoxOrAgreementFromTheLibraryTests(unittest.TestCase):
                 self.assertEqual((got.source.kind, got.value), ("none", None))
                 self.assertIn("agreement", got.net_never)
 
+    def test_a_select_whose_heading_agrees_but_whose_options_are_neutral_is_never_filled_from_the_library(self):
+        cases = (
+            ("Do you agree to our arbitration program?", ("Yes, please", "No, thanks")), ("Do you certify that your answers are true?", ("Yes I do", "No I do not")),
+            ("Arbitration agreement", ("Opt in", "Opt out")), ("Please confirm you will abide by the code of conduct", ("Will do", "Will not")),
+        )
+        for label, options in cases:
+            for kind in (SINGLE, MULTI):
+                with self.subTest(label=label, kind=kind):
+                    field = F("q", label, kind, options=options, parent="Resume/CV")
+                    keyed = plan(BASE + [field]).get("q").answer_key
+                    rows = [answer(keyed, options[0], COMPANY), answer(keyed, options[0], OTHER, ["reusable"]), answer(keyed, options[0], "", ["reusable"])]
+                    for company in (COMPANY, OTHER):
+                        got = plan(BASE + [field], sources(answers=rows), company=company).get("q")
+                        self.assertEqual((got.source.kind, got.value), ("none", None), company)
+                        self.assertIn("agreement", got.net_never)
+                        self.assertEqual(got.problem_kind, "sensitive_never")
+                        self.assertEqual(apply_preflight._action(got, {})["type"], "manual", "no form offers to save it")
+
+    def test_an_agreement_word_in_a_selects_description_counts_like_one_in_its_heading(self):
+        field = SchemaField(name="q", label="Talent pool", required=True, type=SINGLE, options=("Keep me in", "Take me out"),
+                            description="<p>Please confirm you agree to keep your details on file.</p>", parent="Resume/CV")
+        keyed = plan(BASE + [field]).get("q").answer_key
+        got = plan(BASE + [field], sources(answers=[answer(keyed, "Keep me in", COMPANY)])).get("q")
+        self.assertEqual((got.source.kind, got.value), ("none", None))
+        self.assertIn("agreement", got.net_never)
+
+    def test_typed_initials_are_a_signature_and_never_filled_from_the_library(self):
+        for label in ("Type your initials to agree", "Initials (to show you accept the terms above)", "Your initials"):
+            for kind in ("input_text", "textarea"):
+                with self.subTest(label=label, kind=kind):
+                    field = F("q", label, kind, parent="Resume/CV")
+                    keyed = plan(BASE + [field]).get("q").answer_key
+                    for row in (answer(keyed, "Sam Rivera", COMPANY), answer(label, "Sam Rivera", COMPANY), answer(keyed, "Sam Rivera", OTHER, ["reusable"])):
+                        got = plan(BASE + [field], sources(answers=[row])).get("q")
+                        self.assertEqual((got.source.kind, got.value), ("none", None))
+                        self.assertIn("agreement", got.net_never)
+                        self.assertEqual(apply_preflight._action(got, {})["type"], "manual")
+
     def test_an_ordinary_select_still_fills_at_its_own_company(self):
         field = F("q", "Which team are you most interested in?", SINGLE, options=("Perception", "Controls"), parent="Resume/CV")
         got = plan(BASE + [field], sources(answers=[answer("Which team are you most interested in?", "Controls", COMPANY)])).get("q")
@@ -810,19 +848,26 @@ class BroadNetVocabularyTests(unittest.TestCase):
             "Have you ever been charged with a DUI or DWI?", "Have you ever spent time in jail or prison?", "Have you ever received a police caution?",
             "Are there any legal proceedings pending against you?", "Have you received deferred adjudication?", "Have you ever been indicted?",
             "Did you plead nolo contendere?", "Have you ever been detained by law enforcement?", "Has any record been expunged or sealed?",
+            "Do you have any unresolved legal matters?", "Are you subject to a restraining order?", "Has your license ever been suspended or revoked?",
+            "Are you party to any pending litigation?", "Have you ever been cautioned or reprimanded by law enforcement?", "Are you a registered offender?",
         ),
         "demographic": (
             "Do you identify as Black, Indigenous, or a person of color?", "Are you Native American or Alaska Native?", "Are you from an underrepresented group?",
             "Are you a member of a minority group?", "Are you over 40?", "Do you have any medical conditions?", "Do you have a health condition that needs an accommodation?",
             "Are you in the National Guard or Reserves?", "Do you identify as neurodivergent?", "What year were you born?", "What is your national origin?",
+            "Do you have a learning difference such as ADHD or dyslexia?", "Are you a parent or primary caregiver?", "Do you have any children?", "What is your caste?",
+            "Do you identify as Aboriginal or Torres Strait Islander?", "Are you Deaf or hard of hearing?", "What is your first language?",
         ),
         "money": (
             "What is your desired annual income?", "How much do you currently make?", "What were you making at your last internship?", "What is your expected monthly income?",
             "What is your expected CTC?", "What is your target OTE?", "What is your price per hour?",
+            "What is your current total comp?", "What is your desired comp range?", "What was your last drawn fixed component?", "What's your ask?",
+            "Have you ever filed for bankruptcy?", "What is your credit score?",
         ),
         "security": (
             "Do you hold a TS/SCI clearance with polygraph?", "Do you hold a DoD Secret clearance?", "Do you hold a Public Trust?",
             "Will you consent to a government background investigation?", "Are you on any OFAC or sanctions list?",
+            "Do you hold UK SC or DV vetting?", "Do you have CI poly?", "Do you have NATO Secret access?",
         ),
     }
     IMMIGRATION = (
@@ -863,6 +908,8 @@ class BroadNetVocabularyTests(unittest.TestCase):
             ("Which of these communities do you belong to?", ("Black", "Asian", "Indigenous", "White"), "demographic"),
             ("Which of the following best describes you?", ("Black or African American", "Asian", "White", "Two or more races"), "demographic"),
             ("How should we refer to you?", ("He/him", "She/her", "They/them"), "demographic"),
+            ("How do you describe yourself?", ("Asian", "White", "Other"), "demographic"),
+            ("Please pick one", ("$40,000-$50,000", "$50,000-$60,000"), "money"),
         )
         for label, options, topic in cases:
             with self.subTest(label=label):
@@ -872,6 +919,12 @@ class BroadNetVocabularyTests(unittest.TestCase):
                     got = plan(BASE + [field], sources(answers=rows), company=company).get("q")
                     self.assertEqual((got.source.kind, got.value), ("none", None), company)
                     self.assertIn(topic, got.net_never)
+
+    def test_common_prompts_that_share_a_word_with_the_wider_lists_are_not_caught(self):
+        for label in ("What is your comp sci background?", "Describe your Docker registry experience", "Why do you want to work on computer vision?",
+                      "Do you have a valid driver's license?", "Describe your comp bio coursework"):
+            with self.subTest(label=label):
+                self.assertEqual(net_topics(label), ())
 
     def test_a_plain_choice_list_is_not_read_as_pay_or_clearance(self):
         for label, options in (("Which team are you most interested in?", ("Platform", "Security", "Data")), ("Which kind of role do you want?", ("Paid", "Unpaid")),

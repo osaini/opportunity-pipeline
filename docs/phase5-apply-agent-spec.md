@@ -2297,10 +2297,15 @@ only tightens what may be done with a question the classifier called ordinary:
   sensitive, or the net finds a topic in the parent; the text of a text field's description is read too), is **never
   storable**: the what's-missing view offers no form and says why, `answer_missing` refuses it, the plan never fills it
   from the answer library, even at the same company, and the extension's Save (`POST /api/v1/extension/answers`) refuses
-  it. A select's option labels are read for the status topics and for narrow pay and clearance phrases.
+  it. A select's option labels are read for the status topics and for narrow pay, clearance, race and pay-range phrases
+  ("Asian", "White", "$40,000-$50,000"). The lists are best-effort: they do not catch every wording (a fresh one is
+  at worst saved for one company), and the extension's Save can only judge the question in front of it plus the chain
+  of follow-ups above it (below).
 - **No checkbox or agreement control is filled from the answer library** (D9 B). A checkbox, single or a group, never is;
-  nor is a select or multiselect whose option labels or heading agree to, accept, acknowledge, consent to, certify,
-  attest or confirm something, a Yes/No-shaped question that hits the agreement topic, or a typed signature. Only an
+  nor is a select or multiselect whose option labels, heading or description agree to, accept, acknowledge, consent to,
+  certify, attest or confirm something (an agreement word in the heading alone is enough: "Do you certify that your
+  answers are true?" with the options "Yes I do" and "No I do not"), a Yes/No-shaped question that hits the agreement
+  topic, or a typed signature or typed initials ("Type your initials to agree"). Only an
   exact sensitive-store statement ticks or chooses it; otherwise it is left for the student.
 - **Every stored statement and tick-box entry is per company** (C). An acknowledgment or consent statement, and any
   work-authorization, sponsorship or 18-or-older entry whose `answer_kind` is a tick box, is typed text, or whose question or
@@ -2316,8 +2321,15 @@ only tightens what may be done with a question the classifier called ordinary:
   (`NET_BENIGN`, repeated in the engine and pinned by the same vectors). "Security clearance", "export control",
   "charged with" and "hourly rate" are untouched.
 - In the extension, `mayUseAtCompany` still carries a reusable row for an ordinary question, but never onto a field that
-  hits the net, or whose immediately preceding field does, and a checkbox is never pre-ticked from a row saved at another
-  company (an option row never travels).
+  hits the net (its question, its help text read from `aria-describedby`, or for a select its option labels, or a select
+  whose options or heading agree to something, or a typed signature or initials), nor onto a field that follows one that
+  does. "Follows" is a chain, read in page order by `netReadings`: the field right after a hitting field always
+  follows it, and a field that is itself short or follow-up shaped (under six words, a follow-up wording, or one that
+  opens with a question word) passes the chain on, so "Year it happened" and then "Please tell us what happened" both
+  follow a felony question, as do "Which type?" and then "What is the expiration date of your current status?" under a
+  visa question. This mirrors the `own` chain in `build_plan`. A follow-up-shaped field in a chain under a never-storable
+  question is marked `never_storable`, so the panel offers no Save for it; an independent question after one is still
+  offered. A checkbox is never pre-ticked from a row saved at another company (an option row never travels).
 
 The net over-reads on purpose ("Would you like to opt in to updates?" is immigration wording to it, and a question that
 only comes after a sensitive one takes that one's topics). Over-blocking costs some reuse; under-blocking is the bug. It

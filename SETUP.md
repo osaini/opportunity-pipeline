@@ -611,8 +611,9 @@ fields too.
      that also agrees to something are saved for one company only; only a choice
      from the form's own option list ("Yes", "No") for those three kinds, and an
      EEO decline, may be kept for any company;
-   - a box, a group of boxes, a choice whose options agree to something and a
-     typed signature are never filled from the ordinary saved answers, at any
+   - a box, a group of boxes, a choice whose options or heading agree to
+     something and a typed signature or initials are never filled from the
+     ordinary saved answers, at any
      company. Only a stored statement that matches word for word ticks them;
    - export control, citizenship, security clearance and salary questions, and
      personal ones such as age or birth date, are never answered.

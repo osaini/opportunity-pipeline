@@ -538,6 +538,8 @@ NET_TOPICS: dict[str, tuple[str, ...]] = {
         r"(?<!\bone )(?<!\btwo )(?<!\bthree )(?<!\bsingle )(?<!\bfew )\bsentenc(?:e|ed|es|ing)\b", r"\bprobation", r"\bparole",
         r"\bmisdemeanou?r", r"\bbackground check", r"\bpending case", r"\bincarcerat", r"\bimprison",
         r"\bguilty", r"\bno contest", r"\bnolo\b", r"\bplea(?:d|ded)?\b", r"\bpled\b", r"\bwarrant", r"\bdui\b", r"\bdwi\b", r"\bjail", r"\bprison", r"\bpolice", r"\bindict", r"\blegal proceeding", r"\badjudicat", r"\bexpunge", r"\bsealed\b", r"\bdetained\b",
+        r"\blegal matters?", r"\brestraining order", r"\blicen[sc]e\b.{0,40}\b(?:suspen|revo)", r"\blitigation", r"\blaw enforcement",
+        r"\bcaution(?:ed|s)?\b", r"\boffender",
     ),
     "demographic": (
         r"\bgender", r"\bsex", r"\bfemales?\b", r"\bmales?\b", r"\bwom[ae]n\b", r"\bnon ?binary\b", r"\brace\b", r"\bracial", r"\bethnic", r"\bhispanic", r"\blatin[oax]", r"\bveteran", r"\bmilitary",
@@ -545,14 +547,18 @@ NET_TOPICS: dict[str, tuple[str, ...]] = {
         r"\bmarital", r"\bmarried", r"\bpregnan", r"\bgenetic", r"\bage\b", r"\bbirth", r"\bdob\b", r"\byears old\b", r"\bhow old\b", r"\beeoc?\b",
         r"\bself identif",
         r"\bperson of colou?r", r"\bpeople of colou?r", r"\bbipoc", r"\bblack\b", r"\bindigenous", r"\bnative american", r"\balaska native", r"\bpacific islander", r"\bunderrepresent", r"\bminorit", r"\bover 40\b", r"\bborn\b", r"\bnational origin", r"\bmedical", r"\bhealth condition", r"\baccommodat", r"\bnational guard", r"\breserves\b", r"\bneurodiver", r"\bhe him\b", r"\bshe her\b", r"\bthey them\b", r"\braces\b",
+        r"\blearning (?:difference|disabilit)", r"\badhd\b", r"\bdyslex", r"\bautis", r"\bdeaf", r"\bhard of hearing", r"\bchronic", r"\bcaregiver",
+        r"\bchildren\b", r"\bcaste\b", r"\baboriginal", r"\btorres strait", r"\bfirst language", r"\bmother tongue",
     ),
     "money": (
         r"\bsalar", r"\bcompensat", r"\bpay\b", r"\bpaid\b", r"\bwages?\b", r"\bstipend", r"\bhourly\b", r"\bremunerat",
         r"\bearnings?\b", r"\bbonus", r"\b(?:pay|hourly|hour|day|week|wage|salary|desired|expected|minimum|target|base|starting|billing|annual) rate\b",
         r"\brate of pay\b", r"\b(?:expected|desired) (?:salary|compensation|pay|rate|wages?|earnings?|hourly|stipend)",
         r"\bincome", r"\bctc\b", r"\bote\b", r"\bper hour\b", r"\bhow much (?:do you |are you )?(?:currently |now )?(?:make|earn|paid)", r"\b(?:are|were|was) you (?:currently |now |still )?(?:making|earning)\b",
+        r"\bcomp\b(?! (?:sci|science|eng|engineering|arch|architecture|org|bio|lit|vision|geometry|neuro|networks?|theory|systems?)\b)",
+        r"\bfixed component", r"\blast drawn", r"\bvariable (?:pay|component)", r"\byour ask\b", r"\bbankrupt", r"\bcredit (?:score|check|history|report)",
     ),
-    "security": (r"\bclearance", r"\bexport", r"\bitar\b", r"\bear\b", r"\bu s person", r"\bus person", r"\bsecurity", r"\bpolygraph", r"\btop secret", r"\bts sci\b", r"\bdod\b", r"\bpublic trust", r"\bbackground investigation", r"\bsanction", r"\bofac\b", r"\bsecret clearance"),
+    "security": (r"\bclearance", r"\bexport", r"\bitar\b", r"\bear\b", r"\bu s person", r"\bus person", r"\bsecurity", r"\bpolygraph", r"\btop secret", r"\bts sci\b", r"\bdod\b", r"\bpublic trust", r"\bbackground investigation", r"\bsanction", r"\bofac\b", r"\bsecret clearance", r"\bvetting", r"\bpoly\b", r"\baccess authori", r"\bnato\b"),
     "agreement": (
         r"\bagree", r"\backnowledg", r"\bconsent", r"\bcertif", r"\battest", r"\baffirm", r"\bdeclar", r"\bconfirm", r"\bunderstand that",
         r"\bunderstood\b", r"\baccept", r"\bterms\b", r"\bpolic(?:y|ies)\b", r"\bprivacy", r"\bnotice", r"\bdisclos", r"\bstatement",
@@ -627,12 +633,17 @@ def _plain_text(html_text: Any) -> str:
 # ("Paid", "Security" as one team among several) must not read as a question about pay or clearance.
 _OPTION_EXTRA = {
     "security": re.compile(r"clearance|top secret|ts sci|\bsecret\b|public trust|polygraph"),
-    "money": re.compile(r"\bsalar|\bcompensat|\bhourly\b|\bper hour\b|\bper year\b|\b\d+ ?k\b|\bhr\b|\bincome"),
+    "money": re.compile(r"\bsalar|\bcompensat|\bhourly\b|\bper hour\b|\bper year\b|\b\d+ ?k\b|\bhr\b|\bincome|\b\d{2,3} 000\b"),
+    "demographic": re.compile(r"\basian\b|\bwhite\b|\bcaucasian|\bafrican american|\bmiddle eastern"),
 }
 # An option that agrees to, accepts, acknowledges, consents to, certifies or confirms something (spec 7.1, D9 B).
 _AGREEMENT_OPTION = re.compile(r"\bagree|\baccept|\backnowledg|\bconsent|\bcertif|\battest|\bconfirm|\bi have read\b|\bi ve read\b|\bunderstand")
 # A field that asks for a typed signature is an agreement whatever else it says.
-_SIGNATURE = re.compile(r"\bsignature\b|\be ?sign|\bsign here\b|\btype your (?:full )?(?:legal )?name\b")
+# Typed initials are one too, and so is any "type ... to agree" instruction.
+_SIGNATURE = re.compile(
+    r"\bsignature\b|\be ?sign|\bsign here\b|\btype your (?:full )?(?:legal )?name\b|\binitials?\b"
+    r"|\b(?:type|enter|print|write|input)\b.{0,60}\b(?:to|as|in) (?:agree|accept|confirm|acknowledge|consent|certify|attest)"
+)
 _PAY_ATTENTION = re.compile(r"\bpay(?:s|ing)? (?:close |careful |special )?attention\b", re.IGNORECASE)
 # A choice that is Yes or No in the student's own words: two or more of yes, no, y, n among its options.
 _YES_NO_WORDS = frozenset({"yes", "no", "y", "n"})
@@ -669,10 +680,13 @@ def _field_net(item: SchemaField, control: str) -> tuple[frozenset[str], tuple[s
     marks: list[str] = []
     if control in ("checkbox", "multiselect"):
         marks.append(TICK_MARK)
+    # A select, radio or multiselect is an agreement when an agreement word is in its options or in its heading or description:
+    # "Do you certify that your answers are true?" with the options "Yes I do" / "Yes I do not" says it in the heading alone.
+    choice_words = [_words(item.label), _words(_plain_text(item.description))]
     if (
         ((box or yes_no) and "agreement" in own)
-        or (control in ("select", "multiselect") and any(_AGREEMENT_OPTION.search(option) for option in options))
-        or (control in ("text", "textarea") and _SIGNATURE.search(_words(item.label)))
+        or (control in ("select", "multiselect") and any(_AGREEMENT_OPTION.search(text) for text in (*options, *choice_words)))
+        or (control in ("text", "textarea") and _SIGNATURE.search(" ".join(choice_words)))
     ):
         marks.append("agreement")
     return frozenset(own), tuple(marks)

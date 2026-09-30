@@ -111,9 +111,11 @@ value-free progress. The extension never receives the editable profile draft.
    history, personal details such as age or gender, pay, security clearance,
    agreements, employer relatives). It never decides what a question is; it only
    keeps a possibly sensitive question at its own company. In the extension, a
-   reusable saved answer never carries onto a question the net hits, nor onto
-   one that comes right after a question the net hits, and a box is never
-   pre-ticked from an answer saved at another company. **Apply for me never
+   reusable saved answer never carries onto a question the net hits (its
+   wording, its help text, or a select's options), nor onto one that comes
+   right after a question the net hits or further down a chain of short
+   follow-ups under it, and a box is never pre-ticked from an answer saved at
+   another company. **Apply for me never
    carries a saved answer from one company to another**, whatever it is tagged:
    no list of words, the net included, is complete, so nothing travels, and the
    Apply for me check offers no "Use for any company". (Your confirmed name,
@@ -125,8 +127,9 @@ value-free progress. The extension never receives the editable profile draft.
    extension's Save refuses the same wordings. A wording the net misses can at
    worst be saved by the student for that one company, and is never carried
    elsewhere. It never ticks a box, or a group of boxes, from the answer
-   library, nor chooses an option that agrees, accepts, acknowledges, consents
-   to or certifies something, nor types a signature; only a stored
+   library, nor chooses an option (or answers a question whose heading) that
+   agrees, accepts, acknowledges, consents to or certifies something, nor
+   types a signature or initials; only a stored
    acknowledgment or consent that matches word for word ticks or chooses it, and
    that stays with one company. The net over-reads on purpose (a question that
    only comes after a sensitive one takes its topics too), though it leaves
