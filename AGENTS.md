@@ -144,7 +144,7 @@ and sidesteps execution policy.
 py -3 scripts/run_api_fuzz.py
 ```
 
-Property-based fuzzing of all 150 OpenAPI operations, looking for unhandled
+Property-based fuzzing of all 153 OpenAPI operations, looking for unhandled
 exceptions. Starts and stops its own sandbox server.
 
 ```bash
@@ -196,6 +196,10 @@ For hunting what the written assertions did not anticipate, start the sandbox:
 ```bash
 py -3 scripts/serve_for_testing.py
 ```
+
+With `PIPELINE_SANDBOX_FAKE_APPLY=1` the sandbox also turns Apply for me on with a fictional
+Greenhouse listing and an agent that opens no browser: Acme Robotics (saved) becomes a Greenhouse role, and
+its page shows what is missing. Nothing reaches Greenhouse.
 
 It seeds a throwaway database from the same fixture the unittest suite uses,
 prints fixed tokens, and serves `http://127.0.0.1:8799`. Sign in by pasting

@@ -42,7 +42,7 @@
     { "question": "Will you consent to a background check?", "expected": "uncategorized", "extension_flags": true },
     { "question": "What are your religious beliefs?", "expected": "uncategorized", "extension_flags": true },
     { "question": "Do you identify as transgender?", "expected": "uncategorized", "extension_flags": true },
-    { "question": "Are you currently on OPT in the US?", "expected": "sponsorship", "extension_flags": true, "note": "The extension excludes 'opt in' and 'opt out' as marketing wording only when no country or year follows. The agent's pattern in spec 7.3 needs the same narrowing before M4." },
+    { "question": "Are you currently on OPT in the US?", "expected": "sponsorship", "extension_flags": true, "note": "The extension excludes 'opt in' and 'opt out' as marketing wording only when no country or year follows. apply_policy's sponsorship pattern is narrowed the same way." },
     { "question": "Will you be on OPT in 2027?", "expected": "sponsorship", "extension_flags": true }
   ]
 }

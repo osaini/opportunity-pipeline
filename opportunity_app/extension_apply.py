@@ -651,6 +651,42 @@ def confirm_submitted(
     }
 
 
+def _confirmed_resume_row(conn: sqlite3.Connection, version_id: str, user_id: str) -> Any:
+    return conn.execute(
+        """
+        SELECT rf.storage_path, rf.original_name, rf.media_type, rf.sha256
+        FROM resume_versions rv JOIN resume_files rf ON rf.id=rv.resume_file_id
+        WHERE rv.id=? AND rv.user_id=? AND rv.status='confirmed'
+        """,
+        (version_id, user_id),
+    ).fetchone()
+
+
+def _resume_file(resume: Any, storage_root: Path, *, verify: bool = False) -> tuple[Path, str, str, str]:
+    path = (storage_root.resolve() / str(resume["storage_path"])).resolve()
+    if path.parent != storage_root.resolve() or not path.exists():
+        raise ExtensionApplyError("Confirmed resume file is unavailable")
+    # The agent attaches these bytes to a real application, so it checks them against the hash stored when
+    # the file was uploaded. The extension's own path reads the file at attach time and never did.
+    if verify and hashlib.sha256(path.read_bytes()).hexdigest() != str(resume["sha256"]):
+        raise ExtensionApplyError("The confirmed resume file no longer matches what was uploaded")
+    return path, str(resume["original_name"]), str(resume["media_type"]), str(resume["sha256"])
+
+
+def confirmed_resume_file(
+    conn: sqlite3.Connection, version_id: str, storage_root: Path, *, user_id: str, verify: bool = False,
+) -> tuple[Path, str, str, str]:
+    """A confirmed résumé version's file: (path, original name, media type, sha256), confined to the storage folder.
+
+    Needs no application, so a rehearsal can read it. ``verify`` also hashes the file and refuses one that no
+    longer matches its stored hash. ExtensionApplyError when the version is not confirmed or the file is missing.
+    """
+    resume = _confirmed_resume_row(conn, version_id, user_id)
+    if not resume:
+        raise ExtensionApplyError("Confirmed resume version not found")
+    return _resume_file(resume, storage_root, verify=verify)
+
+
 def artifact_path(
     conn: sqlite3.Connection,
     artifact_id: str,
@@ -665,19 +701,9 @@ def artifact_path(
     ).fetchone()
     if not application:
         raise ApplicationNotFoundError(application_id)
-    resume = conn.execute(
-        """
-        SELECT rf.storage_path, rf.original_name, rf.media_type, rf.sha256
-        FROM resume_versions rv JOIN resume_files rf ON rf.id=rv.resume_file_id
-        WHERE rv.id=? AND rv.user_id=? AND rv.status='confirmed'
-        """,
-        (artifact_id, user_id),
-    ).fetchone()
+    resume = _confirmed_resume_row(conn, artifact_id, user_id)
     if resume:
-        path = (storage_root.resolve() / str(resume["storage_path"])).resolve()
-        if path.parent != storage_root.resolve() or not path.exists():
-            raise ExtensionApplyError("Confirmed resume file is unavailable")
-        return path, str(resume["original_name"]), str(resume["media_type"]), str(resume["sha256"])
+        return _resume_file(resume, storage_root)
     generated = conn.execute(
         """
         SELECT ga.storage_path, ga.filename, ga.media_type, ga.sha256, gd.opportunity_id

@@ -38,10 +38,13 @@ import os
 import re
 import shutil
 import sqlite3
+import sys
+import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
+from time import monotonic
 from typing import Any, Iterator
 from uuid import uuid4
 
@@ -101,7 +104,7 @@ DEFAULT_LIMITS = {
     "unattended_per_hour": 1,
     "unattended_daily_cap": 3,
 }
-_LIMIT_MAXIMUM = {
+LIMIT_MAXIMUM = {
     "spacing_minutes": 1440, "daily_cap": 50, "company_days": 365, "rehearsals_per_day": 200,
     "rehearsals_before_submit": 20, "unattended_per_hour": 10, "unattended_daily_cap": 50,
 }
@@ -204,7 +207,7 @@ def limits(conn: sqlite3.Connection, user_id: str) -> dict[str, int]:
     result = {}
     for key, default in DEFAULT_LIMITS.items():
         value = stored.get(key)
-        ok = isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= _LIMIT_MAXIMUM[key]
+        ok = isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= LIMIT_MAXIMUM[key]
         result[key] = value if ok else default
     return result
 
@@ -342,6 +345,13 @@ def _limit_check(
             return Block("ask", ASK_COMPANY_LIMIT, f"You applied to {name} with Apply for me {days} days ago" if days != 1
                          else f"You applied to {name} with Apply for me 1 day ago")
     return None
+
+
+def limit_check(
+    conn: sqlite3.Connection, user_id: str, company: str, board_token: str, mode: str, now: datetime | None = None,
+) -> Block | None:
+    """The first limit that blocks a hand-over now, with its kind ('ask' can be ticked past, 'failed' cannot), or None."""
+    return _limit_check(conn, user_id, company, board_token, mode, _at(now))
 
 
 def limits_block(
@@ -1415,3 +1425,124 @@ def delete_apply_folder(apply_root: Path, user_id: str) -> int:
     count = sum(1 for path in folder.rglob("*") if path.is_file())
     shutil.rmtree(folder, ignore_errors=True)
     return count
+
+
+# --- Settings: the requirement, the agent probe, and the student's exact option labels (5.5, 5.6) -------------
+
+INSTALL_PLAYWRIGHT = "Install Playwright and Chromium: python -m playwright install chromium"
+NOT_HERE = "Apply for me runs only in your own app, with Playwright installed."
+LINUX_DISPLAY = (
+    "Apply for me needs to open a window. Run: systemctl --user import-environment DISPLAY WAYLAND_DISPLAY, then restart the dashboard"
+)
+NEEDS_NAME = "Add your first and last name for applications in your profile"
+NEEDS_EMAIL = "Add your email to your profile"
+NEEDS_RESUME = "Confirm a résumé on your Profile page first"
+
+# The agent factory this app was built with (create_app wires it; None for a test or the fuzz sandbox). The
+# apply_agent switch's requirement runs from automation.REQUIREMENTS, which is given only a connection and a
+# student, so the factory's probe is kept here. Apps in one process share it: the last one built wins.
+_AGENT_FACTORY: Any = None
+_PROBE_CACHE: dict[str, Any] = {"at": 0.0, "answer": ""}
+_PROBE_SECONDS = 300.0
+
+
+def configure_agent_factory(factory: Any) -> None:
+    """Record which agent factory this app has (None means Apply for me cannot run here)."""
+    global _AGENT_FACTORY
+    _AGENT_FACTORY = factory
+
+
+class PlaywrightProbe:
+    """The agent factory the real app has until the agent itself is built: it can say whether a window could open.
+
+    ``available()`` returns "" when Playwright and its Chromium are present, else the sentence saying what to
+    install. It reads the installed package and never the network, and answers from a five minute cache
+    because the requirement runs on every settings render.
+    """
+
+    def available(self) -> str:
+        now = monotonic()
+        if _PROBE_CACHE["at"] and now - _PROBE_CACHE["at"] < _PROBE_SECONDS:
+            return str(_PROBE_CACHE["answer"])
+        # Playwright's sync API refuses to start on a thread that has an asyncio loop, so it is asked from a thread of its own.
+        found: list[str] = []
+        thread = threading.Thread(target=lambda: found.append(_probe_playwright()), name="apply-agent-probe", daemon=True)
+        thread.start()
+        thread.join(20)
+        answer = found[0] if found else INSTALL_PLAYWRIGHT
+        _PROBE_CACHE.update(at=now, answer=answer)
+        return answer
+
+
+def _probe_playwright() -> str:
+    """"" when Playwright and its Chromium build are installed, else the sentence saying what to install."""
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as playwright:
+            path = playwright.chromium.executable_path
+        return "" if path and Path(path).exists() else INSTALL_PLAYWRIGHT
+    except Exception:  # noqa: BLE001 - no package, no browser build, or a broken driver: all mean "install it"
+        return INSTALL_PLAYWRIGHT
+
+
+def setup_requirement(conn: sqlite3.Connection, user_id: str) -> str:
+    """What Apply for me still needs before it can be turned on, or "" (automation.REQUIREMENTS). Reads only, no network.
+
+    The first that applies: Playwright and Chromium are missing, a Linux server has no display, no first and
+    last name for applications, no confirmed email, no confirmed résumé. The confirmation-email checks (D12)
+    belong to a one-click submit, not to the switch.
+    """
+    from . import apply_policy, preparation
+
+    if _AGENT_FACTORY is None:
+        return NOT_HERE
+    probe = getattr(_AGENT_FACTORY, "available", None)
+    missing = str(probe() or "") if callable(probe) else ""
+    if missing:
+        return missing
+    if sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return LINUX_DISPLAY
+    facts = preparation.confirmed_facts(conn, user_id)
+    first, last, _preferred = apply_policy.name_parts(facts)
+    if not (first and last):
+        return NEEDS_NAME
+    contact = facts.get("contact")
+    if not (isinstance(contact, dict) and isinstance(contact.get("email"), str) and contact["email"].strip()):
+        return NEEDS_EMAIL
+    if conn.execute("SELECT 1 FROM resume_versions WHERE user_id=? AND status='confirmed' LIMIT 1", (user_id,)).fetchone() is None:
+        return NEEDS_RESUME
+    return ""
+
+
+def list_ats_labels(conn: sqlite3.Connection, user_id: str, ats: str = ATS_GREENHOUSE) -> dict[str, dict[str, str]]:
+    """The exact option labels the student confirmed, by field: {field: {label, confirmed_at}}."""
+    rows = conn.execute("SELECT field, label, confirmed_at FROM apply_ats_labels WHERE user_id=? AND ats=? ORDER BY field", (user_id, ats)).fetchall()
+    return {str(row["field"]): {"label": str(row["label"]), "confirmed_at": str(row["confirmed_at"])} for row in rows}
+
+
+def set_ats_label(
+    conn: sqlite3.Connection, user_id: str, field: str, label: str, *, ats: str = ATS_GREENHOUSE, now: datetime | None = None,
+) -> dict[str, str]:
+    """Save the exact text of the option the student picked for a typeahead list. Replaces an earlier one."""
+    from .apply_policy import ALLOWED_ATS_LABEL_FIELDS
+
+    if field not in ALLOWED_ATS_LABEL_FIELDS:
+        raise ValueError(f"Unknown option list: {field}")
+    text = " ".join(str(label or "").split())
+    if not text or len(text) > 200:
+        raise ValueError("An option label is 1 to 200 characters")
+    stamp = _stamp(now)
+    with conn:
+        conn.execute(
+            "INSERT INTO apply_ats_labels(user_id, ats, field, label, confirmed_at) VALUES(?, ?, ?, ?, ?) "
+            "ON CONFLICT(user_id, ats, field) DO UPDATE SET label=excluded.label, confirmed_at=excluded.confirmed_at",
+            (user_id, ats, field, text, stamp),
+        )
+    return {"field": field, "label": text, "confirmed_at": stamp}
+
+
+def delete_ats_label(conn: sqlite3.Connection, user_id: str, field: str, *, ats: str = ATS_GREENHOUSE) -> bool:
+    with conn:
+        cursor = conn.execute("DELETE FROM apply_ats_labels WHERE user_id=? AND ats=? AND field=?", (user_id, ats, field))
+    return bool(cursor.rowcount)

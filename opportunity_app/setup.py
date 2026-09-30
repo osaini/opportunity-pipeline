@@ -381,6 +381,27 @@ def _validate_automation_settings(profile: dict[str, Any], errors: list[str], wa
         errors.append("automation.auto_pass_below is above automation.auto_save_at, so a role could be both saved and passed")
 
 
+def _validate_apply_agent_settings(profile: dict[str, Any], errors: list[str], warnings: list[str]) -> None:
+    """The per-student Apply for me settings: how the name is written on an application, and the limits."""
+    from .apply_runs import DEFAULT_LIMITS, LIMIT_MAXIMUM
+    from .profile import _name_parts_errors
+
+    parts = profile.get("name_parts")
+    if parts is not None:
+        errors.extend(_name_parts_errors(parts))
+    settings = profile.get("apply_agent")
+    if settings is None:
+        return
+    if not isinstance(settings, dict):
+        errors.append("apply_agent should be an object such as {\"daily_cap\": 5, \"company_days\": 30}")
+        return
+    for key, value in settings.items():
+        if key not in DEFAULT_LIMITS:
+            warnings.append(f"apply_agent.{key} is not a setting the app reads; known: {', '.join(DEFAULT_LIMITS)}")
+        elif isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= LIMIT_MAXIMUM[key]:
+            errors.append(f"apply_agent.{key} should be a whole number from 1 to {LIMIT_MAXIMUM[key]}, or left out (the default is {DEFAULT_LIMITS[key]})")
+
+
 def validate_profile(profile: Any) -> dict[str, Any]:
     errors: list[str] = []
     warnings: list[str] = []
@@ -429,6 +450,7 @@ def validate_profile(profile: Any) -> dict[str, Any]:
     if profile.get("requires_sponsorship") is True and profile.get("work_authorized_us") is True:
         warnings.append("requires_sponsorship and work_authorized_us are both true; confirm with the student")
     _validate_automation_settings(profile, errors, warnings)
+    _validate_apply_agent_settings(profile, errors, warnings)
     from .profile import COMPLETENESS_FIELDS, is_answered
 
     missing = [field for field in COMPLETENESS_FIELDS if not is_answered(profile.get(field))]

@@ -549,6 +549,26 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 .resume-pick-control { max-width: 360px; }
 .resume-pick .form-status { min-height: 1.3em; margin: 6px 0 0; font-size: 12px; }
 .resume-check-note { margin: 10px 0 4px; color: var(--ink-muted); font-size: 11px; }
+/* Apply for me (apply_preflight.py): what is missing on a saved Greenhouse role, and the settings that go with it. */
+.apply-summary { margin: 0 0 10px; color: var(--ink-soft); font-size: 13px; overflow-wrap: anywhere; }
+.apply-problems { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.apply-problem { padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-sunken); }
+.apply-problem > strong { display: block; font-size: 13px; overflow-wrap: anywhere; }
+.apply-problem > .profile-help { margin: 4px 0 10px; }
+.apply-answer-form { display: grid; gap: 8px; max-width: 520px; }
+.apply-answer-form .secondary-button, .apply-problem > .secondary-button { justify-self: start; }
+.apply-answer-form .form-status:empty { min-height: 0; margin: 0; }
+.apply-options { display: grid; gap: 4px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.apply-options legend { padding: 0; color: var(--ink-soft); font-size: 10px; font-weight: 750; text-transform: uppercase; letter-spacing: .07em; }
+.apply-limit { margin: 0 0 8px; color: var(--warn-ink); font-size: 12px; overflow-wrap: anywhere; }
+.apply-fields { margin-top: 12px; font-size: 12px; }
+.apply-fields summary { cursor: pointer; color: var(--ink-soft); }
+.apply-note { margin: 12px 0 0; color: var(--ink-muted); font-size: 11px; }
+.apply-label { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.apply-settings h5 { margin: var(--space-5) 0 var(--space-2); font-size: 12px; }
+.profile-fieldset { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; min-width: 0; margin: 0; padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-md); }
+.profile-fieldset > legend { padding: 0 6px; color: var(--ink-soft); font-size: 11px; font-weight: 750; }
+.profile-fieldset > .profile-help { grid-column: 1 / -1; margin: 0; }
 .empty-inline { margin: var(--space-5) 0 0; color: var(--ink-muted); font-size: 11px; }
 .preparation-section + .preparation-section { margin-top: 2px; }
 .preparation-create-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(150px, .3fr) minmax(215px, .45fr) auto; gap: var(--space-2); align-items: center; margin-top: var(--space-5); }
@@ -790,7 +810,7 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
   .auth-card { padding: var(--space-7); }
   .profile-card { padding: var(--space-5); }
   .profile-card-heading { display: grid; }
-  .profile-form { grid-template-columns: 1fr; }
+  .profile-form, .profile-fieldset { grid-template-columns: 1fr; }
   .upload-form { grid-template-columns: 1fr; }
   .upload-form .form-status { grid-column: auto; }
   .tracker-fields, .tracker-detail-body, .jev-answer-grid { grid-template-columns: 1fr; }

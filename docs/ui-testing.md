@@ -181,6 +181,12 @@ It seeds a throwaway database from the same fixture, prints fixed tokens, and
 serves on `http://127.0.0.1:8799`. Sign in by pasting `sandbox-owner-token` into
 the "Owner invitation" field. Nothing it does can reach real data.
 
+To explore Apply for me (the "what's missing" view on a saved Greenhouse role), start it with
+`PIPELINE_SANDBOX_FAKE_APPLY=1`. That makes Acme Robotics a Greenhouse role served from a
+fictional listing, gives the sandbox student a name for applications, an email and a résumé,
+and turns the switch on. It uses a fake listing and a fake agent, so no request leaves the
+machine and no browser opens.
+
 `.mcp.json` restricts the browser to that origin via `--allowed-origins`, runs
 `--isolated` so no profile is written to disk, and saves traces to
 `data/playwright-mcp`.

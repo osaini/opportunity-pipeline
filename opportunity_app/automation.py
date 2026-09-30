@@ -184,6 +184,11 @@ FEATURES: dict[str, Feature] = {
                 "Reads job-system and assessment emails in Gmail, moves an application forward when an email clearly "
                 "confirms, rejects or invites, and adds tasks and deadlines. Anything unclear waits for you",
                 "applications", "internal", OFF_SHADOW_ON),
+        # Phase 5: fill a Greenhouse application in a window and stop before Submit. No shadow: every application
+        # needs the student's own press (docs/phase5-apply-agent-spec.md 5.6), so there is nothing to observe first.
+        Feature("apply_agent", "Apply for me",
+                "Fill a Greenhouse application from your confirmed facts and saved answers, show you the result, and send it only "
+                "when you press Submit", "applications", "external"),
         # Phase 2: changes that stay inside the app, each with an Undo (resume_variants.py,
         # internal_automation.py, auto_triage.py).
         Feature("outreach_auto_close", "Close companies that never answered",
@@ -232,6 +237,12 @@ def _resume_variant_requirement(conn: Any, user_id: str) -> str:
     return setup_requirement(conn, user_id)
 
 
+def _apply_agent_requirement(conn: Any, user_id: str) -> str:
+    from .apply_runs import setup_requirement  # imported here: apply_runs imports this module
+
+    return setup_requirement(conn, user_id)
+
+
 THANK_YOU_NEEDS_JEV = (
     "it needs Jev inbox suggestions on, since a thank-you goes only when both the rules and Jev read a reply as a decline"
 )
@@ -263,6 +274,7 @@ REQUIREMENTS: dict[str, Callable[[Any, str], str]] = {
     "auto_pass": _triage_requirement("auto_pass"),
     "resume_variant_pick": _resume_variant_requirement,
     "decline_thank_you": _thank_you_requirement,
+    "apply_agent": _apply_agent_requirement,
 }
 
 

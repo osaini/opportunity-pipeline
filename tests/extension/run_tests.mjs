@@ -364,7 +364,7 @@ tests.engine_loads_without_chrome_and_exposes_the_agent_surface = () => {
   const ext = loadContentScript(pageOf({ tag: "input", type: "text", id: "first_name", label: "First Name" }), { contentScript: false });
   const engine = ext.engine;
   assert.equal(engine.version, "1");
-  assert.deepEqual(Object.keys(engine).sort(), ["attachDocumentFromBytes", "fill", "questionKey", "questionText", "scan", "version"]);
+  assert.deepEqual(Object.keys(engine).sort(), ["attachDocumentFromBytes", "contextDependent", "fill", "needsLabelKey", "questionKey", "questionText", "scan", "version"]);
   assert.ok(Object.isFrozen(engine));
   assert.equal(engine.scan({ name: "Test Student" }, []).fields[0].proposed_value, "Test");
   // A second injection of the same source keeps the first engine.
@@ -991,6 +991,18 @@ tests.question_keys_match_the_shared_parity_vectors = () => {
   assert.ok(vectors.length >= 20);
   for (const { text, key } of vectors) {
     assert.equal(ext.engine.questionKey(text), key, JSON.stringify(text));
+  }
+};
+
+tests.follow_up_and_context_rules_match_the_shared_vectors = () => {
+  // apply_policy.needs_label_key and context_dependent repeat these two rules for the agent's plan.
+  const { vectors } = loadApplyFixture("context_keys.json");
+  const ext = loadContentScript(pageOf({ tag: "input", type: "text", id: "q", label: "Q" }), { contentScript: false });
+  assert.ok(vectors.length >= 50);
+  for (const { text, key, needs_label_key: needsLabel, context_dependent: dependent } of vectors) {
+    assert.equal(ext.engine.questionKey(text), key, JSON.stringify(text));
+    assert.equal(ext.engine.needsLabelKey(key), needsLabel, `${text}: needsLabelKey`);
+    assert.equal(ext.engine.contextDependent(key), dependent, `${text}: contextDependent`);
   }
 };
 

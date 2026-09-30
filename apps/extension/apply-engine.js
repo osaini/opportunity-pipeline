@@ -548,5 +548,8 @@
     attachDocumentFromBytes,
     questionText,
     questionKey,
+    // The two rules apply_policy.py repeats for the agent's plan; tests/fixtures/apply/context_keys.json is run by both.
+    needsLabelKey,
+    contextDependent,
   });
 })();

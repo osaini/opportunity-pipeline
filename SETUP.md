@@ -106,6 +106,7 @@ into `config/profile.json`. The field names are the keys in
 | Ask | Field | Notes |
 | --- | --- | --- |
 | Name, school, degree | `name`, `school`, `degree` | e.g. "B.S. Chemical Engineering". Start with the level (B.S., M.S., Ph.D., MBA): a posting whose title asks only for another level, such as "MS/PhD", scores lower. |
+| How is their name written on an application? | `name_parts` | `{"first": ..., "last": ..., "preferred": ...}`. Apply for me (see 7c) types `first` and `last` into an employer's two name boxes, and `preferred` only where a form has a preferred-name box. It never splits a longer name itself, so ask for it whenever the name has more than two words. Editable on the Profile page as **Name for applications**. |
 | Graduation year | `graduation_year` | a number |
 | Words that name their field in a posting | `degree_keywords` | e.g. `["chemical engineering", "process engineering"]`. Postings that match rank higher. |
 | Kinds of roles they want | `preferred_role_types` | from `internship`, `externship`, `co-op`, `research`, `part_time`, `early_career` |
@@ -519,6 +520,59 @@ this way are listed for a week under Auto-passed this week, each with Restore.
 
 Run `python -m opportunity_app.setup validate` again after editing; it checks
 these fields too.
+
+## 7c. Apply for me (optional)
+
+**Apply for me** reads a saved Greenhouse role's public application form and
+shows the student what it would fill from their confirmed facts and saved
+answers, and which questions it cannot answer yet. The student answers a
+missing question once, on the role, and it is saved for that company. Later
+steps will fill the form in a window that the student watches; the student
+always presses Submit themselves, and nothing here sends an application. It is
+off until they turn it on under Profile › Automation. Ask before turning it on
+for them, and set up these things with the student:
+
+1. **Their name on an application.** Ask how they write it and set
+   `name_parts` (see step 3), or fill in **Name for applications** on the
+   Profile page. A confirmed name of exactly two words works without it; a
+   longer name does not, on purpose, and the switch says so until it is set.
+2. **A confirmed email and a confirmed résumé** (step 7). The email is
+   `contact.email`, confirmed on the Profile page.
+3. **Playwright and Chromium**, the same install as PDF export and contact
+   forms: `python -m playwright install chromium`. On Linux the app also needs
+   a display: run `systemctl --user import-environment DISPLAY WAYLAND_DISPLAY`
+   and restart the dashboard. The switch names whichever of these is missing.
+4. **Limits (optional).** The defaults are cautious: an employer can mark an
+   applicant as spam for good, so the app spaces applications out and applies to
+   one company at most once a month. Change one only if the student asks. Write
+   the ones they want under `apply_agent` in `config/profile.json`, each a whole
+   number:
+
+| Ask | Field | Default |
+| --- | --- | --- |
+| Minutes between two applications | `apply_agent.spacing_minutes` | 10 |
+| Applications a day | `apply_agent.daily_cap` | 5 |
+| Days before applying again to the same company | `apply_agent.company_days` | 30 |
+| Rehearsals and option lookups a day | `apply_agent.rehearsals_per_day` | 20 |
+| Clean rehearsals at different companies before a one click submit | `apply_agent.rehearsals_before_submit` | 3 |
+
+```json
+"apply_agent": {"daily_cap": 3, "company_days": 60}
+```
+
+The limits in force are listed, read only, under Profile › Automation › Apply
+for me settings. That page also keeps the **exact options** the student picks
+for lists only the form knows (school, location, degree): the app uses such an
+option word for word and never guesses one. Screenshots of a filled form,
+when a later step takes them, are deleted after 90 days
+(`PIPELINE_APPLY_EVIDENCE_DAYS` in `.env` changes that). Run
+`python -m opportunity_app.setup validate` after editing; it checks these
+fields too.
+
+Questions about work authorization, sponsorship, demographics, consent and
+salary are never answered from the profile or the saved answers. The app lists
+them and leaves them for the student; a later step adds a separate store for a
+few of them, which the student fills in and consents to themselves.
 
 ## 7b. Call prep (optional)
 

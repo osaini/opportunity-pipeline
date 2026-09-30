@@ -62,6 +62,12 @@ EXCLUDED = {
         "domains. tests/test_outreach_drafting.py, tests/test_outreach_call_prep.py, and "
         "tests/test_outreach_discovery.py cover them against fakes."
     ),
+    "/api/v1/apply-agent/opportunities/[^/]+/(check|answers)$": (
+        "Apply for me's check reads Greenhouse's public listing, and saving an answer reads it too. The sandbox "
+        "has no schema client wired up (a fuzzer must never reach a real employer's board), so both answer 503, "
+        "which schemathesis would count as a crash. tests/test_apply_api.py and tests/test_apply_policy.py "
+        "cover them against a fictional listing, with a test that no socket is opened."
+    ),
     "/api/v1/outreach/[^/]+/form-submit$": (
         "Sending a contact form opens a browser on a company's site and sends a message "
         "as the student. The sandbox has no browser wired up and answers 503, which "

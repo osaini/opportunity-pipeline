@@ -296,7 +296,9 @@ from .outreach_drafting import (
 from .outreach_delivery import bounce_from_text, check_deliveries
 from .outreach_inbox import InboxWatcher, PossibleReplyNotFound, PossibleReplySettled, capture_replies, decide_possible_reply
 from .outreach_forms import default_submitter_factory as default_form_submitter_factory, set_contact_form, submit_contact_form
+from . import apply_policy, apply_preflight, apply_runs
 from .apply_runs import APPLY_ROOT, recover_stale as recover_stale_applications
+from .apply_schema_client import SchemaClient, default_schema_client_factory
 from .outreach_automation import AutomationWorker, settings as automation_settings, update_settings as update_automation_settings
 from .outreach_schedule import cancel_send, schedule_send
 from . import outreach_labels, outreach_thank_you
@@ -664,6 +666,16 @@ class ProfileUpdateRequest(BaseModel):
     confirmed_fields: list[str] = Field(default_factory=list, max_length=100)
 
 
+class ApplyAnswerRequest(BaseModel):
+    key: str = Field(min_length=1, max_length=200)
+    answer: str | list[str] = Field(max_length=10_000)
+    reusable: bool = False
+
+
+class ApplyLabelRequest(BaseModel):
+    label: str = Field(min_length=1, max_length=200)
+
+
 class ResumeConfirmRequest(BaseModel):
     confirmed_data: dict[str, Any] = Field(default_factory=dict)
     profile_updates: dict[str, Any] = Field(default_factory=dict)
@@ -985,6 +997,8 @@ def create_app(
     outreach_provider_factory: Callable[[str, str], AgentProvider] | None = None,
     outreach_gmail_client_factory: Callable[[], httpx.Client] | None = None,
     outreach_form_submitter_factory: Callable[..., Any] | None = None,
+    apply_agent_factory: Any = None,
+    apply_schema_client_factory: Callable[[], SchemaClient] | None = None,
     call_prep_worker: CallPrepWorker | None = None,
     start_call_prep_worker: bool | None = None,
     start_inbox_watcher: bool | None = None,
@@ -1075,6 +1089,13 @@ def create_app(
     resolved_renderer_factory = outreach_renderer_factory or (default_renderer if real_product_db else (lambda: None))
     # Contact forms are sent from a real browser, so only the real app opens one.
     resolved_form_submitter_factory = outreach_form_submitter_factory or (default_form_submitter_factory if real_product_db else None)
+    # Apply for me reads Greenhouse's public listing and opens a browser, so like contact forms it is wired only for
+    # the real app. A sandbox or a test may opt in with fakes (no network, no browser); without them the check and
+    # the start routes answer 503 at once, which is also what the fuzzer sees.
+    resolved_apply_schema_client_factory = apply_schema_client_factory or (default_schema_client_factory if real_product_db else None)
+    resolved_apply_agent_factory = apply_agent_factory or (apply_runs.PlaywrightProbe() if real_product_db else None)
+    apply_runs.configure_agent_factory(resolved_apply_agent_factory)
+    apply_schema_cache = apply_preflight.SchemaCache()
     # The status panel reads this machine's scheduler, daily-run state and
     # data/pipeline.db, which only describe the real product database.
     if system_status is None and real_product_db:
@@ -1889,6 +1910,102 @@ def create_app(
             return resume_variants.resume_check(conn, user_id, opportunity_id)
         except OpportunityNotFoundError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Opportunity not found") from exc
+
+    def apply_schema_client() -> SchemaClient:
+        """The client the read-only Apply for me check uses, or 503 in an app that has none (a test, the fuzz sandbox)."""
+        if resolved_apply_schema_client_factory is None or resolved_apply_agent_factory is None:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=apply_runs.NOT_HERE)
+        return resolved_apply_schema_client_factory()
+
+    def require_apply_agent(conn: sqlite3.Connection, user_id: str) -> None:
+        """6.0 step 1: Apply for me must be on. The answer is what it still needs, or how to turn it on."""
+        if automation_core.mode(conn, user_id, "apply_agent") != "on":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=apply_runs.setup_requirement(conn, user_id) or "Apply for me is off. Turn it on under Automation",
+            )
+
+    @app.get("/api/v1/apply-agent/opportunities/{opportunity_id}/check")
+    def apply_agent_check(
+        opportunity_id: str,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """What Apply for me would fill for this Greenhouse role, and what it still needs from the student.
+
+        Read-only: it opens no browser and writes nothing (no application, no event, no run). It asks Greenhouse's
+        public listing once an hour per role and keeps the answer in memory.
+        """
+        client = apply_schema_client()
+        require_apply_agent(conn, user_id)
+        try:
+            return apply_preflight.check(
+                conn, user_id, opportunity_id, client=client, cache=apply_schema_cache, resume_root=resume_storage,
+            )
+        except OpportunityNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Opportunity not found") from exc
+
+    @app.post("/api/v1/apply-agent/opportunities/{opportunity_id}/answers")
+    def apply_agent_answer(
+        opportunity_id: str,
+        payload: ApplyAnswerRequest,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """Answer one question the check listed as missing. Saved for this company, without field ids, so it carries over."""
+        client = apply_schema_client()
+        require_apply_agent(conn, user_id)
+        try:
+            return apply_preflight.answer_missing(
+                conn, user_id, opportunity_id, key=payload.key, answer=payload.answer, reusable=payload.reusable,
+                client=client, cache=apply_schema_cache, resume_root=resume_storage,
+            )
+        except OpportunityNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Opportunity not found") from exc
+        except apply_preflight.AnswerRefused as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+
+    @app.get("/api/v1/apply-agent/settings")
+    def apply_agent_settings(
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """The Apply for me settings in force: the switch and what it needs, the limits, and the option labels confirmed."""
+        values = apply_runs.limits(conn, user_id)
+        return {
+            "mode": automation_core.mode(conn, user_id, "apply_agent"),
+            "requirement": apply_runs.setup_requirement(conn, user_id),
+            "limits": [
+                {"key": key, "value": values[key], "default": default, "overridden": values[key] != default}
+                for key, default in apply_runs.DEFAULT_LIMITS.items()
+            ],
+            "ats_labels": apply_runs.list_ats_labels(conn, user_id),
+            "label_fields": list(apply_policy.ALLOWED_ATS_LABEL_FIELDS),
+            "evidence_days": apply_runs.evidence_days(),
+        }
+
+    @app.put("/api/v1/apply-agent/ats-labels/{field}")
+    def put_apply_ats_label(
+        field: str,
+        payload: ApplyLabelRequest,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, str]:
+        """Save the exact text of an option the student picked in a typeahead list (school, location, degree)."""
+        try:
+            return apply_runs.set_ats_label(conn, user_id, field, payload.label)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+
+    @app.delete("/api/v1/apply-agent/ats-labels/{field}", status_code=status.HTTP_204_NO_CONTENT)
+    def delete_apply_ats_label(
+        field: str,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> Response:
+        if not apply_runs.delete_ats_label(conn, user_id, field):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No confirmed option for that list")
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.get("/api/v1/urgent")
     def get_urgent(

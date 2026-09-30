@@ -481,22 +481,26 @@
           {
             "id": 4000000201,
             "label": "Heterosexual",
-            "free_form": false
+            "free_form": false,
+            "decline_to_answer": false
           },
           {
             "id": 4000000202,
             "label": "Gay or lesbian",
-            "free_form": false
+            "free_form": false,
+            "decline_to_answer": false
           },
           {
             "id": 4000000203,
             "label": "Bisexual",
-            "free_form": false
+            "free_form": false,
+            "decline_to_answer": false
           },
           {
             "id": 4000000204,
             "label": "I don't wish to answer",
-            "free_form": false
+            "free_form": false,
+            "decline_to_answer": true
           }
         ]
       }

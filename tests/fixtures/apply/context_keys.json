@@ -1,0 +1,359 @@
+{
+  "_comment": "Follow-up and context-dependent question vectors (docs/phase5-apply-agent-spec.md 7.1). 'key' is questionKey(text). 'needs_label_key' is whether the key is a follow-up, an opener or too short to stand on its own words, so a saved answer is never matched on it alone; 'context_dependent' adds the employer-relative wording, so a reusable answer never travels to another company. The engine's needsLabelKey and contextDependent (apps/extension/apply-engine.js) and apply_policy.needs_label_key and context_dependent must agree on every row. Node runs this in tests/extension/run_tests.mjs; the Python suites reuse this file.",
+  "vectors": [
+    {
+      "text": "Why do you want to work at Example Robotics?",
+      "key": "why do you want to work at example robotics",
+      "needs_label_key": false,
+      "context_dependent": false
+    },
+    {
+      "text": "Tell us about a project you are proud of",
+      "key": "tell us about a project you are proud of",
+      "needs_label_key": false,
+      "context_dependent": false
+    },
+    {
+      "text": "Which team are you most interested in?",
+      "key": "which team are you most interested in",
+      "needs_label_key": false,
+      "context_dependent": false
+    },
+    {
+      "text": "Which programming languages have you used?",
+      "key": "which programming languages have you used",
+      "needs_label_key": false,
+      "context_dependent": false
+    },
+    {
+      "text": "Have you previously worked at Example Robotics?",
+      "key": "have you previously worked at example robotics",
+      "needs_label_key": false,
+      "context_dependent": true
+    },
+    {
+      "text": "Have you previously been employed by us?",
+      "key": "have you previously been employed by us",
+      "needs_label_key": false,
+      "context_dependent": true
+    },
+    {
+      "text": "Have you applied here before?",
+      "key": "have you applied here before",
+      "needs_label_key": false,
+      "context_dependent": true
+    },
+    {
+      "text": "Who referred you?",
+      "key": "who referred you",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "Do you know anyone who works here?",
+      "key": "do you know anyone who works here",
+      "needs_label_key": false,
+      "context_dependent": true
+    },
+    {
+      "text": "How did you hear about this role?",
+      "key": "how did you hear about this role",
+      "needs_label_key": false,
+      "context_dependent": true
+    },
+    {
+      "text": "Where did you find this posting?",
+      "key": "where did you find this posting",
+      "needs_label_key": false,
+      "context_dependent": true
+    },
+    {
+      "text": "Are you a current employee?",
+      "key": "are you a current employee",
+      "needs_label_key": false,
+      "context_dependent": true
+    },
+    {
+      "text": "Do you have any relatives who work at this company?",
+      "key": "do you have any relatives who work at this company",
+      "needs_label_key": false,
+      "context_dependent": true
+    },
+    {
+      "text": "Are any family members employed by this organization?",
+      "key": "are any family members employed by this organization",
+      "needs_label_key": false,
+      "context_dependent": true
+    },
+    {
+      "text": "If yes, please explain",
+      "key": "if yes please explain",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "If so, please describe",
+      "key": "if so please describe",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "If no, why not?",
+      "key": "if no why not",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "If other, please specify",
+      "key": "if other please specify",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "Please specify",
+      "key": "please specify",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "Please explain",
+      "key": "please explain",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "Please describe your role",
+      "key": "please describe your role",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "Other",
+      "key": "other",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "Explain",
+      "key": "explain",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "Email",
+      "key": "email",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "Phone",
+      "key": "phone",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "LinkedIn",
+      "key": "linkedin",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "GitHub URL",
+      "key": "github url",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "Portfolio or project link",
+      "key": "portfolio or project link",
+      "needs_label_key": false,
+      "context_dependent": false
+    },
+    {
+      "text": "Preferred internship term",
+      "key": "preferred internship term",
+      "needs_label_key": false,
+      "context_dependent": true
+    },
+    {
+      "text": "Expected graduation year",
+      "key": "expected graduation year",
+      "needs_label_key": false,
+      "context_dependent": false
+    },
+    {
+      "text": "b. Please provide more details",
+      "key": "b please provide more details",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "1a) If yes, what was the outcome?",
+      "key": "1a if yes what was the outcome",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "(ii) Which office?",
+      "key": "ii which office",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "Q4b. Tell us more about your answer",
+      "key": "q4b tell us more about your answer",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "Question 3: Please list them",
+      "key": "question 3 please list them",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "Follow-up: how long?",
+      "key": "follow up how long",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "Follow up question describe the role",
+      "key": "follow up question describe the role",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "Please provide additional details about your experience",
+      "key": "please provide additional details about your experience",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "Give us some context on your answer",
+      "key": "give us some context on your answer",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "List them below",
+      "key": "list them below",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "What is your favorite programming language and why?",
+      "key": "what is your favorite programming language and why",
+      "needs_label_key": false,
+      "context_dependent": false
+    },
+    {
+      "text": "Describe a time you led a team through a hard problem at school",
+      "key": "describe a time you led a team through a hard problem at school",
+      "needs_label_key": false,
+      "context_dependent": false
+    },
+    {
+      "text": "Describe your experience",
+      "key": "describe your experience",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "Explain your interest in robotics and how it connects to your coursework",
+      "key": "explain your interest in robotics and how it connects to your coursework",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "Why or why not?",
+      "key": "why or why not",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "Please see the above",
+      "key": "please see the above",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "As an answer to the previous question, please explain",
+      "key": "as an answer to the previous question please explain",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "Are you willing to relocate for this internship?",
+      "key": "are you willing to relocate for this internship",
+      "needs_label_key": false,
+      "context_dependent": false
+    },
+    {
+      "text": "When can you start?",
+      "key": "when can you start",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "Who is your manager?",
+      "key": "who is your manager",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "Could you tell us if you have worked with us in the past",
+      "key": "could you tell us if you have worked with us in the past",
+      "needs_label_key": false,
+      "context_dependent": true
+    },
+    {
+      "text": "Have you interviewed with us before?",
+      "key": "have you interviewed with us before",
+      "needs_label_key": false,
+      "context_dependent": true
+    },
+    {
+      "text": "Which of these options best describes you and your background in engineering?",
+      "key": "which of these options best describes you and your background in engineering",
+      "needs_label_key": false,
+      "context_dependent": false
+    },
+    {
+      "text": "Are you available to start in June?",
+      "key": "are you available to start in june",
+      "needs_label_key": false,
+      "context_dependent": false
+    },
+    {
+      "text": "Do you have experience with ROS 2?",
+      "key": "do you have experience with ros 2",
+      "needs_label_key": false,
+      "context_dependent": false
+    },
+    {
+      "text": "What is your GPA?",
+      "key": "what is your gpa",
+      "needs_label_key": true,
+      "context_dependent": true
+    },
+    {
+      "text": "How many years of Python experience do you have?",
+      "key": "how many years of python experience do you have",
+      "needs_label_key": false,
+      "context_dependent": false
+    },
+    {
+      "text": "Are you legally authorized to work in the United States?",
+      "key": "are you legally authorized to work in the united states",
+      "needs_label_key": false,
+      "context_dependent": false
+    },
+    {
+      "text": "What are your salary expectations?",
+      "key": "what are your salary expectations",
+      "needs_label_key": true,
+      "context_dependent": true
+    }
+  ]
+}
