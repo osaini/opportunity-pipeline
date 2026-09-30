@@ -153,6 +153,46 @@ class WritingTests(StoreCase):
         self.refused("no company name", category="work_authorization", question=AUTH, answer="Yes", company="Inc.")
         self.assertEqual(self.rows(), [])
 
+    def test_the_list_shows_the_company_as_it_was_typed_never_the_matching_key_rebuilt(self):
+        self.allow("work_authorization")
+        for typed, key in (("Zeta Alpha Labs, Inc.", "alpha labs zeta"), ("McKinsey & Company", "mckinsey"), ("IBM", "ibm")):
+            with self.subTest(typed=typed):
+                saved = self.add(category="work_authorization", question=f"{AUTH} ({typed})", answer="Yes", company=typed)
+                self.assertEqual(saved["company"], typed)
+                self.assertEqual(self.rows()[-1]["company_key"], key, "matching still uses the key")
+        self.assertEqual([entry["company"] for entry in apply_sensitive.list_entries(self.conn, USER)],
+                         ["Zeta Alpha Labs, Inc.", "McKinsey & Company", "IBM"])
+        # A row saved before the name was kept shows its key as it is, not words nobody wrote.
+        with self.conn:
+            self.conn.execute("UPDATE apply_sensitive_answers SET company_name='' WHERE company_key='alpha labs zeta'")
+        self.assertIn("alpha labs zeta", [entry["company"] for entry in apply_sensitive.list_entries(self.conn, USER)])
+
+    def test_the_company_name_column_is_added_once_and_repairs_a_database_that_lacks_it(self):
+        from opportunity_app import schema
+
+        migration = REPO / "migrations" / "0046_apply_sensitive_company_name.sql"
+        self.assertIn("0046_apply_sensitive_company_name.sql", {row[0] for row in self.conn.execute("SELECT name FROM schema_migrations")})
+        schema._apply_apply_sensitive_company_name(self.conn, migration.read_text(encoding="utf-8"))  # a second run changes nothing
+        with self.conn:
+            self.conn.execute("ALTER TABLE apply_sensitive_answers DROP COLUMN company_name")
+        schema._apply_apply_sensitive_company_name(self.conn, migration.read_text(encoding="utf-8"))
+        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(apply_sensitive_answers)")}
+        self.assertIn("company_name", columns)
+
+    def test_an_entry_says_how_many_of_the_students_roles_its_company_names(self):
+        self.allow("work_authorization")
+        self.opportunity("job-zephyr-1", company="Zephyr Robotics")
+        self.opportunity("job-zephyr-2", company="Zephyr Robotics, Inc.")
+        self.opportunity("job-other", company="Beta Labs")
+        short = self.add(category="work_authorization", question=AUTH, answer="Yes", company="Zephyr")
+        self.assertEqual(short["matched_roles"], 0, "a short name never matches the role's key, and the entry says so")
+        full = self.add(category="work_authorization", question=f"{AUTH} (for this role)", answer="No", company="ZEPHYR robotics")
+        self.assertEqual(full["matched_roles"], 2)
+        anyone = self.add(category="work_authorization", question=f"{AUTH} Again", answer="Yes")
+        self.assertIsNone(anyone["matched_roles"])
+        self.assertEqual({entry["question"]: entry["matched_roles"] for entry in apply_sensitive.list_entries(self.conn, USER)},
+                         {AUTH: 0, f"{AUTH} (for this role)": 2, f"{AUTH} Again": None})
+
     def test_a_question_that_depends_on_its_company_is_never_saved_for_any_company(self):
         self.allow("sponsorship")
         self.refused("this company only", category="sponsorship", question=f"{SPONSOR} / If yes, please explain", answer="x", company_only=True)
@@ -255,7 +295,7 @@ class StatementTests(StoreCase):
         self.refused("never for any company", category="acknowledgment", question="I certify that all of this is true", answer="checked", links=[NOTICE_URL])
         self.assertEqual(self.rows(), [])
         saved = self.add(category="acknowledgment", question=PRIVACY, answer="checked", company="Example Robotics, Inc.", links=[NOTICE_URL])
-        self.assertEqual((saved["company"], saved["any_company"], saved["links"]), ("Example Robotics", False, [NOTICE_URL]))
+        self.assertEqual((saved["company"], saved["any_company"], saved["links"]), ("Example Robotics, Inc.", False, [NOTICE_URL]))
         self.assertEqual(self.rows()[0]["company_key"], "example robotics")
 
     def test_the_addresses_a_statement_points_to_are_kept_and_only_web_addresses_are(self):
@@ -821,9 +861,9 @@ class KeyAndCategoryRuleTests(StoreCase):
 
 
 class StoreReaderScanTests(unittest.TestCase):
-    """12.7: only the policy, the runs, operations (export and deletion) and the store's own module name the table."""
+    """12.7: only the policy, the runs, operations (export and deletion), the schema (its migration step) and the store's own module name the table."""
 
-    ALLOWED = {"apply_sensitive.py", "operations.py"}
+    ALLOWED = {"apply_sensitive.py", "operations.py", "schema.py"}
 
     def sources(self):
         for folder in ("opportunity_app", "pipeline_core"):

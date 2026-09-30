@@ -10553,14 +10553,18 @@
         if (reusable) reusable.checked = draft.ticked;
       },
     };
+    // Busy is aria-disabled, not disabled: a disabled button that has focus drops it to the page, outside the open panel.
+    let saving = false;
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
+      if (saving) return;
       const answer = read();
       if (!answer || (Array.isArray(answer) && !answer.length)) {
         status.textContent = "Give an answer first.";
         return;
       }
-      save.disabled = true;
+      saving = true;
+      save.setAttribute("aria-disabled", "true");
       status.textContent = "Saving…";
       try {
         const saved = await api(`/api/v1/apply-agent/opportunities/${encodeURIComponent(problem.opportunityId)}/answers`, {
@@ -10569,7 +10573,8 @@
         });
         onSaved(saved.check, `Saved for ${company}.`);
       } catch (error) {
-        save.disabled = false;
+        saving = false;
+        save.removeAttribute("aria-disabled");
         if (error.message !== "Authentication required") status.textContent = error.message;
       }
     });
@@ -10596,19 +10601,23 @@
       read: () => (input.value !== (action.suggestion || "") ? { answer: input.value } : null),
       write: (draft) => { input.value = draft.answer; },
     };
+    let saving = false;
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
+      if (saving) return;
       if (!input.value.trim()) {
         status.textContent = "Type the option first.";
         return;
       }
-      save.disabled = true;
+      saving = true;
+      save.setAttribute("aria-disabled", "true");
       status.textContent = "Saving…";
       try {
         await api(`/api/v1/apply-agent/ats-labels/${encodeURIComponent(action.field)}`, { method: "PUT", body: JSON.stringify({ label: input.value }) });
         onSaved(null, "Saved.");
       } catch (error) {
-        save.disabled = false;
+        saving = false;
+        save.removeAttribute("aria-disabled");
         if (error.message !== "Authentication required") status.textContent = error.message;
       }
     });
@@ -10640,16 +10649,22 @@
     const id = `apply-sensitive-${problem.key}`;
     let read;
     let write;
-    if (action.control === "checkbox") {
+    // A statement is stored only as ticked. It sits on a box, or on a Yes/No question whose question and description are the
+    // statement: either way the student reads the statement and its links first, and ticks once, never picks between Yes and No.
+    const isBox = action.control === "checkbox";
+    const yesNo = action.control === "select" && ["acknowledgment", "consent"].includes(action.category);
+    const ticked = isBox || yesNo;
+    if (ticked) {
       form.appendChild(element("p", "apply-statement", action.statement || problem.question));
       const links = applyLinkList(action.links);
       if (links) form.appendChild(links);
       const row = element("label", "confirmation-row");
       const agree = document.createElement("input");
       agree.type = "checkbox";
-      row.append(agree, element("span", "", "Yes, tick this statement for me on the form"));
+      const yes = (action.options || []).find((option) => option.trim().toLowerCase() === "yes") || "Yes";
+      row.append(agree, element("span", "", isBox ? "Yes, tick this statement for me on the form" : `Yes, choose ${yes} for me on the form`));
       form.appendChild(row);
-      read = () => (agree.checked ? true : "");
+      read = () => (agree.checked ? (isBox ? true : yes) : "");
       write = (value) => { agree.checked = Boolean(value); };
     } else if (action.control === "select" || action.control === "multiselect") {
       const group = element("fieldset", "apply-options");
@@ -10714,18 +10729,22 @@
         consentBox.checked = draft.consent;
       },
     };
+    // Busy is aria-disabled, not disabled: a disabled button that has focus drops it to the page, outside the open panel.
+    let saving = false;
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
+      if (saving) return;
       const answer = read();
       if (!answer || (Array.isArray(answer) && !answer.length)) {
-        status.textContent = action.control === "checkbox" ? "Tick the statement first." : "Give an answer first.";
+        status.textContent = ticked ? "Tick the statement first." : "Give an answer first.";
         return;
       }
       if (!consentBox.checked) {
         status.textContent = "Tick the box that says how the app may use this answer.";
         return;
       }
-      save.disabled = true;
+      saving = true;
+      save.setAttribute("aria-disabled", "true");
       status.textContent = "Saving…";
       try {
         const saved = await api(`/api/v1/apply-agent/opportunities/${encodeURIComponent(problem.opportunityId)}/sensitive-answers`, {
@@ -10737,7 +10756,8 @@
         });
         onSaved(saved.check, "Saved.");
       } catch (error) {
-        save.disabled = false;
+        saving = false;
+        save.removeAttribute("aria-disabled");
         if (error.message !== "Authentication required") status.textContent = error.message;
       }
     });
@@ -10980,12 +11000,50 @@
 
   // The answers the app may give on sensitive questions (apply_sensitive.py): which kinds the student switched on, what they
   // stored, and a form to add one. Nothing here is answered for the student until they switch a kind on and add the answer.
+  const APPLY_NO_ROLE_MATCH = "None of your roles is at a company with this name, so no role will use this answer yet. Check the name against the one on the role.";
+
   function applySensitiveSettings() {
     const host = element("div", "apply-sensitive-settings");
     const status = element("p", "form-status");
     status.setAttribute("role", "status");
+    // Whatever the student is in the middle of survives a repaint: the kinds they have switched (their changes go to the server
+    // one after another, each built from the switches as they stand, so a quick second click cannot undo the first), the Add an
+    // answer fields, and the control that had focus (found again by its data-focus name).
+    const desired = new Map();
+    let pending = 0;
+    let queue = Promise.resolve();
+    const draft = { kind: "", question: "", answer: "", company: "", links: "", consent: false };
 
     function paint(data) {
+      const focusName = host.contains(document.activeElement) ? document.activeElement.dataset.focus || "" : "";
+      build(data);
+      if (!focusName) return;
+      const target = host.querySelector(`[data-focus="${CSS.escape(focusName)}"]`)
+        // A removed answer's button is gone: land on the list's heading rather than the top of the page.
+        || (focusName.startsWith("remove-") ? host.querySelector('[data-focus="entries-heading"]') : null);
+      if (target) target.focus({ preventScroll: true });
+    }
+
+    // A change to the kinds is sent after the ones before it, and the page shows the server's answer once the last one is back.
+    function switchKinds(groups) {
+      pending += 1;
+      queue = queue.then(async () => {
+        const categories = groups.filter((group) => desired.get(group.key)).flatMap((group) => group.categories);
+        let failure = "";
+        try {
+          const fresh = await api("/api/v1/apply-agent/sensitive-categories", { method: "PUT", body: JSON.stringify({ categories }) });
+          if (pending === 1) paint(fresh);
+        } catch (error) {
+          failure = error.message;
+        }
+        pending -= 1;
+        if (failure && failure !== "Authentication required") status.textContent = failure;
+        if (failure && !pending) await load();
+      });
+    }
+
+    function build(data) {
+      if (!pending) data.groups.forEach((group) => desired.set(group.key, group.on));
       host.replaceChildren();
       host.appendChild(element("h5", "", "Answers for sensitive questions"));
       host.appendChild(element("p", "profile-help", "Some questions ask about work authorization, visa sponsorship, being 18 or older, or voluntary self-identification (EEO), or ask you to agree to a legal statement. The app never answers these on its own. Switch a kind on, then add the answer yourself. The app uses an answer only to fill in application forms, and never sends it anywhere else."));
@@ -10996,24 +11054,20 @@
         const row = element("label", "confirmation-row");
         const box = document.createElement("input");
         box.type = "checkbox";
-        box.checked = group.on;
-        box.addEventListener("change", async () => {
-          const next = new Set(data.groups.filter((other) => other.on).flatMap((other) => other.categories));
-          group.categories.forEach((category) => (box.checked ? next.add(category) : next.delete(category)));
-          box.disabled = true;
-          try {
-            paint(await api("/api/v1/apply-agent/sensitive-categories", { method: "PUT", body: JSON.stringify({ categories: [...next] }) }));
-          } catch (error) {
-            box.disabled = false;
-            box.checked = group.on;
-            if (error.message !== "Authentication required") status.textContent = error.message;
-          }
+        box.checked = Boolean(desired.get(group.key));
+        box.dataset.focus = `kind-${group.key}`;
+        box.addEventListener("change", () => {
+          desired.set(group.key, box.checked);
+          switchKinds(data.groups);
         });
         row.append(box, element("span", "", group.label));
         kinds.appendChild(row);
       });
       host.appendChild(kinds);
-      host.appendChild(element("h5", "", "Answers you added"));
+      const entriesHeading = element("h5", "", "Answers you added");
+      entriesHeading.tabIndex = -1;
+      entriesHeading.dataset.focus = "entries-heading";
+      host.appendChild(entriesHeading);
       if (!data.entries.length) host.appendChild(element("p", "empty-inline", "No answers added yet."));
       const list = element("ul", "reason-list apply-sensitive-list");
       data.entries.forEach((entry) => {
@@ -11022,19 +11076,26 @@
         const shown = entry.answer_kind === "checkbox" ? "Ticked" : entry.answer.split("\n").join(", ");
         const when = entry.consented_at ? entry.consented_at.slice(0, 10) : "";
         row.appendChild(element("span", "", `${entry.words}. ${shown}. For ${entry.any_company ? "any company" : entry.company}. You agreed to its use on ${when}.${entry.switched_on ? "" : " Switched off, so the app is not using it."}`));
+        // A stored company that names none of the student's roles is never used on one: say so rather than leave it looking in force.
+        if (entry.matched_roles === 0) row.appendChild(element("p", "profile-help", APPLY_NO_ROLE_MATCH));
         const links = applyLinkList(entry.links);
         if (links) row.appendChild(links);
         const remove = element("button", "secondary-button", "Remove");
         remove.type = "button";
+        remove.dataset.focus = `remove-${entry.id}`;
         remove.setAttribute("aria-label", `Remove the stored answer for ${entry.question}`);
+        let removing = false;
         remove.addEventListener("click", async () => {
-          remove.disabled = true;
+          if (removing) return;
+          removing = true;
+          remove.setAttribute("aria-disabled", "true");
           try {
             await api(`/api/v1/apply-agent/sensitive-answers/${encodeURIComponent(entry.id)}`, { method: "DELETE" });
             status.textContent = "Removed.";
             await load();
           } catch (error) {
-            remove.disabled = false;
+            removing = false;
+            remove.removeAttribute("aria-disabled");
             if (error.message !== "Authentication required") status.textContent = error.message;
           }
         });
@@ -11060,12 +11121,16 @@
         kind.appendChild(option);
       });
       kindLabel.appendChild(kind);
+      kind.dataset.focus = "add-kind";
+      if ([...kind.options].some((option) => option.value === draft.kind)) kind.value = draft.kind;
       const questionLabel = element("label", "profile-field");
       const questionCaption = element("span", "", "Question, or the statement word for word");
       const question = document.createElement("textarea");
       question.rows = 2;
       question.maxLength = 4000;
       questionLabel.append(questionCaption, question);
+      question.dataset.focus = "add-question";
+      question.value = draft.question;
       const answerLabel = element("label", "profile-field");
       answerLabel.appendChild(element("span", "", "Answer"));
       const answer = document.createElement("input");
@@ -11075,24 +11140,39 @@
       const examples = document.createElement("datalist");
       examples.id = "apply-decline-examples";
       answerLabel.append(answer, examples);
+      answer.dataset.focus = "add-answer";
+      answer.value = draft.answer;
       const companyLabel = element("label", "profile-field");
       const companyCaption = element("span", "", "Company (leave empty for any company)");
       const company = document.createElement("input");
       company.type = "text";
       company.maxLength = 200;
       companyLabel.append(companyCaption, company);
+      company.dataset.focus = "add-company";
+      company.value = draft.company;
       const linksLabel = element("label", "profile-field");
       linksLabel.appendChild(element("span", "", "Addresses the statement links to, one per line (optional)"));
       const links = document.createElement("textarea");
       links.rows = 2;
       linksLabel.appendChild(links);
+      links.dataset.focus = "add-links";
+      links.value = draft.links;
       const help = element("p", "profile-help");
       const consent = element("label", "confirmation-row apply-consent");
       const consentBox = document.createElement("input");
       consentBox.type = "checkbox";
+      consentBox.dataset.focus = "add-consent";
+      consentBox.checked = draft.consent;
       consent.append(consentBox, element("span", "", data.consent_text));
       const add = element("button", "secondary-button", "Save this answer");
       add.type = "submit";
+      add.dataset.focus = "add-save";
+      // Remember what is typed, so a repaint (another kind switched, an answer removed) does not empty the form.
+      const remember = () => Object.assign(draft, {
+        kind: kind.value, question: question.value, answer: answer.value, company: company.value, links: links.value, consent: consentBox.checked,
+      });
+      form.addEventListener("input", remember);
+      form.addEventListener("change", remember);
       function adapt() {
         const chosen = data.categories.find((entry) => entry.category === kind.value) || {};
         answerLabel.hidden = Boolean(chosen.statement);
@@ -11108,8 +11188,11 @@
       kind.addEventListener("change", adapt);
       adapt();
       form.append(kindLabel, questionLabel, answerLabel, linksLabel, companyLabel, help, consent, add);
+      // Busy is aria-disabled, not disabled: a disabled button that has focus drops it to the top of the page.
+      let adding = false;
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
+        if (adding) return;
         if (!question.value.trim()) {
           status.textContent = "Type the question first.";
           return;
@@ -11118,20 +11201,23 @@
           status.textContent = "Tick the box that says how the app may use this answer.";
           return;
         }
-        add.disabled = true;
+        adding = true;
+        add.setAttribute("aria-disabled", "true");
         try {
           const chosen = data.categories.find((entry) => entry.category === kind.value) || {};
-          await api("/api/v1/apply-agent/sensitive-answers", {
+          const saved = await api("/api/v1/apply-agent/sensitive-answers", {
             method: "POST",
             body: JSON.stringify({
               category: kind.value, question: question.value, answer: chosen.statement ? "checked" : answer.value, company: company.value,
               links: links.value.split("\n").map((line) => line.trim()).filter(Boolean), consent: true,
             }),
           });
-          status.textContent = "Saved.";
+          Object.assign(draft, { question: "", answer: "", company: "", links: "", consent: false });
+          status.textContent = saved.matched_roles === 0 ? `Saved. ${APPLY_NO_ROLE_MATCH}` : "Saved.";
           await load();
         } catch (error) {
-          add.disabled = false;
+          adding = false;
+          add.removeAttribute("aria-disabled");
           if (error.message !== "Authentication required") status.textContent = error.message;
         }
       });

@@ -176,3 +176,140 @@ def test_the_sensitive_forms_are_accessible_and_do_not_overflow(apply_ready, own
     violations = Axe().run(owner_page, context=".apply-for-me", options=AXE_OPTIONS).get("violations", [])
     assert not violations, [(item["id"], item["help"]) for item in violations]
     assert owner_page.evaluate("() => document.documentElement.scrollWidth <= document.documentElement.clientWidth")
+
+
+TERMS_FIELD = "question_4000000301"
+TERMS_LINK = "https://careers.example-robotics.test/candidate-terms"
+
+
+@pytest.fixture
+def yes_no_terms(monkeypatch):
+    """The fictional listing also asks a Yes/No agreement question whose description holds the statement and a link."""
+    from apply_fake_ats import FakeSchemaClient
+    from opportunity_app import apply_preflight
+
+    original = FakeSchemaClient.fetch
+
+    def fetch(self, board_token, job_id):
+        listing = original(self, board_token, job_id)
+        if listing is not None:
+            listing["questions"].append({
+                "description": f'<p>By applying you agree to the <a href="{TERMS_LINK}">Candidate Terms</a>, including binding arbitration of any employment dispute and a waiver of class actions.</p>',
+                "label": "Do you accept the candidate terms?", "required": True,
+                "fields": [{"name": TERMS_FIELD, "type": "multi_value_single_select", "values": [{"label": "Yes", "value": 1}, {"label": "No", "value": 0}]}],
+            })
+        return listing
+
+    monkeypatch.setattr(FakeSchemaClient, "fetch", fetch)
+    monkeypatch.setattr(FakeSchemaClient, "__call__", fetch)
+    # The server keeps listings for an hour, and other tests share it: read nothing from that cache and leave nothing in it.
+    monkeypatch.setattr(apply_preflight.SchemaCache, "get", lambda self, key: None)
+    monkeypatch.setattr(apply_preflight.SchemaCache, "put", lambda self, key, listing: None)
+
+
+def test_a_yes_no_agreement_shows_its_statement_and_links_before_it_can_be_ticked(apply_ready, yes_no_terms, owner_page, live_server):
+    allow(live_server, "acknowledgment")
+    open_saved_role(owner_page)
+    section = owner_page.locator(".apply-for-me")
+    expect(section).to_be_visible()
+    confirm_posting(section)
+    terms = section.locator(f'[data-apply-key="{TERMS_FIELD}"]')
+    # The words the student agrees to, and the document they point to, are on screen before the tick and the Save.
+    expect(terms.locator(".apply-statement")).to_contain_text("binding arbitration of any employment dispute and a waiver of class actions")
+    expect(terms.locator(f'a[href="{TERMS_LINK}"]')).to_be_visible()
+    # One tick, never a Yes/No choice that could not be saved for No.
+    expect(terms.locator('input[type="radio"]')).to_have_count(0)
+    expect(terms.get_by_label("Yes, choose Yes for me on the form")).to_be_visible()
+    terms.get_by_role("button", name="Save this answer").click()
+    expect(terms.locator(".form-status")).to_have_text("Tick the statement first.")
+    assert stored(live_server) == []
+    terms.get_by_label("Yes, choose Yes for me on the form").check()
+    terms.get_by_label(CONSENT).check()
+    terms.get_by_role("button", name="Save this answer").click()
+    expect(section.locator(f'[data-apply-key="{TERMS_FIELD}"]')).to_have_count(0)
+    rows = stored(live_server)
+    assert [(row["answer_kind"], row["answer"], row["company_key"]) for row in rows] == [("checkbox", "checked", "acme robotics")]
+    assert "binding arbitration" in rows[0]["question_text"] and TERMS_LINK in rows[0]["statement_links_json"]
+
+
+def test_switching_two_kinds_quickly_keeps_both_changes(apply_ready, owner_page, live_server):
+    from opportunity_app import apply_sensitive
+
+    allow(live_server, *apply_sensitive.STORABLE)
+    owner_page.click("#profile-nav")
+    wait_for_results(owner_page)
+    block = owner_page.locator(".apply-sensitive-settings")
+    expect(block.locator('.apply-kinds input[type="checkbox"]:checked')).to_have_count(6)
+    # Two clicks before the first request is back, as a quick student or a screen reader's double activation would.
+    block.evaluate("""(host) => {
+        for (const key of ["age_18", "acknowledgment"]) host.querySelector(`[data-focus="kind-${key}"]`).click();
+    }""")
+    owner_page.wait_for_timeout(1000)
+    expect(block.locator('.apply-kinds input[type="checkbox"]:checked')).to_have_count(4)
+    expect(block.get_by_label("18 or older")).not_to_be_checked()
+    expect(block.get_by_label("Legal acknowledgments, word for word")).not_to_be_checked()
+    with db(live_server) as conn:
+        allowed = apply_sensitive.allowed_categories(conn, USER)
+    assert "age_18" not in allowed and "acknowledgment" not in allowed
+    assert {"work_authorization", "sponsorship", "consent"} <= allowed
+
+
+def test_a_change_in_the_settings_keeps_keyboard_focus_and_what_was_typed(apply_ready, owner_page, live_server):
+    from opportunity_app import apply_sensitive
+
+    allow(live_server, "work_authorization")
+    with db(live_server) as conn:
+        apply_sensitive.add_entry(conn, USER, category="work_authorization", question="Are you legally authorized to work in the United States?",
+                                  answer="Yes", consent=True)
+    owner_page.click("#profile-nav")
+    wait_for_results(owner_page)
+    block = owner_page.locator(".apply-sensitive-settings")
+    block.get_by_label("Question, or the statement word for word").fill("Half-typed question I was writing")
+    block.get_by_label(CONSENT).check()
+    block.get_by_label("Visa sponsorship and immigration status").focus()
+    owner_page.keyboard.press("Space")
+    expect(block.get_by_label("Kind").locator("option")).to_have_count(2)  # the repaint has happened
+    expect(block.get_by_label("Visa sponsorship and immigration status")).to_be_checked()
+    assert owner_page.evaluate("() => document.activeElement.dataset.focus") == "kind-sponsorship"
+    expect(block.get_by_label("Question, or the statement word for word")).to_have_value("Half-typed question I was writing")
+    expect(block.get_by_label(CONSENT)).to_be_checked()
+    # Removing an answer leaves focus in the block, on the list's heading, not at the top of the page.
+    block.get_by_role("button", name=re.compile("^Remove the stored answer")).focus()
+    owner_page.keyboard.press("Enter")
+    expect(block).to_contain_text("No answers added yet.")
+    assert owner_page.evaluate("() => document.activeElement.textContent") == "Answers you added"
+    expect(block.get_by_label("Question, or the statement word for word")).to_have_value("Half-typed question I was writing")
+
+
+@pytest.mark.allow_page_errors  # the refused save is a 422 by design
+def test_a_refused_needs_you_save_keeps_focus_on_the_save_button(apply_ready, owner_page, live_server):
+    allow(live_server, "work_authorization")
+    open_saved_role(owner_page)
+    section = owner_page.locator(".apply-for-me")
+    expect(section).to_be_visible()
+    # The posting is not confirmed, so the server refuses the save.
+    work = section.locator('[data-apply-key="question_4000000105"]')
+    work.get_by_label("Yes", exact=True).check()
+    work.get_by_label(CONSENT).check()
+    work.get_by_role("button", name="Save this answer").focus()
+    owner_page.keyboard.press("Enter")
+    expect(work.locator(".form-status")).to_contain_text("Confirm it is the right posting")
+    assert owner_page.evaluate("() => document.activeElement.textContent") == "Save this answer"
+    assert owner_page.evaluate("() => !!document.activeElement.closest('#detail-panel')")
+
+
+def test_the_list_shows_the_company_as_typed_and_says_when_no_role_has_it(apply_ready, owner_page, live_server):
+    allow(live_server, "work_authorization")
+    owner_page.click("#profile-nav")
+    wait_for_results(owner_page)
+    block = owner_page.locator(".apply-sensitive-settings")
+    block.get_by_label("Question, or the statement word for word").fill("Are you legally authorized to work in the United States?")
+    block.get_by_label("Answer", exact=True).fill("Yes")
+    block.get_by_label(re.compile("^Company")).fill("Zeta Alpha Labs, Inc.")
+    block.get_by_label(CONSENT).check()
+    block.get_by_role("button", name="Save this answer").click()
+    entry = block.locator(".apply-sensitive-entry")
+    expect(entry).to_contain_text("For Zeta Alpha Labs, Inc.")
+    expect(entry).not_to_contain_text("Alpha Labs Zeta")
+    expect(entry).to_contain_text("None of your roles is at a company with this name")
+    expect(block.locator(".form-status")).to_contain_text("Saved. None of your roles")

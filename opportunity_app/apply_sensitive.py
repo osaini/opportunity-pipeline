@@ -37,6 +37,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from pipeline import identity_tokens
+from pipeline_core.visibility import capture_visible_sql
 
 from .apply_checks import question_key
 from .schema import utc_now
@@ -52,6 +53,7 @@ MAX_QUESTION_CHARS = 4000
 MAX_ANSWER_CHARS = 500
 MAX_LINKS = 8
 MAX_LINK_CHARS = 500
+MAX_COMPANY_CHARS = 200
 
 # What the student ticks before an entry is saved (5.4). The same words are on the form and in the record's meaning.
 CONSENT_TEXT = (
@@ -302,6 +304,8 @@ def add_entry(
         raise StoreRefused("This question depends on the company, so its answer is saved for this company only")
     if not mine and ticked and cites_document(text, cited):
         raise StoreRefused("This statement points to a document, so it is saved for one company only, never for any company")
+    # The name is shown back as typed (or as the role names it); the key is only for matching.
+    shown = _one_line(company, MAX_COMPANY_CHARS, "company") if mine else ""
     stamp = _now(now)
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
     with conn:
@@ -310,16 +314,16 @@ def add_entry(
                 raise StoreRefused("There are too many stored answers. Remove some first")
         conn.execute(
             "INSERT INTO apply_sensitive_answers(id, user_id, category, question_text, question_key, question_hash, answer_kind, answer, company_key, "
-            "statement_links_json, consent_scope, consented_at, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?) "
+            "company_name, statement_links_json, consent_scope, consented_at, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed', ?, ?, ?) "
             "ON CONFLICT(user_id, question_hash, company_key) DO UPDATE SET category=excluded.category, question_text=excluded.question_text, "
-            "question_key=excluded.question_key, answer_kind=excluded.answer_kind, answer=excluded.answer, "
+            "question_key=excluded.question_key, answer_kind=excluded.answer_kind, answer=excluded.answer, company_name=excluded.company_name, "
             "statement_links_json=excluded.statement_links_json, consent_scope='confirmed', consented_at=excluded.consented_at, updated_at=excluded.updated_at",
-            (f"sens-{uuid4().hex}", user_id, category, text, key, digest, kind, stored, mine, json.dumps(list(cited)), stamp, stamp, stamp),
+            (f"sens-{uuid4().hex}", user_id, category, text, key, digest, kind, stored, mine, shown, json.dumps(list(cited)), stamp, stamp, stamp),
         )
         row = conn.execute(
             "SELECT * FROM apply_sensitive_answers WHERE user_id=? AND question_hash=? AND company_key=?", (user_id, digest, mine),
         ).fetchone()
-    return _view(row, allowed_categories(conn, user_id))
+    return _view(row, allowed_categories(conn, user_id), _role_counts(conn, user_id) if mine else {})
 
 
 def _stricter(read_as: str, category: str) -> bool:
@@ -365,12 +369,27 @@ def _loads_links(text: Any) -> list[str]:
     return [str(item) for item in value if isinstance(item, str)] if isinstance(value, list) else []
 
 
-def _view(row: Any, allowed: frozenset[str]) -> dict[str, Any]:
+def _role_counts(conn: sqlite3.Connection, user_id: str) -> dict[str, int]:
+    """How many of the student's roles each employer key names, so an entry can say whether it matches any."""
+    counts: dict[str, int] = {}
+    for row in conn.execute(
+        f"SELECT o.company, COUNT(*) AS roles FROM opportunities o WHERE {capture_visible_sql('o')} GROUP BY o.company", (user_id,),
+    ).fetchall():
+        key = company_key(str(row["company"] or ""))
+        if key:
+            counts[key] = counts.get(key, 0) + int(row["roles"])
+    return counts
+
+
+def _view(row: Any, allowed: frozenset[str], roles: dict[str, int]) -> dict[str, Any]:
     category = str(row["category"])
     mine = str(row["company_key"] or "")
     return {
         "id": str(row["id"]), "category": category, "words": _WORDS.get(category, ""), "question": str(row["question_text"]),
-        "answer": str(row["answer"]), "answer_kind": str(row["answer_kind"]), "company": mine.title(), "any_company": not mine,
+        # The name as typed, never the key rebuilt into words the student did not write. A row saved before the name was kept shows its key as it is.
+        "answer": str(row["answer"]), "answer_kind": str(row["answer_kind"]), "company": str(row["company_name"] or "") or mine, "any_company": not mine,
+        # How many of the student's roles the company names: 0 says the entry will not be used on any role in their list.
+        "matched_roles": roles.get(mine, 0) if mine else None,
         "links": _loads_links(row["statement_links_json"]), "consent_scope": str(row["consent_scope"]), "consented_at": str(row["consented_at"]),
         "last_used_at": str(row["last_used_at"] or ""), "switched_on": category in allowed,
     }
@@ -380,8 +399,9 @@ def list_entries(conn: sqlite3.Connection, user_id: str) -> list[dict[str, Any]]
     """The student's own entries for the settings page. Answers are shown to their owner and go nowhere else."""
     allowed = allowed_categories(conn, user_id)
     rows = conn.execute("SELECT * FROM apply_sensitive_answers WHERE user_id=? ORDER BY category, created_at, id", (user_id,)).fetchall()
+    roles = _role_counts(conn, user_id) if any(row["company_key"] for row in rows) else {}
     order = {category: index for index, category in enumerate(STORABLE)}
-    return sorted((_view(row, allowed) for row in rows), key=lambda item: order.get(item["category"], len(order)))
+    return sorted((_view(row, allowed, roles) for row in rows), key=lambda item: order.get(item["category"], len(order)))
 
 
 def _covers(scope: str, mode: str) -> bool:

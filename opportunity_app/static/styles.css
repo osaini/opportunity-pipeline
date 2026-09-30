@@ -522,6 +522,8 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 .danger-button { color: var(--danger); border-color: var(--danger-line); }
 .danger-button:hover { background: var(--danger-soft); }
 .secondary-button:disabled, .danger-button:disabled, .primary-button:disabled { opacity: .5; cursor: wait; }
+/* A button that is busy but keeps keyboard focus (aria-disabled instead of disabled): the script ignores its clicks. */
+.secondary-button[aria-disabled="true"], .danger-button[aria-disabled="true"], .primary-button[aria-disabled="true"] { opacity: .5; cursor: wait; }
 .resume-list { display: grid; gap: 10px; margin-top: var(--space-5); }
 .resume-card { padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-sunken); }
 .resume-heading { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; }
