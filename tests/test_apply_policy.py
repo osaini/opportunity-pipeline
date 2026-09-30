@@ -664,6 +664,29 @@ class TruthTablePlanRows(unittest.TestCase):
         after = [F("question_20", "Are you legally authorized to work in the US?", SINGLE, options=("Yes", "No")), F("question_21", "Which team are you most interested in this summer?", parent=AUTH)]
         self.assertIsNone(plan(BASE + after, sources()).get("question_21").sensitive, "a standalone question that only sits below one is not a follow-up")
 
+    def test_a_short_follow_up_of_a_felony_or_visa_question_is_as_sensitive_as_its_parent(self):
+        cases = (
+            ("Have you ever been convicted of a felony?", "uncategorized",
+             ("When?", "Where?", "Which state?", "Details", "Describe", "Describe the circumstances", "Date", "Explanation")),
+            ("Do you currently hold a visa?", "sponsorship", ("Which one?", "What type?", "When does it expire?", "Details")),
+        )
+        for parent, category, follow_ups in cases:
+            first = F("question_20", parent, SINGLE, options=("Yes", "No"))
+            for label in follow_ups:
+                with self.subTest(parent=parent, follow_up=label):
+                    follow = F("question_21", label, "textarea", parent=parent)
+                    rows = [answer(f"{parent} / {label}", "Details", tags=["reusable"])]
+                    for mode in ("submit", "handoff"):
+                        got = plan(BASE + [first, follow], sources(answers=rows), mode).get("question_21")
+                        self.assertEqual((got.sensitive, got.source.kind, got.value), (category, "none", None))
+                    self.assertNotEqual(apply_preflight._action(got, {})["type"], "answer", "never the ordinary answer form")
+        # A short question that asks about the student stands on its own, whatever sits above it.
+        sponsor = F("question_20", "Do you currently hold a visa?", SINGLE, options=("Yes", "No"))
+        for label in ("When do you graduate?", "What is your GPA?", "Where are you located?", "Which school do you attend?"):
+            with self.subTest(standalone=label):
+                got = plan(BASE + [sponsor, F("question_21", label, parent=sponsor.label)]).get("question_21")
+                self.assertIsNone(got.sensitive)
+
     def test_a_short_standalone_question_after_a_sensitive_one_is_not_a_follow_up(self):
         sponsor = F("question_30", "Will you now or in the future require visa sponsorship?", SINGLE, options=("Yes", "No"))
         facts = {**FACTS, "contact": {**FACTS["contact"], "linkedin": "https://example.test/in/sam", "github": "https://example.test/sam", "portfolio": "https://example.test"}}
@@ -706,9 +729,9 @@ class TruthTablePlanRows(unittest.TestCase):
         result = plan(BASE + boxes, sources(allowed={"acknowledgment"}, store=lookup))
         self.assertEqual([result.get(name).source.kind for name in ("question_2", "question_3", "question_4")], ["sensitive", "none", "none"])
         self.assertEqual(len(set(asked)), 3)
-        # An option that says what it agrees to is the statement by itself, as before.
+        # An option that says what it agrees to is still not the statement by itself: the heading is part of what is agreed to.
         specific = SchemaField(name="q", label="Anything", required=True, type=MULTI, options=(PRIVACY,))
-        self.assertEqual(apply_policy.statement_of(specific, "checkbox"), PRIVACY)
+        self.assertEqual(apply_policy.statement_of(specific, "checkbox"), f"Anything {PRIVACY}")
 
     def test_a_privacy_box_is_an_acknowledgment_whatever_its_heading_says(self):
         statement = "I have read and agree to the Candidate Privacy Statement"
@@ -721,7 +744,7 @@ class TruthTablePlanRows(unittest.TestCase):
                     got = plan(BASE + [box], sources(answers=rows), mode).get("question_2")
                     self.assertEqual((got.sensitive, got.source.kind, got.value), ("acknowledgment", "none", None))
                 self.assertEqual(kinds(plan(BASE + [box], sources(answers=rows)))["question_2"], "sensitive_not_allowed")
-        # It is ticked from the store only on the exact statement, not on the heading.
+        # It is ticked from the store only on the exact statement (the heading and the option, said once when the option repeats the heading).
         box = F("question_2", "Candidate Privacy Statement", MULTI, options=(statement,))
         allowed = {"acknowledgment"}
         on_heading = Store(entry("acknowledgment", "Candidate Privacy Statement", "checked", kind="checkbox", company_key="example robotics"))

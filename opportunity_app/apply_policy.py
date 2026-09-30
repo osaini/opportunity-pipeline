@@ -358,11 +358,19 @@ def needs_label_key(key: str) -> bool:
     )
 
 
-def follow_up_wording(key: str) -> bool:
-    """Whether the question's own words say it continues another question ("If yes, please explain", "Please provide details").
+# A short question that asks about the student ("When do you graduate?", "What is your GPA?") stands on its own; one that
+# asks nothing about them ("When?", "Which one?", "What type?", "Where?") can only be a follow-up.
+_SECOND_PERSON = re.compile(r"\b(?:you|your|yours|yourself|my|we|our|us)\b")
+_BARE_DETAIL = re.compile(r"^(?:the )?(?:details?|explanations?|dates?|circumstances|specifics|outcome)$")
 
-    Narrower than ``needs_label_key``, which also takes a short or repeated question: "GPA" and "LinkedIn Profile"
-    stand on their own, and "If yes, when?" does not.
+
+def follow_up_wording(key: str) -> bool:
+    """Whether the question's own words say it continues another question ("If yes, please explain", "When?", "Details").
+
+    Narrower than ``needs_label_key``, which also takes any short or repeated question: "GPA", "LinkedIn Profile" and
+    "When do you graduate?" stand on their own. A short question that asks about no one ("Which one?", "What type?",
+    "When does it expire?"), a short "describe" and a bare "Details" continue the question above them: leaving them
+    ordinary would put a felony's circumstances or a visa's type into the answer library.
     """
     text = without_enumeration(key)
     words = len([word for word in text.split(" ") if word])
@@ -371,6 +379,9 @@ def follow_up_wording(key: str) -> bool:
         or bool(_CONTEXT_IF.search(text)) or bool(_CONTEXT_IF_ANY.search(text)) or bool(_CONTEXT_DETAILS.search(text))
         or bool(_CONTEXT_PRONOUN.search(text)) or bool(_CONTEXT_PHRASE.search(text))
         or (words < 8 and bool(_CONTEXT_VERB.search(text)))
+        or bool(_BARE_DETAIL.search(text))
+        or (words < 6 and bool(_CONTEXT_DESCRIBE.search(text)))
+        or (words < 6 and bool(_CONTEXT_WH.search(text)) and not _SECOND_PERSON.search(text))
     )
 
 
@@ -402,6 +413,9 @@ _PATTERNS: dict[str, re.Pattern[str]] = {
         r"|type of visa|\b(?:hold|have|has|current\w*|which) (?:(?:a|an|your|any|the) )?(?:\w+ )?visa\b"
         # "What visa do you hold?", "Are you currently on a visa?", and a bare "Visa" heading.
         r"|\bwhat (?:(?:is|are|s) )?(?:(?:your|the|my) )?(?:\w+ )?visa\b|\bon (?:a|an) (?:\w+ )?visa\b|^visas?$"
+        # Any other visa is immigration status ("What kind of visa do you have?", "Your visa", "Visa (if applicable)") unless it is
+        # plainly the company: at, for or with Visa, Visa's, Visa Inc. or its card.
+        r"|(?<!\bat )(?<!\bfor )(?<!\bwith )(?<!\babout )(?<!\bwhy )(?<!\bjoin )(?<!\bjoining )(?<!\blike )(?<!\bfrom )(?<!\bby )\bvisas?\b(?! s\b)(?! (?:inc|card|cards|payment|payments|network|corp|corporation|company|co|usa|international|gift)\b)"
     ),
     "age_18": _AGE_18,
     "export_control": re.compile(
@@ -514,43 +528,68 @@ def statement_control(control: str, options: Iterable[str]) -> bool:
     return control == "checkbox" or (control == "select" and _yes_no(options))
 
 
-def _statement_parts(item: SchemaField, control: str, category: str = "") -> tuple[str, bool]:
-    """(the text a stored answer to this field is matched on, whether that text leans on words outside the option)."""
-    if control == "select" and category in apply_sensitive.STATEMENT_CATEGORIES and _yes_no(item.options):
-        # A Yes/No question has no statement in its option: the question and its description are the statement.
-        description = _plain(item.description)
-        refers = bool(_REFERS_ELSEWHERE.search(_words(item.label)))
-        return " ".join(part for part in (item.label, description) if part.strip()), bool(description) or refers
-    if control != "checkbox" or not item.options:
-        return item.label, False
-    option = item.options[0]
-    description = _plain(item.description)
-    short = len(_words(option).split()) < _SPECIFIC_STATEMENT_WORDS
-    refers = bool(_REFERS_ELSEWHERE.search(_words(option)))
-    # A box that states a fact about the student ("Yes, this is true for me right now") is the answer to its heading, however
-    # long the option is: a work-authorization or 18-or-older box is never matched on the option alone.
-    asks = category in apply_sensitive.TICKABLE
-    if not (short or refers or description or asks):
-        return option, False
-    return " ".join(part for part in (item.label, option, description) if part.strip()), bool(description) or refers
+def _leaning_heading(item: SchemaField, heading: str) -> str:
+    """The heading with the question above it in front, for a statement that leans on text outside its own words."""
+    prefix = f"{item.parent} / "
+    return heading if not item.parent or heading.startswith(prefix) else f"{prefix}{heading}"
 
 
-def statement_of(item: SchemaField, control: str, category: str = "") -> str:
-    """The text a stored answer to this field is matched on: a checkbox's own statement, else its question.
+def _statement_parts(item: SchemaField, control: str, category: str = "", answer_key: str = "") -> tuple[str, bool]:
+    """(the text a stored answer to this field is matched on, whether that text leans on words outside the option).
 
-    A checkbox's option is its statement only when it says something whole ("I certify that the information I have
-    provided is accurate"). A bare "I agree" or "Yes", an option that points elsewhere ("I agree to the above terms")
-    and any box that has a description of its own do not: the heading and the description are part of the statement
-    then, so two boxes that agree to different things never share a stored answer. A box that answers a question about
-    the student (work authorization, sponsorship, 18 or older) always carries its heading, which is that question, and a
-    Yes/No agreement question is its heading and description (``category`` says which kind of question it is).
+    ``answer_key`` is the text the plan files the question under (``_answer_key``): the heading, with the question above it in
+    front for a follow-up, a short heading and a heading the form repeats. The whole statement the student sees is matched, never
+    the option alone: however long an option is, "I have read and agree to the following" names nothing.
     """
-    return _statement_parts(item, control, category)[0]
+    heading = answer_key or item.label
+    yes_no = control == "select" and category in apply_sensitive.STATEMENT_CATEGORIES and _yes_no(item.options)
+    if not yes_no and (control != "checkbox" or not item.options):
+        return item.label, False
+    description = _plain(item.description)
+    # A box says what it agrees to in its option, a Yes/No question in its question: that is the text that has to be specific.
+    own = _words(item.label) if yes_no else _words(item.options[0])
+    short = len(own.split()) < _SPECIFIC_STATEMENT_WORDS
+    refers = bool(_REFERS_ELSEWHERE.search(own))
+    # A box that states a fact about the student ("Yes, this is true for me right now") is the answer to its heading, however
+    # short the option is: a work-authorization or 18-or-older box carries its heading, which is that question, and is not
+    # about the employer. Any other statement that is short or points elsewhere leans on the question above it as well.
+    about_student = category in apply_sensitive.TICKABLE
+    leans = short or refers
+    if leans and not about_student:
+        heading = _leaning_heading(item, heading)
+    option = "" if yes_no else item.options[0]
+    # What sits in front of the heading (the question above it) is kept whichever words repeat.
+    lead = heading[: -len(item.label)] if item.label and heading.endswith(item.label) else ""
+    label = item.label
+    if option and label:
+        # A heading and an option that say the same thing are one statement, not two.
+        title, chosen = f" {_words(label)} ", f" {_words(option)} "
+        if title.strip() and title in chosen:
+            label = ""
+        elif chosen.strip() and chosen in title:
+            option = ""
+    return (
+        lead + " ".join(part for part in (label, option, description) if part.strip()),
+        bool(description) or refers or (short and not about_student),
+    )
 
 
-def statement_needs_company(item: SchemaField, control: str, category: str = "") -> bool:
-    """Whether a statement leans on a description or on text elsewhere, so a stored answer is kept for one company."""
-    return _statement_parts(item, control, category)[1]
+def statement_of(item: SchemaField, control: str, category: str = "", answer_key: str = "") -> str:
+    """The text a stored answer to this field is matched on: a checkbox's whole statement, else its question.
+
+    A checkbox is its heading, its option and its description together, and a Yes/No agreement question is its
+    question and its description: an option alone ("I agree", or a long generic "I have read and agree to the following")
+    is never the statement, so two boxes that agree to different things never share a stored answer. A statement whose own words
+    are short or point elsewhere carries the question above it too. A box that answers a question about the student (work
+    authorization, sponsorship, 18 or older) carries its heading, which is that question. ``category`` says which kind of
+    question it is, and ``answer_key`` is the heading as the plan files it.
+    """
+    return _statement_parts(item, control, category, answer_key)[0]
+
+
+def statement_needs_company(item: SchemaField, control: str, category: str = "", answer_key: str = "") -> bool:
+    """Whether a statement leans on a description, on text elsewhere or on its heading, so a stored answer is kept for one company."""
+    return _statement_parts(item, control, category, answer_key)[1]
 
 
 def classify_item(item: SchemaField, control: str, parent: str | None = None, follows: bool = False) -> str | None:
@@ -1040,7 +1079,7 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
     checkbox = entry.control == "checkbox"
     # A Yes/No agreement question is matched like a box: on the question and its description, never on the question alone.
     boxlike = checkbox or (category in apply_sensitive.STATEMENT_CATEGORIES and statement_control(entry.control, entry.options))
-    entry.statement = statement_of(item, entry.control, category) if boxlike else entry.answer_key or item.label
+    entry.statement = statement_of(item, entry.control, category, entry.answer_key) if boxlike else entry.answer_key or item.label
     key = question_key(entry.statement)
     if checkbox or category in apply_sensitive.STATEMENT_CATEGORIES:
         entry.links = apply_sensitive.links_in(item.label, *item.options, item.description)
@@ -1051,7 +1090,7 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
     # name and holds only a decline, so it is the same at every company.
     entry.company_only = (
         (item.section != "compliance" and (context_dependent(key) or (not checkbox and entry.context_dependent)))
-        or (boxlike and (statement_needs_company(item, entry.control, category) or apply_sensitive.cites_document(entry.statement, entry.links)))
+        or (boxlike and (statement_needs_company(item, entry.control, category, entry.answer_key) or apply_sensitive.cites_document(entry.statement, entry.links)))
         or (category in apply_sensitive.STATEMENT_CATEGORIES and apply_sensitive.cites_document(entry.statement, entry.links))
     )
     if category in apply_sensitive.STATEMENT_CATEGORIES and not statement_control(entry.control, entry.options):
@@ -1076,6 +1115,12 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
             "The text around this box is too long for the app to check word for word, so it is left for you. Finish in browser leaves it for you"
         )
         return entry
+    if boxlike and category in apply_sensitive.STATEMENT_CATEGORIES and len(_words(entry.statement).split()) < 3:
+        # A statement of one or two words ("Acknowledgment") says nothing the student could be shown as agreed to, and the store
+        # refuses to hold one: it is left for the student rather than offered a form that cannot be saved.
+        entry.problem_kind = "sensitive_never"
+        entry.problem = "The statement for this box is too short for the app to match to one you stored. Finish in browser leaves it for you"
+        return entry
     stored = sources.sensitive_lookup(
         category=category, question_key=key, company_key=apply_sensitive.company_key(ctx.company), mode=ctx.mode, company_only=entry.company_only,
     )
@@ -1088,7 +1133,7 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
     stored_links = tuple(stored.get("links") or ())
     if boxlike:
         if kind != "checkbox" or _norm(answer) != "checked":
-            value, why = None, "This box needs a statement you ticked. Add it again as one"
+            value, why = None, "This box needs a statement you ticked, and the answer you stored is not one. Remove it in Apply agent settings, or tick it here"
         elif checkbox:
             value, why = True, ""
         else:

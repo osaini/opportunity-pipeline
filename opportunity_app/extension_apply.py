@@ -38,7 +38,10 @@ SENSITIVE_FIELD = re.compile(
     r"export administration regulations|legally\s+(?:(?:able|permitted|allowed)\s+to\s+)?work|"
     r"eligib\w*\s+(?:for|to)\s+(?:employment|work)|work permit|type of visa|(?:hold|have|has|"
     r"current\w*|which)\s+(?:(?:a|an|your|any|the)\s+)?(?:\w+\s+)?visa|what(?:['’]s|\s+(?:is|are))?\s+(?:(?:your|the|my)\s+)?(?:\w+\s+)?visa|"
-    r"on\s+(?:a|an)\s+(?:\w+\s+)?visa|^visas?(?=\W*$)|nationalit\w*|"
+    r"on\s+(?:a|an)\s+(?:\w+\s+)?visa|^visas?(?=\W*$)|"
+    r"(?<!\bat\s)(?<!\bfor\s)(?<!\bwith\s)(?<!\babout\s)(?<!\bwhy\s)(?<!\bjoin\s)(?<!\bjoining\s)(?<!\blike\s)(?<!\bfrom\s)(?<!\bby\s)"
+    r"visas?(?!['’]s\b|\s+(?:inc|card|cards|payment|payments|network|corp|corporation|company|co|usa|international|gift)\b)|"
+    r"nationalit\w*|"
     r"(?:u\.? ?s\.?|united states|american)\s+national|national of|crimes?|offen[cs]es?|"
     r"lgbt\w*|queer|sexual\w*|military|armed forces|wages?|base pay|pay rate|felony|"
     r"misdemeanor|arrest\w*|criminal|convict\w*|background check|non[- ]?compete)\b",

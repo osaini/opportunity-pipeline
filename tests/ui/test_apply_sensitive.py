@@ -313,3 +313,76 @@ def test_the_list_shows_the_company_as_typed_and_says_when_no_role_has_it(apply_
     expect(entry).not_to_contain_text("Alpha Labs Zeta")
     expect(entry).to_contain_text("None of your roles is at a company with this name")
     expect(block.locator(".form-status")).to_contain_text("Saved. None of your roles")
+
+
+AGE_FIELD = "question_4000000302"
+AGE_STATEMENT = "Are you 18 years of age or older? Yes, I am 18 or older"
+
+
+@pytest.fixture
+def age_box(monkeypatch):
+    """The fictional listing also asks a tick box that states the student's age."""
+    from apply_fake_ats import FakeSchemaClient
+    from opportunity_app import apply_preflight
+
+    original = FakeSchemaClient.fetch
+
+    def fetch(self, board_token, job_id):
+        listing = original(self, board_token, job_id)
+        if listing is not None:
+            listing["questions"].append({
+                "description": "", "label": "Are you 18 years of age or older?", "required": True,
+                "fields": [{"name": AGE_FIELD, "type": "multi_value_multi_select", "values": [{"label": "Yes, I am 18 or older", "value": 1}]}],
+            })
+        return listing
+
+    monkeypatch.setattr(FakeSchemaClient, "fetch", fetch)
+    monkeypatch.setattr(FakeSchemaClient, "__call__", fetch)
+    monkeypatch.setattr(apply_preflight.SchemaCache, "get", lambda self, key: None)
+    monkeypatch.setattr(apply_preflight.SchemaCache, "put", lambda self, key, listing: None)
+
+
+def test_a_tick_box_answer_added_in_the_settings_is_stored_as_ticked_and_used_on_the_form(apply_ready, age_box, owner_page, live_server):
+    allow(live_server, "age_18")
+    owner_page.click("#profile-nav")
+    wait_for_results(owner_page)
+    block = owner_page.locator(".apply-sensitive-settings")
+    tick = block.get_by_label(re.compile("^The form shows this as a tick box"))
+    expect(tick).to_be_visible()
+    block.get_by_label("Question, or the statement word for word").fill(AGE_STATEMENT)
+    tick.check()
+    expect(block.get_by_label("Answer", exact=True)).to_be_hidden()
+    block.get_by_label(CONSENT).check()
+    block.get_by_role("button", name="Save this answer").click()
+    expect(block.locator(".apply-sensitive-entry")).to_contain_text("Ticked")
+    assert [(row["category"], row["answer_kind"], row["answer"]) for row in stored(live_server)] == [("age_18", "checkbox", "checked")]
+    open_saved_role(owner_page)
+    section = owner_page.locator(".apply-for-me")
+    expect(section).to_be_visible()
+    confirm_posting(section)
+    # The box is filled from what was stored: it is not listed as needing an answer, and no mismatch is reported.
+    expect(section.locator(f'[data-apply-key="{AGE_FIELD}"]')).to_have_count(0)
+    expect(section).not_to_contain_text("doesn't fit this form")
+
+
+def test_remove_buttons_say_which_company_and_the_options_say_which_question(apply_ready, owner_page, live_server):
+    from opportunity_app import apply_sensitive
+
+    question = "Are you legally authorized to work in the United States?"
+    allow(live_server, "work_authorization")
+    with db(live_server) as conn:
+        apply_sensitive.add_entry(conn, USER, category="work_authorization", question=question, answer="Yes", consent=True)
+        apply_sensitive.add_entry(conn, USER, category="work_authorization", question=question, answer="No", consent=True, company="Alpha Labs")
+    owner_page.click("#profile-nav")
+    wait_for_results(owner_page)
+    block = owner_page.locator(".apply-sensitive-settings")
+    expect(block.get_by_role("button", name=re.compile(r"^Remove the stored answer for .*, for any company$"))).to_have_count(1)
+    expect(block.get_by_role("button", name=re.compile(r"^Remove the stored answer for .*, for Alpha Labs$"))).to_have_count(1)
+    with db(live_server) as conn:
+        conn.execute("DELETE FROM apply_sensitive_answers")
+        conn.commit()
+    open_saved_role(owner_page)
+    section = owner_page.locator(".apply-for-me")
+    expect(section).to_be_visible()
+    work = section.locator('[data-apply-key="question_4000000105"]')
+    expect(work.get_by_role("group", name=f"Your answer: {question}")).to_be_visible()

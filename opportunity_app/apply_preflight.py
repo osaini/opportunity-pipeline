@@ -152,6 +152,9 @@ def _sensitive_state(entry: apply_policy.PlanField, sources: apply_policy.Source
     """
     if not entry.sensitive or entry.sensitive not in sources.sensitive_allowed or entry.source.kind != "none" or not entry.statement or entry.text_cut:
         return ""
+    if entry.problem_kind == "sensitive_never":
+        # The plan already said the app can neither match nor store this one (a statement too short, or on a field with no tick).
+        return ""
     stored = sources.sensitive_lookup(
         category=entry.sensitive, question_key=question_key(entry.statement), company_key=apply_sensitive.company_key(company), mode="submit",
         company_only=entry.company_only,

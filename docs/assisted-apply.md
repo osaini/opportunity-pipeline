@@ -39,17 +39,21 @@ value-free progress. The extension never receives the editable profile draft.
      any other value, so no demographic value is ever stored);
    - a legal acknowledgment or a data-processing consent, stored word for word.
      Its box is ticked only when the form's statement is exactly the stored one.
-     The statement is the box's heading, its option and any description under
-     it, together, whenever the option is short, points elsewhere ("I agree to
-     the above terms") or the box has a description. A statement that says "I
-     have read", links a document, has a description of its own or points
-     elsewhere is saved for one company, never for any company, as is any
-     question that depends on its company. The plan shows the form's own
+     The statement is always the whole of what the box shows: its heading, its
+     option and any description under it, together (the option alone is never
+     the statement, however long, because "I have read and agree to the
+     following" names nothing). When the option is short, points elsewhere ("I
+     agree to the above terms") or the box has a description, the statement is
+     also filed under the question above it and saved for one company. A
+     statement that says "I have read", links a document, has a description of
+     its own or points elsewhere is saved for one company, never for any
+     company, as is any question that depends on its company. The plan shows the form's own
      document addresses next to the tick; if the form links to other addresses
      than the ones saved, or to none, the box is left for the student, and so is
      a statement whose description is longer than the app keeps. A Yes/No
-     question that asks for agreement is matched on its heading and its
-     description the same way, and only a box or a Yes/No question is ever
+     question that asks for agreement is matched on its question (under the
+     question above it when it is short or a follow-up) and its description the
+     same way, and only a box or a Yes/No question is ever
      ticked; an acknowledgment on a text field or a list of options is left for
      the student. A box that states a fact about the student (work
      authorization, sponsorship, 18 or older) is matched on its heading and its

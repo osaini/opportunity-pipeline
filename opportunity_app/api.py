@@ -2063,7 +2063,8 @@ def create_app(
             ],
             "categories": [
                 {"category": category, "label": apply_sensitive.LABELS[category], "statement": category in apply_sensitive.STATEMENT_CATEGORIES,
-                 "decline_only": category in apply_sensitive.EEO_CATEGORIES}
+                 "decline_only": category in apply_sensitive.EEO_CATEGORIES,
+                 "tickable": category in apply_sensitive.TICKABLE}
                 for category in apply_sensitive.STORABLE
             ],
             "entries": apply_sensitive.list_entries(conn, user_id),

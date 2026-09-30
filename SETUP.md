@@ -591,14 +591,19 @@ fields too.
    - a legal acknowledgment or consent is ticked only when the form's statement
      (its heading, its option and any description under it) is word for word the
      stored one and links the same documents; one that says "I have read", links
-     a document, has a description of its own or points to "the above terms" is
-     saved for one company only, and so is any question that depends on the
-     company ("this company", a follow-up, a bare heading). A Yes/No question
-     that asks for agreement is matched the same way, on its heading and its
-     description, and only a box or a Yes/No question is ever ticked: a text
-     field or a list of several options is left for them;
+     a document, has a description of its own, has a short option ("I agree") or
+     points to "the above terms" is saved for one company only, and under the
+     question above it, and so is any question that depends on the company
+     ("this company", a follow-up, a bare heading). A Yes/No question that asks
+     for agreement is matched the same way, on its question (with the question
+     above it when it is short or a follow-up) and its description, and only a
+     box or a Yes/No question is ever ticked: a text field or a list of several
+     options is left for them. A statement of fewer than three words is left
+     for them too;
    - a box that states a fact about them (work authorization, sponsorship, 18 or
-     older) is matched on its heading too, since the heading is the question;
+     older) is matched on its heading too, since the heading is the question, and
+     an answer added in settings for such a box is stored as ticked when they
+     tell the form it is a tick box;
    - export control, citizenship, security clearance and salary questions, and
      personal ones such as age or birth date, are never answered.
 

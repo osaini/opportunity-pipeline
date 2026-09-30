@@ -10668,7 +10668,10 @@
       write = (value) => { agree.checked = Boolean(value); };
     } else if (action.control === "select" || action.control === "multiselect") {
       const group = element("fieldset", "apply-options");
-      group.appendChild(element("legend", "", action.decline_only ? "The app stores only a decline answer here" : "Your answer"));
+      const legend = action.decline_only ? "The app stores only a decline answer here" : "Your answer";
+      group.appendChild(element("legend", "", legend));
+      // Several questions on one form each have a group of options: the name says which question this one answers.
+      group.setAttribute("aria-label", `${legend}: ${problem.question}`);
       const boxes = action.options.map((option) => {
         const row = element("label", "confirmation-row");
         const box = document.createElement("input");
@@ -10692,6 +10695,7 @@
       control.type = "text";
       control.id = id;
       control.maxLength = 500;
+      control.setAttribute("aria-label", `Your answer: ${problem.question}`);
       label.appendChild(control);
       form.appendChild(label);
       read = () => control.value;
@@ -11012,7 +11016,7 @@
     const desired = new Map();
     let pending = 0;
     let queue = Promise.resolve();
-    const draft = { kind: "", question: "", answer: "", company: "", links: "", consent: false };
+    const draft = { kind: "", question: "", answer: "", company: "", links: "", consent: false, tick: false };
 
     function paint(data) {
       const focusName = host.contains(document.activeElement) ? document.activeElement.dataset.focus || "" : "";
@@ -11083,7 +11087,7 @@
         const remove = element("button", "secondary-button", "Remove");
         remove.type = "button";
         remove.dataset.focus = `remove-${entry.id}`;
-        remove.setAttribute("aria-label", `Remove the stored answer for ${entry.question}`);
+        remove.setAttribute("aria-label", `Remove the stored answer for ${entry.question}, ${entry.any_company ? "for any company" : `for ${entry.company}`}`);
         let removing = false;
         remove.addEventListener("click", async () => {
           if (removing) return;
@@ -11109,7 +11113,7 @@
         return;
       }
       host.appendChild(element("h5", "", "Add an answer"));
-      host.appendChild(element("p", "profile-help", "Type the question exactly as the form shows it. The app fills an answer only when the words are the same. Or open a role and answer the question from its list."));
+      host.appendChild(element("p", "profile-help", "Type the question exactly as the form shows it. The app fills an answer only when the words are the same. For a statement or a tick box, type its heading and then its text, as the form shows them. Or open a role and answer the question from its list."));
       const form = element("form", "apply-answer-form");
       const kindLabel = element("label", "profile-field");
       kindLabel.appendChild(element("span", "", "Kind"));
@@ -11157,6 +11161,14 @@
       linksLabel.appendChild(links);
       links.dataset.focus = "add-links";
       links.value = draft.links;
+      // An answer the form shows as a tick box (work authorization, sponsorship, 18 or older) is stored as ticked, or it can
+      // never be used: the plan reads a box only as a stored statement.
+      const tickRow = element("label", "confirmation-row");
+      const tickBox = document.createElement("input");
+      tickBox.type = "checkbox";
+      tickBox.dataset.focus = "add-tick";
+      tickBox.checked = draft.tick;
+      tickRow.append(tickBox, element("span", "", "The form shows this as a tick box (type its heading and the box's text as one statement, word for word)"));
       const help = element("p", "profile-help");
       const consent = element("label", "confirmation-row apply-consent");
       const consentBox = document.createElement("input");
@@ -11170,13 +11182,16 @@
       // Remember what is typed, so a repaint (another kind switched, an answer removed) does not empty the form.
       const remember = () => Object.assign(draft, {
         kind: kind.value, question: question.value, answer: answer.value, company: company.value, links: links.value, consent: consentBox.checked,
+        tick: tickBox.checked,
       });
       form.addEventListener("input", remember);
       form.addEventListener("change", remember);
       function adapt() {
         const chosen = data.categories.find((entry) => entry.category === kind.value) || {};
-        answerLabel.hidden = Boolean(chosen.statement);
-        linksLabel.hidden = !chosen.statement;
+        const ticked = Boolean(chosen.tickable && tickBox.checked);
+        tickRow.hidden = !chosen.tickable;
+        answerLabel.hidden = Boolean(chosen.statement) || ticked;
+        linksLabel.hidden = !chosen.statement && !ticked;
         companyCaption.textContent = chosen.statement ? "Company (required when the statement mentions a notice or a document)" : "Company (leave empty for any company)";
         examples.replaceChildren(...(chosen.decline_only ? data.decline_examples : []).map((label) => {
           const option = document.createElement("option");
@@ -11186,8 +11201,9 @@
         help.textContent = chosen.decline_only ? "For this kind the app keeps only a decline answer, such as Decline To Self Identify. Use the words the form uses." : "";
       }
       kind.addEventListener("change", adapt);
+      tickBox.addEventListener("change", adapt);
       adapt();
-      form.append(kindLabel, questionLabel, answerLabel, linksLabel, companyLabel, help, consent, add);
+      form.append(kindLabel, questionLabel, tickRow, answerLabel, linksLabel, companyLabel, help, consent, add);
       // Busy is aria-disabled, not disabled: a disabled button that has focus drops it to the top of the page.
       let adding = false;
       form.addEventListener("submit", async (event) => {
@@ -11205,14 +11221,16 @@
         add.setAttribute("aria-disabled", "true");
         try {
           const chosen = data.categories.find((entry) => entry.category === kind.value) || {};
+          const ticked = Boolean(chosen.tickable && tickBox.checked);
           const saved = await api("/api/v1/apply-agent/sensitive-answers", {
             method: "POST",
             body: JSON.stringify({
-              category: kind.value, question: question.value, answer: chosen.statement ? "checked" : answer.value, company: company.value,
+              category: kind.value, question: question.value, answer: chosen.statement || ticked ? "checked" : answer.value,
+              answer_kind: ticked ? "checkbox" : "", company: company.value,
               links: links.value.split("\n").map((line) => line.trim()).filter(Boolean), consent: true,
             }),
           });
-          Object.assign(draft, { question: "", answer: "", company: "", links: "", consent: false });
+          Object.assign(draft, { question: "", answer: "", company: "", links: "", consent: false, tick: false });
           status.textContent = saved.matched_roles === 0 ? `Saved. ${APPLY_NO_ROLE_MATCH}` : "Saved.";
           await load();
         } catch (error) {

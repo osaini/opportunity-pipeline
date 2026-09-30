@@ -479,7 +479,7 @@ class PlanFromTheStoreTests(StoreCase):
     def test_rows_8_and_9_a_box_is_ticked_only_on_an_exact_statement_for_this_company(self):
         box = F("q", PRIVACY, MULTI, options=(PRIVACY,))
         self.allow("acknowledgment")
-        self.add(category="acknowledgment", question=PRIVACY, answer="checked", company="Example Robotics")
+        self.add(category="acknowledgment", question=apply_policy.statement_of(box, "checkbox"), answer="checked", company="Example Robotics")
         ready = self.plan(BASE + [box])
         self.assertEqual(ready.status, "ready")
         got = ready.get("q")
@@ -507,7 +507,7 @@ class PlanFromTheStoreTests(StoreCase):
     def test_an_any_company_statement_that_reads_no_document_ticks_at_every_company(self):
         box = F("q", ACCURATE, MULTI, options=(ACCURATE,))
         self.allow("acknowledgment")
-        self.add(category="acknowledgment", question=ACCURATE, answer="checked")
+        self.add(category="acknowledgment", question=apply_policy.statement_of(box, "checkbox"), answer="checked")
         for company in (COMPANY, OTHER):
             got = self.plan(BASE + [box], company=company).get("q")
             self.assertEqual((got.value, got.source.label), (True, "Your acknowledgment (any company)"), company)
@@ -679,8 +679,8 @@ class KeyAndCategoryRuleTests(StoreCase):
 
     def test_a_statement_saved_for_any_company_is_not_ticked_where_its_box_links_a_document(self):
         self.allow("acknowledgment")
-        self.add(category="acknowledgment", question=ACCURATE, answer="checked")
         plain = self.box("Certification", ACCURATE)
+        self.add(category="acknowledgment", question=apply_policy.statement_of(plain, "checkbox"), answer="checked")
         self.assertEqual(self.plan(BASE + [plain], company=OTHER).get("q").value, True)
         linked = self.box("Certification", ACCURATE, '<p>Terms at <a href="https://orbit.test/legal/attestation-terms">this page</a>.</p>')
         # A row for the linked box's whole text, saved for any company where the same words linked nothing.
@@ -726,9 +726,9 @@ class KeyAndCategoryRuleTests(StoreCase):
                 for company in (COMPANY, OTHER):
                     self.assert_needs(BASE + [one], "sensitive_missing", "q", company=company)
                 apply_sensitive.delete_entry(self.conn, USER, self.rows()[0]["id"])
-        # A whole statement with nothing else on the box stands on its own, as before.
+        # A whole statement with nothing else on the box is still matched with its heading, and needs no one company.
         alone = self.box("Anything", ACCURATE)
-        self.assertEqual((apply_policy.statement_of(alone, "checkbox"), apply_policy.statement_needs_company(alone, "checkbox")), (ACCURATE, False))
+        self.assertEqual((apply_policy.statement_of(alone, "checkbox"), apply_policy.statement_needs_company(alone, "checkbox")), (f"Anything {ACCURATE}", False))
 
     def test_a_statement_built_from_a_description_the_app_cut_is_left_for_the_student(self):
         listing = {"questions": [{"label": "Acknowledgment", "required": True, "description": "<p>" + "x" * 2300 + "</p>",
@@ -858,6 +858,125 @@ class KeyAndCategoryRuleTests(StoreCase):
         for company in (COMPANY, OTHER):
             got = self.plan(schema, company=company).get("gdpr_consent_given")
             self.assertEqual((got.problem_kind, got.value, got.source.kind), ("sensitive_never", None, "none"), company)
+
+
+class LeftoverReviewTests(StoreCase):
+    """The last review round: a statement is the whole visible statement, under the question it follows, for one company."""
+
+    sources = PlanFromTheStoreTests.sources
+    plan = PlanFromTheStoreTests.plan
+    assert_needs = PlanFromTheStoreTests.assert_needs
+
+    RELOCATION = "Relocation to Austin, TX is required within 30 days of the start date"
+    ARBITRATION = "All employment disputes are resolved by binding individual arbitration, and class actions are waived"
+
+    def box(self, label, option, description="", name="q", parent=""):
+        return SchemaField(name=name, label=label, required=True, type=MULTI, options=(option,), description=description, parent=parent)
+
+    def yes_no(self, label, description="", name="q", parent=""):
+        return SchemaField(name=name, label=label, required=True, type=SINGLE, options=("Yes", "No"), description=description, parent=parent)
+
+    def text(self, label, name="t"):
+        return SchemaField(name=name, label=label, required=False, type="input_text")
+
+    def test_a_long_generic_option_is_never_the_whole_statement(self):
+        option = "I acknowledge and understand the information provided"
+        self.assertGreaterEqual(len(option.split()), apply_policy._SPECIFIC_STATEMENT_WORDS, "long enough that a word count would call it specific")
+        relocation, arbitration = self.box("Relocation to Austin", option), self.box("Binding arbitration", option)
+        self.assertNotEqual(apply_policy.statement_of(relocation, "checkbox"), apply_policy.statement_of(arbitration, "checkbox"))
+        self.allow("acknowledgment")
+        self.add(category="acknowledgment", question=apply_policy.statement_of(relocation, "checkbox"), answer="checked")
+        self.assertIs(self.plan(BASE + [relocation], company=OTHER).get("q").value, True, "the same heading and words, anywhere")
+        self.assert_needs(BASE + [arbitration], "sensitive_missing", "q")
+        self.assert_needs(BASE + [arbitration], "sensitive_missing", "q", company=OTHER)
+        # The same heading and option with another description is another statement.
+        described = self.box("Relocation to Austin", option, "<p>I will move at my own expense.</p>")
+        self.assert_needs(BASE + [described], "sensitive_missing", "q", company=OTHER)
+
+    def test_two_yes_no_acknowledgments_with_the_same_words_under_different_questions_never_share_an_answer(self):
+        first = [self.text(self.RELOCATION, "t1"), self.yes_no("Do you acknowledge?", name="q1", parent=self.RELOCATION)]
+        second = [self.text(self.ARBITRATION, "t2"), self.yes_no("Do you acknowledge?", name="q2", parent=self.ARBITRATION)]
+        self.allow("acknowledgment")
+        form = BASE + first + second
+        got = self.plan(form)
+        self.assertNotEqual(got.get("q1").statement, got.get("q2").statement)
+        self.assertIn(self.RELOCATION, got.get("q1").statement)
+        self.add(category="acknowledgment", question=got.get("q1").statement, answer="Yes", answer_kind="option", company="Example Robotics")
+        again = self.plan(form)
+        self.assertEqual((again.get("q1").value, again.get("q1").source.kind), ("Yes", "sensitive"))
+        self.assertEqual((again.get("q2").problem_kind, again.get("q2").value, again.get("q2").source.kind), ("sensitive_missing", None, "none"))
+        # The same words asked after another question at the same company are not the stored ones either.
+        elsewhere = BASE + [self.text(self.ARBITRATION, "t2"), self.yes_no("Do you acknowledge?", name="q1", parent=self.ARBITRATION)]
+        self.assert_needs(elsewhere, "sensitive_missing", "q1")
+
+    def test_a_follow_up_yes_no_acknowledgment_is_filed_under_its_parent(self):
+        label = "If yes, do you acknowledge the relocation terms?"
+        one = [self.text("Are you willing to relocate?", "t1"), self.yes_no(label, parent="Are you willing to relocate?")]
+        two = [self.text("Are you willing to work nights and weekends?", "t1"), self.yes_no(label, parent="Are you willing to work nights and weekends?")]
+        self.allow("acknowledgment")
+        got = self.plan(BASE + one).get("q")
+        self.assertTrue(got.statement.startswith("Are you willing to relocate? / "), got.statement)
+        self.add(category="acknowledgment", question=got.statement, answer="Yes", answer_kind="option", company="Example Robotics")
+        self.assertEqual(self.plan(BASE + one).get("q").value, "Yes")
+        self.assert_needs(BASE + two, "sensitive_missing", "q")
+
+    def test_a_short_yes_no_heading_can_be_saved_under_its_question_and_alone_is_left_for_the_student(self):
+        self.allow("acknowledgment")
+        above = [self.text(self.RELOCATION, "t1"), self.yes_no("Acknowledgment", parent=self.RELOCATION)]
+        under = self.plan(BASE + above).get("q")
+        self.assertEqual(under.problem_kind, "sensitive_missing")
+        form = apply_preflight._sensitive_form(under, "sensitive_missing")
+        self.assertEqual((form["control"], form["company_only"]), ("select", True))
+        saved = self.add(category="acknowledgment", question=under.statement, answer="Yes", answer_kind="option", company="Example Robotics",
+                         company_only=form["company_only"], from_form=True)
+        self.assertEqual(saved["question"], under.statement)
+        self.assertEqual(self.plan(BASE + above).get("q").value, "Yes")
+        # With nothing above it the statement is one word: the store could never hold it, so no form is offered for it.
+        alone = self.plan(BASE + [self.yes_no("Acknowledgment")]).get("q")
+        self.assertEqual((alone.problem_kind, alone.value), ("sensitive_never", None))
+        self.assertEqual(apply_preflight._action(alone, {})["type"], "manual")
+        self.assertEqual(apply_preflight._sensitive_state(alone, self.sources(), COMPANY), "")
+
+    def test_a_short_option_on_a_bare_heading_is_kept_for_one_company_and_under_its_question(self):
+        self.allow("acknowledgment")
+        builders = (
+            ("box", lambda parent: self.box("Acknowledgment", "I acknowledge", parent=parent)),
+            ("yes and no", lambda parent: self.yes_no("Do you acknowledge?", parent=parent)),
+        )
+        for name, build in builders:
+            with self.subTest(kind=name):
+                relocation = [self.text(self.RELOCATION), build(self.RELOCATION)]
+                arbitration = [self.text(self.ARBITRATION), build(self.ARBITRATION)]
+                got = self.plan(BASE + relocation).get("q")
+                form = apply_preflight._sensitive_form(got, "sensitive_missing")
+                self.assertTrue(form["company_only"], "never offered for any company")
+                self.assertIn(self.RELOCATION, got.statement)
+                self.assertNotEqual(got.statement, self.plan(BASE + arbitration).get("q").statement)
+                answer = "checked" if name == "box" else "Yes"
+                with self.assertRaises(StoreRefused):
+                    self.add(category="acknowledgment", question=got.statement, answer=answer, company_only=form["company_only"])
+                saved = self.add(category="acknowledgment", question=got.statement, answer=answer, company="Example Robotics", company_only=True)
+                self.assertFalse(saved["any_company"])
+                self.assertIsNotNone(self.plan(BASE + relocation).get("q").value)
+                # Under another employer's question, or at another employer, it is asked again.
+                self.assert_needs(BASE + arbitration, "sensitive_missing", "q")
+                self.assert_needs(BASE + relocation, "sensitive_missing", "q", company=OTHER)
+                # Saved for any company by another route, it is still never read for a statement like this.
+                with self.conn:
+                    self.conn.execute("UPDATE apply_sensitive_answers SET company_key=''")
+                self.assert_needs(BASE + relocation, "sensitive_missing", "q")
+                self.assert_needs(BASE + relocation, "sensitive_missing", "q", company=OTHER)
+                with self.conn:
+                    self.conn.execute("DELETE FROM apply_sensitive_answers")
+
+    def test_a_visa_question_in_any_wording_is_never_an_ordinary_answer(self):
+        for label in ("What kind of visa do you have?", "What sort of visa do you hold?", "Your visa", "Visa (if applicable)"):
+            with self.subTest(label=label):
+                # An answer the student saved as reusable at another company is not typed here.
+                rows = [policy_tests.answer(label, "F-1", company=OTHER, tags=["reusable"])]
+                got = policy_tests.plan(BASE + [F("q", label)], policy_tests.sources(answers=rows), "submit", company="Third Co").get("q")
+                self.assertEqual((got.sensitive, got.source.kind, got.value), ("sponsorship", "none", None))
+                self.assertEqual(apply_preflight._action(got, {})["type"], "manual", "never the ordinary answer form with Use for any company")
 
 
 class StoreReaderScanTests(unittest.TestCase):
