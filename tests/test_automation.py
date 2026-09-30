@@ -167,7 +167,7 @@ class RegistryTests(AutomationCase):
             feature = automation.FEATURES[key]
             self.assertEqual((feature.group, feature.modes), ("outreach", ("off", "on")))
         self.assertEqual({key for key, f in automation.FEATURES.items() if f.risk == "external"},
-                         {"scheduled_sending", "bounce_auto_resend", "form_submission", "decline_thank_you"})
+                         {"scheduled_sending", "bounce_auto_resend", "form_submission", "decline_thank_you", "apply_agent"})
         self.assertEqual(automation.FEATURES["jev_inbox_suggestions"].group, "applications")
         self.assertEqual(automation.FEATURES["desktop_notifications"].group, "notifications")
         with self.assertRaises(ValueError):

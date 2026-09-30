@@ -11,7 +11,7 @@
   // terms mirror the ones the agent's classifier (apply_policy.classify_sensitive) adds.
   // opportunity_app/extension_apply.py keeps a copy for the save guard; a test pins the two.
   // "opt in" and "opt out" are marketing wording, unless a country or year follows ("OPT in 2027").
-  const SENSITIVE = /\b(gender|sex|sexual orientation|race|ethnic(?:ity)?|disab(?:ility|led)?|veteran|age|birth|sponsor(?:ship)?|authori[sz](?:ed|ation)|citizen(?:ship)?|salary|compensation|pronoun|marital|religio\w*|genetic|pregnan(?:cy|t)|eeo|transgender|immigration|petition|employment[- ]based|green card|permanent resident|visa[- ](?:sponsor\w*|status|support|type|holder|transfer)|(?:require|need|hold)\w*\s+(?:a\s+)?visa|work visa|student visa|f[- ]?1|j[- ]?1|h[- ]?1[- ]?b|tn|e[- ]?3|stem opt|opt(?!-(?:in|out)\b)(?! (?:in|out)\b(?! (?:the )?(?:us|u\.s\.|usa|united states|20\d\d)(?!\w)))|cpt|practical training|clearance|right to work|eligible to work|legally (?:eligible|authori[sz]ed)|18\+?(?: years)? (?:or older|of age)|over (?:the age of )?18|at least 18|age of 18|u\.? ?s\.? person|itar|export control|export administration regulations|felony|misdemeanor|arrest\w*|criminal|convict\w*|background check|non[- ]?compete)\b/i;
+  const SENSITIVE = /\b(gender|sex|sexual orientation|race|ethnic(?:ity)?|disab(?:ility|led)?|veteran|age|birth|sponsor(?:ship)?|authori[sz](?:ed|ation)|citizen(?:ship)?|salary|compensation|pronoun|marital|religio\w*|genetic|pregnan(?:cy|t)|eeo|transgender|immigration|petition|employment[- ]based|green card|permanent resident|visa[- ](?:sponsor\w*|status|support|type|holder|transfer)|(?:require|need|hold)\w*\s+(?:a\s+)?visa|work visa|student visa|f[- ]?1|j[- ]?1|h[- ]?1[- ]?b|tn|e[- ]?3|stem opt|opt(?!-(?:in|out)\b)(?! (?:in|out)\b(?! (?:the )?(?:us|u\.s\.|usa|united states|20\d\d)(?!\w)))|cpt|practical training|clearance|right to work|eligible to work|legally (?:eligible|authori[sz]ed)|(?:18|eighteen)\+?(?: years)? (?:or older|of age)|over (?:the age of )?(?:18|eighteen)|at least (?:18|eighteen)|age of (?:18|eighteen)|(?:are you|you are|must be)\s+(?:18|eighteen)|u\.? ?s\.? person|itar|export control|export administration regulations|legally\s+(?:(?:able|permitted|allowed)\s+to\s+)?work|eligib\w*\s+(?:for|to)\s+(?:employment|work)|work permit|type of visa|(?:hold|have|has|current\w*|which)\s+(?:(?:a|an|your|any|the)\s+)?(?:\w+\s+)?visa|what(?:['’]s|\s+(?:is|are))?\s+(?:(?:your|the|my)\s+)?(?:\w+\s+)?visa|on\s+(?:a|an)\s+(?:\w+\s+)?visa|^visas?(?=\W*$)|nationalit\w*|(?:u\.? ?s\.?|united states|american)\s+national|national of|crimes?|offen[cs]es?|lgbt\w*|queer|sexual\w*|military|armed forces|wages?|base pay|pay rate|felony|misdemeanor|arrest\w*|criminal|convict\w*|background check|non[- ]?compete)\b/i;
   const PROHIBITED = /\b(submit|next|continue|captcha|consent|send message|contact recruiter)\b/i;
   const NEVER_GENERIC_TYPES = new Set(["submit", "button", "image", "reset", "hidden", "password"]);
   const DOCUMENT_MEDIA = new Set([
@@ -233,7 +233,7 @@
   // smarter: a question worded some other way is not caught, and only the student not tagging it
   // reusable keeps it at one company. A saved answer to one of these never carries to another
   // company, even when the row is tagged reusable.
-  const CONTEXT_WORDING = /previously (?:worked|been employed|applied)|worked (?:here|for us|for this company|at)|applied (?:here|before|previously)|referr|who referred|know (?:anyone|someone)|how did you hear|where did you (?:hear|find)|current(?:ly)? (?:an )?employee|worked (?:for|with|at) (?:us|this|our|the company)|employed (?:by|at|with)|interviewed (?:with|at|here)|relatives?\b|family members?\b|related to\b|spouse|immediate family|former employee|employed here\b|relations? working|this (?:organi[sz]ation|firm|company|employer)/;
+  const CONTEXT_WORDING = /previously (?:worked|been employed|applied)|worked (?:here|for us|for this company|at)|applied (?:here|before|previously)|referr|who referred|know (?:anyone|someone)|how did you hear|where did you (?:hear|find)|current(?:ly)? (?:an )?employee|worked (?:for|with|at) (?:us|this|our|the company)|employed (?:by|at|with)|interviewed (?:with|at|here)|relatives?\b|family members?\b|related to\b|spouse|immediate family|former employee|employed here\b|relations? working|this (?:organi[sz]ation|firm|company|employer)|\bwork (?:here|for us|with us)\b|\bour (?:company|team|organi[sz]ation|mission|products?)\b|\bthis (?:role|position|opportunity|team)\b|\binterest(?:ed|s)? (?:you )?(?:in|about) this\b|\bjoin (?:us|our)\b/;
 
   function needsLabelKey(key) {
     const text = withoutEnumeration(key);
@@ -404,7 +404,8 @@
       const question = questionText(control);
       const labelKey = labelKeyed(type, question, repeated.get(formScope(control)));
       const screened = screenText(control, question);
-      const requiresReview = SENSITIVE.test(screened);
+      // The question on its own too: a bare "Visa" heading is only recognisable when nothing else is around it.
+      const requiresReview = SENSITIVE.test(screened) || SENSITIVE.test(question);
       const prohibited = PROHIBITED.test(screened);
       const mapping = ADAPTERS.mappings.find((candidate) => candidate.pattern.test(label));
       let value = "";
@@ -551,5 +552,8 @@
     attachDocumentFromBytes,
     questionText,
     questionKey,
+    // The two rules apply_policy.py repeats for the agent's plan; tests/fixtures/apply/context_keys.json is run by both.
+    needsLabelKey,
+    contextDependent,
   });
 })();

@@ -6612,6 +6612,19 @@
 
     const form = element("form", "profile-form");
     const name = profileField(form, "Name", "name", profile.name);
+    // Apply for me types these into an employer's application form, and it will not run without a confirmed email.
+    const contactSaved = profile.contact && typeof profile.contact === "object" && !Array.isArray(profile.contact) ? profile.contact : {};
+    const contactEmail = profileField(form, "Email for applications", "contact_email", contactSaved.email, { type: "email", placeholder: "you@example.com" });
+    const contactPhone = profileField(form, "Phone for applications (optional)", "contact_phone", contactSaved.phone, { type: "tel" });
+    // How your name is typed into an employer's application form (Apply for me). A name of more than two words is never split for you.
+    const nameParts = profile.name_parts && typeof profile.name_parts === "object" ? profile.name_parts : {};
+    const nameForApplications = element("fieldset", "profile-fieldset");
+    nameForApplications.appendChild(element("legend", "", "Name for applications"));
+    nameForApplications.appendChild(element("p", "profile-help", "Apply for me types these into an employer's first name and last name boxes. It never splits a longer name for you, so fill these in if your name has more than two words."));
+    const firstForApplications = profileField(nameForApplications, "First name", "name_parts_first", nameParts.first);
+    const lastForApplications = profileField(nameForApplications, "Last name", "name_parts_last", nameParts.last);
+    const preferredForApplications = profileField(nameForApplications, "Preferred name (optional)", "name_parts_preferred", nameParts.preferred);
+    form.appendChild(nameForApplications);
     const school = profileField(form, "School", "school", profile.school);
     const degree = profileField(form, "Degree", "degree", profile.degree);
     const graduation = profileField(form, "Graduation year", "graduation_year", profile.graduation_year, { type: "number", min: 2000, max: 2200 });
@@ -6663,8 +6676,19 @@
         aliases: [],
         places: [regionName.toLowerCase()],
       });
+      const namePartsValue = { first: firstForApplications.value.trim(), last: lastForApplications.value.trim(), preferred: preferredForApplications.value.trim() };
+      // Anything else already saved under contact (from a résumé) is kept; only the email and phone are edited here.
+      const contactValue = { ...contactSaved };
+      [["email", contactEmail], ["phone", contactPhone]].forEach(([key, input]) => {
+        if (input.value.trim()) contactValue[key] = input.value.trim();
+        else delete contactValue[key];
+      });
       const updates = {
         name: name.value.trim(),
+        // Sent only when there is something to say, or something already saved to clear.
+        ...(Object.keys(contactValue).length || profile.contact ? { contact: contactValue } : {}),
+        // Sent only when there is something to say, or something already saved to clear.
+        ...(Object.values(namePartsValue).some(Boolean) || profile.name_parts ? { name_parts: namePartsValue } : {}),
         school: school.value.trim(),
         degree: degree.value.trim(),
         graduation_year: graduation.value ? Number(graduation.value) : null,
@@ -7755,6 +7779,7 @@
       features.appendChild(wrap);
     });
     section.appendChild(features);
+    if (overview.settings.features.some((feature) => feature.key === "apply_agent")) section.appendChild(applyAgentSettingsBlock());
 
     // Roles auto_pass passed on in the last week, each with Restore (the ledger's undo).
     const [passedBlock, passedHeading] = block("automation-auto-passed", "Auto-passed this week", "automation-auto-passed-heading");
@@ -10446,6 +10471,464 @@
     }
   }
 
+  // Apply for me (apply_policy.py, apply_preflight.py): what the app would fill on a saved Greenhouse role, and what it
+  // still needs from you. It only reads: opening this section changes nothing in your tracker, and it shows no answer
+  // you gave, only the questions, where each answer would come from, and what is missing.
+  const APPLY_NOTE = "Nothing in your tracker has changed. Filling the form in a window comes in a later step.";
+
+  function applyAnswerForm(problem, company, onSaved) {
+    const action = problem.action;
+    const form = element("form", "apply-answer-form");
+    const id = `apply-answer-${problem.key}`;
+    const label = element("label", "profile-field");
+    label.appendChild(element("span", "", "Your answer"));
+    let read;
+    let write;
+    if (action.control === "select" || action.control === "checkbox") {
+      const select = document.createElement("select");
+      select.id = id;
+      const none = document.createElement("option");
+      none.value = "";
+      none.textContent = action.control === "select" ? "Choose an option" : "Choose yes or no";
+      select.appendChild(none);
+      (action.control === "select" ? action.options : ["Yes", "No"]).forEach((option) => {
+        const entry = document.createElement("option");
+        entry.value = option;
+        entry.textContent = option;
+        select.appendChild(entry);
+      });
+      label.appendChild(select);
+      form.appendChild(label);
+      read = () => select.value;
+      write = (value) => { select.value = value; };
+    } else if (action.control === "multiselect") {
+      const group = element("fieldset", "apply-options");
+      group.appendChild(element("legend", "", "Your answer (choose every option that applies)"));
+      const boxes = action.options.map((option) => {
+        const row = element("label", "confirmation-row");
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.value = option;
+        row.append(box, element("span", "", option));
+        group.appendChild(row);
+        return box;
+      });
+      form.appendChild(group);
+      read = () => boxes.filter((box) => box.checked).map((box) => box.value);
+      write = (value) => boxes.forEach((box) => { box.checked = value.includes(box.value); });
+    } else {
+      const control = action.control === "text" ? document.createElement("input") : document.createElement("textarea");
+      if (action.control === "text") control.type = "text";
+      control.id = id;
+      control.maxLength = 10000;
+      label.appendChild(control);
+      form.appendChild(label);
+      read = () => control.value;
+      write = (value) => { control.value = value; };
+    }
+    let reusable = null;
+    if (action.reusable_allowed) {
+      const row = element("label", "confirmation-row");
+      reusable = document.createElement("input");
+      reusable.type = "checkbox";
+      row.append(reusable, element("span", "", "Use for any company"));
+      form.appendChild(row);
+    } else {
+      form.appendChild(element("p", "profile-help", "This answer depends on the company, so it is saved for this company only."));
+    }
+    const save = element("button", "secondary-button", "Save and use for this question");
+    save.type = "submit";
+    const status = element("p", "form-status");
+    status.setAttribute("role", "status");
+    form.append(save, status);
+    // What is typed and not yet saved, so the list can be rebuilt after another answer is saved without losing it.
+    form.applyDraft = {
+      read() {
+        const answer = read();
+        const ticked = Boolean(reusable?.checked);
+        return (Array.isArray(answer) ? answer.length : answer) || ticked ? { answer, ticked } : null;
+      },
+      write(draft) {
+        write(draft.answer);
+        if (reusable) reusable.checked = draft.ticked;
+      },
+    };
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const answer = read();
+      if (!answer || (Array.isArray(answer) && !answer.length)) {
+        status.textContent = "Give an answer first.";
+        return;
+      }
+      save.disabled = true;
+      status.textContent = "Saving…";
+      try {
+        const saved = await api(`/api/v1/apply-agent/opportunities/${encodeURIComponent(problem.opportunityId)}/answers`, {
+          method: "POST",
+          body: JSON.stringify({ key: problem.key, answer, reusable: Boolean(reusable?.checked), posting_confirmed: Boolean(problem.postingConfirmed?.()) }),
+        });
+        onSaved(saved.check, `Saved for ${company}.`);
+      } catch (error) {
+        save.disabled = false;
+        if (error.message !== "Authentication required") status.textContent = error.message;
+      }
+    });
+    return form;
+  }
+
+  function applyLabelForm(problem, onSaved) {
+    const action = problem.action;
+    const form = element("form", "apply-answer-form");
+    const label = element("label", "profile-field");
+    label.appendChild(element("span", "", "Exact option, as the form lists it"));
+    const input = document.createElement("input");
+    input.type = "text";
+    input.maxLength = 200;
+    input.value = action.suggestion || "";
+    label.appendChild(input);
+    const save = element("button", "secondary-button", "Save this option");
+    save.type = "submit";
+    const status = element("p", "form-status");
+    status.setAttribute("role", "status");
+    form.append(label, element("p", "profile-help", "You typed this, so the app has not checked it against the form yet. It only uses an option the form really lists, word for word."), save, status);
+    // Kept across a rebuild of the list, but only when the student changed it from the suggestion.
+    form.applyDraft = {
+      read: () => (input.value !== (action.suggestion || "") ? { answer: input.value } : null),
+      write: (draft) => { input.value = draft.answer; },
+    };
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!input.value.trim()) {
+        status.textContent = "Type the option first.";
+        return;
+      }
+      save.disabled = true;
+      status.textContent = "Saving…";
+      try {
+        await api(`/api/v1/apply-agent/ats-labels/${encodeURIComponent(action.field)}`, { method: "PUT", body: JSON.stringify({ label: input.value }) });
+        onSaved(null, "Saved.");
+      } catch (error) {
+        save.disabled = false;
+        if (error.message !== "Authentication required") status.textContent = error.message;
+      }
+    });
+    return form;
+  }
+
+  function applyProblemAction(problem, company, onSaved) {
+    const action = problem.action || {};
+    if (action.type === "answer") return applyAnswerForm(problem, company, onSaved);
+    if (action.type === "ats_label" && action.field) return applyLabelForm(problem, onSaved);
+    if (action.type === "profile") {
+      const open = element("button", "secondary-button", action.field === "name_parts" ? "Add your name for applications" : "Open your profile");
+      open.type = "button";
+      // The Profile page opens behind the role, so leave the role first, then land on the box that is missing.
+      const target = { name_parts: 'input[name="name_parts_first"]', contact: 'input[name="contact_email"]' }[action.field];
+      open.addEventListener("click", () => {
+        closeDetail();
+        els.profileNav.click();
+        // The page loads its form after it opens, so look for the box for a few seconds.
+        let tries = 0;
+        const look = () => {
+          const field = target ? document.querySelector(`.profile-form ${target}`) : null;
+          if (field) {
+            field.scrollIntoView({ block: "center" });
+            field.focus({ preventScroll: true });
+          } else if ((tries += 1) < 25) {
+            setTimeout(look, 200);
+          }
+        };
+        setTimeout(look, 200);
+      });
+      return open;
+    }
+    if (action.type === "library") {
+      // Two saved answers disagree, and only the student can say which one is right: the answer library is where they are kept.
+      const open = element("button", "secondary-button", "Open your saved answers");
+      open.type = "button";
+      open.addEventListener("click", () => {
+        // The answer library lives on the Prepare page, behind the open role, so leave the role first.
+        closeDetail();
+        els.prepareNav.click();
+        // The page loads its sections after it opens, so look for the heading for a few seconds.
+        let tries = 0;
+        const look = () => {
+          const heading = [...document.querySelectorAll("h3")].find((node) => node.textContent === "Answer library");
+          if (heading) {
+            heading.tabIndex = -1;
+            heading.scrollIntoView({ block: "start" });
+            heading.focus({ preventScroll: true });
+          } else if ((tries += 1) < 25) {
+            setTimeout(look, 200);
+          }
+        };
+        setTimeout(look, 200);
+      });
+      return open;
+    }
+    if (action.type === "resume") {
+      const open = element("button", "secondary-button", action.chooser ? "Choose a résumé for this role" : "Go to the résumé section");
+      open.type = "button";
+      open.addEventListener("click", () => {
+        const target = document.querySelector(".resume-pick");
+        target?.scrollIntoView({ block: "center" });
+        target?.querySelector("select")?.focus();
+      });
+      return open;
+    }
+    return null;
+  }
+
+  // Which Greenhouse posting the check read and when, and a warning (with a tick to go on) when it does not look like the saved role.
+  function applyPostingLine(body, result, remember, confirmed) {
+    const posting = result.posting;
+    if (!posting || !(posting.title || posting.company)) return;
+    const line = element("p", "apply-source profile-help");
+    const words = [posting.title, posting.company].filter(Boolean).join(" at ");
+    line.append("Read from ");
+    if (posting.url) {
+      const link = element("a", "", words);
+      link.href = posting.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      line.appendChild(link);
+    } else {
+      line.append(words);
+    }
+    const when = result.from_cache ? "a copy kept for up to an hour" : relativeWhen(result.checked_at);
+    line.append(` on Greenhouse${when ? `, ${when}` : ""}.`);
+    body.appendChild(line);
+    if (!posting.differs) return;
+    const warning = element("div", "apply-mismatch");
+    warning.appendChild(element("p", "apply-limit", `This may not be your role. ${posting.difference}.`));
+    const row = element("label", "confirmation-row");
+    const tick = document.createElement("input");
+    tick.type = "checkbox";
+    tick.checked = confirmed;
+    tick.addEventListener("change", () => remember(tick.checked));
+    row.append(tick, element("span", "", "This is the right posting"));
+    warning.appendChild(row);
+    body.appendChild(warning);
+  }
+
+  function applyForMeSection(item) {
+    // Only a saved role, and only for a student who turned Apply for me on: nobody else's page asks Greenhouse anything.
+    if (item.intent_state !== "saved" || savedAutomationMode("apply_agent") !== "on") return null;
+    const section = element("section", "detail-section apply-for-me");
+    section.dataset.applyForMe = "";
+    // Shown once there is something to say. A role that is not on Greenhouse says so; the switch turned off meanwhile says nothing.
+    section.hidden = true;
+    section.appendChild(element("p", "eyebrow", "Apply for me"));
+    const summary = element("p", "apply-summary", "Checking the Greenhouse form…");
+    summary.setAttribute("role", "status");
+    const body = element("div", "apply-body");
+    section.append(summary, body);
+    const stale = () => state.detailItem !== item || !section.isConnected;
+    let settled = false;
+    const slow = setTimeout(() => { if (!settled && !stale()) section.hidden = false; }, 400);
+    // The student's word that the form Greenhouse returned is this role's, when it did not look like it.
+    let postingConfirmed = false;
+
+    function paint(result, saved = "") {
+      settled = true;
+      section.hidden = false;
+      summary.textContent = saved ? `${saved} ${result.message}` : result.message;
+      // The button that was pressed is gone after a save: keep the place, and let the status be read out.
+      if (saved) {
+        summary.tabIndex = -1;
+        summary.focus({ preventScroll: true });
+      }
+      // Whatever is typed into another question and not yet saved comes back after the list is rebuilt below.
+      const drafts = new Map();
+      body.querySelectorAll("li[data-apply-key]").forEach((row) => {
+        const draft = row.querySelector("form")?.applyDraft?.read();
+        if (draft) drafts.set(row.dataset.applyKey, draft);
+      });
+      body.replaceChildren();
+      if (result.status === "unavailable" || result.status === "failed") return;
+      (result.asks || []).forEach((ask) => body.appendChild(element("p", "apply-limit", `Before you go on: ${ask.message}`)));
+      const stopped = result.eligibility?.handoff;
+      if (stopped && !stopped.allowed && stopped.reason) body.appendChild(element("p", "apply-limit", `Not right now: ${stopped.reason}`));
+      applyPostingLine(body, result, (confirmed) => { postingConfirmed = confirmed; }, postingConfirmed);
+      // Questions the app has a control for come first. The ones it never answers for the student are grouped apart as hers to do on the form.
+      const problems = result.problems || [];
+      const groups = [[problems.filter((problem) => problem.action?.type !== "manual"), ""], [problems.filter((problem) => problem.action?.type === "manual"), "Left for you"]];
+      groups.forEach(([group, heading]) => {
+        if (!group.length) return;
+        if (heading) body.appendChild(element("p", "apply-group", `${heading}: the app leaves these to you on the Greenhouse form.`));
+        const list = element("ul", "apply-problems");
+        group.forEach((problem) => {
+          const row = element("li", "apply-problem");
+          row.dataset.applyKey = problem.key;
+          row.appendChild(element("strong", "", problem.required ? problem.question : `${problem.question} (optional)`));
+          row.appendChild(element("p", "profile-help", problem.message));
+          const control = applyProblemAction({ ...problem, opportunityId: item.id, postingConfirmed: () => postingConfirmed }, result.company, (fresh, message) => {
+            if (fresh) paint(fresh, message);
+            else load(message);
+          });
+          if (control) {
+            if (drafts.has(problem.key)) control.applyDraft?.write(drafts.get(problem.key));
+            row.appendChild(control);
+          }
+          list.appendChild(row);
+        });
+        body.appendChild(list);
+      });
+      const fields = result.fields || [];
+      if (fields.length) {
+        const details = element("details", "apply-fields");
+        details.appendChild(element("summary", "", `What the app would do with each of the ${fields.length} fields`));
+        const list = element("ul", "reason-list");
+        fields.forEach((field) => {
+          const words = field.source ? `from ${field.source.charAt(0).toLowerCase()}${field.source.slice(1)}` : (field.note || "left blank");
+          list.appendChild(element("li", "", `${field.question}${field.required ? "" : " (optional)"}: ${words}`));
+        });
+        details.appendChild(list);
+        body.appendChild(details);
+      }
+      body.appendChild(element("p", "apply-note", APPLY_NOTE));
+    }
+
+    async function load(saved = "") {
+      try {
+        const result = await api(`/api/v1/apply-agent/opportunities/${encodeURIComponent(item.id)}/check`);
+        if (!stale()) paint(result, typeof saved === "string" ? saved : "");
+      } catch (error) {
+        clearTimeout(slow);
+        if (stale()) return;
+        // Turned off since the page opened (409), or not runnable in this app (503): nothing to show.
+        if ([409, 503].includes(error.status)) {
+          section.remove();
+          return;
+        }
+        if (error.message === "Authentication required") return;
+        settled = true;
+        section.hidden = false;
+        summary.textContent = `The Apply for me check could not run: ${error.message}`;
+      }
+    }
+
+    load();
+    return section;
+  }
+
+  // The Apply for me settings, in the Automation panel: the limits in force (read only), and the exact option labels
+  // for the lists only the form knows (school, location, degree).
+  function applyAgentSettingsBlock() {
+    const wrap = element("div", "automation-block automation-apply-agent");
+    const heading = element("h4", "", "Apply for me settings");
+    heading.id = "automation-apply-agent-heading";
+    heading.tabIndex = -1;
+    const host = element("div", "apply-settings");
+    wrap.append(heading, host);
+    const status = element("p", "form-status");
+    status.setAttribute("role", "status");
+    const LIMIT_WORDS = {
+      spacing_minutes: ["Minutes between two applications", "minutes"],
+      daily_cap: ["Applications a day", ""],
+      company_days: ["Days before applying again to the same company", "days"],
+      rehearsals_per_day: ["Rehearsals and option lookups a day", ""],
+      rehearsals_before_submit: ["Clean rehearsals before a one click submit", ""],
+      unattended_per_hour: ["Unattended applications an hour", ""],
+      unattended_daily_cap: ["Unattended applications a day", ""],
+    };
+    const FIELD_WORDS = {
+      location: "Location", school: "School", degree: "Degree", discipline: "Discipline", phone_country: "Phone country",
+      education_start_month: "Education start month", education_start_year: "Education start year",
+      education_end_month: "Education end month", education_end_year: "Education end year",
+    };
+
+    function paint(settings) {
+      host.replaceChildren();
+      if (settings.requirement) host.appendChild(element("p", "profile-help", `To turn it on: ${settings.requirement}.`));
+      const limits = element("ul", "reason-list apply-limits");
+      settings.limits.forEach((limit) => {
+        const [words, unit] = LIMIT_WORDS[limit.key] || [humanizeKey(limit.key), ""];
+        limits.appendChild(element("li", "", `${words}: ${limit.value}${unit ? ` ${unit}` : ""}${limit.overridden ? ` (yours; the default is ${limit.default})` : ""}`));
+      });
+      host.append(
+        element("p", "profile-help", "These limits are in force now. To change one, add it under apply_agent in your profile file (config/profile.json)."),
+        limits,
+        element("p", "profile-help", `Screenshots of a filled form would be kept for ${settings.evidence_days} days, then deleted. Their fingerprints stay.`),
+      );
+      host.appendChild(element("h5", "", "Exact options for lists the form owns"));
+      host.appendChild(element("p", "profile-help", "Some fields, such as school and location, are lists whose wording only the form knows. Save the exact option once and the app uses it word for word."));
+      const labels = Object.entries(settings.ats_labels);
+      if (!labels.length) host.appendChild(element("p", "empty-inline", "No options saved yet."));
+      const list = element("ul", "reason-list apply-labels");
+      labels.forEach(([field, entry]) => {
+        const row = element("li", "apply-label");
+        row.append(element("span", "", `${FIELD_WORDS[field] || field}: ${entry.label} `));
+        const remove = element("button", "secondary-button", "Remove");
+        remove.type = "button";
+        remove.setAttribute("aria-label", `Remove the saved ${FIELD_WORDS[field] || field} option`);
+        remove.addEventListener("click", async () => {
+          remove.disabled = true;
+          try {
+            await api(`/api/v1/apply-agent/ats-labels/${encodeURIComponent(field)}`, { method: "DELETE" });
+            status.textContent = "Removed.";
+            await load();
+          } catch (error) {
+            remove.disabled = false;
+            if (error.message !== "Authentication required") status.textContent = error.message;
+          }
+        });
+        row.appendChild(remove);
+        list.appendChild(row);
+      });
+      host.appendChild(list);
+      const form = element("form", "apply-answer-form");
+      const pick = element("label", "profile-field");
+      pick.appendChild(element("span", "", "List"));
+      const select = document.createElement("select");
+      settings.label_fields.forEach((field) => {
+        const option = document.createElement("option");
+        option.value = field;
+        option.textContent = FIELD_WORDS[field] || field;
+        select.appendChild(option);
+      });
+      pick.appendChild(select);
+      const typed = element("label", "profile-field");
+      typed.appendChild(element("span", "", "Exact option"));
+      const input = document.createElement("input");
+      input.type = "text";
+      input.maxLength = 200;
+      typed.appendChild(input);
+      const add = element("button", "secondary-button", "Save this option");
+      add.type = "submit";
+      form.append(pick, typed, add);
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!input.value.trim()) {
+          status.textContent = "Type the option first.";
+          return;
+        }
+        add.disabled = true;
+        try {
+          await api(`/api/v1/apply-agent/ats-labels/${encodeURIComponent(select.value)}`, { method: "PUT", body: JSON.stringify({ label: input.value }) });
+          status.textContent = "Saved.";
+          await load();
+        } catch (error) {
+          add.disabled = false;
+          if (error.message !== "Authentication required") status.textContent = error.message;
+        }
+      });
+      host.append(form, status);
+    }
+
+    async function load() {
+      try {
+        paint(await api("/api/v1/apply-agent/settings"));
+      } catch (error) {
+        host.replaceChildren(element("p", "form-error", `Apply for me settings could not be loaded: ${error.message}`));
+      }
+    }
+
+    host.appendChild(element("p", "empty-inline", "Loading…"));
+    load();
+    return wrap;
+  }
+
   function renderDetail(item) {
     state.detailItem = item;
     const content = document.createDocumentFragment();
@@ -10534,6 +11017,8 @@
     }
 
     content.appendChild(resumePickSection(item));
+    const applySection = applyForMeSection(item);
+    if (applySection) content.appendChild(applySection);
     content.appendChild(jevReviewSection(item));
 
     const overview = element("section", "detail-section");

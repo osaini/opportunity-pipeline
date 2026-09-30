@@ -30,7 +30,7 @@ class RegistryTests(unittest.TestCase):
             "follow_up_review": "outreach", "form_submission": "outreach", "outreach_auto_close": "outreach",
             "auto_follow_up_drafts": "outreach", "decline_thank_you": "outreach",
             "jev_inbox_suggestions": "applications", "application_mail": "applications", "resume_variant_pick": "applications",
-            "application_silence": "applications", "archive_silent_applications": "applications",
+            "application_silence": "applications", "archive_silent_applications": "applications", "apply_agent": "applications",
             "auto_save": "discovery", "auto_pass": "discovery",
             "desktop_notifications": "notifications",
         })

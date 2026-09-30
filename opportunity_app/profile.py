@@ -15,6 +15,7 @@ from .schema import LOCAL_USER_ID, utc_now
 
 ALLOWED_PROFILE_FIELDS = {
     "name",
+    "name_parts",
     "school",
     "degree",
     "graduation_year",
@@ -247,6 +248,10 @@ _BOOLEAN_FIELDS = (
     "willing_to_relocate",
 )
 _STRUCTURED_FIELDS = ("education", "experience", "projects", "awards", "activities")
+# How the name is written on an application: first and last are what the form's two name boxes get, and
+# preferred is only for a form that has a preferred-name box. Splitting a longer name would be a guess.
+_NAME_PARTS = ("first", "last", "preferred")
+_NAME_PART_LENGTH = 80
 _REGION_TEXT_LISTS = ("state_markers", "places", "aliases")
 
 
@@ -287,6 +292,21 @@ def _region_errors(value: Any) -> list[str]:
             errors.append(f"{label}.bonus must be a whole number")
         if region.get("phrase") is not None and not isinstance(region["phrase"], str):
             errors.append(f"{label}.phrase must be text")
+    return errors
+
+
+def _name_parts_errors(value: Any) -> list[str]:
+    if not isinstance(value, dict):
+        return ["name_parts must be an object with first, last and preferred"]
+    errors = [f"name_parts.{key} is not one of first, last, preferred" for key in sorted(set(value) - set(_NAME_PARTS))]
+    for key in _NAME_PARTS:
+        part = value.get(key)
+        if part is None:
+            continue
+        if not isinstance(part, str):
+            errors.append(f"name_parts.{key} must be text")
+        elif len(part.strip()) > _NAME_PART_LENGTH:
+            errors.append(f"name_parts.{key} must be at most {_NAME_PART_LENGTH} characters")
     return errors
 
 
@@ -345,6 +365,8 @@ def validate_profile_types(profile: dict[str, Any]) -> None:
             errors.extend(_region_errors(value))
         elif field == "compensation_preferences":
             errors.extend(_compensation_errors(value))
+        elif field == "name_parts":
+            errors.extend(_name_parts_errors(value))
         elif field == "contact":
             if not isinstance(value, dict):
                 errors.append("contact must be an object")

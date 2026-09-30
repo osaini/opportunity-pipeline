@@ -38,6 +38,7 @@ from opportunity_app.api import create_app  # noqa: E402
 from helpers_platform import build_and_migrate  # noqa: E402
 
 import outreach_fakes  # noqa: E402
+from apply_fake_ats import FakeApplyAgentFactory, FakeSchemaClient  # noqa: E402
 
 OWNER_TOKEN = "ui-suite-owner-token"
 EMPLOYER_TOKEN = "ui-suite-employer-token"
@@ -171,6 +172,9 @@ def live_server(tmp_path_factory: pytest.TempPathFactory):
         outreach_settings=outreach_fakes.outreach_settings(root),
         typesafe_client_factory=outreach_fakes.FakeTypeSafeClient,
         inbox_client_factory=outreach_fakes.FakeTypeSafeClient,
+        # Apply for me reads the fictional listing and has an agent that only says a window could open: no network, no browser.
+        apply_schema_client_factory=lambda: FakeSchemaClient(any_job=True),
+        apply_agent_factory=FakeApplyAgentFactory(),
     )
     port = _free_port()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))

@@ -317,18 +317,24 @@ class FakeSchemaClient:
     """Serves the fixture listing of the fictional job, or a 404, with no network.
 
     Tests, the sandbox and the UI suite pass it as ``apply_schema_client_factory``.
-    ``fetch`` returns a copy of the parsed listing, or None for a 404. M4 adapts the
-    calling convention to the real client's.
+    ``fetch(board_token, job_id)`` is the real client's call (apply_schema_client): it returns a
+    copy of the parsed listing, or None for a 404. ``any_job`` answers every board and job with
+    the fictional listing, which the sandbox uses so each role it seeds has one.
     """
 
-    def __init__(self, *, closed: bool = False, legacy: bool = False) -> None:
+    def __init__(self, *, closed: bool = False, legacy: bool = False, any_job: bool = False) -> None:
         self.closed = closed
         self.legacy = legacy
+        self.any_job = any_job
         self.calls: list[tuple[str, str]] = []
 
     def fetch(self, board_token: str, job_id: str) -> dict[str, Any] | None:
         self.calls.append((board_token, job_id))
-        if self.closed or board_token != BOARD_TOKEN:
+        if self.closed:
+            return None
+        if self.any_job:
+            return copy.deepcopy(fixture_json("schema_legacy.json" if self.legacy else "schema_new.json"))
+        if board_token != BOARD_TOKEN:
             return None
         if job_id == JOB_ID and not self.legacy:
             return copy.deepcopy(fixture_json("schema_new.json"))
@@ -342,6 +348,21 @@ class FakeSchemaClient:
         """The same, from a boards-api URL: /v1/boards/{token}/jobs/{id}."""
         match = re.fullmatch(r"/v1/boards/([^/]+)/jobs/(\d+)", urlsplit(url).path)
         return self.fetch(match.group(1), match.group(2)) if match else None
+
+
+class FakeApplyAgentFactory:
+    """The agent factory of a test or the sandbox: it says a window could open, and starts nothing.
+
+    ``available()`` is the probe the apply_agent switch's requirement asks (apply_runs.setup_requirement): "" when
+    Playwright and Chromium are present, else a sentence. The fake always says they are, so the same tests pass
+    with or without Playwright installed. The runs themselves arrive with the rehearsal engine (M5a).
+    """
+
+    def __init__(self, missing: str = "") -> None:
+        self.missing = missing
+
+    def available(self) -> str:
+        return self.missing
 
 
 # --- playing the student, for tests that drive a page (and, in M5a, for ``student_hook``) -----------
