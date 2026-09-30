@@ -10597,8 +10597,10 @@
       const open = element("button", "secondary-button", "Open your saved answers");
       open.type = "button";
       open.addEventListener("click", () => {
-        els.profileNav.click();
-        // The profile page loads its sections after it opens, so look for the heading for a couple of seconds.
+        // The answer library lives on the Prepare page, behind the open role, so leave the role first.
+        closeDetail();
+        els.prepareNav.click();
+        // The page loads its sections after it opens, so look for the heading for a few seconds.
         let tries = 0;
         const look = () => {
           const heading = [...document.querySelectorAll("h3")].find((node) => node.textContent === "Answer library");
@@ -10606,7 +10608,7 @@
             heading.tabIndex = -1;
             heading.scrollIntoView({ block: "start" });
             heading.focus({ preventScroll: true });
-          } else if ((tries += 1) < 10) {
+          } else if ((tries += 1) < 25) {
             setTimeout(look, 200);
           }
         };

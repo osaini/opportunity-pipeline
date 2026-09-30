@@ -2090,11 +2090,13 @@ nearest fieldset legend, or else the preceding schema question's label (`"{paren
 so "If yes, please explain" under two different questions are two different keys. The Needs you
 flow saves such answers for this company only and hides the reusable tick.
 
-**A follow-up is as sensitive as its parent.** A field filed under its parent is classified on
-its parent's own category too (7.3): "If yes, please explain" under "Have you ever been convicted
+**A follow-up is as sensitive as its parent.** A field whose own words continue another question
+("If yes, please explain", "Please provide details") and that is filed under its parent is classified
+on its parent's own category too (7.3). A short question that stands alone ("LinkedIn Profile", "GPA")
+inherits nothing, even when it sits below a sensitive one: "If yes, please explain" under "Have you ever been convicted
 of a felony?" is `uncategorized`, and under a sponsorship question it is `sponsorship`. It is
-never saved to the answer library or filled from it. The step is one question deep: the parent's
-own words and options decide, and the category does not travel on to the next question.
+never saved to the answer library or filled from it. The category travels down a chain of
+follow-ups: "If yes, when?" under that follow-up is `uncategorized` too.
 
 **The one-answer rule.** If several `answer_library` rows share the key and, after the company
 rule, have different answers, it is a problem: "You have two different saved answers for
@@ -2149,7 +2151,7 @@ tier at confidence 0.7 (content.js:96-110). Only exact equality of keys counts.
 | S | Single select, radio | The answer text must equal exactly **one** option **label** after normalization. Option values are never matched: a hidden value such as "1" or "0" says nothing about which label it stands for. Zero or several matches is a problem. |
 | M | Multi select | The answer is split on newlines or ";". Each part must equal exactly one option label. The order does not matter. |
 | C | Checkbox (non-consent) | An exact answer under the company rule that is "yes"/"true"/"checked", or "no"/"false". |
-| A | Acknowledgment or consent checkbox | D9 A: never ticked (left for you, or a problem). D9 B: **only** `sensitive` with category `acknowledgment`/`consent` and an exact statement key; a statement that cites a document needs an entry for this company. The statement is the checkbox's own option text, not its heading. A checkbox, or a Yes/No question, is read on its heading, its option text and its description together: `acknowledg`, `terms` or a privacy statement, notice or policy in any of them (and `agree`, `accept`, `policy` or `certif` on a checkbox) makes it an acknowledgment, so it never gets the ordinary answer form or the reusable tick. |
+| A | Acknowledgment or consent checkbox | D9 A: never ticked (left for you, or a problem). D9 B: **only** `sensitive` with category `acknowledgment`/`consent` and an exact statement key; a statement that cites a document needs an entry for this company. The statement is the checkbox's own option text, not its heading, when that text says what it agrees to (six words or more); a bare "I agree", "Yes" or "I accept" says nothing, so the heading, the option and the description together are the statement, and two boxes that agree to different things never share a stored answer. A checkbox, or a Yes/No question, is read on its heading, its option text and its description together: `acknowledg`, `terms` or a privacy statement, notice or policy in any of them (and `agree`, `accept`, `policy` or `certif` on a checkbox) makes it an acknowledgment, so it never gets the ordinary answer form or the reusable tick. |
 | E | Anything sensitive (7.3) | **Only** `sensitive` (D5 B to E). It is never filled from `answer`, `profile` or `ats_label`. Required and not in the store: a problem in a submit, left for you in a handoff. Optional and not in the store: left blank (D13). Category `uncategorized`: never filled. |
 | F | File: résumé | `resume_for` (6.9), only for the field named `resume`. An `unsure` pick opens the chooser. |
 | L | File: cover letter | D11, only for the field named `cover_letter`. |

@@ -349,6 +349,22 @@ def needs_label_key(key: str) -> bool:
     )
 
 
+def follow_up_wording(key: str) -> bool:
+    """Whether the question's own words say it continues another question ("If yes, please explain", "Please provide details").
+
+    Narrower than ``needs_label_key``, which also takes a short or repeated question: "GPA" and "LinkedIn Profile"
+    stand on their own, and "If yes, when?" does not.
+    """
+    text = without_enumeration(key)
+    words = len([word for word in text.split(" ") if word])
+    return (
+        any(_CONTEXT_OPENER.search(item) or _CONTEXT_PLEASE.search(item) for item in (key, text))
+        or bool(_CONTEXT_IF.search(text)) or bool(_CONTEXT_IF_ANY.search(text)) or bool(_CONTEXT_DETAILS.search(text))
+        or bool(_CONTEXT_PRONOUN.search(text)) or bool(_CONTEXT_PHRASE.search(text))
+        or (words < 8 and bool(_CONTEXT_VERB.search(text)))
+    )
+
+
 def context_dependent(key: str) -> bool:
     """A key whose saved answer is never reused for another company, even when the row is tagged reusable."""
     return needs_label_key(key) or bool(_CONTEXT_WORDING.search(key))
@@ -375,6 +391,8 @@ _PATTERNS: dict[str, re.Pattern[str]] = {
         rf"|(?:require|need|hold)\w* (?:a )?visa|work visa|student visa|\b(?:f ?1|j ?1|h ?1 ?b|tn|e ?3)\b|\bstem opt\b|{_OPT_NOT_MARKETING}|\bcpt\b|practical training"
         # "What type of visa do you hold?", "Which visa are you on?", "Do you have a visa?". The company Visa is not caught.
         r"|type of visa|\b(?:hold|have|has|current\w*|which) (?:(?:a|an|your|any|the) )?(?:\w+ )?visa\b"
+        # "What visa do you hold?", "Are you currently on a visa?", and a bare "Visa" heading.
+        r"|\bwhat (?:(?:is|are|s) )?(?:(?:your|the|my) )?(?:\w+ )?visa\b|\bon (?:a|an) (?:\w+ )?visa\b|^visas?$"
     ),
     "age_18": _AGE_18,
     "export_control": re.compile(
@@ -463,6 +481,8 @@ def classify_sensitive(question: str, options: Iterable[str] = (), section: str 
 _AGREE_WORDS = re.compile(r"acknowledg|\bterms\b|privacy (?:statement|notice|policy)")
 _AGREE_BOX_WORDS = re.compile(r"\bagree|\baccept|\bpolicy\b|\bcertif")
 _TAGS = re.compile(r"<[^>]*>")
+# An option this long names what it agrees to; a shorter one ("I agree", "Yes", "I accept the terms") does not.
+_SPECIFIC_STATEMENT_WORDS = 6
 
 
 def _yes_no(options: Iterable[str]) -> bool:
@@ -471,8 +491,18 @@ def _yes_no(options: Iterable[str]) -> bool:
 
 
 def statement_of(item: SchemaField, control: str) -> str:
-    """The text a stored answer to this field is matched on: a checkbox's own statement, else its question."""
-    return item.options[0] if control == "checkbox" and item.options else item.label
+    """The text a stored answer to this field is matched on: a checkbox's own statement, else its question.
+
+    A checkbox's option is its statement when it says something ("I have read and agree to the Candidate Privacy
+    Statement"). A bare "I agree", "Yes" or "I accept" says nothing, so the heading and the description are part
+    of the statement then: two boxes that agree to different things never share a stored answer.
+    """
+    if control != "checkbox" or not item.options:
+        return item.label
+    option = item.options[0]
+    if len(_words(option).split()) >= _SPECIFIC_STATEMENT_WORDS:
+        return option
+    return " ".join(part for part in (item.label, option, html.unescape(_TAGS.sub(" ", item.description))) if part.strip())
 
 
 def classify_item(item: SchemaField, control: str, parent: str | None = None, follows: bool = False) -> str | None:
@@ -1055,7 +1085,8 @@ def build_plan(
     ctx = _Context(sources, company, mode, repeated, uploads_on_attach)
     entries: list[PlanField] = []
     problems: list[Problem] = []
-    # What each question is on its own words, by label, for the follow-ups filed under it (one step, never a chain).
+    # What each question is, by label, for the follow-ups filed under it. A follow-up's own entry is what it
+    # inherited, so a follow-up of a follow-up keeps the first question's category.
     own: dict[str, str | None] = {}
     for item in fields:
         control = control_of(item)
@@ -1066,13 +1097,18 @@ def build_plan(
         follows = False
         if control != "file":
             category = classify_item(item, control)
-            own[item.label] = _most_restrictive(found for found in (own.get(item.label), category) if found)
-            # A follow-up takes its meaning from the question above it, so it is as sensitive as that one.
-            follows = item.section == "custom" and bool(item.parent) and text != item.label
+            # A follow-up takes its meaning from the question above it, so it is as sensitive as that one. Only
+            # words that continue another question count: a short question that stands alone ("GPA") does not.
+            label_key = question_key(item.label)
+            follows = (
+                item.section == "custom" and bool(item.parent) and text != item.label
+                and label_key not in _PROFILE_KEYS and follow_up_wording(label_key)
+            )
             if follows:
                 inherited = classify_item(item, control, own.get(item.parent), True)
                 follows = inherited is not None and inherited != category
                 category = inherited
+            own[item.label] = _most_restrictive(found for found in (own.get(item.label), category) if found)
         entry = PlanField(
             key=item.name, question=item.label, control=control, required=item.required, options=item.options, section=item.section,
             sensitive=category, answer_key=text, context_dependent=dependent,

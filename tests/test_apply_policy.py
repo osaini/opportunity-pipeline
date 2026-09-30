@@ -662,6 +662,52 @@ class TruthTablePlanRows(unittest.TestCase):
         after = [F("question_20", "Are you legally authorized to work in the US?", SINGLE, options=("Yes", "No")), F("question_21", "Which team are you most interested in this summer?", parent=AUTH)]
         self.assertIsNone(plan(BASE + after, sources()).get("question_21").sensitive, "a standalone question that only sits below one is not a follow-up")
 
+    def test_a_short_standalone_question_after_a_sensitive_one_is_not_a_follow_up(self):
+        sponsor = F("question_30", "Will you now or in the future require visa sponsorship?", SINGLE, options=("Yes", "No"))
+        facts = {**FACTS, "contact": {**FACTS["contact"], "linkedin": "https://example.test/in/sam", "github": "https://example.test/sam", "portfolio": "https://example.test"}}
+        for label, ref in (("LinkedIn Profile", "contact.linkedin"), ("Website", "contact.portfolio"), ("LinkedIn", "contact.linkedin"), ("GitHub", "contact.github")):
+            with self.subTest(label=label):
+                got = plan(BASE + [sponsor, F("question_31", label, parent=sponsor.label)], sources(facts=facts, allowed={"sponsorship"})).get("question_31")
+                self.assertIsNone(got.sensitive)
+                self.assertEqual((got.source.kind, got.source.ref), ("profile", ref))
+        auth = F("question_20", AUTH, SINGLE, options=("Yes", "No"))
+        gpa = plan(BASE + [auth, F("question_21", "GPA", parent=AUTH)], sources(answers=[answer(f"{AUTH} / GPA", "3.9")])).get("question_21")
+        self.assertIsNone(gpa.sensitive)
+        self.assertEqual((gpa.source.kind, gpa.value), ("answer", "3.9"))
+
+    def test_a_follow_up_of_a_follow_up_keeps_the_first_questions_category(self):
+        first = F("question_20", "Have you ever been convicted of a felony?", SINGLE, options=("Yes", "No"))
+        second = F("question_21", "If yes, please explain", "textarea", parent=first.label)
+        third = F("question_22", "If yes, when?", parent=second.label)
+        rows = [answer("If yes, please explain / If yes, when?", "2019", tags=["reusable"])]
+        got = plan(BASE + [first, second, third], sources(answers=rows)).get("question_22")
+        self.assertEqual((got.sensitive, got.source.kind, got.value), ("uncategorized", "none", None))
+        handoff = plan(BASE + [first, second, third], sources(answers=rows), "handoff").get("question_22")
+        self.assertEqual(handoff.disposition, "left_for_you")
+
+    def test_two_checkboxes_with_the_same_generic_option_never_share_a_stored_answer(self):
+        boxes = [
+            SchemaField(name="question_2", label="Candidate Privacy Notice", required=True, type=MULTI, options=("I agree",)),
+            SchemaField(name="question_3", label="Mandatory Arbitration Agreement", required=True, type=MULTI, options=("I agree",),
+                        description="<p>I waive my right to a jury trial.</p>"),
+            SchemaField(name="question_4", label="Acknowledgement", required=True, type=MULTI, options=("I agree",),
+                        description="<p>I certify that I will relocate to Austin at my own expense.</p>"),
+        ]
+        keys = {apply_policy.question_key(apply_policy.statement_of(box, "checkbox")) for box in boxes}
+        self.assertEqual(len(keys), 3)
+        asked = []
+
+        def lookup(*, category, question_key, company_key, mode):
+            asked.append(question_key)
+            return {"id": "s1", "answer_kind": "checkbox", "answer": "checked"} if question_key == "candidate privacy notice i agree" else None
+
+        result = plan(BASE + boxes, sources(allowed={"acknowledgment"}, store=lookup))
+        self.assertEqual([result.get(name).source.kind for name in ("question_2", "question_3", "question_4")], ["sensitive", "none", "none"])
+        self.assertEqual(len(set(asked)), 3)
+        # An option that says what it agrees to is the statement by itself, as before.
+        specific = SchemaField(name="q", label="Anything", required=True, type=MULTI, options=(PRIVACY,))
+        self.assertEqual(apply_policy.statement_of(specific, "checkbox"), PRIVACY)
+
     def test_a_privacy_box_is_an_acknowledgment_whatever_its_heading_says(self):
         statement = "I have read and agree to the Candidate Privacy Statement"
         for heading in ("Candidate Privacy Statement", "Privacy Acknowledgment", "Acknowledgement", "Terms and conditions"):

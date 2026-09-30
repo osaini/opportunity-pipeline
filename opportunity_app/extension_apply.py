@@ -37,7 +37,8 @@ SENSITIVE_FIELD = re.compile(
     r"(?:are you|you are|must be)\s+(?:18|eighteen)|u\.? ?s\.? person|itar|export control|"
     r"export administration regulations|legally\s+(?:(?:able|permitted|allowed)\s+to\s+)?work|"
     r"eligib\w*\s+(?:for|to)\s+(?:employment|work)|work permit|type of visa|(?:hold|have|has|"
-    r"current\w*|which)\s+(?:(?:a|an|your|any|the)\s+)?(?:\w+\s+)?visa|nationalit\w*|"
+    r"current\w*|which)\s+(?:(?:a|an|your|any|the)\s+)?(?:\w+\s+)?visa|what(?:['’]s|\s+(?:is|are))?\s+(?:(?:your|the|my)\s+)?(?:\w+\s+)?visa|"
+    r"on\s+(?:a|an)\s+(?:\w+\s+)?visa|^visas?(?=\W*$)|nationalit\w*|"
     r"(?:u\.? ?s\.?|united states|american)\s+national|national of|crimes?|offen[cs]es?|"
     r"lgbt\w*|queer|sexual\w*|military|armed forces|wages?|base pay|pay rate|felony|"
     r"misdemeanor|arrest\w*|criminal|convict\w*|background check|non[- ]?compete)\b",
