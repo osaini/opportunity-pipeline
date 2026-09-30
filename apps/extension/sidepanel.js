@@ -206,10 +206,16 @@
           saveAnswer.disabled = editor.value === "";
           editor.addEventListener("input", () => { saveAnswer.disabled = editor.value === ""; });
           saveAnswer.addEventListener("click", async () => {
+            // The engine matches saved answers on answer_key alone, so a row saved on any other
+            // text (the group's legend, "Unlabelled ...") could never be found again.
+            if (!field.answer_key) {
+              status.textContent = "This field has no stable question text on the page, so its answer cannot be saved for reuse.";
+              return;
+            }
             try {
               await api("/api/v1/extension/answers", {
                 method: "POST",
-                body: JSON.stringify({ question: field.answer_key || field.question || field.label, answer: editor.value, company: applyContext.application.company, tags: [scanResult.ats_type] })
+                body: JSON.stringify({ question: field.answer_key, answer: editor.value, company: applyContext.application.company, tags: [scanResult.ats_type] })
               });
               status.textContent = "Reviewed answer saved for future exact-question matches.";
             } catch (error) { status.textContent = error.message; }

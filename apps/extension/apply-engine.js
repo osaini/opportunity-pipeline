@@ -190,15 +190,24 @@
   }
 
   // Text that takes its meaning from the question above it, not from the company: an opener
-  // ("If yes, please explain", "Other") or anything under three words. Such a key is never matched
-  // on the clean question at any company, so it falls back to the per-posting label tier.
+  // ("If yes, please explain", "Other"), anything under three words, or a follow-up wording
+  // ("Please provide more details"). Such a key is never matched on the clean question at any
+  // company, so it falls back to the per-posting label tier. The rules err toward the label
+  // tier: a question wrongly sent there only loses an exact match, while a real follow-up left
+  // on the clean question would carry parent A's answer into parent B's field.
   const CONTEXT_OPENER = /^(?:if yes|if so|if no|if other|please specify|please explain|please describe|other|explain)\b/;
+  const CONTEXT_IF = /^if\b/;
+  const CONTEXT_PLEASE = /\bplease (?:explain|specify|describe|elaborate)\b/;
+  const CONTEXT_DETAILS = /\b(?:provide|give|share) (?:more |further |additional |any )?(?:details|information|context)\b/;
+  const CONTEXT_VERB = /\b(?:specify|explain|describe|elaborate)\b/;
   // Questions whose truth depends on the employer. A saved answer to one never carries to
   // another company, even when the row is tagged reusable.
   const CONTEXT_WORDING = /previously (?:worked|been employed|applied)|worked (?:here|for us|for this company|at)|applied (?:here|before|previously)|referr|who referred|know (?:anyone|someone)|how did you hear|where did you (?:hear|find)|current(?:ly)? (?:an )?employee/;
 
   function needsLabelKey(key) {
-    return key.split(" ").filter(Boolean).length < 3 || CONTEXT_OPENER.test(key);
+    const words = key.split(" ").filter(Boolean).length;
+    return words < 3 || CONTEXT_OPENER.test(key) || CONTEXT_IF.test(key) || CONTEXT_PLEASE.test(key)
+      || CONTEXT_DETAILS.test(key) || (words < 6 && CONTEXT_VERB.test(key));
   }
 
   function contextDependent(key) {
@@ -210,9 +219,38 @@
   // words with every other opener, so both key on the per-posting label (the `answer_key` a
   // scanned field reports), as they did before the clean question existed. `question` stays the
   // group text for anything that joins on it.
-  function labelKeyed(type, question) {
+  function labelKeyed(type, question, repeated) {
     const key = questionKey(question);
-    return !key || type === "radio" || type === "checkbox" || needsLabelKey(key);
+    return !key || type === "radio" || type === "checkbox" || needsLabelKey(key) || Boolean(repeated?.has(key));
+  }
+
+  // The form a control belongs to, else its document: the scope in which a repeated question is
+  // counted.
+  function formScope(control) {
+    let form = null;
+    try { form = typeof control.closest === "function" ? control.closest("form") : null; } catch (_) { form = null; }
+    return form || control.ownerDocument || document;
+  }
+
+  // The clean question keys that more than one field on the same form carries. Two fields with the
+  // same words can sit under different parents, so neither may use the clean-question tier: each
+  // falls back to its own per-question label (name and id).
+  function repeatedQuestionKeys(controls) {
+    const counts = new Map();
+    for (const control of controls) {
+      const type = controlType(control);
+      if (type === "radio" || type === "checkbox") continue;
+      const key = questionKey(questionText(control));
+      if (!key) continue;
+      const scope = formScope(control);
+      if (!counts.has(scope)) counts.set(scope, new Map());
+      counts.get(scope).set(key, (counts.get(scope).get(key) || 0) + 1);
+    }
+    const repeated = new Map();
+    for (const [scope, keys] of counts) {
+      repeated.set(scope, new Set([...keys].filter(([, count]) => count > 1).map(([key]) => key)));
+    }
+    return repeated;
   }
 
   // A clean-question match is exact only for a row saved at this company, or tagged reusable
@@ -229,6 +267,8 @@
   function matchAnswer(question, label, answers, company) {
     const cleanKey = questionKey(question);
     const normalizedLabel = normalizedQuestion(label);
+    // No words at all (an option with no label source): nothing can be an exact match.
+    if (!cleanKey && !normalizedLabel) return null;
     const companyKey = normalizedQuestion(company || "");
     const cleanMatches = cleanKey && !needsLabelKey(cleanKey) ? (answers || []).filter((entry) => normalizedQuestion(entry.question) === cleanKey) : [];
     const exact = cleanMatches.find((entry) => mayUseAtCompany(entry, cleanKey, companyKey))
@@ -309,12 +349,14 @@
   function scan(profile, answers, options) {
     profile = profile || {};
     const tag = options?.tag === true;
-    const fields = visibleControls().map((control) => {
+    const controls = visibleControls();
+    const repeated = repeatedQuestionKeys(controls);
+    const fields = controls.map((control) => {
       const label = labelFor(control);
       const type = controlType(control);
       const rawText = rawQuestion(control);
       const question = questionText(control);
-      const labelKey = labelKeyed(type, question);
+      const labelKey = labelKeyed(type, question, repeated.get(formScope(control)));
       const screened = screenText(control, question);
       const requiresReview = SENSITIVE.test(screened);
       const prohibited = PROHIBITED.test(screened);

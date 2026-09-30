@@ -28,9 +28,15 @@ value-free progress. The extension never receives the editable profile draft.
    the live DOM after normal `input` and `change` events.
 3. Sensitive or consequential fields remain manual. Exact, non-sensitive saved
    questions can be checked after review; fuzzy matches are never prechecked. A
-   saved answer is exact only for the company it was saved at, or when it is
-   tagged `reusable` (never for "if yes, please explain" or "previously worked
+   saved answer to an ordinary question is exact only for the company it was
+   saved at, or when it is tagged `reusable` (never for "previously worked
    here" style questions); anywhere else it is shown as a similar match.
+   Radio and checkbox options, follow-ups that depend on the question above them
+   ("if yes, please explain", "please provide more details"), very short
+   questions, and a question that appears twice on one form are saved on the
+   field's own label, which includes its per-posting name and id. Those are
+   exact only on that same label, whatever the company, and everywhere else a
+   similar match. A field with no label text on the page cannot be saved.
 4. Confirmed uploaded PDF/DOCX résumés and approved generated PDFs can be
    selected explicitly. Filename, media type, size, and SHA-256 are checked
    before insertion. File bytes are never persisted by the extension.

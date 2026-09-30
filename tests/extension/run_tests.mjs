@@ -608,9 +608,9 @@ tests.radio_and_checkbox_options_are_never_the_question = () => {
     { tag: "input", type: "radio", id: "woman", name: "gender", label: "Woman", groupQuestion: { ariaLabel: "Gender" } },
   );
   page.texts = { g1: "Please review and acknowledge the policy" };
-  // What the side panel would have saved from each option: field.answer_key || field.question || field.label.
+  // What the side panel would have saved from each option: its answer_key.
   const first = loadContentScript(page).scan(profile, []);
-  const saved = (id) => fieldById(first, id).answer_key || fieldById(first, id).question || fieldById(first, id).label;
+  const saved = (id) => fieldById(first, id).answer_key;
   assert.equal(fieldById(first, "yes_a").question, "Will you require visa sponsorship?");
   assert.equal(fieldById(first, "yes_b").question, "Do you like robots?");
   assert.equal(fieldById(first, "yes_c").question, "", "no group text, so no question");
@@ -707,6 +707,110 @@ tests.openers_and_short_keys_never_match_another_parent_question = () => {
   }
 };
 
+// What the side panel pre-ticks: 0.9 and up with a value, on a field that is not sensitive.
+function preTicked(scan, id) {
+  const field = fieldById(scan, id);
+  return !field.prohibited && !field.requires_review && field.confidence >= 0.9 && field.proposed_value !== "";
+}
+
+tests.follow_up_wordings_are_never_exact_across_parent_questions = () => {
+  const wordings = [
+    "If you answered yes, please explain",
+    "If you selected Other, please specify",
+    "If applicable, please explain",
+    "Please provide more details",
+    "Please provide additional information",
+    "Could you share further context",
+    "Please elaborate on your answer here",
+    "Briefly describe your experience",
+    "Tell us about it, please specify",
+  ];
+  for (const wording of wordings) {
+    const page = pageOf(
+      { tag: "textarea", id: "question_611", name: "question_611", label: wording },
+      { tag: "textarea", id: "question_612", name: "question_612", label: wording },
+    );
+    const first = loadContentScript(page).scan(profile, [], "Acme Robotics");
+    const a = fieldById(first, "question_611");
+    assert.equal(a.question, wording, "question keeps the form's words");
+    assert.equal(a.answer_key, a.label, `${wording}: saved on the per-posting label`);
+    assert.notEqual(a.answer_key, fieldById(first, "question_612").answer_key, `${wording}: siblings save on different keys`);
+    // The side panel saves field.answer_key from the first field.
+    const rows = [{ id: "sv", question: a.answer_key, answer: "Parent A answer", company: "Acme Robotics" }];
+    for (const company of ["Acme Robotics", "Orbit Systems"]) {
+      const scan = loadContentScript(page).scan(profile, rows, company);
+      assert.equal(fieldById(scan, "question_611").confidence, 0.9, `${wording}: the field it was saved from`);
+      const other = fieldById(scan, "question_612");
+      assert.notEqual(other.confidence, 0.9, `${wording} at ${company}: the second field is not exact`);
+      assert.equal(preTicked(scan, "question_612"), false, `${wording} at ${company}: the second field is not pre-ticked`);
+      assert.doesNotMatch(other.reason, /Exact saved-question/, wording);
+    }
+    // A later posting: the same wording under a different parent question, different name and id.
+    const later = pageOf({ tag: "textarea", id: "question_9001", name: "question_9001", label: wording });
+    const scan = loadContentScript(later).scan(profile, rows, "Acme Robotics");
+    assert.notEqual(fieldById(scan, "question_9001").confidence, 0.9, `${wording}: a later posting at the same company`);
+  }
+  // Ordinary clean questions keep the exact tier.
+  const plain = pageOf({ tag: "textarea", id: "q1", name: "question_1", label: "Tell us what you would like to learn" });
+  const rows = [{ id: "l", question: "Tell us what you would like to learn", answer: "Controls", company: "Acme Robotics" }];
+  assert.equal(fieldById(loadContentScript(plain).scan(profile, rows, "Acme Robotics"), "q1").confidence, 0.9);
+};
+
+tests.a_question_shared_by_two_fields_never_matches_on_the_clean_question = () => {
+  const shared = "Describe a project you are proud of";
+  const page = pageOf(
+    { tag: "textarea", id: "question_301", name: "question_301", label: shared },
+    { tag: "textarea", id: "question_302", name: "question_302", label: shared },
+    { tag: "textarea", id: "question_303", name: "question_303", label: "Tell us what you would like to learn" },
+  );
+  const first = loadContentScript(page).scan(profile, [], "Acme Robotics");
+  const one = fieldById(first, "question_301");
+  assert.equal(one.question, shared);
+  assert.equal(one.answer_key, one.label, "a duplicated question is saved on the per-question label");
+  assert.notEqual(one.answer_key, fieldById(first, "question_302").answer_key);
+  assert.equal(fieldById(first, "question_303").answer_key, "Tell us what you would like to learn", "a unique question keeps its clean key");
+  const rows = [
+    { id: "sv", question: one.answer_key, answer: "Robot arm", company: "Acme Robotics" },
+    // A row on the clean words, at the same company and reusable, must not answer either copy.
+    { id: "clean", question: shared, answer: "clean row", company: "Acme Robotics", tags: ["reusable"] },
+  ];
+  for (const company of ["Acme Robotics", "Orbit Systems"]) {
+    const scan = loadContentScript(page).scan(profile, rows, company);
+    assert.equal(fieldById(scan, "question_301").provenance, "answer_library:sv");
+    const other = fieldById(scan, "question_302");
+    assert.notEqual(other.confidence, 0.9, `${company}: the second copy is not exact`);
+    assert.equal(preTicked(scan, "question_302"), false);
+    assert.notEqual(other.provenance, "answer_library:clean", "the clean row never lands on a duplicated question");
+  }
+  // Alone on its form, the same question is a clean question again.
+  const alone = loadContentScript(pageOf({ tag: "textarea", id: "question_301", name: "question_301", label: shared }))
+    .scan(profile, [{ id: "clean", question: shared, answer: "clean row", company: "Acme Robotics" }], "Acme Robotics");
+  assert.equal(fieldById(alone, "question_301").confidence, 0.9);
+  assert.equal(fieldById(alone, "question_301").answer_key, shared);
+};
+
+tests.an_option_with_no_label_source_has_no_stable_key_and_is_not_saved = () => {
+  const page = pageOf(
+    { tag: "input", type: "radio", groupQuestion: { legend: "Do you enjoy working in small teams?" } },
+    { tag: "input", type: "checkbox" },
+  );
+  const scan = loadContentScript(page).scan(profile, [
+    { id: "leg", question: "Do you enjoy working in small teams?", answer: "yes", company: "Acme Robotics", tags: ["reusable"] },
+    { id: "un", question: "Unlabelled radio field", answer: "yes", company: "Acme Robotics" },
+    { id: "blank", question: "", answer: "yes", company: "Acme Robotics" },
+  ], "Acme Robotics");
+  for (const field of scan.fields) {
+    assert.equal(field.answer_key, "", `${field.type}: nothing stable to save or match on`);
+    assert.equal(field.confidence, 0, `${field.type}: no row answers it`);
+    assert.equal(field.proposed_value, "");
+  }
+  // The side panel must not invent a key (the legend or "Unlabelled ...") that matching cannot find.
+  const sidepanel = readFileSync(path.join(ROOT, "apps", "extension", "sidepanel.js"), "utf8");
+  assert.match(sidepanel, /if \(!field\.answer_key\)/, "the side panel refuses a row with no key");
+  assert.match(sidepanel, /no stable question/i, "and says why");
+  assert.doesNotMatch(sidepanel, /field\.answer_key \|\| field\.question/, "and never falls back to another text");
+};
+
 tests.checkbox_and_radio_siblings_never_share_a_saved_answer = () => {
   const legend = "Which programming languages have you used professionally?";
   const teams = "Do you enjoy working in small teams?";
@@ -798,7 +902,7 @@ tests.injection_lists_and_the_answer_save_follow_the_split = () => {
   const files = '["adapters.js", "field-engine.js", "apply-engine.js", "content.js"]';
   const sidepanel = readFileSync(path.join(ROOT, "apps", "extension", "sidepanel.js"), "utf8");
   assert.ok(sidepanel.includes(files), "the side panel injects all four files, in order");
-  assert.match(sidepanel, /question: field\.answer_key \|\| field\.question \|\| field\.label/, "the side panel saves the engine's answer key");
+  assert.match(sidepanel, /question: field\.answer_key,/, "the side panel saves the engine's answer key");
   assert.doesNotMatch(sidepanel, /question: field\.label,/);
   const browserTest = readFileSync(path.join(ROOT, "tests", "extension", "browser", "run_browser_tests.mjs"), "utf8");
   assert.ok(browserTest.includes(files), "the MV3 browser test injects the same four files");
