@@ -48,7 +48,7 @@ __all__ = [
     "ALLOWED_ATS_LABEL_FIELDS", "ATS_GREENHOUSE", "CATEGORY_WORDS", "Plan", "PlanField", "SchemaField", "Source", "Sources",
     "build_plan", "canonical_url", "classify_item", "classify_sensitive", "company_matches", "context_dependent", "control_of", "cover_letter_for",
     "identify", "mac_key", "match_options", "name_parts", "needs_label_key", "parse_schema", "plan_entries", "plan_hash",
-    "question_key", "resume_for", "schema_url", "sources_for", "statement_needs_company", "statement_of", "stored_sensitive_answer", "value_mac", "with_page_labels",
+    "question_key", "resume_for", "schema_url", "sources_for", "statement_control", "statement_needs_company", "statement_of", "stored_sensitive_answer", "value_mac", "with_page_labels",
     "without_enumeration",
 ]
 
@@ -494,7 +494,9 @@ _TAGS = re.compile(r"<[^>]*>")
 _SPECIFIC_STATEMENT_WORDS = 6
 # An option that points at text elsewhere on the form names nothing itself, however long it is.
 _REFERS_ELSEWHERE = re.compile(
-    r"\b(?:above|below|following|foregoing|aforementioned|herein|(?:the|these|those|this) (?:terms|statement|notice|policy|policies|agreement|document|declaration))\b"
+    r"\b(?:above|below|following|foregoing|aforementioned|herein"
+    r"|(?:the|these|those|this|that) (?:terms|statement|notice|policy|policies|agreement|document|declaration"
+    r"|conditions?|requirements?|provisions?|arrangements?|clauses?|obligations?|rules?|expectations?))\b"
 )
 
 
@@ -507,33 +509,48 @@ def _plain(html_text: str) -> str:
     return " ".join(html.unescape(_TAGS.sub(" ", html_text)).split())
 
 
-def _statement_parts(item: SchemaField, control: str) -> tuple[str, bool]:
+def statement_control(control: str, options: Iterable[str]) -> bool:
+    """Whether a stored, ticked statement can be put into this control: a box, or a Yes/No question with one "Yes"."""
+    return control == "checkbox" or (control == "select" and _yes_no(options))
+
+
+def _statement_parts(item: SchemaField, control: str, category: str = "") -> tuple[str, bool]:
     """(the text a stored answer to this field is matched on, whether that text leans on words outside the option)."""
+    if control == "select" and category in apply_sensitive.STATEMENT_CATEGORIES and _yes_no(item.options):
+        # A Yes/No question has no statement in its option: the question and its description are the statement.
+        description = _plain(item.description)
+        refers = bool(_REFERS_ELSEWHERE.search(_words(item.label)))
+        return " ".join(part for part in (item.label, description) if part.strip()), bool(description) or refers
     if control != "checkbox" or not item.options:
         return item.label, False
     option = item.options[0]
     description = _plain(item.description)
     short = len(_words(option).split()) < _SPECIFIC_STATEMENT_WORDS
     refers = bool(_REFERS_ELSEWHERE.search(_words(option)))
-    if not (short or refers or description):
+    # A box that states a fact about the student ("Yes, this is true for me right now") is the answer to its heading, however
+    # long the option is: a work-authorization or 18-or-older box is never matched on the option alone.
+    asks = category in apply_sensitive.TICKABLE
+    if not (short or refers or description or asks):
         return option, False
     return " ".join(part for part in (item.label, option, description) if part.strip()), bool(description) or refers
 
 
-def statement_of(item: SchemaField, control: str) -> str:
+def statement_of(item: SchemaField, control: str, category: str = "") -> str:
     """The text a stored answer to this field is matched on: a checkbox's own statement, else its question.
 
     A checkbox's option is its statement only when it says something whole ("I certify that the information I have
     provided is accurate"). A bare "I agree" or "Yes", an option that points elsewhere ("I agree to the above terms")
     and any box that has a description of its own do not: the heading and the description are part of the statement
-    then, so two boxes that agree to different things never share a stored answer.
+    then, so two boxes that agree to different things never share a stored answer. A box that answers a question about
+    the student (work authorization, sponsorship, 18 or older) always carries its heading, which is that question, and a
+    Yes/No agreement question is its heading and description (``category`` says which kind of question it is).
     """
-    return _statement_parts(item, control)[0]
+    return _statement_parts(item, control, category)[0]
 
 
-def statement_needs_company(item: SchemaField, control: str) -> bool:
-    """Whether a checkbox's statement leans on a description or on text elsewhere, so a stored answer is kept for one company."""
-    return _statement_parts(item, control)[1]
+def statement_needs_company(item: SchemaField, control: str, category: str = "") -> bool:
+    """Whether a statement leans on a description or on text elsewhere, so a stored answer is kept for one company."""
+    return _statement_parts(item, control, category)[1]
 
 
 def classify_item(item: SchemaField, control: str, parent: str | None = None, follows: bool = False) -> str | None:
@@ -1021,7 +1038,9 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
     sources = ctx.sources
     # A checkbox is matched on its own statement, a follow-up on its parent's question too: neither on the bare heading.
     checkbox = entry.control == "checkbox"
-    entry.statement = statement_of(item, entry.control) if checkbox else entry.answer_key or item.label
+    # A Yes/No agreement question is matched like a box: on the question and its description, never on the question alone.
+    boxlike = checkbox or (category in apply_sensitive.STATEMENT_CATEGORIES and statement_control(entry.control, entry.options))
+    entry.statement = statement_of(item, entry.control, category) if boxlike else entry.answer_key or item.label
     key = question_key(entry.statement)
     if checkbox or category in apply_sensitive.STATEMENT_CATEGORIES:
         entry.links = apply_sensitive.links_in(item.label, *item.options, item.description)
@@ -1032,9 +1051,14 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
     # name and holds only a decline, so it is the same at every company.
     entry.company_only = (
         (item.section != "compliance" and (context_dependent(key) or (not checkbox and entry.context_dependent)))
-        or (checkbox and (statement_needs_company(item, entry.control) or apply_sensitive.cites_document(entry.statement, entry.links)))
+        or (boxlike and (statement_needs_company(item, entry.control, category) or apply_sensitive.cites_document(entry.statement, entry.links)))
         or (category in apply_sensitive.STATEMENT_CATEGORIES and apply_sensitive.cites_document(entry.statement, entry.links))
     )
+    if category in apply_sensitive.STATEMENT_CATEGORIES and not statement_control(entry.control, entry.options):
+        # A statement is stored only as ticked: a text field, a list or a choice that is not Yes/No has nothing it could be typed as.
+        entry.problem_kind = "sensitive_never"
+        entry.problem = f"This asks for {words} in a way the app can't answer for you. Finish in browser leaves it for you"
+        return entry
     if category == "uncategorized" or category not in sources.sensitive_allowed:
         entry.problem_kind = "sensitive_never" if category == "uncategorized" else "sensitive_not_allowed"
         entry.problem = (
@@ -1062,16 +1086,19 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
     kind = str(stored.get("answer_kind") or "")
     answer = str(stored.get("answer") or "")
     stored_links = tuple(stored.get("links") or ())
-    if checkbox:
-        value, why = (True, "") if kind == "checkbox" and _norm(answer) == "checked" else (None, "This box needs a statement you ticked. Add it again as one")
+    if boxlike:
+        if kind != "checkbox" or _norm(answer) != "checked":
+            value, why = None, "This box needs a statement you ticked. Add it again as one"
+        elif checkbox:
+            value, why = True, ""
+        else:
+            # A Yes/No question that asks for agreement: a statement stored as ticked is the form's one "Yes".
+            yes = [option for option in entry.options if _norm(option) == "yes"]
+            value, why = (yes[0], "") if len(yes) == 1 else (None, "This question has no single Yes option")
         # The words are the same, but a notice is its document: a form that links to other documents than the ones the
         # student agreed to, or to none, is not agreed to. No links on either side is a value too.
-        if value and set(stored_links) != set(entry.links):
+        if value is not None and set(stored_links) != set(entry.links):
             value, why = None, "The document this statement links to is not the one you agreed to. Read it again, then add it again"
-    elif category in apply_sensitive.STATEMENT_CATEGORIES and entry.control == "select" and kind == "checkbox" and _norm(answer) == "checked":
-        # A Yes/No question that asks for agreement: a statement stored as ticked is the form's one "Yes".
-        yes = [option for option in entry.options if _norm(option) == "yes"]
-        value, why = (yes[0], "") if len(yes) == 1 else (None, "This question has no single Yes option")
     else:
         value, why = _choice_value(entry.control, answer, entry.options)
     if value is None:

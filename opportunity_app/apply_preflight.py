@@ -179,6 +179,9 @@ def _sensitive_form(entry: apply_policy.PlanField, kind: str) -> dict[str, Any] 
             return None
     elif entry.control not in ("select", "multiselect", "text", "textarea", "checkbox"):
         return None
+    if statement and not apply_policy.statement_control(entry.control, entry.options):
+        # A statement is stored only as ticked, so a box or a Yes/No question can carry it and a text or list field cannot.
+        return None
     return {
         "type": "sensitive", "control": entry.control, "options": options, "category": category,
         "words": apply_policy.CATEGORY_WORDS.get(category, ""), "statement": entry.statement if statement or entry.control == "checkbox" else "", "links": list(entry.links),
@@ -478,7 +481,7 @@ def answer_sensitive(
     try:
         saved = apply_sensitive.add_entry(
             conn, user_id, category=entry.sensitive, question=entry.statement, answer=text, answer_kind=kind,
-            company="" if everyone else result["company"], links=entry.links, company_only=form["company_only"], consent=consent, now=moment,
+            company="" if everyone else result["company"], links=entry.links, company_only=form["company_only"], consent=consent, now=moment, from_form=True,
         )
     except apply_sensitive.StoreRefused as exc:
         raise AnswerRefused(str(exc)) from exc

@@ -601,13 +601,15 @@ class KeyAndCategoryRuleTests(StoreCase):
             ("age_18", "Confirmation", "I confirm that I am at least 18 years of age"),
             ("work_authorization", "Declaration", "I certify that I am legally authorized to work in the United States"),
         )
-        for category, heading, statement in boxes:
+        for category, heading, option in boxes:
             with self.subTest(category=category):
-                field = self.box(heading, statement, name="question_5")
+                field = self.box(heading, option, name="question_5")
+                # The heading is the question this box answers, so it is part of what is matched, however long the option is.
+                statement = f"{heading} {option}"
                 before = self.plan(BASE + [field]).get("question_5")
                 self.assertEqual((before.sensitive, before.problem_kind, before.statement), (category, "sensitive_missing", statement))
                 form = apply_preflight._sensitive_form(before, "sensitive_missing")
-                self.assertEqual((form["control"], form["statement"]), ("checkbox", statement))
+                self.assertEqual((form["control"], form["statement"], form["company_only"]), ("checkbox", statement, False))
                 self.add(category=category, question=before.statement, answer="checked", answer_kind="checkbox", links=before.links)
                 after = self.plan(BASE + [field]).get("question_5")
                 self.assertEqual((after.value, after.source.kind, after.disposition), (True, "sensitive", "fill"))
@@ -711,6 +713,95 @@ class KeyAndCategoryRuleTests(StoreCase):
         self.assertEqual((ready.status, ready.get("q").value, ready.get("q").source.label), ("ready", "Yes", "Your acknowledgment for Example Robotics"))
         self.assertEqual(apply_preflight._sensitive_state(ready.get("q"), self.sources(), COMPANY), "", "nothing is left to ask")
         self.assert_needs(BASE + [F("q", question, SINGLE, options=("No",))], "sensitive_mismatch", "q")
+
+    # --- Review round two ---
+
+    def yes_no(self, label, description="", name="q", type=SINGLE, options=("Yes", "No")):
+        return SchemaField(name=name, label=label, required=True, type=type, options=options, description=description)
+
+    def test_a_yes_no_agreement_question_is_matched_on_its_description_and_kept_for_one_company(self):
+        label = "Do you acknowledge and agree to the statement above?"
+        first, second = "I consent to Example Robotics keeping my application for 1 year.", "I agree to arbitrate every employment dispute and waive class actions."
+        one, two = self.yes_no(label, f"<p>{first}</p>"), self.yes_no(label, f"<p>{second}</p>")
+        self.allow("acknowledgment")
+        got = self.plan(BASE + [one]).get("q")
+        self.assertEqual((got.sensitive, got.problem_kind, got.control), ("acknowledgment", "sensitive_missing", "select"))
+        self.assertIn(first, got.statement, "the description holds the terms, so it is part of what is matched")
+        form = apply_preflight._sensitive_form(got, "sensitive_missing")
+        self.assertEqual((form["control"], form["company_only"]), ("select", True), "no tick for any company")
+        saved = self.add(category="acknowledgment", question=got.statement, answer="Yes", answer_kind="option", company="Example Robotics")
+        self.assertEqual(self.plan(BASE + [one]).get("q").value, "Yes")
+        self.assert_needs(BASE + [two], "sensitive_missing", "q")
+        # Saved for any company by some other route, it is still not read for a question that leans on text elsewhere.
+        with self.conn:
+            self.conn.execute("UPDATE apply_sensitive_answers SET company_key='' WHERE id=?", (saved["id"],))
+        for company in (COMPANY, OTHER):
+            self.assert_needs(BASE + [one], "sensitive_missing", "q", company=company)
+
+    def test_a_yes_no_agreement_question_is_answered_only_where_its_links_are_the_stored_ones(self):
+        label = "I acknowledge that I have read the candidate privacy notice"
+        v1, v2 = "https://example.test/privacy-v1", "https://example.test/privacy-v2-new-terms"
+        self.allow("acknowledgment")
+        got = self.plan(BASE + [self.yes_no(label, f'<p>See <a href="{v1}">the notice</a>.</p>')]).get("q")
+        self.assertEqual(got.links, (v1,))
+        self.add(category="acknowledgment", question=got.statement, answer="Yes", answer_kind="option", company="Example Robotics", links=got.links)
+        self.assertEqual(self.plan(BASE + [self.yes_no(label, f'<p>See <a href="{v1}">the notice</a>.</p>')]).get("q").value, "Yes")
+        for other in (self.yes_no(label, f'<p>See <a href="{v2}">the notice</a>.</p>'), self.yes_no(label, "<p>See the notice.</p>")):
+            changed = self.plan(BASE + [other]).get("q")
+            self.assertEqual((changed.problem_kind, changed.value), ("sensitive_mismatch", None))
+            self.assertIn("not the one you agreed to", changed.problem)
+
+    def test_a_box_that_answers_a_question_about_the_student_is_matched_on_its_heading_as_well(self):
+        option = "Yes, this is true for me right now"
+        self.allow("work_authorization")
+        us = self.box("Are you legally authorized to work in the United States?", option)
+        canada = self.box("Are you legally authorized to work in Canada?", option)
+        before = self.plan(BASE + [us]).get("q")
+        self.assertEqual((before.sensitive, before.statement, before.company_only), ("work_authorization", f"{us.label} {option}", False))
+        self.add(category="work_authorization", question=before.statement, answer="checked", answer_kind="checkbox")
+        self.assertEqual(self.plan(BASE + [us], company=OTHER).get("q").value, True, "the same question at another company")
+        self.assert_needs(BASE + [canada], "sensitive_missing", "q", company=OTHER)
+
+    def test_an_acknowledgment_that_leans_on_the_heading_is_kept_for_one_company_and_matched_on_it(self):
+        option = "I understand and accept this condition of employment"
+        self.allow("acknowledgment")
+        relocation, arbitration = self.box("Relocation requirement", option), self.box("Mandatory arbitration", option)
+        self.assertTrue(apply_policy.statement_needs_company(relocation, "checkbox"))
+        self.assertIn("Relocation requirement", apply_policy.statement_of(relocation, "checkbox"))
+        self.add(category="acknowledgment", question=apply_policy.statement_of(relocation, "checkbox"), answer="checked", company="Example Robotics")
+        self.assertEqual(self.plan(BASE + [relocation]).get("q").value, True)
+        self.assert_needs(BASE + [arbitration], "sensitive_missing", "q")
+
+    def test_an_acknowledgment_on_a_text_or_list_field_is_never_offered_or_filled(self):
+        self.allow("acknowledgment", "consent")
+        signature = F("q", "I certify that the information in this application is accurate. Type your full name as your signature", "input_text")
+        several = self.yes_no("I acknowledge the following (select all that apply)", type=MULTI, options=("The privacy notice", "The code of conduct"))
+        choice = self.yes_no("Do you acknowledge the code of conduct?", options=("I acknowledge", "I do not acknowledge"))
+        for field in (signature, several, choice):
+            with self.subTest(label=field.label):
+                got = self.plan(BASE + [field]).get("q")
+                self.assertEqual((got.sensitive, got.problem_kind, got.value), ("acknowledgment", "sensitive_never", None))
+                self.assertIsNone(apply_preflight._sensitive_form(got, "sensitive_missing"))
+                # Even a row stored for the same words, by another route, is not typed into it.
+                with self.conn:
+                    self.conn.execute("DELETE FROM apply_sensitive_answers")
+                self.add(category="acknowledgment", question=field.label, answer="checked", company="Example Robotics")
+                again = self.plan(BASE + [field]).get("q")
+                self.assertEqual((again.problem_kind, again.value), ("sensitive_never", None))
+
+    def test_a_kind_the_plan_took_from_the_options_or_the_heading_can_be_stored_but_a_demographic_value_never(self):
+        self.allow("work_authorization", "sponsorship", "eeo_race", "eeo_hispanic", "acknowledgment")
+        # The wording alone reads as a more restrictive kind than the plan's own: fine when the plan's category is authoritative.
+        heading = "Visa Sponsorship / Work Authorization"
+        self.refused("visa sponsorship", category="work_authorization", question=heading, answer="Yes")
+        self.assertEqual(self.add(category="work_authorization", question=heading, answer="Yes", from_form=True)["category"], "work_authorization")
+        # An EEO question keeps to the EEO kinds, in both directions, whoever says it is authoritative.
+        race = "Race (including Hispanic or Latino)"
+        self.assertEqual(self.add(category="eeo_race", question=race, answer=DECLINE)["category"], "eeo_race")
+        for category, question, answer in (("work_authorization", "What is your race?", "Asian"), ("eeo_race", AUTH, DECLINE), ("acknowledgment", "Gender", "checked")):
+            with self.subTest(category=category, question=question):
+                self.refused("", category=category, question=question, answer=answer, from_form=True)
+        self.assertEqual(len(self.rows()), 2)
 
     def test_the_apps_own_placeholder_is_never_a_stored_consent_statement(self):
         schema = apply_policy.parse_schema(fixture_json("schema_new.json"))

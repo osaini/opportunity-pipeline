@@ -592,7 +592,12 @@ fields too.
      stored one and links the same documents; one that says "I have read", links
      a document, has a description of its own or points to "the above terms" is
      saved for one company only, and so is any question that depends on the
-     company ("this company", a follow-up, a bare heading);
+     company ("this company", a follow-up, a bare heading). A Yes/No question
+     that asks for agreement is matched the same way, on its heading and its
+     description, and only a box or a Yes/No question is ever ticked: a text
+     field or a list of several options is left for them;
+   - a box that states a fact about them (work authorization, sponsorship, 18 or
+     older) is matched on its heading too, since the heading is the question;
    - export control, citizenship, security clearance and salary questions, and
      personal ones such as age or birth date, are never answered.
 

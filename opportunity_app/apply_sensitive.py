@@ -228,13 +228,16 @@ def _one_line(text: Any, limit: int, what: str) -> str:
 def add_entry(
     conn: sqlite3.Connection, user_id: str, *, category: str, question: str, answer: Any = "", answer_kind: str = "",
     company: str = "", links: Sequence[str] = (), company_only: bool = False, consent: bool = False, now: datetime | None = None,
+    from_form: bool = False,
 ) -> dict[str, Any]:
     """Store one answer, or refuse it. The same question for the same company is replaced, and its consent is given again.
 
     ``question`` is the exact wording the form showed (for a statement, the whole statement). ``company`` is the
     employer's name: empty means any company, which a statement that cites a document and a follow-up that depends
     on its company (``company_only``, or wording that says so) are refused. ``consent`` must be True: the student ticked the box in
-    ``CONSENT_TEXT``. The write is one transaction.
+    ``CONSENT_TEXT``. ``from_form`` says the category is the plan's own for this very wording (the Needs-you route), so the
+    plan's reading of the options, the question above or the heading is not second-guessed; a demographic value is
+    refused either way. The write is one transaction.
     """
     if category in _NEVER or category not in STORABLE:
         raise StoreRefused(_NEVER.get(category, f"Unknown kind of answer: {category}"))
@@ -253,10 +256,14 @@ def add_entry(
     read_as = classify_sensitive(text)
     if read_as in _NEVER:
         raise StoreRefused(f"This question reads as one the app never answers. {_NEVER[read_as]}")
-    # The plan files this wording under ``read_as``, so a row under another kind is never read. Refusing it here also keeps a
-    # real demographic value out of the table when it is filed as, say, work authorization (D5 C (i)).
+    # The plan files this wording under its own reading, so a row under a stricter or unrelated kind is never read, and a real
+    # demographic value must never get in under, say, work authorization (D5 C (i)). The EEO line is therefore always drawn;
+    # among the other kinds a wording that reads as more restrictive than the kind it is filed under is refused, but a
+    # plan's category may come from the options, the question above or the heading, which the text alone cannot see.
     if read_as is not None and read_as != category and (category, read_as) not in _PAIRED:
-        raise StoreRefused(f"This question reads as {_WORDS.get(read_as, 'another kind of answer')}. Add it under that kind of answer instead")
+        eeo_read, eeo_filed = read_as in EEO_CATEGORIES, category in EEO_CATEGORIES
+        if eeo_read != eeo_filed or (not eeo_read and not from_form and _stricter(read_as, category)):
+            raise StoreRefused(f"This question reads as {_WORDS.get(read_as, 'another kind of answer')}. Add it under that kind of answer instead")
     if PLACEHOLDER_NOTE in text:
         raise StoreRefused("That is the app's own placeholder, not the statement. Give the statement as the form shows it, word for word")
     statement = category in STATEMENT_CATEGORIES
@@ -313,6 +320,13 @@ def add_entry(
             "SELECT * FROM apply_sensitive_answers WHERE user_id=? AND question_hash=? AND company_key=?", (user_id, digest, mine),
         ).fetchone()
     return _view(row, allowed_categories(conn, user_id))
+
+
+def _stricter(read_as: str, category: str) -> bool:
+    """Whether a wording's reading is a more restrictive kind than the one it is filed under (the plan's own order)."""
+    from .apply_policy import _RESTRICTION
+
+    return _RESTRICTION.index(read_as) < _RESTRICTION.index(category)
 
 
 def _depends_on_company(key: str) -> bool:

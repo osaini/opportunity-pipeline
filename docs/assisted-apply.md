@@ -47,7 +47,13 @@ value-free progress. The extension never receives the editable profile draft.
      question that depends on its company. The plan shows the form's own
      document addresses next to the tick; if the form links to other addresses
      than the ones saved, or to none, the box is left for the student, and so is
-     a statement whose description is longer than the app keeps.
+     a statement whose description is longer than the app keeps. A Yes/No
+     question that asks for agreement is matched on its heading and its
+     description the same way, and only a box or a Yes/No question is ever
+     ticked; an acknowledgment on a text field or a list of options is left for
+     the student. A box that states a fact about the student (work
+     authorization, sponsorship, 18 or older) is matched on its heading and its
+     option together, since the heading is the question.
 
    Every entry records the exact question, the answer, and the student's consent
    with the time (the consent says the answer is used only to fill in

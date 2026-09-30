@@ -522,6 +522,43 @@ class NeedsYouTests(SensitiveApiCase):
         self.assertRegex(field["source"], r"^Sensitive answer you added \d{4}-\d\d-\d\d$")
         self.assertNotIn("Yes", json.dumps({**check, "problems": [], "fields": [], "posting": {}}), "the check names sources, never a value")
 
+    def reword(self, key, *, label=None, values=None, type=None):
+        """Serve the fictional listing with one question changed, as another employer's form might word it."""
+        real = self.schema.fetch
+
+        def changed(board, job):
+            listing = real(board, job)
+            for question in listing["questions"]:
+                for field in question["fields"]:
+                    if field["name"] == key:
+                        question["label"] = label or question["label"]
+                        field["values"] = [{"label": text, "value": number} for number, text in enumerate(values, 1)] if values else field["values"]
+                        field["type"] = type or field["type"]
+            return listing
+
+        self.schema.fetch = changed
+
+    def test_a_question_whose_kind_comes_from_its_options_is_stored_under_the_kind_the_plan_gave_it(self):
+        # The wording reads as work authorization; the visa option makes the plan file it as sponsorship. The form must save.
+        self.allow("sponsorship", "work_authorization")
+        self.reword("question_4000000105", label="What is your current work authorization status?",
+                    values=("Authorized to work, no sponsorship needed", "Will need H-1B sponsorship"))
+        problem = self.problem("question_4000000105")
+        self.assertEqual((problem["kind"], problem["action"]["type"]), ("sensitive_missing", "sensitive"))
+        saved = self.needs("question_4000000105", "Authorized to work, no sponsorship needed")
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual([row["category"] for row in self.rows()], [problem["action"]["category"]])
+        self.assertIsNone(next((item for item in saved.json()["check"]["problems"] if item["key"] == "question_4000000105"), None))
+
+    def test_a_work_authorization_box_with_a_confirming_option_is_stored_and_ticked_through_the_form(self):
+        self.allow("work_authorization")
+        self.reword("question_4000000105", values=("Yes, I confirm this applies to me today",), type="multi_value_multi_select")
+        action = self.problem("question_4000000105")["action"]
+        self.assertEqual((action["type"], action["control"]), ("sensitive", "checkbox"))
+        self.assertEqual(self.needs("question_4000000105", True).status_code, 200)
+        field = next(item for item in self.check().json()["fields"] if item["key"] == "question_4000000105")
+        self.assertEqual(field["disposition"], "fill")
+
     def test_the_any_company_tick_is_honoured_for_work_authorization_and_refused_where_the_wording_depends_on_a_company(self):
         self.allow("work_authorization", "acknowledgment")
         self.assertEqual(self.needs("question_4000000105", "Yes", any_company=True).status_code, 200)
