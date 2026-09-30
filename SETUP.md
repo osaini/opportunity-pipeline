@@ -313,6 +313,28 @@ themselves (rule 3). The details:
   and the warning never shows: `python -m opportunity_app.setup set-key
   PIPELINE_GMAIL_TOKEN_DAYS`, then type `0`. The warning is only an estimate,
   and it retires itself once Gmail keeps answering past the date.
+  Connect Gmail asks for **three** permissions: compose, read, and a third that
+  Google words as "Read, compose, and send emails from your Gmail account".
+  Tell the student to **tick it**; without it the app cannot label replies.
+  The app uses it to add one label to the threads where a company replied, and
+  nothing else: it never deletes, archives, moves, or marks mail read.
+  **Reply label step.** Ask the student what Gmail label they want on replies to
+  their outreach, or none. The default is `opportunities`; they set it under
+  Outreach → Outreach settings → "Gmail label for replies" (empty turns it off;
+  letters, digits, spaces, hyphens, underscores and slashes only).
+  A connection made before this existed needs one **Reconnect Gmail** to add the
+  permission. The app refuses a connection when Google signs in as an account
+  other than `PIPELINE_OUTREACH_ACCOUNT`. Pausing automation pauses labelling.
+  **The pipeline mailbox versus an AI harness's Gmail.** The pipeline mailbox is
+  the account the app connected to. A Gmail tool their AI harness provides (for
+  example a claude.ai connector) may be signed into a different account, so an
+  agent must not use it to look at outreach mail. `scripts/pipeline_mailbox.py`
+  (`whoami`, `search`, `thread`) reads the pipeline mailbox read-only, from the
+  main checkout when run in a worktree. Tell the student that anything it prints
+  goes into the agent's conversation and to that agent's model provider. In
+  Claude Code, `.claude/hooks/mailbox-guard.mjs` reminds the agent once per
+  session before a Gmail tool runs; it needs Node (`node --version`). Without
+  Node the AGENTS.md rule is the only guard.
   Ask whether they want the **Automation** switches under Outreach → Outreach
   settings: writing drafts automatically, finding a new contact after a bounce,
   sending on the recipient's weekday morning, having a second model check
