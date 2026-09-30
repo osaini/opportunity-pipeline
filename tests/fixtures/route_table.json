@@ -1,0 +1,2927 @@
+{
+  "exception_handlers": [
+    "HTTPException",
+    "RequestValidationError",
+    "WebSocketRequestValidationError"
+  ],
+  "middleware": [
+    "BaseHTTPMiddleware(security_headers)",
+    "CORSMiddleware"
+  ],
+  "routes": [
+    {
+      "include_in_schema": false,
+      "kind": "Route",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "name": "openapi",
+      "path": "/openapi.json"
+    },
+    {
+      "include_in_schema": false,
+      "kind": "Route",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "name": "swagger_ui_html",
+      "path": "/docs"
+    },
+    {
+      "include_in_schema": false,
+      "kind": "Route",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "name": "swagger_ui_redirect",
+      "path": "/docs/oauth2-redirect"
+    },
+    {
+      "include_in_schema": false,
+      "kind": "Route",
+      "methods": [
+        "GET",
+        "HEAD"
+      ],
+      "name": "redoc_html",
+      "path": "/redoc"
+    },
+    {
+      "endpoint": "health",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "health_api_v1_health_get",
+      "path": "/api/v1/health",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "create_launch_ticket",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "create_launch_ticket_api_v1_auth_launch_ticket_post",
+      "path": "/api/v1/auth/launch-ticket",
+      "response_model": "LaunchTicketResponse",
+      "status_code": null
+    },
+    {
+      "endpoint": "create_session",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "create_session_api_v1_session_post",
+      "path": "/api/v1/session",
+      "response_model": "SessionResponse",
+      "status_code": null
+    },
+    {
+      "endpoint": "register",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "register_api_v1_auth_register_post",
+      "path": "/api/v1/auth/register",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "begin_recovery",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "begin_recovery_api_v1_auth_recovery_post",
+      "path": "/api/v1/auth/recovery",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "finish_recovery",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "finish_recovery_api_v1_auth_recovery_complete_post",
+      "path": "/api/v1/auth/recovery/complete",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "session_status",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "session_status_api_v1_session_get",
+      "path": "/api/v1/session",
+      "response_model": "SessionResponse",
+      "status_code": null
+    },
+    {
+      "endpoint": "refresh_status",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "refresh_status_api_v1_refresh_get",
+      "path": "/api/v1/refresh",
+      "response_model": "RefreshStatusResponse",
+      "status_code": null
+    },
+    {
+      "endpoint": "start_refresh",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "start_refresh_api_v1_refresh_post",
+      "path": "/api/v1/refresh",
+      "response_model": "RefreshStatusResponse",
+      "status_code": 202
+    },
+    {
+      "endpoint": "system_status_report",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "system_status_report_api_v1_system_status_get",
+      "path": "/api/v1/system/status",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "install_scheduled_job",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "install_scheduled_job_api_v1_system_schedules__job__install_post",
+      "path": "/api/v1/system/schedules/{job}/install",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "look_up_job_board",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "look_up_job_board_api_v1_sources_lookup_post",
+      "path": "/api/v1/sources/lookup",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "add_job_board",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "add_job_board_api_v1_sources_post",
+      "path": "/api/v1/sources",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "delete_session",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "operation_id": "delete_session_api_v1_session_delete",
+      "path": "/api/v1/session",
+      "response_model": null,
+      "status_code": 204
+    },
+    {
+      "endpoint": "list_opportunities",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "list_opportunities_api_v1_opportunities_get",
+      "path": "/api/v1/opportunities",
+      "response_model": "OpportunityListResponse",
+      "status_code": null
+    },
+    {
+      "endpoint": "get_opportunity",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_opportunity_api_v1_opportunities__opportunity_id__get",
+      "path": "/api/v1/opportunities/{opportunity_id}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "put_company_tag",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "PUT"
+      ],
+      "operation_id": "put_company_tag_api_v1_company_tags_put",
+      "path": "/api/v1/company-tags",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "put_user_deadline",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "PUT"
+      ],
+      "operation_id": "put_user_deadline_api_v1_opportunities__opportunity_id__deadline_put",
+      "path": "/api/v1/opportunities/{opportunity_id}/deadline",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "delete_user_deadline",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "operation_id": "delete_user_deadline_api_v1_opportunities__opportunity_id__deadline_delete",
+      "path": "/api/v1/opportunities/{opportunity_id}/deadline",
+      "response_model": null,
+      "status_code": 204
+    },
+    {
+      "endpoint": "get_resume_pick",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_resume_pick_api_v1_opportunities__opportunity_id__resume_pick_get",
+      "path": "/api/v1/opportunities/{opportunity_id}/resume-pick",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "put_resume_pick",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "PUT"
+      ],
+      "operation_id": "put_resume_pick_api_v1_opportunities__opportunity_id__resume_pick_put",
+      "path": "/api/v1/opportunities/{opportunity_id}/resume-pick",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "get_resume_check",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_resume_check_api_v1_opportunities__opportunity_id__resume_check_get",
+      "path": "/api/v1/opportunities/{opportunity_id}/resume-check",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "apply_agent_check",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "apply_agent_check_api_v1_apply_agent_opportunities__opportunity_id__check_get",
+      "path": "/api/v1/apply-agent/opportunities/{opportunity_id}/check",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "apply_agent_answer",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "apply_agent_answer_api_v1_apply_agent_opportunities__opportunity_id__answers_post",
+      "path": "/api/v1/apply-agent/opportunities/{opportunity_id}/answers",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "apply_agent_settings",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "apply_agent_settings_api_v1_apply_agent_settings_get",
+      "path": "/api/v1/apply-agent/settings",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "put_apply_ats_label",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "PUT"
+      ],
+      "operation_id": "put_apply_ats_label_api_v1_apply_agent_ats_labels__field__put",
+      "path": "/api/v1/apply-agent/ats-labels/{field}",
+      "response_model": "dict[str, str]",
+      "status_code": null
+    },
+    {
+      "endpoint": "delete_apply_ats_label",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "operation_id": "delete_apply_ats_label_api_v1_apply_agent_ats_labels__field__delete",
+      "path": "/api/v1/apply-agent/ats-labels/{field}",
+      "response_model": null,
+      "status_code": 204
+    },
+    {
+      "endpoint": "list_stored_sensitive_answers",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "list_stored_sensitive_answers_api_v1_apply_agent_sensitive_answers_get",
+      "path": "/api/v1/apply-agent/sensitive-answers",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "put_apply_sensitive_categories",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "PUT"
+      ],
+      "operation_id": "put_apply_sensitive_categories_api_v1_apply_agent_sensitive_categories_put",
+      "path": "/api/v1/apply-agent/sensitive-categories",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "add_apply_sensitive_answer",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "add_apply_sensitive_answer_api_v1_apply_agent_sensitive_answers_post",
+      "path": "/api/v1/apply-agent/sensitive-answers",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "delete_apply_sensitive_answer",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "operation_id": "delete_apply_sensitive_answer_api_v1_apply_agent_sensitive_answers__entry_id__delete",
+      "path": "/api/v1/apply-agent/sensitive-answers/{entry_id}",
+      "response_model": null,
+      "status_code": 204
+    },
+    {
+      "endpoint": "apply_agent_sensitive_answer",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "apply_agent_sensitive_answer_api_v1_apply_agent_opportunities__opportunity_id__sensitive_answers_post",
+      "path": "/api/v1/apply-agent/opportunities/{opportunity_id}/sensitive-answers",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "get_urgent",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_urgent_api_v1_urgent_get",
+      "path": "/api/v1/urgent",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "get_early_programs",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_early_programs_api_v1_early_programs_get",
+      "path": "/api/v1/early-programs",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "put_early_program_status",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "PUT"
+      ],
+      "operation_id": "put_early_program_status_api_v1_early_programs__program_id__status_put",
+      "path": "/api/v1/early-programs/{program_id}/status",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "typesafe_status",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "typesafe_status_api_v1_typesafe_get",
+      "path": "/api/v1/typesafe",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "get_inbox_suggestions",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_inbox_suggestions_api_v1_typesafe_inbox_suggestions_get",
+      "path": "/api/v1/typesafe/inbox-suggestions",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "put_inbox_suggestions",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "PUT"
+      ],
+      "operation_id": "put_inbox_suggestions_api_v1_typesafe_inbox_suggestions_put",
+      "path": "/api/v1/typesafe/inbox-suggestions",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "opportunity_jev_review",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "opportunity_jev_review_api_v1_opportunities__opportunity_id__jev_review_post",
+      "path": "/api/v1/opportunities/{opportunity_id}/jev-review",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "opportunity_action",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "opportunity_action_api_v1_opportunities__opportunity_id__actions_post",
+      "path": "/api/v1/opportunities/{opportunity_id}/actions",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "applications",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "applications_api_v1_applications_get",
+      "path": "/api/v1/applications",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "export_applications",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "export_applications_api_v1_applications_export_get",
+      "path": "/api/v1/applications/export",
+      "response_model": null,
+      "status_code": null
+    },
+    {
+      "endpoint": "tracker_analytics",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "tracker_analytics_api_v1_applications_analytics_get",
+      "path": "/api/v1/applications/analytics",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "import_application_file",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "import_application_file_api_v1_applications_import_post",
+      "path": "/api/v1/applications/import",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "get_application_detail",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_application_detail_api_v1_applications__application_id__get",
+      "path": "/api/v1/applications/{application_id}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "create_contact",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "create_contact_api_v1_applications__application_id__contacts_post",
+      "path": "/api/v1/applications/{application_id}/contacts",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "create_task",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "create_task_api_v1_applications__application_id__tasks_post",
+      "path": "/api/v1/applications/{application_id}/tasks",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "patch_task",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "PATCH"
+      ],
+      "operation_id": "patch_task_api_v1_application_tasks__task_id__patch",
+      "path": "/api/v1/application-tasks/{task_id}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "patch_application",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "PATCH"
+      ],
+      "operation_id": "patch_application_api_v1_applications__application_id__patch",
+      "path": "/api/v1/applications/{application_id}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "outreach_targets",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "outreach_targets_api_v1_outreach_get",
+      "path": "/api/v1/outreach",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "create_outreach",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "create_outreach_api_v1_outreach_post",
+      "path": "/api/v1/outreach",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "export_outreach",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "export_outreach_api_v1_outreach_export_get",
+      "path": "/api/v1/outreach/export",
+      "response_model": null,
+      "status_code": null
+    },
+    {
+      "endpoint": "import_outreach_file",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "import_outreach_file_api_v1_outreach_import_post",
+      "path": "/api/v1/outreach/import",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "outreach_discovery_status",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "outreach_discovery_status_api_v1_outreach_discovery_get",
+      "path": "/api/v1/outreach/discovery",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "start_outreach_discovery",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "start_outreach_discovery_api_v1_outreach_discovery_post",
+      "path": "/api/v1/outreach/discovery",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 202
+    },
+    {
+      "endpoint": "get_outreach_automation",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_outreach_automation_api_v1_outreach_automation_get",
+      "path": "/api/v1/outreach/automation",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "put_outreach_automation",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "PUT"
+      ],
+      "operation_id": "put_outreach_automation_api_v1_outreach_automation_put",
+      "path": "/api/v1/outreach/automation",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "get_automation",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_automation_api_v1_automation_get",
+      "path": "/api/v1/automation",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "put_automation_settings",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "PUT"
+      ],
+      "operation_id": "put_automation_settings_api_v1_automation_settings_put",
+      "path": "/api/v1/automation/settings",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "get_automation_actions",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_automation_actions_api_v1_automation_actions_get",
+      "path": "/api/v1/automation/actions",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "get_automation_action",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_automation_action_api_v1_automation_actions__action_id__get",
+      "path": "/api/v1/automation/actions/{action_id}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "undo_automation_action",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "undo_automation_action_api_v1_automation_actions__action_id__undo_post",
+      "path": "/api/v1/automation/actions/{action_id}/undo",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "approve_automation_action",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "approve_automation_action_api_v1_automation_actions__action_id__approve_post",
+      "path": "/api/v1/automation/actions/{action_id}/approve",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "reject_automation_action",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "reject_automation_action_api_v1_automation_actions__action_id__reject_post",
+      "path": "/api/v1/automation/actions/{action_id}/reject",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "review_automation_action",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "review_automation_action_api_v1_automation_actions__action_id__review_post",
+      "path": "/api/v1/automation/actions/{action_id}/review",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "get_auto_passed",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_auto_passed_api_v1_automation_auto_passed_get",
+      "path": "/api/v1/automation/auto-passed",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "get_employer_domains",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_employer_domains_api_v1_automation_employer_domains_get",
+      "path": "/api/v1/automation/employer-domains",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "trust_employer_domain",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "trust_employer_domain_api_v1_automation_employer_domains__domain_id__trust_post",
+      "path": "/api/v1/automation/employer-domains/{domain_id}/trust",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "untrust_employer_domain",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "untrust_employer_domain_api_v1_automation_employer_domains__domain_id__untrust_post",
+      "path": "/api/v1/automation/employer-domains/{domain_id}/untrust",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "dismiss_employer_domain",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "dismiss_employer_domain_api_v1_automation_employer_domains__domain_id__dismiss_post",
+      "path": "/api/v1/automation/employer-domains/{domain_id}/dismiss",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "get_application_mail",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_application_mail_api_v1_automation_application_mail_get",
+      "path": "/api/v1/automation/application-mail",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "check_application_mail",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "check_application_mail_api_v1_automation_application_mail_check_post",
+      "path": "/api/v1/automation/application-mail/check",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "approve_application_mail_backfill",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "approve_application_mail_backfill_api_v1_automation_application_mail_backfill_approve_all_post",
+      "path": "/api/v1/automation/application-mail/backfill/approve-all",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "read_automation_notices",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "read_automation_notices_api_v1_automation_notices_read_post",
+      "path": "/api/v1/automation/notices/read",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "get_outreach_settings",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_outreach_settings_api_v1_outreach_settings_get",
+      "path": "/api/v1/outreach/settings",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "put_outreach_settings",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "PUT"
+      ],
+      "operation_id": "put_outreach_settings_api_v1_outreach_settings_put",
+      "path": "/api/v1/outreach/settings",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "get_gmail_label",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_gmail_label_api_v1_outreach_gmail_label_get",
+      "path": "/api/v1/outreach/gmail-label",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "put_gmail_label",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "PUT"
+      ],
+      "operation_id": "put_gmail_label_api_v1_outreach_gmail_label_put",
+      "path": "/api/v1/outreach/gmail-label",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "outreach_recontact_status",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "outreach_recontact_status_api_v1_outreach_recontact_get",
+      "path": "/api/v1/outreach/recontact",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "start_outreach_recontact",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "start_outreach_recontact_api_v1_outreach_recontact_post",
+      "path": "/api/v1/outreach/recontact",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 202
+    },
+    {
+      "endpoint": "apply_outreach_recontact",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "apply_outreach_recontact_api_v1_outreach_recontact_apply_post",
+      "path": "/api/v1/outreach/recontact/apply",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 202
+    },
+    {
+      "endpoint": "draft_outreach",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "draft_outreach_api_v1_outreach__target_id__draft_post",
+      "path": "/api/v1/outreach/{target_id}/draft",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "call_prep_for_outreach",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "call_prep_for_outreach_api_v1_outreach__target_id__call_prep_post",
+      "path": "/api/v1/outreach/{target_id}/call-prep",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 202
+    },
+    {
+      "endpoint": "research_outreach_company",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "research_outreach_company_api_v1_outreach__target_id__research_post",
+      "path": "/api/v1/outreach/{target_id}/research",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 202
+    },
+    {
+      "endpoint": "outreach_draft_history",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "outreach_draft_history_api_v1_outreach__target_id__drafts_get",
+      "path": "/api/v1/outreach/{target_id}/drafts",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "restore_outreach_draft",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "restore_outreach_draft_api_v1_outreach__target_id__drafts__version_id__restore_post",
+      "path": "/api/v1/outreach/{target_id}/drafts/{version_id}/restore",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "approve_outreach",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "approve_outreach_api_v1_outreach__target_id__approve_post",
+      "path": "/api/v1/outreach/{target_id}/approve",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "gmail_draft_for_outreach",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "gmail_draft_for_outreach_api_v1_outreach__target_id__gmail_draft_post",
+      "path": "/api/v1/outreach/{target_id}/gmail-draft",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "gmail_send_for_outreach",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "gmail_send_for_outreach_api_v1_outreach__target_id__gmail_send_post",
+      "path": "/api/v1/outreach/{target_id}/gmail-send",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "form_submit_for_outreach",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "form_submit_for_outreach_api_v1_outreach__target_id__form_submit_post",
+      "path": "/api/v1/outreach/{target_id}/form-submit",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "set_outreach_contact_form",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "PUT"
+      ],
+      "operation_id": "set_outreach_contact_form_api_v1_outreach__target_id__contact_form_put",
+      "path": "/api/v1/outreach/{target_id}/contact-form",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "mark_outreach_bounced",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "mark_outreach_bounced_api_v1_outreach__target_id__bounce_post",
+      "path": "/api/v1/outreach/{target_id}/bounce",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "check_outreach_deliveries",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "check_outreach_deliveries_api_v1_outreach_delivery_check_post",
+      "path": "/api/v1/outreach/delivery-check",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "check_outreach_inbox",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "check_outreach_inbox_api_v1_outreach_inbox_check_post",
+      "path": "/api/v1/outreach/inbox-check",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "decide_outreach_possible_reply",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "decide_outreach_possible_reply_api_v1_outreach__target_id__possible_replies__gmail_id__post",
+      "path": "/api/v1/outreach/{target_id}/possible-replies/{gmail_id}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "dismiss_outreach_reply_suggestion",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "operation_id": "dismiss_outreach_reply_suggestion_api_v1_outreach__target_id__reply_suggestion_delete",
+      "path": "/api/v1/outreach/{target_id}/reply-suggestion",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "schedule_outreach_send",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "schedule_outreach_send_api_v1_outreach__target_id__schedule_post",
+      "path": "/api/v1/outreach/{target_id}/schedule",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "cancel_outreach_send",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "operation_id": "cancel_outreach_send_api_v1_outreach__target_id__schedule_delete",
+      "path": "/api/v1/outreach/{target_id}/schedule",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "cancel_outreach_thank_you",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "operation_id": "cancel_outreach_thank_you_api_v1_outreach__target_id__thank_you_delete",
+      "path": "/api/v1/outreach/{target_id}/thank-you",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "edit_outreach_thank_you",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "edit_outreach_thank_you_api_v1_outreach__target_id__thank_you_edit_post",
+      "path": "/api/v1/outreach/{target_id}/thank-you/edit",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "send_outreach_thank_you",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "send_outreach_thank_you_api_v1_outreach__target_id__thank_you_send_post",
+      "path": "/api/v1/outreach/{target_id}/thank-you/send",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "confirm_research_for_outreach",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "confirm_research_for_outreach_api_v1_outreach__target_id__confirm_research_post",
+      "path": "/api/v1/outreach/{target_id}/confirm-research",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "outreach_contacts",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "outreach_contacts_api_v1_outreach__target_id__contacts_get",
+      "path": "/api/v1/outreach/{target_id}/contacts",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "add_outreach_contact",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "add_outreach_contact_api_v1_outreach__target_id__contacts_post",
+      "path": "/api/v1/outreach/{target_id}/contacts",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "find_contacts_for_outreach",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "find_contacts_for_outreach_api_v1_outreach__target_id__find_contacts_post",
+      "path": "/api/v1/outreach/{target_id}/find-contacts",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "apply_outreach_contact",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "apply_outreach_contact_api_v1_outreach__target_id__contacts__candidate_id__apply_post",
+      "path": "/api/v1/outreach/{target_id}/contacts/{candidate_id}/apply",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "log_outreach_reply_route",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "log_outreach_reply_route_api_v1_outreach__target_id__reply_post",
+      "path": "/api/v1/outreach/{target_id}/reply",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "outreach_detail",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "outreach_detail_api_v1_outreach__target_id__get",
+      "path": "/api/v1/outreach/{target_id}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "update_outreach",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "PATCH"
+      ],
+      "operation_id": "update_outreach_api_v1_outreach__target_id__patch",
+      "path": "/api/v1/outreach/{target_id}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "remove_outreach",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "operation_id": "remove_outreach_api_v1_outreach__target_id__delete",
+      "path": "/api/v1/outreach/{target_id}",
+      "response_model": null,
+      "status_code": 204
+    },
+    {
+      "endpoint": "profile",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "profile_api_v1_profile_get",
+      "path": "/api/v1/profile",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "put_profile",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "PUT"
+      ],
+      "operation_id": "put_profile_api_v1_profile_put",
+      "path": "/api/v1/profile",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "export_profile",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "export_profile_api_v1_profile_export_get",
+      "path": "/api/v1/profile/export",
+      "response_model": null,
+      "status_code": null
+    },
+    {
+      "endpoint": "export_full_account",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "export_full_account_api_v1_account_export_get",
+      "path": "/api/v1/account/export",
+      "response_model": null,
+      "status_code": null
+    },
+    {
+      "endpoint": "permanently_delete_account",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "operation_id": "permanently_delete_account_api_v1_account_delete",
+      "path": "/api/v1/account",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "resumes",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "resumes_api_v1_resumes_get",
+      "path": "/api/v1/resumes",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "upload_resume",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "upload_resume_api_v1_resumes_post",
+      "path": "/api/v1/resumes",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "get_resume",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_resume_api_v1_resumes__version_id__get",
+      "path": "/api/v1/resumes/{version_id}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "confirm_resume_version",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "confirm_resume_version_api_v1_resumes__version_id__confirm_post",
+      "path": "/api/v1/resumes/{version_id}/confirm",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "confirm_resume_variant",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "confirm_resume_variant_api_v1_resumes__version_id__variant_post",
+      "path": "/api/v1/resumes/{version_id}/variant",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "download_resume",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "download_resume_api_v1_resumes__version_id__file_get",
+      "path": "/api/v1/resumes/{version_id}/file",
+      "response_model": null,
+      "status_code": null
+    },
+    {
+      "endpoint": "remove_resume",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "operation_id": "remove_resume_api_v1_resumes__version_id__delete",
+      "path": "/api/v1/resumes/{version_id}",
+      "response_model": null,
+      "status_code": 204
+    },
+    {
+      "endpoint": "create_url_capture",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "create_url_capture_api_v1_opportunity_captures_url_post",
+      "path": "/api/v1/opportunity-captures/url",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "create_file_capture",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "create_file_capture_api_v1_opportunity_captures_file_post",
+      "path": "/api/v1/opportunity-captures/file",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "capture_detail",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "capture_detail_api_v1_opportunity_captures__capture_id__get",
+      "path": "/api/v1/opportunity-captures/{capture_id}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "confirm_capture_draft",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "confirm_capture_draft_api_v1_opportunity_captures__capture_id__confirm_post",
+      "path": "/api/v1/opportunity-captures/{capture_id}/confirm",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "preparation_documents",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "preparation_documents_api_v1_preparation_documents_get",
+      "path": "/api/v1/preparation/documents",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "generate_preparation_document",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "generate_preparation_document_api_v1_preparation_documents_post",
+      "path": "/api/v1/preparation/documents",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "get_preparation_document",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_preparation_document_api_v1_preparation_documents__document_id__get",
+      "path": "/api/v1/preparation/documents/{document_id}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "update_preparation_document",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "PUT"
+      ],
+      "operation_id": "update_preparation_document_api_v1_preparation_documents__document_id__put",
+      "path": "/api/v1/preparation/documents/{document_id}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "approve_preparation_document",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "approve_preparation_document_api_v1_preparation_documents__document_id__approve_post",
+      "path": "/api/v1/preparation/documents/{document_id}/approve",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "delete_preparation_document",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "operation_id": "delete_preparation_document_api_v1_preparation_documents__document_id__delete",
+      "path": "/api/v1/preparation/documents/{document_id}",
+      "response_model": null,
+      "status_code": 204
+    },
+    {
+      "endpoint": "download_preparation_document",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "download_preparation_document_api_v1_preparation_documents__document_id__download_get",
+      "path": "/api/v1/preparation/documents/{document_id}/download",
+      "response_model": null,
+      "status_code": null
+    },
+    {
+      "endpoint": "download_preparation_document_pdf",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "download_preparation_document_pdf_api_v1_preparation_documents__document_id__pdf_get",
+      "path": "/api/v1/preparation/documents/{document_id}/pdf",
+      "response_model": null,
+      "status_code": null
+    },
+    {
+      "endpoint": "answer_library",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "answer_library_api_v1_preparation_answers_get",
+      "path": "/api/v1/preparation/answers",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "create_library_answer",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "create_library_answer_api_v1_preparation_answers_post",
+      "path": "/api/v1/preparation/answers",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "delete_all_library_answers",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "operation_id": "delete_all_library_answers_api_v1_preparation_answers_all_delete",
+      "path": "/api/v1/preparation/answers/all",
+      "response_model": null,
+      "status_code": 204
+    },
+    {
+      "endpoint": "update_library_answer",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "PUT"
+      ],
+      "operation_id": "update_library_answer_api_v1_preparation_answers__answer_id__put",
+      "path": "/api/v1/preparation/answers/{answer_id}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "delete_library_answer",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "operation_id": "delete_library_answer_api_v1_preparation_answers__answer_id__delete",
+      "path": "/api/v1/preparation/answers/{answer_id}",
+      "response_model": null,
+      "status_code": 204
+    },
+    {
+      "endpoint": "start_mock_interview",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "start_mock_interview_api_v1_preparation_interviews_post",
+      "path": "/api/v1/preparation/interviews",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "mock_interviews",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "mock_interviews_api_v1_preparation_interviews_get",
+      "path": "/api/v1/preparation/interviews",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "get_mock_interview",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_mock_interview_api_v1_preparation_interviews__interview_id__get",
+      "path": "/api/v1/preparation/interviews/{interview_id}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "submit_mock_answer",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "submit_mock_answer_api_v1_preparation_questions__question_id__answers_post",
+      "path": "/api/v1/preparation/questions/{question_id}/answers",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "submit_recorded_mock_answer",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "submit_recorded_mock_answer_api_v1_preparation_questions__question_id__recorded_answers_post",
+      "path": "/api/v1/preparation/questions/{question_id}/recorded-answers",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "download_recorded_mock_answer",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "download_recorded_mock_answer_api_v1_preparation_answers__answer_id__audio_get",
+      "path": "/api/v1/preparation/answers/{answer_id}/audio",
+      "response_model": null,
+      "status_code": null
+    },
+    {
+      "endpoint": "agent_providers",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "agent_providers_api_v1_agent_providers_get",
+      "path": "/api/v1/agent/providers",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "agent_threads",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "agent_threads_api_v1_agent_threads_get",
+      "path": "/api/v1/agent/threads",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "start_agent_thread",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "start_agent_thread_api_v1_agent_threads_post",
+      "path": "/api/v1/agent/threads",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "agent_activity",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "agent_activity_api_v1_agent_activity_get",
+      "path": "/api/v1/agent/activity",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "get_agent_thread",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_agent_thread_api_v1_agent_threads__thread_id__get",
+      "path": "/api/v1/agent/threads/{thread_id}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "send_agent_message",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "send_agent_message_api_v1_agent_threads__thread_id__messages_post",
+      "path": "/api/v1/agent/threads/{thread_id}/messages",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "cancel_agent_thread",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "cancel_agent_thread_api_v1_agent_threads__thread_id__cancel_post",
+      "path": "/api/v1/agent/threads/{thread_id}/cancel",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "decide_agent_action",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "decide_agent_action_api_v1_agent_proposals__proposal_id__decision_post",
+      "path": "/api/v1/agent/proposals/{proposal_id}/decision",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "create_extension_pairing",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "create_extension_pairing_api_v1_extension_pairings_post",
+      "path": "/api/v1/extension/pairings",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "redeem_extension_pairing",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "redeem_extension_pairing_api_v1_extension_pairings_redeem_post",
+      "path": "/api/v1/extension/pairings/redeem",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "extension_devices",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "extension_devices_api_v1_extension_devices_get",
+      "path": "/api/v1/extension/devices",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "delete_extension_device",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "operation_id": "delete_extension_device_api_v1_extension_devices__device_id__delete",
+      "path": "/api/v1/extension/devices/{device_id}",
+      "response_model": null,
+      "status_code": 204
+    },
+    {
+      "endpoint": "extension_application_candidates",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "extension_application_candidates_api_v1_extension_application_candidates_get",
+      "path": "/api/v1/extension/application-candidates",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "extension_apply_context",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "extension_apply_context_api_v1_extension_apply_context_get",
+      "path": "/api/v1/extension/apply-context",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "download_extension_artifact",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "download_extension_artifact_api_v1_extension_artifacts__artifact_id__file_get",
+      "path": "/api/v1/extension/artifacts/{artifact_id}/file",
+      "response_model": null,
+      "status_code": null
+    },
+    {
+      "endpoint": "put_extension_session",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "PUT"
+      ],
+      "operation_id": "put_extension_session_api_v1_extension_sessions__session_id__put",
+      "path": "/api/v1/extension/sessions/{session_id}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "put_extension_step",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "PUT"
+      ],
+      "operation_id": "put_extension_step_api_v1_extension_sessions__session_id__steps__step_key__put",
+      "path": "/api/v1/extension/sessions/{session_id}/steps/{step_key}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "confirm_extension_submission",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "confirm_extension_submission_api_v1_extension_sessions__session_id__confirm_submitted_post",
+      "path": "/api/v1/extension/sessions/{session_id}/confirm-submitted",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "save_extension_answer",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "save_extension_answer_api_v1_extension_answers_post",
+      "path": "/api/v1/extension/answers",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "apply_sessions",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "apply_sessions_api_v1_apply_sessions_get",
+      "path": "/api/v1/apply-sessions",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "sync_apply_session",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "sync_apply_session_api_v1_apply_sessions_post",
+      "path": "/api/v1/apply-sessions",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "connections",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "connections_api_v1_connections_get",
+      "path": "/api/v1/connections",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "connect_account",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "connect_account_api_v1_connections_post",
+      "path": "/api/v1/connections",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "start_oauth_connection",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "start_oauth_connection_api_v1_connections_oauth__provider__start_get",
+      "path": "/api/v1/connections/oauth/{provider}/start",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "finish_oauth_connection",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "finish_oauth_connection_api_v1_connections_oauth__provider__complete_post",
+      "path": "/api/v1/connections/oauth/{provider}/complete",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "disconnect_account",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "operation_id": "disconnect_account_api_v1_connections__connector_id__delete",
+      "path": "/api/v1/connections/{connector_id}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "monitored_events",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "monitored_events_api_v1_monitored_events_get",
+      "path": "/api/v1/monitored-events",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "ingest_monitored_message",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "ingest_monitored_message_api_v1_monitored_events_post",
+      "path": "/api/v1/monitored-events",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "verified_connector_webhook",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "verified_connector_webhook_api_v1_connections_webhook_post",
+      "path": "/api/v1/connections/webhook",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "decide_monitored_update",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "decide_monitored_update_api_v1_monitored_events__event_id__decision_post",
+      "path": "/api/v1/monitored-events/{event_id}/decision",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "notification_preferences",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "notification_preferences_api_v1_notification_preferences_get",
+      "path": "/api/v1/notification-preferences",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "put_notification_preferences",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "PUT"
+      ],
+      "operation_id": "put_notification_preferences_api_v1_notification_preferences_put",
+      "path": "/api/v1/notification-preferences",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "notification_opt_out",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "notification_opt_out_api_v1_notifications_opt_out_post",
+      "path": "/api/v1/notifications/opt-out",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "create_phone_verification",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "create_phone_verification_api_v1_phone_verifications_post",
+      "path": "/api/v1/phone-verifications",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "verify_phone",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "verify_phone_api_v1_phone_verifications_confirm_post",
+      "path": "/api/v1/phone-verifications/confirm",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "request_voice_check_in",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "request_voice_check_in_api_v1_notifications_voice_check_in_post",
+      "path": "/api/v1/notifications/voice-check-in",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "career_dossier",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "career_dossier_api_v1_dossier_get",
+      "path": "/api/v1/dossier",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "export_dossier",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "export_dossier_api_v1_dossier_export_get",
+      "path": "/api/v1/dossier/export",
+      "response_model": null,
+      "status_code": null
+    },
+    {
+      "endpoint": "put_dossier_settings",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "PUT"
+      ],
+      "operation_id": "put_dossier_settings_api_v1_dossier_settings_put",
+      "path": "/api/v1/dossier/settings",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "create_dossier_item",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "create_dossier_item_api_v1_dossier_items_post",
+      "path": "/api/v1/dossier/items",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "remove_dossier_item",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "operation_id": "remove_dossier_item_api_v1_dossier_items__item_id__delete",
+      "path": "/api/v1/dossier/items/{item_id}",
+      "response_model": null,
+      "status_code": 204
+    },
+    {
+      "endpoint": "remove_all_dossier_data",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "operation_id": "remove_all_dossier_data_api_v1_dossier_delete",
+      "path": "/api/v1/dossier",
+      "response_model": null,
+      "status_code": 204
+    },
+    {
+      "endpoint": "preview_dossier_share",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "preview_dossier_share_api_v1_dossier_shares_preview_post",
+      "path": "/api/v1/dossier/shares/preview",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "create_dossier_share",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "create_dossier_share_api_v1_dossier_shares_post",
+      "path": "/api/v1/dossier/shares",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "revoke_dossier_share",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "DELETE"
+      ],
+      "operation_id": "revoke_dossier_share_api_v1_dossier_shares__grant_id__delete",
+      "path": "/api/v1/dossier/shares/{grant_id}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "public_dossier_share",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "public_dossier_share_api_v1_public_dossier_shares__share_token__get",
+      "path": "/api/v1/public/dossier-shares/{share_token}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "build_market_snapshot",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "build_market_snapshot_api_v1_market_snapshots_post",
+      "path": "/api/v1/market/snapshots",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "verify_market_snapshot",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "verify_market_snapshot_api_v1_market_snapshots__snapshot_id__verify_get",
+      "path": "/api/v1/market/snapshots/{snapshot_id}/verify",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "draft_market_issue",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "draft_market_issue_api_v1_market_issues_post",
+      "path": "/api/v1/market/issues",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "get_market_issue",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_market_issue_api_v1_market_issues__issue_id__get",
+      "path": "/api/v1/market/issues/{issue_id}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "publish_market_issue",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "publish_market_issue_api_v1_market_issues__issue_id__publish_post",
+      "path": "/api/v1/market/issues/{issue_id}/publish",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "public_market_archive",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "public_market_archive_api_v1_public_market_get",
+      "path": "/api/v1/public/market",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "employer_create_organization",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "employer_create_organization_api_v1_employer_organizations_post",
+      "path": "/api/v1/employer/organizations",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "employer_create_requisition",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "employer_create_requisition_api_v1_employer_organizations__organization_id__requisitions_post",
+      "path": "/api/v1/employer/organizations/{organization_id}/requisitions",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "employer_requisitions",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "employer_requisitions_api_v1_employer_requisitions_get",
+      "path": "/api/v1/employer/requisitions",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "employer_import_requisitions",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "employer_import_requisitions_api_v1_employer_requisitions_import_post",
+      "path": "/api/v1/employer/requisitions/import",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "employer_requisition",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "employer_requisition_api_v1_employer_requisitions__requisition_id__get",
+      "path": "/api/v1/employer/requisitions/{requisition_id}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "employer_export_requisition",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "employer_export_requisition_api_v1_employer_requisitions__requisition_id__export_get",
+      "path": "/api/v1/employer/requisitions/{requisition_id}/export",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "employer_candidates",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "employer_candidates_api_v1_employer_requisitions__requisition_id__candidates_get",
+      "path": "/api/v1/employer/requisitions/{requisition_id}/candidates",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "employer_add_candidate",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "employer_add_candidate_api_v1_employer_requisitions__requisition_id__candidates_post",
+      "path": "/api/v1/employer/requisitions/{requisition_id}/candidates",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "employer_candidate",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "employer_candidate_api_v1_employer_candidates__candidate_id__get",
+      "path": "/api/v1/employer/candidates/{candidate_id}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "employer_decide_candidate",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "employer_decide_candidate_api_v1_employer_candidates__candidate_id__decision_post",
+      "path": "/api/v1/employer/candidates/{candidate_id}/decision",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "employer_agent_summary",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "employer_agent_summary_api_v1_employer_candidates__candidate_id__agent_summary_get",
+      "path": "/api/v1/employer/candidates/{candidate_id}/agent-summary",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "employer_draft_message",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "employer_draft_message_api_v1_employer_candidates__candidate_id__messages_post",
+      "path": "/api/v1/employer/candidates/{candidate_id}/messages",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "employer_approve_message",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "employer_approve_message_api_v1_employer_messages__message_id__approve_post",
+      "path": "/api/v1/employer/messages/{message_id}/approve",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "employer_propose_interview",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "employer_propose_interview_api_v1_employer_candidates__candidate_id__interviews_post",
+      "path": "/api/v1/employer/candidates/{candidate_id}/interviews",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "employer_confirm_interview",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "employer_confirm_interview_api_v1_employer_interviews__interview_id__confirm_post",
+      "path": "/api/v1/employer/interviews/{interview_id}/confirm",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "operations_overview",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "operations_overview_api_v1_admin_overview_get",
+      "path": "/api/v1/admin/overview",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "admin_enqueue_job",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "admin_enqueue_job_api_v1_admin_jobs_post",
+      "path": "/api/v1/admin/jobs",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "admin_retry_job",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "admin_retry_job_api_v1_admin_jobs__job_id__retry_post",
+      "path": "/api/v1/admin/jobs/{job_id}/retry",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "admin_run_retention",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "admin_run_retention_api_v1_admin_retention_run_post",
+      "path": "/api/v1/admin/retention/run",
+      "response_model": "dict[str, int]",
+      "status_code": null
+    },
+    {
+      "endpoint": "admin_verify_organization",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "admin_verify_organization_api_v1_admin_organizations__organization_id__verify_post",
+      "path": "/api/v1/admin/organizations/{organization_id}/verify",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "admin_put_feature_flag",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "PUT"
+      ],
+      "operation_id": "admin_put_feature_flag_api_v1_admin_feature_flags__key__put",
+      "path": "/api/v1/admin/feature-flags/{key}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "admin_connector_health",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "admin_connector_health_api_v1_admin_connector_health_get",
+      "path": "/api/v1/admin/connector-health",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "admin_source_control",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "PUT"
+      ],
+      "operation_id": "admin_source_control_api_v1_admin_sources__source_key__put",
+      "path": "/api/v1/admin/sources/{source_key:path}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "admin_create_moderation",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "admin_create_moderation_api_v1_admin_moderation_post",
+      "path": "/api/v1/admin/moderation",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 201
+    },
+    {
+      "endpoint": "admin_resolve_moderation",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "admin_resolve_moderation_api_v1_admin_moderation__item_id__resolve_post",
+      "path": "/api/v1/admin/moderation/{item_id}/resolve",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "admin_school_report",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "admin_school_report_api_v1_admin_school_report_get",
+      "path": "/api/v1/admin/school-report",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "facets",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "facets_api_v1_facets_get",
+      "path": "/api/v1/facets",
+      "response_model": "dict[str, list[typing.Any]]",
+      "status_code": null
+    },
+    {
+      "endpoint": "stats",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "stats_api_v1_stats_get",
+      "path": "/api/v1/stats",
+      "response_model": "dict[str, int]",
+      "status_code": null
+    },
+    {
+      "app": "StaticFiles",
+      "kind": "mount",
+      "name": "assets",
+      "path": "/assets"
+    },
+    {
+      "endpoint": "role_workspace",
+      "include_in_schema": false,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "role_workspace_admin_get",
+      "path": "/admin",
+      "response_model": null,
+      "status_code": null
+    },
+    {
+      "endpoint": "role_workspace",
+      "include_in_schema": false,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "role_workspace_employer_get",
+      "path": "/employer",
+      "response_model": null,
+      "status_code": null
+    },
+    {
+      "endpoint": "oauth_callback_page",
+      "include_in_schema": false,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "oauth_callback_page_connections_oauth__provider__callback_get",
+      "path": "/connections/oauth/{provider}/callback",
+      "response_model": null,
+      "status_code": null
+    },
+    {
+      "endpoint": "public_market_page",
+      "include_in_schema": false,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "public_market_page_market_get",
+      "path": "/market",
+      "response_model": null,
+      "status_code": null
+    },
+    {
+      "endpoint": "web_app",
+      "include_in_schema": false,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "web_app_opportunities__opportunity_id__get",
+      "path": "/opportunities/{opportunity_id}",
+      "response_model": null,
+      "status_code": null
+    },
+    {
+      "endpoint": "web_app",
+      "include_in_schema": false,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "web_app_profile_get",
+      "path": "/profile",
+      "response_model": null,
+      "status_code": null
+    },
+    {
+      "endpoint": "web_app",
+      "include_in_schema": false,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "web_app_agent_get",
+      "path": "/agent",
+      "response_model": null,
+      "status_code": null
+    },
+    {
+      "endpoint": "web_app",
+      "include_in_schema": false,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "web_app_prepare_get",
+      "path": "/prepare",
+      "response_model": null,
+      "status_code": null
+    },
+    {
+      "endpoint": "web_app",
+      "include_in_schema": false,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "web_app_outreach_get",
+      "path": "/outreach",
+      "response_model": null,
+      "status_code": null
+    },
+    {
+      "endpoint": "web_app",
+      "include_in_schema": false,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "web_app_applications_get",
+      "path": "/applications",
+      "response_model": null,
+      "status_code": null
+    },
+    {
+      "endpoint": "web_app",
+      "include_in_schema": false,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "web_app_saved_get",
+      "path": "/saved",
+      "response_model": null,
+      "status_code": null
+    },
+    {
+      "endpoint": "web_app",
+      "include_in_schema": false,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "web_app_programs_get",
+      "path": "/programs",
+      "response_model": null,
+      "status_code": null
+    },
+    {
+      "endpoint": "web_app",
+      "include_in_schema": false,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "web_app_urgent_get",
+      "path": "/urgent",
+      "response_model": null,
+      "status_code": null
+    },
+    {
+      "endpoint": "web_app",
+      "include_in_schema": false,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "web_app__get",
+      "path": "/",
+      "response_model": null,
+      "status_code": null
+    }
+  ]
+}
