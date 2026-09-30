@@ -218,6 +218,12 @@ ACCOUNT_QUERIES = {
     "employer_domains": "SELECT * FROM employer_domains WHERE user_id=?",
     # Every email outreach read for a reply, with why it was taken as it was; a possible reply's words while it waits.
     "outreach_inbox_messages": "SELECT * FROM outreach_inbox_messages WHERE user_id=?",
+    # Apply for me: every attempt and run (value-free; screenshot paths are redacted below), and what the student
+    # allowed it to answer. The per-install key that hashes values (data/private/apply/hash-key) is never exported.
+    "application_submit_claims": "SELECT * FROM application_submit_claims WHERE user_id=?",
+    "apply_runs": "SELECT * FROM apply_runs WHERE user_id=?",
+    "apply_sensitive_answers": "SELECT * FROM apply_sensitive_answers WHERE user_id=?",
+    "apply_ats_labels": "SELECT * FROM apply_ats_labels WHERE user_id=?",
 }
 
 
@@ -234,6 +240,10 @@ def export_account(conn: sqlite3.Connection, *, user_id: str) -> dict[str, Any]:
                 for secret_field in ("code_hash", "token_hash"):
                     if secret_field in row:
                         row[secret_field] = "[redacted]"
+        if key == "apply_runs":
+            # Only the file paths inside the screenshots list are private; each screenshot's hash is kept.
+            for row in rows:
+                row["screenshots_json"] = _redact_screenshot_paths(row["screenshots_json"])
         for row in rows:
             for field in tuple(row):
                 if field == "storage_path" or field.endswith("_path"):
@@ -242,7 +252,21 @@ def export_account(conn: sqlite3.Connection, *, user_id: str) -> dict[str, Any]:
     return result
 
 
-def delete_account(conn: sqlite3.Connection, storage_roots: list[Path], *, user_id: str) -> dict[str, Any]:
+def _redact_screenshot_paths(text: Any) -> str:
+    try:
+        shots = json.loads(text or "[]")
+    except (TypeError, ValueError):
+        return "[]"
+    for shot in shots if isinstance(shots, list) else []:
+        if isinstance(shot, dict) and shot.get("path"):
+            shot["path"] = "[private-file-reference-redacted]"
+    return json.dumps(shots, sort_keys=True)
+
+
+def delete_account(
+    conn: sqlite3.Connection, storage_roots: list[Path], *, user_id: str, apply_root: Path | None = None,
+) -> dict[str, Any]:
+    """Delete the account and its files. ``apply_root`` (Apply for me's screenshots) is removed too, when given."""
     if len(storage_roots) != 3:
         raise OperationsError("Account deletion requires resume, capture, and interview storage roots")
     owned_files: list[tuple[Path, str]] = []
@@ -256,13 +280,18 @@ def delete_account(conn: sqlite3.Connection, storage_roots: list[Path], *, user_
         owned_files.append((storage_roots[2], str(row["audio_path"] or "")))
     digest = hashlib.sha256(user_id.encode()).hexdigest()
     timestamp = utc_now()
+    removed_files = 0
+    if apply_root is not None:
+        # The whole folder of this student's screenshots, before the rows that name them go.
+        from .apply_runs import delete_apply_folder
+
+        removed_files += delete_apply_folder(apply_root, user_id)
     with conn:
         # Employer views reference grants; erase those cached views before cascading the grants.
         conn.execute("DELETE FROM employer_candidates WHERE consent_grant_id IN (SELECT id FROM dossier_consent_grants WHERE user_id=?)", (user_id,))
         cursor = conn.execute("DELETE FROM users WHERE id=?", (user_id,))
         conn.execute("INSERT INTO account_deletion_log(id, user_id_hash, status, detail_json, created_at) VALUES(?, ?, 'completed', ?, ?)",
                      (f"deletion-{uuid4().hex}", digest, json.dumps({"database_rows_removed": bool(cursor.rowcount)}), timestamp))
-    removed_files = 0
     for root, stored_path in owned_files:
         if not stored_path:
             continue
@@ -275,7 +304,8 @@ def delete_account(conn: sqlite3.Connection, storage_roots: list[Path], *, user_
     return {"deleted": True, "files_removed": removed_files, "completed_at": timestamp}
 
 
-def run_retention(conn: sqlite3.Connection, *, now: datetime | None = None) -> dict[str, int]:
+def run_retention(conn: sqlite3.Connection, *, now: datetime | None = None, apply_root: Path | None = None) -> dict[str, int]:
+    """Expire grants and old evidence. With ``apply_root``, Apply for me's screenshots too (apply_runs.purge_evidence)."""
     now = now or datetime.now(timezone.utc)
     expired = now.isoformat()
     with conn:
@@ -299,8 +329,12 @@ def run_retention(conn: sqlite3.Connection, *, now: datetime | None = None) -> d
             "AND (text<>'' OR meta_json<>'{}') AND recorded_at<?",
             (cutoff,),
         ).rowcount
-    return {"expired_grants": grants, "retired_dossier_items": stale, "possible_reply_words": waiting,
-            **purge_excerpts(conn, now=now)}
+    counts = {"expired_grants": grants, "retired_dossier_items": stale, "possible_reply_words": waiting, **purge_excerpts(conn, now=now)}
+    if apply_root is not None:
+        from .apply_runs import purge_evidence
+
+        counts.update(purge_evidence(conn, apply_root=apply_root, now=now))
+    return counts
 
 
 def encrypted_backup(source: Path, destination: Path, key: bytes) -> dict[str, Any]:

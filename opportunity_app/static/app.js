@@ -7464,18 +7464,20 @@
   }
 
   // One thing a pause could not stop, by its action: a 'send' is an email
-  // Gmail already has, and a 'form' a contact form whose button is being
-  // pressed. Nothing else is past stopping (a Gmail draft being saved sends
+  // Gmail already has, a 'form' a contact form whose button is being
+  // pressed, and an 'application' one handed to Greenhouse (Apply for me).
+  // Nothing else is past stopping (a Gmail draft being saved sends
   // nothing), so any other action is left out rather than called an email.
   function inFlightItem(item) {
-    if (item?.action !== "send" && item?.action !== "form") return null;
+    if (item?.action !== "send" && item?.action !== "form" && item?.action !== "application") return null;
     const form = item.action === "form";
-    const how = form ? "submission started" : item.source === "scheduled_send" ? "handed to Gmail" : "sending started";
+    const application = item.action === "application";
+    const how = application ? "handed to Greenhouse" : form ? "submission started" : item.source === "scheduled_send" ? "handed to Gmail" : "sending started";
     const when = automationWhen(item.at);
     const to = item.company ? ` to ${item.company}` : "";
     return {
-      noun: form ? "contact form" : "email",
-      article: form ? "a contact form" : "an email",
+      noun: application ? "application" : form ? "contact form" : "email",
+      article: application ? "an application" : form ? "a contact form" : "an email",
       to,
       detail: when ? `${how} at ${when}` : how,
     };
@@ -7490,8 +7492,13 @@
       return `1 ${only.noun}${only.to} was already on its way (${only.detail}) and can't be stopped.`;
     }
     const emails = described.filter((entry) => entry.noun === "email").length;
-    const forms = described.length - emails;
-    const counted = [emails ? plural(emails, "email", "emails") : "", forms ? plural(forms, "contact form", "contact forms") : ""].filter(Boolean).join(" and ");
+    const applications = described.filter((entry) => entry.noun === "application").length;
+    const forms = described.length - emails - applications;
+    const counted = [
+      emails ? plural(emails, "email", "emails") : "",
+      forms ? plural(forms, "contact form", "contact forms") : "",
+      applications ? plural(applications, "application", "applications") : "",
+    ].filter(Boolean).join(" and ");
     return `${counted} were already on their way and can't be stopped: ${described.map((entry) => `${entry.article}${entry.to} (${entry.detail})`).join("; ")}.`;
   }
 
@@ -7503,6 +7510,9 @@
     const started = when ? ` (started ${when})` : "";
     if (item.action === "draft") {
       return `A Gmail draft${item.company ? ` for ${item.company}` : ""} may have been saved without the app recording it${started}. Check your Gmail Drafts; a draft sends nothing.`;
+    }
+    if (item.action === "application") {
+      return `The application${to} may or may not have reached Greenhouse${started}. Look for Greenhouse's confirmation email or check the company's page, then say whether it went through.`;
     }
     const form = item.action === "form";
     const what = form ? "The contact form message" : item.kind === "follow_up" ? "The follow-up" : item.kind === "thank_you" ? "The thank-you" : "The email";
@@ -9320,6 +9330,8 @@
     outreach_revisit: "Outreach revisit",
     outreach_possible_reply: "Outreach possible reply",
     application_silence: "No reply yet",
+    apply_needs_you: "Apply for me needs you",
+    apply_no_email: "No confirmation email yet",
   };
   const URGENT_GROUPS = [
     ["overdue", "Overdue", (item) => item.days_until < 0],
@@ -9353,7 +9365,7 @@
 
   function urgentHeadline(item) {
     if (item.kind.startsWith("outreach_")) return [item.company, "Cold outreach"];
-    if (item.kind === "task" || item.kind === "application_silence") return [item.title, [item.company, item.subtitle].filter(Boolean).join(" · ")];
+    if (item.kind === "task" || item.kind === "application_silence" || item.kind.startsWith("apply_")) return [item.title, [item.company, item.subtitle].filter(Boolean).join(" · ")];
     return [item.title, item.company];
   }
 
@@ -9369,7 +9381,7 @@
         setView("programs");
       }];
     }
-    if (item.kind === "task" || item.kind === "application_follow_up" || item.kind === "application_silence" || item.kind === "email_deadline") {
+    if (item.kind === "task" || item.kind === "application_follow_up" || item.kind === "application_silence" || item.kind === "email_deadline" || item.kind.startsWith("apply_")) {
       return ["Open application", `Open the application for ${item.company}`, () => {
         state.applicationFocus = item.application_id;
         setView("applications");
@@ -9419,7 +9431,7 @@
     { id: "all", label: "Everything dated", test: () => true },
     ...URGENT_GROUPS.map(([key, label, test]) => ({ id: key, label, group: "When", tone: key === "overdue" ? "is-alert" : key === "today" ? "is-soon" : "", test })),
     { id: "deadlines", label: "Deadlines", group: "Kind", test: (item) => ["posting_deadline", "your_deadline", "program_deadline", "outreach_deadline", "email_deadline"].includes(item.kind) },
-    { id: "follow-ups", label: "Follow-ups", group: "Kind", test: (item) => ["application_follow_up", "application_silence", "outreach_follow_up", "outreach_revisit", "outreach_possible_reply"].includes(item.kind) },
+    { id: "follow-ups", label: "Follow-ups", group: "Kind", test: (item) => ["application_follow_up", "application_silence", "outreach_follow_up", "outreach_revisit", "outreach_possible_reply", "apply_needs_you", "apply_no_email"].includes(item.kind) },
     { id: "tasks", label: "Tasks", group: "Kind", test: (item) => item.kind === "task" },
   ];
 

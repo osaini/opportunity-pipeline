@@ -41,7 +41,7 @@ from typing import Any, Callable
 
 import httpx
 
-from . import automation, internal_automation, outreach_thank_you
+from . import apply_runs, automation, internal_automation, outreach_thank_you
 from .outreach import _log, get_target, greeting_style, greets_contact, heard_back, list_targets, without_greeting
 from .outreach_contacts import SafeFetcher, apply_choice, choose_contact, find_contacts, list_candidates
 from .outreach_forms import form_due
@@ -346,6 +346,10 @@ class AutomationWorker:
     one follow-up draft, and the daily archive of silent applications. Then
     the thank-yous after a plain decline (outreach_thank_you): up to three
     written and scheduled; the scheduled sends above send them when due.
+    Then Apply for me's upkeep (apply_runs.run_worker_step), which needs no
+    switch: a student who turned it off still has an application a stopped
+    server left mid-submit finished, and once a local day their old
+    screenshots are deleted (apply_root).
     Nothing that acts runs for a paused student.
     Each pass records how it went in automation_health (automation.worker).
     """
@@ -365,8 +369,11 @@ class AutomationWorker:
         interval_seconds: float = 60.0,
         decisions_for: Callable[[sqlite3.Connection, str], Any] | None = None,
         on_reply: Callable[[sqlite3.Connection, str, str], None] | None = None,
+        apply_root: Path | None = None,
     ) -> None:
         self.platform_target = platform_target
+        # Where Apply for me keeps screenshots; only given for the real database, so nothing else is ever purged.
+        self._apply_root = apply_root
         # The InboxWatcher's reply classifier and reply hook, for a reply auto-close's fresh look finds.
         self._decisions_for = decisions_for
         self._on_reply = on_reply
@@ -445,6 +452,14 @@ class AutomationWorker:
                 except Exception as exc:  # noqa: BLE001 - recorded like any other step's failure
                     _discard_open_transaction(conn)
                     errors.setdefault(user_id, _step_error(exc))
+            try:
+                # Independent of every switch; it records its own health (apply_agent.runner) per student.
+                upkeep = apply_runs.run_worker_step(conn, apply_root=self._apply_root)
+                if upkeep["recovered"] or upkeep["purged"]:
+                    report["apply"] = upkeep
+            except Exception:  # noqa: BLE001 - the other students' passes are done; the next pass tries again
+                LOGGER.exception("Apply for me upkeep failed")
+                _discard_open_transaction(conn)
             for user_id in sorted({*desktop_users, *due_users, *users}):
                 _record(conn, user_id, WORKER_COMPONENT, ok=user_id not in errors, error=errors.get(user_id, ""))
         return report
