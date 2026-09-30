@@ -197,17 +197,41 @@
   // on the clean question would carry parent A's answer into parent B's field.
   const CONTEXT_OPENER = /^(?:if yes|if so|if no|if other|please specify|please explain|please describe|other|explain)\b/;
   const CONTEXT_IF = /^if\b/;
+  const CONTEXT_IF_ANY = /\bif (?:yes|so|no|not|other|applicable|any)\b/;
   const CONTEXT_PLEASE = /\bplease (?:explain|specify|describe|elaborate)\b/;
-  const CONTEXT_DETAILS = /\b(?:provide|give|share) (?:more |further |additional |any )?(?:details|information|context)\b/;
-  const CONTEXT_VERB = /\b(?:specify|explain|describe|elaborate)\b/;
+  // provide/give/share/include/add/list, then up to three filler words (an article, "more", "a
+  // brief", "the"), then the thing asked for.
+  const CONTEXT_DETAILS = /\b(?:provide|give|share|include|add|list)\s+(?:[a-z']+\s+){0,3}?(?:details?|information|info|context|explanations?)\b/;
+  const CONTEXT_PRONOUN = /\b(?:list|name|give|provide|share|describe|explain|specify|identify) (?:them|it|those|these|each)\b/;
+  const CONTEXT_VERB = /\b(?:explain|explanation|specify|elaborate|clarify|expand)\b/;
+  const CONTEXT_DESCRIBE = /\bdescribe\b/;
+  const CONTEXT_PHRASE = /\btell us (?:more|why)\b|\bwhy or why not\b|\bif applicable\b|\byour (?:answer|response)s? (?:above|to the previous)\b|\bprevious question\b|\bthe above\b/;
+  const CONTEXT_WH = /^(?:which|what|when|where|who|whom|whose|how|why)\b/;
+
+  // The key with a leading enumeration or bullet ("b.", "1a)", "(ii)", "-") and quote marks taken
+  // off. The key is already lower-case with punctuation turned into spaces.
+  function withoutEnumeration(key) {
+    let text = key.replace(/(^|\s)'+/g, "$1").replace(/'+(?=\s|$)/g, "").trim();
+    for (let pass = 0; pass < 2; pass += 1) {
+      const next = text.replace(/^(?:[a-z]|[ivx]{1,4}|\d{1,2}[a-z]?|[a-z]\d{1,2})\s+(?=\S)/, "");
+      if (next === text) break;
+      text = next;
+    }
+    return text;
+  }
+
   // Questions whose truth depends on the employer. A saved answer to one never carries to
   // another company, even when the row is tagged reusable.
   const CONTEXT_WORDING = /previously (?:worked|been employed|applied)|worked (?:here|for us|for this company|at)|applied (?:here|before|previously)|referr|who referred|know (?:anyone|someone)|how did you hear|where did you (?:hear|find)|current(?:ly)? (?:an )?employee/;
 
   function needsLabelKey(key) {
-    const words = key.split(" ").filter(Boolean).length;
-    return words < 3 || CONTEXT_OPENER.test(key) || CONTEXT_IF.test(key) || CONTEXT_PLEASE.test(key)
-      || CONTEXT_DETAILS.test(key) || (words < 6 && CONTEXT_VERB.test(key));
+    const text = withoutEnumeration(key);
+    const words = text.split(" ").filter(Boolean).length;
+    return key.split(" ").filter(Boolean).length < 3 || words < 3
+      || [key, text].some((item) => CONTEXT_OPENER.test(item) || CONTEXT_PLEASE.test(item))
+      || CONTEXT_IF.test(text) || CONTEXT_IF_ANY.test(text) || CONTEXT_DETAILS.test(text) || CONTEXT_PRONOUN.test(text)
+      || CONTEXT_PHRASE.test(text) || (words < 8 && CONTEXT_VERB.test(text)) || (words < 6 && CONTEXT_DESCRIBE.test(text))
+      || (words < 6 && CONTEXT_WH.test(text));
   }
 
   function contextDependent(key) {
@@ -253,28 +277,35 @@
     return repeated;
   }
 
-  // A clean-question match is exact only for a row saved at this company, or tagged reusable
-  // (never for a context-dependent question). An answer saved at another employer is never
-  // assumed true here.
-  function mayUseAtCompany(entry, cleanKey, company) {
+  // A saved answer is exact (0.9, pre-tickable) only for a row saved at this company, or tagged
+  // reusable when neither the field's question nor the row's key is context-dependent. It holds
+  // for every tier: the clean question, the whole label, and rows saved before the clean
+  // question existed. An answer saved at another employer is never assumed true here, and a row
+  // with no company is exact only when it is reusable.
+  function mayUseAtCompany(entry, keys, company) {
     if (company && normalizedQuestion(entry.company || "") === company) return true;
     const reusable = (entry.tags || []).some((tag) => String(tag).toLowerCase() === "reusable");
-    return reusable && !contextDependent(cleanKey);
+    return reusable && !keys.some((key) => key && contextDependent(key));
   }
 
   // A saved question is compared with the clean question first, then with the whole label,
-  // so answers saved before the side panel kept the clean question still match exactly.
-  function matchAnswer(question, label, answers, company) {
+  // so answers saved before the side panel kept the clean question still match. `fieldQuestion`
+  // is the field's own question, which a radio, checkbox or opener does not pass as `question`
+  // but which still decides whether a reusable row may travel.
+  function matchAnswer(question, label, answers, company, fieldQuestion) {
     const cleanKey = questionKey(question);
     const normalizedLabel = normalizedQuestion(label);
     // No words at all (an option with no label source): nothing can be an exact match.
     if (!cleanKey && !normalizedLabel) return null;
     const companyKey = normalizedQuestion(company || "");
+    const ownKey = questionKey(fieldQuestion === undefined ? question : fieldQuestion);
+    const usable = (entry) => mayUseAtCompany(entry, [normalizedQuestion(entry.question), ownKey], companyKey);
     const cleanMatches = cleanKey && !needsLabelKey(cleanKey) ? (answers || []).filter((entry) => normalizedQuestion(entry.question) === cleanKey) : [];
-    const exact = cleanMatches.find((entry) => mayUseAtCompany(entry, cleanKey, companyKey))
-      || (answers || []).find((entry) => normalizedQuestion(entry.question) === normalizedLabel);
-    if (exact) return { entry: exact, confidence: 0.9, exact: true };
-    if (cleanMatches.length) return { entry: cleanMatches[0], confidence: 0.7, exact: false, otherCompany: true };
+    const labelMatches = normalizedLabel ? (answers || []).filter((entry) => normalizedQuestion(entry.question) === normalizedLabel) : [];
+    const exact = cleanMatches.find(usable) || labelMatches.find(usable);
+    if (exact) return { entry: exact, confidence: 0.9, exact: true, sameCompany: Boolean(companyKey) && normalizedQuestion(exact.company || "") === companyKey };
+    const elsewhere = cleanMatches[0] || labelMatches[0];
+    if (elsewhere) return { entry: elsewhere, confidence: 0.7, exact: false, otherCompany: true };
     const labelWords = new Set(normalizedLabel.split(" ").filter((word) => word.length >= 4));
     let best = null;
     let bestScore = 0;
@@ -379,12 +410,14 @@
         confidence = value !== "" ? 0.95 : 0;
         reason = value !== "" ? "Mapped from an explicit label" : "Confirmed profile value is unavailable";
       } else {
-        const match = matchAnswer(labelKey ? "" : question, label, answers, options?.company);
+        const match = matchAnswer(labelKey ? "" : question, label, answers, options?.company, question);
         if (match) {
           value = String(match.entry.answer || "");
           provenance = `answer_library:${match.entry.id}`;
           confidence = match.confidence;
-          reason = match.exact ? "Exact saved-question match; verify before filling"
+          reason = match.exact
+            ? (match.sameCompany ? "Same question saved for this company; verify before filling"
+              : "Same question, saved as reusable; verify before filling")
             : match.otherCompany ? "Saved for another company; direct review required"
               : "Similar saved question; direct review required";
         }

@@ -531,12 +531,12 @@ tests.saved_clean_question_matches_exactly_and_legacy_label_rows_still_do = () =
   const exact = loadContentScript(page).scan(profile, [clean], "Acme Robotics").fields[0];
   assert.equal(exact.provenance, "answer_library:clean-1");
   assert.equal(exact.confidence, 0.9);
-  assert.match(exact.reason, /Exact saved-question match/);
+  assert.equal(exact.reason, "Same question saved for this company; verify before filling");
   assert.equal(exact.proposed_value, "Because I like the mission.");
 
   // A row saved before the side panel kept the clean question holds the whole label.
-  const legacy = { id: "legacy-1", question: field.label, answer: "Legacy answer." };
-  const old = loadContentScript(page).scan(profile, [legacy]).fields[0];
+  const legacy = { id: "legacy-1", question: field.label, answer: "Legacy answer.", company: "Acme Robotics" };
+  const old = loadContentScript(page).scan(profile, [legacy], "Acme Robotics").fields[0];
   assert.equal(old.provenance, "answer_library:legacy-1");
   assert.equal(old.confidence, 0.9);
 
@@ -549,7 +549,7 @@ tests.saved_clean_question_matches_exactly_and_legacy_label_rows_still_do = () =
   const carried = loadContentScript(other).scan(profile, [legacy, clean], "Acme Robotics").fields[0];
   assert.equal(carried.provenance, "answer_library:clean-1");
   assert.equal(carried.confidence, 0.9);
-  const notCarried = loadContentScript(other).scan(profile, [legacy]).fields[0];
+  const notCarried = loadContentScript(other).scan(profile, [legacy], "Acme Robotics").fields[0];
   assert.notEqual(notCarried.confidence, 0.9, "a label-keyed row is not an exact match on another posting");
 };
 
@@ -627,7 +627,7 @@ tests.radio_and_checkbox_options_are_never_the_question = () => {
   for (const id of ["yes_b", "yes_c", "agree_b"]) {
     const field = fieldById(scan, id);
     assert.notEqual(field.confidence, 0.9, `${id}: an option's text is not an exact question match`);
-    assert.doesNotMatch(field.reason, /Exact saved-question/, id);
+    assert.doesNotMatch(field.reason, /Same question/, id);
   }
   // A Yes/No group that asks about sponsorship is sensitive, so it is never proposed.
   const sponsor = fieldById(scan, "yes_a");
@@ -696,12 +696,12 @@ tests.openers_and_short_keys_never_match_another_parent_question = () => {
   for (const company of ["Acme Robotics", "Orbit Systems"]) {
     const scan = loadContentScript(page).scan(profile, rows, company);
     const one = fieldById(scan, "question_601");
-    assert.equal(one.confidence, 0.9, "the field it was saved from");
+    assert.equal(one.confidence, company === "Acme Robotics" ? 0.9 : 0.7, `the field it was saved from, at ${company}`);
     assert.equal(one.provenance, "answer_library:i");
     for (const id of ["question_602", "question_701"]) {
       const other = fieldById(scan, id);
       assert.notEqual(other.confidence, 0.9, `${id} at ${company}: another parent question is not an exact match`);
-      assert.doesNotMatch(other.reason, /Exact saved-question/, id);
+      assert.doesNotMatch(other.reason, /Same question/, id);
     }
     assert.equal(fieldById(scan, "question_700").provenance, "answer_library:o");
   }
@@ -739,11 +739,11 @@ tests.follow_up_wordings_are_never_exact_across_parent_questions = () => {
     const rows = [{ id: "sv", question: a.answer_key, answer: "Parent A answer", company: "Acme Robotics" }];
     for (const company of ["Acme Robotics", "Orbit Systems"]) {
       const scan = loadContentScript(page).scan(profile, rows, company);
-      assert.equal(fieldById(scan, "question_611").confidence, 0.9, `${wording}: the field it was saved from`);
+      assert.equal(fieldById(scan, "question_611").confidence, company === "Acme Robotics" ? 0.9 : 0.7, `${wording}: the field it was saved from, at ${company}`);
       const other = fieldById(scan, "question_612");
       assert.notEqual(other.confidence, 0.9, `${wording} at ${company}: the second field is not exact`);
       assert.equal(preTicked(scan, "question_612"), false, `${wording} at ${company}: the second field is not pre-ticked`);
-      assert.doesNotMatch(other.reason, /Exact saved-question/, wording);
+      assert.doesNotMatch(other.reason, /Same question/, wording);
     }
     // A later posting: the same wording under a different parent question, different name and id.
     const later = pageOf({ tag: "textarea", id: "question_9001", name: "question_9001", label: wording });
@@ -754,6 +754,96 @@ tests.follow_up_wordings_are_never_exact_across_parent_questions = () => {
   const plain = pageOf({ tag: "textarea", id: "q1", name: "question_1", label: "Tell us what you would like to learn" });
   const rows = [{ id: "l", question: "Tell us what you would like to learn", answer: "Controls", company: "Acme Robotics" }];
   assert.equal(fieldById(loadContentScript(plain).scan(profile, rows, "Acme Robotics"), "q1").confidence, 0.9);
+};
+
+tests.exact_label_and_legacy_rows_need_the_company_too = () => {
+  const only = (scan) => scan.fields[0];
+  const boards = (...controls) => ({ hostname: "boards.greenhouse.io", url: "https://boards.greenhouse.io/acme/jobs/1", controls });
+  // Repro (a): a Greenhouse textarea whose question is a follow-up or company-specific wording is
+  // saved on its per-posting label (which carries the name and id).
+  for (const wording of ["Describe your interest in Acme", "Please provide more details"]) {
+    const id = "job_application_answers_attributes_3_text_value";
+    const page = boards({ tag: "textarea", id, name: "job_application[answers_attributes][3][text_value]", label: wording });
+    const saved = fieldById(loadContentScript(page).scan(profile, [], "Acme Robotics"), id);
+    assert.equal(saved.answer_key, saved.label, `${wording}: saved on the per-posting label`);
+    const rows = [{ id: "sv", question: saved.answer_key, answer: "Acme answer", company: "Acme Robotics" }];
+    const home = fieldById(loadContentScript(page).scan(profile, rows, "Acme Robotics"), id);
+    assert.equal(home.confidence, 0.9, `${wording}: still exact at the company it was saved for`);
+    for (const company of ["Orbit Systems", "", undefined]) {
+      const scan = loadContentScript(page).scan(profile, rows, company);
+      const away = fieldById(scan, id);
+      assert.notEqual(away.confidence, 0.9, `${wording} at ${JSON.stringify(company)}: a label-keyed row is not exact at another company`);
+      assert.equal(preTicked(scan, id), false, `${wording} at ${JSON.stringify(company)}: not pre-ticked`);
+    }
+    const foreign = fieldById(loadContentScript(page).scan(profile, rows, "Orbit Systems"), id);
+    assert.equal(foreign.confidence, 0.7);
+    assert.match(foreign.reason, /another company/);
+    // Reusable never carries a follow-up.
+    const reusable = [{ ...rows[0], tags: ["reusable"] }];
+    assert.notEqual(fieldById(loadContentScript(page).scan(profile, reusable, "Orbit Systems"), id).confidence, 0.9, `${wording}: reusable does not carry a follow-up`);
+  }
+  // Repro (b): a field with no name or id, whose label is its question, and a row on those words.
+  const bare = pageOf({ tag: "textarea", wrapped: true, label: "Why do you want to work here?" });
+  assert.equal(only(loadContentScript(bare).scan(profile, [], "Acme Robotics")).answer_key, "Why do you want to work here?", "the label is the question and there is no name or id");
+  const row = { id: "lib", question: "Why do you want to work here?", answer: "The mission.", company: "Acme Robotics" };
+  assert.equal(only(loadContentScript(bare).scan(profile, [row], "Acme Robotics")).confidence, 0.9);
+  const orbit = only(loadContentScript(bare).scan(profile, [row], "Orbit Systems"));
+  assert.equal(orbit.confidence, 0.7, "the same words saved at another company are not exact");
+  assert.match(orbit.reason, /another company/);
+  assert.equal(only(loadContentScript(bare).scan(profile, [{ ...row, company: "" }], "Orbit Systems")).confidence, 0.7, "no company and not reusable");
+  assert.equal(only(loadContentScript(bare).scan(profile, [{ ...row, company: "", tags: ["reusable"] }], "Orbit Systems")).confidence, 0.9, "no company but reusable");
+  assert.equal(only(loadContentScript(bare).scan(profile, [{ ...row, tags: ["reusable"] }], "Orbit Systems")).confidence, 0.9, "reusable at another company");
+  // A legacy row on the whole label: exact at its own company (spec 12.5), not at another.
+  const page = pageOf({ tag: "textarea", id: "question_4000000101", name: "question_4000000101", label: "Why do you want to work here? *" });
+  const label = loadContentScript(page).scan(profile, [], "Acme Robotics").fields[0].label;
+  const legacy = { id: "legacy", question: label, answer: "Legacy answer.", company: "Acme Robotics" };
+  assert.equal(only(loadContentScript(page).scan(profile, [legacy], "Acme Robotics")).confidence, 0.9);
+  assert.equal(only(loadContentScript(page).scan(profile, [legacy], "Orbit Systems")).confidence, 0.7);
+  assert.equal(only(loadContentScript(page).scan(profile, [{ ...legacy, company: "" }], "Acme Robotics")).confidence, 0.7, "a legacy row with no company is not exact");
+  assert.equal(only(loadContentScript(page).scan(profile, [{ ...legacy, company: "" }])).confidence, 0.7);
+};
+
+const FOLLOW_UPS = [
+  "Please provide more detail", "Please provide additional detail", "Please provide an explanation", "Please provide a brief explanation",
+  "Please provide the details", "Please share the details", "Please include details", "Provide more info", "Why or why not?",
+  "Please tell us more", "Tell us more about your answer above", "Tell us why", "Please clarify your answer", "Please expand on your answer",
+  "Please list them", "Which company was it?", "What was the reason?", "Details (if any)", "Additional details (if applicable)",
+  "b. If yes, what was your role?", "1a) If so, when?", "'If other' - list the dates",
+  "(ii) Please specify", "- Explain your answer", "When?", "Which one?", "Tell us more about it", "Please give more context",
+];
+
+tests.every_reviewed_follow_up_wording_is_saved_on_its_own_label = () => {
+  for (const wording of FOLLOW_UPS) {
+    const at = (name) => pageOf({ tag: "textarea", id: name, name, label: wording });
+    const first = loadContentScript(at("question_71")).scan(profile, [], "Acme Robotics").fields[0];
+    assert.notEqual(first.answer_key, first.question, `${wording}: is a follow-up, so it is keyed on its per-posting label`);
+    // The side panel saves answer_key from the field under one parent question.
+    const rows = [{ id: "sv", question: first.answer_key, answer: "Parent A answer", company: "Acme Robotics" }];
+    // The same words under a different parent (another field, another name and id) at the same company.
+    const other = loadContentScript(at("question_72")).scan(profile, rows, "Acme Robotics");
+    assert.notEqual(other.fields[0].confidence, 0.9, `${wording}: not exact on a different field at the same company`);
+    assert.equal(preTicked(other, "question_72"), false, `${wording}: not pre-ticked on a different field`);
+    // A row saved on the bare wording (an older panel, or by hand) is no better.
+    const bare = [{ id: "bare", question: wording, answer: "bare", company: "Acme Robotics" }];
+    assert.notEqual(loadContentScript(at("question_72")).scan(profile, bare, "Acme Robotics").fields[0].confidence, 0.9, `${wording}: a bare row is not exact`);
+  }
+};
+
+tests.standalone_questions_stay_exact_at_their_company = () => {
+  for (const question of ["Why do you want to work here?", "Why are you interested in this role?", "Tell us about yourself", "Describe a time you worked on a team"]) {
+    const at = (name) => pageOf({ tag: "textarea", id: name, name, label: question });
+    const first = loadContentScript(at("question_81")).scan(profile, [], "Acme Robotics").fields[0];
+    assert.equal(first.answer_key, first.question, `${question}: a clean question`);
+    const rows = [{ id: "sv", question: first.answer_key, answer: "Answer", company: "Acme Robotics" }];
+    const later = loadContentScript(at("question_82")).scan(profile, rows, "Acme Robotics").fields[0];
+    assert.equal(later.confidence, 0.9, `${question}: exact on a later posting at the same company`);
+    assert.equal(later.reason, "Same question saved for this company; verify before filling");
+    const away = loadContentScript(at("question_82")).scan(profile, rows, "Orbit Systems").fields[0];
+    assert.equal(away.confidence, 0.7, `${question}: not exact at another company`);
+    const reusable = loadContentScript(at("question_82")).scan(profile, [{ ...rows[0], tags: ["reusable"] }], "Orbit Systems").fields[0];
+    assert.equal(reusable.confidence, 0.9);
+    assert.equal(reusable.reason, "Same question, saved as reusable; verify before filling");
+  }
 };
 
 tests.a_question_shared_by_two_fields_never_matches_on_the_clean_question = () => {
@@ -832,11 +922,14 @@ tests.checkbox_and_radio_siblings_never_share_a_saved_answer = () => {
       const rows = [{ id: "py", question: py.answer_key, answer, company: "Acme Robotics", tags }];
       for (const company of ["Acme Robotics", "Orbit Systems"]) {
         const scan = loadContentScript(page).scan(profile, rows, company);
-        assert.equal(fieldById(scan, "lang_py").confidence, 0.9, "the option it was saved from");
+        // Exact at the company it was saved for, or anywhere when reusable and its question is not
+        // context-dependent; otherwise shown, not exact.
+        const travels = company === "Acme Robotics" || tags.length > 0;
+        assert.equal(fieldById(scan, "lang_py").confidence, travels ? 0.9 : 0.7, `the option it was saved from (${company}, ${tags})`);
         for (const id of ["lang_java", "lang_c", "rel_yes", "rel_no"]) {
           const sibling = fieldById(scan, id);
           assert.notEqual(sibling.confidence, 0.9, `${id} (${answer}, ${company}) is not an exact match`);
-          assert.doesNotMatch(sibling.reason, /Exact saved-question/, id);
+          assert.doesNotMatch(sibling.reason, /Same question/, id);
         }
       }
     }

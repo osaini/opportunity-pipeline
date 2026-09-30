@@ -26,17 +26,28 @@ value-free progress. The extension never receives the editable profile draft.
    It refuses hidden, disabled, duplicate/ambiguous, navigation, CAPTCHA,
    consent, messaging, and submit controls. Every mutation is verified against
    the live DOM after normal `input` and `change` events.
-3. Sensitive or consequential fields remain manual. Exact, non-sensitive saved
-   questions can be checked after review; fuzzy matches are never prechecked. A
-   saved answer to an ordinary question is exact only for the company it was
-   saved at, or when it is tagged `reusable` (never for "previously worked
-   here" style questions); anywhere else it is shown as a similar match.
+3. Sensitive or consequential fields remain manual. A non-sensitive saved
+   answer whose question has the same words as the field can be checked after
+   review; fuzzy matches are never prechecked. "Exact" means the same words, not
+   that the answer is true here, so every such match is labelled "verify before
+   filling". A saved answer is exact only for the company it was saved at, or
+   when it is tagged `reusable` and the question is not one whose answer depends
+   on the employer ("previously worked here" style questions) or on the question
+   above it. That holds for every saved row, including rows saved before the
+   clean question was kept. A row with no company is exact only when it is
+   tagged `reusable`. Anywhere else the answer is shown as "Saved for another
+   company; direct review required" and is not prechecked.
    Radio and checkbox options, follow-ups that depend on the question above them
-   ("if yes, please explain", "please provide more details"), very short
-   questions, and a question that appears twice on one form are saved on the
-   field's own label, which includes its per-posting name and id. Those are
-   exact only on that same label, whatever the company, and everywhere else a
-   similar match. A field with no label text on the page cannot be saved.
+   ("if yes, please explain", "please provide more details", "which company was
+   it?"), very short questions, and a question that appears twice on one form
+   are saved on the field's own label, which includes its per-posting name and
+   id. Those are exact only on that same label, and only under the company rule
+   above; everywhere else they are a similar match. A field with no label text
+   on the page cannot be saved.
+   Known limitation: follow-up detection is wording-based. A follow-up worded
+   like a standalone question can still match an answer saved under a different
+   question at the same company. That is why every match says to verify before
+   filling.
 4. Confirmed uploaded PDF/DOCX résumés and approved generated PDFs can be
    selected explicitly. Filename, media type, size, and SHA-256 are checked
    before insertion. File bytes are never persisted by the extension.
