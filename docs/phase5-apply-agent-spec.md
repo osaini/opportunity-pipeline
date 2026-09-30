@@ -2224,6 +2224,29 @@ tied to sponsorship wording; `authori[sz]ation to work` is added.
 | (demographic section, EEOC name) Gender | eeo_gender |
 | (data_compliance) any statement | consent |
 
+#### EEOC field names, confirmed live 2026-09-29 (before M4)
+
+Read-only GETs of the public Job Board API (`boards-api.greenhouse.io/v1/boards/{board}/jobs/{id}?questions=true`),
+3 jobs each on 10 boards (8 answered; 2 tokens 404'd). **[live]**
+
+- `compliance` entries have `type: "eeoc"`. Their field names on every board that had them (6 of 6):
+  `gender`, `race`, `veteran_status`, all `multi_value_single_select`. `hispanic_ethnicity` and
+  `disability_status` did not appear as compliance field names in this sample; "Hispanic or Latino" was an
+  option of `race`. The classifier still accepts all five EEOC names (gender, race, hispanic_ethnicity,
+  veteran_status, disability_status), since the legacy form uses the other two; any other name in these
+  sections stays `"uncategorized"`.
+- Decline options differ by field and board: "Decline To Self Identify" (race, gender) and
+  "I don't wish to answer" (veteran_status). Under D5 C(i) the stored answer must match the exact option
+  label on the form (7.2 row S), so one decline entry per distinct label is needed; the "what's missing"
+  view should show the label the form offers.
+- `demographic_questions` (the newer survey) is an object `{header, description, questions}`. Each question
+  has a numeric `id`, `label`, `required`, `type`, and `answer_options` of `{id, label, free_form,
+  decline_to_answer}`. There are **no field names**, so under 7.3 step 2 every one of them is
+  `"uncategorized"` and is left for the student, including required ones labelled "Gender",
+  "Veteran Status" and "Disability Status", and optional ones such as LGBTQ+ membership.
+  **Open (for the student):** each option carries a `decline_to_answer` flag. Under D5 C(i) the app could
+  pick the flagged option for these questions too. That would be a spec change, so v1 does not do it.
+
 ### 7.4 Hard stops (never filled around)
 
 - A picture CAPTCHA or challenge; the security code (D10); a "verify your email" page after submit.
