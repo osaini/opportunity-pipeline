@@ -52,7 +52,8 @@ value-free progress. The extension never receives the editable profile draft.
    it?"), very short questions, and a question that appears twice on one form
    are saved on the field's own label plus its form name and id, so two
    different fields on one page never share a key. A field with no name and no
-   id has no such key, and its answer cannot be saved. A field with no label
+   id has no such key, and its answer cannot be saved; a row saved on its
+   wording earlier or by hand is shown there for review, never as exact. A field with no label
    text on the page cannot be saved either. These are exact only on that same
    label, and only under the company rule above; a radio or checkbox option
    row never travels to another company, even when tagged `reusable`, because

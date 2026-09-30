@@ -810,6 +810,9 @@ const FOLLOW_UPS = [
   "Please list them", "Which company was it?", "What was the reason?", "Details (if any)", "Additional details (if applicable)",
   "b. If yes, what was your role?", "1a) If so, when?", "'If other' - list the dates",
   "(ii) Please specify", "- Explain your answer", "When?", "Which one?", "Tell us more about it", "Please give more context",
+  "Q4b. Which company was it?", "Q4b. What was the reason?", "Question 3: Which company was it?", "Question 3b. When?",
+  "Part B: What was the reason?", "Step 2. When?", "1.2.3 Which company was it?", "Section 2 - When?", "No. 3 What was the reason?",
+  "Follow-up: Which company was it?", "Follow up question: When?",
 ];
 
 tests.every_reviewed_follow_up_wording_is_saved_on_its_own_label = () => {
@@ -1071,6 +1074,39 @@ tests.employer_relative_questions_never_travel_even_when_reusable = () => {
     const rows = [{ id: "r", question, answer: "Answer", company: "Acme Robotics", tags: ["reusable"] }];
     assert.equal(loadContentScript(page).scan(profile, rows, "Orbit Systems").fields[0].confidence, 0.9, question);
   }
+};
+
+tests.relative_and_family_wordings_never_travel_even_when_reusable = () => {
+  // Wordings that only the relatives / family-members alternatives catch.
+  for (const question of ["Do you have any relatives at Acme?", "Do you have family members who work here?"]) {
+    const page = pageOf({ tag: "textarea", id: "question_33", name: "question_33", label: question });
+    const rows = [{ id: "r", question, answer: "No", company: "Acme Robotics", tags: ["reusable"] }];
+    assert.notEqual(loadContentScript(page).scan(profile, rows, "Orbit Systems").fields[0].confidence, 0.9, `${question}: not exact at another company`);
+  }
+};
+
+tests.the_engine_source_has_no_stray_control_characters = () => {
+  const source = readFileSync(new URL("../../apps/extension/apply-engine.js", import.meta.url), "utf8");
+  const stray = [...source].map((ch, index) => [ch.charCodeAt(0), index]).filter(([code]) => code < 32 && code !== 9 && code !== 10 && code !== 13);
+  assert.deepEqual(stray, [], "a control byte in a regex silently disables that alternative");
+};
+
+tests.a_nameless_label_keyed_field_is_never_an_exact_match = () => {
+  // A follow-up with no name or id: its label is only its wording, which repeats under any parent.
+  const followUp = pageOf({ tag: "textarea", wrapped: true, label: "If yes, please explain" });
+  const bare = [{ id: "bare", question: "If yes, please explain", answer: "Parent A answer", company: "Acme Robotics" }];
+  const scan = loadContentScript(followUp).scan(profile, bare, "Acme Robotics");
+  assert.notEqual(scan.fields[0].confidence, 0.9, "a bare follow-up row is not exact on a nameless field");
+  // The same standalone wording twice on one form, with no names: neither copy is exact.
+  const shared = "Describe a project you are proud of";
+  const twice = pageOf({ tag: "textarea", wrapped: true, label: shared }, { tag: "textarea", wrapped: true, label: shared });
+  const clean = [{ id: "clean", question: shared, answer: "Answer", company: "Acme Robotics" }];
+  for (const field of loadContentScript(twice).scan(profile, clean, "Acme Robotics").fields) {
+    assert.notEqual(field.confidence, 0.9, "a repeated nameless question is not exact");
+  }
+  // A standalone nameless question is still exact at its company.
+  const alone = pageOf({ tag: "textarea", wrapped: true, label: shared });
+  assert.equal(loadContentScript(alone).scan(profile, clean, "Acme Robotics").fields[0].confidence, 0.9);
 };
 
 let failed = 0;

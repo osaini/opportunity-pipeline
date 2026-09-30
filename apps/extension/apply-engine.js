@@ -208,12 +208,18 @@
   const CONTEXT_PHRASE = /\btell us (?:more|why)\b|\bwhy or why not\b|\bif applicable\b|\byour (?:answer|response)s? (?:above|to the previous)\b|\bprevious question\b|\bthe above\b/;
   const CONTEXT_WH = /^(?:which|what|when|where|who|whom|whose|how|why)\b/;
 
-  // The key with a leading enumeration or bullet ("b.", "1a)", "(ii)", "-") and quote marks taken
-  // off. The key is already lower-case with punctuation turned into spaces.
+  // The key with a leading enumeration or bullet ("b.", "1a)", "(ii)", "-", "Q4b.", "Question 3:",
+  // "1.2.3", "Follow-up:") and quote marks taken off. The key is already lower-case with
+  // punctuation turned into spaces.
   function withoutEnumeration(key) {
     let text = key.replace(/(^|\s)'+/g, "$1").replace(/'+(?=\s|$)/g, "").trim();
-    for (let pass = 0; pass < 2; pass += 1) {
-      const next = text.replace(/^(?:[a-z]|[ivx]{1,4}|\d{1,2}[a-z]?|[a-z]\d{1,2})\s+(?=\S)/, "");
+    text = text.replace(/^follow ?up(?: question)?\s+(?=\S)/, "");
+    for (let pass = 0; pass < 4; pass += 1) {
+      // A numbering word with its number ("question 3", "part b", "step 2", "no 3"), then a bare
+      // number or letter ("1", "1a", "b", "iv", "q4b"); four passes cover "1 2 3".
+      const next = text
+        .replace(/^(?:question|part|step|section|item|no|number)\s+(?:\d{1,3}[a-z]?|[a-z]|[ivx]{1,4})\s+(?=\S)/, "")
+        .replace(/^(?:[a-z]|[ivx]{1,4}|\d{1,3}[a-z]?|[a-z]\d{1,3}[a-z]?)\s+(?=\S)/, "");
       if (next === text) break;
       text = next;
     }
@@ -224,7 +230,7 @@
   // smarter: a question worded some other way is not caught, and only the student not tagging it
   // reusable keeps it at one company. A saved answer to one of these never carries to another
   // company, even when the row is tagged reusable.
-  const CONTEXT_WORDING = /previously (?:worked|been employed|applied)|worked (?:here|for us|for this company|at)|applied (?:here|before|previously)|referr|who referred|know (?:anyone|someone)|how did you hear|where did you (?:hear|find)|current(?:ly)? (?:an )?employee|worked (?:for|with|at) (?:us|this|our|the company)|employed (?:by|at|with)|interviewed (?:with|at|here)|relatives?|family members?|this (?:organi[sz]ation|firm|company|employer)/;
+  const CONTEXT_WORDING = /previously (?:worked|been employed|applied)|worked (?:here|for us|for this company|at)|applied (?:here|before|previously)|referr|who referred|know (?:anyone|someone)|how did you hear|where did you (?:hear|find)|current(?:ly)? (?:an )?employee|worked (?:for|with|at) (?:us|this|our|the company)|employed (?:by|at|with)|interviewed (?:with|at|here)|relatives?\b|family members?\b|this (?:organi[sz]ation|firm|company|employer)/;
 
   function needsLabelKey(key) {
     const text = withoutEnumeration(key);
@@ -416,7 +422,11 @@
         confidence = value !== "" ? 0.95 : 0;
         reason = value !== "" ? "Mapped from an explicit label" : "Confirmed profile value is unavailable";
       } else {
-        const match = matchAnswer(labelKey ? "" : question, label, answers, options?.company, question, type);
+        let match = matchAnswer(labelKey ? "" : question, label, answers, options?.company, question, type);
+        // A label-keyed field with no name and no id has only its wording for a label, and that
+        // wording repeats under any parent question, so nothing may call it an exact match (Save
+        // refuses it for the same reason).
+        if (match?.exact && labelKey && !control.name && !control.id) match = { ...match, confidence: 0.7, exact: false, nameless: true };
         if (match) {
           value = String(match.entry.answer || "");
           provenance = `answer_library:${match.entry.id}`;
@@ -424,7 +434,8 @@
           reason = match.exact
             ? (match.sameCompany ? "Same question saved for this company; verify before filling"
               : "Same question, saved as reusable; verify before filling")
-            : match.otherCompany ? "Saved for another company; direct review required"
+            : match.nameless ? "Same words saved before, but this field has no name to tell it apart; direct review required"
+              : match.otherCompany ? "Saved for another company; direct review required"
               : "Similar saved question; direct review required";
         }
       }
