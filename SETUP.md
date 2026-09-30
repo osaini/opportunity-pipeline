@@ -316,11 +316,12 @@ themselves (rule 3). The details:
   and it retires itself once Gmail keeps answering past the date.
   Connect Gmail asks for **three** permissions: compose, read, and a third that
   Google words as "Read, compose, and send emails from your Gmail account".
-  Tell the student to **tick it**; without it the app cannot label replies.
-  The app uses it to add one label to the threads where a company replied, and
+  Tell the student to **tick it**; without it the app cannot label outreach.
+  The app uses it to add one label to every outreach thread, the emails they
+  send to companies (first emails included) and the replies, and
   nothing else: it never deletes, archives, moves, or marks mail read.
-  **Reply label step.** Ask the student what Gmail label they want on replies to
-  their outreach, or none. The default is `opportunities`; they set it under
+  **Outreach label step.** Ask the student what Gmail label they want on their
+  outreach threads, sent emails and replies, or none. The default is `opportunities`; they set it under
   Outreach → Outreach settings → "Gmail label for replies" (empty turns it off;
   letters, digits, spaces, hyphens, underscores and slashes only).
   A connection made before this existed needs one **Reconnect Gmail** to add the

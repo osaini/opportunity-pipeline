@@ -40,7 +40,7 @@ OAUTH_PROVIDERS = {
     # resume attached. gmail.compose drafts and sends. gmail.readonly lets the
     # app find and read the delivery failure notice for a send that bounced
     # (outreach_delivery.py). gmail.modify is used only to add the student's
-    # reply label to reply threads (outreach_labels.py: messages.batchModify
+    # label to outreach threads, sent mail and replies (outreach_labels.py: messages.batchModify
     # with addLabelIds, and labels.list and labels.create); nothing in the app
     # removes a label, trashes, archives or marks mail read. Not
     # gmail.metadata: with that granted, Gmail refuses to return a message's

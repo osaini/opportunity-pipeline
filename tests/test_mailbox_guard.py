@@ -40,7 +40,7 @@ class MailboxGuardTests(unittest.TestCase):
 
     def test_the_first_gmail_call_is_denied_with_where_the_pipeline_mailbox_is(self):
         reason = self.assertDenied(self.call())
-        for words in ("scripts/pipeline_mailbox.py whoami", "pipeline's mailbox", "say so and ask", "naming the mailbox", "once per session and agent"):
+        for words in ("scripts/pipeline_mailbox.py whoami", "pipeline's mailbox", "say so and ask", "naming the mailbox", "once per session and agent", "first emails included", "all three counts 0"):
             self.assertIn(words, reason)
 
     def test_a_call_in_the_same_batch_is_denied_too(self):

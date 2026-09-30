@@ -161,6 +161,22 @@ class MailboxCase(unittest.TestCase):
                              (USER, gmail_id, kind, utc_now(), label, rest[0] if rest else None, rest[1] if len(rest) > 1 else ""))
             conn.commit()
 
+    def sent_threads(self, *rows):
+        """Sent-thread rows: (thread_id, label_name[, labeled_at[, label_note]]), as outreach_label_threads holds them."""
+        with closing(connect_product(self.db_path)) as conn:
+            for thread_id, label, *rest in rows:
+                conn.execute("INSERT INTO outreach_label_threads(user_id, thread_id, source, found_at, label_name, labeled_at, label_note) VALUES(?, ?, 'sent', ?, ?, ?, ?)",
+                             (USER, thread_id, utc_now(), label, rest[0] if rest else None, rest[1] if len(rest) > 1 else ""))
+            conn.commit()
+
+    def company(self, target_id, status="sent", searched=False):
+        with closing(connect_product(self.db_path)) as conn:
+            conn.execute("INSERT INTO outreach_targets(id, user_id, company, status, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)",
+                         (target_id, USER, f"Bovi {target_id}", status, utc_now(), utc_now()))
+            if searched:
+                conn.execute("INSERT INTO outreach_label_searches(user_id, target_id, searched_at) VALUES(?, ?, ?)", (USER, target_id, utc_now()))
+            conn.commit()
+
     def run_script(self, *args, root=True):
         argv = (["--root", str(self.root)] if root else []) + list(args)
         out, err = io.StringIO(), io.StringIO()
@@ -186,25 +202,26 @@ class WhoamiTests(MailboxCase):
         self.assertIn("Connection status: connected", out)
         self.assertIn("Permissions: compose, read, label (as recorded by the app)", out)
         self.assertIn('Reply label: opportunities; search "label:opportunities"', out)
-        self.assertIn("Captured replies not labelled yet: 2\n", out)
-        self.assertIn("Captured replies the app could not label: 0\n", out)
-        self.assertIn("Rely on label: alone only when both are 0; otherwise also search by from:/subject:", out)
+        self.assertIn("Outreach threads not labelled yet: 2\n", out)
+        self.assertIn("Outreach threads the app could not label: 0\n", out)
+        self.assertIn("Companies not yet searched for sent outreach: 0\n", out)
+        self.assertIn("Rely on label: alone only when all three are 0; otherwise also search by from:/to:/subject:", out)
         self.assertTrue(out.rstrip().endswith("Gmail tools your AI harness provides may be signed into another account. Use this script for pipeline mail."))
 
     def test_a_reply_gmail_would_not_label_is_counted_apart_so_label_alone_is_not_trusted(self):
         # Settled without a label: the name is written and the time is not; the note says why.
         self.replies(("m1", "reply", "opportunities", None, "failed"), ("m2", "reply", "opportunities", utc_now()), ("m3", "possible", "opportunities", None, "failed"))
         _code, out, _err = self.run_script("whoami")
-        self.assertIn("Captured replies not labelled yet: 0\n", out)
-        self.assertIn("Captured replies the app could not label: 1\n", out)
-        self.assertIn("Rely on label: alone only when both are 0; otherwise also search by from:/subject:", out)
+        self.assertIn("Outreach threads not labelled yet: 0\n", out)
+        self.assertIn("Outreach threads the app could not label: 1\n", out)
+        self.assertIn("Rely on label: alone only when all three are 0; otherwise also search by from:/to:/subject:", out)
 
     def test_a_reply_deleted_for_good_does_not_stop_label_from_being_trusted(self):
         # 'gone': Gmail no longer has the message or thread, so no search can miss it.
         self.replies(("m1", "reply", "opportunities", None, "gone"), ("m2", "reply", "opportunities", utc_now()))
         _code, out, _err = self.run_script("whoami")
-        self.assertIn("Captured replies not labelled yet: 0\n", out)
-        self.assertIn("Captured replies the app could not label: 0\n", out)
+        self.assertIn("Outreach threads not labelled yet: 0\n", out)
+        self.assertIn("Outreach threads the app could not label: 0\n", out)
 
     def test_a_two_word_label_is_searched_in_its_search_form(self):
         with closing(connect_product(self.db_path)) as conn:
@@ -212,7 +229,7 @@ class WhoamiTests(MailboxCase):
         self.replies(("m1", "reply", "opportunities"))
         _code, out, _err = self.run_script("whoami")
         self.assertIn('Reply label: Job Replies; search "label:job-replies"', out)
-        self.assertIn("Captured replies not labelled yet: 1", out)
+        self.assertIn("Outreach threads not labelled yet: 1", out)
 
     def test_an_off_label_is_said_and_nothing_is_counted(self):
         with closing(connect_product(self.db_path)) as conn:
@@ -243,12 +260,50 @@ class WhoamiTests(MailboxCase):
                 code, out, err = self.run_script("whoami")
                 self.assertEqual((code, err), (0, ""))
                 self.assertIn('Reply label: opportunities; search "label:opportunities"', out)
-                self.assertIn("Captured replies not labelled yet: not known: this database predates reply labels", out)
+                self.assertIn("Outreach threads not labelled yet: not known: this database predates labels on outreach threads", out)
                 self.assertNotIn("could not label", out)
                 self.assertTrue(out.rstrip().endswith("Use this script for pipeline mail."))
                 with closing(connect_product(self.db_path)) as conn:
                     conn.execute(f"ALTER TABLE outreach_inbox_messages ADD COLUMN {column} " + ("TEXT" if column == "labeled_at" else "TEXT NOT NULL DEFAULT ''"))
                     conn.commit()
+
+    def test_sent_threads_are_counted_with_the_replies_and_a_company_not_yet_searched_is_a_third_figure(self):
+        self.replies(("m1", "reply", ""), ("m2", "reply", "opportunities", None, "failed"))
+        self.sent_threads(("s1", ""), ("s2", "other-name"), ("s3", "opportunities", utc_now()), ("s4", "opportunities", None, "failed"),
+                          ("s5", "opportunities", None, "gone"))
+        self.company("c-searched", searched=True)
+        self.company("c-open-1")
+        self.company("c-open-2", status="replied")
+        self.company("c-unsent", status="drafted")
+        _code, out, _err = self.run_script("whoami")
+        self.assertIn("Outreach threads not labelled yet: 3\n", out, "one reply and two sent threads")
+        self.assertIn("Outreach threads the app could not label: 2\n", out, "a failed reply and a failed sent thread; a gone one is not counted")
+        self.assertIn("Companies not yet searched for sent outreach: 2\n", out, "gone out and not searched; a draft is not")
+        self.assertIn("Rely on label: alone only when all three are 0; otherwise also search by from:/to:/subject:", out)
+
+    def test_a_company_whose_sent_mail_is_searched_and_threads_all_labelled_says_all_three_are_0(self):
+        self.replies(("m1", "reply", "opportunities", utc_now()))
+        self.sent_threads(("s1", "opportunities", utc_now()))
+        self.company("c-1", searched=True)
+        _code, out, _err = self.run_script("whoami")
+        for line in ("Outreach threads not labelled yet: 0\n", "Outreach threads the app could not label: 0\n",
+                     "Companies not yet searched for sent outreach: 0\n"):
+            self.assertIn(line, out)
+
+    def test_a_database_before_0044_says_it_is_not_known_instead_of_failing(self):
+        with closing(connect_product(self.db_path)) as conn:
+            conn.execute("DROP TABLE outreach_label_threads")
+            conn.execute("DROP TABLE outreach_label_searches")
+            conn.execute("DELETE FROM schema_migrations WHERE name LIKE '0044%'")
+            conn.commit()
+        self.replies(("m1", "reply", ""))
+        code, out, err = self.run_script("whoami")
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn('Reply label: opportunities; search "label:opportunities"', out)
+        self.assertIn("Outreach threads not labelled yet: not known: this database predates labels on outreach threads", out)
+        self.assertNotIn("could not label", out)
+        self.assertNotIn("not yet searched", out)
+        self.assertTrue(out.rstrip().endswith("Use this script for pipeline mail."))
 
     def test_a_database_migrated_only_to_0042_still_answers(self):
         with closing(connect_product(self.db_path)) as conn:
@@ -262,7 +317,7 @@ class WhoamiTests(MailboxCase):
         code, out, err = self.run_script("whoami")
         self.assertEqual((code, err), (0, ""))
         self.assertIn(f"Pipeline mailbox: {ACCOUNT}", out)
-        self.assertIn("Captured replies not labelled yet: not known: this database predates reply labels", out)
+        self.assertIn("Outreach threads not labelled yet: not known: this database predates labels on outreach threads", out)
 
 
 class ReadOnlyTests(MailboxCase):

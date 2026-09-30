@@ -1,23 +1,34 @@
-"""A Gmail label on every thread where someone at a company replied.
+"""A Gmail label on every outreach thread: the emails the student sent, and the replies.
 
-The student's replies are captured in outreach_inbox_messages. This step gives
-each confirmed reply's whole thread (kind 'reply', whatever the via, the
-student's own emails in it included) one label in the student's own mailbox,
-``opportunities`` unless they chose another name. Replies captured before the
-step existed are labelled too, 25 threads a pass. A message that joins a
-labelled thread later (the thank-you the app sends, the student's own answer)
-gets the label on a later pass, which is why a "sweep" lists mail from the last
-few minutes and labels the labelled threads it finds. What the sweep has read is kept
-in SWEEP_SETTING: the label it is for, the time it has read up to ("after") and,
-when a listing was too long for one pass, "recheck", the labelled thread it has
-re-read as far as, since the messages it did not list may belong to any of them.
+Two kinds of thread carry it, in the student's own mailbox, ``opportunities``
+unless they chose another name. **Reply threads**: the replies captured in
+outreach_inbox_messages (kind 'reply', whatever the via) with the whole thread,
+the student's own emails in it included. **Sent threads**: every thread that
+holds an outreach email the student sent, whether or not anyone answered,
+recorded in outreach_label_threads. Those come from the app's own sends (the
+threads its gmail_sent and thank_you_sent events name), from a one-time search
+of Sent for each company that has gone out (its addresses and the subjects only
+it uses, from 30 days before it was added, and again after the company changes;
+the student often sent from Gmail after the app made a draft), and from the
+sweep below. Threads found before the step existed are labelled too, 25 threads a
+pass, and 10 companies are searched a pass. A message that joins a labelled
+thread later (the thank-you the app sends, the student's own answer) gets the
+label on a later pass, which is why a "sweep" lists mail from the last few
+minutes and labels the labelled threads it finds; it also lists recent Sent mail
+and labels the threads of any that went to an outreach address or carries an
+outreach subject. What the sweep has read is kept in SWEEP_SETTING: the label it
+is for, the time it has read up to ("after") and, when a listing was too long
+for one pass, "recheck", the labelled thread it has re-read as far as, since the
+messages it did not list may belong to any of them. A Sent listing too long for
+one pass makes every company be searched again, and so does a different label name.
 
 Only ever an add, inside the student's own mailbox: the app sends nothing,
 deletes nothing, archives or moves nothing, marks nothing read, and never
 removes a label (messages.batchModify is only ever sent ``addLabelIds``). Possible
-replies, bounces, automatic replies and application mail are never labelled.
-Labels live on messages, not threads, so a thread's later messages do not
-inherit it; drafts cannot carry one and are left out.
+replies, bounces, automatic replies and application mail are never labelled, and
+neither is a delivery notice (a failure or a delay) inside a labelled thread. Labels live on
+messages, not threads, so a thread's later messages do not inherit it; drafts
+cannot carry one and are left out.
 
 The label needs gmail.modify, which a connection made before this step lacks:
 until the student reconnects Gmail the state is "needs_label_permission" and no
@@ -38,18 +49,25 @@ import sqlite3
 import threading
 import unicodedata
 from contextlib import ExitStack
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from email.utils import getaddresses
 from typing import Any
 from urllib.parse import quote
 
 import httpx
 
 from . import automation
+from .mail_trust import FREEMAIL, registrable_domain
+from .outreach import UNSENT_STATUSES
+from .outreach_delivery import _DAEMONS, _is_delivery_notice
 from .outreach_drafting import sender_account
 from .outreach_gmail import (
+    DRAFT_EVENT,
     MODIFY_SCOPE,
     PROVIDER,
+    SENT_EVENT,
     SERVER_ERRORS,
+    THANK_YOU_SENT_EVENT,
     ClientFactory,
     GmailAuthError,
     GmailThrottled,
@@ -71,6 +89,15 @@ SWEEP_SETTING = "outreach_gmail_label_sweep"
 HEALTH_COMPONENT = "inbox.labels"
 # Threads asked of Gmail in one pass, so a backlog of replies takes a few passes, not one long one.
 PER_PASS = 25
+# Companies whose Sent mail is searched in one pass, and what one search may read and keep: pages of results, pages
+# per search and threads per company.
+SEARCHES_PER_PASS = 10
+SEARCH_RESULTS = 100
+SEARCH_PAGES = 5
+SEARCH_THREADS = 100
+# A company's Sent search starts this long before the day it was added: the student sometimes writes to a company
+# before adding it here.
+HISTORY_LEAD_DAYS = 30
 SWEEP_PAGES = 5
 # Gmail's limit for one messages.batchModify.
 BATCH_LIMIT = 1000
@@ -83,6 +110,15 @@ _SYSTEM_NAMES = frozenset({
     "SCHEDULED", "SNOOZED", "ALL MAIL", "OUTBOX",
 })
 _IN_CHUNKS = 500
+# A subject shorter than this is too generic to tell outreach from other mail.
+MIN_SUBJECT = 12
+# The longest subject phrase a Sent search carries.
+SUBJECT_PHRASE = 100
+# What the label step reads of a message's thread: enough to tell a delivery failure notice from mail.
+_THREAD_HEADERS = ("From", "Subject", "Content-Type", "X-Failed-Recipients")
+_ADDRESS_PART = r"[^\s@\"'(){}<>,;:\\]+"
+_ADDRESS = re.compile(rf"^{_ADDRESS_PART}@{_ADDRESS_PART}\.{_ADDRESS_PART}$")
+_REPLY_PREFIX = re.compile(r"^(?:re|fwd?)\s*:\s*", re.IGNORECASE)
 
 # The label's Gmail id, by (student, mailbox, name), so a pass asks Gmail for it once. A label id belongs to one
 # mailbox and can be another label's in a different one, so a reconnect to another account never reuses it.
@@ -109,10 +145,14 @@ def set_label_name(conn: sqlite3.Connection, user_id: str, value: str | None) ->
     """Save the student's label name, in its own transaction, and return the name now in effect.
 
     None goes back to the default, '' turns labelling off. A ValueError says in a sentence what Gmail would refuse.
+    A different name in effect makes every company that has gone out be searched again: the Sent mail written since the
+    last name's sweep last ran (labelling off, a rename) was never listed under this one.
     """
+    before = label_name(conn, user_id)
     if value is None:
         with conn:
             conn.execute("DELETE FROM user_settings WHERE user_id=? AND key=?", (user_id, SETTING))
+            _search_again(conn, user_id, before, DEFAULT_LABEL)
         return DEFAULT_LABEL
     name = " ".join(value.split())
     if name:
@@ -129,7 +169,14 @@ def set_label_name(conn: sqlite3.Connection, user_id: str, value: str | None) ->
             raise ValueError(f"Gmail keeps the name {name} for itself; choose another label name")
     with conn:
         automation._put_setting(conn, user_id, SETTING, name, utc_stamp())
+        _search_again(conn, user_id, before, name)
     return name
+
+
+def _search_again(conn: sqlite3.Connection, user_id: str, before: str, name: str) -> None:
+    """Forget which companies' Sent mail was searched when labelling starts under a name other than the last one. Opens no transaction."""
+    if name and name != before:
+        conn.execute("DELETE FROM outreach_label_searches WHERE user_id=?", (user_id,))
 
 
 def utc_stamp() -> str:
@@ -167,7 +214,9 @@ def _granted(row: sqlite3.Row) -> list[str]:
 def label_replies(
     conn: sqlite3.Connection, *, user_id: str, client_factory: ClientFactory, now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Label the threads of confirmed replies, and of the messages that joined them since. See the module docstring.
+    """Label every outreach thread: what the student sent, the confirmed replies, and what joined them since.
+
+    See the module docstring; the name is the one the watcher already calls.
 
     ``state`` is "ok", "not_connected", "needs_reconnect", "throttled",
     "unreachable", "wrong_account", "needs_label_permission" (the connection
@@ -228,33 +277,265 @@ def _run(conn: sqlite3.Connection, user_id: str, client_factory: ClientFactory, 
             return {"state": "ok", "detail": {"labels": "off"}}
         if automation.paused(conn, user_id):
             return {"state": "ok", "detail": {"labels": "paused"}}
+        _record_sent_threads(conn, user_id, now)
         pending = [dict(item) for item in conn.execute(
             "SELECT gmail_id, thread_id, label_name FROM outreach_inbox_messages "
             "WHERE user_id=? AND kind='reply' AND label_name<>? ORDER BY received_at, gmail_id LIMIT ?",
             (user_id, name, PER_PASS + 1),
         ).fetchall()]
-        if not pending and not _labelled_threads(conn, user_id, name):
+        work = bool(pending) or bool(_sent_rows(conn, user_id, name, 1)) or bool(_search_candidates(conn, user_id, 1))
+        if not work and not _labelled_threads(conn, user_id, name) and not _sweeping_sent(conn, user_id, name, known):
             return {"state": "ok", "detail": {"labelled": 0}}
         if MODIFY_SCOPE not in granted:
-            return {"state": "needs_label_permission"} if pending else {"state": "ok", "detail": {"labelled": 0}}
+            return {"state": "needs_label_permission"} if work else {"state": "ok", "detail": {"labelled": 0}}
         _discard(conn)
         return _label(conn, connection(), user_id, known, name, pending, now)
 
 
 def _labelled_threads(conn: sqlite3.Connection, user_id: str, name: str) -> list[str]:
-    """The threads the app has already labelled under this name, in a stable order."""
+    """The threads the app has already labelled under this name (replies and sent mail), in a stable order."""
     return [str(item[0]) for item in conn.execute(
-        "SELECT DISTINCT thread_id FROM outreach_inbox_messages "
-        "WHERE user_id=? AND kind='reply' AND label_name=? AND labeled_at IS NOT NULL AND thread_id<>'' ORDER BY thread_id",
-        (user_id, name),
+        "SELECT thread_id FROM outreach_inbox_messages "
+        "WHERE user_id=? AND kind='reply' AND label_name=? AND labeled_at IS NOT NULL AND thread_id<>'' "
+        "UNION SELECT thread_id FROM outreach_label_threads WHERE user_id=? AND label_name=? AND labeled_at IS NOT NULL "
+        "ORDER BY thread_id",
+        (user_id, name, user_id, name),
     ).fetchall()]
+
+
+# --- Sent threads: which they are, and what marks an email as outreach ---------------------
+
+
+def _record_sent_threads(conn: sqlite3.Connection, user_id: str, now: datetime) -> None:
+    """Note the thread of every email the app itself sent (a first email, a follow-up, a thank-you). No Gmail call."""
+    found: dict[str, str] = {}
+    for row in conn.execute(
+        "SELECT target_id, detail FROM outreach_events WHERE user_id=? AND event_type IN (?, ?) ORDER BY created_at, id",
+        (user_id, SENT_EVENT, THANK_YOU_SENT_EVENT),
+    ).fetchall():
+        thread_id = str(_json_dict(row["detail"]).get("thread_id") or "").strip()
+        if thread_id:
+            found.setdefault(thread_id, str(row["target_id"]))
+    if not found:
+        return
+    known = {str(item[0]) for item in conn.execute(
+        "SELECT thread_id FROM outreach_label_threads WHERE user_id=?", (user_id,),
+    ).fetchall()}
+    fresh = [(thread_id, target_id) for thread_id, target_id in found.items() if thread_id not in known]
+    if fresh:
+        with conn:
+            for thread_id, target_id in fresh:
+                _add_thread(conn, user_id, thread_id, target_id, "sent", now)
+
+
+def _add_thread(conn: sqlite3.Connection, user_id: str, thread_id: str, target_id: str, source: str, now: datetime) -> None:
+    """Note a thread that holds outreach the student sent, unless it is noted already. Opens no transaction."""
+    conn.execute(
+        "INSERT INTO outreach_label_threads(user_id, thread_id, target_id, source, found_at) VALUES(?, ?, ?, ?, ?) "
+        "ON CONFLICT(user_id, thread_id) DO NOTHING",
+        (user_id, thread_id, target_id, source, now.isoformat(timespec="microseconds")),
+    )
+
+
+def _sent_rows(conn: sqlite3.Connection, user_id: str, name: str, limit: int) -> list[dict[str, Any]]:
+    """Sent threads not yet settled under this name, oldest found first."""
+    return [dict(item) for item in conn.execute(
+        "SELECT thread_id, target_id FROM outreach_label_threads WHERE user_id=? AND label_name<>? "
+        "ORDER BY found_at, thread_id LIMIT ?",
+        (user_id, name, limit),
+    ).fetchall()]
+
+
+def _json_dict(text: Any) -> dict[str, Any]:
+    try:
+        value = json.loads(text or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _addresses(*values: Any) -> list[str]:
+    """Plausible, lowercased, de-duplicated email addresses out of strings (or lists of strings) that may hold several."""
+    found: list[str] = []
+    for value in values:
+        for text in (value if isinstance(value, list) else [value]):
+            if not isinstance(text, str) or not text:
+                continue
+            for _display, address in getaddresses([text]):
+                address = address.strip().casefold()
+                if _ADDRESS.match(address) and address not in found:
+                    found.append(address)
+    return found
+
+
+def _subject_key(subject: Any) -> str:
+    """A subject as it compares: reply and forward prefixes and repeated spaces gone, in one case."""
+    text = " ".join(str(subject or "").split())
+    while True:
+        bare = _REPLY_PREFIX.sub("", text, count=1).strip()
+        if bare == text:
+            return text.casefold()
+        text = bare
+
+
+def _own_addresses(account: str) -> set[str]:
+    return {address.casefold() for address in (account, sender_account()) if address}
+
+
+def _outreach_marks(conn: sqlite3.Connection, user_id: str, own: set[str]) -> dict[str, dict[str, Any]]:
+    """Per company: when it was added and sent, the addresses mail to it went to, and the subjects its emails carry.
+
+    Never the student's own address. An address only copied on the emails (a referrer, a mentor) is the company's
+    only when it is at one of the company's own mail domains, as the reply watcher decides. A subject shorter
+    than MIN_SUBJECT is left out: it would match other mail, and so is one that another company of the student's has too.
+    """
+    marks: dict[str, dict[str, Any]] = {}
+    for row in conn.execute(
+        "SELECT id, created_at, sent_at, contact_email, contact_cc, bounced_addresses_json, email_subject, follow_up_subject "
+        "FROM outreach_targets WHERE user_id=? ORDER BY created_at, id",
+        (user_id,),
+    ).fetchall():
+        try:
+            bounced = json.loads(row["bounced_addresses_json"] or "[]")
+        except (TypeError, ValueError):
+            bounced = []
+        subjects: list[dict[str, str]] = []
+        for subject in (row["email_subject"], row["follow_up_subject"]):
+            key = _subject_key(subject)
+            phrase = " ".join(re.sub(r'["{}()]', "", str(subject or "")).split())
+            if len(phrase) > SUBJECT_PHRASE:
+                # Gmail's phrase search matches whole words, so a cut inside a word would find nothing.
+                cut = phrase[:SUBJECT_PHRASE + 1]
+                phrase = cut.rsplit(" ", 1)[0] if " " in cut else phrase[:SUBJECT_PHRASE]
+            if len(key) >= MIN_SUBJECT and phrase and all(item["key"] != key for item in subjects):
+                subjects.append({"key": key, "phrase": phrase})
+        marks[str(row["id"])] = {
+            "created_at": str(row["created_at"] or ""),
+            "sent_at": str(row["sent_at"] or ""),
+            # (address, whether it was only copied), in the order they are found; settled below.
+            "found": [(address, False) for address in _addresses(row["contact_email"])]
+            + [(address, True) for address in _addresses(row["contact_cc"])]
+            + [(address, False) for address in _addresses(bounced if isinstance(bounced, list) else [])],
+            "subjects": subjects,
+        }
+    # A subject that two companies share cannot say which of them mail belongs to; it marks neither.
+    held: dict[str, int] = {}
+    for mark in marks.values():
+        for subject in mark["subjects"]:
+            held[subject["key"]] = held.get(subject["key"], 0) + 1
+    for mark in marks.values():
+        mark["subjects"] = [subject for subject in mark["subjects"] if held[subject["key"]] == 1]
+    for row in conn.execute(
+        "SELECT target_id, detail FROM outreach_events WHERE user_id=? AND event_type IN (?, ?, ?) ORDER BY created_at, id",
+        (user_id, SENT_EVENT, DRAFT_EVENT, THANK_YOU_SENT_EVENT),
+    ).fetchall():
+        mark = marks.get(str(row["target_id"]))
+        if mark is None:
+            continue
+        detail = _json_dict(row["detail"])
+        mark["found"] += [(address, False) for address in _addresses(detail.get("to"))]
+        mark["found"] += [(address, True) for address in _addresses(detail.get("cc"))]
+    shared = {host for address in own for host in (_host(address), registrable_domain(address) or "") if host}
+    for mark in marks.values():
+        found = [(address, copied) for address, copied in mark.pop("found") if address not in own]
+        # The company's mail domains: those of the addresses written to, never a free mail service or the student's own.
+        hosts = {_host(address) for address, copied in found if not copied}
+        hosts = {host for host in hosts if host not in FREEMAIL and (registrable_domain(host) or host) not in FREEMAIL
+                 and host not in shared and (registrable_domain(host) or host) not in shared}
+        primary = {address for address, copied in found if not copied}
+        addresses: list[str] = []
+        for address, _copied in found:
+            if address not in addresses and (address in primary or any(
+                    _host(address) == host or _host(address).endswith(f".{host}") for host in hosts)):
+                addresses.append(address)
+        mark["addresses"] = addresses
+    return marks
+
+
+def _host(address: str) -> str:
+    return address.rsplit("@", 1)[-1]
+
+
+def _index(marks: dict[str, dict[str, Any]]) -> tuple[dict[str, str], dict[str, str]]:
+    """Address to company and normalised subject to company, over every company; the first one in a stable order wins."""
+    addresses: dict[str, str] = {}
+    subjects: dict[str, str] = {}
+    for target_id in sorted(marks):
+        for address in marks[target_id]["addresses"]:
+            addresses.setdefault(address, target_id)
+        for subject in marks[target_id]["subjects"]:
+            subjects.setdefault(subject["key"], target_id)
+    return addresses, subjects
+
+
+def _sweeping_sent(conn: sqlite3.Connection, user_id: str, name: str, account: str) -> bool:
+    """Whether the sweep has sent mail to look for: it has started under this name and some company has an address or subject."""
+    if _kept(conn, user_id, name) is None:
+        return False
+    addresses, subjects = _index(_outreach_marks(conn, user_id, _own_addresses(account)))
+    return bool(addresses or subjects)
+
+
+def _search_candidates(conn: sqlite3.Connection, user_id: str, limit: int, account: str = "") -> list[tuple[str, str]]:
+    """(company, query) for each company whose Sent mail has not been searched with the query it has now.
+
+    Only companies that have gone out, or that an app send names. A company is searched once, and once more only when
+    what it would be searched by changes (an address added, a subject or a sent date edited): other edits to the
+    company leave it alone. The query is '' when there is nothing to search by.
+    """
+    unsent = sorted(UNSENT_STATUSES)
+    gone_out = [str(item[0]) for item in conn.execute(
+        "SELECT t.id FROM outreach_targets t WHERE t.user_id=? "
+        f"AND (t.status NOT IN ({', '.join('?' for _ in unsent)}) OR EXISTS ("
+        "SELECT 1 FROM outreach_events e WHERE e.target_id=t.id AND e.user_id=t.user_id AND e.event_type=?)) "
+        "ORDER BY t.created_at, t.id",
+        (user_id, *unsent, SENT_EVENT),
+    ).fetchall()]
+    if not gone_out:
+        return []
+    searched = {str(item[0]): str(item[1]) for item in conn.execute(
+        "SELECT target_id, query FROM outreach_label_searches WHERE user_id=?", (user_id,),
+    ).fetchall()}
+    marks = _outreach_marks(conn, user_id, _own_addresses(account))
+    wanted: list[tuple[str, str]] = []
+    for target_id in gone_out:
+        query = _history_query(marks.get(target_id))
+        if searched.get(target_id) != query:
+            wanted.append((target_id, query))
+            if len(wanted) >= limit:
+                break
+    return wanted
+
+
+def _history_query(mark: dict[str, Any] | None) -> str:
+    """The Sent search for one company's history, or '' when it has no address or subject to search by."""
+    if not mark:
+        return ""
+    terms: list[str] = []
+    for address in mark["addresses"]:
+        terms.extend((f"to:{address}", f"cc:{address}", f"bcc:{address}"))
+    terms.extend(f'subject:"{subject["phrase"]}"' for subject in mark["subjects"])
+    if not terms:
+        return ""
+    # An email can predate the company's being added (the student may write first, or add it as already sent): the earlier of the two dates, less the lead.
+    starts = [start for start in (_epoch(mark["created_at"]), _epoch(mark["sent_at"])) if start is not None]
+    since = min(starts) - HISTORY_LEAD_DAYS * 86400 if starts else None
+    return "in:sent " + (f"after:{since} " if since is not None else "") + "{" + " ".join(terms) + "}"
+
+
+def _epoch(text: str) -> int | None:
+    try:
+        moment = datetime.fromisoformat(text.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return int((moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)).timestamp())
 
 
 class _Labeller:
     """One pass: the label's id, and how many threads it has asked Gmail about."""
 
     def __init__(self, gmail: _Gmail, user_id: str, account: str, name: str):
-        self.gmail, self.user_id, self.name = gmail, user_id, name
+        self.gmail, self.user_id, self.name, self.account = gmail, user_id, name, account
         self.key = (user_id, account.casefold(), name)
         self.threads = 0
 
@@ -320,7 +601,7 @@ class _Labeller:
             raise _Stop("throttled")
 
     def thread(self, thread_id: str) -> tuple[str, list[str]]:
-        """Add the label to every message of a thread that lacks it. (outcome, the thread's message ids as listed).
+        """Add the label to every message of a thread that lacks it, delivery notices apart. (outcome, the thread's message ids as listed).
 
         The outcome is "labelled", "gone" (Gmail no longer has the thread) or
         "failed" (Gmail refused this thread). A rate limit or a refused
@@ -328,7 +609,9 @@ class _Labeller:
         """
         self.threads += 1
         label_id = self.label_id()
-        response = self.gmail.request("GET", f"/threads/{quote(thread_id, safe='')}", params={"format": "minimal"})
+        response = self.gmail.request("GET", f"/threads/{quote(thread_id, safe='')}", params={
+            "format": "metadata", "metadataHeaders": list(_THREAD_HEADERS),
+        })
         if response.status_code == 404:
             return "gone", []
         self._refuse(response)
@@ -338,10 +621,11 @@ class _Labeller:
         listed = [str(item["id"]) for item in messages]
         if not listed:
             return "gone", []
-        # Drafts cannot carry a label, and a message that has it needs nothing.
+        # Drafts cannot carry a label, a message that has it needs nothing, and a delivery notice (failure or delay) is not outreach.
         targets = [
             str(item["id"]) for item in messages
             if "DRAFT" not in (item.get("labelIds") or []) and label_id not in (item.get("labelIds") or [])
+            and not _is_delivery_notice(item)
         ]
         for start in range(0, len(targets), BATCH_LIMIT):
             if self._add(targets[start:start + BATCH_LIMIT], label_id) != "labelled":
@@ -378,7 +662,7 @@ def _label(
     now: datetime,
 ) -> dict[str, Any]:
     labeller = _Labeller(gmail, user_id, account, name)
-    counts = {"labelled": 0, "gone": 0, "failed": 0, "relabelled": 0}
+    counts = {"labelled": 0, "gone": 0, "failed": 0, "relabelled": 0, "sent_labelled": 0, "searched": 0, "found": 0}
     detail: dict[str, Any] = {"label": name}
     stamp = now.isoformat(timespec="seconds")
     done: dict[str, str] = {}
@@ -414,6 +698,9 @@ def _label(
             settled.update(str(item[0]) for item in rows)
             counts[outcome] += len(rows)
             counts["relabelled"] += sum(1 for item in rows if item[1]) if outcome == "labelled" else 0
+
+    def settle_sent(thread_id: str, outcome: str) -> None:
+        _settle_sent(conn, user_id, name, thread_id, outcome, stamp, counts)
 
     def unlisted(gmail_id: str, thread_id: str) -> None:
         """A row whose message its thread's listing did not show: Gmail no longer has it (gone), or it is not one
@@ -459,10 +746,102 @@ def _label(
             else:
                 settle([gmail_id], thread_id, outcome)
         more = more or len(pending) > PER_PASS  # the window was the oldest rows only
-        _sweep(conn, labeller, user_id, name, now, done, detail, fresh)
+        _discard(conn)
+        _search_history(conn, labeller, user_id, now, counts, detail)
+        sent = _sent_rows(conn, user_id, name, PER_PASS + 1)
+        for item in sent:
+            thread_id = str(item["thread_id"])
+            if thread_id in done:
+                settle_sent(thread_id, done[thread_id])
+                continue
+            if labeller.threads >= PER_PASS:
+                more = True
+                break
+            _discard(conn)
+            done[thread_id] = labeller.thread(thread_id)[0]
+            settle_sent(thread_id, done[thread_id])
+        more = more or len(sent) > PER_PASS
+        _sweep(conn, labeller, user_id, name, now, done, detail, fresh, counts)
     except _Stop as stop:
         return result(stop.state)
     return result()
+
+
+def _settle_sent(
+    conn: sqlite3.Connection, user_id: str, name: str, thread_id: str, outcome: str, stamp: str, counts: dict[str, int],
+) -> None:
+    """A sent thread is settled under this name; the time is kept only when the label was added."""
+    with conn:
+        conn.execute(
+            "UPDATE outreach_label_threads SET label_name=?, labeled_at=?, label_note=? WHERE user_id=? AND thread_id=?",
+            (name, stamp if outcome == "labelled" else None, "" if outcome == "labelled" else outcome, user_id, thread_id),
+        )
+    counts["sent_labelled" if outcome == "labelled" else outcome] += 1
+
+
+def _search_history(
+    conn: sqlite3.Connection, labeller: _Labeller, user_id: str, now: datetime, counts: dict[str, int], detail: dict[str, Any],
+) -> None:
+    """Search Sent for each company that has gone out and not been searched since it last changed, for the threads the app did not send itself.
+
+    The student often sends from Gmail after the app made a draft, and a draft's
+    thread does not keep the sent mail. The search is bounded by the company's
+    addresses and subjects and by HISTORY_LEAD_DAYS before the earlier of the day it was added and its sent date. A company is marked
+    searched only when Gmail answered, so a failed search is tried again. It reads up to SEARCH_PAGES pages and keeps up to
+    SEARCH_THREADS threads; a search cut short by either says so in ``search_truncated`` rather than passing as complete.
+    """
+    candidates = _search_candidates(conn, user_id, SEARCHES_PER_PASS, labeller.account)
+    if not candidates:
+        return
+    marks = _outreach_marks(conn, user_id, _own_addresses(labeller.account))
+    for target_id, query in candidates:
+        mark = marks.get(target_id) or {"created_at": "", "sent_at": "", "addresses": [], "subjects": []}
+        threads: list[str] = []
+        truncated = False
+        if query:
+            own_addresses = {address: target_id for address in mark["addresses"]}
+            own_subjects = {subject["key"]: target_id for subject in mark["subjects"]}
+            token = ""
+            for _page in range(SEARCH_PAGES):
+                params: dict[str, Any] = {"q": query, "maxResults": SEARCH_RESULTS}
+                if token:
+                    params["pageToken"] = token
+                _discard(conn)
+                response = labeller.gmail.request("GET", "/messages", params=params)
+                labeller._refuse(response)
+                if response.status_code != 200:
+                    raise _Stop("unreachable")
+                body = response.json()
+                for message in body.get("messages", []) or []:
+                    thread_id = str(message.get("threadId") or "") if isinstance(message, dict) else ""
+                    if not thread_id or thread_id in threads:
+                        continue
+                    if len(threads) >= SEARCH_THREADS:
+                        truncated = True
+                        break
+                    # Gmail's to: and subject: match words, not the whole address or subject (to:ann@ also finds
+                    # jo.ann@), so every hit is checked as the sweep checks mail.
+                    _discard(conn)
+                    if not _outreach_target(labeller, str(message.get("id") or ""), own_addresses, own_subjects):
+                        continue
+                    threads.append(thread_id)
+                token = str(body.get("nextPageToken") or "")
+                if truncated or not token:
+                    break
+            truncated = truncated or bool(token)
+            if truncated:
+                detail["search_truncated"] = True
+                LOGGER.warning("The Sent search for company %s was cut short at %d threads over %d pages", target_id, len(threads), SEARCH_PAGES)
+        with conn:
+            for thread_id in threads:
+                _add_thread(conn, user_id, thread_id, target_id, "search", now)
+            conn.execute(
+                "INSERT INTO outreach_label_searches(user_id, target_id, searched_at, found, query) VALUES(?, ?, ?, ?, ?) "
+                "ON CONFLICT(user_id, target_id) DO UPDATE SET searched_at=excluded.searched_at, found=excluded.found, query=excluded.query",
+                (user_id, target_id, now.isoformat(timespec="microseconds"), len(threads), query),
+            )
+        counts["searched"] += 1
+        counts["found"] += len(threads)
 
 
 def _thread_of(labeller: _Labeller, gmail_id: str) -> str:
@@ -489,27 +868,60 @@ def _kept(conn: sqlite3.Connection, user_id: str, name: str) -> dict[str, Any] |
 
 def _sweep(
     conn: sqlite3.Connection, labeller: _Labeller, user_id: str, name: str, now: datetime, done: dict[str, str],
-    detail: dict[str, Any], fresh: bool = False,
+    detail: dict[str, Any], fresh: bool = False, counts: dict[str, int] | None = None,
 ) -> None:
-    """Label what joined a labelled thread since the last pass: the app's own thank-you, the student's answers.
+    """Label what joined an outreach thread since the last pass, and the sent mail that is outreach and not yet a thread.
 
     Reads Gmail's list of messages from a little before where the last sweep
-    stopped and labels the threads in it that the app has labelled. The first
-    pass under a name only records where to start (before it labels anything),
-    since the threads it labelled were labelled whole. Mail that already has the
-    label is left out of the listing, so a pass cut short by its thread budget
-    carries on where it stopped. A listing too long for one pass moves the start
-    on and asks for every labelled thread to be read again over the next passes,
-    so what it did not list is not missed.
+    stopped and labels the threads in it that the app has labelled (the app's
+    own thank-you, the student's answers). It then lists the Sent mail of the
+    same span and labels the thread of any message that went to an address of an
+    outreach company or carries one of its subjects. The first pass under a name
+    only records where to start (before it labels anything), since the threads it
+    labelled were labelled whole. Mail that already has the label is left out of
+    the listings, so a pass cut short by its thread budget carries on where it
+    stopped. A listing too long for one pass moves the start on; for the labelled
+    threads' listing that asks for every one of them to be read again over the
+    next passes, and for the Sent listing it asks for every company to be
+    searched again, so what it did not list is not missed.
     """
-    if fresh or not _labelled_threads(conn, user_id, name):
+    if fresh:
+        return
+    counts = counts if counts is not None else {"sent_labelled": 0, "gone": 0, "failed": 0}
+    wanted = set(_labelled_threads(conn, user_id, name))
+    addresses, subjects = _index(_outreach_marks(conn, user_id, _own_addresses(labeller.account)))
+    if not wanted and not addresses and not subjects:
         return
     start = int(now.timestamp())
     kept = _kept(conn, user_id, name)
     if kept is None:  # a setting that cannot be read: start over from here
         _keep_watermark(conn, user_id, name, start, now)
         return
-    wanted = set(_labelled_threads(conn, user_id, name))
+    listing = "complete"
+    if wanted:
+        listing = _sweep_labelled(conn, labeller, user_id, name, kept, wanted, now, done, detail)
+        if listing == "stopped":
+            return
+    if addresses or subjects:
+        sent = _sweep_sent(conn, labeller, user_id, name, kept, wanted, now, done, detail, counts, addresses, subjects)
+        if sent == "stopped":
+            return
+        if sent == "truncated":
+            with conn:
+                conn.execute("DELETE FROM outreach_label_searches WHERE user_id=?", (user_id,))
+            detail["sent_sweep_truncated"] = True
+    if listing == "truncated":
+        detail["sweep_truncated"] = True
+        _keep_watermark(conn, user_id, name, start, now, recheck="")
+    else:
+        _keep_watermark(conn, user_id, name, start, now)
+
+
+def _sweep_labelled(
+    conn: sqlite3.Connection, labeller: _Labeller, user_id: str, name: str, kept: dict[str, Any], wanted: set[str],
+    now: datetime, done: dict[str, str], detail: dict[str, Any],
+) -> str:
+    """The labelled threads' new messages. "stopped" (the thread budget ran out; the start stays), "truncated" or "complete"."""
     if "recheck" in kept:
         cursor = str(kept["recheck"] or "")
         for thread_id in sorted(wanted):
@@ -519,15 +931,18 @@ def _sweep(
                 if labeller.threads >= PER_PASS:
                     detail["more"] = True
                     _keep_watermark(conn, user_id, name, int(kept["after"]), now, recheck=cursor)
-                    return
+                    return "stopped"
                 _discard(conn)
                 done[thread_id] = labeller.thread(thread_id)[0]
             cursor = thread_id
         _keep_watermark(conn, user_id, name, int(kept["after"]), now)
     _discard(conn)
     token = ""
-    complete = False
-    query = f"after:{int(kept['after']) - SWEEP_OVERLAP_SECONDS} -in:chats -in:drafts -label:{search_form(name)}"
+    # A delivery notice is never labelled, so left in the listing it would be read again every pass and could hold the sweep back.
+    query = (
+        f"after:{int(kept['after']) - SWEEP_OVERLAP_SECONDS} -in:chats -in:drafts "
+        f"-from:({' OR '.join(sorted(_DAEMONS))}) -label:{search_form(name)}"
+    )
     for _page in range(SWEEP_PAGES):
         params: dict[str, Any] = {"q": query, "maxResults": 100}
         if token:
@@ -543,17 +958,79 @@ def _sweep(
                 continue
             if labeller.threads >= PER_PASS:
                 detail["more"] = True
-                return  # the rest waits; the watermark stays where it was
+                return "stopped"  # the rest waits; the watermark stays where it was
             done[thread_id] = labeller.thread(thread_id)[0]
         token = str(body.get("nextPageToken") or "")
         if not token:
-            complete = True
-            break
-    if complete:
-        _keep_watermark(conn, user_id, name, start, now)
-    else:
-        detail["sweep_truncated"] = True
-        _keep_watermark(conn, user_id, name, start, now, recheck="")
+            return "complete"
+    return "truncated"
+
+
+def _sweep_sent(
+    conn: sqlite3.Connection, labeller: _Labeller, user_id: str, name: str, kept: dict[str, Any], wanted: set[str],
+    now: datetime, done: dict[str, str], detail: dict[str, Any], counts: dict[str, int],
+    addresses: dict[str, str], subjects: dict[str, str],
+) -> str:
+    """Sent mail since the last pass that is outreach: labelled by thread. "stopped", "truncated" or "complete"."""
+    known = wanted | {str(item[0]) for item in conn.execute(
+        "SELECT thread_id FROM outreach_label_threads WHERE user_id=?", (user_id,),
+    ).fetchall()}
+    _discard(conn)  # the SELECT opens a transaction on PostgreSQL, and the listing below is a network call
+    seen: set[str] = set()
+    stamp = now.isoformat(timespec="seconds")
+    token = ""
+    query = f"in:sent after:{int(kept['after']) - SWEEP_OVERLAP_SECONDS} -label:{search_form(name)}"
+    for _page in range(SWEEP_PAGES):
+        params: dict[str, Any] = {"q": query, "maxResults": 100}
+        if token:
+            params["pageToken"] = token
+        response = labeller.gmail.request("GET", "/messages", params=params)
+        labeller._refuse(response)
+        if response.status_code != 200:
+            raise _Stop("unreachable")
+        body = response.json()
+        for message in body.get("messages", []) or []:
+            gmail_id = str(message.get("id") or "") if isinstance(message, dict) else ""
+            thread_id = str(message.get("threadId") or "") if isinstance(message, dict) else ""
+            if not gmail_id or not thread_id or gmail_id in seen or thread_id in known or thread_id in done:
+                continue
+            seen.add(gmail_id)
+            target_id = _outreach_target(labeller, gmail_id, addresses, subjects)
+            if not target_id:
+                continue
+            with conn:
+                _add_thread(conn, user_id, thread_id, target_id, "sweep", now)
+            known.add(thread_id)
+            if labeller.threads >= PER_PASS:
+                detail["more"] = True
+                return "stopped"  # noted above; the next pass labels it
+            _discard(conn)
+            done[thread_id] = labeller.thread(thread_id)[0]
+            _settle_sent(conn, user_id, name, thread_id, done[thread_id], stamp, counts)
+        token = str(body.get("nextPageToken") or "")
+        if not token:
+            return "complete"
+    return "truncated"
+
+
+def _outreach_target(labeller: _Labeller, gmail_id: str, addresses: dict[str, str], subjects: dict[str, str]) -> str:
+    """The company a sent message is outreach to, going by who it went to and its subject; '' when it is not outreach."""
+    response = labeller.gmail.request("GET", f"/messages/{quote(gmail_id, safe='')}", params={
+        "format": "metadata", "metadataHeaders": ["To", "Cc", "Bcc", "Subject"],
+    })
+    if response.status_code == 404:
+        return ""
+    labeller._refuse(response)
+    if response.status_code != 200:
+        raise _Stop("unreachable")
+    headers = {
+        str(item.get("name", "")).casefold(): str(item.get("value", ""))
+        for item in (response.json().get("payload") or {}).get("headers") or [] if isinstance(item, dict)
+    }
+    for address in _addresses(headers.get("to"), headers.get("cc"), headers.get("bcc")):
+        if address in addresses:
+            return addresses[address]
+    return subjects.get(_subject_key(headers.get("subject")), "")
 
 
 def _keep_watermark(

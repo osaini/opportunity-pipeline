@@ -8,7 +8,7 @@ without both. The OAuth connection is the separate "gmail_drafts" connector, so
 its gmail.compose scope (which covers drafts and sending) is never mixed with
 the read-only monitoring connection. Its read scope, gmail.readonly, is for
 finding bounces (outreach_delivery.py). Its gmail.modify scope is only for
-adding the student's reply label to reply threads (outreach_labels.py); the
+adding the student's label to outreach threads, sent mail and replies (outreach_labels.py); the
 app never uses it to remove a label, trash, archive or mark mail read.
 
 Rate limits. Gmail answering "slow down" (a 429, or a 403 naming a rate limit
