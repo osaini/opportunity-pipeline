@@ -1,0 +1,515 @@
+{
+  "absolute_url": "https://job-boards.greenhouse.io/examplerobotics/jobs/4000000001",
+  "id": 4000000001,
+  "internal_job_id": 4000000901,
+  "title": "Robotics Software Intern",
+  "updated_at": "2026-09-01T09:00:00-04:00",
+  "requisition_id": null,
+  "location": {
+    "name": "Springfield, Example State"
+  },
+  "company_name": "Example Robotics",
+  "questions": [
+    {
+      "description": null,
+      "label": "First Name",
+      "required": true,
+      "fields": [
+        {
+          "name": "first_name",
+          "type": "input_text",
+          "values": []
+        }
+      ]
+    },
+    {
+      "description": null,
+      "label": "Last Name",
+      "required": true,
+      "fields": [
+        {
+          "name": "last_name",
+          "type": "input_text",
+          "values": []
+        }
+      ]
+    },
+    {
+      "description": null,
+      "label": "Email",
+      "required": true,
+      "fields": [
+        {
+          "name": "email",
+          "type": "input_text",
+          "values": []
+        }
+      ]
+    },
+    {
+      "description": null,
+      "label": "Phone",
+      "required": false,
+      "fields": [
+        {
+          "name": "phone",
+          "type": "input_text",
+          "values": []
+        }
+      ]
+    },
+    {
+      "description": null,
+      "label": "Resume/CV",
+      "required": true,
+      "fields": [
+        {
+          "name": "resume",
+          "type": "input_file",
+          "values": []
+        },
+        {
+          "name": "resume_text",
+          "type": "textarea",
+          "values": []
+        }
+      ]
+    },
+    {
+      "description": null,
+      "label": "Cover Letter",
+      "required": false,
+      "fields": [
+        {
+          "name": "cover_letter",
+          "type": "input_file",
+          "values": []
+        },
+        {
+          "name": "cover_letter_text",
+          "type": "textarea",
+          "values": []
+        }
+      ]
+    },
+    {
+      "description": null,
+      "label": "Referral token",
+      "required": false,
+      "fields": [
+        {
+          "name": "mapped_url_token",
+          "type": "input_hidden",
+          "values": []
+        }
+      ]
+    },
+    {
+      "description": null,
+      "label": "Why do you want to work at Example Robotics?",
+      "required": true,
+      "fields": [
+        {
+          "name": "question_4000000101",
+          "type": "textarea",
+          "values": []
+        }
+      ]
+    },
+    {
+      "description": null,
+      "label": "Portfolio or project link",
+      "required": false,
+      "fields": [
+        {
+          "name": "question_4000000102",
+          "type": "input_text",
+          "values": []
+        }
+      ]
+    },
+    {
+      "description": null,
+      "label": "Which team are you most interested in?",
+      "required": true,
+      "fields": [
+        {
+          "name": "question_4000000103",
+          "type": "multi_value_single_select",
+          "values": [
+            {
+              "label": "Perception",
+              "value": 1
+            },
+            {
+              "label": "Controls",
+              "value": 2
+            },
+            {
+              "label": "Firmware",
+              "value": 3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": null,
+      "label": "Which programming languages have you used?",
+      "required": false,
+      "fields": [
+        {
+          "name": "question_4000000104",
+          "type": "multi_value_multi_select",
+          "values": [
+            {
+              "label": "Python",
+              "value": 1
+            },
+            {
+              "label": "C++",
+              "value": 2
+            },
+            {
+              "label": "Rust",
+              "value": 3
+            },
+            {
+              "label": "MATLAB",
+              "value": 4
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": null,
+      "label": "Are you legally authorized to work in the United States?",
+      "required": true,
+      "fields": [
+        {
+          "name": "question_4000000105",
+          "type": "multi_value_single_select",
+          "values": [
+            {
+              "label": "Yes",
+              "value": 1
+            },
+            {
+              "label": "No",
+              "value": 2
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": null,
+      "label": "Will you now or in the future require sponsorship for employment visa status?",
+      "required": true,
+      "fields": [
+        {
+          "name": "question_4000000106",
+          "type": "multi_value_single_select",
+          "values": [
+            {
+              "label": "Yes",
+              "value": 1
+            },
+            {
+              "label": "No",
+              "value": 2
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": null,
+      "label": "What are your salary expectations?",
+      "required": false,
+      "fields": [
+        {
+          "name": "question_4000000107",
+          "type": "input_text",
+          "values": []
+        }
+      ]
+    },
+    {
+      "description": null,
+      "label": "Preferred internship term",
+      "required": false,
+      "fields": [
+        {
+          "name": "question_4000000108",
+          "type": "multi_value_single_select",
+          "values": [
+            {
+              "label": "Summer 2027",
+              "value": 1
+            },
+            {
+              "label": "Fall 2027",
+              "value": 2
+            },
+            {
+              "label": "Spring 2028",
+              "value": 3
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": null,
+      "label": "I have read the Example Robotics privacy notice",
+      "required": true,
+      "fields": [
+        {
+          "name": "question_4000000109",
+          "type": "multi_value_multi_select",
+          "values": [
+            {
+              "label": "I have read the Example Robotics privacy notice",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": null,
+      "label": "I certify that the information I have provided is accurate",
+      "required": true,
+      "fields": [
+        {
+          "name": "question_4000000110",
+          "type": "multi_value_multi_select",
+          "values": [
+            {
+              "label": "I certify that the information I have provided is accurate",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": null,
+      "label": "Have you previously worked at Example Robotics?",
+      "required": true,
+      "fields": [
+        {
+          "name": "question_4000000111",
+          "type": "multi_value_single_select",
+          "values": [
+            {
+              "label": "Yes",
+              "value": 1
+            },
+            {
+              "label": "No",
+              "value": 0
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "description": null,
+      "label": "If yes, please explain",
+      "required": false,
+      "fields": [
+        {
+          "name": "question_4000000112",
+          "type": "textarea",
+          "values": []
+        }
+      ]
+    },
+    {
+      "description": null,
+      "label": "Keep me informed about future openings at Example Robotics",
+      "required": false,
+      "fields": [
+        {
+          "name": "question_4000000113",
+          "type": "multi_value_multi_select",
+          "values": [
+            {
+              "label": "Keep me informed about future openings at Example Robotics",
+              "value": 1
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "location_questions": [
+    {
+      "description": null,
+      "label": "Location (City)",
+      "required": false,
+      "fields": [
+        {
+          "name": "location_city",
+          "type": "input_text",
+          "values": []
+        }
+      ]
+    }
+  ],
+  "compliance": [
+    {
+      "type": "eeoc",
+      "description": "Answering these questions is voluntary and has no effect on your application.",
+      "questions": [
+        {
+          "description": null,
+          "label": "Gender",
+          "required": false,
+          "fields": [
+            {
+              "name": "gender",
+              "type": "multi_value_single_select",
+              "values": [
+                {
+                  "label": "Male",
+                  "value": 1
+                },
+                {
+                  "label": "Female",
+                  "value": 2
+                },
+                {
+                  "label": "Decline To Self Identify",
+                  "value": 3
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "description": null,
+          "label": "Are you Hispanic/Latino?",
+          "required": false,
+          "fields": [
+            {
+              "name": "hispanic_ethnicity",
+              "type": "multi_value_single_select",
+              "values": [
+                {
+                  "label": "Yes",
+                  "value": 1
+                },
+                {
+                  "label": "No",
+                  "value": 2
+                },
+                {
+                  "label": "Decline To Self Identify",
+                  "value": 3
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "description": null,
+          "label": "Veteran Status",
+          "required": false,
+          "fields": [
+            {
+              "name": "veteran_status",
+              "type": "multi_value_single_select",
+              "values": [
+                {
+                  "label": "I am not a protected veteran",
+                  "value": 1
+                },
+                {
+                  "label": "I identify as one or more of the classifications of protected veteran",
+                  "value": 2
+                },
+                {
+                  "label": "I don't wish to answer",
+                  "value": 3
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "description": null,
+          "label": "Disability Status",
+          "required": false,
+          "fields": [
+            {
+              "name": "disability_status",
+              "type": "multi_value_single_select",
+              "values": [
+                {
+                  "label": "Yes, I have a disability, or have had one in the past",
+                  "value": 1
+                },
+                {
+                  "label": "No, I do not have a disability and have not had one in the past",
+                  "value": 2
+                },
+                {
+                  "label": "I do not want to answer",
+                  "value": 3
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "demographic_questions": {
+    "header": "Demographic information",
+    "description": "These questions are optional.",
+    "questions": [
+      {
+        "id": 4000000114,
+        "label": "What is your sexual orientation?",
+        "required": false,
+        "type": "multi_value_single_select",
+        "answer_options": [
+          {
+            "id": 4000000201,
+            "label": "Heterosexual",
+            "free_form": false
+          },
+          {
+            "id": 4000000202,
+            "label": "Gay or lesbian",
+            "free_form": false
+          },
+          {
+            "id": 4000000203,
+            "label": "Bisexual",
+            "free_form": false
+          },
+          {
+            "id": 4000000204,
+            "label": "I don't wish to answer",
+            "free_form": false
+          }
+        ]
+      }
+    ]
+  },
+  "data_compliance": [
+    {
+      "type": "gdpr",
+      "requires_consent": true,
+      "requires_processing_consent": false,
+      "requires_retention_consent": false,
+      "retention_period": 365,
+      "demographic_data_consent_applies": false
+    }
+  ]
+}

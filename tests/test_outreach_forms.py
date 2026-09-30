@@ -32,6 +32,7 @@ from opportunity_app.outreach_forms import (
 )
 from opportunity_app.schema import connect_product, utc_now
 
+from browser_support import requires_chromium
 from helpers_platform import build_and_migrate
 from test_outreach_discovery import safe_fetcher, site_transport
 from test_outreach_drafting import confirm_facts
@@ -610,18 +611,6 @@ AUTH_INBOX = {"Authorization": "Bearer inbox-owner"}
 
 # --- In a real browser ----------------------------------------------------------------------
 
-def _chromium_available():
-    try:
-        from playwright.sync_api import sync_playwright
-
-        with sync_playwright() as playwright:
-            playwright.chromium.launch().close()
-        return True
-    except Exception:  # noqa: BLE001 - no package or no browser: the browser tests skip
-        return False
-
-
-CHROMIUM = _chromium_available()
 # A draft as the drafter writes one: paragraphs with blank lines between them,
 # curly apostrophes, an em dash, and accented letters.
 LETTER = (
@@ -691,7 +680,7 @@ class Site:
             route.fulfill(status=404, body="")
 
 
-@unittest.skipUnless(CHROMIUM, "Playwright's Chromium is not installed")
+@requires_chromium
 class BrowserSubmitTests(unittest.TestCase):
     def submit(self, page, *, anchor=ANCHOR_SOLVES, body=LETTER, screenshots=None):
         site = Site({"/contact": page, "/recaptcha/api2/anchor": anchor})
@@ -1088,7 +1077,7 @@ WORDPRESS_FORM = PLAIN_FORM.replace('<form action="/send" method="post">',
 HIDDEN_FORM = PLAIN_FORM.replace('<form action="/send"', '<form style="display:none" action="/send"')
 
 
-@unittest.skipUnless(CHROMIUM, "Playwright's Chromium is not installed")
+@requires_chromium
 class RealWorldBrowserTests(unittest.TestCase):
     def rehearse(self, page):
         site = Site({"/contact": page})
