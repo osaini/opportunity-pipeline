@@ -1,4 +1,4 @@
-"""Apply for me's data layer (apply_runs.py, migration 0044): claims and their two locks, retry, hand-over, heartbeat,
+"""Apply for me's data layer (apply_runs.py, migration 0045): claims and their two locks, retry, hand-over, heartbeat,
 recovery, limits, the rehearsal gate, the readers that learn about claims, the worker step, retention, deletion, export.
 
 No browser and nothing that reaches a network: every company, board and posting here is fictional.
@@ -1390,12 +1390,12 @@ NEW_INDEXES = (
 )
 
 
-def schema_before_0044(path):
+def schema_before_0045(path):
     """A database as it stands on main before this migration, built the way ensure_product_schema builds one."""
     conn = connect_product(path)
     conn.execute("CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)")
     for migration in sorted(MIGRATIONS.glob("[0-9][0-9][0-9][0-9]_*.sql")):
-        if migration.name >= "0044":
+        if migration.name >= "0045":
             break
         sql = migration.read_text(encoding="utf-8")
         step = schema._MIGRATION_STEPS.get(migration.name)
@@ -1417,7 +1417,7 @@ class MigrationTests(unittest.TestCase):
             self.assertIn(column, _columns(conn, table), f"{table}.{column}")
         names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
         self.assertTrue(set(NEW_INDEXES) <= names, set(NEW_INDEXES) - names)
-        self.assertIn("0044_apply_agent.sql", {row[0] for row in conn.execute("SELECT name FROM schema_migrations")})
+        self.assertIn("0045_apply_agent.sql", {row[0] for row in conn.execute("SELECT name FROM schema_migrations")})
 
     def test_a_fresh_database_gets_the_tables_the_indexes_and_the_columns(self):
         _, path = build_and_migrate(Path(self.tempdir.name))
@@ -1430,7 +1430,7 @@ class MigrationTests(unittest.TestCase):
             self.assertIn("state <> 'released'", sql, "partial: a released row locks nothing")
 
     def test_a_database_at_the_latest_earlier_migration_upgrades_and_keeps_its_rows(self):
-        conn = schema_before_0044(Path(self.tempdir.name) / "platform.db")
+        conn = schema_before_0045(Path(self.tempdir.name) / "platform.db")
         self.addCleanup(conn.close)
         stamp = utc_now()
         with conn:
@@ -1448,7 +1448,7 @@ class MigrationTests(unittest.TestCase):
                          "a message read before this phase was never vouched for")
 
     def test_a_crash_after_some_columns_were_added_still_upgrades_and_the_step_is_safe_to_rerun(self):
-        conn = schema_before_0044(Path(self.tempdir.name) / "platform.db")
+        conn = schema_before_0045(Path(self.tempdir.name) / "platform.db")
         self.addCleanup(conn.close)
         # What a crash between the ALTERs and the marker leaves behind.
         conn.execute("ALTER TABLE application_mail_messages ADD COLUMN sender_verified INTEGER NOT NULL DEFAULT 0")
@@ -1456,9 +1456,9 @@ class MigrationTests(unittest.TestCase):
         ensure_product_schema(conn)
         self.assert_migrated(conn)
         with conn:
-            conn.execute("DELETE FROM schema_migrations WHERE name='0044_apply_agent.sql'")
+            conn.execute("DELETE FROM schema_migrations WHERE name='0045_apply_agent.sql'")
         ensure_product_schema(conn)
-        schema._apply_apply_agent(conn, (MIGRATIONS / "0044_apply_agent.sql").read_text(encoding="utf-8"))
+        schema._apply_apply_agent(conn, (MIGRATIONS / "0045_apply_agent.sql").read_text(encoding="utf-8"))
         conn.commit()
         self.assert_migrated(conn)
 

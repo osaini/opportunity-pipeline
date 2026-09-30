@@ -429,7 +429,7 @@ _MIGRATION_STEPS: dict[str, Callable[[Any, str], None]] = {
     "0041_outreach_reply_rules.sql": _apply_outreach_reply_rules,
     "0042_outreach_tech_brief.sql": _apply_tech_brief,
     "0043_gmail_reply_labels.sql": _apply_gmail_reply_labels,
-    "0044_apply_agent.sql": _apply_apply_agent,
+    "0045_apply_agent.sql": _apply_apply_agent,
 }
 
 

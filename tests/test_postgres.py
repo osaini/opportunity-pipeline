@@ -1146,7 +1146,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
         self.assertEqual({target_id: hand_over(target_id) for target_id in ("t-10", "t-3")}, {"t-10": "handed_over", "t-3": "handed_over"})
 
 
-# The tables, indexes and columns 0044 adds; the columns by a guarded Python step, as the earlier migrations do.
+# The tables, indexes and columns 0045 adds; the columns by a guarded Python step, as the earlier migrations do.
 APPLY_TABLES = ("application_submit_claims", "apply_runs", "apply_sensitive_answers", "apply_ats_labels")
 APPLY_COLUMNS = (("application_mail_messages", "sender_verified"),
                  ("generated_document_artifacts", "content_sha256"))
@@ -1155,7 +1155,7 @@ APPLY_LOCKS = ("ux_submit_claims_live_application", "ux_submit_claims_live_job")
 
 @unittest.skipUnless(POSTGRES_TEST_URL, "POSTGRES_TEST_URL is not configured")
 class PostgresApplyContractTests(unittest.TestCase):
-    """Apply for me's claims, their two partial unique indexes, the hand-over and recovery on PostgreSQL (migration 0044, apply_runs.py).
+    """Apply for me's claims, their two partial unique indexes, the hand-over and recovery on PostgreSQL (migration 0045, apply_runs.py).
 
     The locks (a transaction that starts with an UPDATE of the student's users row, the partial unique
     indexes, FOR UPDATE on the claim) are what make one attempt per application and per job hold across
@@ -1205,7 +1205,7 @@ class PostgresApplyContractTests(unittest.TestCase):
         self.conn.commit()
         return row["state"], row["after_click"]
 
-    def test_migration_0044_applies_and_a_rerun_repairs_a_half_applied_upgrade(self):
+    def test_migration_0045_applies_and_a_rerun_repairs_a_half_applied_upgrade(self):
         for table in APPLY_TABLES:
             self.assertEqual(self.conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"], 0, table)
         for table, column in APPLY_COLUMNS:
@@ -1218,12 +1218,12 @@ class PostgresApplyContractTests(unittest.TestCase):
         # What a crash between the ALTERs and the marker leaves: a column gone, and no marker.
         with self.conn:
             self.conn.execute("ALTER TABLE application_mail_messages DROP COLUMN sender_verified")
-            self.conn.execute("DELETE FROM schema_migrations WHERE name='0044_apply_agent.sql'")
+            self.conn.execute("DELETE FROM schema_migrations WHERE name='0045_apply_agent.sql'")
         ensure_product_schema(self.conn)
         for table, column in APPLY_COLUMNS:
             self.assertTrue(schema._has_column(self.conn, table, column), f"{table}.{column} after the rerun")
-        self.assertIsNotNone(self.conn.execute("SELECT 1 FROM schema_migrations WHERE name='0044_apply_agent.sql'").fetchone())
-        schema._apply_apply_agent(self.conn, (MIGRATIONS_DIR / "0044_apply_agent.sql").read_text(encoding="utf-8"))
+        self.assertIsNotNone(self.conn.execute("SELECT 1 FROM schema_migrations WHERE name='0045_apply_agent.sql'").fetchone())
+        schema._apply_apply_agent(self.conn, (MIGRATIONS_DIR / "0045_apply_agent.sql").read_text(encoding="utf-8"))
         self.conn.commit()
 
     def test_the_partial_unique_indexes_hold_one_live_attempt_per_application_and_per_job(self):
