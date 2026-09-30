@@ -1357,3 +1357,28 @@ input.settings-switch:disabled { opacity: .6; cursor: progress; }
 .outreach-interviewer { display: grid; gap: 6px; }
 .outreach-interviewer-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; }
 @media (max-width: 720px) { .outreach-interviewer-fields { grid-template-columns: 1fr; } }
+
+/* Every select's open list wears the app's theme instead of the operating
+   system's, where the browser allows it; elsewhere the native list stays.
+   Last in the file, so it settles ties with each component's own select rule. */
+@supports (appearance: base-select) {
+  select, select::picker(select) { appearance: base-select; }
+  /* A long choice wraps inside the box rather than past it; the arrow stays at the end. */
+  select { display: inline-flex; align-items: center; gap: 8px; white-space: normal; line-height: 1.35; text-align: start; cursor: pointer; }
+  select:disabled { cursor: default; }
+  select::picker-icon { content: ""; flex: none; width: 6px; height: 6px; margin: -3px 2px 0 auto; border-right: 1.5px solid var(--ink-soft); border-bottom: 1.5px solid var(--ink-soft); transform: rotate(45deg); transition: transform .15s; }
+  select:open::picker-icon { margin-top: 3px; transform: rotate(-135deg); }
+  select:open { border-color: var(--accent); }
+  select::picker(select) { margin-block: 6px; padding: 4px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface-strong); color: var(--ink); box-shadow: var(--shadow-raised); max-inline-size: min(440px, calc(100vw - 32px)); }
+  option { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 6px 10px; border-radius: 6px; font-size: 13px; font-weight: 400; line-height: 1.35; letter-spacing: normal; text-transform: none; white-space: normal; cursor: pointer; }
+  option:hover, option:focus-visible { background: var(--accent-soft); outline: none; }
+  option:checked { color: var(--accent-strong); font-weight: 650; }
+  option:disabled { color: var(--ink-muted); cursor: default; }
+  option::checkmark { content: "✓"; order: 1; margin-left: auto; color: var(--accent); }
+  /* These kept room for the operating system's arrow; the arrow is inside now. */
+  .application-controls select, .outreach-filter select, .program-status { padding-right: var(--field-pad-x); }
+  .outreach-settings .settings-field select { appearance: base-select; display: flex; padding: var(--space-2) var(--field-pad-x); background-image: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  select::picker-icon { transition: none; }
+}

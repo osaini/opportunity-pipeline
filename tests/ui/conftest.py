@@ -336,6 +336,25 @@ def sign_in_as_owner(page, token: str = OWNER_TOKEN) -> None:
     page.wait_for_selector("#auth-gate.is-visible", state="detached", timeout=15_000)
 
 
+# The operating system's list, as a browser without appearance: base-select
+# draws every select: there arrows change a closed select directly, which the
+# app's autoSaveSelect answers by saving only on Enter or on leaving it.
+NATIVE_SELECTS = "select, select::picker(select) { appearance: auto !important; }"
+
+
+def native_selects(page) -> None:
+    """Draw every select with the operating system's list, on this page and the next ones.
+
+    A constructed style sheet, since the app's Content-Security-Policy (style-src 'self') refuses a <style> tag.
+    """
+    adopt = (
+        f"(() => {{ const sheet = new CSSStyleSheet(); sheet.replaceSync({NATIVE_SELECTS!r});"
+        " document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet]; })()"
+    )
+    page.evaluate(adopt)
+    page.add_init_script(adopt)
+
+
 def wait_for_results(page) -> None:
     """Wait until the opportunity deck has finished its first render."""
     page.wait_for_function(

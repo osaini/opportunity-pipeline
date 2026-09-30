@@ -22,7 +22,7 @@ from datetime import date, timedelta
 import pytest
 from playwright.sync_api import expect
 
-from conftest import OWNER_TOKEN
+from conftest import OWNER_TOKEN, native_selects
 
 ROLLING = "sandbox-rolling-internship"
 FUTURE = "sandbox-future-research"
@@ -67,6 +67,7 @@ def program_status(page, program_id: str) -> str:
 
 
 def test_arrow_keys_on_a_program_status_do_not_save_and_enter_saves_once(owner_page):
+    native_selects(owner_page)
     open_programs(owner_page)
     puts = record(owner_page, "PUT", PROGRAM_STATUS)
     select = program_select(owner_page, ROLLING)
@@ -93,7 +94,54 @@ def test_arrow_keys_on_a_program_status_do_not_save_and_enter_saves_once(owner_p
     assert focused_control(owner_page) == {"id": ROLLING, "role": "status", "stale": False}
 
 
+def test_in_the_apps_own_list_arrows_save_nothing_and_a_pick_saves_once(owner_page):
+    open_programs(owner_page)
+    puts = record(owner_page, "PUT", PROGRAM_STATUS)
+    select = program_select(owner_page, ROLLING)
+    select.focus()
+    owner_page.keyboard.press("ArrowDown")
+    owner_page.keyboard.press("ArrowDown")
+    assert owner_page.evaluate("document.activeElement.tagName") == "OPTION", "arrows open the list"
+    expect(select).to_have_value("todo")
+    owner_page.keyboard.press("Escape")
+    expect(select).to_have_value("todo")
+    owner_page.wait_for_timeout(400)
+    assert puts == [], "moving through the open list saved something"
+
+    owner_page.keyboard.press("ArrowDown")
+    owner_page.keyboard.press("ArrowDown")
+    chosen = owner_page.evaluate("document.activeElement.value")
+    assert chosen != "todo"
+    with owner_page.expect_response(PROGRAMS_LIST):
+        owner_page.keyboard.press("Enter")
+    owner_page.wait_for_timeout(300)
+    assert [json.loads(put.post_data) for put in puts] == [{"status": chosen}]
+    assert program_status(owner_page, ROLLING) == chosen
+    assert focused_control(owner_page) == {"id": ROLLING, "role": "status", "stale": False}
+
+
+def test_a_typed_letter_on_the_apps_own_select_is_still_only_browsing(owner_page):
+    open_programs(owner_page)
+    puts = record(owner_page, "PUT", PROGRAM_STATUS)
+    select = program_select(owner_page, ROLLING)
+    select.focus()
+    owner_page.keyboard.press("s")
+    expect(select).to_have_value("skipped")
+    # Opening the list after typing is not leaving the select, so it saves nothing either.
+    owner_page.keyboard.press("ArrowDown")
+    assert owner_page.evaluate("document.activeElement.tagName") == "OPTION"
+    owner_page.keyboard.press("Escape")
+    owner_page.wait_for_timeout(400)
+    assert puts == [], "a typed letter saved the status it jumped to"
+    owner_page.keyboard.press("Escape")
+    expect(select).to_have_value("todo")
+    owner_page.keyboard.press("Tab")
+    owner_page.wait_for_timeout(400)
+    assert puts == []
+
+
 def test_escape_restores_the_saved_status_and_leaving_then_saves_nothing(owner_page):
+    native_selects(owner_page)
     open_programs(owner_page)
     puts = record(owner_page, "PUT", PROGRAM_STATUS)
     select = program_select(owner_page, ROLLING)
@@ -117,6 +165,7 @@ def test_a_pointer_choice_still_saves_at_once(owner_page):
 
 
 def test_tabbing_on_during_a_slow_save_keeps_focus_where_the_user_went(owner_page):
+    native_selects(owner_page)
     open_programs(owner_page)
     held: list = []
     owner_page.route(PROGRAM_STATUS, lambda route: held.append(route))
@@ -145,6 +194,7 @@ def test_tabbing_on_during_a_slow_save_keeps_focus_where_the_user_went(owner_pag
 
 
 def test_an_unsaved_choice_on_another_row_survives_a_slow_save(owner_page):
+    native_selects(owner_page)
     open_programs(owner_page)
     held: list = []
     owner_page.route(PROGRAM_STATUS, lambda route: held.append(route))
@@ -189,6 +239,7 @@ def test_the_students_own_programs_label_shows_at_once_after_a_reload(owner_page
 
 
 def test_a_row_that_leaves_the_sub_tab_hands_focus_to_the_next_row(owner_page):
+    native_selects(owner_page)
     owner_page.click("#programs-nav")
     expect(owner_page.locator('#subnav [data-subtab="open"]')).to_have_attribute("aria-current", "true")
     expect(owner_page.locator(".program-row")).to_have_count(1)
@@ -203,6 +254,7 @@ def test_a_row_that_leaves_the_sub_tab_hands_focus_to_the_next_row(owner_page):
 
 
 def test_arrow_keys_on_an_application_stage_send_no_patch(owner_page):
+    native_selects(owner_page)
     owner_page.click("#applications-nav")
     card = owner_page.locator(".application-card").first
     stage = card.get_by_label("Stage")
@@ -224,7 +276,26 @@ def test_arrow_keys_on_an_application_stage_send_no_patch(owner_page):
     assert json.loads(patches[0].post_data) == {"stage": chosen}
 
 
+def test_a_stage_picked_from_the_apps_own_list_saves_once(owner_page):
+    owner_page.click("#applications-nav")
+    stage = owner_page.locator(".application-card").first.get_by_label("Stage")
+    original = stage.input_value()
+    patches = record(owner_page, "PATCH", APPLICATION_PATCH)
+    stage.focus()
+    owner_page.keyboard.press("ArrowDown")
+    owner_page.keyboard.press("ArrowDown")
+    chosen = owner_page.evaluate("document.activeElement.value")
+    assert chosen != original
+    owner_page.wait_for_timeout(400)
+    assert patches == [], "moving through the open list saved (and audited) a stage"
+    with owner_page.expect_response(APPLICATION_PATCH):
+        owner_page.keyboard.press("Enter")
+    owner_page.wait_for_timeout(300)
+    assert [json.loads(patch.post_data) for patch in patches] == [{"stage": chosen}]
+
+
 def test_an_unsaved_stage_on_another_card_survives_a_slow_save(owner_page):
+    native_selects(owner_page)
     # A second application, so one card's reload can meet another card's edit.
     status = owner_page.evaluate(
         """async () => {

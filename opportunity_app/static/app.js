@@ -652,12 +652,19 @@
   // the select commits it, Escape puts the saved value back. A pointer choice
   // from the open list still saves at once. `commit(value, trigger)` runs at
   // most once at a time; trigger is "pointer", "enter", or "blur".
+  //
+  // Where the open list is the app's own (appearance: base-select in
+  // styles.css), arrows on the closed select open the list and only move
+  // through it, so nothing changes until a pick there (Enter, Space, or a
+  // click), which saves at once. A typed letter still changes a closed select
+  // directly, so it is still only browsing.
   const SELECT_BROWSE_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"]);
 
   function autoSaveSelect(select, { saved, commit }) {
     let browsing = false;
     let dirty = false;
     let busy = false;
+    let keyPick = false;
     const run = async (trigger) => {
       browsing = false;
       dirty = false;
@@ -669,8 +676,16 @@
         busy = false;
       }
     };
-    select.addEventListener("pointerdown", () => { browsing = false; });
+    select.addEventListener("pointerdown", () => { browsing = false; keyPick = false; });
     select.addEventListener("keydown", (event) => {
+      // A key on an option: the app's own list is open.
+      if (event.target !== select) {
+        if (event.key === "Enter" || event.key === " ") {
+          browsing = false;
+          keyPick = true;
+        }
+        return;
+      }
       if (event.key === "Enter") {
         if (dirty || select.value !== saved()) {
           event.preventDefault();
@@ -693,9 +708,13 @@
         dirty = true;
         return;
       }
-      run("pointer");
+      const trigger = keyPick ? "enter" : "pointer";
+      keyPick = false;
+      run(trigger);
     });
-    select.addEventListener("blur", () => {
+    select.addEventListener("blur", (event) => {
+      // Focus going into the app's own open list is not leaving the select either.
+      if (event.relatedTarget && select.contains(event.relatedTarget)) return;
       // A list rebuild removes the focused select, which fires blur; that is
       // not the user leaving it, so do not save a choice they are still making.
       queueMicrotask(() => {
