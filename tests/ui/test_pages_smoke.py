@@ -36,7 +36,7 @@ def test_unauthenticated_root_shows_the_auth_gate(page):
     expect(page.locator("#auth-gate")).to_have_class("auth-gate is-visible")
     expect(page.locator("#auth-title")).to_have_text("Open your pipeline")
     # The workspace must not leak behind the gate before a session exists.
-    expect(page.locator("#user-chip")).to_be_hidden()
+    expect(page.locator("#results .opportunity-card")).to_have_count(0)
 
 
 def test_owner_token_opens_the_workspace(page):
@@ -95,6 +95,8 @@ def test_each_authenticated_view_renders(owner_page, view):
     wait_for_results(owner_page)
     expect(owner_page.locator(f"#{view}-nav")).to_have_class("nav-item is-active")
     expect(owner_page.locator("#page-title")).to_have_text(VIEW_TITLES[view])
+    # No visible page header: the heading stays for screen readers and focus only.
+    expect(owner_page.locator("#page-title")).to_have_class("sr-only")
     expect(owner_page.locator("#error-banner")).to_be_hidden()
 
 

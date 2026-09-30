@@ -401,7 +401,6 @@ def test_signing_out_clears_private_data_and_signing_back_in_does_not_duplicate_
         owner_page.click("#logout-button")
     expect(owner_page.locator("#auth-gate")).to_have_class("auth-gate is-visible")
     expect(owner_page.locator("#results .opportunity-card")).to_have_count(0)
-    expect(owner_page.locator("#user-name")).to_have_text("")
     assert "Acme Robotics" not in owner_page.content()
 
     sign_in_as_owner(owner_page)
@@ -413,12 +412,11 @@ def test_signing_out_clears_private_data_and_signing_back_in_does_not_duplicate_
 
 @pytest.mark.allow_page_errors
 def test_an_expired_session_hides_the_previous_workspace(owner_page):
-    expect(owner_page.locator("#user-name")).to_have_text("Test Student")
+    expect(owner_page.locator("#results .opportunity-card").first).to_be_visible()
     owner_page.context.clear_cookies()
     owner_page.click("#saved-nav")
     expect(owner_page.locator("#auth-gate")).to_have_class("auth-gate is-visible")
     expect(owner_page.locator("#results .opportunity-card")).to_have_count(0)
-    expect(owner_page.locator("#user-name")).to_have_text("")
     expect(owner_page.locator("#stat-score")).to_have_text("—")
 
 

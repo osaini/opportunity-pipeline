@@ -94,11 +94,7 @@
     profileBadge: document.getElementById("profile-badge"),
     automationBanner: document.getElementById("automation-banner"),
     keyboardHint: document.getElementById("keyboard-hint"),
-    userChip: document.getElementById("user-chip"),
-    userName: document.getElementById("user-name"),
-    pageEyebrow: document.getElementById("page-eyebrow"),
     pageTitle: document.getElementById("page-title"),
-    pageLede: document.getElementById("page-lede"),
     search: document.getElementById("search-input"),
     role: document.getElementById("role-filter"),
     region: document.getElementById("region-filter"),
@@ -732,8 +728,6 @@
     discoverTagPicker.reset();
     state.company = "";
     renderCompanyFilter();
-    els.userName.textContent = "";
-    els.userChip.hidden = true;
     els.personalizePrompt.hidden = true;
     window.clearTimeout(state.refreshTimer);
     state.refresh = null;
@@ -774,8 +768,6 @@
     els.authGate.classList.remove("is-visible");
     els.authGate.setAttribute("aria-hidden", "true");
     setBackgroundInert("auth", false);
-    els.userName.textContent = session.display_name || "Local user";
-    els.userChip.hidden = false;
     els.tokenInput.value = "";
     // Refreshing rewrites every student's data, so only the owner is offered it.
     els.refreshOpen.hidden = state.userId !== "local-user";
@@ -9527,7 +9519,7 @@
   }
 
   // Early programs: the student's own researched list, from a private config
-  // file. Its name, audience, and evidence wording come from that file, so the
+  // file. Its name and evidence wording come from that file, so the
   // view carries nothing about any one student. The server buckets each entry
   // against today in the student's time zone; this view filters, labels, and
   // records the student's own status.
@@ -9539,7 +9531,7 @@
   ];
   const PROGRAM_STATUS_LABELS = { todo: "Not started", applied: "Applied", skipped: "Skipped" };
   const PROGRAM_EVIDENCE_TONES = { explicit: "is-region", not_named: "", unverified: "is-soon" };
-  const programsMeta = { label: "Programs", audience: "", evidence: { explicit: "Names your class year" } };
+  const programsMeta = { label: "Programs", evidence: { explicit: "Names your class year" } };
 
   function programsTabs(items = null) {
     const count = (test) => (items ? items.filter(test).length : undefined);
@@ -9556,17 +9548,11 @@
     ];
   }
 
-  function programsEyebrow() {
-    return programsMeta.audience ? `Programs that take ${programsMeta.audience}` : "Programs for your stage";
-  }
-
   function applyProgramsMeta(payload) {
     programsMeta.label = payload.label || "Programs";
-    programsMeta.audience = payload.audience || "";
     programsMeta.evidence = payload.evidence_labels || programsMeta.evidence;
     els.programsNavLabel.textContent = programsMeta.label;
     SUBNAV_TITLES.programs = programsMeta.label;
-    if (state.view === "programs") els.pageEyebrow.textContent = programsEyebrow();
   }
 
   // The student's own name for the tab, remembered in this browser so a reload
@@ -9584,7 +9570,7 @@
 
   function rememberProgramsMeta(userId, payload) {
     try {
-      localStorage.setItem(programsLabelKey(userId), JSON.stringify({ label: payload.label || "", audience: payload.audience || "" }));
+      localStorage.setItem(programsLabelKey(userId), JSON.stringify({ label: payload.label || "" }));
     } catch (_error) {
       // Storage blocked (private window): the label just arrives a moment later.
     }
@@ -9777,10 +9763,8 @@
     els.pageStatus.textContent = `${payload.counts.open} open now · ${payload.counts.upcoming} opening later`;
 
     const toolbar = element("div", "urgent-toolbar");
-    const checked = payload.checked_on
-      ? ` Researched ${formatCalendarDate(payload.checked_on)}; confirm on the official page before you apply.`
-      : "";
-    toolbar.appendChild(element("p", "urgent-note", `Today is ${formatCalendarDate(payload.today)}.${checked}`));
+    const checked = payload.checked_on ? `, last checked ${formatCalendarDate(payload.checked_on)}` : "";
+    toolbar.appendChild(element("p", "urgent-note", `Today is ${formatCalendarDate(payload.today)}. Dates come from your own research of each program page${checked}; confirm on the official page before you apply.`));
     els.results.appendChild(toolbar);
 
     if (payload.error || !payload.total) {
@@ -10182,25 +10166,7 @@
     els.displayToggle.hidden = !isCollection;
     els.results.classList.toggle("is-profile", view === "profile" || view === "prepare" || view === "agent");
     els.resultsEyebrow.textContent = view === "programs" ? "Soonest deadline first" : view === "urgent" ? "Overdue first, then the next 14 days" : view === "outreach" ? "Startup cold outreach" : view === "agent" ? "Auditable career copilot" : view === "prepare" ? "Evidence-grounded practice" : view === "profile" ? "Onboarding and evidence" : view === "applications" ? "Application tracker" : view === "saved" ? "Saved shortlist" : "Ready for review";
-    els.pageEyebrow.textContent = view === "programs" ? programsEyebrow() : view === "urgent" ? "Every date has a source" : view === "outreach" ? "Companies without a posting" : view === "agent" ? "Tools, evidence, approval" : view === "prepare" ? "Draft, review, approve" : view === "profile" ? "Private and confirmed by you" : view === "applications" ? "Your applications" : view === "saved" ? "Your chosen opportunities" : "Your live opportunity workspace";
     els.pageTitle.textContent = view === "programs" ? "Programs that fit where you are." : view === "urgent" ? "What needs doing next." : view === "outreach" ? "Reach the startups before they post." : view === "agent" ? "Ask your pipeline, then decide." : view === "prepare" ? "Prepare without inventing a thing." : view === "profile" ? "Build the profile behind every match." : view === "applications" ? "Keep every application moving." : view === "saved" ? "Return to the roles you chose." : "Find the roles worth your time.";
-    els.pageLede.textContent = view === "programs"
-      ? "Internships, research, scholarships, and externships researched for you, each labeled with how strongly its host says a student at your stage may apply. Dates come from your own research of each program page, so check them on the official page before you rely on one."
-      : view === "urgent"
-      ? "Deadlines, tasks, and follow-ups that carry a real date, with overdue items first. Each one says where its date came from; nothing is estimated from a posting's age."
-      : view === "outreach"
-      ? "Research, contacts, cold email drafts, and follow-ups for startups you pitch directly. Unverified contacts stay labeled until you confirm them."
-      : view === "agent"
-      ? "The agent reads only your authorized workspace, cites its tools, abstains when evidence is missing, and puts every mutation behind an approval card."
-      : view === "prepare"
-      ? "Every generated claim cites a confirmed profile field. You stay in control of edits, approvals, downloads, and practice recordings."
-      : view === "profile"
-      ? "Review every imported fact before it affects your profile. Your original files stay private and removable."
-      : view === "applications"
-      ? "Stages, notes, follow-ups, and tasks stay in one audited place."
-      : view === "saved"
-      ? "Your shortlist stays focused here, separate from new opportunities that still need a decision."
-      : "Every result keeps its source, freshness, and an honest explanation of why it ranked here.";
     if (view !== "outreach") state.outreachKeep.clear();
     renderSubnav(initialSubnavTabs(view));
     if (updateHistory) {

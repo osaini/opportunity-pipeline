@@ -333,11 +333,12 @@ def test_a_closed_program_reads_closed_never_days_left(owner_page):
     expect(owner_page.locator(f'.program-row[data-program-id="{FUTURE}"]')).to_contain_text("Closed early this cycle")
 
 
-def test_the_programs_lede_does_not_claim_host_published_dates(owner_page):
+def test_the_programs_note_does_not_claim_host_published_dates(owner_page):
     owner_page.click("#programs-nav")
-    lede = owner_page.locator("#page-lede")
-    expect(lede).to_contain_text("your own research")
-    expect(lede).not_to_contain_text("host published")
+    note = owner_page.locator("#results .urgent-note")
+    expect(note).to_contain_text("your own research")
+    expect(note).to_contain_text("confirm on the official page")
+    expect(note).not_to_contain_text("host published")
 
 
 def test_an_import_reports_its_result_after_the_reload(owner_page, tmp_path):
