@@ -62,6 +62,8 @@ AWAITING_REPLY = {"sent", "followed_up"}
 UNSENT_STATUSES = {"not_started", "drafted", "paused"}
 # Once a company writes back there may be a call to prepare for.
 CALL_PREP_STATUSES = {"replied", "call_scheduled", "offer"}
+# Why automation leaves a company alone once the student set it aside (outreach_targets.not_interested_at).
+NOT_INTERESTED = "You marked the company not interested"
 DEFAULT_FOLLOW_UP_DAYS = 7
 OUTREACH_ORIGINS = ("manual", "import", "discovery")
 # Where a target's location came from, most authoritative first. A deep search
@@ -153,7 +155,7 @@ EXPORT_FIELDS = [
     "location_inferred",
     "email_subject", "email_body", "draft_status",
     "follow_up_subject", "follow_up_body", "follow_up_status", "notes", "source_urls",
-    "researched_at", "research_confidence", "origin", "created_at", "updated_at",
+    "researched_at", "research_confidence", "origin", "not_interested_at", "created_at", "updated_at",
 ]
 # Set by the product, never by an import file or a PATCH.
 IMPORT_IGNORED_FIELDS = {"id", "created_at", "updated_at", "origin", "draft_status", "follow_up_status"}
@@ -247,7 +249,24 @@ def _normalize(payload: dict[str, Any], *, partial: bool) -> dict[str, Any]:
             values[field] = _clean_date(payload[field], field)
     if "source_urls" in payload:
         values["source_urls_json"] = json.dumps(_clean_urls(payload["source_urls"]))
+    # The app's Not interested button sends a boolean; an export file carries the time it was set.
+    if payload.get("not_interested") is not None:
+        values["not_interested_at"] = utc_now() if payload["not_interested"] is True else None
+    elif "not_interested_at" in payload:
+        values["not_interested_at"] = _clean_timestamp(payload["not_interested_at"])
     return values
+
+
+def _clean_timestamp(value: Any) -> str | None:
+    """An export file's not_interested_at: kept when it reads as a time, now when it is set but unreadable, None when empty."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return utc_now()
+    return text
 
 
 def draft_checks(subject: str, body: str) -> dict[str, Any]:
@@ -633,11 +652,12 @@ def _record(
     today = today or date.today()
     due = item.get("follow_up_at")
     # Not while an email from them may be a reply: the card asks about that first.
+    set_aside = bool(item.get("not_interested_at"))
     item["follow_up_due"] = bool(
-        due and item["status"] == "sent" and date.fromisoformat(due) <= today and not item["possible_reply_count"]
+        due and not set_aside and item["status"] == "sent" and date.fromisoformat(due) <= today and not item["possible_reply_count"]
     )
     item["revisit_due"] = bool(
-        due and item["status"] in REVISIT_STATUSES and date.fromisoformat(due) <= today
+        due and not set_aside and item["status"] in REVISIT_STATUSES and date.fromisoformat(due) <= today
     )
     item["mail_domains"] = json.loads(item.pop("mail_domains_json", None) or "[]")
     bounced = json.loads(item.pop("bounced_addresses_json", None) or "[]")
@@ -943,6 +963,25 @@ def _cancel_schedules(conn: sqlite3.Connection, target_id: str, user_id: str, ki
             _log(conn, target_id, user_id, "send_cancelled", detail=reason)
 
 
+def _stop_sends_not_interested(conn: sqlite3.Connection, target_id: str, user_id: str) -> None:
+    """Nothing automatic goes to a company the student set aside, an email already queued included.
+
+    Like cancel_send, this also stops one the worker is still checking; one
+    already handed to Gmail ('transmitting') is too far along. Runs inside the
+    caller's transaction.
+    """
+    from .outreach_thank_you import on_not_interested  # imported here: it imports this module
+
+    for kind in ("initial", "follow_up"):
+        if conn.execute(
+            "UPDATE outreach_scheduled_sends SET state='cancelled', error=?, updated_at=? "
+            "WHERE target_id=? AND user_id=? AND kind=? AND state IN ('scheduled', 'sending', 'failed')",
+            (f"{NOT_INTERESTED}, so it was not sent", utc_now(), target_id, user_id, kind),
+        ).rowcount:
+            _log(conn, target_id, user_id, "send_cancelled", detail=f"{NOT_INTERESTED}, so it was not sent")
+    on_not_interested(conn, target_id, user_id)
+
+
 def _apply_draft_side_effects(values: dict[str, Any], previous: dict[str, Any] | None) -> list[str]:
     """Any change to a draft's words or its recipient sends it back for review.
 
@@ -1179,11 +1218,15 @@ def list_targets(
     channel: str = "",
     query: str = "",
     today: date | None = None,
+    interested_only: bool = False,
 ) -> list[dict[str, Any]]:
+    """Every target, or with ``interested_only`` the ones not marked not interested (what automation may act on)."""
     today = today or local_today(conn, user_id)
     conn.row_factory = sqlite3.Row
     where = ["user_id=?"]
     params: list[Any] = [user_id]
+    if interested_only:
+        where.append("not_interested_at IS NULL")
     if status:
         where.append("status=?")
         params.append(status)
@@ -1385,6 +1428,8 @@ def _plan_target_update(
         values["location_inferred"] = 0
         if previous["location_basis"] in {"research", ""}:
             values["location_basis"] = "manual"
+    if "not_interested_at" in values and bool(values["not_interested_at"]) == bool(previous.get("not_interested_at")):
+        del values["not_interested_at"]
     _apply_status_side_effects(values, previous, today)
     readdressed = _readdress_drafts(values, previous, greeting_style(conn, user_id))
     withdrawn = _apply_draft_side_effects(values, previous)
@@ -1451,6 +1496,12 @@ def _write_target_update(
         raise _ConfirmRaced()
     if "status" in values and values["status"] != previous["status"]:
         _log(conn, target_id, user_id, "status", from_status=previous["status"], to_status=values["status"], detail=status_detail)
+    if "not_interested_at" in values:
+        if values["not_interested_at"]:
+            _log(conn, target_id, user_id, "not_interested", detail=NOT_INTERESTED)
+            _stop_sends_not_interested(conn, target_id, user_id)
+        else:
+            _log(conn, target_id, user_id, "interested_again", detail="You moved the company back into your outreach")
     if plan["research_reset"]:
         # Research and interviewer notes checked against the old company are dropped, not
         # printed as checked facts about the new one; call prep researches again.
@@ -1553,11 +1604,24 @@ def update_target(
     )
 
 
+class SetAsideError(ValueError):
+    """A company marked not interested is kept, so it cannot be deleted while it is set aside."""
+
+
 def delete_target(conn: sqlite3.Connection, target_id: str, *, user_id: str) -> bool:
-    """Delete a target and remember the company, so the deep search does not bring it back."""
-    row = conn.execute("SELECT company, website FROM outreach_targets WHERE id=? AND user_id=?", (target_id, user_id)).fetchone()
+    """Delete a target and remember the company, so the deep search does not bring it back.
+
+    A company marked not interested is kept: SetAsideError until it is moved back.
+    """
+    row = conn.execute(
+        "SELECT company, website, not_interested_at FROM outreach_targets WHERE id=? AND user_id=?", (target_id, user_id),
+    ).fetchone()
     if not row:
         return False
+    if row[2]:
+        raise SetAsideError(
+            f"{row[0]} is under Not interested, where it is kept. Move it back to your outreach first if you want to delete it."
+        )
     with conn:
         conn.execute("DELETE FROM outreach_targets WHERE id=? AND user_id=?", (target_id, user_id))
         # An email waiting as a possible reply moves to another company it could be from, or goes with this one.
@@ -1921,7 +1985,7 @@ def queue_follow_up_reminders(
     rows = conn.execute(
         f"""
         SELECT id, user_id, company, status, follow_up_at FROM outreach_targets
-        WHERE status IN ({', '.join('?' for _ in statuses)}) AND follow_up_at IS NOT NULL
+        WHERE status IN ({', '.join('?' for _ in statuses)}) AND follow_up_at IS NOT NULL AND not_interested_at IS NULL
         """,
         statuses,
     ).fetchall()

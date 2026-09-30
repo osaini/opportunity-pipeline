@@ -430,6 +430,20 @@ def _apply_apply_sensitive_company_name(conn: sqlite3.Connection, sql: str) -> N
     conn.executescript(sql)
 
 
+# When the student marked an outreach company not interested; NULL while it is in play.
+_OUTREACH_NOT_INTERESTED_COLUMNS = (
+    ("outreach_targets", "not_interested_at", "TEXT"),
+)
+
+
+def _apply_outreach_not_interested(conn: sqlite3.Connection, sql: str) -> None:
+    # Guarded like _apply_automation: running it again after a crash repairs it.
+    for table, column, definition in _OUTREACH_NOT_INTERESTED_COLUMNS:
+        if not _has_column(conn, table, column):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    conn.executescript(sql)
+
+
 # Migrations whose SQL alone cannot express the change: parsing timestamps is
 # not portable across SQLite and PostgreSQL, so a Python step owns it. Adding a
 # column is not repeatable, so a step owns that too.
@@ -445,6 +459,7 @@ _MIGRATION_STEPS: dict[str, Callable[[Any, str], None]] = {
     "0043_gmail_reply_labels.sql": _apply_gmail_reply_labels,
     "0045_apply_agent.sql": _apply_apply_agent,
     "0046_apply_sensitive_company_name.sql": _apply_apply_sensitive_company_name,
+    "0047_outreach_not_interested.sql": _apply_outreach_not_interested,
 }
 
 

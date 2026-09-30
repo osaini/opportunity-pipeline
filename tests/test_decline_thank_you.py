@@ -2388,5 +2388,27 @@ class ReviewFindingCardTests(DeclineCase):
         self.assertEqual(review["automatic_thank_you"]["problem"], "No model is set up on this computer to review thank-yous")
 
 
+
+class NotInterestedThankYouTests(DeclineCase):
+    def test_marking_the_company_not_interested_stops_a_waiting_thank_you(self):
+        target_id = self.planned()
+        self.assertEqual(self.scheduled(target_id)["state"], "scheduled")
+        marked = self.client.patch(f"/api/v1/outreach/{target_id}", headers=AUTH, json={"not_interested": True})
+        self.assertEqual(marked.status_code, 200, marked.text)
+        row = thank_you_row(self.conn, target_id, USER)
+        self.assertEqual((row["state"], row["note"]), ("cancelled", outreach_thank_you.NOT_INTERESTED_STOP))
+        self.assertEqual(self.scheduled(target_id)["state"], "cancelled")
+        self.assertEqual(self.run_due(target_id), [])
+        self.assertEqual(len(self.gmail.sent), 1, "only the first email ever went")
+
+    def test_a_thank_you_already_due_does_not_go_to_a_company_set_aside(self):
+        target_id = self.planned()
+        with self.conn:
+            self.conn.execute("UPDATE outreach_targets SET not_interested_at=? WHERE id=?", (utc_now(), target_id))
+        self.assertEqual([item["state"] for item in self.run_due(target_id)], ["cancelled"])
+        self.assertEqual(thank_you_row(self.conn, target_id, USER)["state"], "cancelled")
+        self.assertEqual(len(self.gmail.sent), 1, "only the first email ever went")
+
+
 if __name__ == "__main__":
     unittest.main()

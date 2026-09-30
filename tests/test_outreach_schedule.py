@@ -187,6 +187,30 @@ class ScheduledSendTests(unittest.TestCase):
         self.assertEqual(run_due_sends(self.conn, client_factory=self.factory, now=datetime.now(timezone.utc) + timedelta(days=9)), [])
         self.assertEqual(len(self.gmail.sent), 1)
 
+    def test_marking_the_company_not_interested_cancels_its_scheduled_email(self):
+        self.connect()
+        target = self.approved()
+        self.schedule(target)
+        send_at = self.target(target)["scheduled"]["initial"]["send_at"]
+        marked = self.client.patch(f"/api/v1/outreach/{target['id']}", headers=AUTH, json={"not_interested": True})
+        self.assertEqual(marked.status_code, 200, marked.text)
+        after = self.target(target)
+        self.assertEqual(after["scheduled"], {})
+        self.assertIn("You marked the company not interested, so it was not sent",
+                      [event["detail"] for event in after["events"] if event["event_type"] == "send_cancelled"])
+        self.assertEqual(run_due_sends(self.conn, client_factory=self.factory, now=datetime.fromisoformat(send_at) + timedelta(minutes=1)), [])
+        self.assertEqual(self.gmail.sent, [])
+
+    def test_an_email_already_due_does_not_go_to_a_company_set_aside(self):
+        # The mark and the worker can cross: the check just before sending reads the company again.
+        self.connect()
+        target = self.approved()
+        self.schedule(target)
+        with self.conn:
+            self.conn.execute("UPDATE outreach_targets SET not_interested_at=? WHERE id=?", (utc_now(), target["id"]))
+        self.assertEqual([item["state"] for item in self.due(target)], ["cancelled"])
+        self.assertEqual(self.gmail.sent, [])
+
     def test_marking_it_sent_by_hand_cancels_the_scheduled_copy(self):
         self.connect()
         target = self.approved()

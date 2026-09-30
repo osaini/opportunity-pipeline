@@ -171,6 +171,7 @@ SIGN_OFF = "Best"
 FULL_TEXT_LIMIT = 20_000
 WROTE_AGAIN = "They wrote again, so the thank-you was not sent. Read their reply."
 STUDENT_WROTE = "You wrote to them after their reply, so the thank-you was not sent."
+NOT_INTERESTED_STOP = "You marked the company not interested, so the thank-you was not sent."
 DRAFT_STARTED = "You started a reply to them in Gmail, so the thank-you was not sent."
 SWITCHED_OFF = "Send a thank-you when someone declines was turned off before it went, so it was not sent"
 JEV_OFF = "Jev inbox suggestions was turned off before it went, so it was not sent automatically"
@@ -1273,7 +1274,7 @@ def due(conn: sqlite3.Connection, user_id: str) -> list[str]:
     return [str(row[0]) for row in conn.execute(
         f"""
         SELECT t.id FROM outreach_targets t
-        WHERE t.user_id=? AND t.status IN ({', '.join('?' for _ in ELIGIBLE_STATUSES)})
+        WHERE t.user_id=? AND t.status IN ({', '.join('?' for _ in ELIGIBLE_STATUSES)}) AND t.not_interested_at IS NULL
           AND NOT EXISTS (SELECT 1 FROM outreach_thank_yous y WHERE y.target_id=t.id)
           AND EXISTS (SELECT 1 FROM outreach_events e WHERE e.target_id=t.id AND e.event_type='reply_logged')
         ORDER BY t.updated_at, t.id
@@ -1657,6 +1658,8 @@ def problem_now(
         return "cancelled", STUDENT_WROTE
     if not manual and target["status"] == "paused":
         return "cancelled", "The company is marked Paused, so the thank-you was not sent"
+    if not manual and target.get("not_interested_at"):
+        return "cancelled", NOT_INTERESTED_STOP
     if not manual and target["status"] not in ELIGIBLE_STATUSES:
         return "cancelled", f"The company is now marked {target['status'].replace('_', ' ')}, so the thank-you was not sent"
     if target["contact_bounced"] or thank_you["to_email"].casefold() in target["bounced_addresses"] or target.get("bounced_at"):
@@ -1857,10 +1860,19 @@ def on_new_reply(conn: sqlite3.Connection, target_id: str, user_id: str) -> None
     a thank-you their newer message may have overtaken. One already handed to
     Gmail is left to the claim's own check. Inside the caller's transaction.
     """
+    _stop_open(conn, target_id, user_id, WROTE_AGAIN)
+
+
+def on_not_interested(conn: sqlite3.Connection, target_id: str, user_id: str) -> None:
+    """The student marked the company not interested: a thank-you not yet on its way stops, as on_new_reply. Inside the caller's transaction."""
+    _stop_open(conn, target_id, user_id, NOT_INTERESTED_STOP)
+
+
+def _stop_open(conn: sqlite3.Connection, target_id: str, user_id: str, why: str) -> None:
     row = conn.execute("SELECT state FROM outreach_thank_yous WHERE target_id=? AND user_id=?", (target_id, user_id)).fetchone()
     if row is None or row["state"] not in OPEN_STATES:
         return
-    reason = _with_doubt(conn, target_id, user_id, str(row["state"]), WROTE_AGAIN)
+    reason = _with_doubt(conn, target_id, user_id, str(row["state"]), why)
     _stop_schedule(conn, target_id, user_id, reason)
     if _scheduled_state(conn, target_id, user_id) == "transmitting":
         return

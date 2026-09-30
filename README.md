@@ -975,6 +975,16 @@ confirm the recipient.
    (call, declined, come back later); nothing changes until you click it. After
    a follow-up goes unanswered for 14 days, the card suggests No response.
 
+**Not interested.** A company you no longer want to pursue gets **Not
+interested** on its card. It moves to the Not interested tab and leaves every
+other tab, All companies included. It is kept, never deleted: the deep search
+and imports still see it as tracked, so it is not proposed again, and **Remove
+company** is hidden until you move it back. Nothing automatic acts on it: no
+drafts, sends, follow-ups, thank-yous, reminders, Urgent entries, contact
+searches, or research, and an email already scheduled for it is cancelled.
+Replies from it are still recorded on its card. **Move back to outreach**
+returns it to the tab its status puts it in.
+
 Settings in `.env`:
 
 ```text

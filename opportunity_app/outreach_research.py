@@ -1381,7 +1381,8 @@ def due_for_research(conn: sqlite3.Connection, *, user_id: str, only_replied: bo
     from .outreach import CALL_PREP_STATUSES
 
     rows = conn.execute(
-        "SELECT id, status, tech_brief_at, tech_brief_json FROM outreach_targets WHERE user_id=? ORDER BY company COLLATE NOCASE",
+        "SELECT id, status, tech_brief_at, tech_brief_json FROM outreach_targets WHERE user_id=? AND not_interested_at IS NULL "
+        "ORDER BY company COLLATE NOCASE",
         (user_id,),
     ).fetchall()
     return [

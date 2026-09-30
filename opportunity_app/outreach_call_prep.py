@@ -1020,6 +1020,8 @@ def auto_queue_call_prep(conn: sqlite3.Connection, target_id: str, *, user_id: s
         target = get_target(conn, target_id, user_id=user_id, include_events=True)
         if target.get("call_prep") or (target.get("call_prep_job") or {}).get("state") in ACTIVE_JOB_STATES:
             return False
+        if target.get("not_interested_at"):
+            return False
         check_can_prep(target)
     except (OutreachNotFoundError, ValueError):
         return False
