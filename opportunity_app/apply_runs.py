@@ -84,6 +84,8 @@ GATE_RESET_KEY = "apply_gate_reset_at"
 BREAKER_LIMIT = 2
 BREAKER_WINDOW = 5
 RUNNER_COMPONENT = "apply_agent.runner"
+# The daily evidence purge's own health row, so a failed purge is not mixed with the runner's status.
+RETENTION_COMPONENT = "apply_agent.retention"
 # Greenhouse's own senders (data/application_senders.json), for a confirmation the reader could not match to a role.
 GREENHOUSE_SENDER_DOMAINS = ("greenhouse.io", "greenhouse-mail.io")
 
@@ -105,6 +107,9 @@ _LIMIT_MAXIMUM = {
 }
 
 LIVE_APPLICATION = "This application is already being submitted, or was submitted."
+STOPPED_EARLIER = "An earlier attempt stopped before anything was sent. Retry it."
+# A claim that stopped for the student before the hand-over: nothing left the app, so it blocks nothing.
+_STOPPED_UNSENT = "(c.state IN ('needs_you', 'failed') AND c.after_click=0)"
 # The acknowledgments a student can tick (the "ask" refusals): each is a code a start request may carry.
 ASK_COMPANY_LIMIT = "company_limit"
 ASK_RELEASED_JOB = "released_job"
@@ -496,8 +501,9 @@ def claim(
 ) -> dict[str, Any]:
     """Take the claim for one attempt, before any browser opens (5.2 rules 0 to 2, 6.1). Raises ClaimRefused.
 
-    In one transaction: the lock; the application, made at 'applying' if there is none; on a retry, the release of
-    every stopped attempt that sent nothing; the duplicate and limit checks (so a pause, a stage edit or a second
+    In one transaction: the lock; the application, made at 'applying' if there is none; for a student-started claim
+    (any mode but 'unattended') or a ``retry``, the release of every stopped attempt that sent nothing (5.2 rule 2:
+    only the worker's own unattended attempt may not release one); the duplicate and limit checks (so a pause, a stage edit or a second
     server process either lands first and is seen, or waits); then the insert. A unique-index conflict, which the
     checks should already have caught, is refused with the same sentences. Nothing is created when it is refused.
 
@@ -521,7 +527,7 @@ def claim(
                 conn, opportunity_id, user_id, event_type="apply_agent_started", detail={"mode": mode, "run_id": run_id},
                 timestamp=stamp,
             )
-            if retry:
+            if retry or mode != "unattended":
                 conn.execute(
                     "UPDATE application_submit_claims SET state='released', resolved_by='student', updated_at=? "
                     "WHERE user_id=? AND (application_id=? OR (ats=? AND job_ref=?)) AND after_click=0 AND state IN ('failed', 'needs_you')",
@@ -533,7 +539,8 @@ def claim(
             )
             if block is None:
                 block = _limit_check(conn, user_id, company, board_token, mode, moment)
-                if block is not None and block.code == ASK_COMPANY_LIMIT and ASK_COMPANY_LIMIT in acknowledged:
+                # The company tick is for a student-started attempt; unattended mode cannot tick past it (9.1).
+                if block is not None and block.code == ASK_COMPANY_LIMIT and ASK_COMPANY_LIMIT in acknowledged and mode != "unattended":
                     block = None
             if block is not None:
                 raise ClaimRefused(block.message, code=block.code, ask=block.kind == "ask")
@@ -565,18 +572,30 @@ def claim(
 
 
 def _conflict(conn: sqlite3.Connection, user_id: str, opportunity_id: str, ats: str, job_ref: str) -> ClaimRefused:
-    """The refusal for a unique-index conflict, named for the lock it hit."""
+    """The refusal for a unique-index conflict, named for the lock it hit.
+
+    An attempt that stopped before anything was sent (needs_you or failed, never handed over) is not called live or
+    submitted: a student-started claim releases it, so only an unattended one meets it here.
+    """
     mine = conn.execute(
         "SELECT 1 FROM application_submit_claims c JOIN applications a ON a.id=c.application_id "
-        "WHERE c.user_id=? AND a.opportunity_id=? AND c.state<>'released'",
+        f"WHERE c.user_id=? AND a.opportunity_id=? AND c.state<>'released' AND NOT ({_STOPPED_UNSENT})",
         (user_id, opportunity_id),
     ).fetchone()
     if mine is not None:
         return ClaimRefused(LIVE_APPLICATION, code="application")
     other = conn.execute(
-        "SELECT opportunity_id FROM application_submit_claims WHERE user_id=? AND ats=? AND job_ref=? AND state<>'released'",
+        f"SELECT opportunity_id FROM application_submit_claims c WHERE user_id=? AND ats=? AND job_ref=? AND state<>'released' AND NOT ({_STOPPED_UNSENT})",
         (user_id, ats, job_ref),
     ).fetchone()
+    if other is None:
+        stopped = conn.execute(
+            f"SELECT 1 FROM application_submit_claims c WHERE user_id=? AND state<>'released' AND {_STOPPED_UNSENT} "
+            "AND (application_id IN (SELECT id FROM applications WHERE opportunity_id=? AND user_id=?) OR (ats=? AND job_ref=?))",
+            (user_id, opportunity_id, user_id, ats, job_ref),
+        ).fetchone()
+        if stopped is not None:
+            return ClaimRefused(STOPPED_EARLIER, code="stopped_earlier")
     return ClaimRefused(_other_copy(conn, other["opportunity_id"]) if other else LIVE_APPLICATION, code="job" if other else "application")
 
 
@@ -804,6 +823,19 @@ def resolve_uncertain(
     return dict(_claim_row(conn, token, user_id))
 
 
+# What settled a submission, said in the stage event and the ledger row: (event source, ledger basis, sentence).
+_SETTLED_BY = {
+    "page": ("apply_agent:confirmation_page", "confirmation_page", "Greenhouse showed its confirmation page"),
+    "email": ("apply_agent:confirmation_email", "confirmation_email", "Greenhouse's confirmation email arrived"),
+    "student": ("apply_agent:student_confirmed", "student_confirmed", "you said it went through"),
+}
+
+
+def _settled_by(row: Any) -> tuple[str, str, str]:
+    """How this claim's submission was established, from resolved_by. A claim settled without one had the page."""
+    return _SETTLED_BY.get(row["resolved_by"], _SETTLED_BY["page"])
+
+
 def record_stage(
     conn: sqlite3.Connection, token: str, *, user_id: str, source: str | None = None, now: datetime | None = None,
 ) -> bool:
@@ -811,8 +843,9 @@ def record_stage(
 
     'record' moves an application that is still 'applying' to 'applied' (applied_at = when it was submitted): a
     stage the student changed meanwhile wins. 'ledger' goes through automation.perform and waits while paused.
-    'ask' never moves by itself; the student's "Mark as applied" passes ``source`` to make this same write. True
-    when the stage was settled one way or the other (stage_recorded is now 1).
+    'ask' never moves by itself; the student's "Mark as applied" passes ``source`` to make this same write. The
+    event's source says what settled the submission (the page, the email, or the student) unless one is passed.
+    True when the stage was settled one way or the other (stage_recorded is now 1).
     """
     stamp = _stamp(now)
     row = _claim_row(conn, token, user_id)
@@ -830,7 +863,7 @@ def record_stage(
         if stage is not None and stage["stage"] == "applying":
             actions._update_application_tx(
                 conn, row["application_id"], stage="applied", applied_at=row["submitted_at"], user_id=user_id,
-                source=source or "apply_agent:confirmation_page", timestamp=stamp,
+                source=source or _settled_by(row)[0], timestamp=stamp,
             )
         conn.execute(
             "UPDATE application_submit_claims SET stage_recorded=1 WHERE token=? AND user_id=? AND state='submitted'", (token, user_id),
@@ -839,19 +872,30 @@ def record_stage(
 
 
 def _ledger_stage(conn: sqlite3.Connection, row: Any) -> bool:
-    """Unattended mode's stage write, through the ledger. Waits while paused; needs the auto_apply switch (not built yet)."""
+    """Unattended mode's stage write, through the ledger. Waits while paused; needs the auto_apply switch (not built yet).
+
+    The claim is marked recorded only when the ledger holds the decision (a row, whatever its status) or the stage
+    had already moved on; perform returning None with the stage still 'applying' leaves it to the next pass (6.15).
+    """
     user_id = row["user_id"]
     if "auto_apply" not in automation.FEATURES or automation.mode(conn, user_id, "auto_apply") == "off" or automation.paused(conn, user_id):
         return False
     title, company = _title_of(conn, row["opportunity_id"])
-    automation.perform(
+    _, basis, how = _settled_by(row)
+    recorded = automation.perform(
         conn, user_id=user_id, feature="auto_apply", action_type="application.stage", subject_kind="application",
         subject_id=row["application_id"],
         after={"stage": "applied", "only_from": "applying", "applied_at": row["submitted_at"]},
         evidence={"claim": row["token"], "run_id": row["run_id"], "mode": row["mode"]},
-        summary=f"Applied to {title} at {company} (Greenhouse showed its confirmation page)", basis="confirmation_page",
+        summary=f"Applied to {title} at {company} ({how})", basis=basis,
         confidence=None, idempotency_key=f"apply:{row['token']}", auto=True,
     )
+    # None means nothing was written: a pause landed after the check above, or the stage was already past
+    # 'applying' (a stage the student set wins). Only the second is settled; the first waits for the resume.
+    if recorded is None:
+        stage = conn.execute("SELECT stage FROM applications WHERE id=? AND user_id=?", (row["application_id"], user_id)).fetchone()
+        if stage is None or stage["stage"] == "applying":
+            return False
     with conn:
         conn.execute("UPDATE application_submit_claims SET stage_recorded=1 WHERE token=? AND user_id=?", (row["token"], user_id))
     return True
@@ -893,6 +937,22 @@ def create_run(
              page_url, stamp, _iso(_parse(stamp) + timedelta(seconds=deadline_seconds)), stamp),
         )
     return run_id
+
+
+def link_run(conn: sqlite3.Connection, *, user_id: str, run_id: str, token: str) -> bool:
+    """Tie a run and its claim to each other, whichever was made first (claim() makes its token, create_run its id).
+
+    Crash recovery reads the link from either side, so a run made before its claim and a claim made before its run
+    both find each other. True when both rows were the student's and are now linked.
+    """
+    with conn:
+        run = conn.execute(
+            "UPDATE apply_runs SET claim_token=? WHERE id=? AND user_id=?", (token, run_id, user_id),
+        ).rowcount
+        claim = conn.execute(
+            "UPDATE application_submit_claims SET run_id=? WHERE token=? AND user_id=?", (run_id, token, user_id),
+        ).rowcount
+    return bool(run and claim)
 
 
 def heartbeat_run(conn: sqlite3.Connection, run_id: str, *, now: datetime | None = None) -> bool:
@@ -950,7 +1010,6 @@ def record_result(
     reasons: list[str] | None = None,
     after_click: bool | None = None,
     submitted_at: str | None = None,
-    resolved_by: str = "page",
     confirmation_seen: bool = False,
     watch: bool = True,
     evidence: dict[str, Any] | None = None,
@@ -968,6 +1027,9 @@ def record_result(
     """
     stamp = _stamp(now)
     settled = False
+    # Only a submission whose confirmation page was seen was settled by the page (5.2, 6.14). A stop for the
+    # student, a failure or an uncertain attempt is settled by no one yet: only the email or the student resolves it.
+    resolved_by = "page" if state == "submitted" and confirmation_seen else ""
     try:
         with conn:
             lock_user(conn, user_id)
@@ -1115,10 +1177,14 @@ def recover_stale(conn: sqlite3.Connection, now: datetime | None = None, *, user
     ).fetchall():
         if run["id"] in RUNNING_RUNS:
             continue
-        handed = conn.execute(
-            "SELECT after_click FROM application_submit_claims WHERE token=? AND user_id=?", (run["claim_token"], run["user_id"]),
-        ).fetchone() if run["claim_token"] else None
-        outcome = "unconfirmed" if handed is not None and handed["after_click"] else "failed"
+        # The claim is found from either side: the run's claim_token, or the claim's run_id (a run made before its claim).
+        claims = conn.execute(
+            "SELECT * FROM application_submit_claims WHERE user_id=? AND ((?<>'' AND token=?) OR run_id=?)",
+            (run["user_id"], run["claim_token"], run["claim_token"], run["id"]),
+        ).fetchall()
+        if any(item["state"] in ("claimed", "clicking") and claim_held(item, now=moment) for item in claims):
+            continue  # its attempt is still being worked: only the run's own heartbeat went quiet
+        outcome, body = _stopped_run(run["kind"], claims)
         with conn:
             done = _finish_run_tx(conn, run["id"], outcome=outcome, clean=False, plan_hash=None, stamp=_stamp(now),
                                   reasons=["The app stopped during this run"])
@@ -1126,10 +1192,24 @@ def recover_stale(conn: sqlite3.Connection, now: datetime | None = None, *, user
             counts["runs_failed"] += 1
             automation.notice(
                 conn, run["user_id"], event_key=f"apply-run-stopped:{run['id']}", level="warning",
-                title="The app stopped during an Apply for me run",
-                body="Nothing was sent." if outcome == "failed" else "Check whether your application arrived.",
+                title="The app stopped during an Apply for me run", body=body,
             )
     return counts
+
+
+def _stopped_run(kind: str, claims: list[Any]) -> tuple[str, str]:
+    """The outcome and notice body for an orphaned run: it says nothing was sent only when the app saw that nothing left.
+
+    A lookup or a rehearsal never submits, but it does send what was typed into a field to Greenhouse's lookup
+    service (5.5), so it says no application was sent and stops there. A submit or handoff run says 'Nothing was
+    sent.' only when its claim was found and was never handed over; with no claim found, or one handed over, it may
+    have reached Greenhouse.
+    """
+    if kind in ("lookup", "rehearsal"):
+        return "failed", "No application was sent."
+    if claims and not any(item["after_click"] for item in claims):
+        return "failed", "Nothing was sent."
+    return "unconfirmed", "Check whether your application arrived."
 
 
 def students_to_watch(conn: sqlite3.Connection, now: datetime | None = None) -> list[str]:
@@ -1182,10 +1262,11 @@ def run_worker_step(conn: sqlite3.Connection, *, apply_root: Path | None = None,
                 with conn:
                     automation._put_setting(conn, user_id, PURGE_LAST_RUN_KEY, _iso(_at(now)), _stamp(now))
                 report["purged"].append(user_id)
+                _record_runner(conn, user_id, ok=True, component=RETENTION_COMPONENT)
             except Exception as exc:  # noqa: BLE001
                 LOGGER.exception("Apply for me evidence retention failed for one student")
                 _rollback(conn)
-                _record_runner(conn, user_id, ok=False, error=exc)
+                _record_runner(conn, user_id, ok=False, error=exc, component=RETENTION_COMPONENT)
     return report
 
 
@@ -1196,11 +1277,13 @@ def _rollback(conn: sqlite3.Connection) -> None:
         pass
 
 
-def _record_runner(conn: sqlite3.Connection, user_id: str, *, ok: bool, error: Exception | None = None) -> None:
+def _record_runner(
+    conn: sqlite3.Connection, user_id: str, *, ok: bool, error: Exception | None = None, component: str = RUNNER_COMPONENT,
+) -> None:
     from .outreach_inbox import _step_error  # imported here: it pulls in the whole mail reader
 
     try:
-        automation.record_health(conn, user_id, RUNNER_COMPONENT, ok=ok, error=_step_error(error) if error else "")
+        automation.record_health(conn, user_id, component, ok=ok, error=_step_error(error) if error else "")
     except Exception:  # noqa: BLE001 - a health row never stops the pass
         _rollback(conn)
 
@@ -1270,7 +1353,7 @@ def purge_evidence(
             with conn:
                 conn.execute("UPDATE apply_runs SET screenshots_json=? WHERE id=?", (_dumps(shots), row["id"]))
             counts["apply_screenshots_removed"] += removed
-    counts["apply_orphan_files_removed"] = _remove_orphans(conn, root, user_id)
+    counts["apply_orphan_files_removed"] = _remove_orphans(conn, root, user_id, now)
     trim = _iso(moment - timedelta(days=PROGRESS_KEEP_DAYS))
     for row in conn.execute(
         f"SELECT id, progress_json FROM apply_runs WHERE status='finished' AND started_at<? AND progress_json<>'[]' {scope}", (trim, *args),
@@ -1283,18 +1366,22 @@ def purge_evidence(
     return counts
 
 
-def _remove_orphans(conn: sqlite3.Connection, root: Path, user_id: str | None) -> int:
-    """Files under a student's folder that no run row references, and whose run is not still working."""
+def _remove_orphans(conn: sqlite3.Connection, root: Path, user_id: str | None, now: datetime | None = None) -> int:
+    """Files under a student's folder that no run row references, whose run is not still working, and that are not new."""
     if not root.is_dir():
         return 0
     folders = [root / user_folder(user_id)] if user_id else [child for child in root.iterdir() if child.is_dir() and _USER_FOLDER.match(child.name)]
+    # Read the working runs first: one that records its screenshots and finishes between the two reads is then in
+    # 'referenced' (read second) and cannot fall in neither set. A file made moments ago is left as well; a crash
+    # orphan is old by definition.
+    working = {str(row[0]) for row in conn.execute("SELECT id FROM apply_runs WHERE status='running'").fetchall()}
     referenced: set[Path] = set()
     for row in conn.execute("SELECT screenshots_json FROM apply_runs WHERE screenshots_json<>'[]'").fetchall():
         for shot in _loads(row["screenshots_json"], []):
             stored = str(shot.get("path") or "") if isinstance(shot, dict) else ""
             if stored:
                 referenced.add(_screenshot_file(root, stored).resolve())
-    working = {str(row[0]) for row in conn.execute("SELECT id FROM apply_runs WHERE status='running'").fetchall()}
+    fresh = (_at(now) - HELD_HEARTBEAT).timestamp()
     removed = 0
     for folder in folders:
         if not folder.is_dir():
@@ -1310,6 +1397,8 @@ def _remove_orphans(conn: sqlite3.Connection, root: Path, user_id: str | None) -
             if path.resolve() in referenced or (named and named.group(1) in working):
                 continue
             try:
+                if path.stat().st_mtime > fresh:
+                    continue
                 path.unlink()
             except OSError:
                 continue

@@ -284,13 +284,10 @@ class ClaimTests(ApplyCase):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM application_submit_claims").fetchone()[0], 1)
         self.assertEqual(len(apply_runs.RUNNING), 1, "only the claim that was made is held")
 
-    def test_a_retry_releases_an_attempt_that_sent_nothing_and_never_one_that_did(self):
+    def test_starting_again_releases_an_attempt_that_sent_nothing_and_never_one_that_did(self):
         first = self.start("job-1", "handoff", now=self.at(1))
         apply_runs.settle(self.conn, first["token"], user_id=USER, state="needs_you", note="A required question has no answer", now=self.at(2))
-        with self.assertRaises(ClaimRefused) as caught:
-            self.start("job-1", "handoff", now=self.at(3))  # not a retry: a stopped attempt is not released by itself
-        self.assertEqual(str(caught.exception), apply_runs.LIVE_APPLICATION)
-        second = self.start("job-1", "handoff", retry=True, now=self.at(4))
+        second = self.start("job-1", "handoff", now=self.at(4))  # nothing was sent, so a student's next start releases it
         self.assertEqual(self.claim_row(first["token"])["state"], "released")
         self.assertEqual(self.claim_row(first["token"])["resolved_by"], "student")
         self.assertEqual(self.claim_row(second["token"])["state"], "claimed")
@@ -299,10 +296,41 @@ class ClaimTests(ApplyCase):
         apply_runs.settle(self.conn, second["token"], user_id=USER, state="needs_you", note="Greenhouse asked for a security code", now=self.at(6))
         row = self.claim_row(second["token"])
         self.assertEqual((row["state"], row["after_click"]), ("needs_you", 1))
-        with self.assertRaises(ClaimRefused) as caught:
-            self.start("job-1", "handoff", retry=True, now=self.at(60))
-        self.assertEqual(str(caught.exception), "Greenhouse asked for a security code", "the claim's own note says why")
+        for retry in (True, False):
+            with self.assertRaises(ClaimRefused) as caught:
+                self.start("job-1", "handoff", retry=retry, now=self.at(60))
+            self.assertEqual(str(caught.exception), "Greenhouse asked for a security code", "the claim's own note says why")
         self.assertEqual(self.claim_row(second["token"])["state"], "needs_you")
+
+    def test_an_attempt_the_app_stopped_before_hand_over_does_not_block_the_next_start(self):
+        first = self.start("job-1", "handoff", now=self.at(-10))
+        apply_runs.forget(first["token"])
+        apply_runs.recover_stale(self.conn, self.at())
+        row = self.claim_row(first["token"])
+        self.assertEqual((row["state"], row["after_click"]), ("failed", 0))
+        self.assertIn("Nothing was sent", row["note"])
+        self.assertIsNone(apply_runs.duplicate_block(self.conn, USER, opportunity_id="job-1", ats="greenhouse", job_ref="bluefin/job-1",
+                                                     company=company_key(BLUEFIN), application_id="app-job-1", now=self.at()))
+        again = self.start("job-1", "one_click", now=self.at(1), confirmed_at=self.at().isoformat(), acknowledged=())
+        self.assertEqual(self.claim_row(first["token"])["state"], "released")
+        self.assertEqual(self.claim_row(again["token"])["state"], "claimed")
+
+    def test_unattended_mode_never_releases_a_stopped_attempt_and_says_why_honestly(self):
+        first = self.start("job-1", "handoff", now=self.at(1))
+        apply_runs.settle(self.conn, first["token"], user_id=USER, state="needs_you", note="A required question has no answer", now=self.at(2))
+        with self.assertRaises(ClaimRefused) as caught:
+            self.start("job-1", "unattended", now=self.at(60))
+        self.assertEqual((caught.exception.code, str(caught.exception)), ("stopped_earlier", apply_runs.STOPPED_EARLIER))
+        self.assertNotIn("submitted", str(caught.exception))
+        self.assertEqual(self.claim_row(first["token"])["state"], "needs_you", "rule 2: the worker releases nothing")
+
+    def test_unattended_mode_cannot_tick_past_the_company_limit(self):
+        self.raw_claim(state="submitted", handed_over_at=self.at(-120).isoformat(timespec="microseconds"), company=BLUEFIN)
+        self.opportunity("job-2", BLUEFIN)
+        with self.assertRaises(ClaimRefused) as caught:
+            self.start("job-2", "unattended", job="bluefin/2002", now=self.at(), acknowledged=("company_limit",))
+        self.assertEqual(caught.exception.code, "company_limit")
+        self.start("job-2", "handoff", job="bluefin/2002", now=self.at(), acknowledged=("company_limit",))
 
 
 class DuplicateChecks(ApplyCase):
@@ -580,6 +608,57 @@ class HeartbeatAndRecovery(ApplyCase):
         self.assertEqual(self.claim_row(claim["token"])["state"], "unconfirmed")
         self.assertEqual(apply_runs.get_run(self.conn, run_id, user_id=USER)["outcome"], "unconfirmed")
 
+    def notice_bodies(self):
+        return {row["title"]: row["body"] for row in automation.list_notices(self.conn, USER, limit=50)}
+
+    def test_a_run_made_before_its_claim_is_found_through_the_claims_run_id(self):
+        run_id = self.make_run("handoff", opportunity_id="job-1", started=self.at(-10))
+        claim = self.start("job-1", "handoff", now=self.at(-10), run_id=run_id)  # run first: the run's claim_token is still ''
+        self.assertEqual(apply_runs.get_run(self.conn, run_id, user_id=USER)["claim_token"], "")
+        self.assertTrue(apply_runs.hand_over(self.conn, claim["token"], user_id=USER, now=self.at(-9)))
+        apply_runs.forget(claim["token"])
+        apply_runs.recover_stale(self.conn, self.at())
+        self.assertEqual(self.claim_row(claim["token"])["state"], "unconfirmed")
+        self.assertEqual(apply_runs.get_run(self.conn, run_id, user_id=USER)["outcome"], "unconfirmed")
+        bodies = self.notice_bodies()
+        self.assertEqual(bodies["The app stopped during an Apply for me run"], "Check whether your application arrived.")
+        self.assertNotIn("Nothing was sent.", bodies.values(), "it was handed over, so nobody can say that")
+
+    def test_a_submit_run_says_nothing_was_sent_only_when_its_claim_was_never_handed_over(self):
+        before = self.start("job-1", "handoff", now=self.at(-10))
+        run_before = self.make_run("handoff", opportunity_id="job-1", started=self.at(-10), claim_token=before["token"])
+        apply_runs.forget(before["token"])
+        apply_runs.recover_stale(self.conn, self.at())
+        self.assertEqual(apply_runs.get_run(self.conn, run_before, user_id=USER)["outcome"], "failed")
+        self.assertEqual(self.notice_bodies()["The app stopped during an Apply for me run"], "Nothing was sent.")
+        # A submit run with no claim at all: the app cannot say what left.
+        orphan = self.make_run("submit", opportunity_id="job-9", started=self.at(-10))
+        apply_runs.recover_stale(self.conn, self.at(1))
+        self.assertEqual(apply_runs.get_run(self.conn, orphan, user_id=USER)["outcome"], "unconfirmed")
+
+    def test_a_lookup_or_rehearsal_never_claims_that_nothing_was_sent(self):
+        for kind in ("lookup", "rehearsal"):
+            run_id = self.make_run(kind, opportunity_id=f"op-{kind}", started=self.at(-10))
+            apply_runs.recover_stale(self.conn, self.at())
+            self.assertEqual(apply_runs.get_run(self.conn, run_id, user_id=USER)["outcome"], "failed")
+        bodies = set(self.notice_bodies().values())
+        self.assertEqual(bodies, {"No application was sent."}, "typed text does reach Greenhouse's lookup service, so not 'nothing'")
+
+    def test_a_run_whose_claim_is_still_held_is_not_recovered_because_only_its_own_heartbeat_went_quiet(self):
+        claim = self.start("job-1", "handoff", now=self.at(-10))
+        run_id = self.make_run("handoff", opportunity_id="job-1", started=self.at(-10), claim_token=claim["token"])
+        apply_runs.recover_stale(self.conn, self.at())  # the claim is in RUNNING: held
+        self.assertEqual(apply_runs.get_run(self.conn, run_id, user_id=USER)["status"], "running")
+        self.assertEqual(self.claim_row(claim["token"])["state"], "claimed")
+
+    def test_link_run_ties_both_rows_together(self):
+        claim = self.start("job-1", "handoff", now=self.at(1))
+        run_id = self.make_run("handoff", opportunity_id="job-1", started=self.at(1))
+        self.assertTrue(apply_runs.link_run(self.conn, user_id=USER, run_id=run_id, token=claim["token"]))
+        self.assertEqual(apply_runs.get_run(self.conn, run_id, user_id=USER)["claim_token"], claim["token"])
+        self.assertEqual(self.claim_row(claim["token"])["run_id"], run_id)
+        self.assertFalse(apply_runs.link_run(self.conn, user_id="someone-else", run_id=run_id, token=claim["token"]))
+
 
 class SettleTests(ApplyCase):
     def test_a_settle_that_finds_the_claim_released_still_reports_a_seen_confirmation(self):
@@ -633,6 +712,7 @@ class SettleTests(ApplyCase):
         self.assertEqual((run["status"], run["outcome"]), ("finished", "submitted"))
         self.assertEqual(json.loads(run["evidence_json"])["post_status"], 302)
         self.assertEqual(self.claim_row(claim["token"])["stage_recorded"], 1)
+        self.assertEqual(self.claim_row(claim["token"])["resolved_by"], "page", "a seen confirmation page settled it")
         self.assertIn("apply_agent_submitted", self.events("app-job-1"))
         self.assertIn("Greenhouse showed its confirmation page for your application to Controls Intern at Bluefin Robotics", self.notices())
         # handoff under D1 B ('ask'): recorded as submitted, and the stage does not move by itself.
@@ -662,9 +742,60 @@ class SettleTests(ApplyCase):
                                  note="A required question has no saved answer", reasons=["A required question has no saved answer"], now=self.at(2))
         row = self.claim_row(claim["token"])
         self.assertEqual((row["state"], row["after_click"]), ("needs_you", 0))
+        self.assertEqual(row["resolved_by"], "", "a stop for the student was not settled by the confirmation page")
         self.assertEqual(self.stage("job-1")[0], "applying")
         self.assertIn("Bluefin Robotics: your application needs you", self.notices())
         self.assertEqual(apply_runs.RUNNING, set())
+
+    def test_only_a_seen_confirmation_page_is_recorded_as_settled_by_the_page(self):
+        for number, (state, after_click, seen) in enumerate((("failed", False, False), ("unconfirmed", True, False), ("needs_you", True, False),
+                                                              ("submitted", True, False))):
+            opportunity = f"job-{number}"
+            self.opportunity(opportunity, ("Alpha", "Bravo", "Charlie", "Delta")[number] + " Robotics")  # the company limit is per company
+            claim = self.start(opportunity, "handoff", job=f"bluefin/{number}", board=f"board-{number}", now=self.at(number * 60))
+            apply_runs.hand_over(self.conn, claim["token"], user_id=USER, now=self.at(number * 60 + 1)) if after_click else None
+            run_id = self.make_run("handoff", opportunity_id=opportunity, started=self.at(number * 60), claim_token=claim["token"])
+            apply_runs.record_result(self.conn, user_id=USER, token=claim["token"], run_id=run_id, state=state, outcome=state,
+                                     after_click=after_click, confirmation_seen=seen, now=self.at(number * 60 + 2))
+            with self.subTest(state=state, seen=seen):
+                self.assertEqual(self.claim_row(claim["token"])["resolved_by"], "")
+
+    def test_the_stage_change_after_it_went_through_says_who_settled_it(self):
+        expected = {"student": "apply_agent:student_confirmed", "page": "apply_agent:confirmation_page", "email": "apply_agent:confirmation_email"}
+        for number, (resolved_by, source) in enumerate(expected.items()):
+            handed = self.at(number * 60 - 5).isoformat(timespec="microseconds")
+            token = self.raw_claim(state="unconfirmed" if resolved_by == "student" else "submitted", stage_policy="record", handed_over_at=handed,
+                                   submitted_at=handed)
+            if resolved_by == "student":
+                apply_runs.resolve_uncertain(self.conn, token, user_id=USER, went_through=True, now=self.at(number * 60))
+            else:
+                with self.conn:
+                    self.conn.execute("UPDATE application_submit_claims SET resolved_by=? WHERE token=?", (resolved_by, token))
+                self.assertTrue(apply_runs.record_stage(self.conn, token, user_id=USER, now=self.at(number * 60)))
+            row = self.claim_row(token)
+            detail = self.conn.execute(
+                "SELECT detail_json FROM application_events WHERE application_id=? AND event_type='stage_changed'", (row["application_id"],),
+            ).fetchall()
+            with self.subTest(resolved_by=resolved_by):
+                self.assertEqual(self.stage(row["opportunity_id"])[0], "applied")
+                self.assertTrue(detail and source in detail[-1]["detail_json"], (source, [item["detail_json"] for item in detail]))
+
+    def test_the_ledger_stage_is_not_recorded_when_perform_wrote_nothing(self):
+        feature = automation.Feature("auto_apply", "Test auto apply", "A stand-in for the unattended switch", "applications", "external")
+        automation.register(feature)
+        self.addCleanup(automation.FEATURES.pop, "auto_apply", None)
+        automation.set_mode(self.conn, USER, "auto_apply", "on")
+        token = self.raw_claim(state="submitted", stage_policy="ledger", submitted_at=self.at(-5).isoformat(timespec="microseconds"))
+        with mock.patch.object(automation, "perform", return_value=None):  # a pause landed between the check and the write
+            self.assertEqual(apply_runs.recover_stale(self.conn, self.at())["stage_retried"], 0)
+        self.assertEqual(self.claim_row(token)["stage_recorded"], 0, "nothing was written, so the next pass tries again")
+        self.assertEqual(apply_runs.recover_stale(self.conn, self.at(1))["stage_retried"], 1)
+        self.assertEqual(self.claim_row(token)["stage_recorded"], 1)
+        # A stage that has already moved on (the student applied by hand) is settled, not retried for ever.
+        other = self.raw_claim(state="submitted", stage_policy="ledger", submitted_at=self.at(-5).isoformat(timespec="microseconds"))
+        actions.update_application(self.conn, self.claim_row(other)["application_id"], stage="applied", user_id=USER)
+        self.assertEqual(apply_runs.recover_stale(self.conn, self.at(2))["stage_retried"], 1)
+        self.assertEqual(self.claim_row(other)["stage_recorded"], 1)
 
 
 class LimitTests(ApplyCase):
@@ -896,16 +1027,31 @@ class ReaderTests(ApplyCase):
             self.assertIn(kind, urgent.KIND_PRIORITY)
         self.assertEqual(set(urgent.DATE_SOURCE_LABELS), set(urgent.KIND_PRIORITY), "a kind in only one raises KeyError in the queue")
 
+    def test_urgent_calls_an_attempt_that_may_have_reached_greenhouse_uncertain_and_lets_a_stopped_one_age_out(self):
+        old = self.at(-60 * 24 * 90).isoformat(timespec="microseconds")
+        handed = self.at(-60 * 24 * 90 - 5).isoformat(timespec="microseconds")
+        after = self.raw_claim(state="needs_you", mode="handoff", handed_over_at=handed, updated_at=old)  # a security code, after the POST
+        before = self.raw_claim(state="needs_you", mode="handoff", updated_at=self.at(-60).isoformat(timespec="microseconds"))
+        stale = self.raw_claim(state="needs_you", mode="handoff", updated_at=old)
+        moved = self.raw_claim(state="needs_you", mode="handoff", updated_at=self.at(-60).isoformat(timespec="microseconds"))
+        with self.conn:
+            self.conn.execute("UPDATE applications SET stage='rejected' WHERE id=?", (self.claim_row(moved)["application_id"],))
+        found = {item["key"]: item for item in urgent.urgent_queue(self.conn, user_id=USER, now=self.at())["items"] if item["kind"].startswith("apply_")}
+        self.assertEqual(found[f"apply_needs_you:{after}"]["subtitle"], "It may or may not have gone through")
+        self.assertEqual(found[f"apply_needs_you:{before}"]["subtitle"], "It needs you")
+        self.assertNotIn(f"apply_needs_you:{stale}", found, "an attempt that sent nothing ages out like any other row")
+        self.assertNotIn(f"apply_needs_you:{moved}", found, "the role moved on, so there is nothing left to ask")
+
     def test_urgent_lists_attempts_that_need_the_student_and_submissions_no_email_came_for(self):
         old = self.at(-60 * 24 * 90).isoformat(timespec="microseconds")
-        needs = self.raw_claim(state="needs_you", mode="handoff", updated_at=old)
+        needs = self.raw_claim(state="needs_you", mode="handoff", handed_over_at=old, updated_at=old)
         unconfirmed = self.raw_claim(state="unconfirmed", mode="handoff", handed_over_at=old, updated_at=self.at(-60 * 25).isoformat(timespec="microseconds"))
         silent = self.raw_claim(state="submitted", mode="handoff", handed_over_at=old, verification="no_email_24h", stage_recorded=1,
-                                updated_at=self.at(-60 * 3).isoformat(timespec="microseconds"))
+                                updated_at=self.at(-60 * 31).isoformat(timespec="microseconds"))
         self.raw_claim(state="submitted", mode="handoff", handed_over_at=old, verification="awaiting_email", stage_recorded=1)
         self.raw_claim(state="claimed", mode="handoff")
         with self.conn:
-            self.conn.execute("UPDATE application_submit_claims SET verified_at=? WHERE token=?", (self.at(-60 * 2).isoformat(timespec="microseconds"), silent))
+            self.conn.execute("UPDATE application_submit_claims SET verified_at=? WHERE token=?", (self.at(-60 * 30).isoformat(timespec="microseconds"), silent))
         queue = urgent.urgent_queue(self.conn, user_id=USER, now=self.at())
         found = {item["key"]: item for item in queue["items"] if item["kind"].startswith("apply_")}
         self.assertEqual(set(found), {f"apply_needs_you:{needs}", f"apply_needs_you:{unconfirmed}", f"apply_no_email:{silent}"},
@@ -992,6 +1138,19 @@ class WorkerStepTests(ApplyCase):
         self.assertFalse(second.exists())
         self.assertEqual(report["apply"]["purged"], [USER])
 
+    def test_a_purge_that_works_again_records_its_own_health_after_a_failure(self):
+        apply_root = self.root / "apply"
+        with mock.patch.object(apply_runs, "purge_evidence", side_effect=RuntimeError("the disk went away")):
+            self.worker(apply_root).run_once()
+        health = {row["component"]: row for row in automation.health_summary(self.conn, USER)["components"]}
+        self.assertIn("the disk went away", health["apply_agent.retention"]["last_error"])
+        self.worker(apply_root).run_once()
+        row = self.conn.execute("SELECT last_ok_at, last_error_at FROM automation_health WHERE user_id=? AND component='apply_agent.retention'", (USER,)).fetchone()
+        self.assertTrue(row["last_ok_at"] and row["last_ok_at"] > row["last_error_at"], "the next good purge clears the Error chip")
+        self.assertIsNone(self.conn.execute(
+            "SELECT 1 FROM automation_health WHERE user_id=? AND component='apply_agent.runner' AND last_error_at IS NOT NULL", (USER,)).fetchone(),
+            "the runner's own status is not mixed with retention")
+
     def test_without_an_apply_root_no_file_is_ever_touched(self):
         apply_root = self.root / "apply"
         old = self.screenshot(apply_root, "op-1", days_ago=200)
@@ -1055,6 +1214,7 @@ class RetentionTests(ApplyCase):
         folder.mkdir(parents=True)
         orphan = folder / f"run-{'0' * 32}-fill.png"
         orphan.write_bytes(b"crashed mid-screenshot")
+        os.utime(orphan, (self.at(-60).timestamp(), self.at(-60).timestamp()))  # a crash orphan is old
         (apply_root / "hash-key").write_bytes(b"k" * 32)
         elsewhere = apply_root / "not-a-user-folder"
         elsewhere.mkdir()
@@ -1066,6 +1226,18 @@ class RetentionTests(ApplyCase):
         self.assertTrue(kept.exists() and running.exists())
         self.assertEqual((apply_root / "hash-key").read_bytes(), b"k" * 32)
         self.assertTrue((elsewhere / "note.txt").exists())
+
+    def test_a_file_made_moments_ago_is_left_even_when_no_run_names_it_yet(self):
+        # A run can save a screenshot and finish between the two reads of the sweep; a fresh file is never a crash orphan.
+        apply_root = self.root / "apply"
+        folder = apply_root / apply_runs.user_folder(USER) / "op-1"
+        folder.mkdir(parents=True)
+        fresh = folder / f"run-{'2' * 32}-fill.png"
+        fresh.write_bytes(b"just saved")
+        self.assertEqual(apply_runs.purge_evidence(self.conn, apply_root=apply_root, now=datetime.now(timezone.utc))["apply_orphan_files_removed"], 0)
+        self.assertTrue(fresh.exists())
+        later = datetime.now(timezone.utc) + timedelta(minutes=10)
+        self.assertEqual(apply_runs.purge_evidence(self.conn, apply_root=apply_root, now=later)["apply_orphan_files_removed"], 1)
 
     def test_a_path_outside_the_folder_is_cleared_but_the_file_is_left_alone(self):
         apply_root = self.root / "apply"

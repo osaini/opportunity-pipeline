@@ -84,8 +84,9 @@ KIND_PRIORITY = {
     "apply_needs_you": 1,
     "apply_no_email": 2,
 }
-# Rows that wait for the student however old they are: the attempt may have reached the employer.
-NEVER_EXPIRING_KINDS = ("outreach_possible_reply", "apply_needs_you")
+# Rows that wait for the student however old they are: an email that may be a reply. An Apply for me attempt that
+# may have reached the employer says so itself (never_expires, in _apply_rows); one that sent nothing ages out.
+NEVER_EXPIRING_KINDS = ("outreach_possible_reply",)
 
 _DATE_ONLY = re.compile(r"\d{4}-\d{2}-\d{2}")
 # Warnings about one malformed record are logged once per process, so the nav
@@ -495,20 +496,28 @@ def _apply_rows(conn: sqlite3.Connection, user_id: str) -> list[dict[str, Any]]:
     """Apply for me attempts that need the student, and submissions no confirmation email came for.
 
     An attempt that may have reached Greenhouse ('unconfirmed', or 'needs_you' or 'failed' after the
-    hand-over), or one that stopped for the student ('needs_you'), waits until they settle it. A submission whose
-    24 hour look ended with no email says so and never suggests applying again: some employers send none.
+    hand-over) waits until they settle it, however old, and says it may or may not have gone through. One that
+    stopped for the student before anything was sent ('needs_you', never handed over) is listed only while the
+    application is still 'applying' and ages out like any other row: once the student applied by hand or the
+    role moved on, it has nothing left to ask. A submission whose 24 hour look ended with no email says so and
+    never suggests applying again: some employers send none.
     """
     rows = []
     for row in conn.execute(
         """
-        SELECT c.token, c.state, c.verification, c.updated_at, c.verified_at, c.application_id, o.id AS opportunity_id, o.company, o.title
+        SELECT c.token, c.state, c.after_click, c.verification, c.updated_at, c.verified_at, c.application_id,
+               o.id AS opportunity_id, o.company, o.title, a.stage AS application_stage
         FROM application_submit_claims c JOIN opportunities o ON o.id = c.opportunity_id
+        LEFT JOIN applications a ON a.id = c.application_id
         WHERE c.user_id = ? AND (c.state IN ('unconfirmed', 'needs_you') OR (c.state = 'failed' AND c.after_click = 1)
                                  OR (c.state = 'submitted' AND c.verification = 'no_email_24h'))
         """,
         (user_id,),
     ).fetchall():
         silent = row["state"] == "submitted"
+        uncertain = row["state"] == "unconfirmed" or bool(row["after_click"])
+        if not silent and not uncertain and row["application_stage"] != "applying":
+            continue
         rows.append({
             "kind": "apply_no_email" if silent else "apply_needs_you",
             "record_id": str(row["token"]),
@@ -518,8 +527,9 @@ def _apply_rows(conn: sqlite3.Connection, user_id: str) -> list[dict[str, Any]]:
             "company": row["company"],
             "subtitle": (
                 "No confirmation email yet. Some employers don't send one" if silent
-                else "It may or may not have gone through" if row["state"] in ("unconfirmed", "failed") else "It needs you"
+                else "It may or may not have gone through" if uncertain else "It needs you"
             ),
+            "never_expires": uncertain and not silent,
             "opportunity_id": str(row["opportunity_id"]),
             "application_id": row["application_id"],
         })
@@ -584,7 +594,7 @@ def urgent_queue(
                 })
             continue
         # An email that may be a reply, and an application that may have gone out, wait for the student however old.
-        if when < oldest_overdue and row["kind"] not in NEVER_EXPIRING_KINDS:
+        if when < oldest_overdue and row["kind"] not in NEVER_EXPIRING_KINDS and not row.get("never_expires"):
             older_overdue += 1
             continue
         if when > last_upcoming:

@@ -1186,18 +1186,18 @@ class PostgresApplyContractTests(unittest.TestCase):
     def at(self, minutes=0):
         return self.base + timedelta(minutes=minutes)
 
-    def opportunity(self, opportunity_id, title="Controls Intern"):
+    def opportunity(self, opportunity_id, title="Controls Intern", company="Bluefin Robotics"):
         stamp = utc_now()
         with self.conn:
             self.conn.execute(
                 "INSERT INTO opportunities(id, company, title, url, first_seen_at, last_seen_at, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
-                (opportunity_id, "Bluefin Robotics", title, f"https://boards.example.test/{opportunity_id}", stamp, stamp, stamp, stamp),
+                (opportunity_id, company, title, f"https://boards.example.test/{opportunity_id}", stamp, stamp, stamp, stamp),
             )
 
-    def claim(self, opportunity_id, mode="handoff", *, job="bluefin/1001", conn=None, now=None, **kwargs):
+    def claim(self, opportunity_id, mode="handoff", *, job="bluefin/1001", conn=None, now=None, company="Bluefin Robotics", board="bluefin", **kwargs):
         return apply_runs.claim(
-            conn or self.conn, user_id=AUTOMATION_USER, opportunity_id=opportunity_id, mode=mode, ats="greenhouse", board_token="bluefin",
-            job_ref=job, company=apply_runs.company_key("Bluefin Robotics"), now=now or self.at(1), **kwargs,
+            conn or self.conn, user_id=AUTOMATION_USER, opportunity_id=opportunity_id, mode=mode, ats="greenhouse", board_token=board,
+            job_ref=job, company=apply_runs.company_key(company), now=now or self.at(1), **kwargs,
         )
 
     def state(self, token):
@@ -1299,12 +1299,13 @@ class PostgresApplyContractTests(unittest.TestCase):
 
     def test_the_hand_over_takes_the_pause_row_and_the_claim_and_a_pause_after_it_reports_the_application(self):
         self.opportunity("job-1")
-        self.opportunity("job-2", "Controls Co-op")
+        # Another company: the company limit (30 days) would refuse a second Bluefin claim, and an unattended claim cannot tick past it.
+        self.opportunity("job-2", "Controls Co-op", company="Cobalt Labs")
         token = self.claim("job-1")["token"]
         self.assertTrue(apply_runs.hand_over(self.conn, token, user_id=AUTOMATION_USER, now=self.at(2)))
         self.assertEqual(self.state(token), ("clicking", 1))
         self.assertFalse(apply_runs.hand_over(self.conn, token, user_id=AUTOMATION_USER, now=self.at(3)), "only a claimed attempt is handed over")
-        unattended = self.claim("job-2", "unattended", job="bluefin/2002", now=self.at(60))["token"]
+        unattended = self.claim("job-2", "unattended", job="cobalt/2002", company="Cobalt Labs", board="cobalt", now=self.at(60))["token"]
         result = automation.set_paused(self.conn, AUTOMATION_USER, True)
         self.assertEqual([(item["action"], item["source"]) for item in result["in_flight"]], [("application", "apply_claim")])
         self.assertFalse(apply_runs.hand_over(self.conn, unattended, user_id=AUTOMATION_USER, now=self.at(61)), "an unattended claim waits for the resume")
@@ -1328,6 +1329,44 @@ class PostgresApplyContractTests(unittest.TestCase):
             apply_runs.request_cancel(other, token, user_id=AUTOMATION_USER)
         self.conn.rollback()
         self.assertTrue(apply_runs.request_cancel(other, token, user_id=AUTOMATION_USER), "once the transaction ends, the cancel lands")
+
+    def test_a_claim_waits_on_the_students_lock_and_then_sees_what_landed_first(self):
+        import psycopg
+
+        # Only the lock can make this outcome: no claim exists yet, so the unique indexes have nothing to refuse.
+        self.opportunity("job-1")
+        record_intent(self.conn, "job-1", "apply_opened", user_id=AUTOMATION_USER)
+        application_id = self.conn.execute("SELECT id FROM applications WHERE opportunity_id='job-1'").fetchone()["id"]
+        self.conn.commit()
+        other = connect_product(POSTGRES_TEST_URL)
+        self.addCleanup(other.close)
+        other.execute("SET lock_timeout = '200ms'")
+        other.commit()
+        apply_runs.lock_user(self.conn, AUTOMATION_USER)  # the student's own write holds their row and has not committed
+        with self.assertRaises(psycopg.errors.LockNotAvailable):
+            self.claim("job-1", conn=other)
+        self.assertEqual(apply_runs.RUNNING, set(), "a claim that never started holds nothing")
+        other.execute("SET lock_timeout = 0")
+        other.commit()
+        self.conn.execute("UPDATE applications SET stage='rejected' WHERE id=?", (application_id,))
+        outcome = []
+
+        def waiting():
+            try:
+                outcome.append(("claimed", self.claim("job-1", conn=other, now=self.at(2))["token"]))
+            except apply_runs.ClaimRefused as refusal:
+                outcome.append((refusal.code, str(refusal)))
+
+        thread = threading.Thread(target=waiting)
+        thread.start()
+        time.sleep(0.5)
+        self.assertEqual(outcome, [], "the claim is still waiting for the lock")
+        self.conn.commit()
+        thread.join(10)
+        self.assertEqual(outcome, [("stage", "This application is already rejected")], "the waiting claim saw the stage that landed first")
+        count = self.conn.execute("SELECT COUNT(*) AS n FROM application_submit_claims").fetchone()["n"]
+        self.conn.commit()
+        self.assertEqual(count, 0)
 
     def test_recovery_fails_a_stopped_claim_before_hand_over_and_leaves_a_clicking_one_unconfirmed(self):
         self.opportunity("job-1")
