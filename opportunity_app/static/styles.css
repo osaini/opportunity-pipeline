@@ -522,6 +522,8 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 .danger-button { color: var(--danger); border-color: var(--danger-line); }
 .danger-button:hover { background: var(--danger-soft); }
 .secondary-button:disabled, .danger-button:disabled, .primary-button:disabled { opacity: .5; cursor: wait; }
+/* A button that is busy but keeps keyboard focus (aria-disabled instead of disabled): the script ignores its clicks. */
+.secondary-button[aria-disabled="true"], .danger-button[aria-disabled="true"], .primary-button[aria-disabled="true"] { opacity: .5; cursor: wait; }
 .resume-list { display: grid; gap: 10px; margin-top: var(--space-5); }
 .resume-card { padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-sunken); }
 .resume-heading { display: flex; justify-content: space-between; gap: 18px; align-items: flex-start; }
@@ -569,6 +571,15 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 .apply-note { margin: 12px 0 0; color: var(--ink-muted); font-size: 11px; }
 .apply-label { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .apply-settings h5 { margin: var(--space-5) 0 var(--space-2); font-size: 12px; }
+/* The sensitive-answers store (apply_sensitive.py): the Needs you form and its settings. */
+.apply-statement { margin: 0; padding: var(--space-3) var(--space-4); border-left: 3px solid var(--line); color: var(--ink); font-size: 12px; overflow-wrap: anywhere; }
+.apply-consent { padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); }
+.apply-optional summary { cursor: pointer; color: var(--ink-soft); }
+.apply-optional .apply-problems { margin-top: 8px; }
+.apply-sensitive-settings h5 { margin: var(--space-5) 0 var(--space-2); font-size: 12px; }
+.apply-sensitive-entry { display: grid; gap: 4px; padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-sm); overflow-wrap: anywhere; }
+.apply-sensitive-entry .secondary-button { justify-self: start; }
+.apply-kinds { display: grid; gap: 4px; min-width: 0; margin: 0; padding: 0; border: 0; }
 .profile-fieldset { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; min-width: 0; margin: 0; padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-md); }
 .profile-fieldset > legend { padding: 0 6px; color: var(--ink-soft); font-size: 11px; font-weight: 750; }
 .profile-fieldset > .profile-help { grid-column: 1 / -1; margin: 0; }

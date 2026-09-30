@@ -416,6 +416,20 @@ def _apply_apply_agent(conn: sqlite3.Connection, sql: str) -> None:
     conn.executescript(sql)
 
 
+# The company name as the student typed it, beside the matching key of a stored sensitive answer.
+_APPLY_SENSITIVE_COMPANY_NAME_COLUMNS = (
+    ("apply_sensitive_answers", "company_name", "TEXT NOT NULL DEFAULT ''"),
+)
+
+
+def _apply_apply_sensitive_company_name(conn: sqlite3.Connection, sql: str) -> None:
+    # Guarded like _apply_automation: running it again after a crash repairs it.
+    for table, column, definition in _APPLY_SENSITIVE_COMPANY_NAME_COLUMNS:
+        if not _has_column(conn, table, column):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    conn.executescript(sql)
+
+
 # Migrations whose SQL alone cannot express the change: parsing timestamps is
 # not portable across SQLite and PostgreSQL, so a Python step owns it. Adding a
 # column is not repeatable, so a step owns that too.
@@ -430,6 +444,7 @@ _MIGRATION_STEPS: dict[str, Callable[[Any, str], None]] = {
     "0042_outreach_tech_brief.sql": _apply_tech_brief,
     "0043_gmail_reply_labels.sql": _apply_gmail_reply_labels,
     "0045_apply_agent.sql": _apply_apply_agent,
+    "0046_apply_sensitive_company_name.sql": _apply_apply_sensitive_company_name,
 }
 
 

@@ -1367,6 +1367,37 @@ option E. The API refuses it unless that option is chosen. Questions the classif
 `uncategorized` (age, birth, pronouns, religion, criminal history and so on) have no category, so
 they can never be stored.
 
+**As built in M4s (2026-09-30), where it differs from the text above:**
+
+- The service is `opportunity_app/apply_sensitive.py` (`add_entry`, `delete_entry`, `list_entries`, `lookup`,
+  `allowed_categories`, `set_allowed_categories`). It is the only file that names the table besides
+  `operations.py` (export and deletion); `apply_policy.stored_sensitive_answer` is now a one-line call to
+  `lookup`. The 12.7 allowlist reads: `apply_sensitive.py` and `operations.py`, plus a check that only
+  `apply_policy.py`, `apply_preflight.py` and `api.py` import the module.
+- **`apply_eeo_store_values` is not built.** The student chose D5 C (i), so the service refuses every EEO value
+  that is not a decline, on a whole-label match against a fixed list, whatever a route or a future caller passes.
+  Sub-choice (ii) would need its own decision and a THREAT_MODEL.md:17 rewrite.
+- The routes are all under `require_browser_session` (new in `api.py`; refuses any `Authorization` header, and for
+  a write checks the CSRF header whether or not an `Origin` is present). Reading the list needs it too, since an
+  entry is the student's own answer. `GET/POST /api/v1/apply-agent/sensitive-answers`,
+  `DELETE .../sensitive-answers/{id}`, `PUT .../sensitive-categories`, and the Needs you form
+  `POST /api/v1/apply-agent/opportunities/{id}/sensitive-answers`, which takes only the answer and the tick and
+  reads the category, wording and options from the form it re-reads.
+- The category the student switches on is a choice of storable categories only (`export_control`, `salary`
+  and `uncategorized` are refused, and ignored if hand-written into `user_settings`). Nothing is on by default.
+- A statement that reads a document, or links one, is saved for one company; its links are stored, shown in the
+  check's field list (the plan preview's "links to {address}"), and re-checked against the form: a changed
+  address is a mismatch, not a tick. A data-processing consent (`data_compliance`) has no statement in the
+  listing, so it stays left for the student until M5b reads the statement from the page.
+- An optional sensitive question, which is never a "problem", is offered in the check's `optional_sensitive`
+  list with the same form, so an optional EEO field can be answered with the form's own decline label.
+- The consent wording is "Use this answer only to fill in application forms when I ask the app to apply, and for
+  nothing else. I look over each application before it is sent." The spec's sentence ("...that the app submits
+  after I confirm each one") is not true under D1 B, where the student presses Submit; M6 rewrites it with the
+  D1 A wording. Every entry is stored with `consent_scope='confirmed'`; `unattended` is refused until M8.
+- `last_used_at` is not written yet: the check and the plan write nothing, and the run that fills the field
+  (M5b) is the one to record it.
+
 ### 5.5 `apply_ats_labels`: exact option labels, confirmed once
 
 Some Greenhouse fields are typeahead lists whose labels differ from how the student writes the
@@ -2098,6 +2129,14 @@ of a felony?" is `uncategorized`, and under a sponsorship question it is `sponso
 never saved to the answer library or filled from it. The category travels down a chain of
 follow-ups: "If yes, when?" under that follow-up is `uncategorized` too.
 
+The exception is a parent that is `uncategorized`, `export_control`, `sponsorship` or `salary`: any
+question filed under such a parent (a short or repeated question) inherits its category whatever its
+own wording, and so does a short phrase that asks about no one ("Nature of charge"). "Year",
+"Location", "Expiration date" and "Type" under a felony or visa question therefore fail closed. Only
+the profile fields ("LinkedIn", "GitHub", "Website") keep their own source. A field whose own words
+also ask a voluntary self-identification question, under work authorization, sponsorship or 18 or
+older, is `uncategorized`, and the store refuses such a wording under any kind but EEO.
+
 **The one-answer rule.** If several `answer_library` rows share the key and, after the company
 rule, have different answers, it is a problem: "You have two different saved answers for
 "{question}". Keep one". A row saved for this company is the student's answer for this
@@ -2151,7 +2190,7 @@ tier at confidence 0.7 (content.js:96-110). Only exact equality of keys counts.
 | S | Single select, radio | The answer text must equal exactly **one** option **label** after normalization. Option values are never matched: a hidden value such as "1" or "0" says nothing about which label it stands for. Zero or several matches is a problem. |
 | M | Multi select | The answer is split on newlines or ";". Each part must equal exactly one option label. The order does not matter. |
 | C | Checkbox (non-consent) | An exact answer under the company rule that is "yes"/"true"/"checked", or "no"/"false". |
-| A | Acknowledgment or consent checkbox | D9 A: never ticked (left for you, or a problem). D9 B: **only** `sensitive` with category `acknowledgment`/`consent` and an exact statement key; a statement that cites a document needs an entry for this company. The statement is the checkbox's own option text, not its heading, when that text says what it agrees to (six words or more); a bare "I agree", "Yes" or "I accept" says nothing, so the heading, the option and the description together are the statement, and two boxes that agree to different things never share a stored answer. A checkbox, or a Yes/No question, is read on its heading, its option text and its description together: `acknowledg`, `terms` or a privacy statement, notice or policy in any of them (and `agree`, `accept`, `policy` or `certif` on a checkbox) makes it an acknowledgment, so it never gets the ordinary answer form or the reusable tick. |
+| A | Acknowledgment or consent checkbox | D9 A: never ticked (left for you, or a problem). D9 B: **only** `sensitive` with category `acknowledgment`/`consent` and an exact statement key; a statement that cites a document needs an entry for this company. The statement is always the whole of what the box shows: the heading, the option and the description together (a heading the option repeats is said once), never the option alone, however long it is, because a generic option such as "I have read and agree to the following" names nothing, and two boxes that agree to different things never share a stored answer. When the option (or, for a Yes/No question, its question) is under six words or points elsewhere, the statement also carries the question above it (`{parent} / `) and is saved for one company only; a statement of fewer than three words is left for the student. A Yes/No agreement question is matched on its answer key (which carries `{parent} / ` for a follow-up, a short question or one the form repeats) and its description. A checkbox, or a Yes/No question, is read on its heading, its option text and its description together: `acknowledg`, `terms` or a privacy statement, notice or policy in any of them (and `agree`, `accept`, `policy`, `certif`, `read`, `reviewed`, `understood`, `abide`, `bound` or `received` on a checkbox, and `accept the`, `abide` or `bound by` on a Yes/No question) makes it an acknowledgment, so it never gets the ordinary answer form or the reusable tick. |
 | E | Anything sensitive (7.3) | **Only** `sensitive` (D5 B to E). It is never filled from `answer`, `profile` or `ats_label`. Required and not in the store: a problem in a submit, left for you in a handoff. Optional and not in the store: left blank (D13). Category `uncategorized`: never filled. |
 | F | File: résumé | `resume_for` (6.9), only for the field named `resume`. An `unsure` pick opens the chooser. |
 | L | File: cover letter | D11, only for the field named `cover_letter`. |

@@ -26,7 +26,58 @@ value-free progress. The extension never receives the editable profile draft.
    It refuses hidden, disabled, duplicate/ambiguous, navigation, CAPTCHA,
    consent, messaging, and submit controls. Every mutation is verified against
    the live DOM after normal `input` and `change` events.
-3. Sensitive or consequential fields remain manual. A non-sensitive saved
+3. Sensitive or consequential fields remain manual in the extension: it
+   refuses them, and the saved-answer library never holds an answer to one. The
+   one exception is **Apply for me**, the app's own filler for saved Greenhouse
+   roles (a separate feature, off until the student turns it on), and only for
+   what the student has switched on and stored themselves under Apply for me
+   settings. That store holds:
+   - work authorization, visa sponsorship, and 18 or older, each as the student's
+     own answer;
+   - an EEO self-identification question, only as a decline answer such as
+     "Decline To Self Identify" or "I don't wish to answer" (the service refuses
+     any other value, so no demographic value is ever stored);
+   - a legal acknowledgment or a data-processing consent, stored word for word.
+     Its box is ticked only when the form's statement is exactly the stored one.
+     The statement is always the whole of what the box shows: its heading, its
+     option and any description under it, together (the option alone is never
+     the statement, however long, because "I have read and agree to the
+     following" names nothing). When the option is short, points elsewhere ("I
+     agree to the above terms") or the box has a description, the statement is
+     also filed under the question above it and saved for one company. A
+     statement that says "I have read", names a document in any way (terms, a
+     statement, a program, guidelines, a code of conduct, or a capitalized name
+     after "the" or "our"), links a document, has a description of its own or
+     points elsewhere is saved for one company, never for any
+     company, as is any question that depends on its company. The plan shows the form's own
+     document addresses next to the tick; if the form links to other addresses
+     than the ones saved, or to none, the box is left for the student, and so is
+     a statement whose description is longer than the app keeps. A Yes/No
+     question that asks for agreement is matched on its question (under the
+     question above it when it is short or a follow-up) and its description the
+     same way, and only a box or a Yes/No question is ever
+     ticked; an acknowledgment on a text field or a list of options is left for
+     the student. A box that states a fact about the student (work
+     authorization, sponsorship, 18 or older) is matched on its heading and its
+     option together, since the heading is the question.
+
+   Every entry records the exact question, the answer, and the student's consent
+   with the time (the consent says the answer is used only to fill in
+   application forms). Export control, citizenship and security clearance,
+   salary, and every other personal question (age, birth date, pronouns,
+   religion, criminal history, and anything the classifier cannot place) are
+   never stored or answered. The extension's `apply_context`, the answer
+   library, employer views and every report never read the store
+   (`tests/test_apply_sensitive.py` scans the source for it). Writing or reading
+   the store needs the student's own browser session: a request that sends the
+   access token as an Authorization header is refused, and a write needs the
+   session's CSRF header. The access token can still sign in a browser session,
+   and the account export includes the stored answers, so this guards against a
+   stray script and is not a lock against whoever holds the token. The student
+   still presses Submit themselves.
+
+   Where a sensitive field is not covered by a stored answer it stays manual,
+   as above. A non-sensitive saved
    answer whose question has the same words as the field can be checked after
    review; fuzzy matches are never prechecked. "Exact" means the same words, not
    that the answer is true here. The panel shows a line under every field

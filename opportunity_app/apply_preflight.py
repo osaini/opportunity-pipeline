@@ -24,7 +24,7 @@ from typing import Any
 
 from pipeline_core.visibility import capture_visible_sql
 
-from . import apply_policy, apply_runs, preparation
+from . import apply_policy, apply_runs, apply_sensitive, preparation
 from .actions import OpportunityNotFoundError
 from .apply_schema_client import SchemaClient, SchemaUnavailable
 from .apply_checks import question_key
@@ -133,9 +133,68 @@ def _action(entry: apply_policy.PlanField, facts: dict[str, Any]) -> dict[str, A
     if kind == "label_needed":
         suggestion = facts.get(entry.label_field) if entry.label_field in ("school", "degree") else ""
         return {"type": "ats_label", "field": entry.label_field, "suggestion": suggestion if isinstance(suggestion, str) else ""}
+    if kind in ("sensitive_missing", "sensitive_mismatch"):
+        form = _sensitive_form(entry, kind)
+        if form:
+            return form
     if kind in ("sensitive_never", "sensitive_not_allowed", "sensitive_missing", "sensitive_mismatch"):
-        return {"type": "manual", "category": entry.sensitive or "", "words": apply_policy.CATEGORY_WORDS.get(entry.sensitive or "", "")}
+        return {"type": "manual", "category": entry.sensitive or "", "words": apply_policy.CATEGORY_WORDS.get(entry.sensitive or "", ""),
+                # A category the student may switch on in Apply for me settings, so the view can say so.
+                "allowable": kind == "sensitive_not_allowed" and (entry.sensitive or "") in apply_sensitive.STORABLE}
     return {"type": "none"}
+
+
+def _sensitive_state(entry: apply_policy.PlanField, sources: apply_policy.Sources, company: str) -> str:
+    """"missing" or "mismatch" for a sensitive field the student switched on and the plan could not fill, else "".
+
+    Required or optional alike: an optional field left blank has lost its problem, so this asks the store again. A
+    stored entry that exists but did not fit (another decline label, a statement's address changed) is a mismatch.
+    """
+    if not entry.sensitive or entry.sensitive not in sources.sensitive_allowed or entry.source.kind != "none" or not entry.statement or entry.text_cut:
+        return ""
+    if entry.problem_kind == "sensitive_never":
+        # The plan already said the app can neither match nor store this one (a statement too short, or on a field with no tick).
+        return ""
+    stored = sources.sensitive_lookup(
+        category=entry.sensitive, question_key=question_key(entry.statement), company_key=apply_sensitive.company_key(company), mode="submit",
+        company_only=entry.company_only,
+    )
+    return "mismatch" if stored else "missing"
+
+
+def _sensitive_form(entry: apply_policy.PlanField, kind: str) -> dict[str, Any] | None:
+    """The Needs you form for a sensitive question the student allowed the app to answer, or None when nothing may be stored.
+
+    An EEO question offers only the form's own decline options: the app never stores a demographic value (D5 C (i)),
+    and a form that has no decline option gets no form. A statement is stored word for word, for this company only when
+    it points to a document. The category, the wording and the options come from the form, never from the browser.
+    """
+    category = entry.sensitive or ""
+    statement = category in apply_sensitive.STATEMENT_CATEGORIES
+    # A data-processing consent's statement is on the page only, not in Greenhouse's listing, so there is nothing yet to
+    # store it under: it is left for the student, or added word for word in Apply agent settings.
+    if entry.section == "data_compliance" or entry.text_cut:
+        return None
+    options = list(entry.options)
+    if category in apply_sensitive.EEO_CATEGORIES:
+        options = [option for option in options if apply_sensitive.is_decline(option)]
+        if entry.control not in ("select",) or not options:
+            return None
+    elif entry.control not in ("select", "multiselect", "text", "textarea", "checkbox"):
+        return None
+    if statement and not apply_policy.statement_control(entry.control, entry.options):
+        # A statement is stored only as ticked, so a box or a Yes/No question can carry it and a text or list field cannot.
+        return None
+    return {
+        "type": "sensitive", "control": entry.control, "options": options, "category": category,
+        "words": apply_policy.CATEGORY_WORDS.get(category, ""), "statement": entry.statement if statement or entry.control == "checkbox" else "", "links": list(entry.links),
+        "decline_only": category in apply_sensitive.EEO_CATEGORIES,
+        # A question that depends on its company, a mismatch (this form's own wording or address) and a statement that
+        # points to a document or leans on text elsewhere are saved for this company only; the tick for any company is then
+        # not offered.
+        "company_only": entry.company_only or kind == "sensitive_mismatch",
+        "consent_text": apply_sensitive.CONSENT_TEXT,
+    }
 
 
 def _problem_view(entry: apply_policy.PlanField, facts: dict[str, Any]) -> dict[str, Any]:
@@ -160,7 +219,8 @@ def _view(plan: apply_policy.Plan, facts: dict[str, Any]) -> tuple[list[dict[str
         problems.append(_problem_view(entry, facts))
     fields = [
         {"key": entry.key, "question": entry.question, "required": bool(entry.required), "disposition": entry.disposition,
-         "source": entry.source.label or entry.source.kind if entry.source.kind != "none" else "", "note": entry.note}
+         "source": entry.source.label or entry.source.kind if entry.source.kind != "none" else "", "note": entry.note,
+         "links": list(entry.source.links)}
         for entry in plan.fields
     ]
     filled = [entry for entry in plan.fields if entry.disposition in ("fill", "deferred")]
@@ -181,7 +241,7 @@ def _prepare(
     company = str(opportunity["company"] or "")
     result: dict[str, Any] = {
         "opportunity_id": opportunity_id, "title": str(opportunity["title"] or ""), "company": company, "ats": "", "status": "unavailable",
-        "message": NOT_GREENHOUSE, "problems": [], "asks": [], "fields": [], "counts": {}, "eligibility": {}, "application": {"exists": False, "stage": ""},
+        "message": NOT_GREENHOUSE, "problems": [], "asks": [], "fields": [], "optional_sensitive": [], "counts": {}, "eligibility": {}, "application": {"exists": False, "stage": ""},
         "checked_at": moment.isoformat(timespec="seconds"), "from_cache": False,
         "posting": {"title": "", "company": "", "url": "", "differs": False, "difference": ""},
     }
@@ -272,7 +332,15 @@ def check(
     yours = {item["key"] for item in required if item["action"]["type"] == "manual"}
     open_here = {item["key"] for item in required} - yours
     counts.update(needs_answer=len(open_here), left_for_you=len(yours))
-    result.update(problems=problems, counts=counts, fields=fields)
+    # Optional sensitive questions (EEO, mostly) the student allowed the app to answer and has not yet: left blank, and
+    # offered here with the same form, since an optional question is never listed as a problem.
+    optional = []
+    for entry in plan.fields:
+        state = _sensitive_state(entry, sources, result["company"]) if not entry.required else ""
+        form = _sensitive_form(entry, f"sensitive_{state}") if state else None
+        if form:
+            optional.append({"key": entry.key, "question": entry.question, "message": entry.note, "action": form})
+    result.update(problems=problems, counts=counts, fields=fields, optional_sensitive=optional)
     if open_here:
         count = len(open_here)
         message = f"{count} question{'s' if count != 1 else ''} need{'' if count != 1 else 's'} an answer first"
@@ -365,3 +433,59 @@ def answer_missing(
         conn, entry.answer_key, text, company, tags, answer_id=existing["id"] if existing else None, user_id=user_id,
     )
     return {"answer_id": saved["id"], "check": check(conn, user_id, opportunity_id, client=client, cache=cache, resume_root=resume_root, now=moment)}
+
+
+def answer_sensitive(
+    conn: sqlite3.Connection, user_id: str, opportunity_id: str, *, key: str, answer: Any, consent: bool, any_company: bool = False,
+    client: SchemaClient, cache: SchemaCache | None = None, resume_root: Path | None = None, now: datetime | None = None,
+    posting_confirmed: bool = False,
+) -> dict[str, Any]:
+    """Store the student's answer to one sensitive question the check listed, with the consent ticked (Needs you, 10.3).
+
+    Unlike ``answer_missing`` this saves to the sensitive-answers store, and only for a question the plan says the
+    student switched on and has no stored answer for (or a stored one that does not fit this form). The category, the
+    exact wording, the options and the links come from the form the app read, not from the browser: the browser sends
+    only its answer and the tick. An option answer must be one of the form's own labels, an EEO answer must be a
+    decline, and a statement is stored word for word. It is saved for this company unless ``any_company`` is ticked,
+    which is refused for a statement that points to a document and for a question that depends on its company.
+    Returns the fresh check.
+    """
+    moment = _now(now)
+    result, plan, sources = _prepare(conn, user_id, opportunity_id, client=client, cache=cache, resume_root=resume_root, moment=moment)
+    if plan is None:
+        raise AnswerRefused(result["message"])
+    if result["posting"]["differs"] and not posting_confirmed:
+        raise AnswerRefused(f"{result['posting']['difference']}. Confirm it is the right posting before saving an answer for {result['company']}")
+    entry = plan.get(key)
+    if entry is None:
+        raise AnswerRefused("The form no longer asks that question")
+    state = _sensitive_state(entry, sources, result["company"]) if sources is not None else ""
+    if not state:
+        raise AnswerRefused("The app can't store an answer to this question")
+    form = _sensitive_form(entry, f"sensitive_{state}")
+    if form is None:
+        raise AnswerRefused("The app stores only a decline answer for this kind of question, and this form offers none")
+    kind = {"select": "option", "multiselect": "options", "text": "text", "textarea": "text", "checkbox": "checkbox"}[entry.control]
+    if entry.control == "checkbox":
+        if str(answer).strip().casefold() not in ("checked", "true", "yes"):
+            raise AnswerRefused("Tick the box to agree to this statement")
+        text: Any = "checked"
+    elif entry.control in ("select", "multiselect"):
+        parts = answer if isinstance(answer, list) else [answer]
+        chosen, why = apply_policy.match_options("\n".join(str(part) for part in parts), form["options"], several=entry.control == "multiselect")
+        if not chosen:
+            raise AnswerRefused(f"{why}. Choose from the list")
+        text = chosen if entry.control == "multiselect" else chosen[0]
+    else:
+        text = " ".join(str(answer).split())
+    everyone = bool(any_company) and not form["company_only"]
+    if any_company and form["company_only"]:
+        raise AnswerRefused("This answer is saved for this company only")
+    try:
+        saved = apply_sensitive.add_entry(
+            conn, user_id, category=entry.sensitive, question=entry.statement, answer=text, answer_kind=kind,
+            company="" if everyone else result["company"], links=entry.links, company_only=form["company_only"], consent=consent, now=moment, from_form=True,
+        )
+    except apply_sensitive.StoreRefused as exc:
+        raise AnswerRefused(str(exc)) from exc
+    return {"entry_id": saved["id"], "check": check(conn, user_id, opportunity_id, client=client, cache=cache, resume_root=resume_root, now=moment)}

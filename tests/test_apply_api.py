@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, apply_runs, apply_schema_client, automation
+from opportunity_app import STATIC_DIR, apply_runs, apply_schema_client, apply_sensitive, automation
 from opportunity_app.api import create_app
 from opportunity_app.apply_schema_client import GreenhouseSchemaClient, SchemaUnavailable
 from opportunity_app.profile import update_profile
@@ -64,6 +64,7 @@ class ApplyApiCase(unittest.TestCase):
         self.schema = FakeSchemaClient(any_job=True)
         kwargs = {"apply_schema_client_factory": lambda: self.schema, "apply_agent_factory": FakeApplyAgentFactory()} if self.with_factories else {}
         app = create_app(db_path=self.path, access_token=TOKEN, static_dir=STATIC_DIR, resume_storage=self.root / "resumes", **kwargs)
+        self.app = app
         self.client = self.enterContext(TestClient(app))
         self.conn = connect_product(self.path)
         self.addCleanup(self.conn.close)
@@ -308,6 +309,408 @@ class SettingsRouteTests(ApplyApiCase):
                              ("/api/v1/apply-agent/settings", "get"), ("/api/v1/apply-agent/ats-labels/{field}", "put"),
                              ("/api/v1/apply-agent/ats-labels/{field}", "delete")):
             self.assertIn(method, paths[path])
+
+
+class SensitiveApiCase(ApplyApiCase):
+    """The sensitive-answers store over HTTP. Every route needs the student's own browser session (spec 4.6), so the
+    tests sign in with a cookie and send the CSRF header, as the page does; the owner's bearer token is refused."""
+
+    ROUTES = (
+        ("GET", "/api/v1/apply-agent/sensitive-answers", None),
+        ("PUT", "/api/v1/apply-agent/sensitive-categories", {"categories": []}),
+        ("POST", "/api/v1/apply-agent/sensitive-answers", {"category": "work_authorization", "question": "Are you legally authorized to work?", "answer": "Yes", "consent": True}),
+        ("DELETE", "/api/v1/apply-agent/sensitive-answers/sens-none", None),
+        ("POST", f"/api/v1/apply-agent/opportunities/{ACME}/sensitive-answers", {"key": "question_4000000105", "answer": "Yes", "consent": True, "posting_confirmed": True}),
+    )
+    BASE = "/api/v1/apply-agent"
+
+    def setUp(self):
+        super().setUp()
+        self.greenhouse_role()
+        self.turn_on()
+        self.browser = self.enterContext(TestClient(self.app))
+        signed = self.browser.post("/api/v1/session", json={"token": TOKEN})
+        self.assertEqual(signed.status_code, 200, signed.text)
+        self.csrf = {"X-CSRF-Token": self.browser.cookies.get("pipeline_csrf")}
+
+    def send(self, method, path, body=None):
+        return self.browser.request(method, path, json=body, headers=self.csrf)
+
+    def allow(self, *categories):
+        response = self.send("PUT", f"{self.BASE}/sensitive-categories", {"categories": list(categories)})
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def entries(self):
+        return self.send("GET", f"{self.BASE}/sensitive-answers").json()["entries"]
+
+    def needs(self, key, answer, **extra):
+        body = {"key": key, "answer": answer, "consent": True, "posting_confirmed": True, **extra}
+        return self.send("POST", f"{self.BASE}/opportunities/{ACME}/sensitive-answers", body)
+
+    def problem(self, key):
+        return {item["key"]: item for item in self.check().json()["problems"]}.get(key)
+
+    def rows(self):
+        return [dict(row) for row in self.conn.execute("SELECT * FROM apply_sensitive_answers ORDER BY created_at, id").fetchall()]
+
+
+class SensitiveSessionTests(SensitiveApiCase):
+    def test_the_owner_access_token_is_refused_on_every_route_with_or_without_a_cookie(self):
+        for method, path, body in self.ROUTES:
+            with self.subTest(route=f"{method} {path}"):
+                bearer = self.client.request(method, path, json=body, headers=AUTH)
+                self.assertEqual(bearer.status_code, 403, bearer.text)
+                self.assertIn("browser", bearer.json()["detail"])
+                # A cookie next to the header does not make a script the student.
+                both = self.browser.request(method, path, json=body, headers={**AUTH, **self.csrf})
+                self.assertEqual(both.status_code, 403, both.text)
+                self.assertEqual(self.client.request(method, path, json=body).status_code, 401, "and no sign-in at all is 401")
+        self.assertEqual(self.rows(), [])
+
+    def test_a_cookie_write_without_the_csrf_header_is_refused_even_with_no_origin_header(self):
+        for method, path, body in self.ROUTES:
+            if method == "GET":
+                continue
+            with self.subTest(route=f"{method} {path}"):
+                bare = self.browser.request(method, path, json=body)
+                self.assertEqual((bare.status_code, bare.json()["detail"]), (403, "CSRF validation failed"))
+                wrong = self.browser.request(method, path, json=body, headers={"X-CSRF-Token": "not-the-token"})
+                self.assertEqual(wrong.status_code, 403, wrong.text)
+        self.assertEqual(self.allow("work_authorization")["groups"][0]["on"], True, "and with the header the same write is allowed")
+
+    def test_reading_needs_the_browser_session_but_not_a_csrf_header(self):
+        self.assertEqual(self.browser.get(f"{self.BASE}/sensitive-answers").status_code, 200)
+        self.assertEqual(self.client.get(f"{self.BASE}/sensitive-answers", headers=AUTH).status_code, 403)
+
+    def test_the_routes_are_in_the_openapi_schema(self):
+        paths = self.client.get("/openapi.json").json()["paths"]
+        for method, path, _body in self.ROUTES:
+            template = path.replace(ACME, "{opportunity_id}").replace("sens-none", "{entry_id}")
+            self.assertIn(method.lower(), paths[template], template)
+
+
+class SensitiveSettingsTests(SensitiveApiCase):
+    def test_nothing_is_switched_on_or_stored_at_first_and_the_consent_wording_is_shown(self):
+        body = self.send("GET", f"{self.BASE}/sensitive-answers").json()
+        self.assertEqual(body["entries"], [])
+        self.assertFalse(any(group["on"] for group in body["groups"]))
+        self.assertIn("only to fill in application forms", body["consent_text"])
+        self.assertNotIn("export_control", [item["category"] for item in body["categories"]])
+        self.assertNotIn("salary", [item["category"] for item in body["categories"]])
+        refused = self.send("POST", f"{self.BASE}/sensitive-answers", {"category": "work_authorization", "question": "Are you legally authorized to work?", "answer": "Yes", "consent": True})
+        self.assertEqual(refused.status_code, 422)
+        self.assertIn("Allow answers about work authorization first", refused.json()["detail"])
+        self.assertEqual(self.rows(), [])
+
+    def test_kinds_are_switched_on_and_off_and_export_control_and_salary_cannot_be(self):
+        groups = {item["key"]: item for item in self.allow("work_authorization", "eeo_gender", "eeo_hispanic", "eeo_race", "eeo_veteran", "eeo_disability")["groups"]}
+        self.assertEqual({key: item["on"] for key, item in groups.items()}, {"work_authorization": True, "sponsorship": False, "age_18": False, "eeo": True, "acknowledgment": False, "consent": False})
+        for category in ("export_control", "salary", "uncategorized", "nonsense"):
+            response = self.send("PUT", f"{self.BASE}/sensitive-categories", {"categories": ["age_18", category]})
+            self.assertEqual(response.status_code, 422, category)
+        self.assertTrue(self.send("GET", f"{self.BASE}/sensitive-answers").json()["groups"][0]["on"], "a refused change changed nothing")
+        self.assertFalse(any(group["on"] for group in self.allow()["groups"]))
+
+    def test_an_entry_needs_the_consent_tick_and_records_when_and_for_what(self):
+        self.allow("work_authorization")
+        body = {"category": "work_authorization", "question": "Are you legally authorized to work in the United States?", "answer": "Yes"}
+        for consent in (False, None):
+            response = self.send("POST", f"{self.BASE}/sensitive-answers", {**body, "consent": consent} if consent is not None else body)
+            self.assertEqual((response.status_code, "Tick the box" in response.json()["detail"]), (422, True))
+        self.assertEqual(self.rows(), [])
+        saved = self.send("POST", f"{self.BASE}/sensitive-answers", {**body, "consent": True})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        row = self.rows()[0]
+        self.assertEqual((row["consent_scope"], row["answer_kind"], row["company_key"]), ("confirmed", "option", ""))
+        self.assertTrue(row["consented_at"].startswith(utc_now()[:10]))
+        listed = self.entries()
+        self.assertEqual((listed[0]["answer"], listed[0]["any_company"], listed[0]["switched_on"]), ("Yes", True, True))
+
+    def test_refusals_are_422_with_a_reason_and_store_nothing(self):
+        self.allow(*apply_sensitive.STORABLE)
+        for body, needle in (
+            ({"category": "export_control", "question": "Are you a U.S. person?", "answer": "Yes"}, "never answers export control"),
+            ({"category": "salary", "question": "What are your salary expectations?", "answer": "90000"}, "never answers salary"),
+            ({"category": "work_authorization", "question": "Are you a U.S. citizen or authorized to work in the U.S.?", "answer": "Yes"}, "export control"),
+            ({"category": "age_18", "question": "What is your age?", "answer": "21"}, "personal question"),
+            ({"category": "eeo_gender", "question": "Gender", "answer": "Male"}, "only a decline"),
+            ({"category": "eeo_veteran", "question": "Veteran Status", "answer": "I am not a protected veteran"}, "only a decline"),
+            ({"category": "eeo_race", "question": "Race", "answer": "Decline To Self Identify", "answer_kind": "text"}, "only a decline"),
+            ({"category": "acknowledgment", "question": "I have read the Example Robotics privacy notice", "answer": "checked"}, "never for any company"),
+            ({"category": "acknowledgment", "question": "I certify that this is true", "answer": "checked", "links": ["https://example.test/n"]}, "never for any company"),
+            ({"category": "acknowledgment", "question": "I certify that this is true", "answer": "checked", "links": ["javascript:alert(1)"]}, "http or https"),
+            ({"category": "consent", "question": "I agree", "answer": "checked"}, "whole statement"),
+        ):
+            with self.subTest(body=body):
+                response = self.send("POST", f"{self.BASE}/sensitive-answers", {**body, "consent": True})
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertIn(needle, response.json()["detail"])
+        self.assertEqual(self.rows(), [])
+        for body in ({}, {"category": "age_18"}, {"category": "age_18", "question": "x", "links": ["a"] * 9}):
+            self.assertEqual(self.send("POST", f"{self.BASE}/sensitive-answers", body).status_code, 422, body)
+
+    def test_a_question_that_depends_on_its_company_or_reads_as_another_kind_is_refused_by_the_route(self):
+        self.allow("sponsorship", "work_authorization")
+        prior = "Has this company previously filed an H-1B petition on your behalf?"
+        for body, needle in (
+            ({"category": "sponsorship", "question": prior, "answer": "Yes"}, "this company only"),
+            ({"category": "work_authorization", "question": "What is your race?", "answer": "Asian"}, "voluntary self-identification"),
+            ({"category": "work_authorization", "question": "Gender", "answer": "Female"}, "voluntary self-identification"),
+        ):
+            with self.subTest(body=body):
+                response = self.send("POST", f"{self.BASE}/sensitive-answers", {**body, "consent": True})
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertIn(needle, response.json()["detail"])
+        self.assertEqual(self.rows(), [], "no row, so nothing in the account export either")
+        kept = self.send("POST", f"{self.BASE}/sensitive-answers", {"category": "sponsorship", "question": prior, "answer": "Yes", "company": "Example Robotics", "consent": True})
+        self.assertEqual(kept.status_code, 200, kept.text)
+
+    def test_an_eeo_decline_and_a_statement_for_one_company_are_stored(self):
+        self.allow("eeo_gender", "acknowledgment")
+        self.assertEqual(self.send("POST", f"{self.BASE}/sensitive-answers", {"category": "eeo_gender", "question": "Gender", "answer": "Decline To Self Identify", "consent": True}).status_code, 200)
+        saved = self.send("POST", f"{self.BASE}/sensitive-answers", {
+            "category": "acknowledgment", "question": "I have read the Example Robotics privacy notice", "answer": "checked", "company": "Example Robotics",
+            "links": ["https://example-robotics.test/privacy"], "consent": True})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual((saved.json()["company"], saved.json()["links"], saved.json()["any_company"]), ("Example Robotics", ["https://example-robotics.test/privacy"], False))
+
+    def test_an_entry_is_deleted_at_once_and_a_second_delete_is_404(self):
+        self.allow("age_18")
+        entry = self.send("POST", f"{self.BASE}/sensitive-answers", {"category": "age_18", "question": "Are you at least 18 years of age?", "answer": "Yes", "consent": True}).json()
+        self.assertEqual(self.send("DELETE", f"{self.BASE}/sensitive-answers/{entry['id']}").status_code, 204)
+        self.assertEqual(self.entries(), [])
+        self.assertEqual(self.send("DELETE", f"{self.BASE}/sensitive-answers/{entry['id']}").status_code, 404)
+
+
+class NeedsYouTests(SensitiveApiCase):
+    """The form on a role: the category, the wording and the options come from the form the app read, not from the browser."""
+
+    def test_a_kind_that_is_not_switched_on_is_left_for_the_student_and_says_it_can_be_allowed(self):
+        problem = self.problem("question_4000000105")
+        self.assertEqual((problem["kind"], problem["action"]["type"], problem["action"]["allowable"]), ("sensitive_not_allowed", "manual", True))
+        refused = self.needs("question_4000000105", "Yes")
+        self.assertEqual((refused.status_code, refused.json()["detail"]), (422, "The app can't store an answer to this question"))
+        self.assertEqual(self.rows(), [])
+
+    def test_a_switched_on_question_offers_its_own_options_and_the_consent_wording(self):
+        self.allow("work_authorization", "acknowledgment")
+        action = self.problem("question_4000000105")["action"]
+        self.assertEqual((action["type"], action["control"], action["options"], action["category"], action["decline_only"]), ("sensitive", "select", ["Yes", "No"], "work_authorization", False))
+        self.assertIn("only to fill in application forms", action["consent_text"])
+        self.assertFalse(action["company_only"], "work authorization is true whoever asks")
+
+    def test_the_answer_is_saved_with_the_consent_and_the_next_check_fills_it_from_the_store(self):
+        self.allow("work_authorization")
+        no_tick = self.send("POST", f"{self.BASE}/opportunities/{ACME}/sensitive-answers", {"key": "question_4000000105", "answer": "Yes", "posting_confirmed": True})
+        self.assertEqual((no_tick.status_code, "Tick the box" in no_tick.json()["detail"]), (422, True))
+        maybe = self.needs("question_4000000105", "Maybe")
+        self.assertEqual(maybe.status_code, 422)
+        self.assertIn("not one of the form's options", maybe.json()["detail"])
+        self.assertEqual(self.rows(), [])
+        unconfirmed = self.send("POST", f"{self.BASE}/opportunities/{ACME}/sensitive-answers", {"key": "question_4000000105", "answer": "Yes", "consent": True})
+        self.assertIn("Confirm it is the right posting", unconfirmed.json()["detail"])
+        saved = self.needs("question_4000000105", "Yes")
+        self.assertEqual(saved.status_code, 200, saved.text)
+        row = self.rows()[0]
+        self.assertEqual((row["category"], row["answer"], row["company_key"], row["consent_scope"], row["question_text"]),
+                         ("work_authorization", "Yes", "acme robotics", "confirmed", "Are you legally authorized to work in the United States?"))
+        check = saved.json()["check"]
+        self.assertNotIn("question_4000000105", [item["key"] for item in check["problems"]])
+        field = next(item for item in check["fields"] if item["key"] == "question_4000000105")
+        self.assertEqual(field["disposition"], "fill")
+        self.assertRegex(field["source"], r"^Sensitive answer you added \d{4}-\d\d-\d\d$")
+        self.assertNotIn("Yes", json.dumps({**check, "problems": [], "fields": [], "posting": {}}), "the check names sources, never a value")
+
+    def reword(self, key, *, label=None, values=None, type=None):
+        """Serve the fictional listing with one question changed, as another employer's form might word it."""
+        real = self.schema.fetch
+
+        def changed(board, job):
+            listing = real(board, job)
+            for question in listing["questions"]:
+                for field in question["fields"]:
+                    if field["name"] == key:
+                        question["label"] = label or question["label"]
+                        field["values"] = [{"label": text, "value": number} for number, text in enumerate(values, 1)] if values else field["values"]
+                        field["type"] = type or field["type"]
+            return listing
+
+        self.schema.fetch = changed
+
+    def test_a_question_whose_kind_comes_from_its_options_is_stored_under_the_kind_the_plan_gave_it(self):
+        # The wording reads as work authorization; the visa option makes the plan file it as sponsorship. The form must save.
+        self.allow("sponsorship", "work_authorization")
+        self.reword("question_4000000105", label="What is your current work authorization status?",
+                    values=("Authorized to work, no sponsorship needed", "Will need H-1B sponsorship"))
+        problem = self.problem("question_4000000105")
+        self.assertEqual((problem["kind"], problem["action"]["type"]), ("sensitive_missing", "sensitive"))
+        saved = self.needs("question_4000000105", "Authorized to work, no sponsorship needed")
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual([row["category"] for row in self.rows()], [problem["action"]["category"]])
+        self.assertIsNone(next((item for item in saved.json()["check"]["problems"] if item["key"] == "question_4000000105"), None))
+
+    def test_a_work_authorization_box_with_a_confirming_option_is_stored_and_ticked_through_the_form(self):
+        self.allow("work_authorization")
+        self.reword("question_4000000105", values=("Yes, I confirm this applies to me today",), type="multi_value_multi_select")
+        action = self.problem("question_4000000105")["action"]
+        self.assertEqual((action["type"], action["control"]), ("sensitive", "checkbox"))
+        self.assertEqual(self.needs("question_4000000105", True).status_code, 200)
+        field = next(item for item in self.check().json()["fields"] if item["key"] == "question_4000000105")
+        self.assertEqual(field["disposition"], "fill")
+
+    def test_the_any_company_tick_is_honoured_for_work_authorization_and_refused_where_the_wording_depends_on_a_company(self):
+        self.allow("work_authorization", "acknowledgment")
+        self.assertEqual(self.needs("question_4000000105", "Yes", any_company=True).status_code, 200)
+        self.assertEqual(self.rows()[0]["company_key"], "")
+        privacy = self.problem("question_4000000109")["action"]
+        self.assertEqual((privacy["type"], privacy["control"], privacy["statement"], privacy["company_only"]),
+                         ("sensitive", "checkbox", "I have read the Example Robotics privacy notice", True))
+        refused = self.needs("question_4000000109", True, any_company=True)
+        self.assertEqual((refused.status_code, refused.json()["detail"]), (422, "This answer is saved for this company only"))
+        self.assertEqual(len(self.rows()), 1)
+
+    def test_a_privacy_acknowledgment_is_saved_word_for_word_for_this_company_and_ticked_from_the_store(self):
+        self.allow("acknowledgment")
+        self.assertEqual(self.needs("question_4000000109", "no").status_code, 422)
+        saved = self.needs("question_4000000109", True)
+        self.assertEqual(saved.status_code, 200, saved.text)
+        row = self.rows()[0]
+        self.assertEqual((row["category"], row["answer_kind"], row["answer"], row["company_key"], row["question_text"]),
+                         ("acknowledgment", "checkbox", "checked", "acme robotics", "I have read the Example Robotics privacy notice"))
+        field = next(item for item in saved.json()["check"]["fields"] if item["key"] == "question_4000000109")
+        self.assertEqual((field["disposition"], field["source"]), ("fill", "Your acknowledgment for Acme Robotics"))
+        # A statement that reads no document may be kept for any company.
+        self.assertEqual(self.needs("question_4000000110", True, any_company=True).status_code, 200)
+        self.assertEqual(self.rows()[-1]["company_key"], "")
+
+    def test_an_eeo_question_offers_only_the_forms_decline_option_and_never_stores_anything_else(self):
+        self.allow("eeo_gender", "eeo_hispanic", "eeo_race", "eeo_veteran", "eeo_disability")
+        offered = {item["key"]: item for item in self.check().json()["optional_sensitive"]}
+        self.assertEqual(set(offered), {"gender", "hispanic_ethnicity", "veteran_status", "disability_status"})
+        self.assertEqual(offered["gender"]["action"]["options"], ["Decline To Self Identify"])
+        self.assertEqual(offered["veteran_status"]["action"]["options"], ["I don't wish to answer"])
+        self.assertTrue(all(item["action"]["decline_only"] for item in offered.values()))
+        for label in ("Male", "Female", "Yes", "No"):
+            refused = self.needs("gender", label)
+            self.assertEqual(refused.status_code, 422, label)
+            self.assertIn("not one of the form's options", refused.json()["detail"])
+        self.assertEqual(self.rows(), [])
+        saved = self.needs("gender", "Decline To Self Identify")
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertNotIn("gender", [item["key"] for item in saved.json()["check"]["optional_sensitive"]])
+        field = next(item for item in saved.json()["check"]["fields"] if item["key"] == "gender")
+        self.assertEqual(field["disposition"], "fill")
+        self.assertEqual([row["answer"] for row in self.rows()], ["Decline To Self Identify"])
+
+    def test_questions_that_are_never_stored_have_no_form_even_when_every_kind_is_switched_on(self):
+        self.allow(*apply_sensitive.STORABLE)
+        check = self.check().json()
+        offered = {item["key"] for item in check["optional_sensitive"]}
+        self.assertNotIn("question_4000000107", offered, "salary")
+        self.assertNotIn("question_4000000114", offered, "a demographic-section question has no field name, so it is never filled")
+        for key in ("question_4000000107", "question_4000000114", "gdpr_consent_given", "question_4000000111"):
+            refused = self.needs(key, "Decline To Self Identify")
+            self.assertEqual(refused.status_code, 422, key)
+        self.assertEqual(self.rows(), [])
+        gdpr = next((item for item in check["problems"] if item["key"] == "gdpr_consent_given"), None)
+        self.assertEqual(gdpr["action"]["type"], "manual", "the statement is on the page only")
+
+    def test_a_decline_typed_on_the_settings_page_as_the_form_shows_it_fills_the_eeoc_field(self):
+        self.allow("eeo_gender")
+        saved = self.send("POST", f"{self.BASE}/sensitive-answers", {"category": "eeo_gender", "question": "Gender", "answer": "Decline To Self Identify", "consent": True})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        check = self.check().json()
+        field = next(item for item in check["fields"] if item["key"] == "gender")
+        self.assertEqual(field["disposition"], "fill", "the key is the field's own label, not the question above it")
+        self.assertNotIn("gender", [item["key"] for item in check["optional_sensitive"]])
+
+    def test_an_answer_that_does_not_fit_this_form_is_a_mismatch_and_this_companys_entry_wins_over_it(self):
+        self.allow("eeo_veteran")
+        self.assertEqual(self.send("POST", f"{self.BASE}/sensitive-answers", {"category": "eeo_veteran", "question": "Veteran Status", "answer": "Decline To Self Identify", "consent": True}).status_code, 200)
+        offered = {item["key"]: item for item in self.check().json()["optional_sensitive"]}
+        # The key matches (the field's own label, at any company); what does not fit is the decline this form words differently.
+        self.assertIn("veteran_status", offered, "the any-company answer is not this form's decline label")
+        self.assertEqual(self.problem("veteran_status")["kind"], "sensitive_mismatch", "a miss on the decline's label, not on the key")
+        self.assertTrue(offered["veteran_status"]["action"]["company_only"])
+        self.assertEqual(self.needs("veteran_status", "I don't wish to answer", any_company=True).status_code, 422)
+        self.assertEqual(self.needs("veteran_status", "I don't wish to answer").status_code, 200)
+        self.assertEqual(sorted(row["company_key"] for row in self.rows()), ["", "acme robotics"], "the other entry is untouched")
+
+    def test_the_route_needs_the_switch_the_role_and_a_real_question(self):
+        self.allow("work_authorization")
+        self.assertEqual(self.send("POST", f"{self.BASE}/opportunities/no-such-role/sensitive-answers", {"key": "k", "answer": "x", "consent": True}).status_code, 404)
+        self.assertEqual(self.needs("question_1", "Yes").status_code, 422)
+        self.assertEqual(self.needs("question_4000000101", "Yes").status_code, 422, "an ordinary question is the answer library's")
+        self.assertEqual(self.send("POST", f"{self.BASE}/opportunities/job-b/sensitive-answers", {"key": "k", "answer": "x", "consent": True}).status_code, 422, "not a Greenhouse role")
+        for body in ({}, {"key": "", "answer": "x"}, {"key": "k"}):
+            self.assertEqual(self.send("POST", f"{self.BASE}/opportunities/{ACME}/sensitive-answers", body).status_code, 422, body)
+        with self.conn:
+            self.conn.execute("UPDATE user_settings SET value='off' WHERE key='apply_agent' AND user_id=?", (USER,))
+        self.assertEqual(self.needs("question_4000000105", "Yes").status_code, 409)
+        self.assertEqual(self.rows(), [])
+
+    def test_opening_the_check_writes_nothing_even_with_answers_stored(self):
+        self.allow("work_authorization", "acknowledgment", "eeo_gender")
+        self.needs("question_4000000105", "Yes")
+        self.needs("question_4000000109", True)
+        self.conn.commit()
+        before = (self.rows(), CheckRouteTests.snapshot(self))
+        for _ in range(3):
+            self.assertEqual(self.check().status_code, 200)
+        self.assertEqual((self.rows(), CheckRouteTests.snapshot(self)), before, "no last_used_at, no run, no application, no event")
+
+    def test_no_socket_is_opened_by_the_store_routes(self):
+        boom = AssertionError("the store reached for the network")
+        with mock.patch("socket.socket.connect", side_effect=boom), mock.patch("socket.create_connection", side_effect=boom), \
+                mock.patch("urllib.request.urlopen", side_effect=boom):
+            self.allow("work_authorization")
+            self.assertEqual(self.needs("question_4000000105", "Yes").status_code, 200)
+            self.assertEqual(self.send("GET", f"{self.BASE}/sensitive-answers").status_code, 200)
+            entry = self.entries()[0]
+            self.assertEqual(self.send("DELETE", f"{self.BASE}/sensitive-answers/{entry['id']}").status_code, 204)
+
+
+class StoreNeverLeavesTests(SensitiveApiCase):
+    """12.6: a stored answer is in no response the extension, the answer library or the tracker gives."""
+
+    PLANTED_ANSWER = "ZZ-planted-answer-7731"
+    PLANTED_QUESTION = "Are you legally authorized to work in the ZZ-planted-region-4412?"
+
+    def test_the_planted_entry_is_in_no_extension_or_library_response(self):
+        self.allow("work_authorization")
+        saved = self.send("POST", f"{self.BASE}/sensitive-answers", {"category": "work_authorization", "question": self.PLANTED_QUESTION, "answer": self.PLANTED_ANSWER, "consent": True})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertIn("ZZ-planted-answer-7731", json.dumps(self.entries()), "the owner's own settings page does show it")
+        from opportunity_app.extension_apply import apply_context
+
+        context = apply_context(self.conn, "app-job-b", user_id=USER)
+        self.assertNotIn("ZZ-planted", json.dumps(context, default=str))
+        origin = "chrome-extension://abcdefghijklmnopabcdefghijklmnop"
+        created = self.client.post("/api/v1/extension/pairings", headers=AUTH)
+        self.assertEqual(created.status_code, 201, created.text)
+        redeemed = self.client.post("/api/v1/extension/pairings/redeem", headers={"Origin": origin}, json={"code": created.json()["code"], "device_name": "Test Chrome"})
+        self.assertEqual(redeemed.status_code, 200, redeemed.text)
+        device = {"Authorization": f"Bearer {redeemed.json()['device_token']}", "Origin": origin}
+        responses = [
+            self.client.get("/api/v1/extension/apply-context", headers=device, params={"application_id": "app-job-b"}),
+            self.client.get("/api/v1/extension/application-candidates", headers=device, params={"page_url": "https://example.com/jobs/b"}),
+            self.client.get("/api/v1/preparation/answers", headers=AUTH),
+            self.client.get("/api/v1/applications", headers=AUTH),
+            self.client.get("/api/v1/opportunities", headers=AUTH),
+            self.client.get("/api/v1/profile", headers=AUTH),
+            self.client.get("/api/v1/apply-agent/settings", headers=AUTH),
+            self.get(f"/api/v1/apply-agent/opportunities/{ACME}/check"),
+        ]
+        for response in responses:
+            self.assertEqual(response.status_code, 200, response.request.url)
+            self.assertNotIn("ZZ-planted", response.text, str(response.request.url))
+
+    def test_the_sensitive_question_is_not_offered_to_the_extension_as_a_saved_answer(self):
+        # The extension saves and reads the answer library. Nothing the store holds is ever copied into it.
+        self.allow("work_authorization")
+        self.needs("question_4000000105", "Yes")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM answer_library").fetchone()[0], 0)
 
 
 class SandboxWiringTests(unittest.TestCase):

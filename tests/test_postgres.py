@@ -1208,7 +1208,8 @@ class PostgresAutomationContractTests(unittest.TestCase):
 # The tables, indexes and columns 0045 adds; the columns by a guarded Python step, as the earlier migrations do.
 APPLY_TABLES = ("application_submit_claims", "apply_runs", "apply_sensitive_answers", "apply_ats_labels")
 APPLY_COLUMNS = (("application_mail_messages", "sender_verified"),
-                 ("generated_document_artifacts", "content_sha256"))
+                 ("generated_document_artifacts", "content_sha256"),
+                 ("apply_sensitive_answers", "company_name"))  # 0046
 APPLY_LOCKS = ("ux_submit_claims_live_application", "ux_submit_claims_live_job")
 
 

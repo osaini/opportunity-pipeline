@@ -147,7 +147,7 @@ and sidesteps execution policy.
 py -3 scripts/run_api_fuzz.py
 ```
 
-Property-based fuzzing of all 153 OpenAPI operations, looking for unhandled
+Property-based fuzzing of all 157 OpenAPI operations, looking for unhandled
 exceptions. Starts and stops its own sandbox server.
 
 ```bash

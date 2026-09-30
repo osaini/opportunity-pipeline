@@ -296,7 +296,7 @@ from .outreach_drafting import (
 from .outreach_delivery import bounce_from_text, check_deliveries
 from .outreach_inbox import InboxWatcher, PossibleReplyNotFound, PossibleReplySettled, capture_replies, decide_possible_reply
 from .outreach_forms import default_submitter_factory as default_form_submitter_factory, set_contact_form, submit_contact_form
-from . import apply_policy, apply_preflight, apply_runs
+from . import apply_policy, apply_preflight, apply_runs, apply_sensitive
 from .apply_runs import APPLY_ROOT, recover_stale as recover_stale_applications
 from .apply_schema_client import SchemaClient, default_schema_client_factory
 from .outreach_automation import AutomationWorker, settings as automation_settings, update_settings as update_automation_settings
@@ -675,6 +675,30 @@ class ApplyAnswerRequest(BaseModel):
 
 class ApplyLabelRequest(BaseModel):
     label: str = Field(min_length=1, max_length=200)
+
+
+class ApplySensitiveAnswerRequest(BaseModel):
+    # The Needs you form: only the student's answer and the tick. The category, wording and options come from the form.
+    key: str = Field(min_length=1, max_length=200)
+    answer: str | list[str] | bool
+    consent: bool = False
+    any_company: bool = False
+    posting_confirmed: bool = False
+
+
+class ApplySensitiveEntryRequest(BaseModel):
+    # The settings page: an entry added without a form in hand, so the student gives the exact question and the category.
+    category: str = Field(min_length=1, max_length=40)
+    question: str = Field(min_length=1, max_length=4_000)
+    answer: str | list[str] = Field(default="", max_length=2_000)
+    answer_kind: str = Field(default="", max_length=20)
+    company: str = Field(default="", max_length=200)
+    links: list[str] = Field(default_factory=list, max_length=8)
+    consent: bool = False
+
+
+class ApplySensitiveCategoriesRequest(BaseModel):
+    categories: list[str] = Field(max_length=20)
 
 
 class ResumeConfirmRequest(BaseModel):
@@ -1389,6 +1413,28 @@ def create_app(
             )
         return LOCAL_USER_ID
 
+    def require_browser_session(request: Request, authenticated_user: str = Depends(require_auth)) -> str:
+        """The student's own signed-in browser, not a script holding an access token (spec 4.6).
+
+        The owner's bearer token lives in ``.env`` and is used by local tooling and scheduled agents, which must not be
+        able to record the student's consent. So this refuses any request that carries an ``Authorization`` header, needs
+        a session cookie, and for a write checks the ``X-CSRF-Token`` header against the session's own token whether or
+        not an ``Origin`` header is present (the general middleware checks only when there is one).
+        """
+        if request.headers.get("Authorization"):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This needs your signed-in browser, not an access token")
+        owner_cookie = constant_time_equal(request.cookies.get(SESSION_COOKIE, ""), expected_session)
+        user_session = request.cookies.get(USER_SESSION_COOKIE, "")
+        if not owner_cookie and not user_session:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This needs your signed-in browser session")
+        if request.method not in ("GET", "HEAD", "OPTIONS"):
+            expected = csrf_token if owner_cookie else user_csrf_token(user_session)
+            supplied = request.headers.get("X-CSRF-Token", "")
+            cookie_csrf = request.cookies.get("pipeline_csrf", "")
+            if not supplied or not constant_time_equal(supplied, expected) or not constant_time_equal(cookie_csrf, expected):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="CSRF validation failed")
+        return authenticated_user
+
     def repository(authenticated_user: str = Depends(require_auth)) -> Iterator[OpportunityRepository]:
         try:
             conn = connect_product(database_target, read_only=True)
@@ -2007,6 +2053,93 @@ def create_app(
         if not apply_runs.delete_ats_label(conn, user_id, field):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No confirmed option for that list")
         return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    def sensitive_answers_payload(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
+        allowed = apply_sensitive.allowed_categories(conn, user_id)
+        return {
+            "groups": [
+                {"key": key, "label": label, "categories": list(categories), "on": all(category in allowed for category in categories)}
+                for key, label, categories in apply_sensitive.CATEGORY_GROUPS
+            ],
+            "categories": [
+                {"category": category, "label": apply_sensitive.LABELS[category], "statement": category in apply_sensitive.STATEMENT_CATEGORIES,
+                 "decline_only": category in apply_sensitive.EEO_CATEGORIES,
+                 "tickable": category in apply_sensitive.TICKABLE}
+                for category in apply_sensitive.STORABLE
+            ],
+            "entries": apply_sensitive.list_entries(conn, user_id),
+            "consent_text": apply_sensitive.CONSENT_TEXT,
+            "decline_examples": list(apply_sensitive.DECLINE_EXAMPLES),
+        }
+
+    # The sensitive-answers store. Every route here needs the student's own browser session (require_browser_session): an
+    # access token, which scripts hold, is refused. Reading is refused too, since an entry is the student's own answer.
+    @app.get("/api/v1/apply-agent/sensitive-answers")
+    def list_stored_sensitive_answers(
+        user_id: str = Depends(require_browser_session),
+        conn: sqlite3.Connection = Depends(writable_connection),
+    ) -> dict[str, Any]:
+        """The kinds of sensitive answer the student switched on, and the answers they stored, each with its consent."""
+        return sensitive_answers_payload(conn, user_id)
+
+    @app.put("/api/v1/apply-agent/sensitive-categories")
+    def put_apply_sensitive_categories(
+        payload: ApplySensitiveCategoriesRequest,
+        user_id: str = Depends(require_browser_session),
+        conn: sqlite3.Connection = Depends(writable_connection),
+    ) -> dict[str, Any]:
+        """Switch kinds of sensitive answer on or off. Export control, citizenship, clearance and salary cannot be switched on."""
+        try:
+            apply_sensitive.set_allowed_categories(conn, user_id, payload.categories)
+        except apply_sensitive.StoreRefused as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        return sensitive_answers_payload(conn, user_id)
+
+    @app.post("/api/v1/apply-agent/sensitive-answers")
+    def add_apply_sensitive_answer(
+        payload: ApplySensitiveEntryRequest,
+        user_id: str = Depends(require_browser_session),
+        conn: sqlite3.Connection = Depends(writable_connection),
+    ) -> dict[str, Any]:
+        """Store an answer the app may type into a form, with the consent ticked. The same question for the same company is replaced."""
+        try:
+            return apply_sensitive.add_entry(
+                conn, user_id, category=payload.category, question=payload.question, answer=payload.answer, answer_kind=payload.answer_kind,
+                company=payload.company, links=payload.links, consent=payload.consent,
+            )
+        except apply_sensitive.StoreRefused as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+
+    @app.delete("/api/v1/apply-agent/sensitive-answers/{entry_id}", status_code=status.HTTP_204_NO_CONTENT)
+    def delete_apply_sensitive_answer(
+        entry_id: str,
+        user_id: str = Depends(require_browser_session),
+        conn: sqlite3.Connection = Depends(writable_connection),
+    ) -> Response:
+        """Remove a stored answer at once. A plan that used it no longer matches."""
+        if not apply_sensitive.delete_entry(conn, user_id, entry_id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No stored answer with that id")
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @app.post("/api/v1/apply-agent/opportunities/{opportunity_id}/sensitive-answers")
+    def apply_agent_sensitive_answer(
+        opportunity_id: str,
+        payload: ApplySensitiveAnswerRequest,
+        user_id: str = Depends(require_browser_session),
+        conn: sqlite3.Connection = Depends(writable_connection),
+    ) -> dict[str, Any]:
+        """Needs you: store the student's answer to one sensitive question the check listed, with the consent ticked."""
+        client = apply_schema_client()
+        require_apply_agent(conn, user_id)
+        try:
+            return apply_preflight.answer_sensitive(
+                conn, user_id, opportunity_id, key=payload.key, answer=payload.answer, consent=payload.consent, any_company=payload.any_company,
+                posting_confirmed=payload.posting_confirmed, client=client, cache=apply_schema_cache, resume_root=resume_storage,
+            )
+        except OpportunityNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Opportunity not found") from exc
+        except apply_preflight.AnswerRefused as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
     @app.get("/api/v1/urgent")
     def get_urgent(

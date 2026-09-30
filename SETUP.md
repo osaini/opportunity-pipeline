@@ -571,10 +571,51 @@ when a later step takes them, are deleted after 90 days
 `python -m opportunity_app.setup validate` after editing; it checks these
 fields too.
 
-Questions about work authorization, sponsorship, demographics, consent and
-salary are never answered from the profile or the saved answers. The app lists
-them and leaves them for the student; a later step adds a separate store for a
-few of them, which the student fills in and consents to themselves.
+5. **Sensitive answers (optional; ask, never decide for them).** Questions about
+   work authorization, sponsorship, demographics, consent and salary are never
+   answered from the profile or the saved answers. The app lists them and leaves
+   them for the student. A student who wants the app to type a few of them can
+   allow that under Profile › Automation › Apply for me settings › **Answers for
+   sensitive questions**. Ask which kinds they want, if any: work authorization,
+   visa sponsorship, 18 or older, voluntary self-identification (EEO), legal
+   acknowledgments, data-processing consents. Nothing is on until they switch it
+   on. Then they add each answer themselves, either there (the question exactly
+   as the form shows it) or on a role, where the app lists the question and the
+   form's own options. Say plainly:
+
+   - each answer needs their own tick on the wording that it is used only to
+     fill in application forms, and it is kept with the time they ticked it;
+   - for voluntary self-identification the app keeps only a decline answer such
+     as "Decline To Self Identify", never a real one, and a form that words the
+     decline differently needs its own entry;
+   - a legal acknowledgment or consent is ticked only when the form's statement
+     (its heading, its option and any description under it) is word for word the
+     stored one and links the same documents; one that says "I have read", names
+     a document in any way (terms, a statement, a program, guidelines, a code
+     of conduct, or any capitalized name after "the" or "our"), links a
+     document, has a description of its own, has a short option ("I agree") or
+     points to "the above terms" is saved for one company only, and under the
+     question above it, and so is any question that depends on the company
+     ("this company", a follow-up, a bare heading). A Yes/No question that asks
+     for agreement is matched the same way, on its question (with the question
+     above it when it is short or a follow-up) and its description, and only a
+     box or a Yes/No question is ever ticked: a text field or a list of several
+     options is left for them. A statement of fewer than three words is left
+     for them too;
+   - a box that states a fact about them (work authorization, sponsorship, 18 or
+     older) is matched on its heading too, since the heading is the question, and
+     an answer added in settings for such a box is stored as ticked when they
+     tell the form it is a tick box;
+   - export control, citizenship, security clearance and salary questions, and
+     personal ones such as age or birth date, are never answered.
+
+   Nothing about their situation is written into the app: the kinds, the
+   answers and the consent all live in their own copy. It works from the
+   student's browser session: a request that sends the access token as an
+   Authorization header is refused, and a write needs the session's CSRF header.
+   That is a guard against a stray script, not a lock against anyone who holds
+   the access token (it can sign in a browser session), and the account export
+   includes the stored answers. Say so if they share the machine or the token.
 
 ## 7b. Call prep (optional)
 
