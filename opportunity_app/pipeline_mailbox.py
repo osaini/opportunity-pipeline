@@ -251,7 +251,7 @@ def _whoami(session: _Session, conn, user: str, row: dict[str, Any], env: dict[s
     out(f"Permissions: {', '.join(_permissions(granted)) or 'none'} ({source})")
     try:
         # Imported here: the reader must still start on a checkout that predates reply labels.
-        from .outreach_labels import label_name, search_form
+        from .outreach_labels import _search_candidates, label_name, search_form
 
         label = label_name(conn, user)
     except (ImportError, sqlite3.Error):
@@ -261,23 +261,35 @@ def _whoami(session: _Session, conn, user: str, row: dict[str, Any], env: dict[s
             out("Reply label: off (the app labels nothing)")
         else:
             out(f'Reply label: {label}; search "label:{search_form(label)}"')
-            # Every column the figures below read: a half-applied 0043 has some of them.
-            if all(_has_column(conn, "outreach_inbox_messages", column) for column in ("label_name", "labeled_at", "label_note")):
+            # Every column and table the figures below read: a half-applied 0043 has some of the columns, and a
+            # database before 0044 has no table of sent threads.
+            known = all(_has_column(conn, "outreach_inbox_messages", column) for column in ("label_name", "labeled_at", "label_note")) and all(
+                _has_column(conn, "outreach_label_threads", column) for column in ("label_name", "labeled_at", "label_note")
+            ) and _has_column(conn, "outreach_label_searches", "query")
+            if known:
                 waiting = conn.execute(
                     "SELECT COUNT(*) FROM outreach_inbox_messages WHERE user_id=? AND kind='reply' AND label_name<>?", (user, label),
+                ).fetchone()[0] + conn.execute(
+                    "SELECT COUNT(*) FROM outreach_label_threads WHERE user_id=? AND label_name<>?", (user, label),
                 ).fetchone()[0]
-                # A reply the app could not label (Gmail refused it, or its thread's listing left the message out) is settled
-                # with the name, no time and the note 'failed'. One whose message or
+                # A thread the app could not label (Gmail refused it, or, for a reply, its thread's listing left the message out) is
+                # settled with the name, no time and the note 'failed'. One whose message or
                 # thread Gmail no longer has ('gone') is not counted: no search can find it, so it cannot make label: unreliable.
                 unlabelled = conn.execute(
                     "SELECT COUNT(*) FROM outreach_inbox_messages WHERE user_id=? AND kind='reply' AND label_name=? AND labeled_at IS NULL AND label_note='failed'",
                     (user, label),
+                ).fetchone()[0] + conn.execute(
+                    "SELECT COUNT(*) FROM outreach_label_threads WHERE user_id=? AND label_name=? AND labeled_at IS NULL AND label_note='failed'",
+                    (user, label),
                 ).fetchone()[0]
-                out(f"Captured replies not labelled yet: {waiting}")
-                out(f"Captured replies the app could not label: {unlabelled}")
-                out("Rely on label: alone only when both are 0; otherwise also search by from:/subject:")
+                # A company that has gone out and whose Sent mail the app has not searched yet: threads it sent from Gmail may lack the label.
+                unsearched = len(_search_candidates(conn, user, 1_000_000, mailbox))
+                out(f"Outreach threads not labelled yet: {waiting}")
+                out(f"Outreach threads the app could not label: {unlabelled}")
+                out(f"Companies not yet searched for sent outreach: {unsearched}")
+                out("Rely on label: alone only when all three are 0; otherwise also search by from:/to:/subject:")
             else:
-                out("Captured replies not labelled yet: not known: this database predates reply labels")
+                out("Outreach threads not labelled yet: not known: this database predates labels on outreach threads")
     out(CLOSING)
 
 

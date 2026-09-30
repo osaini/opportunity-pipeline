@@ -2623,7 +2623,7 @@ def create_app(
         conn: sqlite3.Connection = Depends(writable_connection),
         user_id: str = Depends(require_auth),
     ) -> dict[str, Any]:
-        """The Gmail label put on every thread where someone at a company replied, and whether Gmail lets the app add it."""
+        """The Gmail label put on every outreach thread (the emails the student sent and the replies), and whether Gmail lets the app add it."""
         return gmail_label_view(conn, user_id)
 
     @app.put("/api/v1/outreach/gmail-label")

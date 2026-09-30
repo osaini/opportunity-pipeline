@@ -1247,24 +1247,42 @@ unchecked.
 The app requests three scopes. `gmail.compose` covers drafts and sending.
 `gmail.readonly` covers bounces and replies. `gmail.modify` (Google words it as
 "Read, compose, and send emails from your Gmail account"; tick it on the consent
-screen) is used only to add your reply label. With readonly the app reads the headers
+screen) is used only to add your outreach label. With readonly the app reads the headers
 of its own sent threads, delivery failure notices, mail from the companies you
 wrote to (Spam included), mail in the threads of the emails you sent them, and
-mail naming those companies or your emails' subjects, and nothing else. It
-lists recent mail by id to find what is in those threads, reading only those
-messages. The app calls only `drafts.create`, `drafts.get`, `messages.send`,
+mail naming those companies or your emails' subjects, and, to label the emails
+you sent, the To, Cc, Bcc and Subject headers (never the body) of the emails you
+send, and nothing else. It lists recent mail by id to find what is in those
+threads, reading only those messages. To label the emails you sent, it searches
+your Sent mail for each company (by that company's addresses and the subjects only
+that company uses, from 30 days before you added it, and again if you change its
+addresses, subjects or dates), then lists the mail you sent since its last check and reads only those headers
+of each new sent email, to tell whether it went to a company you wrote to. The app calls only `drafts.create`, `drafts.get`, `messages.send`,
 `threads.get` (metadata format), `messages.list` (searches for notices from
 `mailer-daemon` or `postmaster`, for mail from or naming those companies, and
 recent mail by id and thread), `messages.get` (for what those searches find),
-`labels.list`, `labels.create`, `threads.get` (minimal format), `messages.get`
-(minimal format), `messages.batchModify` (adds the label only), and `profile`.
+`labels.list`, `labels.create`, `threads.get` (metadata format: the From,
+Subject, Content-Type and X-Failed-Recipients headers, to tell delivery failure
+notices apart), `messages.list` (`in:sent` searches: per company by its addresses and subjects, then mail sent since the last check), `messages.get`
+(minimal format for a reply's thread, metadata format for a sent message's
+recipients and subject), `messages.batchModify` (adds the label only), and `profile`.
 A connection made before the bounce check or the label existed
 still sends; the tab asks you to reconnect once to turn them on.
 
-**Reply labels.** Every confirmed reply, the whole thread including messages
-that arrive later, gets one Gmail label, `opportunities` by default. Each
-student can rename it or turn it off (empty) under Outreach → Outreach settings
-→ "Gmail label for replies" (letters, digits, spaces, hyphens, underscores and slashes only). Replies captured before the label existed are
+**Outreach labels.** Every outreach thread gets one Gmail label, `opportunities`
+by default: the emails you sent to companies, first emails and follow-ups
+included, whether or not anyone replied, and every confirmed reply, in each case
+the whole thread including messages that arrive later. Delivery failure notices
+and drafts are left out. Emails the app sent are found from its own record;
+emails you sent from Gmail are found by searching your Sent mail once for each
+company that has gone out (by its addresses and the subjects only it uses, from 30
+days before you added it, up to 500 results a search, each hit checked against the
+company's exact addresses and subjects; searched again if you change its addresses,
+subjects or dates, and a subject two companies share is never used, since it
+cannot say which company mail belongs to), and each new sent email's recipients and
+subject are checked the same way afterwards. Each
+student can rename the label or turn it off (empty) under Outreach → Outreach settings
+→ "Gmail label for replies" (letters, digits, spaces, hyphens, underscores and slashes only). Threads that existed before the label are
 labelled once in a backfill. Pausing automation pauses labelling. The app never
 removes a label, and never deletes, archives, moves, or marks mail read. The
 connection is refused if Google signs in as an account other than
@@ -1275,8 +1293,9 @@ account the app connected to; a coding agent's own Gmail tool may be another
 account. `scripts/pipeline_mailbox.py` (`whoami`, `search "label:opportunities"
 [--max N]`, `thread THREAD_ID`) reads the pipeline mailbox, read-only, and can
 read any message in it. `whoami` says whether `label:` alone can be trusted:
-only when it reports 0 replies not labelled yet and 0 that the app could not label
-(Gmail refused them, or left them out of their thread; replies whose mail Gmail no longer has are not counted, since no search finds them). Its output goes into the agent's conversation and to the
+only when it reports 0 outreach threads not labelled yet, 0 that the app could not label
+(Gmail refused them, or left them out of their thread; threads whose mail Gmail no longer has are not counted, since no search finds them)
+and 0 companies not yet searched for sent outreach. Its output goes into the agent's conversation and to the
 agent's model provider. In Claude Code a hook reminds the agent once per session
 before a Gmail tool runs (needs Node).
 

@@ -1823,7 +1823,7 @@ STEP_ERRORS = {
     "throttled": "Gmail asked the app to slow down",
     "needs_label_permission": (
         "Reconnect Gmail and tick the permission Google lists as reading, composing and sending, "
-        "so the app can label reply threads"
+        "so the app can label your outreach threads (the emails you send and their replies)"
     ),
     "wrong_account": "Gmail is connected as a different account from your outreach address; reconnect with that address",
     "label_refused": "Gmail would not create a label with that name; choose another in Outreach settings",

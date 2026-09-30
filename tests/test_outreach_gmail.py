@@ -180,7 +180,8 @@ class FakeGmail:
         # Threads deleted for good (threads.get answers 404), and answers for the next threads.get calls.
         self.gone_threads = set()
         self.thread_answers = []
-        # The reply label's Gmail: threads read in the minimal format, as {thread id: [{"id", "labelIds"}]}.
+        # The reply label's Gmail: threads as {thread id: [{"id", "labelIds"[, "payload": {"headers": [...]}]}]}; a message
+        # with a payload has its headers cut to the ones a metadata read asks for.
         self.label_threads = {}
         # The mailbox's labels ({"id", "name", "type"}), every labels.create body, and every messages.batchModify body.
         self.gmail_labels = []
@@ -238,10 +239,39 @@ class FakeGmail:
             held = next((item.get("labelIds", []) for items in self.label_threads.values() for item in items if item["id"] == message_id), [])
             if ids & set(held):
                 return False
+        # -from:(a OR b) drops a message of the label threads whose sender's name is one of those (a delivery notice).
+        for terms in re.findall(r"-from:\(([^)]*)\)", query):
+            named = {term.strip().casefold() for term in terms.split(" OR ") if term.strip()}
+            held = next((item for items in self.label_threads.values() for item in items if item["id"] == message_id), {})
+            sender = next((h["value"] for h in (held.get("payload") or {}).get("headers", []) if h["name"].casefold() == "from"), "")
+            if parseaddr(sender)[1].casefold().split("@", 1)[0] in named:
+                return False
+        # A history search's {to:a cc:a subject:"phrase"}: a message read back in the metadata format is found only when
+        # one of its recipients holds a term's address or its subject holds a phrase. Gmail matches an address by its
+        # words, so to:ann@bovi.example also finds jo.ann@bovi.example; the app checks each hit itself.
+        history = re.search(r"\{(.*)\}", query) if query.startswith("in:sent") else None
+        if history is not None and message_id in self.metadata:
+            headers = {h["name"].casefold(): h["value"] for h in self.metadata[message_id]["payload"]["headers"]}
+            recipients = {address.casefold() for name in ("to", "cc", "bcc") for _n, address in getaddresses([headers.get(name, "")])}
+            wanted = set(re.findall(r"(?:to|cc|bcc):(\S+)", history.group(1)))
+            phrases = re.findall(r'subject:"([^"]+)"', history.group(1))
+            after, taken = re.search(r"\bafter:(\d+)", query), self.metadata[message_id].get("internalDate")
+            if after and taken is not None and int(taken) / 1000 < int(after.group(1)):
+                return False
+            def words(text):
+                return [word for word in re.split(r"[^0-9a-z]+", text.casefold()) if word]
+
+            def holds(recipient, term):
+                have, need = words(recipient), words(term)
+                return bool(need) and any(have[start:start + len(need)] == need for start in range(len(have) - len(need) + 1))
+
+            return any(holds(recipient, term) for recipient in recipients for term in wanted) or any(
+                phrase.casefold() in headers.get("subject", "").casefold() for phrase in phrases
+            )
         if message_id not in self.raw:
             return True
         message = self.parsed(message_id)
-        terms = re.search(r"\bfrom:\(([^)]*)\)", query)
+        terms = re.search(r"(?<!-)\bfrom:\(([^)]*)\)", query)
         if terms is not None:
             wanted = {term.strip().casefold() for term in terms.group(1).split(" OR ") if term.strip()}
             # Gmail matches the From's address, from its raw text: it never fails on a header Python cannot parse.
@@ -333,10 +363,16 @@ class FakeGmail:
                 return self.thread_answers.pop(0)()
             if thread_id in self.gone_threads:
                 return httpx.Response(404, json={"error": {"code": 404, "message": "Requested entity was not found."}})
-            if form == "minimal" and thread_id in self.label_threads:
-                return httpx.Response(200, json={"id": thread_id, "historyId": "1", "messages": [
-                    {"threadId": thread_id, **message} for message in self.label_threads[thread_id]
-                ]})
+            if form in ("minimal", "metadata") and thread_id in self.label_threads:
+                messages = []
+                for message in self.label_threads[thread_id]:
+                    message = {"threadId": thread_id, **message}
+                    if form == "metadata" and asked and message.get("payload"):
+                        payload = dict(message["payload"])
+                        payload["headers"] = [header for header in payload.get("headers", []) if header["name"].casefold() in asked]
+                        message["payload"] = payload
+                    messages.append(message)
+                return httpx.Response(200, json={"id": thread_id, "historyId": "1", "messages": messages})
             sent = {"id": thread_id.replace("thread-", "sent-"), "labelIds": ["SENT"], "internalDate": "1000",
                     "payload": {"mimeType": "multipart/mixed", "headers": [{"name": "From", "value": ACCOUNT}]}}
             placed = []
@@ -364,10 +400,10 @@ class FakeGmail:
             query = params.get("q", "")
             self.searches.append(query)
             self.search_params.append(dict(params))
-            if "mailer-daemon" in query:
+            if "mailer-daemon" in query and "-from:(" not in query:
                 found = self.inbox_notices
             elif query.startswith("in:sent"):
-                found = self.sent_search
+                found = [m for m in self.sent_search if self.listed(m, query, False)]
             else:
                 found = [m for m in self.inbox_replies if self.listed(m, query, params.get("includeSpamTrash") == "true")]
             listed = lambda ids: [{"id": message_id, "threadId": self.thread_of(message_id)} for message_id in ids]
