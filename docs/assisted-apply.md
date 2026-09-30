@@ -26,7 +26,37 @@ value-free progress. The extension never receives the editable profile draft.
    It refuses hidden, disabled, duplicate/ambiguous, navigation, CAPTCHA,
    consent, messaging, and submit controls. Every mutation is verified against
    the live DOM after normal `input` and `change` events.
-3. Sensitive or consequential fields remain manual. A non-sensitive saved
+3. Sensitive or consequential fields remain manual in the extension: it
+   refuses them, and the saved-answer library never holds an answer to one. The
+   one exception is **Apply for me**, the app's own filler for saved Greenhouse
+   roles (a separate feature, off until the student turns it on), and only for
+   what the student has switched on and stored themselves under Apply for me
+   settings. That store holds:
+   - work authorization, visa sponsorship, and 18 or older, each as the student's
+     own answer;
+   - an EEO self-identification question, only as a decline answer such as
+     "Decline To Self Identify" or "I don't wish to answer" (the service refuses
+     any other value, so no demographic value is ever stored);
+   - a legal acknowledgment or a data-processing consent, stored word for word.
+     Its box is ticked only when the form's statement is exactly the stored one.
+     A statement that says "I have read" or links a document is saved for one
+     company, never for any company, and the plan shows the document's address
+     next to the tick; if the form later links to another address the box is
+     left for the student.
+
+   Every entry records the exact question, the answer, and the student's consent
+   with the time (the consent says the answer is used only to fill in
+   application forms). Export control, citizenship and security clearance,
+   salary, and every other personal question (age, birth date, pronouns,
+   religion, criminal history, and anything the classifier cannot place) are
+   never stored or answered. The extension's `apply_context`, the answer
+   library, employer views and every report never read the store
+   (`tests/test_apply_sensitive.py` scans the source for it). Writing or reading
+   the store needs the student's own browser session, not the access token. The
+   student still presses Submit themselves.
+
+   Where a sensitive field is not covered by a stored answer it stays manual,
+   as above. A non-sensitive saved
    answer whose question has the same words as the field can be checked after
    review; fuzzy matches are never prechecked. "Exact" means the same words, not
    that the answer is true here. The panel shows a line under every field

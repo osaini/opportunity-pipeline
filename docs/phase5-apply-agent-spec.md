@@ -1367,6 +1367,37 @@ option E. The API refuses it unless that option is chosen. Questions the classif
 `uncategorized` (age, birth, pronouns, religion, criminal history and so on) have no category, so
 they can never be stored.
 
+**As built in M4s (2026-09-30), where it differs from the text above:**
+
+- The service is `opportunity_app/apply_sensitive.py` (`add_entry`, `delete_entry`, `list_entries`, `lookup`,
+  `allowed_categories`, `set_allowed_categories`). It is the only file that names the table besides
+  `operations.py` (export and deletion); `apply_policy.stored_sensitive_answer` is now a one-line call to
+  `lookup`. The 12.7 allowlist reads: `apply_sensitive.py` and `operations.py`, plus a check that only
+  `apply_policy.py`, `apply_preflight.py` and `api.py` import the module.
+- **`apply_eeo_store_values` is not built.** The student chose D5 C (i), so the service refuses every EEO value
+  that is not a decline, on a whole-label match against a fixed list, whatever a route or a future caller passes.
+  Sub-choice (ii) would need its own decision and a THREAT_MODEL.md:17 rewrite.
+- The routes are all under `require_browser_session` (new in `api.py`; refuses any `Authorization` header, and for
+  a write checks the CSRF header whether or not an `Origin` is present). Reading the list needs it too, since an
+  entry is the student's own answer. `GET/POST /api/v1/apply-agent/sensitive-answers`,
+  `DELETE .../sensitive-answers/{id}`, `PUT .../sensitive-categories`, and the Needs you form
+  `POST /api/v1/apply-agent/opportunities/{id}/sensitive-answers`, which takes only the answer and the tick and
+  reads the category, wording and options from the form it re-reads.
+- The category the student switches on is a choice of storable categories only (`export_control`, `salary`
+  and `uncategorized` are refused, and ignored if hand-written into `user_settings`). Nothing is on by default.
+- A statement that reads a document, or links one, is saved for one company; its links are stored, shown in the
+  check's field list (the plan preview's "links to {address}"), and re-checked against the form: a changed
+  address is a mismatch, not a tick. A data-processing consent (`data_compliance`) has no statement in the
+  listing, so it stays left for the student until M5b reads the statement from the page.
+- An optional sensitive question, which is never a "problem", is offered in the check's `optional_sensitive`
+  list with the same form, so an optional EEO field can be answered with the form's own decline label.
+- The consent wording is "Use this answer only to fill in application forms when I ask the app to apply, and for
+  nothing else. I look over each application before it is sent." The spec's sentence ("...that the app submits
+  after I confirm each one") is not true under D1 B, where the student presses Submit; M6 rewrites it with the
+  D1 A wording. Every entry is stored with `consent_scope='confirmed'`; `unattended` is refused until M8.
+- `last_used_at` is not written yet: the check and the plan write nothing, and the run that fills the field
+  (M5b) is the one to record it.
+
 ### 5.5 `apply_ats_labels`: exact option labels, confirmed once
 
 Some Greenhouse fields are typeahead lists whose labels differ from how the student writes the

@@ -570,10 +570,33 @@ when a later step takes them, are deleted after 90 days
 `python -m opportunity_app.setup validate` after editing; it checks these
 fields too.
 
-Questions about work authorization, sponsorship, demographics, consent and
-salary are never answered from the profile or the saved answers. The app lists
-them and leaves them for the student; a later step adds a separate store for a
-few of them, which the student fills in and consents to themselves.
+5. **Sensitive answers (optional; ask, never decide for them).** Questions about
+   work authorization, sponsorship, demographics, consent and salary are never
+   answered from the profile or the saved answers. The app lists them and leaves
+   them for the student. A student who wants the app to type a few of them can
+   allow that under Profile › Automation › Apply for me settings › **Answers for
+   sensitive questions**. Ask which kinds they want, if any: work authorization,
+   visa sponsorship, 18 or older, voluntary self-identification (EEO), legal
+   acknowledgments, data-processing consents. Nothing is on until they switch it
+   on. Then they add each answer themselves, either there (the question exactly
+   as the form shows it) or on a role, where the app lists the question and the
+   form's own options. Say plainly:
+
+   - each answer needs their own tick on the wording that it is used only to
+     fill in application forms, and it is kept with the time they ticked it;
+   - for voluntary self-identification the app keeps only a decline answer such
+     as "Decline To Self Identify", never a real one, and a form that words the
+     decline differently needs its own entry;
+   - a legal acknowledgment or consent is ticked only when the form's statement
+     is word for word the stored one, and one that says "I have read" or links a
+     document is saved for one company only;
+   - export control, citizenship, security clearance and salary questions, and
+     personal ones such as age or birth date, are never answered.
+
+   Nothing about their situation is written into the app: the kinds, the
+   answers and the consent all live in their own copy. It works from the
+   student's browser session, so a script with the access token cannot read or
+   change it.
 
 ## 7b. Call prep (optional)
 
