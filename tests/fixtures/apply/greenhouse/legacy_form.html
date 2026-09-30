@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Job Application for Robotics Hardware Intern at Example Robotics</title>
+<!--
+  FICTIONAL. A trimmed copy of the structure of Greenhouse's older hosted form: form#application_form,
+  job_application[...] control names, an .asterisk span as the required marker, and a #submit_app
+  button. Standard fields only: the older form's custom-question names are not modelled here. Only
+  detection is live while LEGACY_ENABLED is False (spec 4.4).
+-->
+<style>.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }</style>
+</head>
+<body>
+<h1 class="app-title">Robotics Hardware Intern</h1>
+<script>
+  window.__loader = {"boardToken":"examplerobotics","jobId":"4000000002","submitPath":"/examplerobotics/jobs/4000000002","confirmationPath":"/examplerobotics/jobs/4000000002/confirmation"};
+</script>
+<form id="application_form" method="post" action="https://boards.greenhouse.io/examplerobotics/jobs/4000000002" enctype="multipart/form-data">
+  <div class="field">
+    <label for="first_name">First Name <span class="asterisk">*</span></label>
+    <input id="first_name" name="job_application[first_name]" type="text" required>
+  </div>
+  <div class="field">
+    <label for="last_name">Last Name <span class="asterisk">*</span></label>
+    <input id="last_name" name="job_application[last_name]" type="text" required>
+  </div>
+  <div class="field">
+    <label for="email">Email <span class="asterisk">*</span></label>
+    <input id="email" name="job_application[email]" type="email" required>
+  </div>
+  <div class="field">
+    <label for="phone">Phone</label>
+    <input id="phone" name="job_application[phone]" type="tel">
+  </div>
+  <div class="field" id="resume_group">
+    <label for="resume_file">Resume/CV <span class="asterisk">*</span></label>
+    <input id="resume_file" name="job_application[resume]" type="file" required>
+  </div>
+  <input id="submit_app" type="submit" value="Submit Application">
+</form>
+</body>
+</html>

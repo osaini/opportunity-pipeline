@@ -1,0 +1,87 @@
+{
+  "absolute_url": "https://boards.greenhouse.io/examplerobotics/jobs/4000000002",
+  "id": 4000000002,
+  "internal_job_id": 4000000902,
+  "title": "Robotics Hardware Intern",
+  "updated_at": "2026-08-15T09:00:00-04:00",
+  "requisition_id": null,
+  "location": {
+    "name": "Springfield, Example State"
+  },
+  "company_name": "Example Robotics",
+  "questions": [
+    {
+      "description": null,
+      "label": "First Name",
+      "required": true,
+      "fields": [
+        {
+          "name": "first_name",
+          "type": "input_text",
+          "values": []
+        }
+      ]
+    },
+    {
+      "description": null,
+      "label": "Last Name",
+      "required": true,
+      "fields": [
+        {
+          "name": "last_name",
+          "type": "input_text",
+          "values": []
+        }
+      ]
+    },
+    {
+      "description": null,
+      "label": "Email",
+      "required": true,
+      "fields": [
+        {
+          "name": "email",
+          "type": "input_text",
+          "values": []
+        }
+      ]
+    },
+    {
+      "description": null,
+      "label": "Phone",
+      "required": false,
+      "fields": [
+        {
+          "name": "phone",
+          "type": "input_text",
+          "values": []
+        }
+      ]
+    },
+    {
+      "description": null,
+      "label": "Resume/CV",
+      "required": true,
+      "fields": [
+        {
+          "name": "resume",
+          "type": "input_file",
+          "values": []
+        },
+        {
+          "name": "resume_text",
+          "type": "textarea",
+          "values": []
+        }
+      ]
+    }
+  ],
+  "location_questions": [],
+  "compliance": [],
+  "demographic_questions": {
+    "header": null,
+    "description": null,
+    "questions": []
+  },
+  "data_compliance": []
+}

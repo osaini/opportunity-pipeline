@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Job Application for Robotics Software Intern at Example Robotics</title>
+<!--
+  FICTIONAL. A trimmed copy of the structure of a Greenhouse job-boards application form: the
+  company, the ids and every word of the questions are made up. It uses no real employer's text.
+  The react-select controls are a vanilla-JS IMITATION (a combobox input, a menu of options that
+  appears on typing, the chosen value in a separate element, and a hidden required mirror).
+  tests/apply_fake_ats.py serves this page and adds a scenario script where the marker below is.
+-->
+<style>
+  body { font: 16px/1.4 system-ui, sans-serif; max-width: 42rem; margin: 2rem auto; padding: 0 1rem; }
+  .field, fieldset { margin: 1rem 0; border: 0; padding: 0; }
+  label, legend { display: block; font-weight: 600; margin-bottom: .25rem; }
+  label.inline { display: block; font-weight: 400; }
+  input[type=text], input[type=email], input[type=tel], textarea, select { width: 100%; padding: .4rem; box-sizing: border-box; }
+  .visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
+  .required::after { content: "*"; margin-left: .2rem; }
+  .select__control { border: 1px solid #888; border-radius: 4px; padding: .3rem; }
+  .select__menu { border: 1px solid #888; background: #fff; }
+  .select__option { padding: .3rem .5rem; cursor: pointer; }
+  .select__multi-value { display: inline-block; background: #ddd; margin-right: .3rem; padding: 0 .3rem; }
+  .error { color: #b00020; }
+  .trap { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Robotics Software Intern</h1>
+  <p>Example Robotics &middot; Springfield, Example State</p>
+</header>
+<script>
+  window.__loader = {"boardToken":"examplerobotics","jobId":"4000000001","submitPath":"/examplerobotics/jobs/4000000001","confirmationPath":"/examplerobotics/jobs/4000000001/confirmation"};
+</script>
+
+<p><button type="button" id="autofill-mygreenhouse" data-forbidden>Autofill my application</button></p>
+
+<form id="application-form" method="post" action="https://boards.greenhouse.io/examplerobotics/jobs/4000000001" enctype="multipart/form-data" data-allow-s3="false" novalidate>
+  <input type="hidden" name="mapped_url_token" value="fixture-token-0001">
+
+  <!-- Required marker: the required attribute, and an asterisk. -->
+  <div class="field">
+    <label for="first_name">First Name <span aria-hidden="true">*</span></label>
+    <input id="first_name" name="first_name" type="text" required autocomplete="given-name">
+  </div>
+  <!-- Required marker: the required attribute alone. -->
+  <div class="field">
+    <label for="last_name">Last Name</label>
+    <input id="last_name" name="last_name" type="text" required autocomplete="family-name">
+  </div>
+  <!-- Required marker: aria-required alone. -->
+  <div class="field">
+    <label for="email">Email</label>
+    <input id="email" name="email" type="email" aria-required="true" data-required autocomplete="email">
+  </div>
+  <div class="field">
+    <label for="phone">Phone</label>
+    <input id="phone" name="phone" type="tel" autocomplete="tel">
+  </div>
+
+  <!-- Required marker: span.required in the upload group alone. input#resume is visually hidden, as on the live board. -->
+  <div class="field" id="resume-group">
+    <label for="resume">Resume/CV <span class="required"></span></label>
+    <div>
+      <button type="button" onclick="document.getElementById('resume').click()">Attach</button>
+      <button type="button" data-forbidden>Dropbox</button>
+      <button type="button" data-forbidden>Google Drive</button>
+      <button type="button" data-forbidden>Enter manually</button>
+    </div>
+    <input id="resume" name="resume" type="file" class="visually-hidden" accept=".pdf,.doc,.docx,.txt,.rtf">
+    <p id="resume-file-name"></p>
+  </div>
+  <div class="field" id="cover-letter-group">
+    <label for="cover_letter">Cover Letter</label>
+    <div>
+      <button type="button" onclick="document.getElementById('cover_letter').click()">Attach</button>
+      <button type="button" data-forbidden>Enter manually</button>
+    </div>
+    <input id="cover_letter" name="cover_letter" type="file" class="visually-hidden" accept=".pdf,.doc,.docx,.txt,.rtf">
+    <p id="cover_letter-file-name"></p>
+  </div>
+
+  <div class="field">
+    <label for="location_city">Location (City)</label>
+    <div class="rs" data-name="location_city" data-lookup="location"></div>
+    <button type="button" id="locate-me" data-forbidden>Locate me</button>
+  </div>
+
+  <!-- Required marker: an asterisk in the label alone. -->
+  <div class="field">
+    <label for="question_4000000101">Why do you want to work at Example Robotics? *</label>
+    <textarea id="question_4000000101" name="question_4000000101" data-required rows="4"></textarea>
+  </div>
+  <div class="field">
+    <label for="question_4000000102">Portfolio or project link</label>
+    <input id="question_4000000102" name="question_4000000102" type="text">
+  </div>
+  <!-- Required marker: the hidden required mirror alone. -->
+  <div class="field">
+    <label for="question_4000000103">Which team are you most interested in?</label>
+    <div class="rs" data-name="question_4000000103" data-required="true" data-options="Perception|Controls|Firmware"></div>
+  </div>
+  <div class="field">
+    <label for="question_4000000104">Which programming languages have you used?</label>
+    <div class="rs" data-name="question_4000000104" data-multi="true" data-options="Python|C++|Rust|MATLAB"></div>
+  </div>
+  <div class="field">
+    <label for="question_4000000105">Are you legally authorized to work in the United States?</label>
+    <div class="rs" data-name="question_4000000105" data-required="true" data-options="Yes|No"></div>
+  </div>
+  <div class="field">
+    <label for="question_4000000106">Will you now or in the future require sponsorship for employment visa status?</label>
+    <div class="rs" data-name="question_4000000106" data-required="true" data-options="Yes|No"></div>
+  </div>
+  <div class="field">
+    <label for="question_4000000107">What are your salary expectations?</label>
+    <input id="question_4000000107" name="question_4000000107" type="text">
+  </div>
+  <!-- A native select whose first option is a real value: a page-set default (spec 6.10 item 4). -->
+  <div class="field">
+    <label for="question_4000000108">Preferred internship term</label>
+    <select id="question_4000000108" name="question_4000000108">
+      <option value="1">Summer 2027</option>
+      <option value="2">Fall 2027</option>
+      <option value="3">Spring 2028</option>
+    </select>
+  </div>
+  <div class="field">
+    <label class="inline"><input type="checkbox" id="question_4000000109" name="question_4000000109" value="1" required>
+      I have read the <a href="https://examplerobotics.test/privacy" target="_blank">Example Robotics privacy notice</a></label>
+  </div>
+  <div class="field">
+    <label class="inline"><input type="checkbox" id="question_4000000110" name="question_4000000110" value="1" required>
+      I certify that the information I have provided is accurate</label>
+  </div>
+  <!-- Required marker: aria-required on the radio group alone. -->
+  <fieldset role="group" aria-required="true" aria-labelledby="q111-label">
+    <legend id="q111-label">Have you previously worked at Example Robotics?</legend>
+    <label class="inline"><input type="radio" name="question_4000000111" value="1"> Yes</label>
+    <label class="inline"><input type="radio" name="question_4000000111" value="0"> No</label>
+  </fieldset>
+  <div class="field">
+    <label for="question_4000000112">If yes, please explain</label>
+    <textarea id="question_4000000112" name="question_4000000112" rows="2"></textarea>
+  </div>
+  <!-- A box the employer pre-checked, optional. -->
+  <div class="field">
+    <label class="inline"><input type="checkbox" id="question_4000000113" name="question_4000000113" value="1" checked>
+      Keep me informed about future openings at Example Robotics</label>
+  </div>
+
+  <!-- A demographic question outside the EEOC block. -->
+  <div class="field">
+    <label for="question_4000000114">What is your sexual orientation?</label>
+    <div class="rs" data-name="question_4000000114" data-options="Heterosexual|Gay or lesbian|Bisexual|I don't wish to answer"></div>
+  </div>
+
+  <section id="eeoc">
+    <h2>Voluntary Self-Identification</h2>
+    <p>Answering these questions is voluntary and has no effect on your application.</p>
+    <div class="field">
+      <label for="gender">Gender</label>
+      <div class="rs" data-name="gender" data-options="Male|Female|Decline To Self Identify"></div>
+    </div>
+    <div class="field">
+      <label for="hispanic_ethnicity">Are you Hispanic/Latino?</label>
+      <div class="rs" data-name="hispanic_ethnicity" data-options="Yes|No|Decline To Self Identify"></div>
+    </div>
+    <div class="field">
+      <label for="veteran_status">Veteran Status</label>
+      <div class="rs" data-name="veteran_status" data-options="I am not a protected veteran|I identify as one or more of the classifications of protected veteran|I don't wish to answer"></div>
+    </div>
+    <div class="field">
+      <label for="disability_status">Disability Status</label>
+      <div class="rs" data-name="disability_status" data-options="Yes, I have a disability, or have had one in the past|No, I do not have a disability and have not had one in the past|I do not want to answer"></div>
+    </div>
+  </section>
+
+  <div class="field">
+    <label class="inline"><input type="checkbox" id="gdpr_consent_given" name="gdpr_consent_given" value="1" required>
+      I consent to Example Robotics storing my application data for 365 days</label>
+  </div>
+
+  <!-- A spam trap: hidden by CSS, not in Greenhouse's listing. Filling it marks the applicant as a bot. -->
+  <input type="text" name="website_url" id="website_url" class="trap" tabindex="-1" autocomplete="off">
+
+  <p id="form-error" class="error" role="alert" hidden></p>
+
+  <div id="security-code" hidden>
+    <p>Enter the security code that was sent to your email address.</p>
+    <input id="security-input-0" name="security_code" maxlength="1" size="1" aria-label="Security code character 1">
+    <input id="security-input-1" name="security_code" maxlength="1" size="1" aria-label="Security code character 2">
+    <input id="security-input-2" name="security_code" maxlength="1" size="1" aria-label="Security code character 3">
+    <input id="security-input-3" name="security_code" maxlength="1" size="1" aria-label="Security code character 4">
+    <input id="security-input-4" name="security_code" maxlength="1" size="1" aria-label="Security code character 5">
+    <input id="security-input-5" name="security_code" maxlength="1" size="1" aria-label="Security code character 6">
+    <input id="security-input-6" name="security_code" maxlength="1" size="1" aria-label="Security code character 7">
+    <input id="security-input-7" name="security_code" maxlength="1" size="1" aria-label="Security code character 8">
+  </div>
+
+  <button type="submit" class="btn">Submit application</button>
+</form>
+
+<script>
+(function () {
+  "use strict";
+  var loader = window.__loader;
+  var form = document.getElementById("application-form");
+  window.__forbiddenClicks = 0;
+  document.querySelectorAll("[data-forbidden]").forEach(function (button) {
+    button.addEventListener("click", function () { window.__forbiddenClicks += 1; });
+  });
+
+  // The URL a typeahead asks for its options. FICTIONAL path: the real lookup endpoints are pinned in M5a.
+  window.grLookupUrl = function (kind, text) {
+    return "https://boards-api.greenhouse.io/fake-lookup/" + kind + "?q=" + encodeURIComponent(text);
+  };
+
+  // --- an imitation of react-select ---------------------------------------------------------
+  document.querySelectorAll(".rs").forEach(function (mount) {
+    var name = mount.dataset.name;
+    var options = (mount.dataset.options || "").split("|").filter(Boolean);
+    var multi = mount.dataset.multi === "true";
+    var lookup = mount.dataset.lookup || "";
+    mount.innerHTML =
+      '<div class="select__control"><div class="select__value-container"><span class="select__values"></span>' +
+      '<input class="select__input" id="' + name + '" type="text" role="combobox" aria-autocomplete="list" aria-expanded="false" autocomplete="off"></div></div>' +
+      '<div class="select__menu" role="listbox" hidden></div>' +
+      '<input type="text" name="' + name + '"' + (mount.dataset.required === "true" ? " required" : "") +
+      ' aria-hidden="true" tabindex="-1" class="visually-hidden" value="">';
+    var input = mount.querySelector(".select__input");
+    var menu = mount.querySelector(".select__menu");
+    var values = mount.querySelector(".select__values");
+    var mirror = mount.querySelector("input[aria-hidden]");
+    var chosen = [];
+    function draw() {
+      values.innerHTML = "";
+      chosen.forEach(function (label) {
+        var box = document.createElement("div");
+        box.className = multi ? "select__multi-value" : "select__single-value";
+        var text = document.createElement("div");
+        if (multi) text.className = "select__multi-value__label";
+        text.textContent = label;
+        if (multi) { box.appendChild(text); } else { box.textContent = label; }
+        values.appendChild(box);
+      });
+      mirror.value = chosen.map(function (label) { return "v" + (options.indexOf(label) + 1 || label); }).join(",");
+    }
+    function show(labels) {
+      menu.innerHTML = "";
+      labels.forEach(function (label) {
+        var row = document.createElement("div");
+        row.className = "select__option";
+        row.setAttribute("role", "option");
+        row.textContent = label;
+        row.addEventListener("click", function () {
+          chosen = multi ? chosen.concat([label]) : [label];
+          input.value = "";
+          menu.hidden = true;
+          input.setAttribute("aria-expanded", "false");
+          draw();
+        });
+        menu.appendChild(row);
+      });
+      menu.hidden = labels.length === 0;
+      input.setAttribute("aria-expanded", String(labels.length > 0));
+    }
+    input.addEventListener("input", function () {
+      var text = input.value.trim().toLowerCase();
+      if (!text) { show([]); return; }
+      if (lookup) {
+        fetch(window.grLookupUrl(lookup, input.value)).then(function (r) { return r.json(); }).then(function (found) { show(found); }).catch(function () { show([]); });
+      } else {
+        show(options.filter(function (label) { return label.toLowerCase().indexOf(text) !== -1; }));
+      }
+    });
+  });
+
+  // --- attached files ------------------------------------------------------------------------
+  ["resume", "cover_letter"].forEach(function (id) {
+    var input = document.getElementById(id);
+    input.addEventListener("change", function () {
+      document.getElementById(id + "-file-name").textContent = input.files.length ? input.files[0].name : "";
+    });
+  });
+
+  // --- the form's own checks and its reaction to the answer; scenarios replace these -----------
+  function showError(text) {
+    var box = document.getElementById("form-error");
+    box.textContent = text;
+    box.hidden = !text;
+  }
+  window.grValidate = function () {
+    var missing = Array.prototype.filter.call(form.querySelectorAll("[required], [data-required]"), function (control) {
+      return control.type === "checkbox" ? !control.checked : !String(control.value).trim();
+    });
+    var group = form.querySelector('fieldset[aria-required="true"]');
+    if (group && !group.querySelector("input:checked")) missing.push(group);
+    return missing.length ? "Please complete the required fields." : "";
+  };
+  window.grAfterSubmit = function (response) {
+    if (response.ok) {
+      window.location.assign(loader.confirmationPath);
+    } else if (response.status === 428) {
+      document.getElementById("security-code").hidden = false;
+    } else {
+      showError("Greenhouse could not accept the application (" + response.status + ").");
+    }
+  };
+  form.addEventListener("submit", function (event) {
+    event.preventDefault();
+    var problem = window.grValidate();
+    showError(problem);
+    if (problem) return;
+    fetch("https://boards.greenhouse.io" + loader.submitPath, { method: "POST", body: new FormData(form) })
+      .then(function (response) { window.grAfterSubmit(response); })
+      .catch(function () {});
+  });
+})();
+</script>
+<!--FAKE_SCENARIO-->
+</body>
+</html>
