@@ -342,6 +342,7 @@ def age_box(monkeypatch):
     monkeypatch.setattr(apply_preflight.SchemaCache, "put", lambda self, key, listing: None)
 
 
+@pytest.mark.allow_page_errors  # the save with no company is a 422 by design
 def test_a_tick_box_answer_added_in_the_settings_is_stored_as_ticked_and_used_on_the_form(apply_ready, age_box, owner_page, live_server):
     allow(live_server, "age_18")
     owner_page.click("#profile-nav")
@@ -353,9 +354,14 @@ def test_a_tick_box_answer_added_in_the_settings_is_stored_as_ticked_and_used_on
     tick.check()
     expect(block.get_by_label("Answer", exact=True)).to_be_hidden()
     block.get_by_label(CONSENT).check()
+    # A tick box is kept for one company only: with no company the save is refused, and with one it is stored for that company.
+    block.get_by_role("button", name="Save this answer").click()
+    expect(block.locator(".form-status")).to_contain_text("never for any company")
+    assert stored(live_server) == []
+    block.get_by_label(re.compile("^Company")).fill("Acme Robotics")
     block.get_by_role("button", name="Save this answer").click()
     expect(block.locator(".apply-sensitive-entry")).to_contain_text("Ticked")
-    assert [(row["category"], row["answer_kind"], row["answer"]) for row in stored(live_server)] == [("age_18", "checkbox", "checked")]
+    assert [(row["category"], row["answer_kind"], row["answer"], row["company_key"]) for row in stored(live_server)] == [("age_18", "checkbox", "checked", "acme robotics")]
     open_saved_role(owner_page)
     section = owner_page.locator(".apply-for-me")
     expect(section).to_be_visible()

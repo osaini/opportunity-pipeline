@@ -12,8 +12,13 @@ and for which kind of use). Nothing else is ever stored here:
   table holds no demographic value, and the service refuses anything else. This is the student's D5 C (i);
 - a question is stored only under the kind the wording reads as (a consent may be worded as an acknowledgment), so a
   demographic question cannot be filed as work authorization to get a real value past the decline check;
-- a statement that says "I have read" or points to a document is saved for one company, never for any company:
-  one employer's notice is not another's. So is any question that depends on its company (7.1).
+- every statement (an acknowledgment or a consent) is saved for one company, never for any company, and so is every tick
+  box and every typed answer for work authorization, sponsorship or 18 or older: no list of words can prove a statement
+  names no document, so nothing of the kind travels. Only a select's exact option label for those three kinds, and an EEO
+  decline, may be kept for any company. So is any question that depends on its company (7.1);
+- an entry for work authorization, sponsorship or 18 or older whose statement or answer also claims a demographic, a
+  criminal record, pay or a clearance (the broad net's never-storable topics) is refused, so this table never holds a
+  ticked veteran, gender, ethnicity or probation claim;
 
 Who reads it. ``lookup`` is asked by apply_policy (the plan) and by nothing else: the extension's apply context,
 ``/api/v1/extension/*``, the saved-answer library, employer views and every report never read this table
@@ -191,17 +196,45 @@ def links_in(*texts: Any) -> tuple[str, ...]:
     return tuple(found)
 
 
+# The only words a statement may be made of for the app to be sure it names no document: a certification that what the student
+# wrote on this application is true. Every other agreement (arbitration "rules", a "code", a "principles" page, a "poster", a
+# retention period at one employer) may be that employer's own text, and a list of document nouns can never be complete.
+_ACCURACY_WORDS = frozenset(
+    "i we certify certification attest affirm declare declaration confirm acknowledge that the my all of this these those information "
+    "answers responses details data provided given submitted made entered in on to application form and best knowledge are is was were "
+    "true accurate correct complete truthful not no false misleading or a an above here it they be have has been am will".split()
+)
+_ACCURACY_CLAIM = re.compile(r"\b(?:true|accurate|correct|complete|truthful)\b")
+
+
+def _names_no_document(statement: str) -> bool:
+    """Whether a statement is provably a certification that the student's own answers are true, and nothing else."""
+    words = _words(statement).split()
+    return bool(words) and bool(_ACCURACY_CLAIM.search(" ".join(words))) and all(word in _ACCURACY_WORDS for word in words)
+
+
 def cites_document(statement: str, links: Iterable[str] = (), *, names: bool = True) -> bool:
     """Whether a statement reads, agrees to or links a document, so it is only ever saved for one company.
 
-    ``names`` also reads a capitalized name after "the", "our" or "its" as a document. It is on for a legal
-    acknowledgment or a data consent, whose whole point is the text it agrees to, and off for a box that states a fact
-    about the student ("I am authorized to work in the United States"), which names a place, not a document.
+    No longer what decides scope: every statement and every tick box is kept for one company (``_any_company_choice``), because no
+    list can prove a statement names no document. It stays as the finer reading, for callers and tests that ask.
+
+    ``names`` is on for a legal acknowledgment or a data consent, whose whole point is the text it agrees to, and off for a box
+    that states a fact about the student ("I am authorized to work in the United States"), which names a place, not a document.
+    It reads a capitalized name after "the", "our" or "its" as a document, and fails closed on any agreement the broad net
+    finds (apply_policy.NET_TOPICS): such a statement names no document only when the app can prove it, which is a plain
+    certification that the student's answers are true. The word lists above catch the common documents; the rule is that a
+    list of nouns can never be complete, so anything that agrees to something and is not provably plain is kept for one company.
     """
-    return (
-        bool(tuple(links)) or bool(_DOCUMENT_WORDS.search(_words(statement))) or bool(links_in(statement))
-        or (names and bool(_NAMED_DOCUMENT.search(html.unescape(str(statement or "")))))
-    )
+    if bool(tuple(links)) or bool(_DOCUMENT_WORDS.search(_words(statement))) or bool(links_in(statement)):
+        return True
+    if not names:
+        return False
+    if _NAMED_DOCUMENT.search(html.unescape(str(statement or ""))):
+        return True
+    from .apply_policy import net_topics
+
+    return "agreement" in net_topics(statement) and not _names_no_document(statement)
 
 
 # --- What the student allowed ---------------------------------------------------------------------------------
@@ -248,8 +281,8 @@ def add_entry(
     """Store one answer, or refuse it. The same question for the same company is replaced, and its consent is given again.
 
     ``question`` is the exact wording the form showed (for a statement, the whole statement). ``company`` is the
-    employer's name: empty means any company, which a statement that cites a document and a follow-up that depends
-    on its company (``company_only``, or wording that says so) are refused. ``consent`` must be True: the student ticked the box in
+    employer's name: empty means any company, which every statement, every tick box, every typed answer and a follow-up that
+    depends on its company (``company_only``, or wording that says so) are refused. ``consent`` must be True: the student ticked the box in
     ``CONSENT_TEXT``. ``from_form`` says the category is the plan's own for this very wording (the Needs-you route), so the
     plan's reading of the options, the question above or the heading is not second-guessed; a demographic value is
     refused either way. The write is one transaction.
@@ -266,7 +299,7 @@ def add_entry(
         raise StoreRefused("Give the question exactly as the form shows it")
     # The wording decides too: an answer to "Are you a U.S. citizen or authorized to work in the U.S.?" is never stored
     # under a more permissive name. The classifier is the plan's own, imported here because the plan imports this module.
-    from .apply_policy import classify_sensitive, eeo_words
+    from .apply_policy import NEVER_STORABLE_TOPICS, classify_sensitive, eeo_words, net_topics
 
     read_as = classify_sensitive(text)
     if read_as in _NEVER:
@@ -302,10 +335,22 @@ def add_entry(
         else:
             stored = _one_line(answer, MAX_ANSWER_CHARS, "answer")
         cited = ()
-    if category not in EEO_CATEGORIES and not ticked and eeo_words(text):
+    if category in TICKABLE:
         # A wording that asks for voluntary self-identification as well as work authorization, sponsorship or age is never filed
         # under the other kind, whichever kind reads it most strictly: a demographic value must not get in under it (D5 C (i)).
-        raise StoreRefused("This question also asks for voluntary self-identification. The app stores only a decline for those, so it cannot store an answer to it")
+        # A ticked statement is no exception: "I am authorized to work in the United States and I am a protected veteran" would
+        # tick a demographic claim at every employer. The broad net is read as well as the classifier's own words, so a wording the
+        # lists miss ("military spouse", "date of birth") is refused too, and so is a claim about a criminal record, pay or
+        # clearance ("...and I am not on probation"): those topics are never storable (D5 C (i)). An 18-or-older wording is not one.
+        # An acknowledgment or a consent may name such words ("EEOC Know Your Rights poster"): it is an agreement, saved for one company.
+        claimed = set(net_topics(text)) & set(NEVER_STORABLE_TOPICS)
+        if eeo_words(text) or "demographic" in claimed:
+            raise StoreRefused("This question also asks for voluntary self-identification. The app stores only a decline for those, so it cannot store an answer to it")
+        if claimed:
+            raise StoreRefused("This question also asks about criminal history, pay or security clearance. The app never stores an answer to those, so it cannot store an answer to it")
+        # The answer too, not only the question: an option such as "Yes, and I am a protected veteran" is a demographic value.
+        if not ticked and (eeo_words(stored) or set(net_topics(stored)) & set(NEVER_STORABLE_TOPICS)):
+            raise StoreRefused("That answer says more than work authorization, sponsorship or age. The app never stores a criminal, demographic, pay or clearance claim")
     if category in EEO_CATEGORIES:
         # D5 C (i): this table never holds a demographic value. Checked here, so no route and no future caller can bypass it.
         if kind != "option" or not is_decline(stored):
@@ -319,8 +364,13 @@ def add_entry(
     # employer ("this company", a follow-up, a bare heading) is never kept for every company (7.1).
     if not mine and category not in EEO_CATEGORIES and _depends_on_company(key):
         raise StoreRefused("This question depends on the company, so its answer is saved for this company only")
-    if not mine and ticked and cites_document(text, cited, names=statement):
-        raise StoreRefused("This statement points to a document, so it is saved for one company only, never for any company")
+    if not mine and (statement or ticked or (category in TICKABLE and kind != "option")):
+        # No list of words can prove a statement names no document, and a tick box or a typed answer is not an exact option label:
+        # every statement and every tick box is kept for the one company it was read at (D9 B; spec 5.4 "As built").
+        raise StoreRefused("A statement, a tick box or a typed answer is saved for one company only, never for any company")
+    if not mine and not _any_company_choice(category, kind, text, stored):
+        # A choice that also agrees to something ("Yes, and I agree to E-Verify") is an agreement, and an agreement is one company's.
+        raise StoreRefused("This question or answer also agrees to something, so it is saved for one company only, never for any company")
     # The name is shown back as typed (or as the role names it); the key is only for matching.
     shown = _one_line(company, MAX_COMPANY_CHARS, "company") if mine else ""
     stamp = _now(now)
@@ -427,6 +477,23 @@ def _covers(scope: str, mode: str) -> bool:
     return scope == "unattended" or (scope == "confirmed" and mode != "unattended")
 
 
+def _any_company_choice(category: str, answer_kind: str, question_text: str, answer: str) -> bool:
+    """Whether an entry may be kept, and used, for any company.
+
+    Only an EEO decline and a select's exact option label for work authorization, sponsorship or 18 or older are: a statement, a
+    tick box and a typed answer never are (no list of words can prove a statement names no document), and neither is a choice
+    whose question or option agrees to something ("Yes, and I agree to complete E-Verify"), which is an agreement whatever
+    kind it is filed under.
+    """
+    if category in EEO_CATEGORIES:
+        return True
+    if category not in TICKABLE or answer_kind != "option":
+        return False
+    from .apply_policy import net_topics
+
+    return "agreement" not in net_topics(f"{question_text} {answer}")
+
+
 def lookup(
     conn: sqlite3.Connection, user_id: str, *, category: str, question_key: str, company_key: str, mode: str, company_only: bool = False,
 ) -> dict[str, Any] | None:
@@ -454,7 +521,9 @@ def lookup(
             continue
         if not mine and company_only:
             continue
-        if category in STATEMENT_CATEGORIES and not mine and cites_document(str(row["question_text"]), links):
+        if not mine and not _any_company_choice(category, str(row["answer_kind"]), str(row["question_text"]), str(row["answer"])):
+            # A statement, a tick box, a typed answer or a choice that agrees to something is only ever used at the company it was
+            # saved for, whatever the row says.
             continue
         usable.append((bool(mine), row, links))
     if not usable:

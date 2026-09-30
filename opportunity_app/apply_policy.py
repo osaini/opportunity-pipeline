@@ -14,8 +14,9 @@ why in words the student can act on.
     identify            which Greenhouse board and job a saved role is (4.4)
 
 A value has four sources and no others: a confirmed profile fact through a short mapping list, an answer
-the student saved (only when the question is word for word the same and it was saved for this company or
-marked reusable), an exact option label the student confirmed, and the résumé or cover letter for the role.
+the student saved (only when the question is word for word the same and it was saved for this company: an
+answer never travels to another company here, whatever tag it carries), an exact option label the student
+confirmed, and the résumé or cover letter for the role.
 Sensitive answers come from one function, ``stored_sensitive_answer``, which reads the store the student
 filled in on purpose (apply_sensitive.py) and nothing else. Nothing is ever guessed: no fuzzy match, no first
 option, no label regex.
@@ -45,9 +46,9 @@ from .apply_checks import ALTERNATE_TEXT_FIELDS, BOARD_HOSTS, Problem, join, que
 from .extension_apply import SENSITIVE_FIELD, ExtensionApplyError, confirmed_resume_file
 
 __all__ = [
-    "ALLOWED_ATS_LABEL_FIELDS", "ATS_GREENHOUSE", "CATEGORY_WORDS", "Plan", "PlanField", "SchemaField", "Source", "Sources",
-    "build_plan", "canonical_url", "classify_item", "classify_sensitive", "company_matches", "context_dependent", "control_of", "cover_letter_for", "eeo_words",
-    "identify", "mac_key", "match_options", "name_parts", "needs_label_key", "parse_schema", "plan_entries", "plan_hash",
+    "ALLOWED_ATS_LABEL_FIELDS", "ATS_GREENHOUSE", "CATEGORY_WORDS", "NET_TOPICS", "NET_WORDS", "NEVER_STORABLE_TOPICS", "Plan", "PlanField", "SchemaField", "Source", "Sources",
+    "build_plan", "canonical_url", "claims_demographic", "claims_never_storable", "classify_item", "classify_sensitive", "company_matches", "context_dependent", "control_of", "cover_letter_for", "eeo_words",
+    "identify", "mac_key", "match_options", "name_parts", "needs_label_key", "net_topics", "never_storable", "parse_schema", "plan_entries", "plan_hash", "possibly_sensitive",
     "question_key", "resume_for", "schema_url", "sources_for", "statement_control", "statement_needs_company", "statement_of", "stored_sensitive_answer", "value_mac", "with_page_labels",
     "without_enumeration",
 ]
@@ -500,12 +501,205 @@ def classify_sensitive(question: str, options: Iterable[str] = (), section: str 
     return result
 
 
+# --- The broad net: what might be sensitive, kept apart from the precise classifier above ----------------------
+#
+# ``classify_sensitive`` decides a category from listed wordings, and every review round found wordings the lists miss. So
+# this is a second, deliberately wide reading of the same question: one list per topic, each item a topic word or a short
+# phrase (never a sentence shape). It never marks a question sensitive by itself, and it never says which category. It only
+# tightens what the app may do with a question the precise classifier called ordinary (spec 7.3, "As built"). Safety does not
+# rest on it: Apply for me never carries a saved answer from one company to another, and never fills a box or an agreement from
+# the answer library (spec 7.1 "As built"), so a wording the lists miss can at worst be saved by the student for that one company.
+# What the net adds is a best-effort refusal:
+#
+# - a question that hits a NEVER-STORABLE topic (criminal, demographic, money, security), or that is filed under or follows one,
+#   is left for the student: no form offers to save it, and nothing fills it from the answer library at all;
+# - a checkbox, a select whose options agree to something, a Yes/No-like question that hits the agreement topic and a typed
+#   signature are never filled from the answer library (only an exact stored statement may tick or choose it, D9 B).
+#
+# Over-blocking costs only some convenience, so a list leans wide. apps/extension/apply-engine.js repeats these lists as
+# ``NET_TOPICS`` and tests/fixtures/apply/broad_net.json is run by both suites, so the two cannot drift apart. The text is
+# normalized first: lower case, every run of anything but a-z and 0-9 one space ("visa's" reads "visa s", "H-1B" "h 1 b").
+NET_TOPICS: dict[str, tuple[str, ...]] = {
+    "immigration": (
+        r"\bvisa", r"\bsponsor", r"\bimmigra", r"\bcitizen", r"\bnationalit", r"\bpassport", r"\bgreen card", r"\bpermanent resident",
+        r"\bh ?1 ?b\b", r"\bopt\b", r"\bcpt\b", r"\bf ?1\b", r"\bj ?1\b", r"\btn (?:visa|status)", r"\be ?3\b", r"\bi ?9\b",
+        r"\be ?verify", r"\balien",
+        r"\bead\b", r"\bdaca\b", r"\btps\b", r"\basyl", r"\brefugee", r"\bforeign national", r"\blawful", r"\bh ?4\b", r"\bleave to remain", r"\bsettled status", r"\bblue card", r"\bemployment pass", r"\bworking rights", r"\blive and work", r"\bstatus in the (?:u s|us|united states)",
+    ),
+    "work_authorization": (
+        r"\b(?:able|permitted|allowed|free|eligible|entitled|authori[sz]ed|legally|cleared) to work",
+        r"\bwork (?:authori|eligib|right|permit|status|restriction|visa)", r"\bemployment (?:eligib|verification|authori|status)",
+        r"\bright to work", r"\bunrestricted", r"\bwithout restrictions?\b", r"\blegally\b",
+        r"\b(?:permission|right|authority|authori[sz]ation|eligibility) to (?:work|be employed)",
+        r"\bwork in the (?:u s|us|usa|united states|country)",
+    ),
+    "criminal": (
+        r"\bconvict", r"\bfelon", r"\bcriminal", r"\bcrimes?\b", r"\barrest", r"\boffen[cs]e", r"\bcourt", r"(?<!\bin )\bcharge[sd]?\b",
+        r"(?<!\bone )(?<!\btwo )(?<!\bthree )(?<!\bsingle )(?<!\bfew )\bsentenc(?:e|ed|es|ing)\b", r"\bprobation", r"\bparole",
+        r"\bmisdemeanou?r", r"\bbackground check", r"\bpending case", r"\bincarcerat", r"\bimprison",
+        r"\bguilty", r"\bno contest", r"\bnolo\b", r"\bplea(?:d|ded)?\b", r"\bpled\b", r"\bwarrant", r"\bdui\b", r"\bdwi\b", r"\bjail", r"\bprison", r"\bpolice", r"\bindict", r"\blegal proceeding", r"\badjudicat", r"\bexpunge", r"\bsealed\b", r"\bdetained\b",
+        r"\blegal matters?", r"\brestraining order", r"\blicen[sc]e\b.{0,40}\b(?:suspen|revo)", r"\blitigation", r"\blaw enforcement",
+        r"\bcaution(?:ed|s)?\b", r"\boffender",
+    ),
+    "demographic": (
+        r"\bgender", r"\bsex", r"\bfemales?\b", r"\bmales?\b", r"\bwom[ae]n\b", r"\bnon ?binary\b", r"\brace\b", r"\bracial", r"\bethnic", r"\bhispanic", r"\blatin[oax]", r"\bveteran", r"\bmilitary",
+        r"\barmed forces", r"\bdisab", r"\bpronoun", r"\borientation", r"\blgbt", r"\btransgender", r"\bqueer\b", r"\breligio",
+        r"\bmarital", r"\bmarried", r"\bpregnan", r"\bgenetic", r"\bage\b", r"\bbirth", r"\bdob\b", r"\byears old\b", r"\bhow old\b", r"\beeoc?\b",
+        r"\bself identif",
+        r"\bperson of colou?r", r"\bpeople of colou?r", r"\bbipoc", r"\bblack\b", r"\bindigenous", r"\bnative american", r"\balaska native", r"\bpacific islander", r"\bunderrepresent", r"\bminorit", r"\bover 40\b", r"\bborn\b", r"\bnational origin", r"\bmedical", r"\bhealth condition", r"\baccommodat", r"\bnational guard", r"\breserves\b", r"\bneurodiver", r"\bhe him\b", r"\bshe her\b", r"\bthey them\b", r"\braces\b",
+        r"\blearning (?:difference|disabilit)", r"\badhd\b", r"\bdyslex", r"\bautis", r"\bdeaf", r"\bhard of hearing", r"\bchronic", r"\bcaregiver",
+        r"\bchildren\b", r"\bcaste\b", r"\baboriginal", r"\btorres strait", r"\bfirst language", r"\bmother tongue",
+    ),
+    "money": (
+        r"\bsalar", r"\bcompensat", r"\bpay\b", r"\bpaid\b", r"\bwages?\b", r"\bstipend", r"\bhourly\b", r"\bremunerat",
+        r"\bearnings?\b", r"\bbonus", r"\b(?:pay|hourly|hour|day|week|wage|salary|desired|expected|minimum|target|base|starting|billing|annual) rate\b",
+        r"\brate of pay\b", r"\b(?:expected|desired) (?:salary|compensation|pay|rate|wages?|earnings?|hourly|stipend)",
+        r"\bincome", r"\bctc\b", r"\bote\b", r"\bper hour\b", r"\bhow much (?:do you |are you )?(?:currently |now )?(?:make|earn|paid)", r"\b(?:are|were|was) you (?:currently |now |still )?(?:making|earning)\b",
+        r"\bcomp\b(?! (?:sci|science|eng|engineering|arch|architecture|org|bio|lit|vision|geometry|neuro|networks?|theory|systems?)\b)",
+        r"\bfixed component", r"\blast drawn", r"\bvariable (?:pay|component)", r"\byour ask\b", r"\bbankrupt", r"\bcredit (?:score|check|history|report)",
+    ),
+    "security": (r"\bclearance", r"\bexport", r"\bitar\b", r"\bear\b", r"\bu s person", r"\bus person", r"\bsecurity", r"\bpolygraph", r"\btop secret", r"\bts sci\b", r"\bdod\b", r"\bpublic trust", r"\bbackground investigation", r"\bsanction", r"\bofac\b", r"\bsecret clearance", r"\bvetting", r"\bpoly\b", r"\baccess authori", r"\bnato\b"),
+    "agreement": (
+        r"\bagree", r"\backnowledg", r"\bconsent", r"\bcertif", r"\battest", r"\baffirm", r"\bdeclar", r"\bconfirm", r"\bunderstand that",
+        r"\bunderstood\b", r"\baccept", r"\bterms\b", r"\bpolic(?:y|ies)\b", r"\bprivacy", r"\bnotice", r"\bdisclos", r"\bstatement",
+        r"\barbitrat", r"\bhave read\b", r"\bi ve read\b", r"\breviewed\b", r"\bbound\b", r"\babide", r"\bsignature", r"\bsign here\b",
+        r"\be ?sign", r"\bauthori[sz]e\b", r"\bpermission", r"\bcompl(?:y|iance|ies)\b", r"\b(?:been|was|am|are|being) informed\b", r"\binformed (?:of|that)\b", r"\bwaive", r"\bretain\b",
+        r"\bretention", r"\bon file\b", r"\bhereby\b",
+    ),
+    "relative": (r"\brelative", r"\bfamily", r"\bspouse", r"\brelated to\b", r"\breferr", r"\bformer employee", r"\bcurrent employee", r"\bconflict of interest"),
+}
+# The topics no answer may be saved for or filled from the library, whichever company: the app leaves them for the student.
+NEVER_STORABLE_TOPICS = ("criminal", "demographic", "money", "security")
+# Topics read on a select's option labels as well as its wording. The others would over-read a plain choice list ("Security"
+# as one team among several), so an option is read for the topics a person's own status is answered in.
+_NET_OPTION_TOPICS = frozenset({"immigration", "work_authorization", "criminal", "demographic"})
+_NET_PATTERNS = {topic: re.compile("|".join(items)) for topic, items in NET_TOPICS.items()}
+# Ordinary phrases the topic lists would otherwise read as criminal or security ("take charge of a project", "in two sentences",
+# "network security", "exporting data") or as pay ("hourly availability"). They are removed before the topics are read, so
+# a common CS or essay prompt still gets its save form. Each is a whole phrase, never a bare topic word: "security clearance",
+# "export control", "charged with", "the sentence you served" and "hourly rate" are not touched. apps/extension/apply-engine.js
+# repeats this list as NET_BENIGN and tests/fixtures/apply/broad_net.json runs both.
+NET_BENIGN = (
+    r"\b(?:take|takes|took|taken|taking) charge\b",
+    r"\b(?:in|with|within|using|about|of) (?:a|an|one|two|three|four|five|\d+(?: \d+)?|a few|a couple of|few|several) sentences?\b",
+    r"\b(?:\d+(?: \d+)?|a few|few|several|a couple of|two|three|four|five) sentences\b",
+    r"\b(?:network|cyber|information|application|computer|software|web|cloud|mobile|embedded|platform|infrastructure) security\b",
+    r"\bsecurity (?:tools?|testing|concepts|best practices|research|vulnerabilit(?:y|ies))\b",
+    r"\bexport(?:s|ed|ing)? (?:data|files?|results?|reports?|tables?|to (?:csv|excel|pdf|json|xml))\b",
+    r"\bhourly (?:availability|schedule|commitment)\b",
+)
+_BENIGN = re.compile("|".join(NET_BENIGN))
+_ADULT = "adult"   # an 18-or-older wording: possibly sensitive, but a storable kind, so never on the never-storable list
+# What a question filed under a precisely sensitive one takes from it when the wording has no topic word of its own.
+_CATEGORY_TOPIC = {
+    "work_authorization": "work_authorization", "sponsorship": "immigration", "age_18": _ADULT, "export_control": "security",
+    "salary": "money", "acknowledgment": "agreement", "consent": "agreement", "uncategorized": "personal",
+    "eeo_gender": "demographic", "eeo_hispanic": "demographic", "eeo_race": "demographic", "eeo_veteran": "demographic",
+    "eeo_disability": "demographic",
+}
+# "personal" is what a question the precise classifier called uncategorized passes on: never storable, like the four above.
+_NEVER_TOPICS = frozenset((*NEVER_STORABLE_TOPICS, "personal"))
+NET_WORDS = {
+    "criminal": "criminal history", "demographic": "personal details such as age, gender or background", "money": "pay",
+    "security": "security clearance or export control", "agreement": "a legal agreement", "personal": "a personal question",
+}
+
+
+def net_topics(text: Any) -> tuple[str, ...]:
+    """The topics the broad net finds in a text, sorted. An 18-or-older wording is the topic ``adult``, not demographic."""
+    words = _BENIGN.sub(" ", re.sub(r"\beighteen\b", "18", _words(text)))
+    plain = _AGE_18.sub(" ", words)
+    found = {topic for topic, pattern in _NET_PATTERNS.items() if pattern.search(plain if topic == "demographic" else words)}
+    if _AGE_18.search(words):
+        found.add(_ADULT)
+    return tuple(sorted(found))
+
+
+def possibly_sensitive(text: Any) -> bool:
+    """Whether the broad net finds anything in a text. It says "look closer", never which category."""
+    return bool(net_topics(text))
+
+
+def never_storable(text: Any) -> bool:
+    """Whether the text hits a topic no answer may be saved for or filled from the library (criminal, demographic, money, security)."""
+    return bool(set(net_topics(text)) & set(NEVER_STORABLE_TOPICS))
+
+
+def _plain_text(html_text: Any) -> str:
+    return " ".join(html.unescape(_TAGS.sub(" ", str(html_text or ""))).split())
+
+
+# Phrases read on a select's option labels for two more topics. They are narrower than the topic lists, because a plain choice list
+# ("Paid", "Security" as one team among several) must not read as a question about pay or clearance.
+_OPTION_EXTRA = {
+    "security": re.compile(r"clearance|top secret|ts sci|\bsecret\b|public trust|polygraph"),
+    "money": re.compile(r"\bsalar|\bcompensat|\bhourly\b|\bper hour\b|\bper year\b|\b\d+ ?k\b|\bhr\b|\bincome|\b\d{2,3} 000\b"),
+    "demographic": re.compile(r"\basian\b|\bwhite\b|\bcaucasian|\bafrican american|\bmiddle eastern"),
+}
+# An option that agrees to, accepts, acknowledges, consents to, certifies or confirms something (spec 7.1, D9 B).
+_AGREEMENT_OPTION = re.compile(r"\bagree|\baccept|\backnowledg|\bconsent|\bcertif|\battest|\bconfirm|\bi have read\b|\bi ve read\b|\bunderstand")
+# A field that asks for a typed signature is an agreement whatever else it says.
+# Typed initials are one too, and so is any "type ... to agree" instruction.
+_SIGNATURE = re.compile(
+    r"\bsignature\b|\be ?sign|\bsign here\b|\btype your (?:full )?(?:legal )?name\b|\binitials?\b"
+    r"|\b(?:type|enter|print|write|input)\b.{0,60}\b(?:to|as|in) (?:agree|accept|confirm|acknowledge|consent|certify|attest)"
+)
+_PAY_ATTENTION = re.compile(r"\bpay(?:s|ing)? (?:close |careful |special )?attention\b", re.IGNORECASE)
+# A choice that is Yes or No in the student's own words: two or more of yes, no, y, n among its options.
+_YES_NO_WORDS = frozenset({"yes", "no", "y", "n"})
+# The mark a control that is never filled from the answer library carries in ``net_never``, whatever it says (spec 7.1, B).
+TICK_MARK = "tick"
+
+
+def _yes_no_like(options: Iterable[str]) -> bool:
+    return len({_words(option) for option in options} & _YES_NO_WORDS) >= 2
+
+
+def _field_net(item: SchemaField, control: str) -> tuple[frozenset[str], tuple[str, ...]]:
+    """(the topics a form field's own words hit, the marks that leave it for the student whatever its topics).
+
+    Its label is read, and its description; a box's options too, since that is where its statement is; a select's options for the
+    topics a person's own status is answered in and for a few narrow phrases (pay, clearance). The marks: a checkbox, a single one
+    or a group, is never filled from the answer library (``tick``); a box, a Yes/No-like question or a select whose options agree
+    to something, and a typed signature, are an ``agreement``. Only an exact stored statement may tick or choose those (D9 B).
+    """
+    box = control == "checkbox"
+    yes_no = control == "select" and (_yes_no(item.options) or _yes_no_like(item.options))
+    parts = [item.label]
+    if box:
+        parts.extend(item.options)
+    own = set(net_topics(" ".join(parts)))
+    description = net_topics(_PAY_ATTENTION.sub(" ", _plain_text(item.description)))
+    # A description is where a form sometimes puts the real question ("Please list any criminal convictions here"). Its own agreement
+    # and family words are usually boilerplate, so those count only on a box or a Yes/No question, whose whole point is the statement.
+    own |= set(description) if box or yes_no else set(description) - {"agreement", "relative"}
+    options = [_words(option) for option in item.options]
+    if control in ("select", "multiselect") and options:
+        own |= set(net_topics(" ".join(options))) & _NET_OPTION_TOPICS
+        own |= {topic for topic, pattern in _OPTION_EXTRA.items() if any(pattern.search(option) for option in options)}
+    marks: list[str] = []
+    if control in ("checkbox", "multiselect"):
+        marks.append(TICK_MARK)
+    # A select, radio or multiselect is an agreement when an agreement word is in its options or in its heading or description:
+    # "Do you certify that your answers are true?" with the options "Yes I do" / "Yes I do not" says it in the heading alone.
+    choice_words = [_words(item.label), _words(_plain_text(item.description))]
+    if (
+        ((box or yes_no) and "agreement" in own)
+        or (control in ("select", "multiselect") and any(_AGREEMENT_OPTION.search(text) for text in (*options, *choice_words)))
+        or (control in ("text", "textarea") and _SIGNATURE.search(" ".join(choice_words)))
+    ):
+        marks.append("agreement")
+    return frozenset(own), tuple(marks)
+
+
 # A box or a Yes/No question that asks the student to agree to something is an acknowledgment, whatever its
 # heading says ("Candidate Privacy Statement"): the statement is in the option's text or the description. The
 # short list is read on both; the longer one only on a checkbox, whose whole job is to agree.
 _AGREE_WORDS = re.compile(r"acknowledg|\bterms\b|privacy (?:statement|notice|policy)|\baccepts? (?:the|our|its|these|this|all)\b|\babide\b|\bbound by\b")
 _AGREE_BOX_WORDS = re.compile(
     r"\bagree|\baccept|\bpolicy\b|\bcertif|\bread\b|\breviewed?\b|\bunderstood\b|\babide|\bbound\b|\breceiv(?:e|ed|es|ing)\b|\bi ve read\b"
+    # The broad net (NET_TOPICS) is the safety floor for a box that agrees in other words; these are the common ones it caught.
+    r"|\bcompl(?:y|ies)\b|\bdeclar|\bauthori[sz]e\b|\bwaive|\bbeen informed\b|\bpermission\b"
 )
 _TAGS = re.compile(r"<[^>]*>")
 # An option this long names what it agrees to; a shorter one ("I agree", "Yes", "I accept the terms") does not.
@@ -620,12 +814,45 @@ def classify_item(item: SchemaField, control: str, parent: str | None = None, fo
     # A field whose own words ask for voluntary self-identification as well ("If other, please specify your gender" under a
     # work authorization question, "Do you require sponsorship? What is your race?") is never offered as a work authorization,
     # sponsorship or 18-or-older answer: no form for it may offer demographic options, and no such value is stored (D5 C (i)).
-    if result in _NOT_WITH_EEO and eeo_words(item.label):
+    # The broad net's demographic topic reads the whole statement a box or Yes/No question shows (its heading, its option and its
+    # description), not only the heading: "I am authorized to work in the United States and I am a protected veteran" is a
+    # demographic claim, not a work-authorization one.
+    if result in _NOT_WITH_EEO and (eeo_words(item.label) or claims_never_storable(item, control)):
         return "uncategorized"
     return result
 
 
 _NOT_WITH_EEO = frozenset({"work_authorization", "sponsorship", "age_18"})
+
+
+def _claim_parts(item: SchemaField, control: str) -> list[str]:
+    parts = [item.label]
+    if control == "checkbox" or (control == "select" and _yes_no(item.options)):
+        parts.append(_plain_text(item.description))
+    if control == "checkbox":
+        parts.extend(item.options)
+    elif control in ("select", "multiselect"):
+        # A work-authorization list whose option is "Yes, and I am a protected veteran" asks for more than work authorization.
+        parts.extend(item.options)
+    return parts
+
+
+def claims_demographic(item: SchemaField, control: str) -> bool:
+    """Whether a field's heading, and for a box or a Yes/No question its option and description, hit the demographic topic.
+
+    An 18-or-older wording is not demographic here (``net_topics`` reads it as ``adult``). A work-authorization,
+    sponsorship or 18-or-older answer that also claims a demographic is never stored or filled (D5 C (i)).
+    """
+    return "demographic" in net_topics(" ".join(_claim_parts(item, control)))
+
+
+def claims_never_storable(item: SchemaField, control: str) -> bool:
+    """Whether a field's own words (heading, options and description) also hit criminal, demographic, money or security.
+
+    A work-authorization, sponsorship or 18-or-older answer that also claims a criminal record, a demographic, pay or clearance
+    ("...and I am not currently on probation") is never stored or filled: it is left for the student (D5 C (i), spec 7.3 "As built").
+    """
+    return never_storable(" ".join(_claim_parts(item, control)))
 
 
 def eeo_words(text: Any) -> bool:
@@ -869,6 +1096,12 @@ class PlanField:
     company_only: bool = False
     # A sensitive field whose statement is built from text the app did not keep whole, so it cannot be matched word for word.
     text_cut: bool = False
+    # What the broad net found (NET_TOPICS): in the question's own words, in the question above it when this one follows it, or
+    # from a precisely sensitive question above it. ``net_company`` keeps an ordinary question's answer for one company;
+    # ``net_never`` names the never-storable topics (or an agreement box), which leave the question to the student.
+    net: tuple[str, ...] = ()
+    net_company: bool = False
+    net_never: tuple[str, ...] = ()
 
 
 @dataclass
@@ -1031,25 +1264,19 @@ def posting_difference(company: str, title: str, listing: Mapping[str, Any]) -> 
     return ""
 
 
-def _saved_answer(item: SchemaField, text: str, dependent: bool, ctx: _Context) -> tuple[dict[str, Any] | None, str, str]:
-    """(the usable saved answer, problem_kind, problem) under the company rule and the one-answer rule (7.1).
+def _saved_answer(item: SchemaField, text: str, ctx: _Context) -> tuple[dict[str, Any] | None, str, str]:
+    """(the usable saved answer, problem_kind, problem): only a row saved for this company, and only one answer for it (7.1).
 
-    A row saved for this company is the student's answer for this company and wins over a reusable row saved
-    elsewhere, so answering a question here settles it. The one-answer rule then applies within the tier that wins.
+    Apply for me never carries an answer from one company to another (spec 7.1 "As built"): no classifier can tell every
+    personal, legal or agreement question from an ordinary one, so the safe default is that nothing travels. A row tagged
+    reusable (saved in the library or by the extension) is read here as the row for the company it was saved at, and at any
+    other company it is one saved elsewhere. The student's own browser extension still proposes a reusable answer for
+    review; the agent does not.
     """
     key = question_key(text)
     rows = [row for row in ctx.sources.answers if question_key(row["question"]) == key and str(row["answer"]).strip()]
-    here, reusable_rows, elsewhere = [], [], []
-    for row in rows:
-        same = company_matches(str(row["company"] or ""), ctx.company)
-        reusable = any(str(tag).lower() == "reusable" for tag in row["tags"])
-        if same:
-            here.append(row)
-        elif reusable and not dependent and not context_dependent(key):
-            reusable_rows.append(row)
-        else:
-            elsewhere.append(row)
-    usable = here or reusable_rows
+    usable = [row for row in rows if company_matches(str(row["company"] or ""), ctx.company)]
+    elsewhere = [row for row in rows if row not in usable]
     answers = {str(row["answer"]).strip() for row in usable}
     if len(answers) > 1:
         return None, "conflicting_answers", f'You have two different saved answers for "{item.label}". Keep one'
@@ -1106,12 +1333,13 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
     entry.text_cut = item.description_cut and (checkbox or category in apply_sensitive.STATEMENT_CATEGORIES)
     # A question that depends on its company is never answered from another company's entry (7.1), and neither is a
     # statement that points to a document or leans on words outside its option. An EEOC field is found by its own
-    # name and holds only a decline, so it is the same at every company.
+    # name and holds only a decline, so it is the same at every company. Every stored statement (an acknowledgment or a consent)
+    # and every tick box or typed answer is kept for one company, whatever its words: no list can prove a statement names no
+    # document. Only a select's exact option label, for work authorization, sponsorship or 18 or older, is kept for any company.
     entry.company_only = (
-        (item.section != "compliance" and (context_dependent(key) or (not checkbox and entry.context_dependent)))
-        or (boxlike and (statement_needs_company(item, entry.control, category, entry.answer_key)
-                         or apply_sensitive.cites_document(entry.statement, entry.links, names=category in apply_sensitive.STATEMENT_CATEGORIES)))
-        or (category in apply_sensitive.STATEMENT_CATEGORIES and apply_sensitive.cites_document(entry.statement, entry.links))
+        category in apply_sensitive.STATEMENT_CATEGORIES
+        or (category in apply_sensitive.TICKABLE and (entry.control != "select" or "agreement" in net_topics(" ".join((item.label, _plain_text(item.description), *item.options)))))
+        or (item.section != "compliance" and (context_dependent(key) or (not checkbox and entry.context_dependent)))
     )
     if category in apply_sensitive.STATEMENT_CATEGORIES and not statement_control(entry.control, entry.options):
         # A statement is stored only as ticked: a text field, a list or a choice that is not Yes/No has nothing it could be typed as.
@@ -1179,7 +1407,7 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
     return entry
 
 
-def _plan_value(item: SchemaField, entry: PlanField, text: str, dependent: bool, ctx: _Context) -> PlanField:
+def _plan_value(item: SchemaField, entry: PlanField, text: str, ctx: _Context) -> PlanField:
     facts, key = ctx.sources.facts, question_key(item.label)
     control, name = entry.control, item.name
     profile_value, profile_ref = "", ""
@@ -1220,7 +1448,19 @@ def _plan_value(item: SchemaField, entry: PlanField, text: str, dependent: bool,
     if control not in ("text", "textarea", "select", "multiselect", "checkbox"):
         entry.problem_kind, entry.problem = "unsupported", f'The app doesn\'t fill this kind of field ("{item.label}")'
         return entry
-    row, kind, problem = _saved_answer(item, text, dependent, ctx)
+    if entry.net_never:
+        # The broad net: a question about criminal history, personal details, pay or security, one filed under such a question,
+        # or a box that agrees to something in words the classifier has no list for. Nothing in the answer library fills it,
+        # at this company or another, and no form offers to save an answer to it.
+        words = ", ".join(NET_WORDS[topic] for topic in entry.net_never if topic in NET_WORDS)
+        entry.problem_kind = "sensitive_never"
+        entry.problem = (
+            f"This looks like a question about {words}, so the app never saves an answer to it or fills one in from your saved answers. Finish in browser leaves it for you"
+            if words else
+            "The app never ticks a box for you from your saved answers, so this is left for you. Finish in browser leaves it for you"
+        )
+        return entry
+    row, kind, problem = _saved_answer(item, text, ctx)
     if row is None:
         entry.problem_kind, entry.problem = kind, problem
         return entry
@@ -1229,12 +1469,7 @@ def _plan_value(item: SchemaField, entry: PlanField, text: str, dependent: bool,
         entry.problem_kind = "answer_mismatch"
         entry.problem = f'{why}. Save an answer that is one of the options' if control in ("select", "multiselect") else f"{why}"
         return entry
-    same = company_matches(str(row["company"] or ""), ctx.company)
-    reusable = any(str(tag).lower() == "reusable" for tag in row["tags"])
-    entry.source = Source(
-        "answer", str(row["id"]), company=str(row["company"] or ""), reusable=reusable and not same,
-        label=f"Saved answer for {row['company']}" if same else "Saved answer, reusable" + (f" (first saved for {row['company']})" if row["company"] else ""),
-    )
+    entry.source = Source("answer", str(row["id"]), company=str(row["company"] or ""), label=f"Saved answer for {row['company']}")
     entry.value = value
     return entry
 
@@ -1289,6 +1524,9 @@ def build_plan(
     # What each question is, by label, for the follow-ups filed under it. A follow-up's own entry is what it
     # inherited, so a follow-up of a follow-up keeps the first question's category.
     own: dict[str, str | None] = {}
+    # The same, for the broad net's topics (NET_TOPICS): what each question's own words hit, and what a follow-up chain carries.
+    net_own: dict[str, frozenset[str]] = {}
+    net_chain: dict[str, frozenset[str]] = {}
     for item in fields:
         control = control_of(item)
         if control == "hidden" or item.name in ALTERNATE_TEXT_FIELDS:
@@ -1296,15 +1534,16 @@ def build_plan(
         text, dependent = texts[item.name]
         category = None
         follows = False
+        net: frozenset[str] = frozenset()
+        marks: tuple[str, ...] = ()
         if control != "file":
             category = classify_item(item, control)
             # A follow-up takes its meaning from the question above it, so it is as sensitive as that one. Only
             # words that continue another question count: a short question that stands alone ("GPA") does not.
             label_key = question_key(item.label)
             custom_child = item.section == "custom" and bool(item.parent) and label_key not in _PROFILE_KEYS
-            under_strict = custom_child and (
-                _most_restrictive((own.get(item.parent), classify_sensitive(item.parent))) in _INHERITING_PARENTS
-            )
+            parent_category = _most_restrictive((own.get(item.parent), classify_sensitive(item.parent))) if custom_child else None
+            under_strict = custom_child and parent_category in _INHERITING_PARENTS
             # Under a question the app never answers, or one only the student may (a felony, a visa, salary, export control), a
             # question filed under it is that question's continuation whatever its own words: "Year" or "Type" says nothing about
             # what it is the year or the type of. So is a short phrase that asks about no one ("Nature of charge"). Under any
@@ -1318,9 +1557,34 @@ def build_plan(
                 follows = inherited is not None and inherited != category
                 category = inherited
             own[item.label] = _most_restrictive(found for found in (own.get(item.label), category) if found)
+            # The broad net, whatever the precise classifier said. A question is read on its own words, and takes the topics of the
+            # question right above it (its parent: the group it is filed under) when it follows that one by the rules above, when
+            # that one is precisely sensitive, or when the net finds a topic in it: then whatever the child says ("Please tell us
+            # what happened", "Sentence received and date of release") is about the parent's subject. Only a profile field (a
+            # LinkedIn or portfolio link) is exempt.
+            own_net, marks = _field_net(item, control)
+            topics = set(own_net)
+            continues = custom_child and (text != item.label or follow_up_wording(label_key))
+            parent_net = net_own.get(item.parent, frozenset()) | set(net_topics(item.parent)) if custom_child else frozenset()
+            if custom_child and (continues or parent_category is not None or parent_net):
+                topics |= parent_net
+                if continues:
+                    # A follow-up of a follow-up keeps the first question's topics; a question that only comes after a sensitive
+                    # one takes that one's own topics and does not pass them on to what follows it.
+                    topics |= net_chain.get(item.parent, frozenset())
+                if parent_category is not None:
+                    topics.add(_CATEGORY_TOPIC[parent_category])
+            net = frozenset(topics)
+            net_own[item.label] = frozenset(net_own.get(item.label, frozenset()) | own_net)
+            net_chain[item.label] = frozenset(net_chain.get(item.label, frozenset()) | (net if continues else own_net))
+        # The net tightens only an ordinary question: a sensitive one already goes through the store and never the library.
+        ordinary = control != "file" and category is None
+        net_company = ordinary and (bool(net) or bool(marks))
+        net_never = (tuple(sorted(net & _NEVER_TOPICS)) + marks) if ordinary else ()
         entry = PlanField(
             key=item.name, question=item.label, control=control, required=item.required, options=item.options, section=item.section,
-            sensitive=category, answer_key=text, context_dependent=dependent,
+            sensitive=category, answer_key=text, context_dependent=dependent or net_company,
+            net=tuple(sorted(net)), net_company=net_company and not dependent, net_never=net_never,
         )
         if control == "file":
             _plan_file(item, entry, ctx)
@@ -1330,7 +1594,7 @@ def build_plan(
             entry.problem_kind = "ambiguous_question"
             entry.problem = f'The form asks "{item.label}" more than once, so the app cannot tell the answers apart'
         else:
-            _plan_value(item, entry, text, dependent, ctx)
+            _plan_value(item, entry, text, ctx)
         entries.append(_settle(entry, ctx))
     joined: set[str] = set()
     if scan is not None:

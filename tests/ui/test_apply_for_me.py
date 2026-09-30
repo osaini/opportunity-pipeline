@@ -118,14 +118,14 @@ def test_a_text_and_a_select_question_are_answered_once_and_the_answer_carries_o
     expect(section.locator(".apply-summary")).to_contain_text("Saved for Acme Robotics.")
     team = section.locator('[data-apply-key="question_4000000103"]')
     team.locator("select").select_option("Controls")
-    team.get_by_label("Use for any company").check()
+    expect(team.get_by_label("Use for any company")).to_have_count(0)
     team.get_by_role("button", name="Save and use for this question").click()
     expect(section.locator('[data-apply-key="question_4000000103"]')).to_have_count(0)
-    # The saved answers are id-free rows for this company, and the reusable tick added its tag.
+    # The saved answers are id-free rows for this company, and neither is tagged reusable: Apply for me carries no answer to another company.
     with db(live_server) as conn:
         rows = {row["question"]: (row["answer"], row["company"], row["tags_json"]) for row in conn.execute("SELECT question, answer, company, tags_json FROM answer_library")}
     assert rows["Why do you want to work at Example Robotics?"] == ("I build small robot arms", "Acme Robotics", "[]")
-    assert rows["Which team are you most interested in?"] == ("Controls", "Acme Robotics", '["reusable"]')
+    assert rows["Which team are you most interested in?"] == ("Controls", "Acme Robotics", "[]")
     # Closed and opened again, the two are no longer missing.
     owner_page.locator("#detail-close").click()
     open_saved_role(owner_page)
@@ -197,14 +197,16 @@ def test_the_profile_keeps_the_email_and_phone_an_application_is_filled_with(own
     expect(owner_page.get_by_label("Email for applications")).to_have_value("sam.rivera@example.test")
 
 
-def test_the_reusable_tick_is_hidden_for_a_question_that_depends_on_the_company(apply_ready, owner_page):
+def test_no_missing_answer_offers_use_for_any_company(apply_ready, owner_page):
     open_saved_role(owner_page)
     section = owner_page.locator(".apply-for-me")
     expect(section).to_be_visible()
     worked = section.locator('[data-apply-key="question_4000000111"]')
     expect(worked).to_contain_text("saved for this company only")
     expect(worked.get_by_label("Use for any company")).to_have_count(0)
-    expect(section.locator('[data-apply-key="question_4000000101"]').get_by_label("Use for any company")).to_have_count(1)
+    expect(section.locator('[data-apply-key="question_4000000101"]')).to_contain_text("saved for this company only")
+    expect(section.locator('[data-apply-key="question_4000000101"]').get_by_label("Use for any company")).to_have_count(0)
+    expect(section.get_by_label("Use for any company")).to_have_count(0)
 
 
 def test_two_saved_answers_that_disagree_offer_a_way_to_the_answer_library(apply_ready, owner_page, live_server):

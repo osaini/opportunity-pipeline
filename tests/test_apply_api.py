@@ -256,7 +256,8 @@ class AnswerRouteTests(ApplyApiCase):
         for body, needle in (
             ({"key": "question_4000000103", "answer": "Hardware"}, "not one of the form's options"),
             ({"key": "question_4000000105", "answer": "Yes"}, "kind of question"),
-            ({"key": "question_4000000111", "answer": "No", "reusable": True}, "depends on the company"),
+            ({"key": "question_4000000111", "answer": "No", "reusable": True}, "this company only"),
+            ({"key": "question_4000000101", "answer": "I build robot arms", "reusable": True}, "this company only"),
             ({"key": "question_1", "answer": "x"}, "no longer asks"),
             ({"key": "question_4000000101", "answer": "   "}, "Type an answer"),
         ):
@@ -580,9 +581,12 @@ class NeedsYouTests(SensitiveApiCase):
                          ("acknowledgment", "checkbox", "checked", "acme robotics", "I have read the Example Robotics privacy notice"))
         field = next(item for item in saved.json()["check"]["fields"] if item["key"] == "question_4000000109")
         self.assertEqual((field["disposition"], field["source"]), ("fill", "Your acknowledgment for Acme Robotics"))
-        # A statement that reads no document may be kept for any company.
-        self.assertEqual(self.needs("question_4000000110", True, any_company=True).status_code, 200)
-        self.assertEqual(self.rows()[-1]["company_key"], "")
+        # Every statement is kept for one company, even one that reads no document (D9 B, spec 5.4 "As built").
+        plain = self.needs("question_4000000110", True, any_company=True)
+        self.assertEqual((plain.status_code, plain.json()["detail"]), (422, "This answer is saved for this company only"))
+        self.assertEqual(len(self.rows()), 1)
+        self.assertEqual(self.needs("question_4000000110", True).status_code, 200)
+        self.assertEqual(self.rows()[-1]["company_key"], "acme robotics")
 
     def test_an_eeo_question_offers_only_the_forms_decline_option_and_never_stores_anything_else(self):
         self.allow("eeo_gender", "eeo_hispanic", "eeo_race", "eeo_veteran", "eeo_disability")

@@ -527,7 +527,9 @@ these fields too.
 **Apply for me** reads a saved Greenhouse role's public application form and
 shows the student what it would fill from their confirmed facts and saved
 answers, and which questions it cannot answer yet. The student answers a
-missing question once, on the role, and it is saved for that company. Later
+missing question once, on the role, and it is saved for that company only: Apply
+for me never carries an answer from one company to another, so there is no "use
+for any company" tick there. Later
 steps will fill the form in a window that the student watches; the student
 always presses Submit themselves, and nothing here sends an application. It is
 off until they turn it on under Profile › Automation. Ask before turning it on
@@ -590,13 +592,13 @@ fields too.
      decline differently needs its own entry;
    - a legal acknowledgment or consent is ticked only when the form's statement
      (its heading, its option and any description under it) is word for word the
-     stored one and links the same documents; one that says "I have read", names
-     a document in any way (terms, a statement, a program, guidelines, a code
-     of conduct, or any capitalized name after "the" or "our"), links a
-     document, has a description of its own, has a short option ("I agree") or
-     points to "the above terms" is saved for one company only, and under the
-     question above it, and so is any question that depends on the company
-     ("this company", a follow-up, a bare heading). A Yes/No question that asks
+     stored one and links the same documents. Every such statement is saved for
+     one company only, however it is worded, because no list of words can prove
+     that a statement names no document (a plain "I certify that the information I
+     have provided is accurate" is one company's too), and a short option ("I
+     agree") or a pointer to "the above terms" is also filed under the question
+     above it. So is any question that depends on the company ("this company", a
+     follow-up, a bare heading). A Yes/No question that asks
      for agreement is matched the same way, on its question (with the question
      above it when it is short or a follow-up) and its description, and only a
      box or a Yes/No question is ever ticked: a text field or a list of several
@@ -605,7 +607,14 @@ fields too.
    - a box that states a fact about them (work authorization, sponsorship, 18 or
      older) is matched on its heading too, since the heading is the question, and
      an answer added in settings for such a box is stored as ticked when they
-     tell the form it is a tick box;
+     tell the form it is a tick box. A tick box, a typed answer, and a choice
+     that also agrees to something are saved for one company only; only a choice
+     from the form's own option list ("Yes", "No") for those three kinds, and an
+     EEO decline, may be kept for any company;
+   - a box, a group of boxes, a choice whose options or heading agree to
+     something and a typed signature or initials are never filled from the
+     ordinary saved answers, at any
+     company. Only a stored statement that matches word for word ticks them;
    - export control, citizenship, security clearance and salary questions, and
      personal ones such as age or birth date, are never answered.
 

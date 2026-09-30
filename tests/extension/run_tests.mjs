@@ -364,7 +364,7 @@ tests.engine_loads_without_chrome_and_exposes_the_agent_surface = () => {
   const ext = loadContentScript(pageOf({ tag: "input", type: "text", id: "first_name", label: "First Name" }), { contentScript: false });
   const engine = ext.engine;
   assert.equal(engine.version, "1");
-  assert.deepEqual(Object.keys(engine).sort(), ["attachDocumentFromBytes", "contextDependent", "fill", "needsLabelKey", "questionKey", "questionText", "scan", "version"]);
+  assert.deepEqual(Object.keys(engine).sort(), ["attachDocumentFromBytes", "contextDependent", "fill", "needsLabelKey", "netTopics", "neverStorable", "possiblySensitive", "questionKey", "questionText", "scan", "version"]);
   assert.ok(Object.isFrozen(engine));
   assert.equal(engine.scan({ name: "Test Student" }, []).fields[0].proposed_value, "Test");
   // A second injection of the same source keeps the first engine.
@@ -1017,6 +1017,40 @@ tests.follow_up_and_context_rules_match_the_shared_vectors = () => {
   }
 };
 
+tests.the_broad_net_matches_the_shared_vectors = () => {
+  // apply_policy.net_topics, possibly_sensitive and never_storable repeat these three rules for the agent's plan.
+  const { vectors } = loadApplyFixture("broad_net.json");
+  const ext = loadContentScript(pageOf({ tag: "input", type: "text", id: "q", label: "Q" }), { contentScript: false });
+  assert.ok(vectors.length >= 120);
+  for (const { text, topics, possibly_sensitive: possibly, never_storable: never } of vectors) {
+    assert.deepEqual(Array.from(ext.engine.netTopics(text)), topics, `${text}: netTopics`);
+    assert.equal(ext.engine.possiblySensitive(text), possibly, `${text}: possiblySensitive`);
+    assert.equal(ext.engine.neverStorable(text), never, `${text}: neverStorable`);
+  }
+  assert.equal(ext.engine.possiblySensitive(undefined), false);
+  assert.equal(ext.engine.possiblySensitive(null), false);
+};
+
+tests.a_possibly_sensitive_question_never_travels_when_reusable = () => {
+  // Wordings the precise SENSITIVE rule does not flag but the broad net does: a reusable row never carries them to another company.
+  for (const question of ["Are you permitted to work in the United States?", "Do you have unrestricted work rights in the United States?",
+    "US work eligibility", "Will you be able to provide proof of employment eligibility?", "What sentence were you given?",
+    "I agree to the arbitration rules", "Do you give permission for us to keep your resume on file?", "Where is your court date?",
+    "What is the expiration date of your visa’s status?", "Expected pay"]) {
+    const page = pageOf({ tag: "textarea", id: "question_41", name: "question_41", label: question });
+    const rows = [{ id: "r", question, answer: "Answer", company: "Acme Robotics", tags: ["reusable"] }];
+    const away = loadContentScript(page).scan(profile, rows, "Orbit Systems").fields[0];
+    assert.notEqual(away.confidence, 0.9, `${question}: not exact at another company`);
+  }
+  // A question the net does not touch still travels when reusable.
+  for (const question of ["Tell us about yourself", "What programming languages do you know?", "Describe a time you worked on a team"]) {
+    const page = pageOf({ tag: "textarea", id: "question_42", name: "question_42", label: question });
+    const rows = [{ id: "r", question, answer: "Answer", company: "Acme Robotics", tags: ["reusable"] }];
+    const field = loadContentScript(page).scan(profile, rows, "Orbit Systems").fields[0];
+    assert.equal(field.confidence, 0.9, `${question}: ${field.reason}`);
+  }
+};
+
 tests.injection_lists_and_the_answer_save_follow_the_split = () => {
   const files = '["adapters.js", "field-engine.js", "apply-engine.js", "content.js"]';
   const sidepanel = readFileSync(path.join(ROOT, "apps", "extension", "sidepanel.js"), "utf8");
@@ -1133,6 +1167,163 @@ tests.a_nameless_label_keyed_field_is_never_an_exact_match = () => {
   // A standalone nameless question is still exact at its company.
   const alone = pageOf({ tag: "textarea", wrapped: true, label: shared });
   assert.equal(loadContentScript(alone).scan(profile, clean, "Acme Robotics").fields[0].confidence, 0.9);
+};
+
+// --- Round 2 design change: a reusable row never carries after a question the net finds something in, and never ticks a box ---
+
+tests.a_reusable_row_never_carries_a_question_that_follows_one_the_net_finds_something_in = () => {
+  // PR #52 wordings: the follow-up's own words say nothing, so only the question right before it can tell.
+  const pairs = [
+    ["Have you ever been convicted of a felony?", "Please tell us what happened"],
+    ["Have you ever been convicted of a felony?", "What did you learn from that experience?"],
+    ["Do you now or will you in the future require visa sponsorship?", "What is the expiration date of your current status?"],
+    ["Are you currently on probation or parole?", "How much longer is it expected to last?"],
+    ["Have you ever pleaded guilty or no contest to a crime?", "Tell us the circumstances of that"],
+  ];
+  for (const [parent, child] of pairs) {
+    const page = pageOf(
+      { tag: "textarea", id: "question_1", name: "question_1", label: parent },
+      { tag: "textarea", id: "question_2", name: "question_2", label: child },
+    );
+    const rows = [{ id: "r", question: child, answer: "Answer", company: "Acme Robotics", tags: ["reusable"] }];
+    const away = fieldById(loadContentScript(page).scan(profile, rows, "Orbit Systems"), "question_2");
+    assert.notEqual(away.confidence, 0.9, `${child} under ${parent}: a reusable row is not exact at another company`);
+    const scan = loadContentScript(page).scan(profile, rows, "Orbit Systems");
+    assert.equal(preTicked(scan, "question_2"), false, `${child}: not pre-ticked`);
+    // At the company it was saved for it is still that company's own answer.
+    const home = fieldById(loadContentScript(page).scan(profile, rows, "Acme Robotics"), "question_2");
+    assert.equal(home.confidence, 0.9, `${child}: the same company's own row is still exact`);
+  }
+  // The same wording after an ordinary question still travels when the row is reusable.
+  const ordinary = pageOf(
+    { tag: "textarea", id: "question_1", name: "question_1", label: "Tell us about yourself" },
+    { tag: "textarea", id: "question_2", name: "question_2", label: "What did you learn from that experience?" },
+  );
+  const row = { id: "r", question: "What did you learn from that experience?", answer: "Answer", company: "Acme Robotics", tags: ["reusable"] };
+  assert.equal(fieldById(loadContentScript(ordinary).scan(profile, [row], "Orbit Systems"), "question_2").confidence, 0.9);
+};
+
+tests.a_reusable_row_never_ticks_a_box_at_another_company = () => {
+  const box = pageOf({ tag: "input", type: "checkbox", id: "coe", name: "question_900[]", value: "I will adhere to the Code of Ethics at all times", label: "I will adhere to the Code of Ethics at all times", groupQuestion: { legend: "Code of Ethics" } });
+  const key = loadContentScript(box).scan(profile, [], "Acme Robotics").fields[0].answer_key;
+  const rows = [{ id: "c", question: key, answer: "true", company: "Acme Robotics", tags: ["reusable"] }];
+  const away = loadContentScript(box).scan(profile, rows, "Orbit Systems");
+  assert.notEqual(away.fields[0].confidence, 0.9);
+  assert.equal(preTicked(away, "coe"), false, "a box is never pre-ticked from a row saved at another company");
+  assert.equal(preTicked(loadContentScript(box).scan(profile, [{ ...rows[0], company: "" }], "Orbit Systems"), "coe"), false, "nor from a row with no company");
+};
+
+tests.a_question_the_net_calls_never_storable_is_marked_so_the_panel_offers_no_save = () => {
+  const cases = [["Have you ever pleaded guilty or no contest to a crime?", true], ["What is your desired annual income?", true], ["Tell us about yourself", false]];
+  for (const [question, never] of cases) {
+    const page = pageOf({ tag: "textarea", id: "question_5", name: "question_5", label: question });
+    assert.equal(fieldById(loadContentScript(page).scan(profile, [], "Acme Robotics"), "question_5").never_storable, never, question);
+  }
+  const sidepanel = readFileSync(path.join(ROOT, "apps", "extension", "sidepanel.js"), "utf8");
+  assert.match(sidepanel, /!field\.requires_review && !field\.never_storable/, "the panel hides Save for a never-storable question");
+};
+
+// --- Round 4: a select's options and help text are read, and a chain of follow-ups carries the topic to the end ---
+
+tests.a_reusable_select_whose_options_or_help_text_agree_never_travels_or_pre_ticks = () => {
+  const selects = [
+    ["Keep my details in the talent pool for future roles", ["I consent", "I do not consent"], "I consent"],
+    ["Interview recording for training purposes", ["I accept", "I decline"], "I accept"],
+    ["Our arbitration agreement for disputes", ["Opt in", "Opt out"], "Opt in"],
+    ["Do you certify that your answers are true?", ["Yes I do", "No I do not"], "Yes I do"],
+  ];
+  for (const [question, labels, answer] of selects) {
+    const page = pageOf({ tag: "select", id: "question_7", name: "question_7", label: question, options: labels.map((label) => ({ value: label, label })) });
+    const rows = [{ id: "r", question, answer, company: "Acme Robotics", tags: ["reusable"] }];
+    for (const company of ["Orbit Systems", "", undefined]) {
+      const scan = loadContentScript(page).scan(profile, rows, company);
+      assert.notEqual(fieldById(scan, "question_7").confidence, 0.9, `${question} at ${JSON.stringify(company)}: not exact`);
+      assert.equal(preTicked(scan, "question_7"), false, `${question} at ${JSON.stringify(company)}: not pre-ticked`);
+    }
+    // At the company it was saved for it is still that company's own answer.
+    assert.equal(fieldById(loadContentScript(page).scan(profile, rows, "Acme Robotics"), "question_7").confidence, 0.9, `${question}: own company`);
+  }
+  // A help text that carries the real question (aria-describedby) is read like the question itself.
+  const help = "Please list any criminal convictions here";
+  const page = Object.assign(pageOf({ tag: "textarea", id: "question_8", name: "question_8", label: "Anything else we should know about you?", ariaDescribedby: "help_8" }), { texts: { help_8: help } });
+  const rows = [{ id: "r", question: "Anything else we should know about you?", answer: "Answer", company: "Acme Robotics", tags: ["reusable"] }];
+  const away = loadContentScript(page).scan(profile, rows, "Orbit Systems");
+  assert.equal(preTicked(away, "question_8"), false, "a criminal ask in the help text: not pre-ticked at another company");
+  assert.equal(fieldById(away, "question_8").never_storable, true, "and the panel offers no Save for it");
+  // A plain select, and a plain textarea with harmless help text, still travel when reusable.
+  const plain = pageOf({ tag: "select", id: "question_9", name: "question_9", label: "Which team are you most interested in?", options: [{ value: "a", label: "Perception" }, { value: "b", label: "Security" }] });
+  const plainRow = [{ id: "p", question: "Which team are you most interested in?", answer: "Perception", company: "Acme Robotics", tags: ["reusable"] }];
+  assert.equal(fieldById(loadContentScript(plain).scan(profile, plainRow, "Orbit Systems"), "question_9").confidence, 0.9, "a plain choice list is not read as a clearance question");
+  const harmless = Object.assign(pageOf({ tag: "textarea", id: "question_10", name: "question_10", label: "Tell us about yourself", ariaDescribedby: "help_10" }), { texts: { help_10: "A few lines is plenty" } });
+  const harmlessRow = [{ id: "h", question: "Tell us about yourself", answer: "Answer", company: "Acme Robotics", tags: ["reusable"] }];
+  assert.equal(fieldById(loadContentScript(harmless).scan(profile, harmlessRow, "Orbit Systems"), "question_10").confidence, 0.9);
+};
+
+tests.a_race_or_pay_range_select_is_never_storable_and_a_typed_signature_never_travels = () => {
+  const race = pageOf({ tag: "select", id: "question_12", name: "question_12", label: "How do you describe yourself?", options: [{ value: "a", label: "Asian" }, { value: "w", label: "White" }, { value: "o", label: "Other" }] });
+  assert.equal(fieldById(loadContentScript(race).scan(profile, [], "Acme Robotics"), "question_12").never_storable, true, "a race list");
+  const pay = pageOf({ tag: "select", id: "question_13", name: "question_13", label: "Range", options: [{ value: "a", label: "$40,000-$50,000" }, { value: "b", label: "$50,000-$60,000" }] });
+  assert.equal(fieldById(loadContentScript(pay).scan(profile, [], "Acme Robotics"), "question_13").never_storable, true, "a pay-range list");
+  for (const question of ["Type your initials to agree", "Initials (to show you accept the terms above)", "Your initials"]) {
+    const page = pageOf({ tag: "input", type: "text", id: "question_11", name: "question_11", label: question });
+    const rows = [{ id: "r", question, answer: "SR", company: "Acme Robotics", tags: ["reusable"] }];
+    assert.equal(preTicked(loadContentScript(page).scan(profile, rows, "Orbit Systems"), "question_11"), false, question);
+  }
+};
+
+tests.a_reusable_row_never_carries_a_field_two_or_more_below_a_sensitive_question = () => {
+  const felony = { legend: "Have you ever been convicted of a felony?" };
+  const yesNo = [{ value: "y", label: "Yes" }, { value: "n", label: "No" }];
+  const chains = [
+    [
+      { tag: "input", type: "radio", id: "f_yes", name: "question_1", value: "Yes", label: "Yes", groupQuestion: felony },
+      { tag: "input", type: "radio", id: "f_no", name: "question_1", value: "No", label: "No", groupQuestion: felony },
+      { tag: "input", type: "text", id: "question_2", name: "question_2", label: "Year it happened" },
+      { tag: "textarea", id: "question_3", name: "question_3", label: "Please tell us what happened" },
+    ],
+    [
+      { tag: "select", id: "question_1", name: "question_1", label: "Do you now or will you in the future require visa sponsorship?", options: yesNo },
+      { tag: "input", type: "text", id: "question_2", name: "question_2", label: "Which type?" },
+      { tag: "input", type: "text", id: "question_3", name: "question_3", label: "What is the expiration date of your current status?" },
+    ],
+    [
+      { tag: "select", id: "question_1", name: "question_1", label: "Are you currently on probation or parole?", options: yesNo },
+      { tag: "input", type: "text", id: "question_2", name: "question_2", label: "When does it end?" },
+      { tag: "textarea", id: "question_3", name: "question_3", label: "What conditions were imposed on you by the judge" },
+    ],
+  ];
+  for (const controls of chains) {
+    const page = pageOf(...controls);
+    const last = controls[controls.length - 1];
+    const rows = [{ id: "r", question: last.label, answer: "2027", company: "Acme Robotics", tags: ["reusable"] }];
+    const away = loadContentScript(page).scan(profile, rows, "Orbit Systems");
+    assert.notEqual(fieldById(away, "question_3").confidence, 0.9, `${last.label}: not exact at another company`);
+    assert.equal(preTicked(away, "question_3"), false, `${last.label}: not pre-ticked`);
+    const home = loadContentScript(page).scan(profile, rows, "Acme Robotics");
+    assert.equal(fieldById(home, "question_3").confidence, 0.9, `${last.label}: the same company's own row is still exact`);
+  }
+  // An ordinary chain is left alone.
+  const ordinary = pageOf(
+    { tag: "textarea", id: "question_1", name: "question_1", label: "Tell us about yourself" },
+    { tag: "input", type: "text", id: "question_2", name: "question_2", label: "Which languages?" },
+    { tag: "textarea", id: "question_3", name: "question_3", label: "What did you learn from that experience?" },
+  );
+  const row = { id: "r", question: "What did you learn from that experience?", answer: "Answer", company: "Acme Robotics", tags: ["reusable"] };
+  assert.equal(fieldById(loadContentScript(ordinary).scan(profile, [row], "Orbit Systems"), "question_3").confidence, 0.9);
+};
+
+tests.a_follow_up_of_a_never_storable_question_offers_no_save_and_an_independent_one_does = () => {
+  const yesNo = [{ value: "y", label: "Yes" }, { value: "n", label: "No" }];
+  const probation = { tag: "select", id: "question_1", name: "question_1", label: "Are you currently on probation or parole?", options: yesNo };
+  const scanned = (...rest) => loadContentScript(pageOf(probation, ...rest)).scan(profile, [], "Acme Robotics");
+  assert.equal(fieldById(scanned({ tag: "textarea", id: "question_2", name: "question_2", label: "Please tell us what happened" }), "question_2").never_storable, true, "a direct follow-up");
+  const chain = scanned(
+    { tag: "input", type: "text", id: "question_2", name: "question_2", label: "When does it end?" },
+    { tag: "textarea", id: "question_3", name: "question_3", label: "What conditions were imposed on you by the judge" },
+  );
+  assert.equal(fieldById(chain, "question_3").never_storable, true, "a follow-up two fields down");
+  const independent = scanned({ tag: "textarea", id: "question_2", name: "question_2", label: "Describe your experience with distributed systems in detail" });
+  assert.equal(fieldById(independent, "question_2").never_storable, false, "an independent question after one is still offered for saving");
 };
 
 let failed = 0;
