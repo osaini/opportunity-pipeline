@@ -155,12 +155,17 @@ def is_decline(text: Any) -> bool:
 
 _HREF = re.compile(r"""href\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
 _BARE_URL = re.compile(r"https?://[^\s<>\"')\]]+", re.IGNORECASE)
-# A statement that reads a document ("I have read the privacy notice") depends on which document that is. Leaning
-# wide is the safe way: it makes the entry company-specific, and the student is asked once more for a new company.
+# A statement that reads or agrees to a document depends on which document that is. Leaning wide is the safe way: it makes
+# the entry company-specific, and the student is asked once more for a new company. Any statement that plainly names no
+# document ("I certify that the information I have provided is accurate") may be kept for any company.
 _DOCUMENT_WORDS = re.compile(
-    r"\bhave read\b|\bread and (?:understood?|agree|accept)|acknowledge receipt|\breceipt of\b|\bprivacy\b|\bterms of\b|\bterms and conditions\b"
-    r"|\bpolic(?:y|ies)\b|\bnotice\b|\bhandbook\b|\bagreement\b|https?://"
+    r"\bhave read\b|\bi ve read\b|\breviewed\b|\bread and (?:understood?|agree|accept)|acknowledge receipt|\breceipt of\b|\bprivacy\b"
+    r"|\bterms\b|\bpolic(?:y|ies)\b|\bnotice\b|\bhandbook\b|\bagreement\b|\bstatement\b|\bcode of (?:business )?conduct\b"
+    r"|\bprogram\b|\bdisclosures?\b|\bguidelines?\b|\bstandards\b|\baddendum\b|\bcontract\b|\bcharter\b|https?://"
 )
+# A capitalized name after "the", "our" or "its" ("the Candidate Data Protection Statement") is a document by its own
+# name, whatever word it ends in. Read on the text as written, since the normalized text has lost its capitals.
+_NAMED_DOCUMENT = re.compile(r"\b(?i:the|our|its|their)\s+(?:[A-Z][\w'’&.-]*\s+)+[A-Z][\w'’&.-]*")
 
 
 def _clean_url(url: str) -> str:
@@ -186,9 +191,17 @@ def links_in(*texts: Any) -> tuple[str, ...]:
     return tuple(found)
 
 
-def cites_document(statement: str, links: Iterable[str] = ()) -> bool:
-    """Whether a statement reads or links a document, so it is only ever saved for one company."""
-    return bool(tuple(links)) or bool(_DOCUMENT_WORDS.search(_words(statement))) or bool(links_in(statement))
+def cites_document(statement: str, links: Iterable[str] = (), *, names: bool = True) -> bool:
+    """Whether a statement reads, agrees to or links a document, so it is only ever saved for one company.
+
+    ``names`` also reads a capitalized name after "the", "our" or "its" as a document. It is on for a legal
+    acknowledgment or a data consent, whose whole point is the text it agrees to, and off for a box that states a fact
+    about the student ("I am authorized to work in the United States"), which names a place, not a document.
+    """
+    return (
+        bool(tuple(links)) or bool(_DOCUMENT_WORDS.search(_words(statement))) or bool(links_in(statement))
+        or (names and bool(_NAMED_DOCUMENT.search(html.unescape(str(statement or "")))))
+    )
 
 
 # --- What the student allowed ---------------------------------------------------------------------------------
@@ -253,7 +266,7 @@ def add_entry(
         raise StoreRefused("Give the question exactly as the form shows it")
     # The wording decides too: an answer to "Are you a U.S. citizen or authorized to work in the U.S.?" is never stored
     # under a more permissive name. The classifier is the plan's own, imported here because the plan imports this module.
-    from .apply_policy import classify_sensitive
+    from .apply_policy import classify_sensitive, eeo_words
 
     read_as = classify_sensitive(text)
     if read_as in _NEVER:
@@ -289,6 +302,10 @@ def add_entry(
         else:
             stored = _one_line(answer, MAX_ANSWER_CHARS, "answer")
         cited = ()
+    if category not in EEO_CATEGORIES and not ticked and eeo_words(text):
+        # A wording that asks for voluntary self-identification as well as work authorization, sponsorship or age is never filed
+        # under the other kind, whichever kind reads it most strictly: a demographic value must not get in under it (D5 C (i)).
+        raise StoreRefused("This question also asks for voluntary self-identification. The app stores only a decline for those, so it cannot store an answer to it")
     if category in EEO_CATEGORIES:
         # D5 C (i): this table never holds a demographic value. Checked here, so no route and no future caller can bypass it.
         if kind != "option" or not is_decline(stored):
@@ -302,7 +319,7 @@ def add_entry(
     # employer ("this company", a follow-up, a bare heading) is never kept for every company (7.1).
     if not mine and category not in EEO_CATEGORIES and _depends_on_company(key):
         raise StoreRefused("This question depends on the company, so its answer is saved for this company only")
-    if not mine and ticked and cites_document(text, cited):
+    if not mine and ticked and cites_document(text, cited, names=statement):
         raise StoreRefused("This statement points to a document, so it is saved for one company only, never for any company")
     # The name is shown back as typed (or as the role names it); the key is only for matching.
     shown = _one_line(company, MAX_COMPANY_CHARS, "company") if mine else ""

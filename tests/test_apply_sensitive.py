@@ -682,7 +682,7 @@ class KeyAndCategoryRuleTests(StoreCase):
         plain = self.box("Certification", ACCURATE)
         self.add(category="acknowledgment", question=apply_policy.statement_of(plain, "checkbox"), answer="checked")
         self.assertEqual(self.plan(BASE + [plain], company=OTHER).get("q").value, True)
-        linked = self.box("Certification", ACCURATE, '<p>Terms at <a href="https://orbit.test/legal/attestation-terms">this page</a>.</p>')
+        linked = self.box("Certification", ACCURATE, '<p>Details at <a href="https://orbit.test/legal/attestation">this page</a>.</p>')
         # A row for the linked box's whole text, saved for any company where the same words linked nothing.
         self.add(category="acknowledgment", question=apply_policy.statement_of(linked, "checkbox"), answer="checked")
         got = self.plan(BASE + [linked], company=OTHER).get("q")
@@ -977,6 +977,99 @@ class LeftoverReviewTests(StoreCase):
                 got = policy_tests.plan(BASE + [F("q", label)], policy_tests.sources(answers=rows), "submit", company="Third Co").get("q")
                 self.assertEqual((got.sensitive, got.source.kind, got.value), ("sponsorship", "none", None))
                 self.assertEqual(apply_preflight._action(got, {})["type"], "manual", "never the ordinary answer form with Use for any company")
+
+    # --- A statement that names a document any way at all is kept for one company (D9 B) ---
+
+    NAMED_STATEMENTS = (
+        ("box", "Candidate Terms", "I agree to the Candidate Terms"),
+        ("box", "Data Protection", "I agree to the Candidate Data Protection Statement"),
+        ("box", "Candidate Information", "I acknowledge receiving the Candidate Information Statement"),
+        ("box", "Arbitration", "I agree to the Mutual Arbitration Program"),
+        ("box", "Conduct", "I have reviewed and will abide by the Code of Conduct"),
+        ("box", "Company Rules", "I agree to follow the Employee Guidelines"),
+        ("box", "Onboarding", "I agree to be bound by the Standards of Practice Addendum"),
+        ("box", "Recruiting", "I agree to the Northwind Recruiting Promise"),
+        ("yes_no", "Do you agree to our Candidate Terms?", ""),
+        ("yes_no", "Do you consent to the Applicant Data Statement?", ""),
+    )
+
+    def named_field(self, kind, heading, option):
+        return self.box(heading, option) if kind == "box" else self.yes_no(heading)
+
+    def test_a_statement_that_names_a_document_is_never_offered_stored_or_ticked_for_any_company(self):
+        self.allow("acknowledgment", "consent")
+        for kind, heading, option in self.NAMED_STATEMENTS:
+            with self.subTest(statement=option or heading):
+                form = BASE + [self.named_field(kind, heading, option)]
+                got = self.plan(form).get("q")
+                self.assertIn(got.sensitive, ("acknowledgment", "consent"))
+                self.assertEqual((got.problem_kind, got.company_only), ("sensitive_missing", True))
+                offered = apply_preflight._sensitive_form(got, "sensitive_missing")
+                self.assertTrue(offered["company_only"], "no Use for any company")
+                self.assertTrue(apply_sensitive.cites_document(got.statement, got.links))
+                answer = "checked" if kind == "box" else "Yes"
+                with self.assertRaises(StoreRefused):
+                    self.add(category=got.sensitive, question=got.statement, answer=answer, answer_kind="option", company="", company_only=offered["company_only"], from_form=True)
+                self.assertEqual(self.rows(), [])
+                self.add(category=got.sensitive, question=got.statement, answer=answer, answer_kind="option", company=COMPANY, company_only=True, from_form=True)
+                filled = self.plan(form).get("q")
+                self.assertEqual((filled.disposition, filled.source.kind), ("fill", "sensitive"))
+                self.assertIn(COMPANY, filled.source.label)
+                # Another employer's form with the same words is asked again, and so is a row a legacy route saved for any company.
+                self.assert_needs(form, "sensitive_missing", "q", company=OTHER)
+                with self.conn:
+                    self.conn.execute("UPDATE apply_sensitive_answers SET company_key=''")
+                self.assert_needs(form, "sensitive_missing", "q")
+                self.assert_needs(form, "sensitive_missing", "q", company=OTHER)
+                with self.conn:
+                    self.conn.execute("DELETE FROM apply_sensitive_answers")
+
+    def test_a_statement_that_names_no_document_is_still_kept_for_any_company(self):
+        self.allow("acknowledgment", "work_authorization")
+        self.add(category="acknowledgment", question=f"Certification {ACCURATE}", answer="checked")
+        self.assertIs(self.plan(BASE + [self.box("Certification", ACCURATE)], company=OTHER).get("q").value, True)
+        # A box that states a fact about the student names a place ("the United States"), not a document.
+        self.add(category="work_authorization", question=f"{AUTH} I am authorized to work in the United States", answer="checked", answer_kind="checkbox")
+        self.assertFalse(apply_sensitive.cites_document("I am authorized to work in the United States", names=False))
+        self.assertTrue(apply_sensitive.cites_document("I am authorized to work in the United States"))
+
+    # --- A wording that asks for a demographic answer as well never stores one (D5 C (i)) ---
+
+    def test_a_demographic_follow_up_of_a_work_authorization_question_is_never_offered_or_stored(self):
+        self.allow("work_authorization", "sponsorship", "age_18")
+        parent = F("q1", AUTH, SINGLE, options=("Yes", "No"))
+        child = F("q2", "If other, please specify your gender", SINGLE, options=("Female", "Male", "Non-binary"), parent=AUTH)
+        got = self.plan(BASE + [parent, child]).get("q2")
+        self.assertEqual((got.sensitive, got.problem_kind, got.source.kind, got.value), ("uncategorized", "sensitive_never", "none", None))
+        self.assertEqual(apply_preflight._action(got, {})["type"], "manual", "no form offering the demographic options")
+        self.assertEqual(self.plan(BASE + [parent, child], "handoff").get("q2").disposition, "left_for_you")
+        with self.assertRaises(StoreRefused):
+            self.add(category="work_authorization", question=got.statement, answer="Female", from_form=True)
+        self.assertEqual(self.rows(), [])
+        # The settings route: a mixed wording is refused under every kind that is not EEO, and a real answer never gets in.
+        for category, question, answer in (
+            ("work_authorization", "Are you authorized to work in the US? Please also state your gender", "Female"),
+            ("sponsorship", "Do you require visa sponsorship? What is your race?", "Asian"),
+            ("age_18", "Are you 18 or older? Are you a veteran?", "I am a protected veteran"),
+        ):
+            with self.subTest(category=category):
+                self.refused("voluntary self-identification", category=category, question=question, answer=answer)
+                self.refused("voluntary self-identification", category=category, question=question, answer=answer, from_form=True)
+        self.assertEqual(self.rows(), [])
+        # The plain wordings of the same kinds still work.
+        self.add(category="work_authorization", question=AUTH, answer="Yes")
+        self.add(category="sponsorship", question=SPONSOR, answer="No")
+        self.assertEqual(len(self.rows()), 2)
+
+    def test_a_field_that_asks_work_authorization_and_a_demographic_question_together_is_uncategorized(self):
+        for label in ("Do you require visa sponsorship? What is your race?", "Are you 18 or older? Are you a veteran?",
+                      "Are you legally authorized to work in the US? Please also state your gender"):
+            with self.subTest(label=label):
+                item = F("q", label, SINGLE, options=("Yes", "No"))
+                self.assertEqual(apply_policy.classify_item(item, "select"), "uncategorized")
+                self.assertTrue(apply_policy.eeo_words(label))
+        plain = F("q", AUTH, SINGLE, options=("Yes", "No"))
+        self.assertEqual(apply_policy.classify_item(plain, "select"), "work_authorization")
 
 
 class StoreReaderScanTests(unittest.TestCase):

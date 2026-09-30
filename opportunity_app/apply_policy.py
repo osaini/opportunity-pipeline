@@ -46,7 +46,7 @@ from .extension_apply import SENSITIVE_FIELD, ExtensionApplyError, confirmed_res
 
 __all__ = [
     "ALLOWED_ATS_LABEL_FIELDS", "ATS_GREENHOUSE", "CATEGORY_WORDS", "Plan", "PlanField", "SchemaField", "Source", "Sources",
-    "build_plan", "canonical_url", "classify_item", "classify_sensitive", "company_matches", "context_dependent", "control_of", "cover_letter_for",
+    "build_plan", "canonical_url", "classify_item", "classify_sensitive", "company_matches", "context_dependent", "control_of", "cover_letter_for", "eeo_words",
     "identify", "mac_key", "match_options", "name_parts", "needs_label_key", "parse_schema", "plan_entries", "plan_hash",
     "question_key", "resume_for", "schema_url", "sources_for", "statement_control", "statement_needs_company", "statement_of", "stored_sensitive_answer", "value_mac", "with_page_labels",
     "without_enumeration",
@@ -435,6 +435,8 @@ _NEVER_STORABLE = re.compile(
     r"\bage\b|birth|pronoun|marital|religio|genetic|pregnan|criminal|convict|felony|misdemeanor|arrest|background check|sexual|transgender|non ?compete"
     r"|crimes?\b|offen[cs]es?\b|lgbt|queer"
 )
+# A question filed under a parent in one of these kinds is that kind too, whatever its own wording says (see build_plan).
+_INHERITING_PARENTS = frozenset({"uncategorized", "export_control", "sponsorship", "salary"})
 # Most restrictive first (7.3 step 3).
 _RESTRICTION = (
     "uncategorized", "export_control", "salary", "sponsorship", "work_authorization", "age_18",
@@ -462,8 +464,8 @@ def _words(text: Any) -> str:
     return re.sub(r"[^a-z0-9]+", " ", str(text if text is not None else "").lower()).strip()
 
 
-def _most_restrictive(categories: Iterable[str]) -> str | None:
-    found = set(categories)
+def _most_restrictive(categories: Iterable[str | None]) -> str | None:
+    found = {category for category in categories if category}
     return next((category for category in _RESTRICTION if category in found), None)
 
 
@@ -501,8 +503,10 @@ def classify_sensitive(question: str, options: Iterable[str] = (), section: str 
 # A box or a Yes/No question that asks the student to agree to something is an acknowledgment, whatever its
 # heading says ("Candidate Privacy Statement"): the statement is in the option's text or the description. The
 # short list is read on both; the longer one only on a checkbox, whose whole job is to agree.
-_AGREE_WORDS = re.compile(r"acknowledg|\bterms\b|privacy (?:statement|notice|policy)")
-_AGREE_BOX_WORDS = re.compile(r"\bagree|\baccept|\bpolicy\b|\bcertif")
+_AGREE_WORDS = re.compile(r"acknowledg|\bterms\b|privacy (?:statement|notice|policy)|\baccepts? (?:the|our|its|these|this|all)\b|\babide\b|\bbound by\b")
+_AGREE_BOX_WORDS = re.compile(
+    r"\bagree|\baccept|\bpolicy\b|\bcertif|\bread\b|\breviewed?\b|\bunderstood\b|\babide|\bbound\b|\breceiv(?:e|ed|es|ing)\b|\bi ve read\b"
+)
 _TAGS = re.compile(r"<[^>]*>")
 # An option this long names what it agrees to; a shorter one ("I agree", "Yes", "I accept the terms") does not.
 _SPECIFIC_STATEMENT_WORDS = 6
@@ -612,7 +616,22 @@ def classify_item(item: SchemaField, control: str, parent: str | None = None, fo
                 found.append("acknowledgment")
         if follows and item.parent:
             found.extend((classify_sensitive(item.parent), parent))
-    return _most_restrictive(category for category in found if category)
+    result = _most_restrictive(found)
+    # A field whose own words ask for voluntary self-identification as well ("If other, please specify your gender" under a
+    # work authorization question, "Do you require sponsorship? What is your race?") is never offered as a work authorization,
+    # sponsorship or 18-or-older answer: no form for it may offer demographic options, and no such value is stored (D5 C (i)).
+    if result in _NOT_WITH_EEO and eeo_words(item.label):
+        return "uncategorized"
+    return result
+
+
+_NOT_WITH_EEO = frozenset({"work_authorization", "sponsorship", "age_18"})
+
+
+def eeo_words(text: Any) -> bool:
+    """Whether the words themselves ask a voluntary self-identification (EEO) question, whatever else they ask."""
+    words = _words(text)
+    return any(pattern.search(words) for category, pattern in _PATTERNS.items() if category.startswith("eeo_"))
 
 
 def stored_sensitive_answer(
@@ -1090,7 +1109,8 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
     # name and holds only a decline, so it is the same at every company.
     entry.company_only = (
         (item.section != "compliance" and (context_dependent(key) or (not checkbox and entry.context_dependent)))
-        or (boxlike and (statement_needs_company(item, entry.control, category, entry.answer_key) or apply_sensitive.cites_document(entry.statement, entry.links)))
+        or (boxlike and (statement_needs_company(item, entry.control, category, entry.answer_key)
+                         or apply_sensitive.cites_document(entry.statement, entry.links, names=category in apply_sensitive.STATEMENT_CATEGORIES)))
         or (category in apply_sensitive.STATEMENT_CATEGORIES and apply_sensitive.cites_document(entry.statement, entry.links))
     )
     if category in apply_sensitive.STATEMENT_CATEGORIES and not statement_control(entry.control, entry.options):
@@ -1281,9 +1301,17 @@ def build_plan(
             # A follow-up takes its meaning from the question above it, so it is as sensitive as that one. Only
             # words that continue another question count: a short question that stands alone ("GPA") does not.
             label_key = question_key(item.label)
-            follows = (
-                item.section == "custom" and bool(item.parent) and text != item.label
-                and label_key not in _PROFILE_KEYS and follow_up_wording(label_key)
+            custom_child = item.section == "custom" and bool(item.parent) and label_key not in _PROFILE_KEYS
+            under_strict = custom_child and (
+                _most_restrictive((own.get(item.parent), classify_sensitive(item.parent))) in _INHERITING_PARENTS
+            )
+            # Under a question the app never answers, or one only the student may (a felony, a visa, salary, export control), a
+            # question filed under it is that question's continuation whatever its own words: "Year" or "Type" says nothing about
+            # what it is the year or the type of. So is a short phrase that asks about no one ("Nature of charge"). Under any
+            # other parent only words that continue another question count.
+            follows = custom_child and (
+                (text != item.label and (under_strict or follow_up_wording(label_key)))
+                or (under_strict and len(without_enumeration(label_key).split()) < 5 and not _SECOND_PERSON.search(label_key))
             )
             if follows:
                 inherited = classify_item(item, control, own.get(item.parent), True)

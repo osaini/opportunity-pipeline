@@ -590,8 +590,10 @@ fields too.
      decline differently needs its own entry;
    - a legal acknowledgment or consent is ticked only when the form's statement
      (its heading, its option and any description under it) is word for word the
-     stored one and links the same documents; one that says "I have read", links
-     a document, has a description of its own, has a short option ("I agree") or
+     stored one and links the same documents; one that says "I have read", names
+     a document in any way (terms, a statement, a program, guidelines, a code
+     of conduct, or any capitalized name after "the" or "our"), links a
+     document, has a description of its own, has a short option ("I agree") or
      points to "the above terms" is saved for one company only, and under the
      question above it, and so is any question that depends on the company
      ("this company", a follow-up, a bare heading). A Yes/No question that asks

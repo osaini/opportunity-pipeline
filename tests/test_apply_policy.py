@@ -680,12 +680,44 @@ class TruthTablePlanRows(unittest.TestCase):
                         got = plan(BASE + [first, follow], sources(answers=rows), mode).get("question_21")
                         self.assertEqual((got.sensitive, got.source.kind, got.value), (category, "none", None))
                     self.assertNotEqual(apply_preflight._action(got, {})["type"], "answer", "never the ordinary answer form")
-        # A short question that asks about the student stands on its own, whatever sits above it.
-        sponsor = F("question_20", "Do you currently hold a visa?", SINGLE, options=("Yes", "No"))
+        # A short question that asks about the student stands on its own under a question that is only work authorization.
+        # (Under a felony, visa, salary or export-control question it does not: see the noun follow-up test below.)
+        auth = F("question_20", AUTH, SINGLE, options=("Yes", "No"))
         for label in ("When do you graduate?", "What is your GPA?", "Where are you located?", "Which school do you attend?"):
             with self.subTest(standalone=label):
-                got = plan(BASE + [sponsor, F("question_21", label, parent=sponsor.label)]).get("question_21")
+                got = plan(BASE + [auth, F("question_21", label, parent=auth.label)]).get("question_21")
                 self.assertIsNone(got.sensitive)
+
+    def test_any_question_filed_under_a_felony_visa_salary_or_export_control_parent_inherits_it_whatever_its_wording(self):
+        cases = (
+            ("Have you ever been convicted of a felony?", "uncategorized",
+             ("Year", "Location", "County", "Court", "Sentence", "Comments", "Please list", "Additional information", "Nature of charge")),
+            ("Do you currently hold a visa?", "sponsorship",
+             ("Expiration date", "Expiry date", "Type", "Category", "Country", "Issuing country", "Start date", "End date", "Status", "Valid until")),
+            ("What are your salary expectations?", "salary", ("Amount", "Currency")),
+            ("Are you a U.S. person under the export control regulations?", "export_control", ("Basis", "Country")),
+        )
+        for parent, category, children in cases:
+            first = F("question_20", parent, SINGLE, options=("Yes", "No"))
+            for label in children:
+                with self.subTest(parent=parent, child=label):
+                    follow = F("question_21", label, "textarea", parent=parent)
+                    rows = [answer(f"{parent} / {label}", "Details", tags=["reusable"]), answer(f"{parent} / {label}", "Details", company=OTHER, tags=["reusable"])]
+                    for mode in ("submit", "handoff"):
+                        for src in (sources(answers=rows), sources()):
+                            got = plan(BASE + [first, follow], src, mode).get("question_21")
+                            self.assertEqual((got.sensitive, got.source.kind, got.value), (category, "none", None))
+                            self.assertNotEqual(got.disposition, "fill")
+                            self.assertNotEqual(apply_preflight._action(got, {})["type"], "answer", "never the ordinary Needs-you form that writes the answer library")
+                    self.assertEqual(plan(BASE + [first, follow], sources(answers=rows), "handoff").get("question_21").disposition, "left_for_you")
+        # A profile field keeps its profile source, and a follow-up of a question that is only work authorization is not swept in.
+        facts = {**FACTS, "contact": {**FACTS["contact"], "linkedin": "https://example.test/in/sam"}}
+        felony = F("question_20", "Have you ever been convicted of a felony?", SINGLE, options=("Yes", "No"))
+        got = plan(BASE + [felony, F("question_21", "LinkedIn", parent=felony.label)], sources(facts=facts)).get("question_21")
+        self.assertEqual((got.sensitive, got.source.kind), (None, "profile"))
+        auth = F("question_20", AUTH, SINGLE, options=("Yes", "No"))
+        got = plan(BASE + [auth, F("question_21", "Year", parent=AUTH)], sources(answers=[answer(f"{AUTH} / Year", "2027")])).get("question_21")
+        self.assertEqual((got.sensitive, got.value), (None, "2027"))
 
     def test_a_short_standalone_question_after_a_sensitive_one_is_not_a_follow_up(self):
         sponsor = F("question_30", "Will you now or in the future require visa sponsorship?", SINGLE, options=("Yes", "No"))
@@ -757,6 +789,33 @@ class TruthTablePlanRows(unittest.TestCase):
         marketing = F("question_4", "Keep me informed about future openings", MULTI, required=False, options=("Keep me informed about future openings",))
         self.assertIsNone(plan(BASE + [marketing], sources()).get("question_4").sensitive)
 
+    def test_a_box_or_agreement_that_agrees_in_other_words_is_never_ticked_from_the_answer_library(self):
+        boxes = (
+            ("box", "Code of Conduct", "I have reviewed and will abide by the Code of Conduct"),
+            ("box", "Candidate Notice", "I've read and understood the Candidate Notice"),
+            ("box", "Arbitration Program", "I will be bound by the Mutual Arbitration Program"),
+            ("box", "Equipment", "I confirm I received the laptop policy summary"),
+            ("yes_no", "Do you accept the Code of Business Conduct?", ""),
+            ("yes_no", "Do you accept our Candidate Terms?", ""),
+        )
+        for kind, heading, option in boxes:
+            with self.subTest(statement=option or heading):
+                field = F("question_2", heading, MULTI, options=(option,)) if kind == "box" else F("question_2", heading, SINGLE, options=("Yes", "No"))
+                rows = [answer(heading, "Yes", company=OTHER, tags=["reusable"]), answer(heading, "Yes", company=COMPANY, tags=["reusable"]),
+                        answer(heading, "Yes", company="Third Co", tags=["reusable"])]
+                for allowed in ((), ("acknowledgment",)):
+                    for mode in ("submit", "handoff"):
+                        got = plan(BASE + [field], sources(answers=rows, allowed=allowed), mode, company="Third Co").get("question_2")
+                        self.assertEqual((got.sensitive, got.source.kind, got.value), ("acknowledgment", "none", None))
+                        self.assertNotEqual(got.disposition, "fill")
+                self.assertEqual(kinds(plan(BASE + [field], sources(answers=rows)))["question_2"], "sensitive_not_allowed")
+                self.assertEqual(kinds(plan(BASE + [field], sources(answers=rows, allowed=("acknowledgment",))))["question_2"], "sensitive_missing")
+                self.assertNotEqual(apply_preflight._action(plan(BASE + [field], sources(answers=rows)).get("question_2"), {})["type"], "answer")
+        # A box that is not an agreement at all stays ordinary.
+        marketing = F("question_4", "Keep me informed about future openings", MULTI, required=False, options=("Keep me informed about future openings",))
+        self.assertIsNone(plan(BASE + [marketing], sources()).get("question_4").sensitive)
+        remote = F("question_5", "Would you accept a remote position?", SINGLE, required=False, options=("Yes", "No"))
+        self.assertIsNone(plan(BASE + [remote], sources()).get("question_5").sensitive)
     def test_this_companys_saved_answer_wins_over_a_reusable_one_from_another_company(self):
         field = F("q", "Which team are you most interested in?", SINGLE, options=("Perception", "Controls", "Robotics"))
         elsewhere = answer("Which team are you most interested in?", "Robotics", company=OTHER, tags=["reusable"])

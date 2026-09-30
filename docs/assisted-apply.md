@@ -45,8 +45,10 @@ value-free progress. The extension never receives the editable profile draft.
      following" names nothing). When the option is short, points elsewhere ("I
      agree to the above terms") or the box has a description, the statement is
      also filed under the question above it and saved for one company. A
-     statement that says "I have read", links a document, has a description of
-     its own or points elsewhere is saved for one company, never for any
+     statement that says "I have read", names a document in any way (terms, a
+     statement, a program, guidelines, a code of conduct, or a capitalized name
+     after "the" or "our"), links a document, has a description of its own or
+     points elsewhere is saved for one company, never for any
      company, as is any question that depends on its company. The plan shows the form's own
      document addresses next to the tick; if the form links to other addresses
      than the ones saved, or to none, the box is left for the student, and so is
