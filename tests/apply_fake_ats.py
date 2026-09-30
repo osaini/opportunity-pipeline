@@ -14,8 +14,12 @@ hostnames, so the adapter's host checks run as in production with no network:
 The company, board token, job ids and every word of the pages are fictional
 (tests/fixtures/apply/greenhouse/). The lookup endpoint the form's location
 typeahead calls, ``/fake-lookup/location``, is invented for the fake: the real
-lookup endpoints are pinned against a live board in M5a. Likewise the
-demographic question's control id (``question_4000000114``) is an assumption.
+lookup endpoints are pinned against a live board in M5a. The listing fixtures
+keep to the keys the live Job Board API returns. That API gives a demographic
+question only an id, and a ``data_compliance`` entry only its type and consent
+flags, so the control names and the consent statement the form shows live in
+``DEMOGRAPHIC_CONTROL`` and ``DATA_COMPLIANCE_CONTROLS`` below: unconfirmed until
+checked against a live board, and M4 must derive them from the page's DOM.
 
 It records every request that reached it, the clicks the page counted on
 buttons the agent must never press (``forbidden_clicks``), and whether the
@@ -53,6 +57,11 @@ LEGACY_JOB_URL = f"https://{JOB_HOST}{LEGACY_JOB_PATH}"
 CONFIRMATION_URL = f"https://{JOB_HOST}{CONFIRMATION_PATH}"
 SCHEMA_PATH = f"/v1/boards/{BOARD_TOKEN}/jobs/{JOB_ID}"
 LOOKUP_PATH = "/fake-lookup/location"
+# What the fixture PAGE names, not something the listing says (see the docstring).
+DEMOGRAPHIC_CONTROL = "question_{id}"
+DATA_COMPLIANCE_CONTROLS = {
+    "gdpr": ("gdpr_consent_given", "I consent to Example Robotics storing my application data for 365 days"),
+}
 LOOKUP_OPTIONS = ("Springfield, Example State, United States", "Springdale, Example State, United States")
 
 SCENARIOS = (
@@ -71,7 +80,8 @@ SCENARIOS = (
     "loader_missing",               # no submitPath in the HTML
     "eager_script",                 # a page script POSTs on every keystroke, like lead-capture scripts
     "eager_get",                    # a page script sends a GET beacon to another host carrying a field value
-    "eager_get_greenhouse",         # the same beacon, to a Greenhouse host
+    "eager_get_greenhouse",         # the same beacon, to a Greenhouse host, also unencoded and wrapped in JSON
+    "stray_get",                    # a page script sends a GET to a non-lookup path and to two lookup endpoints on every input, carrying no value
     "lookup_leak",                  # a typeahead's lookup GET also carries another field's value
     "double_submit",                # a page script (or a double click) sends a second POST right after the first
     "captcha_body_leak",            # a page script POSTs a field value to a CAPTCHA endpoint
@@ -87,8 +97,17 @@ _SCRIPTS = {
     "eager_get": _FORM + """.addEventListener("input", function (e) {
       if (e.target.value) new Image().src = "https://pixel.example-robotics.test/p.gif?v=" + encodeURIComponent(e.target.value);
     });""",
+    # Three beacons per input: properly encoded, concatenated with no encoding (a "+" then stays a "+"), and wrapped in JSON (a newline becomes a backslash-n).
     "eager_get_greenhouse": _FORM + """.addEventListener("input", function (e) {
-      if (e.target.value) new Image().src = "https://job-boards.greenhouse.io/pixel.gif?v=" + encodeURIComponent(e.target.value);
+      if (!e.target.value) return;
+      new Image().src = "https://job-boards.greenhouse.io/pixel.gif?v=" + encodeURIComponent(e.target.value);
+      new Image().src = "https://job-boards.greenhouse.io/pixel.gif?raw=" + e.target.value;
+      new Image().src = "https://job-boards.greenhouse.io/pixel.gif?json=" + JSON.stringify({value: e.target.value});
+    });""",
+    "stray_get": _FORM + """.addEventListener("input", function () {
+      fetch("https://job-boards.greenhouse.io/track?e=input").catch(function () {});
+      fetch("https://boards-api.greenhouse.io/fake-lookup/location?q=abc").catch(function () {});
+      fetch("https://boards-api.greenhouse.io/fake-lookup/school?q=abc").catch(function () {});
     });""",
     "lookup_leak": """window.grLookupUrl = function (kind, text) {
       return "https://boards-api.greenhouse.io/fake-lookup/" + kind + "?q=" + encodeURIComponent(text)
@@ -199,15 +218,18 @@ class FakeGreenhouse:
         context.route("**/*", self.route)
         if hasattr(context, "route_web_socket"):
             def refuse(ws: Any) -> None:
+                # Refused by never calling connect_to_server(). ws.close() from inside
+                # the handler deadlocks Playwright's sync API (seen with 1.5x).
                 self.websockets.append(ws.url)
-                ws.close()
             context.route_web_socket("**/*", refuse)
 
     def route(self, route: Any) -> None:
         request = route.request
         try:
-            body = request.post_data or ""
-        except Exception:  # noqa: BLE001 - a binary body: the fake only reads text fields
+            # post_data decodes strictly as UTF-8 and raises on a real PDF's bytes; the fake only reads text fields.
+            buffer = request.post_data_buffer
+            body = buffer.decode("utf-8", errors="replace") if buffer else ""
+        except Exception:  # noqa: BLE001 - no body
             body = ""
         reply = self.answer(request.method, request.url, body, resource_type=getattr(request, "resource_type", ""))
         if reply is None:

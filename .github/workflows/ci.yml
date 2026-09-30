@@ -124,7 +124,9 @@ jobs:
     # browser tests never ran in CI. PIPELINE_REQUIRE_BROWSER_TESTS=1 turns a missing or
     # broken Chromium into an error that shows the launch exception (tests/browser_support.py),
     # so this job cannot go green by skipping every browser test. PIPELINE_HEADED_TESTS=1
-    # lets the one headed launch test run for real under a virtual display.
+    # lets the one headed launch test run for real under a virtual display. A hung
+    # Playwright call would otherwise run to GitHub's six-hour limit.
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

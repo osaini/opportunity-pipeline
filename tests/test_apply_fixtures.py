@@ -30,6 +30,8 @@ from apply_fake_ats import (
     API_HOST,
     CONFIRMATION_PATH,
     CONFIRMATION_URL,
+    DATA_COMPLIANCE_CONTROLS,
+    DEMOGRAPHIC_CONTROL,
     JOB_HOST,
     JOB_ID,
     JOB_PATH,
@@ -70,6 +72,8 @@ from opportunity_app.apply_checks import (
 
 EMAIL = "sam.rivera@example.test"
 LOOKUP = Endpoint(API_HOST, "/fake-lookup/", "location")
+LOOKUP_LOCATION = Endpoint(API_HOST, "/fake-lookup/location", "location")
+LOOKUP_SCHOOL = Endpoint(API_HOST, "/fake-lookup/school", "school")
 FIXTURE_NAMES = (
     "new_form.html", "new_confirmation.html", "closed.html", "offsite.html", "text_only_thanks.html",
     "legacy_form.html", "legacy_confirmation.html", "schema_new.json", "schema_legacy.json", "security_code_428.json",
@@ -86,11 +90,14 @@ def schema_fields(schema):
         for question in block["questions"]:
             for entry in question["fields"]:
                 found.append((entry["name"], question["label"], question["required"], entry["type"]))
+    # The live listing gives these two no control name (a demographic question has an id, a
+    # data_compliance entry only its type and flags), so the names come from the fake's constants.
     for question in (schema.get("demographic_questions") or {}).get("questions", []):
-        found.append((question["name"], question["label"], question["required"], question["type"]))
+        found.append((DEMOGRAPHIC_CONTROL.format(id=question["id"]), question["label"], question["required"], question["type"]))
     for block in schema.get("data_compliance", []):
         if block.get("requires_consent"):
-            found.append((block["name"], block["label"], True, "multi_value_multi_select"))
+            name, label = DATA_COMPLIANCE_CONTROLS[block["type"]]
+            found.append((name, label, True, "multi_value_multi_select"))
     return found
 
 
@@ -223,6 +230,19 @@ class FixtureTests(unittest.TestCase):
         for name in ("gender", "hispanic_ethnicity", "veteran_status", "disability_status", "location_city", "question_4000000105", "question_4000000106"):
             self.assertIn(name, names)
 
+    def test_the_listing_keeps_to_the_keys_the_live_job_board_api_returns(self):
+        # M4's parse_schema must not come to depend on a key a real board never sends.
+        schema = fixture_json("schema_new.json")
+        for block in schema["data_compliance"]:
+            self.assertLessEqual(set(block), {"type", "requires_consent", "requires_processing_consent", "requires_retention_consent",
+                                              "retention_period", "demographic_data_consent_applies"})
+        for question in schema["demographic_questions"]["questions"]:
+            self.assertLessEqual(set(question), {"id", "label", "required", "type", "answer_options"})
+        # What the listing does not say is derived, from the fake's documented constants.
+        names = {name for name, *_ in schema_fields(schema)}
+        self.assertIn("gdpr_consent_given", names)
+        self.assertIn("question_4000000114", names)
+
     def test_the_legacy_listing_and_page_agree_on_the_standard_fields(self):
         listing = {name: label for name, label, *_ in schema_fields(fixture_json("schema_legacy.json"))}
         html = fixture_text("legacy_form.html")
@@ -337,7 +357,7 @@ class FakeGreenhouseTests(unittest.TestCase):
 
     def test_a_fake_route_fulfils_and_a_hung_submit_is_left_pending(self):
         class Request:
-            method, url, post_data, resource_type = "GET", JOB_URL, "", "document"
+            method, url, post_data_buffer, resource_type = "GET", JOB_URL, None, "document"
 
         class Route:
             request = Request()
@@ -353,6 +373,38 @@ class FakeGreenhouseTests(unittest.TestCase):
         hung = Route()
         FakeGreenhouse("hang").route(hung)
         self.assertIsNone(hung.fulfilled)
+
+
+    def test_a_binary_upload_in_the_body_does_not_hide_the_text_fields_from_the_fake(self):
+        # Playwright's post_data raises on a real PDF's bytes; the security_code scenario reads the code from the body.
+        submit = f"https://{SUBMIT_HOST}{JOB_PATH}"
+        pdf = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj\n"
+        with_code = (b'--b\r\nContent-Disposition: form-data; name="resume"; filename="r.pdf"\r\nContent-Type: application/pdf\r\n\r\n' + pdf
+                     + b'\r\n--b\r\nContent-Disposition: form-data; name="security_code"\r\n\r\n7\r\n--b--')
+        without = with_code.replace(b'name="security_code"\r\n\r\n7', b'name="security_code"\r\n\r\n')
+        self.assertRaises(UnicodeDecodeError, with_code.decode)
+
+        class Request:
+            method, url, resource_type = "POST", submit, "fetch"
+            post_data_buffer = with_code
+
+            @property
+            def post_data(self):
+                return with_code.decode("utf-8")       # what Playwright does: strict, and it raises
+
+        class Route:
+            request = Request()
+            fulfilled = None
+
+            def fulfill(self, **kwargs):
+                self.fulfilled = kwargs
+
+        for body, status in ((with_code, 200), (without, 428)):
+            with self.subTest(status=status):
+                Request.post_data_buffer = body
+                route = Route()
+                FakeGreenhouse("security_code").route(route)
+                self.assertEqual(route.fulfilled["status"], status)
 
 
 class FakeSchemaClientTests(unittest.TestCase):
@@ -443,6 +495,10 @@ class PolicyRoute:
         self.fake, self.mode, self.phase = fake, mode, phase
         self.state = RouteState(submit_path=JOB_PATH, **state)
         self.refused = []
+        # The handler's own record of what it aborted, by request. Observation.requests reads this, never requestfailed.
+        self.aborted = []
+        # A test's switch: let the submit POST through to the fake, then lose the connection before any answer.
+        self.drop_submit = False
 
     def install(self, context):
         context.route("**/*", self)
@@ -457,6 +513,8 @@ class PolicyRoute:
         return RouteRequest(
             method=request.method, url=request.url, resource_type=request.resource_type, headers=request.headers, body=body,
             is_navigation=request.is_navigation_request() and request.frame.parent_frame is None,
+            # The real handler takes this from outreach_render.request_allowed; every host here is a fake one, served in-process.
+            public=True,
         )
 
     def __call__(self, route):
@@ -464,13 +522,19 @@ class PolicyRoute:
         decision = route_decision(self.mode, self.phase, self.facts(request), self.state)
         if isinstance(decision, Abort):
             self.refused.append(decision.record(request.method) | {"path": urlsplit(request.url).path})
+            self.aborted.append(request)
             route.abort("blockedbyclient")
             return
         self.state.record(decision)
+        if self.drop_submit and decision.submit_post:
+            buffer = request.post_data_buffer
+            self.fake.answer(request.method, request.url, buffer.decode("utf-8", errors="replace") if buffer else "")
+            route.abort("connectionreset")      # the connection drops: requestfailed fires, though the route let the POST through
+            return
         self.fake.route(route)
 
     def websocket(self, ws):
-        decision = route_decision(self.mode, self.phase, RouteRequest("GET", ws.url, is_websocket=True), self.state)
+        decision = route_decision(self.mode, self.phase, RouteRequest("GET", ws.url, is_websocket=True, public=True), self.state)
         self.refused.append(decision.record("GET"))
         # Refused by never calling connect_to_server(): the page holds a socket that goes nowhere.
         # (ws.close() from inside the handler deadlocks Playwright's sync API, seen with 1.5x.)
@@ -480,7 +544,14 @@ class PolicyRoute:
 
 
 class Observer:
-    """Gathers what `Observation` holds from a real page, the way the agent's watch loop will."""
+    """Gathers what `Observation` holds from a real page, the way the agent's watch loop will.
+
+    ``passed`` comes from the route handler's own record (``policy.aborted``), never
+    from ``requestfailed``: that event also fires for a request the route let
+    through whose connection then failed, and calling such a submit "refused" would
+    make ``decide_outcome`` say "Nothing was sent". Pass the ``policy`` whenever the
+    page sits behind a ``PolicyRoute``; with none, nothing was ever aborted.
+    """
 
     def __init__(self, page, policy=None):
         self.page, self.policy = page, policy
@@ -488,23 +559,20 @@ class Observer:
         self.navigated = False
         page.on("request", self._request)
         page.on("response", self._response)
-        page.on("requestfailed", self._failed)
         page.on("framenavigated", self._navigated)
 
     def _request(self, request):
         if request.method not in ("GET", "HEAD", "OPTIONS"):
             parts = urlsplit(request.url)
-            self.seen.append({"request": request, "method": request.method, "host": parts.hostname, "path": parts.path, "status": None, "passed": True})
+            self.seen.append({"request": request, "method": request.method, "host": parts.hostname, "path": parts.path, "status": None})
 
     def _response(self, response):
         for entry in self.seen:
             if entry["request"] is response.request:
                 entry["status"] = response.status
 
-    def _failed(self, request):
-        for entry in self.seen:
-            if entry["request"] is request:
-                entry["passed"] = False
+    def _passed(self, entry):
+        return self.policy is None or not any(entry["request"] is aborted for aborted in self.policy.aborted)
 
     def _navigated(self, frame):
         if frame == self.page.main_frame:
@@ -516,7 +584,7 @@ class Observer:
         parts = urlsplit(page.url)
         return Observation(
             main_path=parts.path, main_query=parts.query, form_present=page.locator("form#application-form").count() > 0,
-            requests=tuple(SeenRequest(e["method"], e["host"], e["path"], e["status"], e["passed"]) for e in self.seen),
+            requests=tuple(SeenRequest(e["method"], e["host"], e["path"], e["status"], self._passed(e)) for e in self.seen),
             security_code_visible=page.locator("#security-input-0").is_visible(),
             challenge_frame=page.locator("iframe[src*='bframe']").count() > 0, submit_path=JOB_PATH, confirmation_path=CONFIRMATION_PATH,
             board_token="examplerobotics", job_id=JOB_ID, navigated=self.navigated,
@@ -525,6 +593,8 @@ class Observer:
 
 
 RESUME = {"name": "Sam Rivera Resume.pdf", "mimeType": "application/pdf", "buffer": b"%PDF-1.4 fictional resume for tests"}
+# Bytes that are not valid UTF-8, as a real PDF's are.
+BINARY_RESUME = {"name": "Sam Rivera Resume.pdf", "mimeType": "application/pdf", "buffer": b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj\n"}
 
 
 @requires_chromium
@@ -639,6 +709,17 @@ class RequiredCheckScriptBrowserTests(BrowserFixtureTestCase):
         scan = self.read(page)
         self.assertTrue(scan["legacy"])
         self.assertEqual({entry["key"] for entry in scan["items"]}, {"job_application[first_name]", "job_application[last_name]", "job_application[email]", "job_application[resume]"})
+
+    def test_a_native_invalid_reason_is_fixed_wording_never_the_browsers_message_that_quotes_the_typed_text(self):
+        _fake, page, _router = self.load()
+        typed = "sam.rivera.example.test"
+        page.fill("#email", typed)
+        # Chromium's own message for this control quotes what was typed.
+        self.assertIn(typed, page.evaluate("() => document.getElementById('email').validationMessage"))
+        invalid = [entry for entry in self.read(page)["invalid"] if entry["key"] == "email"]
+        self.assertEqual([entry["reason"] for entry in invalid], ["not the kind of value the field expects"])
+        for entry in self.read(page)["invalid"]:
+            self.assertNotIn(typed, entry["reason"])
 
     def test_a_page_without_the_form_reports_none(self):
         _fake, page, _router = self.open("closed")
@@ -823,6 +904,22 @@ class OutcomeBrowserTests(BrowserFixtureTestCase):
         self.assertEqual((outcome.outcome, outcome.detail), ("submitted", {"security_code": True}))
         self.assertEqual(len(fake.submit_posts()), 2)
 
+    def test_the_security_code_still_confirms_when_the_resume_is_a_real_binary_pdf(self):
+        # Playwright's post_data raises on bytes that are not UTF-8; the fake used to read that body as empty, so the code was never seen.
+        fake, page, _router = self.load("security_code")
+        observer = Observer(page)
+        complete_form(page, resume=BINARY_RESUME)
+        press_submit(page)
+        page.wait_for_timeout(900)
+        self.assertEqual(decide_outcome(observer.observation()).outcome, "waiting")
+        type_security_code(page)
+        press_submit(page)
+        page.wait_for_timeout(900)
+        outcome = decide_outcome(observer.observation(), code_wait_over=True)
+        self.assertEqual((outcome.outcome, outcome.detail), ("submitted", {"security_code": True}))
+        self.assertEqual(len(fake.submit_posts()), 2)
+        self.assertIn("%PDF-1.7", fake.submit_posts()[0].post_data)
+
     def test_the_closed_posting_has_no_form(self):
         _fake, page, _router = self.load("closed")
         self.assertEqual(page.locator("form#application-form").count(), 0)
@@ -856,10 +953,25 @@ class RoutePolicyBrowserTests(BrowserFixtureTestCase):
                 self.assertEqual([seen for seen in fake.requests if seen.path == beacon], [])
                 self.assertIn("value_guard", router.rules())
 
+    def test_a_beacon_the_page_re_encodes_is_still_refused(self):
+        # An unencoded "+" (Chromium encodes the spaces and leaves the "+"), and a JSON-wrapped multi-line answer.
+        phone, essay = "+1 512 555 0100", "I build small robot arms.\nAnd I would like to learn from the team."
+        fake, page, router = self.load("eager_get_greenhouse", ("rehearse", PHASE_BEFORE_INPUT), values={"phone": phone, "essay": essay})
+        router.phase = PHASE_AFTER_INPUT
+        page.fill("#phone", phone)
+        page.fill("#question_4000000101", essay)
+        page.wait_for_timeout(400)
+        self.assertEqual([seen for seen in fake.requests if seen.path == "/pixel.gif"], [])
+        self.assertEqual(sorted({(entry["rule"], entry.get("field_key")) for entry in router.refused if entry["path"] == "/pixel.gif"}),
+                         [("value_guard", "essay"), ("value_guard", "phone")])
+        # Three beacons per input, all refused: the encoded one, the unencoded one and the JSON one.
+        self.assertEqual(len([entry for entry in router.refused if entry["path"] == "/pixel.gif"]), 6)
+
     def test_a_lookup_carrying_another_fields_value_is_refused_and_a_clean_one_is_served(self):
         fake, page, router = self.typing("lookup_leak")
         page.fill("#email", EMAIL)
         router.state.typing_key = "location_city"
+        router.state.typing_lookup = "location"
         page.fill("#location_city", "Spring")
         page.wait_for_timeout(300)
         self.assertEqual(fake.requests_to(API_HOST), [])
@@ -868,18 +980,41 @@ class RoutePolicyBrowserTests(BrowserFixtureTestCase):
         # The same typing on a clean page reaches the lookup and gets its options.
         fake, page, router = self.typing("confirm")
         router.state.typing_key = "location_city"
+        router.state.typing_lookup = "location"
         page.fill("#location_city", "Spring")
         page.wait_for_selector(".select__option")
         self.assertEqual(page.locator(".select__option").count(), 2)
         self.assertEqual([seen.path for seen in fake.requests_to(API_HOST) if seen.path != f"/v1/boards/examplerobotics/jobs/{JOB_ID}"], [apply_fake_ats.LOOKUP_PATH])
 
-    def test_nothing_but_lookups_and_static_assets_reaches_greenhouse_after_the_first_input(self):
-        fake, page, router = self.typing("confirm")
+    def stray(self, *, typing_key, typing_lookup):
+        """The page sends a non-lookup GET and two lookups on every input; the agent types a field of its own."""
+        fake, page, router = self.load(
+            "stray_get", ("rehearse", PHASE_BEFORE_INPUT), values={"first_name": "Samantha"},
+            lookup_endpoints=(LOOKUP_LOCATION, LOOKUP_SCHOOL), typing_key=typing_key, typing_lookup=typing_lookup,
+        )
+        router.phase = PHASE_AFTER_INPUT
         first_input = len(fake.requests)
-        page.fill("#first_name", "Samantha")
-        page.fill("#phone", "555")
-        page.wait_for_timeout(300)
+        page.fill("#last_name", "Rivera")
+        page.wait_for_timeout(400)
+        return fake, router, first_input
+
+    def test_after_the_first_input_only_the_typed_fields_own_lookup_reaches_greenhouse(self):
+        fake, router, first_input = self.stray(typing_key="location_city", typing_lookup="location")
+        self.assertEqual([(seen.method, seen.host, seen.path) for seen in fake.requests[first_input:]], [("GET", API_HOST, "/fake-lookup/location")])
+        # The non-lookup GET and the other field's lookup were refused by the after-first-input rule, not by luck.
+        self.assertEqual(sorted((entry["host"], entry["path"], entry["rule"]) for entry in router.refused),
+                         [(API_HOST, "/fake-lookup/school", "after_first_input"), (JOB_HOST, "/track", "after_first_input")])
+
+    def test_after_the_first_input_a_field_with_no_typeahead_reaches_no_lookup(self):
+        fake, router, first_input = self.stray(typing_key="last_name", typing_lookup="")
         self.assertEqual(fake.requests[first_input:], [])
+        self.assertEqual(sorted((entry["path"], entry["rule"]) for entry in router.refused),
+                         [("/fake-lookup/location", "after_first_input"), ("/fake-lookup/school", "after_first_input"), ("/track", "after_first_input")])
+
+    def test_typing_a_field_with_a_typeahead_reaches_only_that_endpoint_kind(self):
+        fake, router, first_input = self.stray(typing_key="school", typing_lookup="school")
+        self.assertEqual([seen.path for seen in fake.requests[first_input:]], ["/fake-lookup/school"])
+        self.assertEqual(sorted(entry["path"] for entry in router.refused), ["/fake-lookup/location", "/track"])
 
     def test_a_captcha_endpoint_never_receives_a_field_value(self):
         fake, page, router = self.load("captcha_body_leak", ("submit", PHASE_FILL), values=self.VALUES)
@@ -893,6 +1028,20 @@ class RoutePolicyBrowserTests(BrowserFixtureTestCase):
         page.wait_for_timeout(500)
         self.assertEqual(fake.websockets, [])
         self.assertIn("websocket", router.rules())
+
+    def test_the_fake_installed_on_a_whole_context_refuses_a_websocket_without_hanging(self):
+        # install() used to call ws.close() inside the handler, which deadlocks Playwright's sync API.
+        import faulthandler
+
+        faulthandler.dump_traceback_later(60, exit=True)
+        try:
+            fake, page, _router = self.open("websocket")
+            page.goto(JOB_URL, wait_until="domcontentloaded")
+            page.wait_for_timeout(500)
+        finally:
+            faulthandler.cancel_dump_traceback_later()
+        self.assertEqual(fake.websockets, ["wss://socket.example-robotics.test/live"])
+        self.assertEqual(page.locator("form#application-form").count(), 1)
 
     def test_an_upload_to_an_s3_host_is_refused_in_a_rehearsal(self):
         fake, page, router = self.typing("s3_upload")
@@ -923,7 +1072,7 @@ class RoutePolicyBrowserTests(BrowserFixtureTestCase):
         fake, page, router = self.load("double_submit", ("submit", PHASE_FILL))
         complete_form(page, resume=RESUME)
         router.phase = PHASE_AFTER_HAND_OVER
-        observer = Observer(page)
+        observer = Observer(page, router)
         press_submit(page)
         page.wait_for_timeout(900)
         self.assertEqual(len(fake.submit_posts()), 1)
@@ -935,7 +1084,7 @@ class RoutePolicyBrowserTests(BrowserFixtureTestCase):
         fake, page, router = self.load("other_path_post", ("submit", PHASE_FILL))
         complete_form(page, resume=RESUME)
         router.phase = PHASE_AFTER_HAND_OVER
-        observer = Observer(page)
+        observer = Observer(page, router)
         press_submit(page)
         page.wait_for_timeout(900)
         self.assertEqual(fake.submit_posts(), [])
@@ -944,6 +1093,25 @@ class RoutePolicyBrowserTests(BrowserFixtureTestCase):
         outcome = decide_outcome(observer.observation())
         self.assertEqual((outcome.outcome, outcome.after_click), ("failed", 0))
         self.assertIn("address the app doesn't recognize", outcome.note)
+
+    def test_a_submit_the_route_let_through_whose_connection_then_dropped_is_unconfirmed_not_nothing_sent(self):
+        fake, page, router = self.load("confirm", ("submit", PHASE_FILL))
+        complete_form(page, resume=RESUME)
+        router.phase = PHASE_AFTER_HAND_OVER
+        router.drop_submit = True
+        observer = Observer(page, router)
+        press_submit(page)
+        page.wait_for_timeout(900)
+        # The submit POST reached Greenhouse (the fake) and the route let it through; only the answer was lost.
+        self.assertEqual(len(fake.submit_posts()), 1)
+        self.assertEqual(router.state.submit_posts_passed, 1)
+        self.assertEqual(router.refused, [])
+        seen = observer.observation().requests
+        self.assertEqual([(entry.method, entry.host, entry.path, entry.status, entry.passed) for entry in seen],
+                         [("POST", SUBMIT_HOST, JOB_PATH, None, True)])
+        outcome = decide_outcome(observer.observation())
+        self.assertEqual((outcome.outcome, outcome.after_click), ("unconfirmed", 1))
+        self.assertNotIn("Nothing was sent", outcome.note)
 
     def test_the_agent_never_presses_the_buttons_it_must_avoid_and_the_page_counts_them(self):
         fake, page, _router = self.load("confirm", ("rehearse", PHASE_BEFORE_INPUT))

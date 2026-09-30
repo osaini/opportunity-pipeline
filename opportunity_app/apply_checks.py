@@ -24,10 +24,11 @@ apply_runs keep their own types.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, NamedTuple, Sequence
-from urllib.parse import parse_qs, quote, quote_plus, unquote_plus, urlsplit
+from urllib.parse import parse_qs, quote, quote_plus, unquote, unquote_plus, urlsplit
 
 # ---------------------------------------------------------------------------------------------
 # Hosts and endpoints
@@ -143,9 +144,11 @@ class RouteRequest:
     is_navigation: bool = False          # a main-frame navigation
     is_websocket: bool = False
     # ``outreach_render.request_allowed`` said the host resolves only to public
-    # addresses (loopback and private networks are refused). Tests that serve
-    # pages through ``route_hook`` set it, as FormSubmitter's hook replaces the rule.
-    public: bool = True
+    # addresses (loopback and private networks are refused). The handler must
+    # pass True: anything else, including leaving it unset, is refused. Tests that
+    # serve pages through ``route_hook`` pass True themselves, as FormSubmitter's
+    # hook replaces the rule.
+    public: bool | None = None
     headers: Mapping[str, str] = field(default_factory=dict)
     body: str | bytes | None = None
 
@@ -157,6 +160,7 @@ class RouteState:
     submit_path: str = ""                                 # from the loader; empty means no request can be the submit POST
     values: Mapping[str, Any] = field(default_factory=dict)   # planned values by field key, in memory only
     typing_key: str = ""                                  # the field being typed into right now
+    typing_lookup: str = ""                               # the lookup kind that field's typeahead calls (Endpoint.kind); empty when it has none
     lookup_endpoints: Sequence[Endpoint] = field(default_factory=lambda: GREENHOUSE_LOOKUP_ENDPOINTS)
     captcha_endpoints: Sequence[Endpoint] = field(default_factory=lambda: CAPTCHA_ENDPOINTS)
     submit_posts_passed: int = 0
@@ -214,24 +218,50 @@ def _guarded_values(values: Mapping[str, Any]) -> list[tuple[str, str]]:
         for text in (held if isinstance(held, (list, tuple, set, frozenset)) else [held]):
             if isinstance(text, str) and len(text) >= MIN_GUARDED_VALUE:
                 found.append((key, text))
+                # A browser drops the line breaks of a URL, and a script may split or re-join them,
+                # so each line of a multi-line answer is guarded on its own too.
+                lines = [line.strip() for line in text.splitlines()]
+                if len(lines) > 1:
+                    found.extend((key, line) for line in lines if len(line) >= MIN_GUARDED_VALUE)
     return found
+
+
+CRLF, LF, BACKSLASH = chr(13) + chr(10), chr(10), chr(92)
+
+
+def _encodings(value: str) -> set[str]:
+    """The ways a value is likely to appear in a request: raw, URL-encoded, JSON-escaped, and with CRLF line breaks."""
+    lf = value.replace(CRLF, LF)
+    forms = {value}
+    for text in (value, lf, lf.replace(LF, CRLF)):
+        forms.add(text)
+        forms.add(quote(text, safe=""))
+        forms.add(quote_plus(text))
+        for ascii_only in (True, False):
+            escaped = json.dumps(text, ensure_ascii=ascii_only)[1:-1]
+            forms.add(escaped)
+            forms.add(escaped.replace("/", BACKSLASH + "/"))
+    return forms
 
 
 def leaked_field(request: RouteRequest, values: Mapping[str, Any], *, exclude: str = "") -> str:
     """The key of a planned value found in the request's URL, headers or body, or "".
 
-    Each value of four or more characters is searched raw, URL-encoded, and
-    case-folded, in the text as sent and as URL-decoded. ``exclude`` is the
-    field whose own typed text a lookup request may carry.
+    Each value of four or more characters is searched raw, URL-encoded,
+    JSON-escaped (a newline or a quote written as an escape sequence), with CRLF
+    line breaks, and case-folded, in the text as sent and as URL-decoded both ways
+    (``+`` as a space, and ``+`` left alone, which is what a script that never
+    called encodeURIComponent sends). ``exclude`` is the field whose own typed
+    text a lookup request may carry.
     """
     body = request.body
     if isinstance(body, (bytes, bytearray)):
         body = bytes(body).decode("utf-8", errors="replace")
     texts = [request.url, *(str(value) for value in request.headers.values()), body or ""]
-    haystacks = set(texts) | {unquote_plus(text) for text in texts}
+    haystacks = set(texts) | {unquote_plus(text) for text in texts} | {unquote(text) for text in texts}
     folded = [text.casefold() for text in haystacks]
     for key, value in _guarded_values({k: v for k, v in values.items() if k != exclude}):
-        for variant in {value, quote(value, safe=""), quote_plus(value)}:
+        for variant in _encodings(value):
             if any(variant in text for text in haystacks) or any(variant.casefold() in text for text in folded):
                 return key
     return ""
@@ -260,14 +290,16 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
         return abort("offsite_navigation", f"This posting sends applicants to {host}")
     if request.is_websocket:
         return abort("websocket", "The page tried to open a WebSocket, which the app refuses")
-    if not request.public:
+    if request.public is not True:
         return abort("non_public_address", "The address is not a public one")
 
     is_submit_post = method == "POST" and host == SUBMIT_HOST and bool(state.submit_path) and path == state.submit_path
     after_hand_over = phase == PHASE_AFTER_HAND_OVER
+    # A lookup is the one the typed field's own typeahead calls: the plan names its
+    # kind, and only an endpoint of that kind counts (never any pinned endpoint).
     is_lookup = (
-        method == "GET" and bool(state.typing_key) and not request.is_navigation
-        and _endpoint_matches(state.lookup_endpoints, host, path)
+        method == "GET" and bool(state.typing_key) and bool(state.typing_lookup) and not request.is_navigation
+        and _endpoint_matches(state.lookup_endpoints, host, path, state.typing_lookup)
     )
     # The value guard. Exempt: the submit POST itself, a lookup GET for the field
     # being typed (which may carry that field's own text and nothing else), and
@@ -318,7 +350,15 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
 
 @dataclass(frozen=True)
 class SeenRequest:
-    """A non-GET request seen after hand-over. ``passed`` is False when the route aborted it."""
+    """A non-GET request seen after hand-over.
+
+    ``passed`` is False only when the route handler itself aborted the request,
+    and the gatherer must take it from the handler's own record of its decisions.
+    Never take it from the browser's ``requestfailed`` event: that also fires for
+    a request the route let through whose connection then dropped or timed out,
+    and calling that "refused" would class a submit that reached Greenhouse as
+    "Nothing was sent" and let a retry release the claim.
+    """
 
     method: str
     host: str
@@ -329,6 +369,8 @@ class SeenRequest:
 
 @dataclass(frozen=True)
 class Observation:
+    """What the watch loop saw after hand-over. ``requests`` follows the ``SeenRequest.passed`` rule: refusals come from the route handler's record."""
+
     main_path: str = ""
     main_query: str = ""
     form_present: bool = True
@@ -462,7 +504,7 @@ def _key_of(item: Any) -> str:
     return _canonical_key(_get(item, "name") or _get(item, "id") or "")
 
 
-def join(schema_fields: Iterable[Any], scan_fields: Iterable[Any]) -> list[Problem]:
+def join(schema_fields: Iterable[Any], scan_fields: Iterable[Any], fill_keys: Iterable[Any] | None = None) -> list[Problem]:
     """Every way the page and Greenhouse's own listing disagree.
 
     Each schema field is matched to page controls by ``name`` or ``id``. A
@@ -471,7 +513,14 @@ def join(schema_fields: Iterable[Any], scan_fields: Iterable[Any]) -> list[Probl
     hidden control the plan would fill, and a question whose wording normalizes
     to a different key are all problems. Greenhouse's own hidden inputs
     (``input_hidden``) are matched but never need a control.
+
+    ``fill_keys`` are the keys the plan would fill. Join runs before there is a
+    plan, so with none given every hidden listed control is reported (the
+    cautious reading). Once the plan exists, pass its keys and a hidden control
+    that the plan leaves blank, such as an optional sub-question the page shows
+    only after its parent is answered, is not a problem.
     """
+    fills = None if fill_keys is None else {_canonical_key(key) for key in fill_keys}
     schema = [item for item in schema_fields]
     scans = [item for item in scan_fields]
     names = {str(_get(item, "name") or "") for item in schema}
@@ -508,7 +557,7 @@ def join(schema_fields: Iterable[Any], scan_fields: Iterable[Any]) -> list[Probl
         # input#resume is visually hidden). The scan says "group_visible" when it can.
         if _get(scan, "visible_css") is False:
             group = _get(scan, "widget") == "file_group" and _get(scan, "group_visible", True) is not False
-            if not group:
+            if not group and (fills is None or required or _canonical_key(name) in fills):
                 problems.append(Problem(
                     "hidden_control", name, f"The form hides the field \"{label}\", so the app will not fill it", label, required,
                 ))
@@ -617,6 +666,22 @@ REQUIRED_CHECK_SCRIPT = r"""() => {
     return el.value || "";
   };
   const empty = (value) => Array.isArray(value) ? value.length === 0 : value === "";
+  // A fixed reason per validity state. The browser's own message is never used: it
+  // quotes what was typed (an email that is missing its "@"), and a reason ends up
+  // in the run's stored notes, which never hold a field's value.
+  const reasonOf = (el) => {
+    const v = el.validity || {};
+    if (v.valueMissing) return "required and empty";
+    if (v.typeMismatch) return "not the kind of value the field expects";
+    if (v.patternMismatch) return "does not match the format the field expects";
+    if (v.tooShort) return "too short";
+    if (v.tooLong) return "too long";
+    if (v.rangeUnderflow) return "below the smallest value allowed";
+    if (v.rangeOverflow) return "above the largest value allowed";
+    if (v.stepMismatch) return "not a value the field allows";
+    if (v.badInput) return "not readable as a value for the field";
+    return "not valid";
+  };
   const invalid = [];
   const items = new Map();
   const questionByKey = new Map();
@@ -635,7 +700,7 @@ REQUIRED_CHECK_SCRIPT = r"""() => {
     if (box.querySelector("span.required")) markers.push("span_required");
     questionByKey.set(keyOf(el), question);
     if (shown(el) && (el.getAttribute("aria-invalid") === "true" || el.matches(":invalid"))) {
-      invalid.push({key: key, question: question, reason: el.getAttribute("aria-invalid") === "true" ? "marked invalid by the form" : (el.validationMessage || "not valid")});
+      invalid.push({key: key, question: question, reason: el.getAttribute("aria-invalid") === "true" ? "marked invalid by the form" : reasonOf(el)});
     }
     if (!markers.length) return;
     const id = key || ("#" + index);
@@ -670,7 +735,6 @@ REQUIRED_CHECK_SCRIPT = r"""() => {
 
 SKIPPED_DISPOSITIONS = frozenset({"deferred", "left_for_you", "blank"})
 CAPTCHA_TOKEN_FIELDS = frozenset({"g-recaptcha-response", "h-captcha-response", "cf-turnstile-response"})
-_TICKED = frozenset({"true", "yes", "1", "on", "ticked", "checked"})
 
 
 def _normal(text: Any) -> str:
@@ -705,10 +769,17 @@ def _same_value(kind: str, planned: Any, held: Any) -> bool:
     if kind in ("text", "textarea", "email", "tel", "url", "number", "file") and not isinstance(planned, (list, tuple)) and not isinstance(held, list):
         # Only the CRLF difference a browser makes in a textarea is allowed.
         return str(planned).replace("\r\n", "\n") == str(held).replace("\r\n", "\n")
+    # A radio or a checkbox group is compared by the labels of what is checked: a
+    # planned "Yes" is not satisfied by a checked "No". Only a planned bool means "ticked".
     want, have = _as_list(planned), _as_list(held)
-    if len(want) == 1 and _normal(want[0]) in _TICKED and kind in ("checkbox", "radio"):
-        return len(have) >= 1
     return sorted(_normal(text) for text in want) == sorted(_normal(text) for text in have)
+
+
+def _scrub(text: str, secrets: Iterable[tuple[str, str]]) -> str:
+    """``text`` with every guarded value it quotes (any case) replaced by a placeholder."""
+    for _key, value in secrets:
+        text = re.sub(re.escape(value), "[your answer]", text, flags=re.IGNORECASE)
+    return text
 
 
 def _plan_fields(plan: Any) -> list[Any]:
@@ -769,6 +840,7 @@ def check_required(
         complained.add(key)
 
     item_keys: set[str] = set()
+    items, controls = list(items), list(controls)
     for item in items:
         key = _canonical_key(_get(item, "key"))
         question = str(_get(item, "question") or key or "a field")
@@ -821,12 +893,20 @@ def check_required(
         add("unplanned_value", key, f"The field \"{label}\" holds a value the app did not put there", label, required)
 
     # 5. The form flags nothing (aria-invalid, native :invalid, visible error text).
+    # A page's error text may quote what was typed, and a Problem never holds a value.
+    secrets = _guarded_values({
+        f"{origin}{index}": value
+        for origin, group in (("planned", [_planned(entry) for entry in plan_by_key.values()]),
+                              ("item", [_get(item, "value_text") for item in items]),
+                              ("control", [_get(control, "value_text") for control in controls]))
+        for index, value in enumerate(group)
+    })
     for flagged in invalid:
         key = _canonical_key(_get(flagged, "key"))
         if key and key in skipped:
             continue
         label = str(_get(flagged, "question") or key or "the form")
-        reason = str(_get(flagged, "reason") or "not valid")[:160]
+        reason = _scrub(str(_get(flagged, "reason") or "not valid"), secrets)[:160]
         problems.append(Problem("invalid", key, f"The form flagged \"{label}\": {reason}", label, True))
 
     # 6. Submit runs only: the plan is the one the student confirmed.
@@ -852,16 +932,23 @@ def clean_rehearsal(run: Any) -> bool:
 
     ``run`` carries ``plan`` (the value-free entries, as stored in apply_runs.plan_json),
     ``join_problems`` (from ``join``), ``check_problems`` (from ``check_required``)
-    and ``outcome``. Not clean: a problem on a required field, any join problem,
+    and ``outcome``, all required: a run missing any of them (a stored row that
+    keeps its plan and problems under other names, say) is never clean. Not clean:
+    a problem on a required field, any join problem,
     any failed check, or a planned file that was deferred (a board that uploads as
     you attach). Optional fields left blank, and deferred sensitive fields, do not
     make it unclean, because every rehearsal defers those.
     """
-    if _get(run, "outcome", "rehearsed") != "rehearsed":
+    if _get(run, "outcome", "") != "rehearsed":
         return False
-    if list(_get(run, "join_problems") or ()) or list(_get(run, "check_problems") or ()):
+    # A run that does not carry these was not checked, so it is not clean. An empty
+    # list means "checked, nothing found".
+    plan, join_problems, check_problems = (_get(run, name) for name in ("plan", "join_problems", "check_problems"))
+    if plan is None or join_problems is None or check_problems is None:
         return False
-    for entry in _get(run, "plan") or ():
+    if list(join_problems) or list(check_problems):
+        return False
+    for entry in plan:
         disposition = _get(entry, "disposition")
         if disposition == "deferred" and _is_file_entry(entry):
             return False

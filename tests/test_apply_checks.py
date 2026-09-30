@@ -5,9 +5,11 @@ No browser and no database: this runs in the default suite. The browser tests
 observations these functions read are gathered correctly.
 """
 
+import json
 import re
 import unittest
 from dataclasses import dataclass, field
+from urllib.parse import quote
 
 from opportunity_app import apply_checks
 from opportunity_app.apply_checks import (
@@ -30,6 +32,7 @@ from opportunity_app.apply_checks import (
     clean_rehearsal,
     decide_outcome,
     join,
+    leaked_field,
     question_key,
     route_decision,
 )
@@ -38,6 +41,8 @@ TOKEN, JOB = "examplerobotics", "4000000001"
 SUBMIT_PATH = f"/{TOKEN}/jobs/{JOB}"
 CONFIRMATION_PATH = f"{SUBMIT_PATH}/confirmation"
 LOOKUP = Endpoint("boards-api.greenhouse.io", "/fake-lookup/", "location")
+LOOKUP_LOCATION = Endpoint("boards-api.greenhouse.io", "/fake-lookup/location", "location")
+LOOKUP_SCHOOL = Endpoint("boards-api.greenhouse.io", "/fake-lookup/school", "school")
 EMAIL = "sam.rivera@example.test"
 
 
@@ -196,6 +201,8 @@ class DecideOutcomeTests(unittest.TestCase):
 # --- route_decision (spec 4.3) ------------------------------------------------------------------
 
 def request(method="GET", url="https://job-boards.greenhouse.io/examplerobotics/jobs/4000000001", **kwargs):
+    # The handler passes public=True after outreach_render.request_allowed; a request with no such fact is refused.
+    kwargs.setdefault("public", True)
     return RouteRequest(method=method, url=url, **kwargs)
 
 
@@ -240,6 +247,15 @@ class RouteDecisionRulesTests(unittest.TestCase):
         decision = route_decision("rehearse", PHASE_BEFORE_INPUT, request(url="http://127.0.0.1:8000/", public=False), state())
         self.assertEqual(decision.rule, "non_public_address")
 
+    def test_a_request_with_no_public_fact_is_refused_so_the_rule_fails_closed(self):
+        for mode, phase in (("rehearse", PHASE_BEFORE_INPUT), ("submit", PHASE_FILL), ("handoff", PHASE_STUDENT)):
+            with self.subTest(mode=mode):
+                unset = RouteRequest(method="GET", url="http://127.0.0.1:8000/api/v1/applications")
+                self.assertIsNone(unset.public)
+                self.assertEqual(route_decision(mode, phase, unset, state()).rule, "non_public_address")
+                self.assertEqual(route_decision(mode, phase, RouteRequest("GET", "https://job-boards.greenhouse.io/x"), state()).rule, "non_public_address")
+                self.assertIsInstance(route_decision(mode, phase, RouteRequest("GET", "https://job-boards.greenhouse.io/x", public=True), state()), Allow)
+
     def test_an_unknown_mode_or_phase_is_refused(self):
         self.assertEqual(route_decision("unattended", PHASE_FILL, request(), state()).rule, "unknown_phase")
         self.assertEqual(route_decision("submit", PHASE_BEFORE_INPUT, request(), state()).rule, "unknown_phase")
@@ -280,6 +296,26 @@ class ValueGuardTests(unittest.TestCase):
                 decision = self.guard(request("POST", "https://analytics.example-robotics.test/collect", body=body), mode="submit", phase=PHASE_FILL)
                 self.assertEqual(decision.rule, "value_guard")
 
+    def test_a_value_the_page_re_encodes_is_still_found(self):
+        phone, essay = "+1 512 555 0100", 'I build "robot" arms.\nAnd I like the team.'
+        site = "https://example.test/portfolio"
+        values = {"phone": phone, "essay": essay, "site": site}
+        for label, req in (
+            # A script that concatenates without encodeURIComponent: Chromium encodes the spaces and leaves the "+".
+            ("unencoded plus", request(url="https://job-boards.greenhouse.io/pixel.gif?v=+1%20512%20555%200100", resource_type="image")),
+            ("json body", request("POST", "https://www.google.com/recaptcha/api2/reload", body=json.dumps({"v": essay}))),
+            ("json body, non-ascii escaped off", request("POST", "https://www.google.com/recaptcha/api2/reload", body=json.dumps({"v": essay}, ensure_ascii=False))),
+            ("json in a url", request(url="https://job-boards.greenhouse.io/x.png?d=" + quote(json.dumps({"v": essay})), resource_type="image")),
+            ("json with escaped slashes", request("POST", "https://www.google.com/recaptcha/api2/reload", body=json.dumps({"v": site}).replace("/", "\\/"))),
+            ("crlf body", request("POST", "https://www.google.com/recaptcha/api2/reload", body=essay.replace("\n", "\r\n"))),
+        ):
+            with self.subTest(label):
+                found = route_decision("rehearse" if req.method == "GET" else "submit", PHASE_AFTER_INPUT if req.method == "GET" else PHASE_FILL, req, state(values=values))
+                self.assertEqual(found.rule, "value_guard")
+        # The two probes that got through before, by name.
+        self.assertEqual(leaked_field(request("POST", "https://www.google.com/recaptcha/api2/reload", body=json.dumps({"v": essay})), {"essay": essay}), "essay")
+        self.assertEqual(leaked_field(request(url="https://job-boards.greenhouse.io/pixel.gif?v=+1%20512%20555%200100"), {"phone": phone}), "phone")
+
     def test_a_short_value_is_not_searched_for(self):
         # "Yes" would match almost anything, so values under four characters are not guarded.
         decision = self.guard(request(url="https://job-boards.greenhouse.io/logo.png?yes=Yes", resource_type="image"))
@@ -303,12 +339,12 @@ class ValueGuardTests(unittest.TestCase):
     def test_the_lookup_for_the_field_being_typed_may_carry_that_fields_own_text(self):
         typing = "Springfield, Example State"
         url = f"https://boards-api.greenhouse.io/fake-lookup/location?q={typing.replace(' ', '%20')}"
-        decision = self.guard(request(url=url, resource_type="fetch"), typing_key="city")
+        decision = self.guard(request(url=url, resource_type="fetch"), typing_key="city", typing_lookup="location")
         self.assertEqual(decision, Allow("lookup"))
 
     def test_a_lookup_carrying_another_fields_value_is_refused_and_names_that_field(self):
         url = f"https://boards-api.greenhouse.io/fake-lookup/location?q=Spring&e={EMAIL}"
-        decision = self.guard(request(url=url, resource_type="fetch"), typing_key="city")
+        decision = self.guard(request(url=url, resource_type="fetch"), typing_key="city", typing_lookup="location")
         self.assertEqual((decision.rule, decision.field_key), ("value_guard", "email"))
 
     def test_a_lookup_with_no_field_being_typed_is_not_a_lookup(self):
@@ -366,7 +402,7 @@ class LookupAndRehearseTableTests(unittest.TestCase):
         )
         for label, url, resource in cases:
             with self.subTest(label):
-                decision = route_decision("rehearse", PHASE_AFTER_INPUT, request(url=url, resource_type=resource), state(typing_key="city"))
+                decision = route_decision("rehearse", PHASE_AFTER_INPUT, request(url=url, resource_type=resource), state(typing_key="city", typing_lookup="location"))
                 self.assertEqual(decision.rule, "after_first_input")
 
     def test_after_the_first_input_every_other_method_is_refused_on_any_host(self):
@@ -383,23 +419,63 @@ class LookupAndRehearseTableTests(unittest.TestCase):
     def test_the_lookup_pass_needs_an_endpoint_that_is_pinned(self):
         url = "https://boards-api.greenhouse.io/fake-lookup/location?q=Spr"
         req = request(url=url, resource_type="fetch")
-        self.assertEqual(route_decision("lookup", PHASE_AFTER_INPUT, req, state(typing_key="city")), Allow("lookup"))
-        self.assertEqual(route_decision("lookup", PHASE_AFTER_INPUT, req, state(typing_key="city", lookup_endpoints=())).rule, "after_first_input")
+        self.assertEqual(route_decision("lookup", PHASE_AFTER_INPUT, req, state(typing_key="city", typing_lookup="location")), Allow("lookup"))
+        self.assertEqual(route_decision("lookup", PHASE_AFTER_INPUT, req, state(typing_key="city", typing_lookup="location", lookup_endpoints=())).rule, "after_first_input")
         # The shipped list is empty until M5a confirms the real endpoints on a live board.
         self.assertEqual(apply_checks.GREENHOUSE_LOOKUP_ENDPOINTS, ())
-        self.assertEqual(route_decision("lookup", PHASE_AFTER_INPUT, req, RouteState(submit_path=SUBMIT_PATH, typing_key="city")).rule, "after_first_input")
+        self.assertEqual(route_decision("lookup", PHASE_AFTER_INPUT, req, RouteState(submit_path=SUBMIT_PATH, typing_key="city", typing_lookup="location")).rule, "after_first_input")
 
     def test_a_lookup_endpoint_is_an_exact_host_and_a_path_prefix(self):
         for url, allowed in (
             ("https://boards-api.greenhouse.io/fake-lookup/location?q=a", True),
-            ("https://boards-api.greenhouse.io/fake-lookup/school?q=a", True),
+            ("https://boards-api.greenhouse.io/fake-lookup/location/extra?q=a", True),
+            ("https://boards-api.greenhouse.io/fake-lookup/school?q=a", False),      # pinned, but it serves another field
             ("https://boards-api.greenhouse.io/fake-lookup-other?q=a", False),
             ("https://job-boards.greenhouse.io/fake-lookup/location?q=a", False),
             ("https://boards-api.greenhouse.io.example.test/fake-lookup/location?q=a", False),
         ):
             with self.subTest(url=url):
-                decision = route_decision("rehearse", PHASE_AFTER_INPUT, request(url=url, resource_type="fetch"), state(typing_key="city"))
+                decision = route_decision("rehearse", PHASE_AFTER_INPUT, request(url=url, resource_type="fetch"),
+                                          state(typing_key="city", typing_lookup="location", lookup_endpoints=(LOOKUP_LOCATION, LOOKUP_SCHOOL)))
                 self.assertEqual(isinstance(decision, Allow), allowed)
+
+    def test_a_lookup_passes_only_for_the_kind_the_typed_field_uses(self):
+        endpoints = (LOOKUP_LOCATION, LOOKUP_SCHOOL)
+        location = request(url="https://boards-api.greenhouse.io/fake-lookup/location?q=a", resource_type="fetch")
+        school = request(url="https://boards-api.greenhouse.io/fake-lookup/school?q=a", resource_type="fetch")
+        for typing_lookup, allowed in (("location", location), ("school", school)):
+            for label, req in (("location", location), ("school", school)):
+                with self.subTest(typing_lookup=typing_lookup, request=label):
+                    decision = route_decision("rehearse", PHASE_AFTER_INPUT, req, state(typing_key="field", typing_lookup=typing_lookup, lookup_endpoints=endpoints))
+                    if req is allowed:
+                        self.assertEqual(decision, Allow("lookup"))
+                    else:
+                        self.assertEqual(decision.rule, "after_first_input")
+
+    def test_typing_a_field_with_no_typeahead_never_allows_a_lookup(self):
+        # typing_key is set (M5a sets it on every type), but the field has no lookup kind.
+        endpoints = (LOOKUP_LOCATION, LOOKUP_SCHOOL)
+        for url in ("https://boards-api.greenhouse.io/fake-lookup/location?q=a", "https://boards-api.greenhouse.io/fake-lookup/school?q=a"):
+            for mode in ("lookup", "rehearse"):
+                with self.subTest(url=url, mode=mode):
+                    decision = route_decision(mode, PHASE_AFTER_INPUT, request(url=url, resource_type="fetch"),
+                                              state(typing_key="first_name", typing_lookup="", lookup_endpoints=endpoints))
+                    self.assertEqual(decision.rule, "after_first_input")
+
+    def test_an_endpoint_with_no_kind_serves_no_field(self):
+        anonymous = Endpoint("boards-api.greenhouse.io", "/fake-lookup/", "")
+        req = request(url="https://boards-api.greenhouse.io/fake-lookup/location?q=a", resource_type="fetch")
+        for typing_lookup in ("", "location"):
+            with self.subTest(typing_lookup=typing_lookup):
+                decision = route_decision("rehearse", PHASE_AFTER_INPUT, req, state(typing_key="city", typing_lookup=typing_lookup, lookup_endpoints=(anonymous,)))
+                self.assertEqual(decision.rule, "after_first_input")
+
+    def test_a_field_typed_with_another_kinds_endpoint_loses_the_value_guard_exemption(self):
+        # first_name is being typed and its (non-)lookup is not the location endpoint, so its text is guarded on that endpoint too.
+        url = "https://boards-api.greenhouse.io/fake-lookup/location?q=Samantha"
+        decision = route_decision("rehearse", PHASE_AFTER_INPUT, request(url=url, resource_type="fetch"),
+                                  state(typing_key="first_name", typing_lookup="", lookup_endpoints=(LOOKUP_LOCATION, LOOKUP_SCHOOL)))
+        self.assertEqual((decision.rule, decision.field_key), ("value_guard", "first_name"))
 
 
 class SubmitAndHandoffTableTests(unittest.TestCase):
@@ -593,9 +669,22 @@ class JoinTests(unittest.TestCase):
                   field_of("cover_letter_text", "Cover Letter", required=False, type="textarea")]
         self.assertEqual(join(schema, [scan_of("resume", "Resume/CV", type="file", widget="file_group")]), [])
 
-    def test_a_hidden_control_the_plan_would_fill_is_a_problem(self):
-        problems = join([field_of("website", "Website", required=False)], [scan_of("website", "Website", required_any=False, visible=False)])
-        self.assertEqual([(p.kind, p.key) for p in problems], [("hidden_control", "website")])
+    def test_a_hidden_control_is_a_problem_when_the_plan_would_fill_it_or_no_plan_is_given(self):
+        schema = [field_of("website", "Website", required=False)]
+        scans = [scan_of("website", "Website", required_any=False, visible=False)]
+        self.assertEqual([(p.kind, p.key) for p in join(schema, scans)], [("hidden_control", "website")])            # no plan yet: the cautious reading
+        self.assertEqual([(p.kind, p.key) for p in join(schema, scans, ["website"])], [("hidden_control", "website")])
+        self.assertEqual([(p.kind, p.key) for p in join(schema, scans, ["job_application[website]"])], [("hidden_control", "website")])
+
+    def test_an_optional_hidden_control_the_plan_leaves_blank_is_not_a_problem(self):
+        # An optional sub-question the page shows only after its parent is answered.
+        schema = [field_of("explain", "If yes, please explain", required=False)]
+        scans = [scan_of("explain", "If yes, please explain", required_any=False, visible=False)]
+        self.assertEqual(join(schema, scans, []), [])
+        self.assertEqual(join(schema, scans, ["first_name"]), [])
+        # A required hidden control can never be filled, so it stays a problem whatever the plan says.
+        required = [field_of("explain", "If yes, please explain", required=True)]
+        self.assertEqual([(p.kind, p.key) for p in join(required, scans, [])], [("hidden_control", "explain")])
 
     def test_an_unknown_visibility_is_not_treated_as_hidden(self):
         scan = scan_of("website", "Website", required_any=False)
@@ -644,6 +733,12 @@ class RequiredCheckScriptTests(unittest.TestCase):
         for pattern in forbidden:
             with self.subTest(pattern=pattern):
                 self.assertIsNone(re.search(pattern, REQUIRED_CHECK_SCRIPT))
+
+    def test_it_reports_a_fixed_reason_and_never_the_browsers_own_message(self):
+        # validationMessage quotes what was typed ("'sam...' is missing an '@'").
+        self.assertNotIn("validationMessage", REQUIRED_CHECK_SCRIPT)
+        for state_name in ("valueMissing", "typeMismatch", "patternMismatch", "tooShort", "tooLong", "rangeUnderflow", "rangeOverflow", "stepMismatch", "badInput"):
+            self.assertIn(f"v.{state_name}", REQUIRED_CHECK_SCRIPT)
 
     def test_it_shares_no_selectors_with_the_apply_engine_by_construction(self):
         # The engine's own attribute for tagged controls is never used here.
@@ -798,6 +893,39 @@ class CheckRequiredTests(unittest.TestCase):
         items[-1] = item("statement", "I certify it is accurate", ["Something else"], kind="checkbox")
         self.assertEqual(self.kinds(self.check(items, plan)), [("value_mismatch", "statement")])
 
+    def test_a_planned_label_is_never_satisfied_by_another_checked_label(self):
+        # The plan says "Yes" (or "1", "On", "true"); the page holds the opposite choice. The failure used to run one way only.
+        for planned_label, held, kind in (
+            ("Yes", ["No"], "radio"), ("No", ["Yes"], "radio"), ("1", ["5"], "radio"), ("On", ["Off"], "checkbox"),
+            ("true", ["false"], "checkbox"), ("Yes", ["Maybe", "No"], "checkbox"),
+        ):
+            with self.subTest(planned=planned_label, held=held, kind=kind):
+                plan = good_plan()
+                plan.fields.append(planned("prior", "Have you worked here before?", planned_label, control=kind))
+                schema = SCHEMA + [field_of("prior", "Have you worked here before?", type="multi_value_single_select")]
+                items = good_items() + [item("prior", "Have you worked here before?", held, kind=kind, markers=("aria",))]
+                # check 2, the item held against the plan
+                self.assertEqual(self.kinds(self.check(items, plan, schema)), [("value_mismatch", "prior")])
+                # check 4, the control held against the plan, with the item out of the way
+                controls = [control("prior", held[0], kind=kind, checked=True)]
+                optional = [field_of("prior", "Have you worked here before?", required=False, type="multi_value_single_select")]
+                self.assertEqual(self.kinds(self.check(good_items(), plan, SCHEMA + optional, controls=controls)), [("unplanned_value", "prior")])
+        # The same label, chosen, is fine, in any case and spacing.
+        plan = good_plan()
+        plan.fields.append(planned("prior", "Have you worked here before?", "Yes", control="radio"))
+        items = good_items() + [item("prior", "Have you worked here before?", ["  yes "], kind="radio", markers=("aria",))]
+        self.assertEqual(self.check(items, plan, SCHEMA + [field_of("prior", "Have you worked here before?", type="multi_value_single_select")]), [])
+
+    def test_the_fixtures_own_yes_no_radio_holds_only_the_planned_answer(self):
+        # question_4000000111: "Have you previously worked at Example Robotics?" (options Yes and No)
+        plan = good_plan()
+        plan.fields.append(planned("question_4000000111", "Have you previously worked at Example Robotics?", "Yes", control="radio"))
+        schema = SCHEMA + [field_of("question_4000000111", "Have you previously worked at Example Robotics?", type="multi_value_single_select")]
+        no = [item("question_4000000111", "Have you previously worked at Example Robotics?", ["No"], kind="radio", markers=("aria",))]
+        yes = [item("question_4000000111", "Have you previously worked at Example Robotics?", ["Yes"], kind="radio", markers=("aria",))]
+        self.assertEqual(self.kinds(self.check(good_items() + no, plan, schema)), [("value_mismatch", "question_4000000111")])
+        self.assertEqual(self.check(good_items() + yes, plan, schema), [])
+
     # 3. every schema-required field appears among the items
     def test_a_schema_required_field_the_scanner_did_not_report_is_a_problem(self):
         items = [entry for entry in good_items() if entry["key"] != "email"]
@@ -880,6 +1008,23 @@ class CheckRequiredTests(unittest.TestCase):
         unattributed = self.check(invalid=[{"key": "", "question": "", "reason": "Something went wrong"}])
         self.assertEqual([p.kind for p in unattributed], ["invalid"])
 
+    def test_a_problem_never_quotes_a_value_the_form_or_the_plan_holds(self):
+        typed = "sam.rivera.example.test"
+        items = good_items()
+        items[1] = item("email", "Email", typed, kind="email", markers=("aria",))
+        controls = [control("email", typed, kind="email")]
+        for reason in (f"Please include an '@' in the email address. '{typed}' is missing an '@'.", f"Sorry, {EMAIL.upper()} is taken", f"{typed}"):
+            with self.subTest(reason=reason):
+                problems = self.check(items, invalid=[{"key": "email", "question": "Email", "reason": reason}], controls=controls)
+                invalid = [p for p in problems if p.kind == "invalid"]
+                self.assertEqual(len(invalid), 1)
+                for held in (typed, EMAIL, EMAIL.upper()):
+                    self.assertNotIn(held, invalid[0].message)
+                    self.assertNotIn(held.lower(), invalid[0].message.lower())
+        # What is not a value stays, so the student still learns what the form said.
+        problems = self.check(invalid=[{"key": "email", "question": "Email", "reason": "required and empty"}])
+        self.assertIn("required and empty", problems[0].message)
+
     def test_what_the_form_flags_on_a_deferred_field_is_not_held_against_the_form(self):
         # A required field left empty on purpose (a rehearsal defers every sensitive answer) is :invalid by nature.
         problems = self.check(invalid=[{"key": "work_auth", "question": "Work authorization", "reason": "Please fill out this field."}])
@@ -948,6 +1093,19 @@ class CleanRehearsalTests(unittest.TestCase):
             with self.subTest(outcome=outcome):
                 self.assertFalse(clean_rehearsal(self.run_of(entry(), outcome=outcome)))
 
+    def test_a_run_that_does_not_carry_what_the_gate_reads_is_never_clean(self):
+        # A stored apply_runs row keeps these under other names (plan_json, reasons_json): it must not read as clean.
+        complete = self.run_of(entry())
+        self.assertTrue(clean_rehearsal(complete))
+        for missing in ("outcome", "plan", "join_problems", "check_problems"):
+            with self.subTest(missing=missing):
+                partial = {name: value for name, value in complete.items() if name != missing}
+                self.assertFalse(clean_rehearsal(partial))
+                self.assertFalse(clean_rehearsal({**complete, missing: None}))
+        self.assertFalse(clean_rehearsal({"plan": []}))
+        self.assertFalse(clean_rehearsal({"outcome": "rehearsed", "plan_json": "[]", "clean": True}))
+        self.assertFalse(clean_rehearsal(object()))
+
     def test_a_run_may_be_an_object_and_its_plan_entries_objects(self):
         @dataclass
         class Source:
@@ -966,9 +1124,17 @@ class CleanRehearsalTests(unittest.TestCase):
         class Run:
             plan: list = field(default_factory=lambda: [Entry()])
             outcome: str = "rehearsed"
+            join_problems: list = field(default_factory=list)
+            check_problems: list = field(default_factory=list)
+
+        @dataclass
+        class Unchecked:
+            plan: list = field(default_factory=lambda: [Entry()])
+            outcome: str = "rehearsed"
 
         self.assertTrue(clean_rehearsal(Run()))
         self.assertFalse(clean_rehearsal(Run(plan=[Entry(problem="x")])))
+        self.assertFalse(clean_rehearsal(Unchecked()))
 
 
 if __name__ == "__main__":
