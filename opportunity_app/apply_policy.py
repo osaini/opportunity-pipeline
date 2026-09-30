@@ -16,8 +16,9 @@ why in words the student can act on.
 A value has four sources and no others: a confirmed profile fact through a short mapping list, an answer
 the student saved (only when the question is word for word the same and it was saved for this company or
 marked reusable), an exact option label the student confirmed, and the résumé or cover letter for the role.
-Sensitive answers come from one function, ``stored_sensitive_answer``, which returns None until the store
-that holds them is built (M4s). Nothing is ever guessed: no fuzzy match, no first option, no label regex.
+Sensitive answers come from one function, ``stored_sensitive_answer``, which reads the store the student
+filled in on purpose (apply_sensitive.py) and nothing else. Nothing is ever guessed: no fuzzy match, no first
+option, no label regex.
 
 The value of a field is held in the plan in memory only. What is stored and hashed is a keyed MAC of it.
 """
@@ -39,7 +40,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from pipeline import identity_tokens
 
-from . import preparation, resume_variants
+from . import apply_sensitive, preparation, resume_variants
 from .apply_checks import ALTERNATE_TEXT_FIELDS, BOARD_HOSTS, Problem, join, question_key
 from .extension_apply import SENSITIVE_FIELD, ExtensionApplyError, confirmed_resume_file
 
@@ -535,25 +536,29 @@ def stored_sensitive_answer(
 ) -> dict[str, Any] | None:
     """The stored answer the student deliberately added for this sensitive question, or None.
 
-    The one place the plan asks. The store (apply_sensitive_answers, spec 5.4) is built in M4s; until then
-    nothing is stored, so nothing sensitive is ever answered. The entry it will return holds ``id``,
-    ``answer_kind`` (option, options, text or checkbox), ``answer`` and the statement's ``links``, and only
-    when the exact key, the category, the company and the consent scope for ``mode`` all match.
+    The one place the plan asks (apply_sensitive.lookup, spec 5.4). The entry it returns holds ``id``,
+    ``answer_kind`` (option, options, text or checkbox), ``answer``, the statement's ``links`` and ``added``,
+    and only when the exact key, the category, the company and the consent scope for ``mode`` all match.
+    It reads only: the check and the plan write nothing.
     """
-    return None
+    return apply_sensitive.lookup(conn, user_id, category=category, question_key=question_key, company_key=company_key, mode=mode)
 
 
 # --- Where a value may come from (7.1) --------------------------------------------------------------
 
 @dataclass(frozen=True)
 class Source:
-    """kind is profile, ats_label, answer, sensitive, resume, cover_letter or none. ``ref`` names the row, never a value."""
+    """kind is profile, ats_label, answer, sensitive, resume, cover_letter or none. ``ref`` names the row, never a value.
+
+    ``links`` are the addresses of the documents a ticked statement points to, shown next to the tick (D9 B).
+    """
 
     kind: str = "none"
     ref: str = ""
     company: str = ""
     reusable: bool = False
     label: str = ""
+    links: tuple[str, ...] = ()
 
 
 NO_SOURCE = Source()
@@ -619,11 +624,6 @@ def _loads(text: Any, default: Any) -> Any:
     except (TypeError, ValueError):
         return default
     return value if isinstance(value, type(default)) else default
-
-
-def _setting(conn: sqlite3.Connection, user_id: str, key: str) -> str:
-    row = conn.execute("SELECT value FROM user_settings WHERE user_id=? AND key=?", (user_id, key)).fetchone()
-    return str(row[0]) if row and row[0] is not None else ""
 
 
 def _norm(text: Any) -> str:
@@ -712,7 +712,7 @@ def sources_for(
         str(row["field"]): str(row["label"])
         for row in conn.execute("SELECT field, label FROM apply_ats_labels WHERE user_id=? AND ats=?", (user_id, ATS_GREENHOUSE)).fetchall()
     }
-    allowed = frozenset(part.strip() for part in _setting(conn, user_id, "apply_sensitive_categories").split(",") if part.strip())
+    allowed = apply_sensitive.allowed_categories(conn, user_id)
 
     def lookup(**kwargs: Any) -> dict[str, Any] | None:
         return stored_sensitive_answer(conn, user_id, **kwargs)
@@ -754,6 +754,10 @@ class PlanField:
     defer: bool = False
     # Which typeahead list this field is (5.5), when its option must be one the student confirmed.
     label_field: str = ""
+    # A sensitive field: the exact text a stored answer is matched on (a checkbox's statement, else the question), and
+    # the addresses of the documents the form's statement links to. Never a value.
+    statement: str = ""
+    links: tuple[str, ...] = ()
 
 
 @dataclass
@@ -977,7 +981,10 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
     words = CATEGORY_WORDS.get(category, "a personal question")
     sources = ctx.sources
     # A checkbox is matched on its own statement, a follow-up on its parent's question too: neither on the bare heading.
-    key = question_key(statement_of(item, entry.control) if entry.control == "checkbox" else entry.answer_key or item.label)
+    entry.statement = statement_of(item, entry.control) if entry.control == "checkbox" else entry.answer_key or item.label
+    key = question_key(entry.statement)
+    if category in apply_sensitive.STATEMENT_CATEGORIES:
+        entry.links = apply_sensitive.links_in(item.label, *item.options, item.description)
     if category == "uncategorized" or category not in sources.sensitive_allowed:
         entry.problem_kind = "sensitive_never" if category == "uncategorized" else "sensitive_not_allowed"
         entry.problem = (
@@ -985,21 +992,31 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
             if follows else f"The app doesn't answer this kind of question for you ({words}). Finish in browser leaves it for you"
         )
         return entry
-    stored = sources.sensitive_lookup(category=category, question_key=key, company_key=" ".join(sorted(identity_tokens(ctx.company))), mode=ctx.mode)
+    stored = sources.sensitive_lookup(category=category, question_key=key, company_key=apply_sensitive.company_key(ctx.company), mode=ctx.mode)
     if not stored:
         entry.problem_kind = "sensitive_missing"
         entry.problem = f"You haven't added an answer for this ({words}) in Apply agent settings"
         return entry
     kind = str(stored.get("answer_kind") or "")
     answer = str(stored.get("answer") or "")
+    stored_links = tuple(stored.get("links") or ())
     if entry.control == "checkbox":
         value, why = (True, "") if kind == "checkbox" and _norm(answer) == "checked" else (None, "The stored statement is not the one on this form")
+        # The words are the same, but a notice is its document: a form that now links to another one is not agreed to.
+        if value and stored_links and entry.links and set(stored_links) != set(entry.links):
+            value, why = None, "The document this statement links to is not the one you agreed to. Read it again, then add it again"
     else:
         value, why = _choice_value(entry.control, answer, entry.options)
     if value is None:
-        entry.problem_kind, entry.problem = "sensitive_mismatch", f"Your stored answer doesn't fit this form's options. {why}"
+        entry.problem_kind, entry.problem = "sensitive_mismatch", f"Your stored answer doesn't fit this form. {why}"
         return entry
-    entry.source = Source("sensitive", str(stored.get("id") or ""), label="Sensitive answer you added")
+    if category in apply_sensitive.STATEMENT_CATEGORIES:
+        noun = "acknowledgment" if category == "acknowledgment" else "consent"
+        label = f"Your {noun} (any company)" if not stored.get("company_key") else f"Your {noun} for {ctx.company}"
+        entry.links = entry.links or stored_links
+    else:
+        label = "Sensitive answer you added" + (f" {stored['added']}" if stored.get("added") else "")
+    entry.source = Source("sensitive", str(stored.get("id") or ""), label=label, links=entry.links)
     entry.value = value
     return entry
 
@@ -1194,7 +1211,8 @@ def plan_entries(plan: Plan) -> list[dict[str, Any]]:
     return [
         {"key": item.key, "question": item.question, "control": item.control, "required": bool(item.required),
          "options": list(item.options), "sensitive": item.sensitive, "disposition": item.disposition,
-         "source": {"kind": item.source.kind, "ref": item.source.ref, "company": item.source.company, "reusable": item.source.reusable},
+         "source": {"kind": item.source.kind, "ref": item.source.ref, "company": item.source.company, "reusable": item.source.reusable,
+                    "links": list(item.source.links)},
          "value_mac": item.value_mac, "file_sha256": item.file_sha256, "problem": item.problem}
         for item in plan.fields
     ]

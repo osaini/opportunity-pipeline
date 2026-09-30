@@ -1489,22 +1489,18 @@ class SettingsValidationTests(unittest.TestCase):
         self.assertIn("apply_agent should be an object", " ".join(validate_profile({"apply_agent": 5})["errors"]))
 
 
-class SourceBoundaryTests(unittest.TestCase):
-    """The plan has one place to ask for a stored sensitive answer, and it answers nothing until the store exists."""
+class SourceBoundaryTests(runs_tests.ApplyCase):
+    """The plan has one place to ask for a stored sensitive answer, and it answers nothing while the store is empty."""
 
-    def test_the_lookup_returns_none_until_the_store_is_built(self):
-        import tempfile
-
-        with tempfile.TemporaryDirectory() as folder:
-            conn = sqlite3.connect(Path(folder) / "x.db")
-            self.assertIsNone(apply_policy.stored_sensitive_answer(conn, USER, category="work_authorization", question_key="q", company_key="c", mode="submit"))
-            conn.close()
+    def test_the_lookup_returns_none_while_nothing_is_stored(self):
+        self.assertIsNone(apply_policy.stored_sensitive_answer(self.conn, USER, category="work_authorization", question_key="q", company_key="c", mode="submit"))
 
     def test_the_default_sources_hand_the_plan_that_lookup_and_no_allowed_category(self):
         self.assertEqual(Sources().sensitive_allowed, frozenset())
         self.assertIsNone(Sources().sensitive_lookup(category="salary", question_key="x", company_key="", mode="submit"))
 
     def test_the_policy_never_reads_the_sensitive_table_by_name(self):
+        # It asks apply_sensitive.lookup; the table is named there and nowhere in the plan or the check.
         source = Path(apply_policy.__file__).read_text(encoding="utf-8")
         self.assertNotIn("FROM apply_sensitive_answers", source)
         self.assertNotRegex(Path(apply_preflight.__file__).read_text(encoding="utf-8"), r"apply_sensitive_answers")
