@@ -21,7 +21,7 @@ const REASON = [
   "This Gmail tool reads the account linked to your AI harness, which is often not the pipeline's mailbox.",
   "Outreach replies, interview mail and bounces live in the pipeline mailbox: the account the app's Gmail connection is signed into.",
   "Read that one with `py -3 scripts/pipeline_mailbox.py whoami`, then `search \"<gmail query>\"` or `thread <id>` (python3 on macOS/Linux), from the checkout where the app runs.",
-  "Replies carry the student's reply label; whoami shows its search form and whether `label:` alone can be trusted (both counts 0).",
+  "Outreach threads (the emails the student sent, first emails included, and the replies) carry the student's label; whoami shows its search form and whether `label:` alone can be trusted (all three counts 0).",
   "If the script fails, say so and ask rather than searching another mailbox.",
   "Mail that is not outreach (for example LinkedIn job alerts for `pipeline.py import-emails`) can be in either account: ask the person which account holds it.",
   "Never report that nothing was found without naming the mailbox you searched.",

@@ -28,10 +28,12 @@ loopback-only.
 | Schema | `migrations/*.sql` | SQLite by default; PostgreSQL supported. |
 
 Once Gmail is reconnected with the label permission, the app adds the student's
-reply label (Outreach settings) to threads where a company replied. It does not
-while the label is off or automation is paused, so `label:` is complete only when
-`pipeline_mailbox.py whoami` reports 0 replies not labelled yet (and 0 that the app
-could not label; mail Gmail has since deleted is not counted, since no search finds it).
+label (Outreach settings) to every outreach thread: the emails the student sent
+to companies, first emails included, and the replies. It does not while the label
+is off or automation is paused, so `label:` is complete only when
+`pipeline_mailbox.py whoami` reports 0 outreach threads not labelled yet, 0 that
+the app could not label, and 0 companies not yet searched for sent outreach (mail
+Gmail has since deleted is not counted, since no search finds it).
 
 **The product's core promise is source integrity.** Every opportunity keeps its
 source, its freshness, and an honest explanation of its score. Anything that
@@ -70,8 +72,9 @@ weight it above crashes.
    may be signed into a different account, so it is not evidence about outreach.
    To read pipeline mail start with `py -3 scripts/pipeline_mailbox.py whoami`
    (`python3` on macOS and Linux). Use `search "label:<its search form>" [--max N]`
-   only when whoami reports 0 replies not labelled yet and 0 that the app could
-   not label; otherwise search by from:/subject:. Use `thread THREAD_ID` to read a
+   only when whoami reports 0 outreach threads not labelled yet, 0 that the app
+   could not label and 0 companies not yet searched for sent outreach; otherwise
+   search by from:/to:/subject:. Use `thread THREAD_ID` to read a
    thread. Run it from the checkout where the app runs;
    from a git worktree it finds the main checkout. It is read-only. If it fails,
    say so and ask; never fall back to a harness Gmail tool. Mail that is not

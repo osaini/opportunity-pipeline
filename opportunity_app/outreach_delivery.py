@@ -223,16 +223,26 @@ def read_notice(raw: bytes) -> dict[str, Any] | None:
     return {"failed": sorted(set(failed)), "reason": reason}
 
 
+def _header_map(message: dict[str, Any]) -> dict[str, str]:
+    return {
+        str(item.get("name", "")).lower(): str(item.get("value", ""))
+        for item in (message.get("payload") or {}).get("headers") or []
+    }
+
+
+def _is_delivery_notice(message: dict[str, Any]) -> bool:
+    """Whether a message's headers alone make it a delivery notice of any kind (a failure or a delay), never mail."""
+    headers = _header_map(message)
+    sender = parseaddr(headers.get("from", ""))[1].casefold()
+    content_type = f"{headers.get('content-type', '')} {(message.get('payload') or {}).get('mimeType', '')}".casefold()
+    return sender.split("@", 1)[0] in _DAEMONS or ("multipart/report" in content_type and "delivery-status" in content_type)
+
+
 def _headers_say_failure(message: dict[str, Any]) -> dict[str, Any] | None:
     """What a message's headers alone say, if it looks like a delivery failure notice."""
-    payload = message.get("payload") or {}
-    headers = {str(item.get("name", "")).lower(): str(item.get("value", "")) for item in payload.get("headers") or []}
-    sender = parseaddr(headers.get("from", ""))[1].casefold()
-    content_type = f"{headers.get('content-type', '')} {payload.get('mimeType', '')}".casefold()
-    from_daemon = sender.split("@", 1)[0] in _DAEMONS
-    delivery_report = "multipart/report" in content_type and "delivery-status" in content_type
-    if not (from_daemon or delivery_report):
+    if not _is_delivery_notice(message):
         return None
+    headers = _header_map(message)
     subject = headers.get("subject", "")
     if _DELAY.search(subject) and "failure" not in subject.casefold():
         return None

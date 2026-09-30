@@ -3282,7 +3282,7 @@
     // about to ask for it again, so reply and bounce checks never stop.
     const expiring = Boolean(gmail.connected && gmail.bounce_check && gmail.expiring_soon);
     // A connection that signed into another account than the outreach address, or that
-    // lacks the permission to label reply threads, is offered Reconnect Gmail too.
+    // lacks the permission to label outreach threads, is offered Reconnect Gmail too.
     const wrongAccount = Boolean(gmail.connected && gmail.wrong_account);
     const needsLabelPermission = Boolean(gmail.connected && gmail.bounce_check && gmail.label && !gmail.label_check);
     if (gmail.connected && gmail.bounce_check && !expiring && !wrongAccount && !needsLabelPermission) return null;
@@ -3294,9 +3294,9 @@
       : wrongAccount
       ? `Gmail is connected as ${gmail.connected_as}, but your outreach address is ${gmail.account}. Reconnect Gmail and choose ${gmail.account}.`
       : gmail.connected && gmail.bounce_check
-      ? `Reconnect Gmail once so the app can add your “${gmail.label}” label to every thread where someone at a company replied. Google lists this permission as “Read, compose, and send emails”; tick it on Google's screen. The app uses it only to add that one label: it never deletes, archives, moves or marks mail as read. To stop being asked, leave the label empty in Outreach settings.`
+      ? `Reconnect Gmail once so the app can add your “${gmail.label}” label to every outreach thread: the emails you send to companies, first emails included, and their replies. Google lists this permission as “Read, compose, and send emails”; tick it on Google's screen. The app uses it only to add that one label: it never deletes, archives, moves or marks mail as read. To find your outreach it also reads the recipients and subject (never the body) of the emails you send. To stop being asked, leave the label empty in Outreach settings.`
       : gmail.connected
-      ? `Reconnect Gmail once so the app can catch bounces and log replies for you. It asks for permission to read mail; the app reads only delivery failure notices, mail from the companies you wrote to (Spam included), mail in the threads of the emails you sent them, and mail that names those companies or your emails' subjects. To find replies in those threads it lists recent mail by id, reading only what is in them.${gmail.label ? ` It also asks for the permission Google lists as “Read, compose, and send emails”, used only to add your “${gmail.label}” label to threads where a company replied (it never deletes, archives, moves or marks mail as read); tick both boxes.` : ""}`
+      ? `Reconnect Gmail once so the app can catch bounces and log replies for you. It asks for permission to read mail; the app reads only delivery failure notices, mail from the companies you wrote to (Spam included), mail in the threads of the emails you sent them, and mail that names those companies or your emails' subjects. To find replies in those threads it lists recent mail by id, reading only what is in them.${gmail.label ? ` It also asks for the permission Google lists as “Read, compose, and send emails”, used only to add your “${gmail.label}” label to your outreach threads, sent emails and replies; to find the emails you send from Gmail it reads the recipients and subject (never the body) of each new email you send (it never deletes, archives, moves or marks mail as read); tick both boxes.` : ""}`
       : gmail.needs_reconnect
         ? "Gmail stopped accepting the connection. Reconnect it to keep creating drafts with attachments."
         : `Connect Gmail to send approved emails${what} from here, or open them as drafts in Gmail first. Nothing sends until you press Send and confirm the recipient.`));
@@ -4217,7 +4217,7 @@
     return field;
   }
 
-  // The Gmail label the app adds to every thread where a company replied. Per
+  // The Gmail label the app adds to every outreach thread (the emails sent to companies, and the replies). Per
   // student, so it is saved through its own route rather than the .env settings.
   async function gmailLabelField() {
     const field = element("div", "settings-field gmail-label-setting");
@@ -4230,7 +4230,7 @@
     input.autocomplete = "off";
     input.disabled = true;
     const help = element("p", "profile-help",
-      "Every thread where someone at a company replied gets this label in Gmail, with your own emails in it, and replies found before now too. Leave it empty to stop labelling; pausing automation pauses it too. Rename it here rather than in Gmail: the app adds the label under this name and creates it if it is missing. After a rename, threads keep the old label too; delete it in Gmail if you no longer want it.");
+      "Every outreach thread gets this label in Gmail: the emails you send to companies, first emails included, and the replies, with those found before now too. To find that outreach, the app reads the recipients and subject (never the body) of the emails you send. Leave it empty to stop labelling; pausing automation pauses it too. Rename it here rather than in Gmail: the app adds the label under this name and creates it if it is missing. After a rename, threads keep the old label too; delete it in Gmail if you no longer want it.");
     const mailbox = element("p", "profile-help gmail-label-mailbox");
     const permission = element("p", "profile-help gmail-label-permission");
     const status = element("p", "profile-help gmail-label-status");
@@ -4276,7 +4276,7 @@
       try {
         const saved = await api("/api/v1/outreach/gmail-label", { method: "PUT", body: JSON.stringify({ value: wanted }) });
         show(saved);
-        status.textContent = saved.value ? `Replies will be labelled “${saved.value}”.` : "Labelling is off.";
+        status.textContent = saved.value ? `Outreach threads will be labelled “${saved.value}”.` : "Labelling is off.";
       } catch (error) {
         status.className = "form-error gmail-label-status";
         status.textContent = error.message;

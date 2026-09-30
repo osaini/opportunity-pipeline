@@ -1,4 +1,4 @@
-"""The Gmail reply label: its Outreach settings field, and the Reconnect Gmail copy that asks for its permission.
+"""The Gmail outreach label: its Outreach settings field, and the Reconnect Gmail copy that asks for its permission.
 
 The field talks to the live server's own route, so a save is checked through
 the same GET a reload uses. The mailbox line and the connect panel depend on a
@@ -49,7 +49,8 @@ def test_the_label_field_starts_on_the_default_and_says_what_it_does(owner_page,
     expect(box).to_have_value("opportunities")
     expect(box).to_have_attribute("placeholder", "Empty keeps labelling off; the usual name is opportunities")
     expect(box).to_be_enabled()
-    expect(field).to_contain_text("Every thread where someone at a company replied gets this label in Gmail")
+    expect(field).to_contain_text("Every outreach thread gets this label in Gmail: the emails you send to companies, first emails included, and the replies")
+    expect(field).to_contain_text("the app reads the recipients and subject (never the body) of the emails you send")
     expect(field).to_contain_text("Leave it empty to stop labelling; pausing automation pauses it too")
     expect(field).to_contain_text("threads keep the old label too")
     assert saved_setting(owner_page, base_url)["value"] == "opportunities"
@@ -61,7 +62,7 @@ def test_renaming_the_label_saves_at_once_and_survives_a_reload(owner_page, base
     box.fill("Job replies")
     box.press("Enter")
     box.blur()
-    expect(field.locator(".gmail-label-status")).to_have_text("Replies will be labelled “Job replies”.")
+    expect(field.locator(".gmail-label-status")).to_have_text("Outreach threads will be labelled “Job replies”.")
     saved = saved_setting(owner_page, base_url)
     assert saved["value"] == "Job replies"
     assert saved["search"] == "job-replies"
@@ -159,9 +160,10 @@ def test_reconnect_gmail_asks_for_the_label_permission_once(owner_page):
     gmail_listing(owner_page, bounce_check=True, label="opportunities", label_check=False)
     open_outreach(owner_page)
     panel = owner_page.locator(".outreach-gmail-connect")
-    expect(panel.locator(".profile-help")).to_contain_text("add your “opportunities” label to every thread where someone at a company replied")
+    expect(panel.locator(".profile-help")).to_contain_text("add your “opportunities” label to every outreach thread: the emails you send to companies, first emails included, and their replies")
     expect(panel.locator(".profile-help")).to_contain_text("“Read, compose, and send emails”")
     expect(panel.locator(".profile-help")).to_contain_text("it never deletes, archives, moves or marks mail as read")
+    expect(panel.locator(".profile-help")).to_contain_text("it also reads the recipients and subject (never the body) of the emails you send")
     expect(panel.locator(".profile-help")).to_contain_text("leave the label empty in Outreach settings")
     expect(panel.get_by_role("button", name="Reconnect Gmail")).to_be_visible()
     owner_page.unroute_all(behavior="ignoreErrors")
@@ -173,7 +175,7 @@ def test_reconnect_gmail_names_both_permissions_when_the_label_is_on_and_only_on
     text = owner_page.locator(".outreach-gmail-connect .profile-help")
     expect(text).to_contain_text("It asks for permission to read mail;")
     expect(text).to_contain_text("“Read, compose, and send emails”")
-    expect(text).to_contain_text("add your “opportunities” label to threads where a company replied")
+    expect(text).to_contain_text("add your “opportunities” label to your outreach threads, sent emails and replies")
     expect(text).to_contain_text("tick both boxes")
     expect(text).not_to_contain_text("one more permission")
     owner_page.unroute_all(behavior="ignoreErrors")

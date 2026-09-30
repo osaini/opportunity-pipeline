@@ -46,6 +46,18 @@ GMAIL_REPLY_LABELS_COLUMNS = (
     ("outreach_inbox_messages", "label_note"), ("connector_accounts", "account_email"),
 )
 GMAIL_REPLY_LABELS_INDEX = "idx_outreach_inbox_messages_labels"
+# The tables 0044 adds (the Gmail label on the outreach the student sent), plain SQL with no Python step.
+SENT_LABELS_MIGRATION = "0044_outreach_sent_labels.sql"
+SENT_LABELS_INDEX = "idx_outreach_label_threads_label"
+SENT_LABELS_COLUMNS = {
+    "outreach_label_threads": {
+        "user_id": ("text", "NO"), "thread_id": ("text", "NO"), "target_id": ("text", "NO"), "source": ("text", "NO"),
+        "label_name": ("text", "NO"), "labeled_at": ("text", "YES"), "label_note": ("text", "NO"), "found_at": ("text", "NO"),
+    },
+    "outreach_label_searches": {
+        "user_id": ("text", "NO"), "target_id": ("text", "NO"), "searched_at": ("text", "NO"), "found": ("integer", "NO"), "query": ("text", "NO"),
+    },
+}
 RECEIVED = "2026-09-25T15:00:00+00:00"
 
 
@@ -882,6 +894,53 @@ class PostgresAutomationContractTests(unittest.TestCase):
         ensure_product_schema(self.conn)
         self.assertTrue(schema._has_column(self.conn, "connector_accounts", "account_email"))
         self.conn.commit()
+
+    def test_migration_0044_adds_the_sent_label_tables_and_a_rerun_changes_nothing(self):
+        def columns():
+            found = {}
+            for row in self.conn.execute(
+                "SELECT table_name, column_name, data_type, is_nullable FROM information_schema.columns "
+                "WHERE table_schema=current_schema() AND table_name IN ('outreach_label_threads', 'outreach_label_searches')",
+            ).fetchall():
+                found.setdefault(row["table_name"], {})[row["column_name"]] = (row["data_type"], row["is_nullable"])
+            self.conn.commit()
+            return found
+
+        self.assertEqual(columns(), SENT_LABELS_COLUMNS)
+        self.assertIn("(user_id, label_name)", self.index_definition(SENT_LABELS_INDEX) or "")
+        keys = {row["table_name"]: row["columns"] for row in self.conn.execute(
+            "SELECT tc.table_name, string_agg(kcu.column_name, ',' ORDER BY kcu.ordinal_position) AS columns "
+            "FROM information_schema.table_constraints tc JOIN information_schema.key_column_usage kcu "
+            "ON kcu.constraint_name=tc.constraint_name AND kcu.table_schema=tc.table_schema "
+            "WHERE tc.table_schema=current_schema() AND tc.constraint_type='PRIMARY KEY' "
+            "AND tc.table_name IN ('outreach_label_threads', 'outreach_label_searches') GROUP BY tc.table_name",
+        ).fetchall()}
+        self.conn.commit()
+        self.assertEqual(keys, {"outreach_label_threads": "user_id,thread_id", "outreach_label_searches": "user_id,target_id"})
+        # No foreign key: a deleted company's threads keep their label.
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO outreach_label_threads(user_id, thread_id, source, found_at) VALUES(?, 'th-1', 'sent', ?)",
+                (AUTOMATION_USER, utc_now()),
+            )
+            self.conn.execute(
+                "INSERT INTO outreach_label_searches(user_id, target_id, searched_at) VALUES(?, 'gone-target', ?)",
+                (AUTOMATION_USER, utc_now()),
+            )
+        row = self.conn.execute("SELECT target_id, label_name, labeled_at, label_note FROM outreach_label_threads WHERE thread_id='th-1'").fetchone()
+        found = self.conn.execute("SELECT found FROM outreach_label_searches WHERE target_id='gone-target'").fetchone()["found"]
+        self.conn.commit()
+        self.assertEqual((row["target_id"], row["label_name"], row["labeled_at"], row["label_note"]), ("", "", None, ""))
+        self.assertEqual(found, 0)
+        # Applying it again (the marker gone) keeps the tables and their rows.
+        with self.conn:
+            self.conn.execute("DELETE FROM schema_migrations WHERE name=?", (SENT_LABELS_MIGRATION,))
+        ensure_product_schema(self.conn)
+        self.assertEqual(columns(), SENT_LABELS_COLUMNS)
+        kept = self.conn.execute("SELECT COUNT(*) AS n FROM outreach_label_threads").fetchone()["n"]
+        markers = self.conn.execute("SELECT COUNT(*) AS n FROM schema_migrations WHERE name=?", (SENT_LABELS_MIGRATION,)).fetchone()["n"]
+        self.conn.commit()
+        self.assertEqual((kept, markers), (1, 1))
 
     def test_a_read_only_connection_stays_read_only_after_a_commit(self):
         """connect_product(read_only=True): SET TRANSACTION covers only the first transaction, so the connection is read-only too."""
