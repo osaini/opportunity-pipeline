@@ -8,10 +8,10 @@
   their own go-ahead.
 - **Build order (2026-09-29):** M1, M2 and M3 in parallel, then M4, then M4s. Because D5 is C,
   M4s comes before M5b so that Finish in browser can fill the stored answers.
-- **Base:** origin/main `5d95aa9` (Phases 0 to 2 merged and deployed). Line numbers below are
-  from that commit. Revision 2 re-checked the ones the review questioned: sidepanel.js:82
+- **Base:** origin/main `5d95aa9` (Phases 0 to 2 merged and deployed). Line numbers below were
+  taken from that commit and were refreshed against ac2398d on 2026-09-29. Revision 2 re-checked the ones the review questioned: sidepanel.js:82
   (injection list) and :212 (answer save; the call starts at :210) are right; the contact-form
-  factory wiring is api.py:1039-1040; `discover_ats` lives in pipeline.py:2277, not boards.py.
+  factory wiring is api.py:1063-1064; `discover_ats` lives in pipeline.py:2277, not boards.py.
 - **Relation to PLAN.md:** this document expands PLAN.md "Phase 5: Apply agent pilot"
   (PLAN.md:1099-1255). PLAN.md is the student's automation roadmap and is kept outside the
   repository, so its line references are to that file. Where the two differ, this document wins. Appendix A lists every
@@ -410,7 +410,7 @@ Screenshots of filled forms contain personal data. They are stored under
 `data/private/apply/` (section 11).
 
 - Retention options: **30 days / 90 days / 180 days** (the mail-evidence default,
-  application_inbox.py:105), or **until the application closes plus 30 days**.
+  application_inbox.py:109), or **until the application closes plus 30 days**.
 - Masking options. A mask covers the whole field: its label, the control, the value shown next to
   it (react-select shows the chosen value in a separate element) and any error text.
   - **(i)** mask the fields filled from sensitive answers;
@@ -473,7 +473,7 @@ document.
 The watch needs two things:
 
 - "Update applications from job emails" (`application_mail`) in shadow or on. Shadow still reads
-  and records messages (application_inbox.py:1157, 1651).
+  and records messages (application_inbox.py:1165, 1707).
 - The email typed into the application must be the Gmail account the app reads. The app does not
   store that address today; revision 2 records it when Gmail is connected (5.1). A connection
   made before this phase needs one reconnect.
@@ -598,7 +598,7 @@ none of its functions are reachable.
   - sidepanel.js:82;
   - tests/extension/browser/run_browser_tests.mjs:109;
   - the loader in tests/extension/dom_stub.mjs:120-164;
-  - the `node --check` line in ci.yml:29.
+  - the `node --check` line in ci.yml:39.
 
 **New scan outputs.** These are added to each field. None of them changes a value the side panel
 reads today:
@@ -863,7 +863,7 @@ Deterministic code only. Page text never chooses an action (docs/THREAT_MODEL.md
    `/{token}/jobs/{digits}`, or `/embed/job_app?for={token}&token={digits}`. A token parsed from a
    URL wins.
 2. Otherwise it looks for an `opportunity_sources` row whose `source_key` matches the pattern
-   `'greenhouse:%'`, **passed as a query parameter**, as pipeline.py:1928 and schema.py:695 do.
+   `'greenhouse:%'`, **passed as a query parameter**, as pipeline.py:1928 and schema.py:770 do.
    (A literal `%` in the SQL breaks on PostgreSQL, where `PostgresConnection` turns `?` into
    `%s`.) The token is the part after `greenhouse:`, and the job id is `external_id`
    (pipeline.py:827-857). The source key is `kind:(id or token)` (pipeline.py:2127-2139), so a
@@ -967,7 +967,7 @@ three minutes, and a hung page must never hold the app hostage.
   AutomationWorker and InboxWatcher already do.
 
 **Factories are wired only for the real product database**, like the contact-form submitter
-(api.py:1039-1040):
+(api.py:1063-1064):
 
 - `create_app(..., apply_agent_factory=None, apply_schema_client_factory=None)`. Each defaults to
   its real implementation only when `real_product_db`; otherwise it stays None.
@@ -982,7 +982,7 @@ three minutes, and a hung page must never hold the app hostage.
 **Routes that record consent or confirmation need the student's browser session.** A dependency
 `require_browser_session` accepts only a cookie-authenticated session, always checks the
 `X-CSRF-Token` header against the session's token (whether or not an `Origin` header is
-present; the general middleware checks only when it is, api.py:1263-1270), and answers 403 to
+present; the general middleware checks only when it is, api.py:1301-1308), and answers 403 to
 any request carrying an `Authorization` header. The owner's bearer token lives in `.env` and is
 used by local tooling and scheduled agents, which must not be able to act for the student. It
 guards:
@@ -1023,7 +1023,7 @@ gathered correctly.
   is in `opportunity_app/`. Playwright stays optional (requirements-optional.txt), and
   `tests/test_dependency_boundary.py` is unchanged.
 - The extension keeps its no-submit guarantee and `final_submit_available: false`
-  (content.js:241-242, extension_apply.py:518, api.py:3835).
+  (content.js:241-242, extension_apply.py:518, api.py:3984).
 - `extension_apply.apply_context` keeps excluding sensitive answers. A new test asserts it never
   returns an `apply_sensitive_answers` entry (12.7).
 - Loopback only. The server binds 127.0.0.1 as before. The agent's browser can reach only public
@@ -1047,7 +1047,7 @@ The migration:
 
 - creates four tables and their indexes (`CREATE TABLE IF NOT EXISTS`);
 - adds three columns to existing tables, through a guarded Python step
-  `schema._apply_apply_agent` registered in `_MIGRATION_STEPS` (schema.py:315-321), each column
+  `schema._apply_apply_agent` registered in `_MIGRATION_STEPS` (schema.py:387-396), each column
   added only if missing, as 0038 does, so a crash before the migration is marked cannot make the
   next start fail on a duplicate column:
   - `connector_accounts.account_email TEXT NOT NULL DEFAULT ''`: the Gmail address, recorded from
@@ -1056,7 +1056,7 @@ The migration:
     `PIPELINE_OUTREACH_ACCOUNT` and a live `/profile` call (outreach_gmail.py:612-617), which a
     settings render cannot make;
   - `application_mail_messages.sender_verified INTEGER NOT NULL DEFAULT 0`: 1 when
-    `mail_trust.authenticate` (mail_trust.py:225) vouched for the sender. The Phase 1 reader sets
+    `mail_trust.authenticate` (mail_trust.py:239) vouched for the sender. The Phase 1 reader sets
     it when it records the row. The watch trusts only verified rows (6.16);
   - `generated_document_artifacts.content_sha256 TEXT NOT NULL DEFAULT ''`: the SHA-256 of the
     approved text the PDF was rendered from, so a stale PDF is never attached (6.9).
@@ -1171,7 +1171,7 @@ afterwards. They are kept separate, as PLAN.md:1213-1215 requires.
    released this way (rule 6).
 3. **Hand-over** happens just before the click (submit), or inside the route handler that sees
    the student's POST (handoff). It is one transaction:
-   - the lock (rule 0), then `pause_guard` (automation.py:446-461);
+   - the lock (rule 0), then `pause_guard` (automation.py:481-496);
    - it returns False when:
      - `cancel_requested=1`;
      - `unattended`, and automation is paused;
@@ -1408,11 +1408,11 @@ count toward the daily rehearsal limit (9.1).
 
 ### 5.6 Settings, features, and the code that reads claims
 
-**Features** go in `automation.FEATURES` (automation.py:150-201):
+**Features** go in `automation.FEATURES` (automation.py:150-213):
 
 - `Feature("apply_agent", "Apply for me", "Fill a Greenhouse application from your confirmed facts and saved answers, show you the result, and send it only when you press Submit", "applications", "external")`
   - Its mode is `OFF_ON`, and there is no shadow, because each submission needs the student.
-  - It gets a `REQUIREMENTS` entry (automation.py:226-230), `apply_runs.setup_requirement`. That
+  - It gets a `REQUIREMENTS` entry (automation.py:260-265), `apply_runs.setup_requirement`. That
     returns the first of these sentences that applies:
     - the agent factory's `available()` probe says Playwright or Chromium is missing ("Install
       Playwright and Chromium: python -m playwright install chromium");
@@ -1432,7 +1432,7 @@ count toward the daily rehearsal limit (9.1).
       instead of gating the switch, and Finish in browser works without them (its card then says
       the app isn't checking for a confirmation email).
   - These are all database or environment reads; none makes a network call, because
-    requirements run on every settings render (automation.py:571-582).
+    requirements run on every settings render (automation.py:611-622).
 - `auto_apply`, for unattended mode, is **not registered until M8** (D2).
 
 **Per-student limits** default in code, can be overridden in the student's profile, and are
@@ -1458,10 +1458,10 @@ The student's D3 and D4 answers become these defaults.
 | `apply_ats_disabled:<ats>` | set by the 8.8 threshold; cleared only by the student |
 
 **Screenshot retention:** `PIPELINE_APPLY_EVIDENCE_DAYS`, default 90 (D8), following
-`PIPELINE_MAIL_EVIDENCE_DAYS` (application_inbox.py:2124-2129).
+`PIPELINE_MAIL_EVIDENCE_DAYS` (application_inbox.py:2181-2186).
 
 **The worker step.** `AutomationWorker.run_once` today works only for students with an outreach or
-internal switch on (outreach_automation.py:296-359, `_users_with`). It gains an apply step that
+internal switch on (outreach_automation.py:386-458, `_users_with`). It gains an apply step that
 does not depend on switches:
 
 - for every student returned by `apply_runs.students_to_watch(conn)` (a query: a claim in
@@ -1474,35 +1474,35 @@ does not depend on switches:
 
 **Existing readers that must learn about the new claims:**
 
-- `automation.in_flight` (automation.py:495-537): add each `clicking` claim that is held (5.2
+- `automation.in_flight` (automation.py:530-572): add each `clicking` claim that is held (5.2
   rule 7: running here, or heartbeat under 2 minutes old), with `action: "application"`,
   `source: "apply_claim"`, and the company. Not by claim age: a handoff claim can legitimately be
   20 minutes old at hand-over.
-- `automation.unconfirmed` (automation.py:540-568): add `unconfirmed` claims, `clicking` claims
+- `automation.unconfirmed` (automation.py:575-608): add `unconfirmed` claims, `clicking` claims
   that are not held, and `after_click=1` claims in `needs_you` or `failed`.
-- `automation.paused_text` (automation.py:1992-2005): generalize its grammar from exactly two
+- `automation.paused_text` (automation.py:2158-2171): generalize its grammar from exactly two
   categories to any number ("1 email was already handed to Gmail, 1 contact form was already
   being sent, and 1 application was already being submitted, and none of them can be stopped").
-- `app.js`: `unconfirmedSentence` (app.js:6843) and the in-flight and Health rendering (around
-  app.js:6987) learn `action: "application"`.
+- `app.js`: `unconfirmedSentence` (app.js:7417) and the in-flight and Health rendering (around
+  app.js:7561) learn `action: "application"`.
 - `urgent.py`: add one kind for claims that need the student (`unconfirmed`, `needs_you`) and one
-  for `no_email_24h`. Each kind must be added to **both** `DATE_SOURCE_LABELS` (urgent.py:47) and
-  `KIND_PRIORITY` (urgent.py:65), or the aggregator raises KeyError (PLAN.md:74-75).
+  for `no_email_24h`. Each kind must be added to **both** `DATE_SOURCE_LABELS` (urgent.py:48) and
+  `KIND_PRIORITY` (urgent.py:68), or the aggregator raises KeyError (PLAN.md:74-75).
 
 ### 5.7 Export and deletion
 
 - **Account export** (operations.py):
   - include `apply_runs`, value-free. `export_account` redacts only columns named `storage_path`
-    or ending in `_path` (operations.py:231-234), so `screenshots_json` is special-cased: every
+    or ending in `_path` (operations.py:235-238), so `screenshots_json` is special-cased: every
     `path` inside it becomes `[private-file-reference-redacted]`;
   - include `application_submit_claims`, `apply_sensitive_answers` and `apply_ats_labels`, which
     are the student's own data;
   - never include the HMAC key (5.3).
-- **Account deletion.** `operations.delete_account` (operations.py:241-271) takes a list of
-  storage roots and has three callers: api.py:3058, tests/test_automation.py:1265 and
-  tests/test_urgent.py:397. It gains an optional keyword argument `apply_root: Path | None =
+- **Account deletion.** `operations.delete_account` (operations.py:245-275) takes a list of
+  storage roots and has three callers: api.py:3207, tests/test_automation.py:1267 and
+  tests/test_urgent.py:492. It gains an optional keyword argument `apply_root: Path | None =
   None`. When given, it removes `data/private/apply/<user folder>/` in full (section 11) before
-  it deletes the user row, which cascades the new tables. api.py:3058 passes it; the two tests are
+  it deletes the user row, which cascades the new tables. api.py:3207 passes it; the two tests are
   unchanged, and a new test passes it.
 
 ---
@@ -1525,7 +1525,7 @@ panel never waits on Greenhouse.
 3. **The application, if any.** Look up `applications` by `(opportunity_id, user_id)`, read-only,
    the way `import_applications` does (actions.py:729-736). An application row may already exist
    from the posting's Apply link (`apply_opened`, actions.py:131), a capture (captures.py:337) or an
-   import (schema.py:606); any existing row is used. None is created here (6.1 creates one for
+   import (schema.py:681); any existing row is used. None is created here (6.1 creates one for
    submit and handoff only).
 4. **Stage and duplicate checks.** "Ask" means a tick the student must give on the start of a
    submit or Finish in browser run (10.3); lookups and rehearsals are never stopped by an ask.
@@ -1775,7 +1775,7 @@ employer receives the name the student sees.
 - Before attaching, `document_artifacts.ensure_document_artifact` re-renders when the stored
   artifact's `content_sha256` (5.1) differs from the SHA-256 of the approved text. Today it returns
   any existing file (document_artifacts.py:105-108), and the API deletes the old PDF only after
-  an edit has committed (api.py:3260-3261), so a failed delete could leave a stale PDF.
+  an edit has committed (api.py:3409-3410), so a failed delete could leave a stale PDF.
 - The document id, version and content SHA-256 are in the plan hash, and the preview shows the
   letter's text.
 - Attached with a payload, as above, using the artifact's file name.
@@ -1964,22 +1964,22 @@ suite, without a browser (12.3).
      after={"stage": "applied", "only_from": "applying", "applied_at": submitted_at},
      evidence={...claim, run, screenshot hash...}, summary="Applied to {title} at {company}
      (Greenhouse showed its confirmation page)", basis="confirmation_page", confidence=None,
-     idempotency_key=f"apply:{token}", auto=True)` (automation.py:1321-1415).
-     `ApplicationStage.effective` honours `only_from` (automation.py:699-708).
+     idempotency_key=f"apply:{token}", auto=True)` (automation.py:1452-1585).
+     `ApplicationStage.effective` honours `only_from` (automation.py:740-749).
      - `perform` returns None while paused. The submission has already happened, so the claim
        keeps `stage_recorded=0`, and `recover_stale` retries with the same idempotency key after
        the student resumes. This is the Phase 1 `awaiting_resume` pattern
-       (application_inbox.py:107-110).
+       (application_inbox.py:111-114).
      - The card says "Submitted. Applied will be recorded when you resume automation".
 4. Write a notice through `automation.notice`, with no field values and no links (as in
-   application_inbox.py:104). For example: "Greenhouse showed its confirmation page for your
+   application_inbox.py:108). For example: "Greenhouse showed its confirmation page for your
    application to {title} at {company}", or "{company}: your application needs you".
 5. Close the browser, unless a wait is running.
 
 ### 6.16 The 24-hour confirmation watch
 
 `apply_runs.watch(conn, user_id, now)` runs on every AutomationWorker pass, every 60 s
-(outreach_automation.py:246+), for every student `students_to_watch` returns (5.6). It is a
+(outreach_automation.py:333+), for every student `students_to_watch` returns (5.6). It is a
 database query only.
 
 **Which claims it looks at:**
@@ -1997,7 +1997,7 @@ database query only.
 - `kind = 'application_confirmation'`;
 - `state IN ('done', 'awaiting_resume')`;
 - `matched_by IN ('job_id', 'company_title')`: not `company_single`, which Phase 1 accepts for a
-  confirmation (application_inbox.py:1030) but which means only "the one open application at this
+  confirmation (application_inbox.py:1036) but which means only "the one open application at this
   company";
 - `sender_verified = 1` (5.1), PLAN.md decision 11's "authenticated sender plus a strong match";
 - `received_at >= handed_over_at - 5 minutes`;
@@ -2440,7 +2440,7 @@ pause came after the confirm. It shows a submit that was already handed over as 
   one. M8 needs its own AGENTS.md rewrite, decided by the student in that PR (D2).
 - **Switch.** `Feature("auto_apply", ..., "applications", "external", OFF_SHADOW_ON)`.
   `REQUIREMENTS`: `apply_agent` on; the profile's `automation.auto_apply_at` set, with no default,
-  so the switch cannot turn on without it (the pattern of `auto_save_at`, SETUP.md:418);
+  so the switch cannot turn on without it (the pattern of `auto_save_at`, SETUP.md:466);
   `application_mail` on or shadow with the Gmail address known; the gate met with
   `rehearsals_before_submit + 5`; the ATS not disabled by the 8.8 threshold; and, if D5 is B to E,
   each sensitive entry consented again with `consent_scope='unattended'` (entries without it are
@@ -2457,7 +2457,7 @@ pause came after the confirm. It shows a submit that was already handed over as 
 - **Shadow.** The worker runs a full rehearsal (browser, GET only) and records a ledger row with
   status `shadow` through `perform` (subject: the opportunity; `after`: the stage change it would
   make; evidence: the run id and plan hash). `can_turn_on` then applies unchanged: 48 hours, at
-  least 5 shadow rows, all reviewed, none wrong (automation.py:332-371).
+  least 5 shadow rows, all reviewed, none wrong (automation.py:367-406).
 - **On.** The worker submits (6.13) with the pause honored at hand-over, and records the stage
   through `perform` (6.15, `stage_policy='ledger'`).
   - Undo reverts only the tracker. The UI must say so: "Undo changes your tracker only. The
@@ -2477,15 +2477,15 @@ All UI is in `opportunity_app/static/app.js` and `styles.css`. It follows the ex
 - an `element(...)` builder;
 - `role="status"` live regions;
 - two-click confirms, as outreach Send does;
-- `announceWithUndo` (app.js:1857), for undoable ledger actions only.
+- `announceWithUndo` (app.js:1858), for undoable ledger actions only.
 
 The wording is plain and never hardcodes anything about one student.
 
 ### 10.1 Where it appears
 
 - **Opportunity detail:** a new `applyForMeSection(item)` inserted in `renderDetail`
-  (app.js:9779) right after the résumé section (app.js:9866, `resumePickSection`, app.js:9582).
-- **Application card:** status badges in `createApplicationCard` (app.js:1950).
+  (app.js:10354) right after the résumé section (app.js:10441, `resumePickSection`, app.js:10157).
+- **Application card:** status badges in `createApplicationCard` (app.js:1951).
 - **Automation panel:** the `apply_agent` switch with its requirement sentence, rendered like the
   other features.
 - **Apply agent settings** (reached from the Automation panel):
@@ -2624,13 +2624,13 @@ the timeline. Each timeline entry says who acted: "you confirmed", "you submitte
 
   It runs **on its own** from the AutomationWorker once per local day (5.6), with its health
   recorded, because `operations.run_retention` runs only when a retention job is enqueued from
-  the admin route (api.py:4451, :4474). `run_retention` calls it too.
+  the admin route (api.py:4600, :4623). `run_retention` calls it too.
 - **Deletion.** 5.7. Account deletion removes the user folder. Row cascades remove the runs,
   claims, sensitive answers and labels.
 - **Value-free records.** Values are not stored in any of these places:
   - runs, claims and events (plans keep an HMAC per value, 5.3, not a plain hash);
   - logs;
-  - notices (as application_inbox.py:104);
+  - notices (as application_inbox.py:108);
   - `refused_json` and `requests_json`, which hold method, host, path and status only, never a
     query string or body.
 
@@ -3074,7 +3074,7 @@ except one the student hook caused.
 - **R11. An abandoned Finish in browser leaves an `applying` row**, just as clicking Apply does
   today. Opening the section and rehearsing no longer create one (6.0). Phase 1 can move any
   `applying` row to applied on a confirmation matched at `company_single`
-  (application_inbox.py:1030); that behaviour predates this phase and is not changed here.
+  (application_inbox.py:1036); that behaviour predates this phase and is not changed here.
   **Open:** whether to remove the row when the student stops a first-ever Finish in browser for
   that role before hand-over.
 - **R12. The email must be the Gmail account the app reads** (D12). If the student applies with a
@@ -3231,7 +3231,7 @@ process id (memory note restart-web-dashboard).
   - `opportunity_app/operations.py`: `run_retention`, `delete_account(apply_root=...)`, export;
   - `opportunity_app/urgent.py`;
   - `opportunity_app/api.py`: routes, `require_browser_session`, the factory wiring next to
-    api.py:1039-1040, and the deletion caller at :3058;
+    api.py:1063-1064, and the deletion caller at :3207;
   - `opportunity_app/outreach_automation.py`: the apply worker step;
   - `opportunity_app/static/app.js`, `styles.css`.
 - **Scripts:** `scripts/serve_for_testing.py` (the fake apply flag).
