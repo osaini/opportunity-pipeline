@@ -5,6 +5,14 @@ import sqlite3
 from pathlib import Path
 from unittest import mock
 
+try:
+    import realdata_guard
+except ImportError:  # imported as tests.helpers_platform, with tests/ not on sys.path
+    from tests import realdata_guard
+# Every test that builds a fixture database imports this module, so a run of any one test file is guarded against opening
+# data/*.db (AGENTS.md hard rule 1). See tests/realdata_guard.py.
+realdata_guard.install()
+
 PROFILE_REGIONS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "profile_regions.json"
 
 from opportunity_app.schema import migrate_legacy_database
