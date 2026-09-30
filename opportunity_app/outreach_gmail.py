@@ -7,7 +7,9 @@ only by pressing Send and then confirming the recipient; nothing goes out
 without both. The OAuth connection is the separate "gmail_drafts" connector, so
 its gmail.compose scope (which covers drafts and sending) is never mixed with
 the read-only monitoring connection. Its read scope, gmail.readonly, is for
-finding bounces (outreach_delivery.py).
+finding bounces (outreach_delivery.py). Its gmail.modify scope is only for
+adding the student's reply label to reply threads (outreach_labels.py); the
+app never uses it to remove a label, trash, archive or mark mail read.
 
 Rate limits. Gmail answering "slow down" (a 429, or a 403 naming a rate limit
 or quota) is not a broken connection, so it never asks the student to
@@ -67,6 +69,7 @@ PROVIDER = "gmail_drafts"
 GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me"
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 READ_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
 DRAFT_EVENT = "gmail_draft_created"
 SENT_EVENT = "gmail_sent"
 # Logged by outreach_delivery.record_bounce. Every send and draft before the
@@ -144,14 +147,25 @@ def gmail_drafts_status(conn: sqlite3.Connection, *, user_id: str, now: datetime
     except (TypeError, ValueError):
         granted = []
     health = automation.gmail_health(conn, user_id, now=now)
+    from .outreach_labels import label_name  # imported here: it imports this module
+
+    connected = bool(configured and row and row["status"] == "connected")
+    account = sender_account()
+    connected_as = str(row["account_email"] or "") if connected and "account_email" in row.keys() else ""
     return {
         "configured": configured,
-        "connected": bool(configured and row and row["status"] == "connected"),
+        "connected": connected,
         "needs_reconnect": bool(row and row["status"] == "error"),
         # A connection made before the app asked to read mail sends fine but
-        # cannot see bounces until it is reconnected.
-        "bounce_check": bool(configured and row and row["status"] == "connected" and READ_SCOPE in granted),
-        "account": sender_account(),
+        # cannot see bounces until it is reconnected. gmail.modify reads mail too.
+        "bounce_check": bool(connected and (READ_SCOPE in granted or MODIFY_SCOPE in granted)),
+        # Likewise a connection made before the reply label cannot label until it is reconnected.
+        "label_check": bool(connected and MODIFY_SCOPE in granted),
+        "label": label_name(conn, user_id),
+        # The address the connection signed into, once known, and whether it is not the outreach address.
+        "connected_as": connected_as,
+        "wrong_account": bool(connected_as and account and connected_as.casefold() != account.casefold()),
+        "account": account,
         "attachment": path.name if path else "",
         "attachment_problem": attachment_problem(path),
         # Only while connected (gmail_health), and only when Reconnect Gmail can work (configured).

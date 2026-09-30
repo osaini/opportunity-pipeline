@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import hashlib
+import json
 import sys
 import tempfile
 import unittest
@@ -13,6 +14,7 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import httpx
 from cryptography.fernet import Fernet
 
 from opportunity_app import connections
@@ -43,6 +45,9 @@ class FakeAsyncClient:
 
     response = None
     captured = None
+    # What users.getProfile answers, or an exception to raise instead; None is a signed-in student@school.example.
+    profile = None
+    profile_calls = []
 
     def __init__(self, *args, **kwargs):
         pass
@@ -57,6 +62,13 @@ class FakeAsyncClient:
         type(self).captured = {"url": url, "data": data}
         return type(self).response
 
+    async def get(self, url, headers=None):
+        type(self).profile_calls.append({"url": url, "headers": headers})
+        answer = type(self).profile
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer if answer is not None else _fake_response(payload={"emailAddress": "student@school.example"})
+
 
 class OAuthLifecycleTests(unittest.TestCase):
     def setUp(self):
@@ -68,9 +80,13 @@ class OAuthLifecycleTests(unittest.TestCase):
             {
                 "GOOGLE_OAUTH_CLIENT_ID": "test-client-id",
                 "GOOGLE_OAUTH_CLIENT_SECRET": "test-client-secret",
+                # A developer's own .env must not decide whether a connection is refused as another account.
+                "PIPELINE_OUTREACH_ACCOUNT": "",
             },
         )
         self.env_patcher.start()
+        FakeAsyncClient.profile = None
+        FakeAsyncClient.profile_calls = []
 
     def tearDown(self):
         self.env_patcher.stop()
@@ -205,6 +221,98 @@ class OAuthLifecycleTests(unittest.TestCase):
             self.assertNotEqual(granted(), "2026-09-01T00:00:00+00:00")
             connections.disconnect_provider(conn, record["id"], user_id=LOCAL_USER_ID)
             self.assertIsNone(granted())
+
+    def gmail_row(self, conn):
+        return conn.execute(
+            "SELECT scopes_json, account_email FROM connector_accounts WHERE user_id=? AND provider='gmail_drafts'", (LOCAL_USER_ID,),
+        ).fetchone()
+
+    def test_a_gmail_connection_stores_the_account_it_signed_into_and_the_scopes_google_granted(self):
+        granted = "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.modify"
+        with closing(connect_product(self.platform_path)) as conn:
+            with mock.patch.dict("os.environ", {"PIPELINE_OUTREACH_ACCOUNT": "Student@School.example"}):
+                self.complete(conn, "gmail_drafts", {"access_token": "a1", "refresh_token": "r1", "scope": granted}, "code-1")
+            row = self.gmail_row(conn)
+            self.assertEqual(row["account_email"], "student@school.example")
+            self.assertEqual(json.loads(row["scopes_json"]), sorted(granted.split()), "what Google granted, not what was asked")
+            call = FakeAsyncClient.profile_calls[0]
+            self.assertEqual(call["url"], connections.GMAIL_PROFILE_URL)
+            self.assertEqual(call["headers"], {"Authorization": "Bearer a1"})
+            # A token response that names no scopes falls back to the scopes asked for.
+            self.complete(conn, "gmail_drafts", {"access_token": "a2"}, "code-2")
+            self.assertEqual(json.loads(self.gmail_row(conn)["scopes_json"]), connections.OAUTH_PROVIDERS["gmail_drafts"]["scopes"])
+
+    def test_gmail_asks_for_the_modify_scope_as_well(self):
+        scopes = connections.OAUTH_PROVIDERS["gmail_drafts"]["scopes"]
+        for name in ("gmail.compose", "gmail.readonly", "gmail.modify"):
+            self.assertIn(f"https://www.googleapis.com/auth/{name}", scopes)
+
+    def test_a_connection_from_another_google_account_is_refused_before_anything_is_saved(self):
+        FakeAsyncClient.profile = _fake_response(payload={"emailAddress": "someone.else@elsewhere.example"})
+        with closing(connect_product(self.platform_path)) as conn:
+            with mock.patch.dict("os.environ", {"PIPELINE_OUTREACH_ACCOUNT": "student@school.example"}):
+                with self.assertRaises(ValueError) as caught:
+                    self.complete(conn, "gmail_drafts", {"access_token": "a1", "refresh_token": "r1"}, "code-1")
+            self.assertEqual(
+                str(caught.exception),
+                "Google signed in as someone.else@elsewhere.example, but this pipeline's mailbox is student@school.example. "
+                "Connect again and choose student@school.example.",
+            )
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM connector_accounts").fetchone()[0], 0)
+            self.assertIsNone(conn.execute("SELECT consumed_at FROM oauth_states").fetchone()["consumed_at"], "the state is not spent")
+
+    def test_a_connection_whose_account_cannot_be_confirmed_is_not_saved(self):
+        unreadable = _fake_response(payload={})
+        unreadable.json = mock.Mock(side_effect=ValueError("not json"))
+        cases = {
+            "403": (_fake_response(status_code=403, payload={"error": {"message": "Insufficient Permission"}}),
+                    "Google did not grant the Gmail permissions; connect again and tick every box on Google's screen"),
+            "500": (_fake_response(status_code=500), "Could not confirm which Gmail account connected; try connecting again"),
+            "no address": (_fake_response(payload={"historyId": "1"}), "Could not confirm which Gmail account connected; try connecting again"),
+            "not json": (unreadable, "Could not confirm which Gmail account connected; try connecting again"),
+            "unreachable": (httpx.ConnectError("no route"), "Could not confirm which Gmail account connected; try connecting again"),
+        }
+        with closing(connect_product(self.platform_path)) as conn:
+            for name, (answer, sentence) in cases.items():
+                with self.subTest(name):
+                    FakeAsyncClient.profile = answer
+                    with self.assertRaises(ValueError) as caught:
+                        self.complete(conn, "gmail_drafts", {"access_token": "a1", "refresh_token": "r1"}, f"code-{name}")
+                    self.assertEqual(str(caught.exception), sentence)
+                    self.assertEqual(conn.execute("SELECT COUNT(*) FROM connector_accounts").fetchone()[0], 0)
+
+    def test_a_403_says_why_when_google_gave_a_reason(self):
+        api_off = "Enable the Gmail API in your Google Cloud project (README, Gmail drafts setup), then connect again"
+        try_again = "Could not confirm which Gmail account connected; try connecting again"
+        tick = "Google did not grant the Gmail permissions; connect again and tick every box on Google's screen"
+        cases = {
+            "api off (errors)": ({"error": {"status": "PERMISSION_DENIED", "errors": [{"reason": "accessNotConfigured"}]}}, api_off),
+            "api off (details)": ({"error": {"status": "PERMISSION_DENIED", "details": [{"reason": "SERVICE_DISABLED"}]}}, api_off),
+            "rate limit": ({"error": {"errors": [{"reason": "userRateLimitExceeded"}]}}, try_again),
+            "quota": ({"error": {"status": "RESOURCE_EXHAUSTED"}}, try_again),
+            "insufficient scope": ({"error": {"status": "PERMISSION_DENIED", "errors": [{"reason": "insufficientPermissions"}]}}, tick),
+            "error that is not an object": ({"error": "forbidden"}, tick),
+            "reasons that are not lists of objects": ({"error": {"errors": ["accessNotConfigured"], "details": None}}, tick),
+        }
+        with closing(connect_product(self.platform_path)) as conn:
+            for name, (payload, sentence) in cases.items():
+                with self.subTest(name):
+                    FakeAsyncClient.profile = _fake_response(status_code=403, payload=payload)
+                    with self.assertRaises(ValueError) as caught:
+                        self.complete(conn, "gmail_drafts", {"access_token": "a1", "refresh_token": "r1"}, f"code-{name}")
+                    self.assertEqual(str(caught.exception), sentence)
+                    self.assertEqual(conn.execute("SELECT COUNT(*) FROM connector_accounts").fetchone()[0], 0)
+
+    def test_only_a_gmail_connection_is_asked_which_account_it_is(self):
+        # Microsoft's answer carries no address either; neither provider may be asked, and neither stores one.
+        ids = {"MICROSOFT_OAUTH_CLIENT_ID": "ms-id", "MICROSOFT_OAUTH_CLIENT_SECRET": "ms-secret"}
+        with closing(connect_product(self.platform_path)) as conn, mock.patch.dict("os.environ", ids):
+            for provider in ("google", "microsoft"):
+                with self.subTest(provider):
+                    self.complete(conn, provider, {"access_token": "a1", "refresh_token": "r1"}, f"code-{provider}")
+                    self.assertEqual(FakeAsyncClient.profile_calls, [])
+                    row = conn.execute("SELECT account_email FROM connector_accounts WHERE provider=?", (provider,)).fetchone()
+                    self.assertEqual(row["account_email"], "")
 
     def test_complete_oauth_rejects_malformed_encryption_key_before_writes(self):
         FakeAsyncClient.response = _fake_response(payload={"access_token": "at-secret"})

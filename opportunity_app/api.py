@@ -296,9 +296,10 @@ from .outreach_drafting import (
 from .outreach_delivery import bounce_from_text, check_deliveries
 from .outreach_inbox import InboxWatcher, PossibleReplyNotFound, PossibleReplySettled, capture_replies, decide_possible_reply
 from .outreach_forms import default_submitter_factory as default_form_submitter_factory, set_contact_form, submit_contact_form
+from .apply_runs import APPLY_ROOT, recover_stale as recover_stale_applications
 from .outreach_automation import AutomationWorker, settings as automation_settings, update_settings as update_automation_settings
 from .outreach_schedule import cancel_send, schedule_send
-from . import outreach_thank_you
+from . import outreach_labels, outreach_thank_you
 from .outreach_gmail import (
     GmailAuthError,
     SendConflictError,
@@ -597,6 +598,11 @@ class OutreachSettingsRequest(BaseModel):
     company_research_agent: str | None = Field(default=None, max_length=40)
     linkedin_account: str | None = Field(default=None, max_length=300)
     attachment_resume_id: str | None = Field(default=None, max_length=100)
+
+
+class GmailLabelRequest(BaseModel):
+    # None goes back to the default label name; an empty string turns the label off.
+    value: str | None = Field(default=None, max_length=100)
 
 
 class BoardLookupRequest(BaseModel):
@@ -958,6 +964,7 @@ def create_app(
     resume_storage: Path = DEFAULT_STORAGE,
     capture_storage: Path = DEFAULT_CAPTURE_STORAGE,
     interview_storage: Path = DEFAULT_MOCK_AUDIO_STORAGE,
+    apply_storage: Path | None = None,
     employer_token: str | None = None,
     admin_token: str | None = None,
     database_url: str | None = None,
@@ -1058,6 +1065,12 @@ def create_app(
     # reach past the company's plain HTML, so like the refresh they are wired
     # up by default only for the real product database.
     real_product_db = not is_postgres_target(database_target) and database_target == DEFAULT_PLATFORM_DB.resolve()
+    # Apply for me's screenshots (data/private/apply). Only the real app has any, so a test or sandbox that does not
+    # name a folder never retention-purges or deletes from the real one.
+    if apply_storage is None and real_product_db:
+        apply_storage = APPLY_ROOT
+    if apply_storage is not None:
+        apply_storage = apply_storage.expanduser().resolve()
     resolved_smtp_verifier_factory = outreach_smtp_verifier_factory or (default_smtp_verifier if real_product_db else (lambda: None))
     resolved_renderer_factory = outreach_renderer_factory or (default_renderer if real_product_db else (lambda: None))
     # Contact forms are sent from a real browser, so only the real app opens one.
@@ -1133,7 +1146,7 @@ def create_app(
         draft_provider=outreach_draft_provider, contact_delay=outreach_contact_delay,
         gmail_client_factory=resolved_gmail_client_factory, form_submitter_factory=resolved_form_submitter_factory,
         # A reply auto-close's fresh look finds is handled as the InboxWatcher handles one.
-        decisions_for=inbox_decisions_for, on_reply=prep_after_reply,
+        decisions_for=inbox_decisions_for, on_reply=prep_after_reply, apply_root=apply_storage,
     )
     if start_automation_worker is None:
         start_automation_worker = real_product_db
@@ -1148,6 +1161,11 @@ def create_app(
         else:
             with closing(connect_product(database_target)) as migration_connection:
                 ensure_product_schema(migration_connection)
+                # What a server that stopped mid-application left behind (5.2 rule 7); the worker keeps at it.
+                try:
+                    recover_stale_applications(migration_connection)
+                except Exception:  # noqa: BLE001 - starting never waits on it
+                    LOGGER.exception("Applications a stopped server left were not recovered")
             if start_call_prep_worker:
                 call_prep_worker.start()
             if start_inbox_watcher:
@@ -2589,6 +2607,37 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
         return {"available": True, **view}
 
+    def gmail_label_view(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
+        value = outreach_labels.label_name(conn, user_id)
+        gmail = gmail_drafts_status(conn, user_id=user_id)
+        return {
+            "value": value,
+            "default": outreach_labels.DEFAULT_LABEL,
+            "search": outreach_labels.search_form(value),
+            "mailbox": {"connected": gmail["connected"], "connected_as": gmail["connected_as"], "expected": gmail["account"]},
+            "permission": gmail["label_check"],
+        }
+
+    @app.get("/api/v1/outreach/gmail-label")
+    def get_gmail_label(
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """The Gmail label put on every thread where someone at a company replied, and whether Gmail lets the app add it."""
+        return gmail_label_view(conn, user_id)
+
+    @app.put("/api/v1/outreach/gmail-label")
+    def put_gmail_label(
+        payload: GmailLabelRequest,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        try:
+            outreach_labels.set_label_name(conn, user_id, payload.value)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        return gmail_label_view(conn, user_id)
+
     @app.get("/api/v1/outreach/recontact")
     def outreach_recontact_status(
         conn: sqlite3.Connection = Depends(writable_connection),
@@ -3204,7 +3253,7 @@ def create_app(
     ) -> dict[str, Any]:
         if confirmation != "DELETE":
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Send X-Confirm-Delete: DELETE to confirm permanent account deletion")
-        return delete_account(conn, [resume_storage, capture_storage, interview_storage], user_id=user_id)
+        return delete_account(conn, [resume_storage, capture_storage, interview_storage], user_id=user_id, apply_root=apply_storage)
 
     @app.get("/api/v1/resumes")
     def resumes(
@@ -4624,7 +4673,7 @@ def create_app(
         context: tuple[sqlite3.Connection, str] = Depends(admin_connection),
     ) -> dict[str, int]:
         conn, _actor = context
-        return run_retention(conn)
+        return run_retention(conn, apply_root=apply_storage)
 
     @app.post("/api/v1/admin/organizations/{organization_id}/verify")
     def admin_verify_organization(

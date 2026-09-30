@@ -3281,14 +3281,22 @@
     // A working connection is offered Reconnect Gmail early when Google is
     // about to ask for it again, so reply and bounce checks never stop.
     const expiring = Boolean(gmail.connected && gmail.bounce_check && gmail.expiring_soon);
-    if (gmail.connected && gmail.bounce_check && !expiring) return null;
+    // A connection that signed into another account than the outreach address, or that
+    // lacks the permission to label reply threads, is offered Reconnect Gmail too.
+    const wrongAccount = Boolean(gmail.connected && gmail.wrong_account);
+    const needsLabelPermission = Boolean(gmail.connected && gmail.bounce_check && gmail.label && !gmail.label_check);
+    if (gmail.connected && gmail.bounce_check && !expiring && !wrongAccount && !needsLabelPermission) return null;
     const panel = element("div", "outreach-gmail-connect");
     const what = gmail.attachment ? ` with ${gmail.attachment} attached` : "";
     const reconnect = gmail.needs_reconnect || gmail.connected;
     panel.appendChild(element("p", "profile-help", expiring
       ? gmailExpiryLine(gmail.likely_expires_at)
+      : wrongAccount
+      ? `Gmail is connected as ${gmail.connected_as}, but your outreach address is ${gmail.account}. Reconnect Gmail and choose ${gmail.account}.`
+      : gmail.connected && gmail.bounce_check
+      ? `Reconnect Gmail once so the app can add your “${gmail.label}” label to every thread where someone at a company replied. Google lists this permission as “Read, compose, and send emails”; tick it on Google's screen. The app uses it only to add that one label: it never deletes, archives, moves or marks mail as read. To stop being asked, leave the label empty in Outreach settings.`
       : gmail.connected
-      ? "Reconnect Gmail once so the app can catch bounces and log replies for you. It asks for one more permission, to read mail; the app reads only delivery failure notices, mail from the companies you wrote to (Spam included), mail in the threads of the emails you sent them, and mail that names those companies or your emails' subjects. To find replies in those threads it lists recent mail by id, reading only what is in them."
+      ? `Reconnect Gmail once so the app can catch bounces and log replies for you. It asks for permission to read mail; the app reads only delivery failure notices, mail from the companies you wrote to (Spam included), mail in the threads of the emails you sent them, and mail that names those companies or your emails' subjects. To find replies in those threads it lists recent mail by id, reading only what is in them.${gmail.label ? ` It also asks for the permission Google lists as “Read, compose, and send emails”, used only to add your “${gmail.label}” label to threads where a company replied (it never deletes, archives, moves or marks mail as read); tick both boxes.` : ""}`
       : gmail.needs_reconnect
         ? "Gmail stopped accepting the connection. Reconnect it to keep creating drafts with attachments."
         : `Connect Gmail to send approved emails${what} from here, or open them as drafts in Gmail first. Nothing sends until you press Send and confirm the recipient.`));
@@ -4209,6 +4217,80 @@
     return field;
   }
 
+  // The Gmail label the app adds to every thread where a company replied. Per
+  // student, so it is saved through its own route rather than the .env settings.
+  async function gmailLabelField() {
+    const field = element("div", "settings-field gmail-label-setting");
+    const label = element("label", "", "Gmail label for replies");
+    label.htmlFor = "settings-gmail-label";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.id = "settings-gmail-label";
+    input.maxLength = 100;
+    input.autocomplete = "off";
+    input.disabled = true;
+    const help = element("p", "profile-help",
+      "Every thread where someone at a company replied gets this label in Gmail, with your own emails in it, and replies found before now too. Leave it empty to stop labelling; pausing automation pauses it too. Rename it here rather than in Gmail: the app adds the label under this name and creates it if it is missing. After a rename, threads keep the old label too; delete it in Gmail if you no longer want it.");
+    const mailbox = element("p", "profile-help gmail-label-mailbox");
+    const permission = element("p", "profile-help gmail-label-permission");
+    const status = element("p", "profile-help gmail-label-status");
+    status.id = "settings-gmail-label-status";
+    status.setAttribute("aria-live", "polite");
+    field.append(label, input, help, mailbox, permission, status);
+    function show(setting) {
+      input.value = setting.value || "";
+      input.placeholder = setting.default ? `Empty keeps labelling off; the usual name is ${setting.default}` : "Empty keeps labelling off";
+      input.disabled = false;
+      const box = setting.mailbox || {};
+      const expected = box.expected || "";
+      const known = box.connected_as || "";
+      mailbox.className = "profile-help gmail-label-mailbox";
+      if (!box.connected) {
+        mailbox.textContent = "Pipeline mailbox: not connected";
+      } else if (!known) {
+        mailbox.textContent = "Pipeline mailbox: checking which account Gmail is connected as…";
+      } else if (expected && known.toLowerCase() !== expected.toLowerCase()) {
+        mailbox.className = "form-error gmail-label-mailbox";
+        mailbox.textContent = `Pipeline mailbox: ${known}. Your outreach address is ${expected}; reconnect Gmail and choose ${expected}.`;
+      } else {
+        mailbox.textContent = `Pipeline mailbox: ${known}`;
+      }
+      permission.textContent = box.connected && setting.value && !setting.permission
+        ? "Labelling waits until you reconnect Gmail on the Outreach tab."
+        : "";
+    }
+    try {
+      show(await api("/api/v1/outreach/gmail-label"));
+    } catch (error) {
+      mailbox.textContent = `The Gmail label setting could not be loaded: ${error.message}`;
+      return field;
+    }
+    input.addEventListener("change", async () => {
+      const wanted = input.value;
+      const focused = document.activeElement === input;
+      input.disabled = true;
+      input.removeAttribute("aria-invalid");
+      input.removeAttribute("aria-describedby");
+      status.className = "profile-help gmail-label-status";
+      status.textContent = "Saving…";
+      try {
+        const saved = await api("/api/v1/outreach/gmail-label", { method: "PUT", body: JSON.stringify({ value: wanted }) });
+        show(saved);
+        status.textContent = saved.value ? `Replies will be labelled “${saved.value}”.` : "Labelling is off.";
+      } catch (error) {
+        status.className = "form-error gmail-label-status";
+        status.textContent = error.message;
+        input.setAttribute("aria-invalid", "true");
+        input.setAttribute("aria-describedby", status.id);
+      } finally {
+        input.disabled = false;
+        // Saving with Enter leaves the field focused; disabling it drops focus to the page, so put it back.
+        if (focused && document.activeElement === document.body) input.focus();
+      }
+    });
+    return field;
+  }
+
   // Work the app does on its own. Each switch is the student's, stored in the
   // database, and off until they turn it on. Only scheduled sending, the
   // resend after a bounce, and contact forms send anything, and only a draft
@@ -4282,6 +4364,7 @@
     // Per student and stored in the database, so it shows for every account.
     body.appendChild(await automationFields());
     body.appendChild(await jevInboxField());
+    body.appendChild(await gmailLabelField());
     if (state.userId !== "local-user") {
       body.appendChild(element("p", "profile-help", "These settings belong to the owner of this computer's workspace."));
       return panel;
@@ -7381,18 +7464,20 @@
   }
 
   // One thing a pause could not stop, by its action: a 'send' is an email
-  // Gmail already has, and a 'form' a contact form whose button is being
-  // pressed. Nothing else is past stopping (a Gmail draft being saved sends
+  // Gmail already has, a 'form' a contact form whose button is being
+  // pressed, and an 'application' one handed to Greenhouse (Apply for me).
+  // Nothing else is past stopping (a Gmail draft being saved sends
   // nothing), so any other action is left out rather than called an email.
   function inFlightItem(item) {
-    if (item?.action !== "send" && item?.action !== "form") return null;
+    if (item?.action !== "send" && item?.action !== "form" && item?.action !== "application") return null;
     const form = item.action === "form";
-    const how = form ? "submission started" : item.source === "scheduled_send" ? "handed to Gmail" : "sending started";
+    const application = item.action === "application";
+    const how = application ? "handed to Greenhouse" : form ? "submission started" : item.source === "scheduled_send" ? "handed to Gmail" : "sending started";
     const when = automationWhen(item.at);
     const to = item.company ? ` to ${item.company}` : "";
     return {
-      noun: form ? "contact form" : "email",
-      article: form ? "a contact form" : "an email",
+      noun: application ? "application" : form ? "contact form" : "email",
+      article: application ? "an application" : form ? "a contact form" : "an email",
       to,
       detail: when ? `${how} at ${when}` : how,
     };
@@ -7407,8 +7492,13 @@
       return `1 ${only.noun}${only.to} was already on its way (${only.detail}) and can't be stopped.`;
     }
     const emails = described.filter((entry) => entry.noun === "email").length;
-    const forms = described.length - emails;
-    const counted = [emails ? plural(emails, "email", "emails") : "", forms ? plural(forms, "contact form", "contact forms") : ""].filter(Boolean).join(" and ");
+    const applications = described.filter((entry) => entry.noun === "application").length;
+    const forms = described.length - emails - applications;
+    const counted = [
+      emails ? plural(emails, "email", "emails") : "",
+      forms ? plural(forms, "contact form", "contact forms") : "",
+      applications ? plural(applications, "application", "applications") : "",
+    ].filter(Boolean).join(" and ");
     return `${counted} were already on their way and can't be stopped: ${described.map((entry) => `${entry.article}${entry.to} (${entry.detail})`).join("; ")}.`;
   }
 
@@ -7420,6 +7510,9 @@
     const started = when ? ` (started ${when})` : "";
     if (item.action === "draft") {
       return `A Gmail draft${item.company ? ` for ${item.company}` : ""} may have been saved without the app recording it${started}. Check your Gmail Drafts; a draft sends nothing.`;
+    }
+    if (item.action === "application") {
+      return `The application${to} may or may not have reached Greenhouse${started}. Look for Greenhouse's confirmation email or check the company's page, then say whether it went through.`;
     }
     const form = item.action === "form";
     const what = form ? "The contact form message" : item.kind === "follow_up" ? "The follow-up" : item.kind === "thank_you" ? "The thank-you" : "The email";
@@ -9237,6 +9330,8 @@
     outreach_revisit: "Outreach revisit",
     outreach_possible_reply: "Outreach possible reply",
     application_silence: "No reply yet",
+    apply_needs_you: "Apply for me needs you",
+    apply_no_email: "No confirmation email yet",
   };
   const URGENT_GROUPS = [
     ["overdue", "Overdue", (item) => item.days_until < 0],
@@ -9270,7 +9365,7 @@
 
   function urgentHeadline(item) {
     if (item.kind.startsWith("outreach_")) return [item.company, "Cold outreach"];
-    if (item.kind === "task" || item.kind === "application_silence") return [item.title, [item.company, item.subtitle].filter(Boolean).join(" · ")];
+    if (item.kind === "task" || item.kind === "application_silence" || item.kind.startsWith("apply_")) return [item.title, [item.company, item.subtitle].filter(Boolean).join(" · ")];
     return [item.title, item.company];
   }
 
@@ -9286,7 +9381,7 @@
         setView("programs");
       }];
     }
-    if (item.kind === "task" || item.kind === "application_follow_up" || item.kind === "application_silence" || item.kind === "email_deadline") {
+    if (item.kind === "task" || item.kind === "application_follow_up" || item.kind === "application_silence" || item.kind === "email_deadline" || item.kind.startsWith("apply_")) {
       return ["Open application", `Open the application for ${item.company}`, () => {
         state.applicationFocus = item.application_id;
         setView("applications");
@@ -9336,7 +9431,7 @@
     { id: "all", label: "Everything dated", test: () => true },
     ...URGENT_GROUPS.map(([key, label, test]) => ({ id: key, label, group: "When", tone: key === "overdue" ? "is-alert" : key === "today" ? "is-soon" : "", test })),
     { id: "deadlines", label: "Deadlines", group: "Kind", test: (item) => ["posting_deadline", "your_deadline", "program_deadline", "outreach_deadline", "email_deadline"].includes(item.kind) },
-    { id: "follow-ups", label: "Follow-ups", group: "Kind", test: (item) => ["application_follow_up", "application_silence", "outreach_follow_up", "outreach_revisit", "outreach_possible_reply"].includes(item.kind) },
+    { id: "follow-ups", label: "Follow-ups", group: "Kind", test: (item) => ["application_follow_up", "application_silence", "outreach_follow_up", "outreach_revisit", "outreach_possible_reply", "apply_needs_you", "apply_no_email"].includes(item.kind) },
     { id: "tasks", label: "Tasks", group: "Kind", test: (item) => item.kind === "task" },
   ];
 

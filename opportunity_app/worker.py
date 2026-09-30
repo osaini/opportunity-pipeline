@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import DEFAULT_PLATFORM_DB
+from .apply_runs import APPLY_ROOT
+from .database import is_postgres_target
 from .ingestion import make_stage_handler
 from .notifications import connector_health, run_notification_digest, send_due_reminders
 from .outreach import queue_follow_up_reminders
@@ -76,8 +78,10 @@ def run_once(target: Path | str = DEFAULT_PLATFORM_DB):
         queue_follow_up_reminders(conn)
         enqueue_due_schedules(conn)
         stage_handler = make_stage_handler(conn)
+        # Apply for me's screenshots belong to the real product database only, as in create_app.
+        real_db = not is_postgres_target(target) and Path(target).expanduser().resolve() == DEFAULT_PLATFORM_DB.resolve()
         handlers = {
-            "retention": lambda _payload: run_retention(conn),
+            "retention": lambda _payload: run_retention(conn, apply_root=APPLY_ROOT if real_db else None),
             "connector_health": lambda _payload: connector_health(conn),
             "notification_digest": lambda payload: run_notification_digest(conn, payload),
             "reminder_dispatch": lambda _payload: send_due_reminders(conn),

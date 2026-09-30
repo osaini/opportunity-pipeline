@@ -32,7 +32,10 @@ AUTH = {"Authorization": "Bearer gmail-owner"}
 USER = "local-user"
 ACCOUNT = "student@school.example"
 PDF = b"%PDF-1.4 fake resume"
+# The two scopes a connection made before the reply label was built holds: the fixture for "connected, cannot label".
 SCOPES = ["https://www.googleapis.com/auth/gmail.compose", "https://www.googleapis.com/auth/gmail.readonly"]
+MODIFY = "https://www.googleapis.com/auth/gmail.modify"
+LABEL_SCOPES = [*SCOPES, MODIFY]
 
 
 def plain_notice(text, *, subject="Mail delivery failed: returning message to sender", headers=""):
@@ -177,6 +180,41 @@ class FakeGmail:
         # Threads deleted for good (threads.get answers 404), and answers for the next threads.get calls.
         self.gone_threads = set()
         self.thread_answers = []
+        # The reply label's Gmail: threads read in the minimal format, as {thread id: [{"id", "labelIds"}]}.
+        self.label_threads = {}
+        # The mailbox's labels ({"id", "name", "type"}), every labels.create body, and every messages.batchModify body.
+        self.gmail_labels = []
+        self.label_creates = []
+        self.batch_modifies = []
+        # Answers for the next labels.create and batchModify calls, in order: a callable returning a response, else the default.
+        self.create_answers = []
+        self.modify_answers = []
+        # A labels.list answer used instead of the mailbox's labels while it is set.
+        self.labels_list_response = None
+        self.label_gets = 0
+
+    def label_named(self, name, kind="user"):
+        return next((label for label in self.gmail_labels if label["name"] == name and label["type"] == kind), None)
+
+    def add_label(self, name, kind="user"):
+        label = {"id": f"Label_{len(self.gmail_labels) + 1}", "name": name, "type": kind}
+        self.gmail_labels.append(label)
+        return label
+
+    def batch_modify(self, request):
+        body = json.loads(request.content)
+        self.batch_modifies.append(body)
+        if self.modify_answers:
+            return self.modify_answers.pop(0)()
+        known = {label["id"] for label in self.gmail_labels}
+        for label_id in body.get("addLabelIds", []):
+            if label_id not in known:
+                return httpx.Response(400, json={"error": {"code": 400, "message": f"Invalid label: {label_id}"}})
+        for messages in self.label_threads.values():
+            for message in messages:
+                if message["id"] in body["ids"]:
+                    message["labelIds"] = [*message.get("labelIds", []), *body.get("addLabelIds", [])]
+        return httpx.Response(204)
 
     def thread_of(self, message_id):
         for thread_id, items in self.replies.items():
@@ -194,6 +232,12 @@ class FakeGmail:
             return False
         if ("-in:trash" in query and "TRASH" in labels) or ("-in:sent" in query and "SENT" in labels):
             return False
+        # -label:name drops a message that already carries that label (the label's search form: lowercase, dashes for spaces and slashes).
+        for wanted_form in re.findall(r"(?<![\w-])-label:(\S+)", query):
+            ids = {label["id"] for label in self.gmail_labels if re.sub(r"[ /]+", "-", label["name"].lower()) == wanted_form}
+            held = next((item.get("labelIds", []) for items in self.label_threads.values() for item in items if item["id"] == message_id), [])
+            if ids & set(held):
+                return False
         if message_id not in self.raw:
             return True
         message = self.parsed(message_id)
@@ -238,6 +282,20 @@ class FakeGmail:
         if path.endswith("/profile"):
             self.run_hook("profile")
             return httpx.Response(200, json={"emailAddress": self.profile_email})
+        if path.endswith("/labels"):
+            if request.method == "GET":
+                self.label_gets += 1
+                if self.labels_list_response is not None:
+                    return self.labels_list_response()
+                return httpx.Response(200, json={"labels": list(self.gmail_labels)})
+            if request.method == "POST":
+                body = json.loads(request.content)
+                self.label_creates.append(body)
+                if self.create_answers:
+                    return self.create_answers.pop(0)()
+                return httpx.Response(200, json=self.add_label(body["name"]))
+        if request.method == "POST" and path.endswith("/messages/batchModify"):
+            return self.batch_modify(request)
         if request.method == "POST" and path.endswith("/drafts"):
             self.run_hook("create_draft")
             if self.draft_status != 200:
@@ -275,6 +333,10 @@ class FakeGmail:
                 return self.thread_answers.pop(0)()
             if thread_id in self.gone_threads:
                 return httpx.Response(404, json={"error": {"code": 404, "message": "Requested entity was not found."}})
+            if form == "minimal" and thread_id in self.label_threads:
+                return httpx.Response(200, json={"id": thread_id, "historyId": "1", "messages": [
+                    {"threadId": thread_id, **message} for message in self.label_threads[thread_id]
+                ]})
             sent = {"id": thread_id.replace("thread-", "sent-"), "labelIds": ["SENT"], "internalDate": "1000",
                     "payload": {"mimeType": "multipart/mixed", "headers": [{"name": "From", "value": ACCOUNT}]}}
             placed = []
@@ -320,6 +382,9 @@ class FakeGmail:
             return httpx.Response(200, json={"messages": listed(found)})
         if request.method == "GET" and "/messages/" in path:
             message_id = path.rsplit("/", 1)[1]
+            if request.url.params.get("format") == "minimal":
+                home = next((thread for thread, items in self.label_threads.items() if any(item["id"] == message_id for item in items)), None)
+                return httpx.Response(200, json={"id": message_id, "threadId": home}) if home else httpx.Response(404)
             if request.url.params.get("format") == "metadata":
                 return httpx.Response(200, json=self.metadata[message_id]) if message_id in self.metadata else httpx.Response(404)
             if message_id not in self.raw:
@@ -406,6 +471,7 @@ class GmailDraftTests(unittest.TestCase):
         listing = self.client.get("/api/v1/outreach", headers=AUTH).json()
         self.assertEqual(listing["gmail_drafts"], {
             "configured": True, "connected": False, "needs_reconnect": False, "bounce_check": False,
+            "label_check": False, "label": "opportunities", "connected_as": "", "wrong_account": False,
             "account": ACCOUNT, "attachment": "Resume.pdf", "attachment_problem": "",
             "expiring_soon": False, "likely_expires_at": None,
         })
@@ -415,7 +481,19 @@ class GmailDraftTests(unittest.TestCase):
         with closing(connect_product(self.platform_path)) as conn:
             conn.execute("UPDATE connector_accounts SET scopes_json=?", (json.dumps(SCOPES),))
             conn.commit()
-        self.assertTrue(self.client.get("/api/v1/outreach", headers=AUTH).json()["gmail_drafts"]["bounce_check"])
+        status = self.client.get("/api/v1/outreach", headers=AUTH).json()["gmail_drafts"]
+        self.assertEqual((status["bounce_check"], status["label_check"]), (True, False), "compose and read cannot add a label")
+        with closing(connect_product(self.platform_path)) as conn:
+            conn.execute("UPDATE connector_accounts SET scopes_json=?, account_email=?", (json.dumps([SCOPES[0], MODIFY]), "Student@School.example"))
+            conn.commit()
+        status = self.client.get("/api/v1/outreach", headers=AUTH).json()["gmail_drafts"]
+        self.assertEqual((status["bounce_check"], status["label_check"]), (True, True), "gmail.modify reads mail and labels it")
+        self.assertEqual((status["connected_as"], status["wrong_account"]), ("Student@School.example", False), "case does not matter")
+        with closing(connect_product(self.platform_path)) as conn:
+            conn.execute("UPDATE connector_accounts SET account_email='someone.else@elsewhere.example'")
+            conn.commit()
+        status = self.client.get("/api/v1/outreach", headers=AUTH).json()["gmail_drafts"]
+        self.assertEqual((status["connected_as"], status["wrong_account"]), ("someone.else@elsewhere.example", True))
         with mock.patch.dict("os.environ", {"PIPELINE_CONNECTION_KEY": ""}):
             status = self.client.get("/api/v1/outreach", headers=AUTH).json()["gmail_drafts"]
         self.assertEqual((status["configured"], status["connected"]), (False, False))
@@ -956,14 +1034,34 @@ class GmailDraftTests(unittest.TestCase):
         self.assertEqual(self.send(target).status_code, 200)
         self.assertFalse([r for r in self.gmail.requests if r.url.path.endswith("/drafts/send")])
 
-    def test_oauth_start_requests_compose_and_metadata_for_the_sending_account(self):
+    def test_oauth_start_asks_for_every_scope_the_connection_uses_for_the_sending_account(self):
         response = self.client.get("/api/v1/connections/oauth/gmail_drafts/start", headers=AUTH)
         self.assertEqual(response.status_code, 200, response.text)
         query = parse_qs(urlparse(response.json()["authorization_url"]).query)
-        self.assertEqual(query["scope"], [" ".join(SCOPES)])
+        self.assertEqual(query["scope"], [" ".join(outreach_gmail.OAUTH_PROVIDERS["gmail_drafts"]["scopes"])])
+        self.assertEqual(set(query["scope"][0].split()), set(LABEL_SCOPES))
         self.assertEqual(query["login_hint"], [ACCOUNT])
         self.assertTrue(query["redirect_uri"][0].endswith("/connections/oauth/gmail_drafts/callback"))
         self.assertEqual(self.client.get("/connections/oauth/gmail_drafts/callback").status_code, 200)
+
+    def test_a_connection_from_another_google_account_is_refused_with_the_reason_and_nothing_is_saved(self):
+        """Through the route the page calls: Google's token answer is fine, its profile names another address."""
+        started = self.client.get("/api/v1/connections/oauth/gmail_drafts/start", headers=AUTH).json()["authorization_url"]
+        state = parse_qs(urlparse(started).query)["state"][0]
+
+        def google(request):
+            if request.url.path.endswith("/profile"):
+                return httpx.Response(200, json={"emailAddress": "someone.else@elsewhere.example"})
+            return httpx.Response(200, json={"access_token": "a1", "refresh_token": "r1"})
+
+        real = httpx.AsyncClient
+        with mock.patch("opportunity_app.connections.httpx.AsyncClient", lambda *a, **k: real(transport=httpx.MockTransport(google))):
+            response = self.client.post("/api/v1/connections/oauth/gmail_drafts/complete", headers=AUTH, json={"state": state, "code": "code-1"})
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(response.json()["detail"], f"Google signed in as someone.else@elsewhere.example, but this pipeline's mailbox is {ACCOUNT}. "
+                                                    f"Connect again and choose {ACCOUNT}.")
+        with closing(connect_product(self.platform_path)) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM connector_accounts WHERE provider='gmail_drafts'").fetchone()[0], 0)
 
 
     # --- Rate limits ------------------------------------------------------------

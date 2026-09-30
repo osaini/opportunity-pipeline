@@ -1,0 +1,25 @@
+-- A Gmail label on every reply thread (opportunity_app/outreach_labels.py), and
+-- which Gmail account the connection signed into.
+--
+-- The columns are added by a Python step (schema._apply_gmail_reply_labels),
+-- guarded, so a crash before the migration is marked cannot make the next start
+-- fail on a duplicate column:
+--
+-- outreach_inbox_messages.label_name  the label name this row was last settled
+--                   under; '' = not yet. A row whose label_name differs from the
+--                   student's current label is labelled again under the new name.
+-- outreach_inbox_messages.labeled_at  set = the app added that label to the
+--                   reply's message and to the thread's other messages at that
+--                   time. label_name set with labeled_at NULL = settled without a
+--                   label: the message or thread is gone, or the app could not
+--                   label that one thread.
+-- outreach_inbox_messages.label_note  why a row was settled without a label:
+--                   'gone' = Gmail no longer has the message or thread (no search
+--                   can find it), 'failed' = Gmail still has it but the app could
+--                   not label it (Gmail refused, or the thread's listing left the
+--                   message out). '' when labelled or not yet settled.
+-- connector_accounts.account_email  the address the Gmail connection signed into
+--                   ('' = not known yet), so a connection made with the wrong
+--                   Google account is noticed rather than read as the mailbox.
+CREATE INDEX IF NOT EXISTS idx_outreach_inbox_messages_labels
+    ON outreach_inbox_messages(user_id, kind, label_name);

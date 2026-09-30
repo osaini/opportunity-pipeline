@@ -498,7 +498,9 @@ python3 pipeline.py import-emails [path]   # defaults to data/linkedin_emails.js
 ```
 
 This does not read your inbox itself — `pipeline.py` has no standing Gmail
-credentials. Instead, a Claude Code session (with Gmail access) extracts
+credentials. The alerts may sit in a different Gmail account from the pipeline
+mailbox (the one the app connected to), so confirm with the person which account
+holds them before searching. Instead, a Claude Code session (with Gmail access) extracts
 matching alert emails into a JSON file matching this contract, then runs the
 import:
 
@@ -1242,8 +1244,10 @@ holds it until then, and anything else stops it with the reviewer's reasons on
 the card. If the reviewer cannot run, the follow-up waits rather than going
 unchecked.
 
-The app requests two scopes. `gmail.compose` covers drafts and sending.
-`gmail.readonly` covers bounces and replies. With it the app reads the headers
+The app requests three scopes. `gmail.compose` covers drafts and sending.
+`gmail.readonly` covers bounces and replies. `gmail.modify` (Google words it as
+"Read, compose, and send emails from your Gmail account"; tick it on the consent
+screen) is used only to add your reply label. With readonly the app reads the headers
 of its own sent threads, delivery failure notices, mail from the companies you
 wrote to (Spam included), mail in the threads of the emails you sent them, and
 mail naming those companies or your emails' subjects, and nothing else. It
@@ -1252,10 +1256,29 @@ messages. The app calls only `drafts.create`, `drafts.get`, `messages.send`,
 `threads.get` (metadata format), `messages.list` (searches for notices from
 `mailer-daemon` or `postmaster`, for mail from or naming those companies, and
 recent mail by id and thread), `messages.get` (for what those searches find),
-and `profile`. A connection made before the bounce check existed
-still sends; the tab asks you to reconnect once to turn the check on. The
+`labels.list`, `labels.create`, `threads.get` (minimal format), `messages.get`
+(minimal format), `messages.batchModify` (adds the label only), and `profile`.
+A connection made before the bounce check or the label existed
+still sends; the tab asks you to reconnect once to turn them on.
+
+**Reply labels.** Every confirmed reply, the whole thread including messages
+that arrive later, gets one Gmail label, `opportunities` by default. Each
+student can rename it or turn it off (empty) under Outreach → Outreach settings
+→ "Gmail label for replies" (letters, digits, spaces, hyphens, underscores and slashes only). Replies captured before the label existed are
+labelled once in a backfill. Pausing automation pauses labelling. The app never
+removes a label, and never deletes, archives, moves, or marks mail read. The
 connection is refused if Google signs in as an account other than
 `PIPELINE_OUTREACH_ACCOUNT`.
+
+**Reading the pipeline mailbox from an agent.** The pipeline mailbox is the
+account the app connected to; a coding agent's own Gmail tool may be another
+account. `scripts/pipeline_mailbox.py` (`whoami`, `search "label:opportunities"
+[--max N]`, `thread THREAD_ID`) reads the pipeline mailbox, read-only, and can
+read any message in it. `whoami` says whether `label:` alone can be trusted:
+only when it reports 0 replies not labelled yet and 0 that the app could not label
+(Gmail refused them, or left them out of their thread; replies whose mail Gmail no longer has are not counted, since no search finds them). Its output goes into the agent's conversation and to the
+agent's model provider. In Claude Code a hook reminds the agent once per session
+before a Gmail tool runs (needs Node).
 
 One-time setup:
 

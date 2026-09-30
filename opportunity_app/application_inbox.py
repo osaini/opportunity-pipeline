@@ -2,7 +2,7 @@
 
 "Update applications from job emails" (the ``application_mail`` switch) is
 off for every student until they turn it on, and runs in shadow first. It is
-the fourth step of the inbox watcher (outreach_inbox.InboxWatcher), with the
+the fifth step of the inbox watcher (outreach_inbox.InboxWatcher), with the
 same Gmail connection and transport, at most one pass every ten minutes.
 
 Reading. Live mail comes from users.history.list (2 quota units a call,

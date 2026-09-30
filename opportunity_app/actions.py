@@ -125,32 +125,7 @@ def _record_intent_tx(
         )
     application_id: str | None = None
     if action == "apply_opened":
-        application_id = f"app-{opportunity_id}"
-        conn.execute(
-            """
-            INSERT INTO applications(
-                id, opportunity_id, user_id, stage, notes, applied_at,
-                follow_up_at, created_at, updated_at
-            ) VALUES(?, ?, ?, 'applying', '', NULL, NULL, ?, ?)
-            ON CONFLICT(opportunity_id, user_id) DO UPDATE SET
-                updated_at=excluded.updated_at
-            """,
-            (application_id, opportunity_id, user_id, timestamp, timestamp),
-        )
-        row = conn.execute(
-            "SELECT id, stage FROM applications WHERE opportunity_id=? AND user_id=?",
-            (opportunity_id, user_id),
-        ).fetchone()
-        application_id = str(row["id"])
-        conn.execute(
-            """
-            INSERT INTO application_events(
-                application_id, event_type, from_stage, to_stage,
-                detail_json, created_at
-            ) VALUES(?, 'application_opened', ?, ?, '{}', ?)
-            """,
-            (application_id, row["stage"], row["stage"], timestamp),
-        )
+        application_id = ensure_application_tx(conn, opportunity_id, user_id, event_type="application_opened", timestamp=timestamp)
     response = {
         "opportunity_id": opportunity_id,
         "action": action,
@@ -177,6 +152,51 @@ def _record_intent_tx(
             ),
         )
     return response
+
+
+def ensure_application_tx(
+    conn: sqlite3.Connection,
+    opportunity_id: str,
+    user_id: str,
+    *,
+    event_type: str,
+    detail: dict[str, Any] | None = None,
+    timestamp: str | None = None,
+) -> str:
+    """The application for this posting, made at 'applying' if there is none, and an event that says why; returns its id.
+
+    Inside a transaction the caller owns. An application that exists keeps
+    its stage and only has its updated_at moved. Opening the posting's Apply
+    link (``application_opened``) and starting to fill its form for the
+    student (``apply_agent_started``, apply_runs.claim) both come here.
+    """
+    timestamp = timestamp or utc_now()
+    conn.execute(
+        """
+        INSERT INTO applications(
+            id, opportunity_id, user_id, stage, notes, applied_at,
+            follow_up_at, created_at, updated_at
+        ) VALUES(?, ?, ?, 'applying', '', NULL, NULL, ?, ?)
+        ON CONFLICT(opportunity_id, user_id) DO UPDATE SET
+            updated_at=excluded.updated_at
+        """,
+        (f"app-{opportunity_id}", opportunity_id, user_id, timestamp, timestamp),
+    )
+    row = conn.execute(
+        "SELECT id, stage FROM applications WHERE opportunity_id=? AND user_id=?",
+        (opportunity_id, user_id),
+    ).fetchone()
+    application_id = str(row["id"])
+    conn.execute(
+        """
+        INSERT INTO application_events(
+            application_id, event_type, from_stage, to_stage,
+            detail_json, created_at
+        ) VALUES(?, ?, ?, ?, ?, ?)
+        """,
+        (application_id, event_type, row["stage"], row["stage"], json.dumps(detail or {}), timestamp),
+    )
+    return application_id
 
 
 def list_applications(conn: sqlite3.Connection, *, user_id: str) -> list[dict[str, Any]]:
