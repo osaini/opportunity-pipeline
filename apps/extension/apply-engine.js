@@ -7,9 +7,11 @@
   if (globalThis.OpportunityApplyEngine?.version) return;
 
   // Sensitive questions are never mapped, proposed from the library, or offered for saving.
-  // The immigration, clearance, 18-or-older, criminal-history and non-compete terms mirror
-  // the ones the agent's classifier (apply_policy.classify_sensitive) adds.
-  const SENSITIVE = /\b(gender|sex|sexual orientation|race|ethnic(?:ity)?|disab(?:ility|led)?|veteran|age|birth|sponsor(?:ship)?|authori[sz](?:ed|ation)|citizen(?:ship)?|salary|compensation|pronoun|marital|religion|genetic|pregnan(?:cy|t)|eeo|immigration|petition|employment[- ]based|visa[- ](?:sponsor\w*|status|support|type|holder|transfer)|(?:require|need|hold)\w*\s+(?:a\s+)?visa|work visa|student visa|f[- ]?1|j[- ]?1|h[- ]?1[- ]?b|tn|e[- ]?3|stem opt|opt(?![- ](?:in|out))|cpt|practical training|clearance|right to work|eligible to work|legally (?:eligible|authori[sz]ed)|18\+?(?: years)? (?:or older|of age)|over (?:the age of )?18|at least 18|age of 18|felony|criminal|convict\w*|non[- ]?compete)\b/i;
+  // The immigration, clearance, export-control, 18-or-older, criminal-history and non-compete
+  // terms mirror the ones the agent's classifier (apply_policy.classify_sensitive) adds.
+  // opportunity_app/extension_apply.py keeps a copy for the save guard; a test pins the two.
+  // "opt in" and "opt out" are marketing wording, unless a country or year follows ("OPT in 2027").
+  const SENSITIVE = /\b(gender|sex|sexual orientation|race|ethnic(?:ity)?|disab(?:ility|led)?|veteran|age|birth|sponsor(?:ship)?|authori[sz](?:ed|ation)|citizen(?:ship)?|salary|compensation|pronoun|marital|religio\w*|genetic|pregnan(?:cy|t)|eeo|transgender|immigration|petition|employment[- ]based|green card|permanent resident|visa[- ](?:sponsor\w*|status|support|type|holder|transfer)|(?:require|need|hold)\w*\s+(?:a\s+)?visa|work visa|student visa|f[- ]?1|j[- ]?1|h[- ]?1[- ]?b|tn|e[- ]?3|stem opt|opt(?!-(?:in|out)\b)(?! (?:in|out)\b(?! (?:the )?(?:us|u\.s\.|usa|united states|20\d\d)(?!\w)))|cpt|practical training|clearance|right to work|eligible to work|legally (?:eligible|authori[sz]ed)|18\+?(?: years)? (?:or older|of age)|over (?:the age of )?18|at least 18|age of 18|u\.? ?s\.? person|itar|export control|export administration regulations|felony|misdemeanor|arrest\w*|criminal|convict\w*|background check|non[- ]?compete)\b/i;
   const PROHIBITED = /\b(submit|next|continue|captcha|consent|send message|contact recruiter)\b/i;
   const NEVER_GENERIC_TYPES = new Set(["submit", "button", "image", "reset", "hidden", "password"]);
   const DOCUMENT_MEDIA = new Set([
@@ -27,13 +29,17 @@
     return String(value).replace(/[^a-zA-Z0-9_-]/g, (character) => `\\${character}`);
   }
 
-  function labelFor(control) {
+  function labelSources(control, extra = []) {
     const owner = control.ownerDocument || document;
     const explicit = control.id ? owner.querySelector(`label[for="${escapeSelector(control.id)}"]`) : null;
     const wrapping = typeof control.closest === "function" ? control.closest("label") : null;
     return [explicit?.textContent, wrapping?.textContent, control.getAttribute?.("aria-label"),
-      control.getAttribute?.("data-automation-id"), control.name, control.id, control.placeholder]
-      .filter(Boolean).join(" ").replace(/\s+/g, " ").trim().slice(0, 500);
+      control.getAttribute?.("data-automation-id"), control.name, control.id, control.placeholder, ...extra]
+      .filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+  }
+
+  function labelFor(control) {
+    return labelSources(control).slice(0, 500);
   }
 
   function collapse(value) {
@@ -52,21 +58,53 @@
     return collapse(own ? String(label.textContent || "").split(own).join(" ") : label.textContent);
   }
 
+  // Every word the form shows for a control, uncut, for the sensitive and prohibited screens:
+  // the label is cut at 500 characters and never reads aria-labelledby, but matching and
+  // Save can use both.
+  function screenText(control, question) {
+    const owner = control.ownerDocument || document;
+    return labelSources(control, [textOfIds(owner, control.getAttribute?.("aria-labelledby")), question]);
+  }
+
+  function textOfIds(owner, ids) {
+    const list = collapse(ids).split(" ").filter(Boolean);
+    if (!list.length || typeof owner.getElementById !== "function") return "";
+    return collapse(list.map((id) => owner.getElementById(id)?.textContent || "").join(" "));
+  }
+
+  // The question a radio or checkbox option belongs to: the enclosing fieldset's legend, else
+  // a radiogroup or group's aria-labelledby or aria-label. The option's own label ("Yes",
+  // "I agree", "Woman") is an answer, not the question, so it is never used here.
+  function groupQuestion(control) {
+    if (typeof control.closest !== "function") return "";
+    const owner = control.ownerDocument || document;
+    let node = control.closest('fieldset, [role="radiogroup"], [role="group"]');
+    for (let depth = 0; node && depth < 3; depth += 1) {
+      const legend = typeof node.querySelector === "function" ? node.querySelector("legend") : null;
+      const text = collapse(legend?.textContent)
+        || textOfIds(owner, node.getAttribute?.("aria-labelledby"))
+        || collapse(node.getAttribute?.("aria-label"));
+      if (text) return text;
+      node = typeof node.parentElement?.closest === "function"
+        ? node.parentElement.closest('fieldset, [role="radiogroup"], [role="group"]') : null;
+    }
+    return "";
+  }
+
   // The words the form shows for a control, before the required marker is stripped:
   // <label for>, else the wrapping label, else aria-labelledby, else aria-label.
-  // Never name, id or placeholder: those change with every posting.
+  // Never name, id or placeholder: those change with every posting. A radio or checkbox
+  // reports its group's question instead, or nothing when the group has none.
   function rawQuestion(control) {
+    const type = String(control.type || "").toLowerCase();
+    if (type === "radio" || type === "checkbox") return groupQuestion(control);
     const owner = control.ownerDocument || document;
     const explicit = control.id ? owner.querySelector?.(`label[for="${escapeSelector(control.id)}"]`) : null;
     const wrapping = typeof control.closest === "function" ? control.closest("label") : null;
     const candidates = [
       () => (explicit ? ownLabelText(explicit, control) : ""),
       () => (wrapping ? ownLabelText(wrapping, control) : ""),
-      () => {
-        const ids = collapse(control.getAttribute?.("aria-labelledby")).split(" ").filter(Boolean);
-        if (!ids.length || typeof owner.getElementById !== "function") return "";
-        return collapse(ids.map((id) => owner.getElementById(id)?.textContent || "").join(" "));
-      },
+      () => textOfIds(owner, control.getAttribute?.("aria-labelledby")),
       () => collapse(control.getAttribute?.("aria-label")),
     ];
     for (const candidate of candidates) {
@@ -151,14 +189,35 @@
     return normalizedQuestion(text);
   }
 
+  // Questions whose truth depends on the employer or on the question above them. A saved answer
+  // to one never carries to another company, even when the row is tagged reusable.
+  const CONTEXT_OPENER = /^(?:if yes|if so|if no|if other|please specify|please explain|please describe|other|explain)\b/;
+  const CONTEXT_WORDING = /previously (?:worked|been employed|applied)|worked (?:here|for us|for this company|at)|applied (?:here|before|previously)|referr|who referred|know (?:anyone|someone)|how did you hear|where did you (?:hear|find)|current(?:ly)? (?:an )?employee/;
+
+  function contextDependent(key) {
+    return key.split(" ").filter(Boolean).length < 3 || CONTEXT_OPENER.test(key) || CONTEXT_WORDING.test(key);
+  }
+
+  // A clean-question match is exact only for a row saved at this company, or tagged reusable
+  // (never for a context-dependent question). An answer saved at another employer is never
+  // assumed true here.
+  function mayUseAtCompany(entry, cleanKey, company) {
+    if (company && normalizedQuestion(entry.company || "") === company) return true;
+    const reusable = (entry.tags || []).some((tag) => String(tag).toLowerCase() === "reusable");
+    return reusable && !contextDependent(cleanKey);
+  }
+
   // A saved question is compared with the clean question first, then with the whole label,
   // so answers saved before the side panel kept the clean question still match exactly.
-  function matchAnswer(question, label, answers) {
+  function matchAnswer(question, label, answers, company) {
     const cleanKey = questionKey(question);
     const normalizedLabel = normalizedQuestion(label);
-    const exact = (cleanKey && (answers || []).find((entry) => normalizedQuestion(entry.question) === cleanKey))
+    const companyKey = normalizedQuestion(company || "");
+    const cleanMatches = cleanKey ? (answers || []).filter((entry) => normalizedQuestion(entry.question) === cleanKey) : [];
+    const exact = cleanMatches.find((entry) => mayUseAtCompany(entry, cleanKey, companyKey))
       || (answers || []).find((entry) => normalizedQuestion(entry.question) === normalizedLabel);
     if (exact) return { entry: exact, confidence: 0.9, exact: true };
+    if (cleanMatches.length) return { entry: cleanMatches[0], confidence: 0.7, exact: false, otherCompany: true };
     const labelWords = new Set(normalizedLabel.split(" ").filter((word) => word.length >= 4));
     let best = null;
     let bestScore = 0;
@@ -205,10 +264,10 @@
     return markers;
   }
 
-  function widgetKind(control, type, question) {
+  function widgetKind(control, type) {
     if (type === "file") return "file_group";
     if (control.getAttribute?.("role") === "combobox") {
-      return control.id === "candidate-location" || /\blocation\b/i.test(question) ? "location" : "react_select";
+      return control.id === "candidate-location" ? "location" : "react_select";
     }
     return "native";
   }
@@ -222,7 +281,9 @@
       const style = view.getComputedStyle(control);
       const box = control.getBoundingClientRect();
       if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity) === 0) return false;
-      return !(box.width < 2 || box.height < 2 || box.right < 0 || box.bottom < 0);
+      if (box.width < 2 || box.height < 2 || box.right < 0 || box.bottom < 0 || box.left > 10000) return false;
+      if (typeof control.closest === "function" && control.closest("[aria-hidden='true']")) return false;
+      return !(control.tabIndex === -1 && box.width < 5);
     } catch (_) {
       return null;
     }
@@ -236,8 +297,9 @@
       const type = controlType(control);
       const rawText = rawQuestion(control);
       const question = questionText(control);
-      const requiresReview = SENSITIVE.test(label);
-      const prohibited = PROHIBITED.test(label);
+      const screened = screenText(control, question);
+      const requiresReview = SENSITIVE.test(screened);
+      const prohibited = PROHIBITED.test(screened);
       const mapping = ADAPTERS.mappings.find((candidate) => candidate.pattern.test(label));
       let value = "";
       let provenance = "unmapped";
@@ -257,12 +319,14 @@
         confidence = value !== "" ? 0.95 : 0;
         reason = value !== "" ? "Mapped from an explicit label" : "Confirmed profile value is unavailable";
       } else {
-        const match = matchAnswer(question, label, answers);
+        const match = matchAnswer(question, label, answers, options?.company);
         if (match) {
           value = String(match.entry.answer || "");
           provenance = `answer_library:${match.entry.id}`;
           confidence = match.confidence;
-          reason = match.exact ? "Exact saved-question match; verify before filling" : "Similar saved question; direct review required";
+          reason = match.exact ? "Exact saved-question match; verify before filling"
+            : match.otherCompany ? "Saved for another company; direct review required"
+              : "Similar saved question; direct review required";
         }
       }
       if (value === null || typeof value === "object") value = "";
@@ -275,7 +339,7 @@
         required: Boolean(control.required || control.getAttribute?.("aria-required") === "true"),
         reason, proposed_value: String(value),
         question, required_markers: markers, required_any: markers.length > 0,
-        widget: widgetKind(control, type, question), visible_css: visibleCss(control),
+        widget: widgetKind(control, type), visible_css: visibleCss(control),
         name: String(control.name || ""), id: String(control.id || "") };
     });
     return { ats_type: atsType(), page_url: globalThis.location?.href || "", fields };
@@ -319,7 +383,7 @@
     const results = [];
     for (const field of reviewed || []) {
       if (field.approved !== true || field.proposed_value === "") continue;
-      if (field.prohibited || PROHIBITED.test(field.label) || NEVER_GENERIC_TYPES.has(String(field.type).toLowerCase())) {
+      if (field.prohibited || PROHIBITED.test(`${field.label} ${field.question || ""}`) || NEVER_GENERIC_TYPES.has(String(field.type).toLowerCase())) {
         results.push({ key: field.key, filled: false, reason: "Prohibited controls cannot be filled" }); continue;
       }
       const control = resolveControl(field);

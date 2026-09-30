@@ -9,6 +9,9 @@
 //   ariaLabelledby         ids resolved through page.texts
 //   container              {hiddenMirror, spanRequired, others}: the field container
 //   style, rect            computed style and box; without rect, visible_css is unknown
+//   tabIndex, ariaHiddenAncestor   for the visible_css checks beyond the box (rect.left too)
+//   groupQuestion          {legend, labelledby, ariaLabel}: the fieldset or group a radio or
+//                          checkbox sits in, its legend or aria-labelledby text or aria-label
 import vm from "node:vm";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -47,6 +50,46 @@ class StubContainer {
   }
 }
 
+// A <label>: its own words plus the text of the control inside it. cloneNode and
+// querySelectorAll behave as they do in a browser, so the engine's real path (clone the
+// label, remove the controls inside it) is the one the tests take.
+class StubLabel {
+  constructor(parts) {
+    this.parts = parts;
+  }
+
+  get textContent() {
+    return this.parts.filter((part) => !part.removed).map((part) => part.text).join(" ").trim();
+  }
+
+  cloneNode(_deep) {
+    return new StubLabel(this.parts.map((part) => ({ ...part })));
+  }
+
+  querySelectorAll(selector) {
+    if (selector !== "input, select, textarea, option") return [];
+    return this.parts.filter((part) => part.inner).map((part) => ({ remove() { part.removed = true; } }));
+  }
+}
+
+// The fieldset or group a radio or checkbox sits in.
+class StubGroup {
+  constructor(descriptor) {
+    this.descriptor = descriptor;
+    this.parentElement = null;
+  }
+
+  querySelector(selector) {
+    return selector === "legend" && this.descriptor.legend ? { textContent: this.descriptor.legend } : null;
+  }
+
+  getAttribute(name) {
+    if (name === "aria-labelledby") return this.descriptor.labelledby || null;
+    if (name === "aria-label") return this.descriptor.ariaLabel || null;
+    return null;
+  }
+}
+
 class StubElement {
   constructor(descriptor) {
     this.tagName = String(descriptor.tag || "input").toUpperCase();
@@ -71,6 +114,9 @@ class StubElement {
     this.wrappedByLabel = Boolean(descriptor.wrapped);
     this.attrs = {};
     this.style = descriptor.style || null;
+    this.tabIndex = descriptor.tabIndex ?? 0;
+    this.ariaHiddenAncestor = Boolean(descriptor.ariaHiddenAncestor);
+    this.groupQuestion = descriptor.groupQuestion ? new StubGroup(descriptor.groupQuestion) : null;
     if (descriptor.rect) this.getBoundingClientRect = () => ({ right: 1000, bottom: 1000, ...descriptor.rect });
     this.parentElement = descriptor.container ? new StubContainer(this, descriptor.container) : null;
     this.events = [];
@@ -105,8 +151,10 @@ class StubElement {
 
   closest(selector) {
     if (selector === "label" && this.wrappedByLabel) {
-      return { textContent: `${this.labelText} ${this.ownText}`.trim() };
+      return new StubLabel([{ text: this.labelText }, { text: this.ownText, inner: true }]);
     }
+    if (selector === 'fieldset, [role="radiogroup"], [role="group"]') return this.groupQuestion;
+    if (selector === "[aria-hidden='true']") return this.ariaHiddenAncestor ? {} : null;
     if (selector === '[role="group"]' && this.group) {
       return { getAttribute: (name) => (name === "aria-required" && this.group.ariaRequired ? "true" : null) };
     }
@@ -127,7 +175,7 @@ export class StubDocument {
     this.controls = (page.controls || []).map((descriptor) => new StubElement(descriptor));
     this.labelsById = {};
     for (const control of this.controls) {
-      if (control.id && control.labelText && !control.wrappedByLabel) this.labelsById[control.id] = { textContent: control.labelText };
+      if (control.id && control.labelText && !control.wrappedByLabel) this.labelsById[control.id] = new StubLabel([{ text: control.labelText }]);
     }
     this.texts = page.texts || {};
     this.removed = new Set();
@@ -147,7 +195,7 @@ export class StubDocument {
   appendControl(descriptor) {
     const control = new StubElement(descriptor);
     this.controls.push(control);
-    if (control.id && control.labelText) this.labelsById[control.id] = { textContent: control.labelText };
+    if (control.id && control.labelText) this.labelsById[control.id] = new StubLabel([{ text: control.labelText }]);
     return control;
   }
 
@@ -200,9 +248,9 @@ export function loadContentScript(page, { contentScript = true } = {}) {
     context,
     // The shared engine itself, for options the extension's messages never pass (tag).
     engine: context.OpportunityApplyEngine,
-    scan(profile, answers) {
+    scan(profile, answers, company) {
       let response = null;
-      listener({ type: "SCAN_FIELDS", profile, answers }, null, (value) => {
+      listener({ type: "SCAN_FIELDS", profile, answers, company }, null, (value) => {
         response = value;
       });
       return response;

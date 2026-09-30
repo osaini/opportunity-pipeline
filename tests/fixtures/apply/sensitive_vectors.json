@@ -32,6 +32,17 @@
     { "question": "Data processing statement", "section": "data_compliance", "field_name": "gdpr_consent", "expected": "consent", "extension_flags": false },
     { "question": "What salary are you expecting?", "expected": "salary", "extension_flags": true },
     { "question": "I have read and agree to the Privacy Policy", "expected": "acknowledgment", "extension_flags": false },
-    { "question": "I consent to the retention of my application data", "expected": "consent", "extension_flags": false }
+    { "question": "I consent to the retention of my application data", "expected": "consent", "extension_flags": false },
+    { "question": "Do you hold a green card?", "expected": "export_control", "extension_flags": true },
+    { "question": "Are you a lawful permanent resident?", "expected": "export_control", "extension_flags": true },
+    { "question": "Are you a U.S. person as defined by ITAR?", "expected": "export_control", "extension_flags": true },
+    { "question": "Is your employment subject to export control regulations?", "expected": "export_control", "extension_flags": true },
+    { "question": "Have you ever been arrested?", "expected": "uncategorized", "extension_flags": true },
+    { "question": "Have you been charged with a misdemeanor?", "expected": "uncategorized", "extension_flags": true },
+    { "question": "Will you consent to a background check?", "expected": "uncategorized", "extension_flags": true },
+    { "question": "What are your religious beliefs?", "expected": "uncategorized", "extension_flags": true },
+    { "question": "Do you identify as transgender?", "expected": "uncategorized", "extension_flags": true },
+    { "question": "Are you currently on OPT in the US?", "expected": "sponsorship", "extension_flags": true, "note": "The extension excludes 'opt in' and 'opt out' as marketing wording only when no country or year follows. The agent's pattern in spec 7.3 needs the same narrowing before M4." },
+    { "question": "Will you be on OPT in 2027?", "expected": "sponsorship", "extension_flags": true }
   ]
 }

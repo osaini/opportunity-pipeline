@@ -172,14 +172,21 @@ tests.content_script_preserves_no_submit_guarantee = () => {
   const engineSource = readFileSync(path.join(ROOT, "apps", "extension", "apply-engine.js"), "utf8");
   assert.match(engineSource, /"submit"/);
   assert.match(engineSource, /SENSITIVE/);
-  for (const file of ["content.js", "apply-engine.js"]) {
+  for (const file of ["content.js", "apply-engine.js", "adapters.js", "field-engine.js"]) {
     const source = readFileSync(path.join(ROOT, "apps", "extension", file), "utf8");
     assert.doesNotMatch(source, /\.click\(/, `${file} must not click`);
     assert.doesNotMatch(source, /requestSubmit/, `${file} must not requestSubmit`);
     assert.doesNotMatch(source, /\.submit\(/, `${file} must not submit`);
     assert.doesNotMatch(source, /new MouseEvent/, `${file} must not build a MouseEvent`);
     assert.doesNotMatch(source, /new PointerEvent/, `${file} must not build a PointerEvent`);
-    assert.doesNotMatch(source, /dispatchEvent/, `${file} must not dispatch events itself`);
+    if (file === "field-engine.js") {
+      // The one place events are dispatched: a field the reviewed plan named, input and change only.
+      const dispatches = source.match(/dispatchEvent\([^)]*\)?/g) || [];
+      assert.ok(dispatches.length > 0);
+      for (const call of dispatches) assert.match(call, /dispatchEvent\(new Event\("(?:input|change)"/, `${file}: ${call}`);
+    } else {
+      assert.doesNotMatch(source, /dispatchEvent/, `${file} must not dispatch events itself`);
+    }
   }
   // Fill results may never include a submit-type target even if forged.
   const page = loadFixture("lever.json");
@@ -393,6 +400,18 @@ tests.clean_question_excludes_name_id_and_placeholder = () => {
   assert.equal(anon.id, "anon");
 };
 
+tests.wrapping_label_question_drops_the_controls_inside_it = () => {
+  // The stub's labels clone and remove inner controls as a browser does, so this is the real path.
+  const page = pageOf(
+    { tag: "select", id: "team", name: "team_pick", wrapped: true, label: "Preferred team", text: "Backend Frontend Platform" },
+    { tag: "select", id: "other", name: "other_pick", label: "Other team", text: "Ignored" },
+  );
+  const scan = loadContentScript(page).scan(profile);
+  assert.equal(fieldById(scan, "team").question, "Preferred team", "the options' text is not part of the question");
+  assert.match(fieldById(scan, "team").label, /Backend Frontend Platform/, "the label itself still holds it");
+  assert.equal(fieldById(scan, "other").question, "Other team");
+};
+
 tests.question_text_strips_only_trailing_required_markers = () => {
   const cases = [
     ["Email*", "Email"],
@@ -447,6 +466,7 @@ tests.combobox_input_is_custom_select_and_never_filled = () => {
   const ext = loadContentScript(pageOf(
     { tag: "input", type: "text", role: "combobox", id: "school", label: "School" },
     { tag: "input", type: "text", role: "combobox", id: "candidate-location", label: "Location (City)" },
+    { tag: "input", type: "text", role: "combobox", id: "question_3", label: "Which office location do you prefer?" },
     { tag: "input", type: "file", id: "resume", label: "Resume/CV" },
     { tag: "input", type: "text", id: "plain", label: "Plain" },
   ));
@@ -458,6 +478,7 @@ tests.combobox_input_is_custom_select_and_never_filled = () => {
   assert.equal(school.proposed_value, "", "no value is proposed for a widget the extension cannot fill");
   assert.match(school.reason, /manual/);
   assert.equal(fieldById(scan, "candidate-location").widget, "location");
+  assert.equal(fieldById(scan, "question_3").widget, "react_select", "a fixed list that mentions location is not the location typeahead");
   assert.equal(fieldById(scan, "resume").widget, "file_group");
   assert.equal(fieldById(scan, "plain").widget, "native");
   const result = ext.fill([{ ...school, proposed_value: "Somewhere University", approved: true }]);
@@ -475,10 +496,15 @@ tests.visible_css_is_reported_not_used_to_filter = () => {
     { tag: "input", type: "text", id: "v_hidden", label: "Hidden", rect: { width: 200, height: 30 }, style: { visibility: "hidden" } },
     { tag: "input", type: "text", id: "v_clear", label: "Clear", rect: { width: 200, height: 30 }, style: { opacity: "0" } },
     { tag: "input", type: "text", id: "v_off", label: "Off", rect: { width: 200, height: 30, right: -5 } },
+    { tag: "input", type: "text", id: "v_left", label: "Left", rect: { width: 200, height: 30, left: 20000, right: 20200 } },
+    { tag: "input", type: "text", id: "v_aria", label: "Aria", rect: { width: 200, height: 30 }, ariaHiddenAncestor: true },
+    { tag: "input", type: "text", id: "v_trap", label: "Trap", rect: { width: 4, height: 30 }, tabIndex: -1 },
+    { tag: "input", type: "text", id: "v_skip", label: "Skip", rect: { width: 200, height: 30 }, tabIndex: -1 },
   )).scan(profile);
   const seen = Object.fromEntries(scan.fields.map((field) => [field.id, field.visible_css]));
-  assert.deepEqual(seen, { v_unknown: null, v_ok: true, v_tiny: false, v_none: false, v_hidden: false, v_clear: false, v_off: false });
-  assert.equal(scan.fields.length, 7, "a control that fails the CSS test is still listed");
+  assert.deepEqual(seen, { v_unknown: null, v_ok: true, v_tiny: false, v_none: false, v_hidden: false, v_clear: false, v_off: false,
+    v_left: false, v_aria: false, v_trap: false, v_skip: true });
+  assert.equal(scan.fields.length, 11, "a control that fails the CSS test is still listed");
 };
 
 tests.tag_option_marks_controls_only_when_asked = () => {
@@ -501,8 +527,8 @@ tests.saved_clean_question_matches_exactly_and_legacy_label_rows_still_do = () =
   const page = pageOf({ tag: "textarea", id: "question_4000000101", name: "question_4000000101", label: "Why do you want to work here? *" });
   const first = loadContentScript(page).scan(profile);
   const field = first.fields[0];
-  const clean = { id: "clean-1", question: field.question, answer: "Because I like the mission." };
-  const exact = loadContentScript(page).scan(profile, [clean]).fields[0];
+  const clean = { id: "clean-1", question: field.question, answer: "Because I like the mission.", company: "Acme Robotics" };
+  const exact = loadContentScript(page).scan(profile, [clean], "Acme Robotics").fields[0];
   assert.equal(exact.provenance, "answer_library:clean-1");
   assert.equal(exact.confidence, 0.9);
   assert.match(exact.reason, /Exact saved-question match/);
@@ -515,16 +541,131 @@ tests.saved_clean_question_matches_exactly_and_legacy_label_rows_still_do = () =
   assert.equal(old.confidence, 0.9);
 
   // The clean question is compared first, so it wins when both kinds of row exist.
-  const both = loadContentScript(page).scan(profile, [legacy, clean]).fields[0];
+  const both = loadContentScript(page).scan(profile, [legacy, clean], "Acme Robotics").fields[0];
   assert.equal(both.provenance, "answer_library:clean-1");
 
   // The same question on another posting (new name and id) still matches; the legacy row does not.
   const other = pageOf({ tag: "textarea", id: "question_4000000999", name: "question_4000000999", label: "Why do you want to work here? *" });
-  const carried = loadContentScript(other).scan(profile, [legacy, clean]).fields[0];
+  const carried = loadContentScript(other).scan(profile, [legacy, clean], "Acme Robotics").fields[0];
   assert.equal(carried.provenance, "answer_library:clean-1");
   assert.equal(carried.confidence, 0.9);
   const notCarried = loadContentScript(other).scan(profile, [legacy]).fields[0];
   assert.notEqual(notCarried.confidence, 0.9, "a label-keyed row is not an exact match on another posting");
+};
+
+tests.aria_labelledby_and_long_labels_are_screened_like_the_question = () => {
+  const felony = "Have you ever been convicted of a felony?";
+  const consent = "I consent to the processing of my personal data";
+  const filler = "This acknowledgment is long. ".repeat(20);
+  const page = {
+    ...pageOf(
+      { tag: "input", type: "text", id: "question_900", name: "question_900", ariaLabelledby: "q900" },
+      { tag: "input", type: "checkbox", id: "question_901", name: "question_901", ariaLabelledby: "q901" },
+      { tag: "textarea", id: "long", name: "long", label: `${filler}Please confirm that you consent to contact.` },
+      { tag: "input", type: "checkbox", id: "long_box", name: "long_box", label: `${filler}I consent to background screening.` },
+    ),
+    texts: { q900: felony, q901: consent },
+  };
+  const answers = [
+    { id: "lib-1", question: felony, answer: "No", company: "Acme Robotics" },
+    { id: "lib-2", question: consent, answer: "yes", company: "Acme Robotics" },
+    { id: "lib-3", question: `${filler}Please confirm that you consent to contact.`, answer: "ok", company: "Acme Robotics" },
+  ];
+  const ext = loadContentScript(page);
+  const scan = ext.scan(profile, answers, "Acme Robotics");
+  const text = fieldById(scan, "question_900");
+  assert.equal(text.question, felony, "the question comes from aria-labelledby");
+  assert.equal(text.requires_review, true, "a felony question named only by aria-labelledby is sensitive");
+  assert.equal(text.provenance, "unmapped");
+  assert.equal(text.confidence, 0);
+  assert.equal(text.proposed_value, "");
+  const box = fieldById(scan, "question_901");
+  assert.equal(box.prohibited, true, "a consent checkbox named only by aria-labelledby is prohibited");
+  assert.equal(box.provenance, "unmapped");
+  assert.equal(box.proposed_value, "");
+  const long = fieldById(scan, "long");
+  assert.ok(long.label.length <= 500 && !/consent/i.test(long.label), "the label is cut before the word");
+  assert.equal(long.prohibited, true, "consent past character 500 is still screened");
+  assert.equal(long.proposed_value, "");
+  const longBox = fieldById(scan, "long_box");
+  assert.equal(longBox.question, "", "a lone checkbox reports no question");
+  assert.equal(longBox.prohibited, true, "the uncut label is screened even when it is not the question");
+  // Even a reviewed field that lost its prohibited flag cannot be filled when the word is only in its question.
+  const forged = ext.fill([{ ...box, question: consent, prohibited: false, proposed_value: "yes", approved: true }]);
+  assert.equal(forged.results[0].filled, false);
+  assert.match(forged.results[0].reason, /Prohibited/);
+  assert.equal(ext.document.controls.find((item) => item.id === "question_901").checked, false);
+};
+
+tests.radio_and_checkbox_options_are_never_the_question = () => {
+  const groupOf = (legend) => ({ legend });
+  const page = pageOf(
+    { tag: "input", type: "radio", id: "yes_a", name: "question_111", value: "Yes", label: "Yes", groupQuestion: groupOf("Will you require visa sponsorship?") },
+    { tag: "input", type: "radio", id: "yes_b", name: "question_222", label: "Yes", groupQuestion: groupOf("Do you like robots?") },
+    { tag: "input", type: "radio", id: "yes_c", name: "question_333", label: "Yes" },
+    { tag: "input", type: "checkbox", id: "agree_a", name: "question_555[]", label: "I agree", groupQuestion: { labelledby: "g1" } },
+    { tag: "input", type: "checkbox", id: "agree_b", name: "question_999[]", label: "I agree" },
+    { tag: "input", type: "radio", id: "woman", name: "gender", label: "Woman", groupQuestion: { ariaLabel: "Gender" } },
+  );
+  page.texts = { g1: "Please review and acknowledge the policy" };
+  // What the side panel would have saved from each option: field.question || field.label.
+  const first = loadContentScript(page).scan(profile, []);
+  const saved = (id) => fieldById(first, id).question || fieldById(first, id).label;
+  assert.equal(fieldById(first, "yes_a").question, "Will you require visa sponsorship?");
+  assert.equal(fieldById(first, "yes_b").question, "Do you like robots?");
+  assert.equal(fieldById(first, "yes_c").question, "", "no group text, so no question");
+  assert.equal(fieldById(first, "agree_a").question, "Please review and acknowledge the policy");
+  assert.equal(fieldById(first, "agree_b").question, "");
+  assert.notEqual(saved("yes_c"), "Yes", "with no group text the saved key is the full label");
+  assert.notEqual(saved("agree_b"), "I agree");
+  // A row whose question is the bare option text must not exact-match or pre-tick anything.
+  const answers = [
+    { id: "lib-yes", question: "Yes", answer: "Yes", company: "Acme Robotics", tags: ["reusable"] },
+    { id: "lib-agree", question: "I agree", answer: "yes", company: "Acme Robotics", tags: ["reusable"] },
+  ];
+  const scan = loadContentScript(page).scan(profile, answers, "Acme Robotics");
+  for (const id of ["yes_b", "yes_c", "agree_b"]) {
+    const field = fieldById(scan, id);
+    assert.notEqual(field.confidence, 0.9, `${id}: an option's text is not an exact question match`);
+    assert.doesNotMatch(field.reason, /Exact saved-question/, id);
+  }
+  // A Yes/No group that asks about sponsorship is sensitive, so it is never proposed.
+  const sponsor = fieldById(scan, "yes_a");
+  assert.equal(sponsor.requires_review, true);
+  assert.equal(sponsor.provenance, "unmapped");
+  assert.equal(fieldById(scan, "woman").requires_review, true, "the group's own label is screened");
+};
+
+tests.saved_answers_do_not_cross_companies_unless_reusable = () => {
+  const page = pageOf(
+    { tag: "input", type: "text", id: "worked", name: "question_556", label: "Have you previously worked here?" },
+    { tag: "input", type: "text", id: "explain", name: "question_557", label: "If yes, please explain" },
+    { tag: "input", type: "text", id: "learn", name: "question_558", label: "Tell us what you would like to learn" },
+  );
+  const rows = (extra = {}) => [
+    { id: "w", question: "Have you previously worked here?", answer: "Yes", company: "Acme Robotics", ...extra },
+    { id: "e", question: "If yes, please explain", answer: "Interned", company: "Acme Robotics", ...extra },
+    { id: "l", question: "Tell us what you would like to learn", answer: "Controls", company: "Acme Robotics", ...extra },
+  ];
+  const at = (company, extra) => loadContentScript(page).scan(profile, rows(extra), company);
+  // The same company: exact.
+  for (const id of ["worked", "explain", "learn"]) {
+    assert.equal(fieldById(at("Acme Robotics"), id).confidence, 0.9, `${id} at the company it was saved for`);
+  }
+  assert.equal(fieldById(at("acme  robotics"), "worked").confidence, 0.9, "company is compared normalized");
+  // Another company, or none named: shown, but not exact and never pre-tickable.
+  for (const company of ["Orbit Systems", undefined, ""]) {
+    for (const id of ["worked", "explain", "learn"]) {
+      const field = fieldById(at(company), id);
+      assert.equal(field.confidence, 0.7, `${id} for ${JSON.stringify(company)}`);
+      assert.match(field.reason, /another company/);
+    }
+  }
+  // Reusable carries an ordinary question, never a context-dependent one.
+  const reusable = at("Orbit Systems", { tags: ["reusable"] });
+  assert.equal(fieldById(reusable, "learn").confidence, 0.9);
+  assert.equal(fieldById(reusable, "worked").confidence, 0.7, "previously worked here never crosses companies");
+  assert.equal(fieldById(reusable, "explain").confidence, 0.7, "an if-yes opener never crosses companies");
 };
 
 tests.extended_sensitive_flags_the_shared_vectors = () => {
@@ -544,7 +685,9 @@ tests.extended_sensitive_flags_the_shared_vectors = () => {
     if (vector.extension_flags) assert.notEqual(vector.expected, null, `${vector.question}: flagged by the extension, so never null`);
   }
   // The terms step 6 adds, each on its own.
-  for (const term of ["immigration", "clearance", "felony", "criminal", "convicted", "non-compete", "at least 18 years of age", "F-1", "H-1B", "STEM OPT", "visa sponsorship"]) {
+  for (const term of ["immigration", "clearance", "felony", "criminal", "convicted", "non-compete", "at least 18 years of age", "F-1", "H-1B", "STEM OPT", "visa sponsorship",
+    "green card", "permanent resident", "misdemeanor", "arrested", "background check", "ITAR", "U.S. person", "export control",
+    "export administration regulations", "religious", "transgender", "OPT in 2027", "OPT in the US"]) {
     const scan = loadContentScript(pageOf({ tag: "input", type: "text", id: "t", label: `Question about ${term}` })).scan(profile);
     assert.equal(scan.fields[0].requires_review, true, term);
   }

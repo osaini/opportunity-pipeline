@@ -303,7 +303,7 @@
     await activeTab();
     if (!selectedApplicationId || !applyContext) throw new Error("Choose and confirm an application context first.");
     status.textContent = "Scanning visible controls…";
-    scanResult = await send({ type: "SCAN_FIELDS", profile: applyContext.confirmed_profile, answers: applyContext.answers });
+    scanResult = await send({ type: "SCAN_FIELDS", profile: applyContext.confirmed_profile, answers: applyContext.answers, company: applyContext.application.company });
     const auth = await storedAuth();
     const unsupportedCounts = { ...auth.unsupportedCounts };
     for (const field of scanResult.fields.filter((item) => item.unsupported)) {

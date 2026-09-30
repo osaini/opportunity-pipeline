@@ -27,7 +27,10 @@ value-free progress. The extension never receives the editable profile draft.
    consent, messaging, and submit controls. Every mutation is verified against
    the live DOM after normal `input` and `change` events.
 3. Sensitive or consequential fields remain manual. Exact, non-sensitive saved
-   questions can be checked after review; fuzzy matches are never prechecked.
+   questions can be checked after review; fuzzy matches are never prechecked. A
+   saved answer is exact only for the company it was saved at, or when it is
+   tagged `reusable` (never for "if yes, please explain" or "previously worked
+   here" style questions); anywhere else it is shown as a similar match.
 4. Confirmed uploaded PDF/DOCX résumés and approved generated PDFs can be
    selected explicitly. Filename, media type, size, and SHA-256 are checked
    before insertion. File bytes are never persisted by the extension.

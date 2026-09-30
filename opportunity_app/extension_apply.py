@@ -21,10 +21,22 @@ from .schema import utc_now
 PAIRING_TTL_MINUTES = 10
 PAIRING_MAX_FAILURES = 10
 EXTENSION_ORIGIN = re.compile(r"^chrome-extension://[a-p]{32}$")
+# The same rule as SENSITIVE in apps/extension/apply-engine.js; tests/test_platform.py pins the
+# two to each other, so the save guard and the ApplyContext filter never lag the extension.
 SENSITIVE_FIELD = re.compile(
-    r"\b(gender|sex|sexual orientation|race|ethnic(?:ity)?|disab(?:ility|led)?|veteran|"
-    r"age|birth|sponsor(?:ship)?|authori[sz](?:ed|ation)|citizen(?:ship)?|salary|"
-    r"compensation|pronoun|marital|religion|genetic|pregnan(?:cy|t)|eeo)\b",
+    r"\b(gender|sex|sexual orientation|race|ethnic(?:ity)?|disab(?:ility|led)?|veteran|age|"
+    r"birth|sponsor(?:ship)?|authori[sz](?:ed|ation)|citizen(?:ship)?|salary|compensation|"
+    r"pronoun|marital|religio\w*|genetic|pregnan(?:cy|t)|eeo|transgender|immigration|petition|"
+    r"employment[- ]based|green card|permanent resident|"
+    r"visa[- ](?:sponsor\w*|status|support|type|holder|transfer)|"
+    r"(?:require|need|hold)\w*\s+(?:a\s+)?visa|work visa|student visa|f[- ]?1|j[- ]?1|"
+    r"h[- ]?1[- ]?b|tn|e[- ]?3|stem opt|"
+    r"opt(?!-(?:in|out)\b)(?! (?:in|out)\b(?! (?:the )?(?:us|u\.s\.|usa|united states|20\d\d)(?!\w)))|"
+    r"cpt|practical training|clearance|right to work|eligible to work|"
+    r"legally (?:eligible|authori[sz]ed)|18\+?(?: years)? (?:or older|of age)|"
+    r"over (?:the age of )?18|at least 18|age of 18|u\.? ?s\.? person|itar|export control|"
+    r"export administration regulations|felony|misdemeanor|arrest\w*|criminal|convict\w*|"
+    r"background check|non[- ]?compete)\b",
     re.IGNORECASE,
 )
 PROHIBITED_CONTROL = re.compile(
