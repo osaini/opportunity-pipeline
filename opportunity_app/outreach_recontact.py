@@ -38,7 +38,7 @@ PERSON_BASES = {"confirmed", "strong_guess", "weak_guess"}
 
 
 def upgradeable(target: dict[str, Any]) -> bool:
-    if target["sent_at"] or target["status"] not in {"not_started", "drafted"}:
+    if target["sent_at"] or target["status"] not in {"not_started", "drafted"} or target.get("not_interested_at"):
         return False
     if target["draft_status"] == "approved" or not target["website"]:
         return False

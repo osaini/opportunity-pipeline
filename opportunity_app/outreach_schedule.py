@@ -48,7 +48,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from . import automation
-from .outreach import DraftChangedError, UNSENT_STATUSES, _city_state, _log, get_target, heard_back
+from .outreach import NOT_INTERESTED, DraftChangedError, UNSENT_STATUSES, _city_state, _log, get_target, heard_back
 from .outreach_gmail import (
     SENT_EVENT,
     THANK_YOU_KIND,
@@ -304,6 +304,10 @@ def _gate(
     from .outreach_review import FRESH_LOOK_REASONS, fresh_look, review_follow_up, review_runner
 
     target_id, user_id = row["target_id"], row["user_id"]
+    # Marking a company not interested stops what it has queued; this catches a send that was already being checked.
+    if get_target(conn, target_id, user_id=user_id).get("not_interested_at"):
+        _finish(conn, row, "cancelled", f"{NOT_INTERESTED}, so it was not sent")
+        return "cancelled"
     if row["kind"] == "follow_up":
         stopped = _answered(conn, row, get_target(conn, target_id, user_id=user_id), now)
         if stopped:

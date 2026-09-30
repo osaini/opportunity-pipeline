@@ -675,7 +675,7 @@ def enrich_targets(
     rows = conn.execute(
         """
         SELECT id, location, location_basis, location_inferred, sec_form_d_json, profile_checked_at FROM outreach_targets
-        WHERE user_id=? ORDER BY CASE WHEN profile_checked_at IS NULL THEN 0 ELSE 1 END, profile_checked_at, created_at DESC
+        WHERE user_id=? AND not_interested_at IS NULL ORDER BY CASE WHEN profile_checked_at IS NULL THEN 0 ELSE 1 END, profile_checked_at, created_at DESC
         """,
         (user_id,),
     ).fetchall()

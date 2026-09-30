@@ -448,6 +448,43 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 .settings-field input[type="text"]:focus { outline: 3px solid var(--focus); border-color: var(--accent); }
 .settings-field input[type="text"]:disabled { opacity: 0.6; }
 .settings-field .gmail-label-mailbox:empty, .settings-field .gmail-label-permission:empty, .settings-field .gmail-label-status:empty { display: none; }
+
+/* Outreach settings: a card per section, each setting a row with its words on
+   the left and its control on the right; narrow panes stack them. */
+.outreach-settings { grid-column: 1 / -1; display: grid; gap: var(--space-5); container-type: inline-size; }
+.settings-section { min-width: 0; padding: var(--space-5) var(--space-6) var(--space-2); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.settings-section > h3 { margin: 0; font-size: 15px; letter-spacing: -.01em; }
+.settings-section-intro { max-width: 62ch; margin: 4px 0 0; color: var(--ink-soft); font-size: 12px; line-height: 1.5; }
+.settings-section > h3 + :not(.settings-section-intro), .settings-section-intro + * { margin-top: var(--space-3); }
+.settings-section .settings-field { width: 100%; grid-template-columns: minmax(0, 1fr) minmax(220px, 320px); column-gap: var(--space-8); row-gap: 0; align-items: start; padding: var(--space-4) 0; border-top: 1px solid var(--line); }
+.settings-section .settings-field > label { grid-column: 1; color: var(--ink); font-size: 13px; line-height: 1.4; }
+.settings-section .settings-field > select, .settings-section .settings-field > input { grid-column: 2; grid-row: 1 / span 6; }
+.settings-section .settings-field > p { grid-column: 1; max-width: 62ch; line-height: 1.55; }
+.settings-section .settings-field > p:not(:empty) { margin-top: 6px; }
+.settings-section .automation-settings-status:not(:empty) { padding-bottom: var(--space-3); }
+.settings-section .settings-toggle { grid-template-columns: minmax(0, 1fr) auto; }
+.settings-section .settings-toggle > .settings-switch { justify-self: end; }
+.outreach-settings .settings-field select { appearance: none; padding-right: 38px; background-color: var(--field); background-image: linear-gradient(45deg, transparent 50%, var(--ink-soft) 50%), linear-gradient(135deg, var(--ink-soft) 50%, transparent 50%); background-position: calc(100% - 20px) 50%, calc(100% - 15px) 50%; background-size: 5px 5px; background-repeat: no-repeat; cursor: pointer; font-size: 13px; }
+.outreach-settings .settings-field input[type="text"] { background: var(--field); font-size: 13px; }
+.outreach-settings .settings-field select:hover:not(:disabled), .outreach-settings .settings-field input[type="text"]:hover:not(:disabled) { border-color: var(--line-strong); }
+/* input. outranks the app-wide 16px checkbox rule. */
+input.settings-switch { appearance: none; position: relative; width: 42px; height: 24px; margin: 0; border: 1px solid var(--ink-muted); border-radius: var(--radius-pill); background: var(--surface-sunken); cursor: pointer; transition: background-color .15s, border-color .15s; }
+input.settings-switch::before { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--ink-muted); transition: transform .15s, background-color .15s; }
+input.settings-switch:checked { border-color: var(--accent); background: var(--accent); }
+input.settings-switch:checked::before { background: var(--on-accent); transform: translateX(18px); }
+input.settings-switch:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+input.settings-switch:disabled { opacity: .6; cursor: progress; }
+/* One save line for the .env settings, pinned to the bottom of the screen; empty, it takes no room but stays for screen readers. */
+.outreach-settings > .form-status { position: sticky; bottom: var(--space-4); z-index: 2; justify-self: end; margin: 0; padding: 8px 14px; border: 1px solid var(--line-strong); border-radius: var(--radius-pill); background: var(--surface-strong); color: var(--ink); font-size: 12px; font-weight: 650; box-shadow: var(--shadow-raised); }
+.outreach-settings > .form-status:empty { padding: 0; border: 0; box-shadow: none; }
+@container (max-width: 620px) {
+  .settings-section { padding: var(--space-4) var(--space-4) var(--space-1); }
+  .settings-section .settings-field:not(.settings-toggle) { grid-template-columns: minmax(0, 1fr); }
+  .settings-section .settings-field:not(.settings-toggle) > select, .settings-section .settings-field:not(.settings-toggle) > input { grid-column: 1; grid-row: auto; margin-top: var(--space-2); }
+}
+@media (prefers-reduced-motion: reduce) {
+  input.settings-switch, input.settings-switch::before { transition: none; }
+}
 .board-tracker h4 { margin: 0; font-size: 13px; }
 .board-tracker p { margin: 0; }
 .board-tracker-form { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -1320,3 +1357,28 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 .outreach-interviewer { display: grid; gap: 6px; }
 .outreach-interviewer-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; }
 @media (max-width: 720px) { .outreach-interviewer-fields { grid-template-columns: 1fr; } }
+
+/* Every select's open list wears the app's theme instead of the operating
+   system's, where the browser allows it; elsewhere the native list stays.
+   Last in the file, so it settles ties with each component's own select rule. */
+@supports (appearance: base-select) {
+  select, select::picker(select) { appearance: base-select; }
+  /* A long choice wraps inside the box rather than past it; the arrow stays at the end. */
+  select { display: inline-flex; align-items: center; gap: 8px; white-space: normal; line-height: 1.35; text-align: start; cursor: pointer; }
+  select:disabled { cursor: default; }
+  select::picker-icon { content: ""; flex: none; width: 6px; height: 6px; margin: -3px 2px 0 auto; border-right: 1.5px solid var(--ink-soft); border-bottom: 1.5px solid var(--ink-soft); transform: rotate(45deg); transition: transform .15s; }
+  select:open::picker-icon { margin-top: 3px; transform: rotate(-135deg); }
+  select:open { border-color: var(--accent); }
+  select::picker(select) { margin-block: 6px; padding: 4px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface-strong); color: var(--ink); box-shadow: var(--shadow-raised); max-inline-size: min(440px, calc(100vw - 32px)); }
+  option { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 6px 10px; border-radius: 6px; font-size: 13px; font-weight: 400; line-height: 1.35; letter-spacing: normal; text-transform: none; white-space: normal; cursor: pointer; }
+  option:hover, option:focus-visible { background: var(--accent-soft); outline: none; }
+  option:checked { color: var(--accent-strong); font-weight: 650; }
+  option:disabled { color: var(--ink-muted); cursor: default; }
+  option::checkmark { content: "✓"; order: 1; margin-left: auto; color: var(--accent); }
+  /* These kept room for the operating system's arrow; the arrow is inside now. */
+  .application-controls select, .outreach-filter select, .program-status { padding-right: var(--field-pad-x); }
+  .outreach-settings .settings-field select { appearance: base-select; display: flex; padding: var(--space-2) var(--field-pad-x); background-image: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  select::picker-icon { transition: none; }
+}

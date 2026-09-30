@@ -448,7 +448,7 @@ def auto_close_due(conn: sqlite3.Connection, user_id: str, *, today: date | None
 
     today = today or local_today(conn, user_id)
     due = []
-    for item in list_targets(conn, user_id=user_id, status="followed_up", today=today):
+    for item in list_targets(conn, user_id=user_id, status="followed_up", today=today, interested_only=True):
         suggestion = lifecycle_suggestion(item, today)
         if not suggestion or suggestion["status"] != "no_response":
             continue
@@ -598,7 +598,7 @@ def follow_up_draft_due(conn: sqlite3.Connection, user_id: str, *, now: datetime
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     today = local_today(conn, user_id, now)
     due = []
-    for item in list_targets(conn, user_id=user_id, status="sent", today=today):
+    for item in list_targets(conn, user_id=user_id, status="sent", today=today, interested_only=True):
         if not item["follow_up_due"] or not item["email_body"]:
             continue
         if item["follow_up_body"] or item["follow_up_subject"] or item["follow_up_status"] != "none":

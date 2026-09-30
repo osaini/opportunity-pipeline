@@ -15,7 +15,7 @@ from uuid import uuid4
 import pytest
 from playwright.sync_api import expect
 
-from conftest import OWNER_TOKEN, wait_for_results
+from conftest import OWNER_TOKEN, native_selects, wait_for_results
 from opportunity_app import auto_triage, automation
 from opportunity_app.schema import connect_product, utc_now
 from opportunity_app.user_time import user_timezone
@@ -285,6 +285,7 @@ def test_a_restore_that_failed_can_be_tried_again(owner_page, live_server):
 
 
 def test_leaving_the_resume_choice_by_keyboard_keeps_focus_where_the_student_went(owner_page, base_url, live_server):
+    native_selects(owner_page)
     add_resume(live_server, name="hardware.pdf", label="Hardware")
     add_resume(live_server, name="software.pdf", label="Software")
     set_profile(live_server, resume_variants=VARIANTS, default_variant="Hardware")

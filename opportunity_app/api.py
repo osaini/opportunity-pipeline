@@ -250,6 +250,7 @@ from .outreach import (
     OUTREACH_PRIORITIES,
     OUTREACH_STATUSES,
     OutreachNotFoundError,
+    SetAsideError as OutreachSetAsideError,
     approve_draft as approve_outreach_draft,
     confirm_research as confirm_outreach_research,
     create_target as create_outreach_target,
@@ -461,6 +462,8 @@ class OutreachTargetRequest(BaseModel):
     # rather than a shapeless validation error; the length bound belongs to the
     # string arm, because on the union it is applied to a bool too and raises.
     confirm_location: Annotated[str, Field(max_length=200)] | bool | None = None
+    # True files the company under Not interested (kept, and left alone by automation); False moves it back.
+    not_interested: bool | None = None
 
 
 class OutreachDraftRequest(BaseModel):
@@ -3441,7 +3444,11 @@ def create_app(
         conn: sqlite3.Connection = Depends(writable_connection),
         user_id: str = Depends(require_auth),
     ) -> Response:
-        if not delete_outreach_target(conn, target_id, user_id=user_id):
+        try:
+            deleted = delete_outreach_target(conn, target_id, user_id=user_id)
+        except OutreachSetAsideError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        if not deleted:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found")
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 

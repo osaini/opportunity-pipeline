@@ -207,13 +207,13 @@ def locate_targets(
     """Search for every target's location that nothing better has settled."""
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
-        "SELECT id, company, website, location, location_basis, location_inferred FROM outreach_targets "
+        "SELECT id, company, website, location, location_basis, location_inferred, not_interested_at FROM outreach_targets "
         "WHERE user_id=? ORDER BY company COLLATE NOCASE",
         (user_id,),
     ).fetchall()
     chosen = set(target_ids) if target_ids is not None else None
     due = [dict(row) for row in rows if dict(row)["id"] in chosen] if chosen is not None else [
-        dict(row) for row in rows if needs_a_location(dict(row))
+        dict(row) for row in rows if needs_a_location(dict(row)) and not row["not_interested_at"]
     ]
     if limit is not None:
         due = due[:max(0, limit)]

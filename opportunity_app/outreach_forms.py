@@ -1370,7 +1370,7 @@ def form_due(conn: sqlite3.Connection, *, user_id: str) -> list[str]:
     from .outreach import list_targets
 
     due = []
-    for item in list_targets(conn, user_id=user_id):
+    for item in list_targets(conn, user_id=user_id, interested_only=True):
         form = item["contact_form"]
         if not form or form["state"] != "found":
             continue

@@ -442,7 +442,7 @@ def _outreach_rows(conn: sqlite3.Connection, user_id: str) -> list[dict[str, Any
         f"""
         SELECT id, company, status, deadline_date, follow_up_at
         FROM outreach_targets
-        WHERE user_id = ? AND (
+        WHERE user_id = ? AND not_interested_at IS NULL AND (
             status NOT IN ({closed})
             OR (status IN ({revisit}) AND follow_up_at IS NOT NULL AND follow_up_at <> '')
         )
@@ -482,7 +482,9 @@ def _outreach_rows(conn: sqlite3.Connection, user_id: str) -> list[dict[str, Any
             rows.append({**base, "kind": "outreach_follow_up", "raw_date": row["follow_up_at"]})
     # Whatever the company's status: a reply may change it.
     for target_id, received in waiting.items():
-        target = conn.execute("SELECT id, company, status FROM outreach_targets WHERE id=? AND user_id=?", (target_id, user_id)).fetchone()
+        target = conn.execute(
+            "SELECT id, company, status FROM outreach_targets WHERE id=? AND user_id=? AND not_interested_at IS NULL", (target_id, user_id),
+        ).fetchone()
         if target is not None:
             rows.append({
                 "record_id": str(target["id"]), "date_only": False, "title": target["company"], "company": target["company"],

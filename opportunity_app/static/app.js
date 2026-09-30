@@ -652,12 +652,19 @@
   // the select commits it, Escape puts the saved value back. A pointer choice
   // from the open list still saves at once. `commit(value, trigger)` runs at
   // most once at a time; trigger is "pointer", "enter", or "blur".
+  //
+  // Where the open list is the app's own (appearance: base-select in
+  // styles.css), arrows on the closed select open the list and only move
+  // through it, so nothing changes until a pick there (Enter, Space, or a
+  // click), which saves at once. A typed letter still changes a closed select
+  // directly, so it is still only browsing.
   const SELECT_BROWSE_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"]);
 
   function autoSaveSelect(select, { saved, commit }) {
     let browsing = false;
     let dirty = false;
     let busy = false;
+    let keyPick = false;
     const run = async (trigger) => {
       browsing = false;
       dirty = false;
@@ -669,8 +676,16 @@
         busy = false;
       }
     };
-    select.addEventListener("pointerdown", () => { browsing = false; });
+    select.addEventListener("pointerdown", () => { browsing = false; keyPick = false; });
     select.addEventListener("keydown", (event) => {
+      // A key on an option: the app's own list is open.
+      if (event.target !== select) {
+        if (event.key === "Enter" || event.key === " ") {
+          browsing = false;
+          keyPick = true;
+        }
+        return;
+      }
       if (event.key === "Enter") {
         if (dirty || select.value !== saved()) {
           event.preventDefault();
@@ -693,9 +708,13 @@
         dirty = true;
         return;
       }
-      run("pointer");
+      const trigger = keyPick ? "enter" : "pointer";
+      keyPick = false;
+      run(trigger);
     });
-    select.addEventListener("blur", () => {
+    select.addEventListener("blur", (event) => {
+      // Focus going into the app's own open list is not leaving the select either.
+      if (event.relatedTarget && select.contains(event.relatedTarget)) return;
       // A list rebuild removes the focused select, which fires blur; that is
       // not the user leaving it, so do not save a choice they are still making.
       queueMicrotask(() => {
@@ -2678,6 +2697,8 @@
     // an import file claimed and the tracker refused, not what it accepted.
     location_import_claim: "Import file's unverified location claim",
     location_entered: "Location entered",
+    not_interested: "Marked not interested",
+    interested_again: "Moved back from Not interested",
     call_prep_queued: "Call prep started",
     call_prep_generated: "Call prep written",
     call_prep_replaced: "Call prep replaced",
@@ -3928,6 +3949,11 @@
     return !item.sent_at && ["not_started", "drafted"].includes(item.status);
   }
 
+  // A company the student marked not interested is kept, never deleted, and
+  // shows only under Not interested: every other tab, All companies included,
+  // leaves it out.
+  const outreachNotInterested = (item) => Boolean(item.not_interested_at);
+
   // The rail's outreach tabs. The server returns every company once; each tab
   // narrows that list here, so every count stays in step with the cards.
   const OUTREACH_TABS = [
@@ -3945,11 +3971,12 @@
     { id: "replied", label: "Replied", group: "Contacted", tone: "is-good", test: (item) => ["replied", "call_scheduled", "offer"].includes(item.status) },
     { id: "closed", label: "Closed or paused", group: "Contacted", test: (item) => ["declined", "no_response", "paused"].includes(item.status) },
     { id: "all", label: "All companies", group: "Everything", test: () => true },
+    { id: "not-interested", label: "Not interested", group: "Everything", test: outreachNotInterested },
     { id: "deep-search", label: "Deep search", group: "Tools", tool: true },
     { id: "find-people", label: "Find people", group: "Tools", tool: true },
     { id: "add", label: "Add, import, export", group: "Tools", tool: true },
     { id: "settings", label: "Settings", group: "Tools", tool: true },
-  ];
+  ].map((tab) => (tab.tool || tab.id === "not-interested" ? tab : { ...tab, test: (item) => !outreachNotInterested(item) && tab.test(item) }));
 
   const OUTREACH_SORTS = {
     contact: ["Confirmed email first", () => 0],
@@ -4305,9 +4332,8 @@
   };
 
   async function automationFields() {
-    const field = element("div", "settings-field automation-settings");
-    field.appendChild(element("h3", "", "Automation"));
-    const status = element("p", "profile-help");
+    const field = element("div", "automation-settings");
+    const status = element("p", "profile-help automation-settings-status");
     status.setAttribute("aria-live", "polite");
     let current;
     try {
@@ -4317,12 +4343,19 @@
       return field;
     }
     AUTOMATION_SWITCHES.forEach(([key, text, help]) => {
-      const label = element("label", "settings-checkbox");
+      const row = element("div", "settings-field settings-toggle");
       const box = document.createElement("input");
       box.type = "checkbox";
+      box.className = "settings-switch";
+      box.setAttribute("role", "switch");
       box.id = `settings-automation-${key}`;
       box.checked = Boolean(current[key]);
-      label.append(box, document.createTextNode(` ${text}`));
+      const label = element("label", "", text);
+      label.htmlFor = box.id;
+      const description = element("p", "profile-help", help);
+      description.id = `${box.id}-help`;
+      box.setAttribute("aria-describedby", description.id);
+      row.append(label, box, description);
       box.addEventListener("change", async () => {
         box.disabled = true;
         status.textContent = "Saving…";
@@ -4339,40 +4372,50 @@
           box.disabled = false;
         }
       });
-      field.append(label, element("p", "profile-help", help));
+      field.appendChild(row);
     });
     field.appendChild(status);
     return field;
   }
 
+  // One titled card per kind of setting; each setting inside is a row with
+  // what it does on the left and its control on the right.
+  function settingsSection(title, intro = "") {
+    const section = element("section", "settings-section");
+    const heading = element("h3", "", title);
+    heading.id = `settings-section-${title.toLowerCase().replace(/[^a-z]+/g, "-")}`;
+    section.setAttribute("aria-labelledby", heading.id);
+    section.appendChild(heading);
+    if (intro) section.appendChild(element("p", "settings-section-intro", intro));
+    return section;
+  }
+
   async function outreachSettingsPanel() {
-    const panel = element("section", "tracker-detail outreach-deep-search outreach-settings");
-    panel.setAttribute("aria-labelledby", "outreach-settings-heading");
-    const heading = element("h2", "outreach-recontact-heading", "Outreach settings");
-    heading.id = "outreach-settings-heading";
-    panel.appendChild(heading);
-    const body = element("div", "outreach-deep-search-body");
-    panel.appendChild(body);
+    // The page's own heading ("Outreach settings") names the panel.
+    const panel = element("section", "outreach-settings");
+    panel.setAttribute("aria-labelledby", "result-count");
     // Per student and stored in the database, so it shows for every account.
-    body.appendChild(await automationFields());
-    body.appendChild(await jevInboxField());
-    body.appendChild(await gmailLabelField());
+    const automation = settingsSection("Automation", "Work the app does on its own. Every switch starts off.");
+    automation.appendChild(await automationFields());
+    const mail = settingsSection("Replies and Gmail");
+    mail.appendChild(await jevInboxField());
+    mail.appendChild(await gmailLabelField());
+    panel.append(automation, mail);
     if (state.userId !== "local-user") {
-      body.appendChild(element("p", "profile-help", "These settings belong to the owner of this computer's workspace."));
+      panel.appendChild(element("p", "profile-help", "These settings belong to the owner of this computer's workspace."));
       return panel;
     }
     let settings;
     try {
       settings = await api("/api/v1/outreach/settings");
     } catch (error) {
-      body.appendChild(element("p", "form-error", error.message));
+      panel.appendChild(element("p", "form-error", error.message));
       return panel;
     }
     if (!settings.available) {
-      body.appendChild(element("p", "profile-help", "These settings live in this computer's .env file, so only the owner's main workspace can change them."));
+      panel.appendChild(element("p", "profile-help", "These settings live in this computer's .env file, so only the owner's main workspace can change them."));
       return panel;
     }
-    body.appendChild(element("p", "outreach-note", "Saved to this computer's .env and used right away; no restart needed. API keys stay in .env and are never shown here."));
     const status = element("p", "form-status");
     status.setAttribute("aria-live", "polite");
 
@@ -4509,15 +4552,15 @@
     companyResearchSelect.addEventListener("change", () => save({ company_research_agent: companyResearchSelect.value }, "Company research agent"));
 
     // The one LinkedIn account call prep may read interviewers' profiles as.
-    const linkedinField = element("label", "profile-field");
-    linkedinField.appendChild(element("span", "", "LinkedIn test account for reading interviewers' profiles"));
+    const linkedinField = element("div", "settings-field");
+    const linkedinLabel = element("label", "", "LinkedIn test account for reading interviewers' profiles");
+    linkedinLabel.htmlFor = "settings-linkedin-account";
     const linkedinInput = document.createElement("input");
     linkedinInput.type = "text";
     linkedinInput.id = "settings-linkedin-account";
     linkedinInput.placeholder = "Profile link or username; empty keeps LinkedIn off";
     linkedinInput.value = settings.linkedin_account?.value || "";
-    linkedinField.appendChild(linkedinInput);
-    linkedinField.appendChild(element("p", "profile-help",
+    linkedinField.append(linkedinLabel, linkedinInput, element("p", "profile-help",
       "Use a separate test account, never your everyday one. Before every read the app checks that LinkedIn is signed in as exactly this account, with importing your browser's sign-in turned off, and it only ever reads. See SETUP.md step 7b, Call prep."));
     linkedinInput.addEventListener("change", () => save({ linkedin_account: linkedinInput.value }, "LinkedIn account"));
 
@@ -4553,7 +4596,13 @@
       save({ attachment_resume_id: attachSelect.value }, "Attachment");
     });
 
-    body.append(draftField, followField, prepField, thanksField, reviewField, researchField, companyResearchField, linkedinField, attachField, status);
+    const writing = settingsSection("Writing and review",
+      "Saved to this computer's .env and used right away; no restart needed. API keys stay in .env and are never shown here.");
+    writing.append(draftField, followField, thanksField, reviewField, attachField);
+    const researching = settingsSection("Research and call prep", "Saved to .env too.");
+    researching.append(researchField, companyResearchField, prepField, linkedinField);
+    // One save line for both sections, pinned to the bottom of the screen so it shows wherever the change was made.
+    panel.append(writing, researching, status);
     return panel;
   }
 
@@ -4692,6 +4741,9 @@
   // The one thing to do next, in the words the bar and the list row use.
   // `tab` is where that work happens; the bar offers to go there.
   function outreachNextStep(item) {
+    if (outreachNotInterested(item)) {
+      return { label: "Nothing while not interested", hint: "It is kept here, and nothing automatic goes to it. Move it back to outreach to pick it up again.", tab: null };
+    }
     if (item.possible_reply_count) {
       const one = item.possible_reply_count === 1;
       return { label: one ? "Check a possible reply" : "Check possible replies", hint: `${one ? "An email" : "Emails"} from them may be a reply. Say whether ${one ? "it is" : "each is"} on the card; follow-ups wait until you do.`, tab: null, tone: "is-warning" };
@@ -5704,6 +5756,8 @@
     }
     const side = element("div", "outreach-head-side");
     side.appendChild(chip(OUTREACH_STATUS_LABELS[item.status] || item.status, item.status === "replied" || item.status === "call_scheduled" || item.status === "offer" ? "is-region" : ""));
+    const setAside = outreachNotInterested(item);
+    if (setAside) side.appendChild(chip(`Not interested since ${formatDate(item.not_interested_at)}`, "is-warning"));
     const link = safeExternalUrl(item.website) || item.source_urls.map(safeExternalUrl).find(Boolean);
     if (link) {
       const site = element("a", "secondary-button", "Research source ↗");
@@ -5712,6 +5766,21 @@
       site.rel = "noopener noreferrer";
       side.appendChild(site);
     }
+    // Filed under Not interested, never deleted; automation leaves it alone until it is moved back.
+    const interest = element("button", "secondary-button outreach-interest", setAside ? "Move back to outreach" : "Not interested");
+    interest.type = "button";
+    interest.addEventListener("click", async () => {
+      interest.disabled = true;
+      try {
+        await patchOutreach(item, { not_interested: !setAside }, setAside
+          ? `${item.company} moved back into your outreach.`
+          : `${item.company} moved to Not interested. It is kept there, and nothing automatic goes to it.`, ".outreach-interest");
+      } catch (error) {
+        showError(error.message);
+        interest.disabled = false;
+      }
+    });
+    side.appendChild(interest);
     heading.append(identity, side);
 
     const facts = element("div", "application-facts");
@@ -6124,6 +6193,7 @@
     save.type = "submit";
     const remove = element("button", "danger-button", "Remove company");
     remove.type = "button";
+    remove.hidden = outreachNotInterested(item);
     const formStatus = element("p", "form-status");
     formStatus.setAttribute("aria-live", "polite");
     footer.append(save, remove, formStatus);
@@ -6503,7 +6573,9 @@
               ? "Add a startup you want to cold email under Tools, or run a deep search."
               : tab.id === "to-contact"
                 ? "Every company has been contacted. Run a deep search or add one under Tools."
-                : "Pick another tab beside the page."));
+                : tab.id === "not-interested"
+                  ? "Mark a company Not interested on its card to file it here. It is kept, and left out of every other tab."
+                  : "Pick another tab beside the page."));
           els.results.appendChild(empty);
         } else {
           els.results.appendChild(outreachSplitView(items, tab, {
