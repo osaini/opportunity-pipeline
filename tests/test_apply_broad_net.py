@@ -22,6 +22,7 @@ from opportunity_app.apply_policy import SchemaField, classify_item, net_topics,
 from opportunity_app.apply_sensitive import StoreRefused
 
 import test_apply_policy as policy_tests
+from helpers_source import static_script_text
 import test_apply_sensitive as sensitive_tests
 from test_apply_policy import BASE, COMPANY, F, MULTI, OTHER, SINGLE, USER, answer, kinds, plan, sources
 
@@ -549,7 +550,8 @@ class NoCrossCompanyReuseTests(unittest.TestCase):
         field = F("q", "What excites you about robotics?", "textarea", parent="Resume/CV")
         action = apply_preflight._action(plan(BASE + [field]).get("q"), {})
         self.assertEqual(sorted(action), ["answer_key", "control", "options", "type"])
-        source = (Path(__file__).resolve().parent.parent / "opportunity_app" / "static" / "app.js").read_text(encoding="utf-8")
+        # Negative guards read every shipped script, so moving code out of app.js cannot turn them into no-ops.
+        source = static_script_text()
         # The what's-missing form has no tick and sends no reusable flag. (The sensitive form keeps its own "Use for any company", which
         # is offered only for a select's exact option label or an EEO decline.)
         self.assertFalse("reusable_allowed" in source)

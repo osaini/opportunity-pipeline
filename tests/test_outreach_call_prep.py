@@ -30,6 +30,7 @@ from opportunity_app.schema import connect_product, ensure_product_schema
 from opportunity_app.worker import WEB_APP_JOB_TYPES
 
 from helpers_platform import build_and_migrate
+from helpers_source import js_function, static_script_text
 from test_outreach_drafting import AUTH, USER, ScriptedProvider as DraftProvider, confirm_facts
 
 REPLY = "Thanks for writing! Could we set up a call Thursday at 3pm? I'd like to hear about your drone work."
@@ -1198,25 +1199,26 @@ class CallPrepApiTests(unittest.TestCase):
             self.assertEqual(client.get(f"/api/v1/outreach/{created['id']}", headers=AUTH).json()["tech_brief_job"]["state"], "succeeded")
 
     def test_the_pane_offers_call_prep(self):
-        script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        script = static_script_text()  # every shipped script, so the asserts follow code that moves between files
         self.assertIn("/call-prep`", script)
         self.assertIn('["prep", "Call prep"]', script)
-        self.assertIn("window.confirm(", script[script.index("function askForReply"):])
+        self.assertIn("window.confirm(", js_function(script, "askForReply"))
         self.assertIn("visibilitychange", script)
         self.assertIn("/research`", script)
         self.assertIn("function outreachTechBrief", script)
 
     def test_the_panes_say_what_is_happening_and_do_not_overstate_the_second_read(self):
-        script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        script = static_script_text()
+        # Each pane is cut out by function name, not by character offset, so moving the code or changing its length cannot shift a window.
         # Call prep researching inline shows as Researching, not as a live Research button.
-        tech = script[script.index("function outreachTechBrief"):]
-        self.assertIn("preppingFirst", tech[:2500])
-        self.assertIn("item.call_prep_job?.state", tech[:2500])
+        tech = js_function(script, "outreachTechBrief")
+        self.assertIn("preppingFirst", tech)
+        self.assertIn("item.call_prep_job?.state", tech)
         # The interviewer pane never shows a stored person after the student named someone else.
-        pane = script[script.index("function outreachInterviewer"):]
-        self.assertIn("(you named them); LinkedIn not read yet", pane[:3000])
-        self.assertIn("record = {};", pane[:3000], "the old profile link is dropped")
-        self.assertIn("linkedin.why", pane[:4500], "the reason comes from the record, not hardcoded copy")
+        pane = js_function(script, "outreachInterviewer")
+        self.assertIn("(you named them); LinkedIn not read yet", pane)
+        self.assertIn("record = {};", pane, "the old profile link is dropped")
+        self.assertIn("linkedin.why", pane, "the reason comes from the record, not hardcoded copy")
         self.assertNotIn("it never names the company", script)
         # A separate read of a passage is not a different model, so no copy says it is.
         self.assertNotIn("a second model confirm", script)

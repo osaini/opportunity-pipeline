@@ -28,6 +28,7 @@ from opportunity_app.profile import update_profile
 from opportunity_app.schema import utc_now
 
 import test_apply_runs as runs_tests
+from helpers_source import apply_modules
 from apply_fake_ats import FakeApplyAgentFactory, FakeSchemaClient, fixture_json
 
 USER = "local-user"
@@ -1029,11 +1030,15 @@ class IdentifyTests(runs_tests.ApplyCase):
 
 class NothingIsGuessedTests(unittest.TestCase):
     def test_the_policy_has_no_label_regex_mapping_and_no_similarity_tier(self):
-        source = Path(apply_policy.__file__).read_text(encoding="utf-8")
         # The extension's label-pattern mappings are regexes over the label and its answer tier scores word overlap;
-        # the agent has an exact list of keys and equality of keys, and nothing else.
-        self.assertNotIn("mappings", source)
-        self.assertNotRegex(source, r"difflib|SequenceMatcher|overlap")
+        # the agent has an exact list of keys and equality of keys, and nothing else. Every apply module is scanned, not
+        # only apply_policy.py, so the policy moving into several files or a package cannot take this guard with it.
+        sources = apply_modules()
+        self.assertIn("apply_policy.py", sources)
+        for name, source in sources.items():
+            with self.subTest(module=name):
+                self.assertNotIn("mappings", source)
+                self.assertNotRegex(source, r"difflib|SequenceMatcher|overlap")
 
 
 # --- The truth table's rows that read the database -------------------------------------------------------------
@@ -1604,9 +1609,14 @@ class SourceBoundaryTests(runs_tests.ApplyCase):
 
     def test_the_policy_never_reads_the_sensitive_table_by_name(self):
         # It asks apply_sensitive.lookup; the table is named there and nowhere in the plan or the check.
-        source = Path(apply_policy.__file__).read_text(encoding="utf-8")
-        self.assertNotIn("FROM apply_sensitive_answers", source)
-        self.assertNotRegex(Path(apply_preflight.__file__).read_text(encoding="utf-8"), r"apply_sensitive_answers")
+        # Every apply module but the store's own is scanned, so the plan or the check moving files cannot hide a read.
+        sources = apply_modules(exclude_store=True)
+        self.assertIn("apply_policy.py", sources)
+        self.assertIn("apply_preflight.py", sources)
+        for name, source in sources.items():
+            with self.subTest(module=name):
+                self.assertNotIn("FROM apply_sensitive_answers", source)
+                self.assertNotRegex(source, r"apply_sensitive_answers")
 
 
 if __name__ == "__main__":

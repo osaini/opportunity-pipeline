@@ -46,15 +46,18 @@ def _is_stdlib(module: str) -> bool:
 
 class LegacyPipelineDependencyBoundaryTests(unittest.TestCase):
     def test_pipeline_and_core_import_only_the_allowed_modules(self):
-        files = [ROOT / "pipeline.py", *sorted((ROOT / "pipeline_core").glob("*.py"))]
+        # Every module of pipeline_core, sub-packages included, so splitting pipeline.py into new modules stays covered.
+        files = [ROOT / "pipeline.py", *sorted((ROOT / "pipeline_core").rglob("*.py"))]
+        self.assertGreater(len(files), 1)
         for path in files:
+            name = path.relative_to(ROOT).as_posix()
             for module, guarded in _imports(path):
-                with self.subTest(file=path.name, module=module):
+                with self.subTest(file=name, module=module):
                     top = module.split(".")[0]
                     if _is_stdlib(module) or top in FIRST_PARTY or module in STDLIB_ONLY_PRODUCT_MODULES:
                         continue
-                    self.assertIn(top, OPTIONAL_THIRD_PARTY, f"{path.name} imports {module}")
-                    self.assertTrue(guarded, f"{path.name} imports optional {module} without an ImportError guard")
+                    self.assertIn(top, OPTIONAL_THIRD_PARTY, f"{name} imports {module}")
+                    self.assertTrue(guarded, f"{name} imports optional {module} without an ImportError guard")
 
     def test_product_modules_the_pipeline_imports_are_stdlib_only(self):
         for dotted in STDLIB_ONLY_PRODUCT_MODULES:
