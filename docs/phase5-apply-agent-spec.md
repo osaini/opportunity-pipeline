@@ -2268,6 +2268,35 @@ which the extension deliberately leaves to its own consent rule) are mirrored in
 `SENSITIVE` and `extension_apply.SENSITIVE_FIELD`. A vector may also carry `parent` (a follow-up's
 own words come back as its parent's category), `control` (`checkbox`) and `description`.
 
+**As built: the broad net (after M4s, 2026-09-30).** Every review round found wordings the lists above miss
+(the student's own "visa's", a follow-up such as "Please tell us what happened", a work-authorization question worded
+"Are you permitted to work in the United States?", an agreement box worded "I will comply with the Code of Ethics"),
+so the precise classifier is not the only guard. A second, deliberately wide reading sits beside it:
+`apply_policy.net_topics` and `possibly_sensitive` (repeated as `netTopics` and `possiblySensitive` in
+`apps/extension/apply-engine.js`, pinned by `tests/fixtures/apply/broad_net.json`, run by both suites). It is one list
+per topic (immigration, work authorization, criminal, demographic, money, security, agreement, employer-relative), each item
+a topic word or short phrase, never a sentence shape. It never marks a question sensitive and never picks a category; it
+only tightens what may be done with a question the classifier called ordinary:
+
+- A question the net hits, or one that follows or is filed under such a question (its parent, when the child follows it
+  by the follow-up rules or the parent is precisely sensitive), is **company-only**: no "Use for any company", and no fill
+  from an answer saved for another company or for no company, even one tagged `reusable`. In the extension
+  `mayUseAtCompany` gives the same answer.
+- A question that hits the criminal, demographic (apart from an 18-or-older wording), money or security topic, or follows one,
+  is **never storable**: the what's-missing view offers no form and says why, `answer_missing` refuses it, and the plan never
+  fills it from the answer library, even at the same company.
+- A box or Yes/No question that hits the agreement topic is never filled from the answer library; only an exact
+  sensitive-store statement ticks it (D9 B). A stored acknowledgment or consent is kept for one company unless it is
+  provably a plain certification that the student's own answers are true; any other agreement may be that employer's own
+  document, so it is never offered or stored for any company.
+- A work-authorization, sponsorship or 18-or-older entry whose statement (heading, option, description) also hits the
+  demographic topic is refused, and the field is read as a personal question.
+
+The net over-reads on purpose ("Would you like to opt in to updates?" is immigration wording to it, and a question that
+only comes after a sensitive one takes that one's topics). Over-blocking costs some reuse; under-blocking is the bug. It
+does not replace the classifier: what the net alone catches is company-only or left to the student, never answered from
+the store.
+
 `tests/fixtures/apply/sensitive_vectors.json` holds, with the expected result:
 
 | Question | Expected |

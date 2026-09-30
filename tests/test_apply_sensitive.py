@@ -314,8 +314,11 @@ class StatementTests(StoreCase):
 
     def test_a_consent_statement_is_stored_the_same_way(self):
         self.allow("consent")
-        saved = self.add(category="consent", question="I consent to Example Robotics storing my application data for 365 days", answer="checked")
-        self.assertEqual((saved["category"], saved["answer"], saved["any_company"]), ("consent", "checked", True))
+        statement = "I consent to Example Robotics storing my application data for 365 days"
+        # A consent agrees to one employer's own terms, and the app cannot prove it names no document: one company only (broad net).
+        self.refused("never for any company", category="consent", question=statement, answer="checked")
+        saved = self.add(category="consent", question=statement, answer="checked", company="Example Robotics")
+        self.assertEqual((saved["category"], saved["answer"], saved["any_company"]), ("consent", "checked", False))
 
 
 class LookupTests(StoreCase):
@@ -683,8 +686,11 @@ class KeyAndCategoryRuleTests(StoreCase):
         self.add(category="acknowledgment", question=apply_policy.statement_of(plain, "checkbox"), answer="checked")
         self.assertEqual(self.plan(BASE + [plain], company=OTHER).get("q").value, True)
         linked = self.box("Certification", ACCURATE, '<p>Details at <a href="https://orbit.test/legal/attestation">this page</a>.</p>')
-        # A row for the linked box's whole text, saved for any company where the same words linked nothing.
-        self.add(category="acknowledgment", question=apply_policy.statement_of(linked, "checkbox"), answer="checked")
+        # A row for the linked box's whole text, saved for any company where the same words linked nothing (a legacy row: the store now
+        # refuses any-company for it, so it is put there by hand).
+        self.add(category="acknowledgment", question=apply_policy.statement_of(linked, "checkbox"), answer="checked", company=COMPANY)
+        with self.conn:
+            self.conn.execute("UPDATE apply_sensitive_answers SET company_key='' WHERE question_text=?", (apply_policy.statement_of(linked, "checkbox"),))
         got = self.plan(BASE + [linked], company=OTHER).get("q")
         self.assertEqual((got.problem_kind, got.source.kind, got.value), ("sensitive_missing", "none", None))
         self.assertTrue(apply_preflight._sensitive_form(got, "sensitive_missing")["company_only"])
@@ -885,8 +891,10 @@ class LeftoverReviewTests(StoreCase):
         relocation, arbitration = self.box("Relocation to Austin", option), self.box("Binding arbitration", option)
         self.assertNotEqual(apply_policy.statement_of(relocation, "checkbox"), apply_policy.statement_of(arbitration, "checkbox"))
         self.allow("acknowledgment")
-        self.add(category="acknowledgment", question=apply_policy.statement_of(relocation, "checkbox"), answer="checked")
-        self.assertIs(self.plan(BASE + [relocation], company=OTHER).get("q").value, True, "the same heading and words, anywhere")
+        # Nothing in it proves it names no document, so it is kept for the company it was saved for, on its heading and words.
+        self.add(category="acknowledgment", question=apply_policy.statement_of(relocation, "checkbox"), answer="checked", company=COMPANY)
+        self.assertIs(self.plan(BASE + [relocation]).get("q").value, True, "the same heading and words, at that company")
+        self.assert_needs(BASE + [relocation], "sensitive_missing", "q", company=OTHER)
         self.assert_needs(BASE + [arbitration], "sensitive_missing", "q")
         self.assert_needs(BASE + [arbitration], "sensitive_missing", "q", company=OTHER)
         # The same heading and option with another description is another statement.

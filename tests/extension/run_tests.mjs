@@ -364,7 +364,7 @@ tests.engine_loads_without_chrome_and_exposes_the_agent_surface = () => {
   const ext = loadContentScript(pageOf({ tag: "input", type: "text", id: "first_name", label: "First Name" }), { contentScript: false });
   const engine = ext.engine;
   assert.equal(engine.version, "1");
-  assert.deepEqual(Object.keys(engine).sort(), ["attachDocumentFromBytes", "contextDependent", "fill", "needsLabelKey", "questionKey", "questionText", "scan", "version"]);
+  assert.deepEqual(Object.keys(engine).sort(), ["attachDocumentFromBytes", "contextDependent", "fill", "needsLabelKey", "netTopics", "neverStorable", "possiblySensitive", "questionKey", "questionText", "scan", "version"]);
   assert.ok(Object.isFrozen(engine));
   assert.equal(engine.scan({ name: "Test Student" }, []).fields[0].proposed_value, "Test");
   // A second injection of the same source keeps the first engine.
@@ -1014,6 +1014,40 @@ tests.follow_up_and_context_rules_match_the_shared_vectors = () => {
     assert.equal(ext.engine.questionKey(text), key, JSON.stringify(text));
     assert.equal(ext.engine.needsLabelKey(key), needsLabel, `${text}: needsLabelKey`);
     assert.equal(ext.engine.contextDependent(key), dependent, `${text}: contextDependent`);
+  }
+};
+
+tests.the_broad_net_matches_the_shared_vectors = () => {
+  // apply_policy.net_topics, possibly_sensitive and never_storable repeat these three rules for the agent's plan.
+  const { vectors } = loadApplyFixture("broad_net.json");
+  const ext = loadContentScript(pageOf({ tag: "input", type: "text", id: "q", label: "Q" }), { contentScript: false });
+  assert.ok(vectors.length >= 120);
+  for (const { text, topics, possibly_sensitive: possibly, never_storable: never } of vectors) {
+    assert.deepEqual(Array.from(ext.engine.netTopics(text)), topics, `${text}: netTopics`);
+    assert.equal(ext.engine.possiblySensitive(text), possibly, `${text}: possiblySensitive`);
+    assert.equal(ext.engine.neverStorable(text), never, `${text}: neverStorable`);
+  }
+  assert.equal(ext.engine.possiblySensitive(undefined), false);
+  assert.equal(ext.engine.possiblySensitive(null), false);
+};
+
+tests.a_possibly_sensitive_question_never_travels_when_reusable = () => {
+  // Wordings the precise SENSITIVE rule does not flag but the broad net does: a reusable row never carries them to another company.
+  for (const question of ["Are you permitted to work in the United States?", "Do you have unrestricted work rights in the United States?",
+    "US work eligibility", "Will you be able to provide proof of employment eligibility?", "What sentence were you given?",
+    "I agree to the arbitration rules", "Do you give permission for us to keep your resume on file?", "Where is your court date?",
+    "What is the expiration date of your visa’s status?", "Expected pay"]) {
+    const page = pageOf({ tag: "textarea", id: "question_41", name: "question_41", label: question });
+    const rows = [{ id: "r", question, answer: "Answer", company: "Acme Robotics", tags: ["reusable"] }];
+    const away = loadContentScript(page).scan(profile, rows, "Orbit Systems").fields[0];
+    assert.notEqual(away.confidence, 0.9, `${question}: not exact at another company`);
+  }
+  // A question the net does not touch still travels when reusable.
+  for (const question of ["Tell us about yourself", "What programming languages do you know?", "Describe a time you worked on a team"]) {
+    const page = pageOf({ tag: "textarea", id: "question_42", name: "question_42", label: question });
+    const rows = [{ id: "r", question, answer: "Answer", company: "Acme Robotics", tags: ["reusable"] }];
+    const field = loadContentScript(page).scan(profile, rows, "Orbit Systems").fields[0];
+    assert.equal(field.confidence, 0.9, `${question}: ${field.reason}`);
   }
 };
 

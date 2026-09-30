@@ -1,0 +1,1255 @@
+{
+  "_comment": "Vectors for the broad net (docs/phase5-apply-agent-spec.md 7.3, 'As built'). 'topics' is the sorted list of topics the net finds in the text (immigration, work_authorization, criminal, demographic, money, security, agreement, relative, and 'adult' for an 18-or-older wording), 'possibly_sensitive' is whether it finds any, and 'never_storable' whether it finds criminal, demographic, money or security: the topics no answer may be saved for or filled from the answer library. The net never says a question IS sensitive; the precise classifier still decides categories. apply_policy.net_topics, possibly_sensitive and never_storable and the engine's netTopics, possiblySensitive and neverStorable (apps/extension/apply-engine.js) must agree on every row. Node runs this in tests/extension/run_tests.mjs; the Python suites reuse this file. A few rows document deliberate over-reading ('Would you like to opt in to updates?', 'Are you interested in security engineering?'): over-blocking costs only some reuse, under-blocking is the bug.",
+  "vectors": [
+    {
+      "text": "Why are you interested in this role?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Tell us about yourself",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Describe a time you worked on a team",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Are you willing to relocate?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "What is your expected graduation date?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "LinkedIn profile",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Portfolio URL",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "What programming languages do you know?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Which team are you most interested in?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Describe yourself in one sentence",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Tell us about a project you are proud of",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "What is your GPA?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "When can you start?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Why do you want to work at Example Robotics?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Would you like to receive updates about future openings?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Keep me informed about future openings",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "What is your preferred name?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Which city do you live in?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "GitHub URL",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "How many hours per week can you work?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Are you in charge of a team?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "How would you rate your Python skills?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Do you have experience with image processing?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Tell us about your usage of Python",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Cybersecurity experience",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Please tell us what happened",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Tell us about it",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "What type?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Year",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Location",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Who is in charge of your current project?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Write three sentences about your favorite project",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Preferred start month",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "What is the expiration date of your current status?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Your visa's expiration date",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Your visa’s expiration date",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Do you require visa sponsorship?",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "What is your citizenship?",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Are you a U.S. citizen?",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Passport number",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Are you a permanent resident?",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Do you hold a green card?",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Are you on H-1B?",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "H1B transfer",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Are you on OPT or CPT?",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "F-1 status",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "J 1 exchange visitor",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "TN status",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "E-3 visa holder",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Are you an alien?",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Will you complete Form I-9?",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "E-Verify",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Nationality",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Immigration status",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Are you able to work in the United States without restriction?",
+      "topics": [
+        "work_authorization"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Are you permitted to work in the United States?",
+      "topics": [
+        "work_authorization"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Are you allowed to work in the US?",
+      "topics": [
+        "work_authorization"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Do you have unrestricted work rights in the United States?",
+      "topics": [
+        "work_authorization"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Can you work in the U.S. without restrictions?",
+      "topics": [
+        "work_authorization"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Do you have permission to work in the United States?",
+      "topics": [
+        "agreement",
+        "work_authorization"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Are you currently able to work in the US full time?",
+      "topics": [
+        "work_authorization"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Will you be able to provide proof of employment eligibility?",
+      "topics": [
+        "work_authorization"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Please confirm your employment eligibility status",
+      "topics": [
+        "agreement",
+        "work_authorization"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "US work eligibility",
+      "topics": [
+        "work_authorization"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Are you eligible to work in the US?",
+      "topics": [
+        "work_authorization"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Do you have the right to work in the UK?",
+      "topics": [
+        "work_authorization"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Do you require a work permit?",
+      "topics": [
+        "work_authorization"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Are you legally entitled to work here?",
+      "topics": [
+        "work_authorization"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Would you like to opt in to updates?",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Have you ever been convicted of a felony?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Have you been arrested?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Sentence received and date of release",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you currently on probation or parole?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you have any pending cases?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Will you consent to a background check?",
+      "topics": [
+        "agreement",
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Court date",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Nature of the charge",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Were you charged with an offense?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Any misdemeanor?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Any misdemeanour?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Describe a crime you committed",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "What sentence were you given?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Were you ever incarcerated?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Conviction details",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "What is your gender?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Preferred pronouns",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you a veteran?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you have a disability?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Race/ethnicity",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you Hispanic or Latino?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Sexual orientation",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Religion",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Marital status",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you pregnant?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "What is your date of birth?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "DOB",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "How old are you?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you over 21 years old?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "What is your age?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Military service",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you transgender?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Genetic information",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you over 18 and a veteran?",
+      "topics": [
+        "adult",
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Please answer the EEO questions",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Self-identification",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you LGBTQ?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you female?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Non-binary",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "I am male",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you identify as a woman?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "What are your salary expectations?",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Expected compensation",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Desired pay rate",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Hourly rate",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "What is your expected salary?",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you okay with the stipend?",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Pay range?",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Wage requirements",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Expected pay",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "What is your rate of pay?",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "What is your desired hourly rate?",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Bonus expectations",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you hold a security clearance?",
+      "topics": [
+        "security"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you a U.S. person under ITAR?",
+      "topics": [
+        "security"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Export control status",
+      "topics": [
+        "security"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "EAR compliance",
+      "topics": [
+        "agreement",
+        "security"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you interested in security engineering?",
+      "topics": [
+        "security"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Top secret clearance",
+      "topics": [
+        "security"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Polygraph",
+      "topics": [
+        "security"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "I agree to the terms",
+      "topics": [
+        "agreement"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "I acknowledge",
+      "topics": [
+        "agreement"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "I consent to data processing",
+      "topics": [
+        "agreement"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "I certify that the information is accurate",
+      "topics": [
+        "agreement"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Privacy notice",
+      "topics": [
+        "agreement"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "I have read and understood the policy",
+      "topics": [
+        "agreement"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "I will comply with the Code of Ethics",
+      "topics": [
+        "agreement"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "I hereby declare that it is true",
+      "topics": [
+        "agreement"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "I have been informed of my rights",
+      "topics": [
+        "agreement"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Do you agree to arbitrate disputes?",
+      "topics": [
+        "agreement"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Do you confirm the information you provided is true?",
+      "topics": [
+        "agreement"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Do you give permission for us to keep your resume on file?",
+      "topics": [
+        "agreement"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "I authorize Example Robotics to contact my references",
+      "topics": [
+        "agreement"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "I will abide by the code of conduct",
+      "topics": [
+        "agreement"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Type your name as your signature",
+      "topics": [
+        "agreement"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "I e-sign this application",
+      "topics": [
+        "agreement"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Terms and conditions",
+      "topics": [
+        "agreement"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Would you accept a remote position?",
+      "topics": [
+        "agreement"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "I've read the Candidate Notice",
+      "topics": [
+        "agreement"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "I will be bound by the Mutual Arbitration Program",
+      "topics": [
+        "agreement"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "I waive my right to a jury trial",
+      "topics": [
+        "agreement"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "I understand that employment is at will",
+      "topics": [
+        "agreement"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Data retention",
+      "topics": [
+        "agreement"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Disclosure statement",
+      "topics": [
+        "agreement"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Do you have relatives working here?",
+      "topics": [
+        "relative"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Were you referred by an employee?",
+      "topics": [
+        "relative"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Are you related to anyone at the company?",
+      "topics": [
+        "relative"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Spouse employed here?",
+      "topics": [
+        "relative"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Do you have family members at Example Robotics?",
+      "topics": [
+        "relative"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Are you a current employee?",
+      "topics": [
+        "relative"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Do you have a conflict of interest?",
+      "topics": [
+        "relative"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Are you at least 18 years of age?",
+      "topics": [
+        "adult"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Are you 18 or older?",
+      "topics": [
+        "adult"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Must be eighteen years of age",
+      "topics": [
+        "adult"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "I confirm I am over the age of 18",
+      "topics": [
+        "adult",
+        "agreement"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    }
+  ]
+}

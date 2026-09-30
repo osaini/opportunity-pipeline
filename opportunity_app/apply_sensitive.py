@@ -12,8 +12,11 @@ and for which kind of use). Nothing else is ever stored here:
   table holds no demographic value, and the service refuses anything else. This is the student's D5 C (i);
 - a question is stored only under the kind the wording reads as (a consent may be worded as an acknowledgment), so a
   demographic question cannot be filed as work authorization to get a real value past the decline check;
-- a statement that says "I have read" or points to a document is saved for one company, never for any company:
-  one employer's notice is not another's. So is any question that depends on its company (7.1).
+- a statement is saved for one company, never for any company, unless it is provably a plain certification that the
+  student's own answers are true: any other agreement may be one employer's own document, however it is worded (the
+  broad net, apply_policy.NET_TOPICS, reads the agreement wording). So is any question that depends on its company (7.1);
+- an entry for work authorization, sponsorship or 18 or older whose statement also claims a demographic (the net's
+  demographic topic) is refused, so this table never holds a ticked veteran, gender or ethnicity claim;
 
 Who reads it. ``lookup`` is asked by apply_policy (the plan) and by nothing else: the extension's apply context,
 ``/api/v1/extension/*``, the saved-answer library, employer views and every report never read this table
@@ -191,17 +194,42 @@ def links_in(*texts: Any) -> tuple[str, ...]:
     return tuple(found)
 
 
+# The only words a statement may be made of for the app to be sure it names no document: a certification that what the student
+# wrote on this application is true. Every other agreement (arbitration "rules", a "code", a "principles" page, a "poster", a
+# retention period at one employer) may be that employer's own text, and a list of document nouns can never be complete.
+_ACCURACY_WORDS = frozenset(
+    "i we certify certification attest affirm declare declaration confirm acknowledge that the my all of this these those information "
+    "answers responses details data provided given submitted made entered in on to application form and best knowledge are is was were "
+    "true accurate correct complete truthful not no false misleading or a an above here it they be have has been am will".split()
+)
+_ACCURACY_CLAIM = re.compile(r"\b(?:true|accurate|correct|complete|truthful)\b")
+
+
+def _names_no_document(statement: str) -> bool:
+    """Whether a statement is provably a certification that the student's own answers are true, and nothing else."""
+    words = _words(statement).split()
+    return bool(words) and bool(_ACCURACY_CLAIM.search(" ".join(words))) and all(word in _ACCURACY_WORDS for word in words)
+
+
 def cites_document(statement: str, links: Iterable[str] = (), *, names: bool = True) -> bool:
     """Whether a statement reads, agrees to or links a document, so it is only ever saved for one company.
 
-    ``names`` also reads a capitalized name after "the", "our" or "its" as a document. It is on for a legal
-    acknowledgment or a data consent, whose whole point is the text it agrees to, and off for a box that states a fact
-    about the student ("I am authorized to work in the United States"), which names a place, not a document.
+    ``names`` is on for a legal acknowledgment or a data consent, whose whole point is the text it agrees to, and off for a box
+    that states a fact about the student ("I am authorized to work in the United States"), which names a place, not a document.
+    It reads a capitalized name after "the", "our" or "its" as a document, and fails closed on any agreement the broad net
+    finds (apply_policy.NET_TOPICS): such a statement names no document only when the app can prove it, which is a plain
+    certification that the student's answers are true. The word lists above catch the common documents; the rule is that a
+    list of nouns can never be complete, so anything that agrees to something and is not provably plain is kept for one company.
     """
-    return (
-        bool(tuple(links)) or bool(_DOCUMENT_WORDS.search(_words(statement))) or bool(links_in(statement))
-        or (names and bool(_NAMED_DOCUMENT.search(html.unescape(str(statement or "")))))
-    )
+    if bool(tuple(links)) or bool(_DOCUMENT_WORDS.search(_words(statement))) or bool(links_in(statement)):
+        return True
+    if not names:
+        return False
+    if _NAMED_DOCUMENT.search(html.unescape(str(statement or ""))):
+        return True
+    from .apply_policy import net_topics
+
+    return "agreement" in net_topics(statement) and not _names_no_document(statement)
 
 
 # --- What the student allowed ---------------------------------------------------------------------------------
@@ -266,7 +294,7 @@ def add_entry(
         raise StoreRefused("Give the question exactly as the form shows it")
     # The wording decides too: an answer to "Are you a U.S. citizen or authorized to work in the U.S.?" is never stored
     # under a more permissive name. The classifier is the plan's own, imported here because the plan imports this module.
-    from .apply_policy import classify_sensitive, eeo_words
+    from .apply_policy import classify_sensitive, eeo_words, net_topics
 
     read_as = classify_sensitive(text)
     if read_as in _NEVER:
@@ -302,9 +330,12 @@ def add_entry(
         else:
             stored = _one_line(answer, MAX_ANSWER_CHARS, "answer")
         cited = ()
-    if category not in EEO_CATEGORIES and not ticked and eeo_words(text):
+    if category not in EEO_CATEGORIES and (eeo_words(text) or "demographic" in net_topics(text)):
         # A wording that asks for voluntary self-identification as well as work authorization, sponsorship or age is never filed
         # under the other kind, whichever kind reads it most strictly: a demographic value must not get in under it (D5 C (i)).
+        # A ticked statement is no exception: "I am authorized to work in the United States and I am a protected veteran" would
+        # tick a demographic claim at every employer. The broad net's demographic topic is read as well as the classifier's own
+        # words, so a wording the lists miss ("military spouse", "date of birth") is refused too; an 18-or-older wording is not one.
         raise StoreRefused("This question also asks for voluntary self-identification. The app stores only a decline for those, so it cannot store an answer to it")
     if category in EEO_CATEGORIES:
         # D5 C (i): this table never holds a demographic value. Checked here, so no route and no future caller can bypass it.

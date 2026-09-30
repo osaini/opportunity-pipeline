@@ -417,13 +417,18 @@ def answer_missing(
     entry = plan.get(key)
     if entry is None:
         raise AnswerRefused("The form no longer asks that question")
-    if entry.sensitive:
+    if entry.sensitive or entry.net_never:
+        # A sensitive question has no ordinary answer, and neither does one the broad net leaves to the student (criminal history,
+        # personal details, pay, security, or a box that agrees to something): no answer to it is saved, for any company.
         raise AnswerRefused("The app doesn't save answers to this kind of question")
     if entry.problem_kind not in ("missing_answer", "answer_mismatch") and entry.source.kind != "answer":
         raise AnswerRefused("The app can't fill this question from a saved answer")
     text = _stored_answer(entry, answer)
     if reusable and entry.context_dependent:
-        raise AnswerRefused("This question depends on the company, so its answer is saved for this company only")
+        raise AnswerRefused(
+            "This question may be personal or legal, so its answer is saved for this company only" if entry.net_company
+            else "This question depends on the company, so its answer is saved for this company only"
+        )
     company = result["company"]
     existing = _existing_row(conn, user_id, entry.answer_key, company)
     tags = [tag for tag in (json.loads(existing["tags_json"] or "[]") if existing else []) if str(tag).lower() != "reusable"]

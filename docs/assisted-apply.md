@@ -45,11 +45,13 @@ value-free progress. The extension never receives the editable profile draft.
      following" names nothing). When the option is short, points elsewhere ("I
      agree to the above terms") or the box has a description, the statement is
      also filed under the question above it and saved for one company. A
-     statement that says "I have read", names a document in any way (terms, a
-     statement, a program, guidelines, a code of conduct, or a capitalized name
-     after "the" or "our"), links a document, has a description of its own or
-     points elsewhere is saved for one company, never for any
-     company, as is any question that depends on its company. The plan shows the form's own
+     statement is saved for one company, never for any company, unless the app
+     can prove it names no document, which it can only do for a plain
+     certification that the student's own answers are true ("I certify that the
+     information I have provided is accurate"). Any other agreement, whatever its
+     words (terms, rules, a code, a program, a capitalized name), a link, a
+     description of its own or a pointer elsewhere is one company's, as is any
+     question that depends on its company. The plan shows the form's own
      document addresses next to the tick; if the form links to other addresses
      than the ones saved, or to none, the box is left for the student, and so is
      a statement whose description is longer than the app keeps. A Yes/No
@@ -100,8 +102,26 @@ value-free progress. The extension never receives the editable profile draft.
    interviewed with us, relatives or family members, related to, spouse,
    immediate family, employed here, current or former employee, referred, know
    anyone, how did you hear, "this organization/firm/company/employer". An
-   employer-relative question worded some other way is not caught, so do not
-   tag such an answer `reusable`.
+   employer-relative question worded some other way is not caught by that list,
+   so do not tag such an answer `reusable`.
+   A second, deliberately wide check backs both lists up: the broad net
+   (`possiblySensitive` in the extension, `possibly_sensitive` in the agent),
+   one list of topic words per topic (immigration, work authorization, criminal
+   history, personal details such as age or gender, pay, security clearance,
+   agreements, employer relatives). It never decides what a question is; it only
+   keeps a possibly sensitive question at its own company. A saved answer to a
+   question the net hits is never carried to another company, even when tagged
+   `reusable`, and the Apply for me check offers no "Use for any company" for
+   it. The agent goes further for criminal history, personal details, pay and
+   security: it never saves an answer to such a question, or to one filed under
+   it ("Please tell us what happened" under a felony question), and never fills
+   one from the answer library, even at the same company. A box or Yes/No
+   question that agrees to something, in any words, is never ticked from the
+   answer library; only a stored acknowledgment that matches word for word
+   ticks it, and that stays with one company unless it is a plain certification
+   that the student's own answers are true. The net over-reads on purpose (a
+   question that only comes after a sensitive one takes its topics too), so it
+   can cost a saved answer some reuse. Nothing is ever answered on its say-so.
    Radio and checkbox options, follow-ups that depend on the question above them
    ("if yes, please explain", "please provide more details", "which company was
    it?", also after numbering or tags such as "Q4b.", "Question 3:", "1.2.3",

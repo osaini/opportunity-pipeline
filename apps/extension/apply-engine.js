@@ -235,6 +235,73 @@
   // company, even when the row is tagged reusable.
   const CONTEXT_WORDING = /previously (?:worked|been employed|applied)|worked (?:here|for us|for this company|at)|applied (?:here|before|previously)|referr|who referred|know (?:anyone|someone)|how did you hear|where did you (?:hear|find)|current(?:ly)? (?:an )?employee|worked (?:for|with|at) (?:us|this|our|the company)|employed (?:by|at|with)|interviewed (?:with|at|here)|relatives?\b|family members?\b|related to\b|spouse|immediate family|former employee|employed here\b|relations? working|this (?:organi[sz]ation|firm|company|employer)|\bwork (?:here|for us|with us)\b|\bour (?:company|team|organi[sz]ation|mission|products?)\b|\bthis (?:role|position|opportunity|team)\b|\binterest(?:ed|s)? (?:you )?(?:in|about) this\b|\bjoin (?:us|our)\b/;
 
+  // The broad net: a second, deliberately wide reading of a question, kept apart from SENSITIVE above. It never marks a field
+  // sensitive by itself; it only says "possibly sensitive", so a reusable saved answer never carries such a question to another
+  // company. One list per topic, each item a topic word or a short phrase. Python's apply_policy.NET_TOPICS repeats these lists
+  // and tests/fixtures/apply/broad_net.json is run by both suites. The text is normalized first: lower case, every run of
+  // anything but a-z and 0-9 one space ("visa's" reads "visa s", "H-1B" reads "h 1 b").
+  const NET_TOPICS = Object.freeze({
+    immigration: [
+      /\bvisa/, /\bsponsor/, /\bimmigra/, /\bcitizen/, /\bnationalit/, /\bpassport/, /\bgreen card/, /\bpermanent resident/,
+      /\bh ?1 ?b\b/, /\bopt\b/, /\bcpt\b/, /\bf ?1\b/, /\bj ?1\b/, /\btn (?:visa|status)/, /\be ?3\b/, /\bi ?9\b/,
+      /\be ?verify/, /\balien/,
+    ],
+    work_authorization: [
+      /\b(?:able|permitted|allowed|free|eligible|entitled|authori[sz]ed|legally|cleared) to work/,
+      /\bwork (?:authori|eligib|right|permit|status|restriction|visa)/, /\bemployment (?:eligib|verification|authori|status)/,
+      /\bright to work/, /\bunrestricted/, /\bwithout restrictions?\b/, /\blegally\b/,
+      /\b(?:permission|right|authority|authori[sz]ation|eligibility) to (?:work|be employed)/,
+      /\bwork in the (?:u s|us|usa|united states|country)/,
+    ],
+    criminal: [
+      /\bconvict/, /\bfelon/, /\bcriminal/, /\bcrimes?\b/, /\barrest/, /\boffen[cs]e/, /\bcourt/, /(?<!\bin )\bcharge[sd]?\b/,
+      /(?<!\bone )(?<!\btwo )(?<!\bthree )(?<!\bsingle )(?<!\bfew )\bsentenc(?:e|ed|es|ing)\b/, /\bprobation/, /\bparole/,
+      /\bmisdemeanou?r/, /\bbackground check/, /\bpending case/, /\bincarcerat/, /\bimprison/,
+    ],
+    demographic: [
+      /\bgender/, /\bsex/, /\bfemales?\b/, /\bmales?\b/, /\bwom[ae]n\b/, /\bnon ?binary\b/, /\brace\b/, /\bracial/, /\bethnic/, /\bhispanic/, /\blatin[oax]/, /\bveteran/, /\bmilitary/,
+      /\barmed forces/, /\bdisab/, /\bpronoun/, /\borientation/, /\blgbt/, /\btransgender/, /\bqueer\b/, /\breligio/,
+      /\bmarital/, /\bmarried/, /\bpregnan/, /\bgenetic/, /\bage\b/, /\bbirth/, /\bdob\b/, /\byears old\b/, /\bhow old\b/, /\beeoc?\b/,
+      /\bself identif/,
+    ],
+    money: [
+      /\bsalar/, /\bcompensat/, /\bpay\b/, /\bpaid\b/, /\bwages?\b/, /\bstipend/, /\bhourly\b/, /\bremunerat/,
+      /\bearnings?\b/, /\bbonus/, /\b(?:pay|hourly|hour|day|week|wage|salary|desired|expected|minimum|target|base|starting|billing|annual) rate\b/,
+      /\brate of pay\b/, /\b(?:expected|desired) (?:salary|compensation|pay|rate|wages?|earnings?|hourly|stipend)/,
+    ],
+    security: [/\bclearance/, /\bexport/, /\bitar\b/, /\bear\b/, /\bu s person/, /\bus person/, /\bsecurity/, /\bpolygraph/, /\btop secret/],
+    agreement: [
+      /\bagree/, /\backnowledg/, /\bconsent/, /\bcertif/, /\battest/, /\baffirm/, /\bdeclar/, /\bconfirm/, /\bunderstand that/,
+      /\bunderstood\b/, /\baccept/, /\bterms\b/, /\bpolic(?:y|ies)\b/, /\bprivacy/, /\bnotice/, /\bdisclos/, /\bstatement/,
+      /\barbitrat/, /\bhave read\b/, /\bi ve read\b/, /\breviewed\b/, /\bbound\b/, /\babide/, /\bsignature/, /\bsign here\b/,
+      /\be ?sign/, /\bauthori[sz]e\b/, /\bpermission/, /\bcompl(?:y|iance|ies)\b/, /\b(?:been|was|am|are|being) informed\b/, /\binformed (?:of|that)\b/, /\bwaive/, /\bretain\b/,
+      /\bretention/, /\bon file\b/, /\bhereby\b/,
+    ],
+    relative: [/\brelative/, /\bfamily/, /\bspouse/, /\brelated to\b/, /\breferr/, /\bformer employee/, /\bcurrent employee/, /\bconflict of interest/],
+  });
+  // Topics no answer may be saved for or filled from the library, whichever company.
+  const NEVER_STORABLE_TOPICS = Object.freeze(["criminal", "demographic", "money", "security"]);
+  const NET_PATTERNS = Object.freeze(Object.fromEntries(Object.entries(NET_TOPICS).map(([topic, list]) => [topic, new RegExp(list.map((item) => item.source).join("|"))])));
+  // An 18-or-older wording is its own topic ("adult"): possibly sensitive, but a storable kind, so never on the never-storable list.
+  const AGE_TAIL = "(?: years?)?(?: (?:of age|old|or older|or over|and older|and over))*";
+  const AGE_18 = `\\b(?:(?:at least|over|above|older than) (?:the age of )?18${AGE_TAIL}|(?:the )?age of 18${AGE_TAIL}|18(?: years?)?(?: (?:of age|old|or older|or over|and older|and over))+|(?:are you|you are|must be) 18(?!\\d)${AGE_TAIL})`;
+
+  function netTopics(text) {
+    const words = String(text ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\beighteen\b/g, "18");
+    const plain = words.replace(new RegExp(AGE_18, "g"), " ");
+    const found = Object.keys(NET_PATTERNS).filter((topic) => NET_PATTERNS[topic].test(topic === "demographic" ? plain : words));
+    if (new RegExp(AGE_18).test(words)) found.push("adult");
+    return found.sort();
+  }
+
+  function possiblySensitive(text) {
+    return netTopics(text).length > 0;
+  }
+
+  function neverStorable(text) {
+    return netTopics(text).some((topic) => NEVER_STORABLE_TOPICS.includes(topic));
+  }
+
   function needsLabelKey(key) {
     const text = withoutEnumeration(key);
     const words = text.split(" ").filter(Boolean).length;
@@ -299,7 +366,9 @@
     // nothing shows it is the same question anywhere else: it never travels, reusable or not.
     if (optionRow) return false;
     const reusable = (entry.tags || []).some((tag) => String(tag).toLowerCase() === "reusable");
-    return reusable && !keys.some((key) => key && contextDependent(key));
+    // The broad net too: a question that might be immigration, criminal, demographic, pay, security, an agreement or about the
+    // employer's own people never carries to another company, whatever the row says or however the wording is phrased.
+    return reusable && !keys.some((key) => key && (contextDependent(key) || possiblySensitive(key)));
   }
 
   // A saved question is compared with the clean question first, then with the whole label,
@@ -555,5 +624,9 @@
     // The two rules apply_policy.py repeats for the agent's plan; tests/fixtures/apply/context_keys.json is run by both.
     needsLabelKey,
     contextDependent,
+    // The broad net (apply_policy.py repeats it; tests/fixtures/apply/broad_net.json is run by both).
+    netTopics,
+    possiblySensitive,
+    neverStorable,
   });
 })();
