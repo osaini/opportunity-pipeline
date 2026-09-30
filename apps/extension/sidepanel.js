@@ -189,6 +189,8 @@
       if (field.type === "file" || field.prohibited) {
         copy.append(node("output", field.reason || "Manual action required"));
       } else {
+        const reason = globalThis.ApplyModeFieldNotes.reasonLine(field);
+        if (reason) copy.append(node("output", reason));
         const editor = document.createElement(field.type === "textarea" ? "textarea" : "input");
         if (editor.tagName === "INPUT") editor.type = "text";
         editor.value = fieldValue(field);
@@ -217,7 +219,7 @@
                 method: "POST",
                 body: JSON.stringify({ question: field.answer_key, answer: editor.value, company: applyContext.application.company, tags: [scanResult.ats_type] })
               });
-              status.textContent = "Reviewed answer saved for future exact-question matches.";
+              status.textContent = "Reviewed answer saved for future matches. Each match still asks you to verify before filling.";
             } catch (error) { status.textContent = error.message; }
           });
           copy.append(saveAnswer);

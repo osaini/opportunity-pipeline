@@ -220,9 +220,11 @@
     return text;
   }
 
-  // Questions whose truth depends on the employer. A saved answer to one never carries to
-  // another company, even when the row is tagged reusable.
-  const CONTEXT_WORDING = /previously (?:worked|been employed|applied)|worked (?:here|for us|for this company|at)|applied (?:here|before|previously)|referr|who referred|know (?:anyone|someone)|how did you hear|where did you (?:hear|find)|current(?:ly)? (?:an )?employee/;
+  // Questions whose truth depends on the employer, found from this wording list and nothing
+  // smarter: a question worded some other way is not caught, and only the student not tagging it
+  // reusable keeps it at one company. A saved answer to one of these never carries to another
+  // company, even when the row is tagged reusable.
+  const CONTEXT_WORDING = /previously (?:worked|been employed|applied)|worked (?:here|for us|for this company|at)|applied (?:here|before|previously)|referr|who referred|know (?:anyone|someone)|how did you hear|where did you (?:hear|find)|current(?:ly)? (?:an )?employee|worked (?:for|with|at) (?:us|this|our|the company)|employed (?:by|at|with)|interviewed (?:with|at|here)|relatives?|family members?|this (?:organi[sz]ation|firm|company|employer)/;
 
   function needsLabelKey(key) {
     const text = withoutEnumeration(key);
@@ -282,8 +284,11 @@
   // for every tier: the clean question, the whole label, and rows saved before the clean
   // question existed. An answer saved at another employer is never assumed true here, and a row
   // with no company is exact only when it is reusable.
-  function mayUseAtCompany(entry, keys, company) {
+  function mayUseAtCompany(entry, keys, company, optionRow) {
     if (company && normalizedQuestion(entry.company || "") === company) return true;
+    // An option row is saved on the option's own label and does not carry its group question, so
+    // nothing shows it is the same question anywhere else: it never travels, reusable or not.
+    if (optionRow) return false;
     const reusable = (entry.tags || []).some((tag) => String(tag).toLowerCase() === "reusable");
     return reusable && !keys.some((key) => key && contextDependent(key));
   }
@@ -292,14 +297,15 @@
   // so answers saved before the side panel kept the clean question still match. `fieldQuestion`
   // is the field's own question, which a radio, checkbox or opener does not pass as `question`
   // but which still decides whether a reusable row may travel.
-  function matchAnswer(question, label, answers, company, fieldQuestion) {
+  function matchAnswer(question, label, answers, company, fieldQuestion, fieldType) {
     const cleanKey = questionKey(question);
     const normalizedLabel = normalizedQuestion(label);
     // No words at all (an option with no label source): nothing can be an exact match.
     if (!cleanKey && !normalizedLabel) return null;
     const companyKey = normalizedQuestion(company || "");
     const ownKey = questionKey(fieldQuestion === undefined ? question : fieldQuestion);
-    const usable = (entry) => mayUseAtCompany(entry, [normalizedQuestion(entry.question), ownKey], companyKey);
+    const optionRow = fieldType === "radio" || fieldType === "checkbox";
+    const usable = (entry) => mayUseAtCompany(entry, [normalizedQuestion(entry.question), ownKey], companyKey, optionRow);
     const cleanMatches = cleanKey && !needsLabelKey(cleanKey) ? (answers || []).filter((entry) => normalizedQuestion(entry.question) === cleanKey) : [];
     const labelMatches = normalizedLabel ? (answers || []).filter((entry) => normalizedQuestion(entry.question) === normalizedLabel) : [];
     const exact = cleanMatches.find(usable) || labelMatches.find(usable);
@@ -410,7 +416,7 @@
         confidence = value !== "" ? 0.95 : 0;
         reason = value !== "" ? "Mapped from an explicit label" : "Confirmed profile value is unavailable";
       } else {
-        const match = matchAnswer(labelKey ? "" : question, label, answers, options?.company, question);
+        const match = matchAnswer(labelKey ? "" : question, label, answers, options?.company, question, type);
         if (match) {
           value = String(match.entry.answer || "");
           provenance = `answer_library:${match.entry.id}`;
@@ -426,12 +432,14 @@
       const key = fingerprint(control, label);
       if (tag && typeof control.setAttribute === "function") control.setAttribute("data-opportunity-field", key);
       const markers = requiredMarkers(control, rawText);
+      // A label-keyed field is saved on its label, which is per-posting only through its name and
+      // id. With neither, the label is bare wording that repeats across postings, so no key.
       return { key, label: label || `Unlabelled ${type} field`, type,
         provenance, confidence, requires_review: requiresReview, prohibited,
         unsupported: type === "custom_select",
         required: Boolean(control.required || control.getAttribute?.("aria-required") === "true"),
         reason, proposed_value: String(value),
-        question, answer_key: labelKey ? label : question, required_markers: markers, required_any: markers.length > 0,
+        question, answer_key: labelKey ? (control.name || control.id ? label : "") : question, required_markers: markers, required_any: markers.length > 0,
         widget: widgetKind(control, type), visible_css: visibleCss(control),
         name: String(control.name || ""), id: String(control.id || "") };
     });

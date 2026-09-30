@@ -922,9 +922,9 @@ tests.checkbox_and_radio_siblings_never_share_a_saved_answer = () => {
       const rows = [{ id: "py", question: py.answer_key, answer, company: "Acme Robotics", tags }];
       for (const company of ["Acme Robotics", "Orbit Systems"]) {
         const scan = loadContentScript(page).scan(profile, rows, company);
-        // Exact at the company it was saved for, or anywhere when reusable and its question is not
-        // context-dependent; otherwise shown, not exact.
-        const travels = company === "Acme Robotics" || tags.length > 0;
+        // Exact at the company it was saved for. An option row never travels, reusable or not: it
+        // does not carry its group question, so nothing could show it is the same question.
+        const travels = company === "Acme Robotics";
         assert.equal(fieldById(scan, "lang_py").confidence, travels ? 0.9 : 0.7, `the option it was saved from (${company}, ${tags})`);
         for (const id of ["lang_java", "lang_c", "rel_yes", "rel_no"]) {
           const sibling = fieldById(scan, id);
@@ -1001,6 +1001,76 @@ tests.injection_lists_and_the_answer_save_follow_the_split = () => {
   assert.ok(browserTest.includes(files), "the MV3 browser test injects the same four files");
   const ci = readFileSync(path.join(ROOT, ".github", "workflows", "ci.yml"), "utf8");
   assert.match(ci, /node --check apps\/extension\/apply-engine\.js/);
+};
+
+
+// --- Round 2 review: what the student sees, and where an exact match can still leak ---
+
+tests.the_match_reason_is_shown_beside_every_non_file_field = () => {
+  const notes = require(path.join(ROOT, "apps", "extension", "lib", "field-notes.js"));
+  const page = pageOf({ tag: "textarea", id: "question_1", name: "question_1", label: "Why do you want to work here?" });
+  const rows = [{ id: "a", question: "Why do you want to work here?", answer: "Robots", company: "Acme Robotics" }];
+  const same = loadContentScript(page).scan(profile, rows, "Acme Robotics").fields[0];
+  assert.match(notes.reasonLine(same), /verify before filling/i, "a same-company match says to verify");
+  const away = loadContentScript(page).scan(profile, rows, "Orbit Systems").fields[0];
+  assert.match(notes.reasonLine(away), /another company/i, "a match saved for another company says so");
+  const mapped = loadContentScript(pageOf({ tag: "input", type: "text", id: "e", name: "email", label: "Email Address" })).scan(profile).fields[0];
+  assert.equal(notes.reasonLine(mapped), mapped.reason);
+  assert.equal(notes.reasonLine({ reason: "" }), "");
+  assert.equal(notes.reasonLine(null), "");
+  const sidepanel = readFileSync(path.join(ROOT, "apps", "extension", "sidepanel.js"), "utf8");
+  assert.match(sidepanel, /ApplyModeFieldNotes\.reasonLine\(field\)/, "the side panel renders the reason for each row");
+  assert.doesNotMatch(sidepanel, /exact-question/, "and no longer calls a saved match exact");
+  const html = readFileSync(path.join(ROOT, "apps", "extension", "sidepanel.html"), "utf8");
+  assert.ok(html.indexOf("lib/field-notes.js") > -1 && html.indexOf("lib/field-notes.js") < html.indexOf("sidepanel.js"), "the page loads the helper first");
+};
+
+tests.a_follow_up_or_option_with_no_name_or_id_cannot_be_saved = () => {
+  for (const wording of ["Please provide more details", "If yes, please explain", "Which company was it?"]) {
+    const scan = loadContentScript(pageOf({ tag: "textarea", wrapped: true, label: wording })).scan(profile, [], "Acme Robotics");
+    assert.equal(scan.fields[0].answer_key, "", `${wording}: nothing per-posting to key on`);
+  }
+  const radio = loadContentScript(pageOf({ tag: "input", type: "radio", wrapped: true, label: "Yes", groupQuestion: { legend: "Are you willing to relocate?" } })).scan(profile, [], "Acme Robotics");
+  assert.equal(radio.fields[0].answer_key, "", "an option with no name or id has no per-posting key");
+  const clean = loadContentScript(pageOf({ tag: "textarea", wrapped: true, label: "Why do you want to work here?" })).scan(profile, [], "Acme Robotics");
+  assert.equal(clean.fields[0].answer_key, "Why do you want to work here?", "a clean question is unaffected");
+  const named = loadContentScript(pageOf({ tag: "textarea", id: "question_5", name: "question_5", label: "Please provide more details" })).scan(profile, [], "Acme Robotics");
+  assert.notEqual(named.fields[0].answer_key, "", "with a name and id it keeps its per-posting key");
+};
+
+tests.a_reusable_option_row_never_travels_to_another_company = () => {
+  const legend = "Are you willing to relocate?";
+  const at = (groupQuestion) => pageOf({ tag: "input", type: "radio", id: "q_9_yes", name: "question_9", value: "Yes", label: "Yes", ...(groupQuestion ? { groupQuestion } : {}) });
+  const first = loadContentScript(at({ legend })).scan(profile, [], "Acme Robotics").fields[0];
+  const row = { id: "opt", question: first.answer_key, answer: "yes", company: "Acme Robotics", tags: ["reusable"] };
+  for (const [name, group] of [["a different legend", { legend: "Do you enjoy working in small teams?" }], ["no legend", null], ["the same legend", { legend }]]) {
+    const scan = loadContentScript(at(group)).scan(profile, [row], "Orbit Systems");
+    assert.notEqual(scan.fields[0].confidence, 0.9, `a reusable option at Orbit under ${name}`);
+    assert.equal(preTicked(scan, "q_9_yes"), false, name);
+  }
+  const home = loadContentScript(at({ legend })).scan(profile, [row], "Acme Robotics");
+  assert.equal(home.fields[0].confidence, 0.9, "still exact at its own company");
+  const box = pageOf({ tag: "input", type: "checkbox", id: "lang_py", name: "question_800[]", value: "Python", label: "Python", groupQuestion: { legend: "Languages?" } });
+  const boxKey = loadContentScript(box).scan(profile, [], "Acme Robotics").fields[0].answer_key;
+  const away = loadContentScript(box).scan(profile, [{ id: "c", question: boxKey, answer: "true", company: "Acme Robotics", tags: ["reusable"] }], "Orbit Systems");
+  assert.notEqual(away.fields[0].confidence, 0.9, "a reusable checkbox row does not travel either");
+};
+
+tests.employer_relative_questions_never_travel_even_when_reusable = () => {
+  for (const question of ["Have you ever worked for this organization?", "Do you have relatives employed by us?", "Have you interviewed with us before?",
+    "Are any of your family members employed by this company?", "Were you previously employed by this firm?"]) {
+    const page = pageOf({ tag: "textarea", id: "question_31", name: "question_31", label: question });
+    const rows = [{ id: "r", question, answer: "No", company: "Acme Robotics", tags: ["reusable"] }];
+    const away = loadContentScript(page).scan(profile, rows, "Orbit Systems").fields[0];
+    assert.notEqual(away.confidence, 0.9, `${question}: not exact at another company`);
+    assert.equal(loadContentScript(page).scan(profile, rows, "Acme Robotics").fields[0].confidence, 0.9, `${question}: exact at its own company`);
+  }
+  // Questions that are not about the employer still travel when reusable.
+  for (const question of ["Why are you interested in this role?", "Tell us about yourself", "Describe a time you worked on a team"]) {
+    const page = pageOf({ tag: "textarea", id: "question_32", name: "question_32", label: question });
+    const rows = [{ id: "r", question, answer: "Answer", company: "Acme Robotics", tags: ["reusable"] }];
+    assert.equal(loadContentScript(page).scan(profile, rows, "Orbit Systems").fields[0].confidence, 0.9, question);
+  }
 };
 
 let failed = 0;

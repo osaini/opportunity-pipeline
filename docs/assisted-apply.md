@@ -29,25 +29,42 @@ value-free progress. The extension never receives the editable profile draft.
 3. Sensitive or consequential fields remain manual. A non-sensitive saved
    answer whose question has the same words as the field can be checked after
    review; fuzzy matches are never prechecked. "Exact" means the same words, not
-   that the answer is true here, so every such match is labelled "verify before
-   filling". A saved answer is exact only for the company it was saved at, or
-   when it is tagged `reusable` and the question is not one whose answer depends
-   on the employer ("previously worked here" style questions) or on the question
-   above it. That holds for every saved row, including rows saved before the
-   clean question was kept. A row with no company is exact only when it is
-   tagged `reusable`. Anywhere else the answer is shown as "Saved for another
-   company; direct review required" and is not prechecked.
+   that the answer is true here. The panel shows a line under every field
+   saying why it was proposed: an exact match reads "Same question saved for
+   this company; verify before filling" (or "Same question, saved as reusable;
+   verify before filling"), and anything saved at another company reads "Saved
+   for another company; direct review required" and is not prechecked. A saved
+   answer is exact only for the company it was saved at, or when it is tagged
+   `reusable`, is not a radio or checkbox option, and its question is not
+   context-dependent. That holds for every saved row, including rows saved
+   before the clean question was kept. A row with no company is exact only when
+   it is tagged `reusable`.
+   What counts as context-dependent is decided from wording, not meaning. A
+   question is kept at its own company when it is under three words, is a
+   follow-up (see below), or matches a fixed list: previously worked, employed
+   or applied here, worked for or with us or this company, employed by or at,
+   interviewed with us, relatives or family members, referred, know anyone,
+   how did you hear, current employee, "this organization/firm/company/
+   employer". An employer-relative question worded some other way is not
+   caught, so do not tag such an answer `reusable`.
    Radio and checkbox options, follow-ups that depend on the question above them
    ("if yes, please explain", "please provide more details", "which company was
    it?"), very short questions, and a question that appears twice on one form
-   are saved on the field's own label, which includes its per-posting name and
-   id. Those are exact only on that same label, and only under the company rule
-   above; everywhere else they are a similar match. A field with no label text
-   on the page cannot be saved.
-   Known limitation: follow-up detection is wording-based. A follow-up worded
-   like a standalone question can still match an answer saved under a different
-   question at the same company. That is why every match says to verify before
-   filling.
+   are saved on the field's own label plus its form name and id, so two
+   different fields on one page never share a key. A field with no name and no
+   id has no such key, and its answer cannot be saved. A field with no label
+   text on the page cannot be saved either. These are exact only on that same
+   label, and only under the company rule above; a radio or checkbox option
+   row never travels to another company, even when tagged `reusable`, because
+   the row does not record its group question.
+   Known limitations, which is why every match says to verify before filling.
+   Follow-up detection is wording-based, so a follow-up worded like a
+   standalone question can still match an answer saved under a different
+   question at the same company. And a name and id are not always unique to one
+   posting: legacy `boards.greenhouse.io` forms number their fields by position
+   (`answers_attributes_3_text_value`), so a follow-up or an option saved on one
+   posting can match the same wording at the same position on another posting
+   at the same company, under a different parent question.
 4. Confirmed uploaded PDF/DOCX résumés and approved generated PDFs can be
    selected explicitly. Filename, media type, size, and SHA-256 are checked
    before insertion. File bytes are never persisted by the extension.
