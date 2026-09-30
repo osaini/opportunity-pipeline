@@ -1,8 +1,17 @@
-// Minimal hand-rolled DOM stub for exercising apps/extension/content.js in
-// Node without any dependency. Supports only what the content script uses:
-// querySelectorAll("input, textarea, select"), label[for="id"] lookup,
-// closest("label"), aria-label/name/id/placeholder label sources, focus,
-// and dispatched input/change events.
+// Minimal hand-rolled DOM stub for exercising apps/extension/content.js and
+// apply-engine.js in Node without any dependency. Supports only what the
+// scripts use: querySelectorAll("input, textarea, select"), label[for="id"]
+// lookup, closest("label"), aria-label/aria-labelledby/name/id/placeholder
+// label sources, focus, and dispatched input/change events. Descriptor keys
+// beyond the basics (all optional, all absent in the older fixtures):
+//   wrapped, text          a wrapping <label>, and the control's own text inside it
+//   ariaRequired, group    aria-required on the control, or on a [role=group] ancestor
+//   ariaLabelledby         ids resolved through page.texts
+//   container              {hiddenMirror, spanRequired, others}: the field container
+//   style, rect            computed style and box; without rect, visible_css is unknown
+//   tabIndex, ariaHiddenAncestor   for the visible_css checks beyond the box (rect.left too)
+//   groupQuestion          {legend, labelledby, ariaLabel}: the fieldset or group a radio or
+//                          checkbox sits in, its legend or aria-labelledby text or aria-label
 import vm from "node:vm";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -17,6 +26,70 @@ class StubEvent {
   }
 }
 
+// The one ancestor the engine asks about. It answers the exact selector strings the
+// engine uses for a hidden required mirror and an upload group's required span, and
+// reports `others` extra visible controls so a shared container can be simulated.
+class StubContainer {
+  constructor(control, descriptor) {
+    this.control = control;
+    this.descriptor = descriptor;
+    this.parentElement = null;
+  }
+
+  querySelectorAll(_selector) {
+    const others = Array.from({ length: this.descriptor.others || 0 }, () => (
+      { disabled: false, hidden: false, type: "text", getAttribute: () => null }
+    ));
+    return [this.control, ...others];
+  }
+
+  querySelector(selector) {
+    if (selector === 'input[required][aria-hidden="true"]') return this.descriptor.hiddenMirror ? {} : null;
+    if (selector === "span.required") return this.descriptor.spanRequired ? {} : null;
+    return null;
+  }
+}
+
+// A <label>: its own words plus the text of the control inside it. cloneNode and
+// querySelectorAll behave as they do in a browser, so the engine's real path (clone the
+// label, remove the controls inside it) is the one the tests take.
+class StubLabel {
+  constructor(parts) {
+    this.parts = parts;
+  }
+
+  get textContent() {
+    return this.parts.filter((part) => !part.removed).map((part) => part.text).join(" ").trim();
+  }
+
+  cloneNode(_deep) {
+    return new StubLabel(this.parts.map((part) => ({ ...part })));
+  }
+
+  querySelectorAll(selector) {
+    if (selector !== "input, select, textarea, option") return [];
+    return this.parts.filter((part) => part.inner).map((part) => ({ remove() { part.removed = true; } }));
+  }
+}
+
+// The fieldset or group a radio or checkbox sits in.
+class StubGroup {
+  constructor(descriptor) {
+    this.descriptor = descriptor;
+    this.parentElement = null;
+  }
+
+  querySelector(selector) {
+    return selector === "legend" && this.descriptor.legend ? { textContent: this.descriptor.legend } : null;
+  }
+
+  getAttribute(name) {
+    if (name === "aria-labelledby") return this.descriptor.labelledby || null;
+    if (name === "aria-label") return this.descriptor.ariaLabel || null;
+    return null;
+  }
+}
+
 class StubElement {
   constructor(descriptor) {
     this.tagName = String(descriptor.tag || "input").toUpperCase();
@@ -25,46 +98,65 @@ class StubElement {
     this.name = descriptor.name || "";
     this.placeholder = descriptor.placeholder || "";
     this.ariaLabel = descriptor.ariaLabel || "";
+    this.ariaLabelledby = descriptor.ariaLabelledby || "";
     this.role = descriptor.role || "";
     this.disabled = Boolean(descriptor.disabled);
     this.value = "";
     this.checked = false;
     this.required = Boolean(descriptor.required);
+    this.ariaRequired = Boolean(descriptor.ariaRequired);
+    this.group = descriptor.group || null;
     this.hidden = Boolean(descriptor.hidden);
     this.accept = descriptor.accept || "";
     this.options = (descriptor.options || []).map((option) => ({ value: option.value, textContent: option.label }));
     this.labelText = descriptor.label || "";
-    this.wrappedByLabel = false;
+    this.ownText = descriptor.text || "";
+    this.wrappedByLabel = Boolean(descriptor.wrapped);
+    this.attrs = {};
+    this.style = descriptor.style || null;
+    this.tabIndex = descriptor.tabIndex ?? 0;
+    this.ariaHiddenAncestor = Boolean(descriptor.ariaHiddenAncestor);
+    this.groupQuestion = descriptor.groupQuestion ? new StubGroup(descriptor.groupQuestion) : null;
+    if (descriptor.rect) this.getBoundingClientRect = () => ({ right: 1000, bottom: 1000, ...descriptor.rect });
+    this.parentElement = descriptor.container ? new StubContainer(this, descriptor.container) : null;
     this.events = [];
     this.focused = false;
+  }
+
+  get textContent() {
+    return this.ownText;
   }
 
   get attributes() {
     const self = this;
     return {
       get(name) {
-        if (name === "aria-label") return self.ariaLabel;
-        if (name === "role") return self.role;
-        if (name === "aria-required") return self.required ? "true" : null;
-        return null;
+        return self.getAttribute(name);
       },
     };
   }
 
   setAttribute(name, value) {
     if (name === "aria-label") this.ariaLabel = value;
+    else this.attrs[name] = String(value);
   }
 
   getAttribute(name) {
     if (name === "aria-label") return this.ariaLabel;
+    if (name === "aria-labelledby") return this.ariaLabelledby || null;
     if (name === "role") return this.role;
-    if (name === "aria-required") return this.required ? "true" : null;
-    return null;
+    if (name === "aria-required") return this.ariaRequired ? "true" : null;
+    return this.attrs[name] ?? null;
   }
 
   closest(selector) {
     if (selector === "label" && this.wrappedByLabel) {
-      return { textContent: this.labelText };
+      return new StubLabel([{ text: this.labelText }, { text: this.ownText, inner: true }]);
+    }
+    if (selector === 'fieldset, [role="radiogroup"], [role="group"]') return this.groupQuestion;
+    if (selector === "[aria-hidden='true']") return this.ariaHiddenAncestor ? {} : null;
+    if (selector === '[role="group"]' && this.group) {
+      return { getAttribute: (name) => (name === "aria-required" && this.group.ariaRequired ? "true" : null) };
     }
     return null;
   }
@@ -83,8 +175,9 @@ export class StubDocument {
     this.controls = (page.controls || []).map((descriptor) => new StubElement(descriptor));
     this.labelsById = {};
     for (const control of this.controls) {
-      if (control.id && control.labelText) this.labelsById[control.id] = { textContent: control.labelText };
+      if (control.id && control.labelText && !control.wrappedByLabel) this.labelsById[control.id] = new StubLabel([{ text: control.labelText }]);
     }
+    this.texts = page.texts || {};
     this.removed = new Set();
   }
 
@@ -102,8 +195,12 @@ export class StubDocument {
   appendControl(descriptor) {
     const control = new StubElement(descriptor);
     this.controls.push(control);
-    if (control.id && control.labelText) this.labelsById[control.id] = { textContent: control.labelText };
+    if (control.id && control.labelText) this.labelsById[control.id] = new StubLabel([{ text: control.labelText }]);
     return control;
+  }
+
+  getElementById(id) {
+    return this.texts[id] === undefined ? null : { textContent: this.texts[id] };
   }
 
   querySelectorAll(selector) {
@@ -118,7 +215,7 @@ export class StubDocument {
   }
 }
 
-export function loadContentScript(page) {
+export function loadContentScript(page, { contentScript = true } = {}) {
   const document = new StubDocument(page);
   let listener = null;
   const chrome = {
@@ -133,22 +230,27 @@ export function loadContentScript(page) {
   const context = vm.createContext({
     document,
     location: { hostname: page.hostname, href: page.url },
-    chrome,
+    ...(contentScript ? { chrome } : {}),
     CSS: { escape: (value) => String(value).replace(/"/g, '\\"') },
+    getComputedStyle: (element) => ({ display: "block", visibility: "visible", opacity: "1", ...element.style }),
     Event: StubEvent,
     console,
     setTimeout,
   });
-  for (const filename of ["adapters.js", "field-engine.js", "content.js"]) {
+  // contentScript: false loads only the three files a page gets from the agent, with no chrome.*.
+  for (const filename of contentScript ? ["adapters.js", "field-engine.js", "apply-engine.js", "content.js"] : ["adapters.js", "field-engine.js", "apply-engine.js"]) {
     const source = readFileSync(path.join(EXTENSION_DIR, filename), "utf8");
     vm.runInContext(source, context, { filename });
   }
-  if (!listener) throw new Error("content.js did not register an onMessage listener");
+  if (contentScript && !listener) throw new Error("content.js did not register an onMessage listener");
   return {
     document,
-    scan(profile, answers) {
+    context,
+    // The shared engine itself, for options the extension's messages never pass (tag).
+    engine: context.OpportunityApplyEngine,
+    scan(profile, answers, company) {
       let response = null;
-      listener({ type: "SCAN_FIELDS", profile, answers }, null, (value) => {
+      listener({ type: "SCAN_FIELDS", profile, answers, company }, null, (value) => {
         response = value;
       });
       return response;

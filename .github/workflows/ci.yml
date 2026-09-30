@@ -36,8 +36,8 @@ jobs:
       - run: python -m unittest tests.test_scheduled_tasks tests.test_postgres -v
       - run: node --check opportunity_app/static/app.js
       - run: node --check opportunity_app/static/ops.js
-      - run: node --check apps/extension/adapters.js && node --check apps/extension/field-engine.js && node --check apps/extension/content.js && node --check apps/extension/sidepanel.js && node --check apps/extension/service-worker.js
-      - run: node --check apps/extension/lib/base64.js
+      - run: node --check apps/extension/adapters.js && node --check apps/extension/field-engine.js && node --check apps/extension/apply-engine.js && node --check apps/extension/content.js && node --check apps/extension/sidepanel.js && node --check apps/extension/service-worker.js
+      - run: node --check apps/extension/lib/base64.js && node --check apps/extension/lib/documents.js && node --check apps/extension/lib/field-notes.js
       - run: node tests/extension/run_tests.mjs
       - run: pip-audit -r requirements-web.lock -r requirements-test.txt
   portability:

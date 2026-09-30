@@ -46,6 +46,14 @@ submitted**. Page text or a success-looking URL can never update the tracker.
 - LinkedIn Easy Apply is intentionally unsupported pending a separate platform-
   policy and account-state review.
 
+## How the scripts fit together
+
+`adapters.js`, `field-engine.js` and `apply-engine.js` are plain page scripts with no
+`chrome.*` calls: the field rules (what is sensitive, prohibited, mapped or left
+alone) live in `apply-engine.js` and are exposed as `globalThis.OpportunityApplyEngine`.
+`content.js` is only the message listener the side panel talks to. None of them clicks,
+submits, or dispatches an event other than `input` and `change` on a field you approved.
+
 Run the fast field-engine regression suite with:
 
 ```bash

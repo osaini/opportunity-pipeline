@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import io
 import hashlib
 import hmac
@@ -1023,6 +1024,20 @@ class PlatformTests(unittest.TestCase):
             self.assertIn("0002_agent_runtime.sql", migrations)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM agent_turns").fetchone()[0], 2)
 
+    def test_server_sensitive_guard_matches_the_extension_rule(self):
+        import re
+
+        from opportunity_app.extension_apply import SENSITIVE_FIELD, answer_is_sensitive
+
+        root = Path(__file__).resolve().parents[1]
+        engine = (root / "apps" / "extension" / "apply-engine.js").read_text(encoding="utf-8")
+        match = re.search(r"const SENSITIVE = /(.*)/i;", engine)
+        self.assertIsNotNone(match)
+        self.assertEqual(SENSITIVE_FIELD.pattern, match.group(1), "extension_apply.SENSITIVE_FIELD drifted from apply-engine.js")
+        vectors = json.loads((root / "tests" / "fixtures" / "apply" / "sensitive_vectors.json").read_text(encoding="utf-8"))["vectors"]
+        for vector in vectors:
+            self.assertEqual(answer_is_sensitive(vector["question"]), vector["extension_flags"], vector["question"])
+
     def test_apply_mode_has_minimal_permissions_no_submit_and_private_session_sync(self):
         extension = Path(__file__).resolve().parents[1] / "apps" / "extension"
         manifest = json.loads((extension / "manifest.json").read_text(encoding="utf-8"))
@@ -1035,12 +1050,23 @@ class PlatformTests(unittest.TestCase):
         )
         self.assertEqual(manifest["side_panel"]["default_path"], "sidepanel.html")
         self.assertIn("service_worker", manifest["background"])
-        content_script = (extension / "content.js").read_text(encoding="utf-8")
-        self.assertIn('"submit"', content_script)
-        self.assertIn("SENSITIVE", content_script)
-        self.assertNotIn(".click(", content_script)
-        self.assertNotIn("requestSubmit", content_script)
-        self.assertNotIn(".submit(", content_script)
+        # The field rules live in apply-engine.js, so the positive assertions follow them;
+        # the negative ones cover both files, since every click the agent makes is in Python.
+        engine_script = (extension / "apply-engine.js").read_text(encoding="utf-8")
+        self.assertIn('"submit"', engine_script)
+        self.assertIn("SENSITIVE", engine_script)
+        for name in ("content.js", "apply-engine.js", "adapters.js", "field-engine.js"):
+            source = (extension / name).read_text(encoding="utf-8")
+            for forbidden in (".click(", "requestSubmit", ".submit(", "new MouseEvent", "new PointerEvent"):
+                self.assertNotIn(forbidden, source, f"{name} must not contain {forbidden}")
+            if name == "field-engine.js":
+                # The one place events are dispatched: input and change, on a field the plan named.
+                calls = re.findall(r"dispatchEvent\([^)]*\)?", source)
+                self.assertTrue(calls)
+                for call in calls:
+                    self.assertRegex(call, r'^dispatchEvent\(new Event\("(?:input|change)"', name)
+            else:
+                self.assertNotIn("dispatchEvent", source, f"{name} must not dispatch events itself")
 
         self.migrate()
         app = create_app(

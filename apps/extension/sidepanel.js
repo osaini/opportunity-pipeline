@@ -79,7 +79,7 @@
     try {
       return await chrome.tabs.sendMessage(activeTabId, message);
     } catch (_) {
-      await chrome.scripting.executeScript({ target: { tabId: activeTabId }, files: ["adapters.js", "field-engine.js", "content.js"] });
+      await chrome.scripting.executeScript({ target: { tabId: activeTabId }, files: ["adapters.js", "field-engine.js", "apply-engine.js", "content.js"] });
       return chrome.tabs.sendMessage(activeTabId, message);
     }
   }
@@ -189,6 +189,8 @@
       if (field.type === "file" || field.prohibited) {
         copy.append(node("output", field.reason || "Manual action required"));
       } else {
+        const reason = globalThis.ApplyModeFieldNotes.reasonLine(field);
+        if (reason) copy.append(node("output", reason));
         const editor = document.createElement(field.type === "textarea" ? "textarea" : "input");
         if (editor.tagName === "INPUT") editor.type = "text";
         editor.value = fieldValue(field);
@@ -206,12 +208,18 @@
           saveAnswer.disabled = editor.value === "";
           editor.addEventListener("input", () => { saveAnswer.disabled = editor.value === ""; });
           saveAnswer.addEventListener("click", async () => {
+            // The engine matches saved answers on answer_key alone, so a row saved on any other
+            // text (the group's legend, "Unlabelled ...") could never be found again.
+            if (!field.answer_key) {
+              status.textContent = "This field has no stable question text on the page, so its answer cannot be saved for reuse.";
+              return;
+            }
             try {
               await api("/api/v1/extension/answers", {
                 method: "POST",
-                body: JSON.stringify({ question: field.label, answer: editor.value, company: applyContext.application.company, tags: [scanResult.ats_type] })
+                body: JSON.stringify({ question: field.answer_key, answer: editor.value, company: applyContext.application.company, tags: [scanResult.ats_type] })
               });
-              status.textContent = "Reviewed answer saved for future exact-question matches.";
+              status.textContent = "Reviewed answer saved for future matches. Each match still asks you to verify before filling.";
             } catch (error) { status.textContent = error.message; }
           });
           copy.append(saveAnswer);
@@ -303,7 +311,7 @@
     await activeTab();
     if (!selectedApplicationId || !applyContext) throw new Error("Choose and confirm an application context first.");
     status.textContent = "Scanning visible controls…";
-    scanResult = await send({ type: "SCAN_FIELDS", profile: applyContext.confirmed_profile, answers: applyContext.answers });
+    scanResult = await send({ type: "SCAN_FIELDS", profile: applyContext.confirmed_profile, answers: applyContext.answers, company: applyContext.application.company });
     const auth = await storedAuth();
     const unsupportedCounts = { ...auth.unsupportedCounts };
     for (const field of scanResult.fields.filter((item) => item.unsupported)) {
