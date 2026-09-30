@@ -34,7 +34,7 @@ in from four places only:
 
 1. facts the student has confirmed in their profile (name, email, phone, links);
 2. answers the student saved before, when the question is word for word the same **and** the
-   answer was saved for this company or marked "use for any company";
+   answer was saved for this company (as built, v1: never carried to another company, see 7.1 "As built");
 3. the résumé picked for this role, or the student's confirmed résumé when no variant is picked;
 4. exact option labels the student picked once for typeahead lists such as school and location.
 
@@ -2116,6 +2116,17 @@ a number or letter is taken off, in any order and up to six times, before the op
 `tests/fixtures/apply/context_keys.json` is run by both the engine and `apply_policy`, so the two
 cannot drift apart.
 
+**As built (2026-09-30), a deliberate deviation from the company rule above: Apply for me v1 does no cross-company
+reuse.** No classifier can tell every personal, legal or agreement question from an ordinary one (three review rounds
+each found wordings the lists missed), so an `answer_library` row is used by `build_plan` only when its `company`
+equals this company by `identity_tokens`. The `reusable` tag is ignored there: a reusable row saved at another
+company is a row "saved elsewhere" and fills nothing (`_saved_answer`). The what's-missing view no longer offers "Use
+for any company" (`apply_preflight._action` has no `reusable_allowed`, and `app.js` shows "This answer is saved for
+this company only"), and `answer_missing` refuses `reusable=True`. Confirmed profile facts (name, email, phone, links,
+`name_parts`) are unaffected. Nothing else changes for the extension, which still proposes a reusable row for
+review on an ordinary question (10.3, 7.3 "As built"). Restoring reuse later is a small change (read the tag again in
+`_saved_answer` and offer the tick again) and needs the student's say-so first.
+
 For a sub-question that starts with one of those openers, the key is prefixed with its parent: the
 nearest fieldset legend, or else the preceding schema question's label (`"{parent} / {question}"`),
 so "If yes, please explain" under two different questions are two different keys. The Needs you
@@ -2278,19 +2289,35 @@ per topic (immigration, work authorization, criminal, demographic, money, securi
 a topic word or short phrase, never a sentence shape. It never marks a question sensitive and never picks a category; it
 only tightens what may be done with a question the classifier called ordinary:
 
-- A question the net hits, or one that follows or is filed under such a question (its parent, when the child follows it
-  by the follow-up rules or the parent is precisely sensitive), is **company-only**: no "Use for any company", and no fill
-  from an answer saved for another company or for no company, even one tagged `reusable`. In the extension
-  `mayUseAtCompany` gives the same answer.
-- A question that hits the criminal, demographic (apart from an 18-or-older wording), money or security topic, or follows one,
-  is **never storable**: the what's-missing view offers no form and says why, `answer_missing` refuses it, and the plan never
-  fills it from the answer library, even at the same company.
-- A box or Yes/No question that hits the agreement topic is never filled from the answer library; only an exact
-  sensitive-store statement ticks it (D9 B). A stored acknowledgment or consent is kept for one company unless it is
-  provably a plain certification that the student's own answers are true; any other agreement may be that employer's own
-  document, so it is never offered or stored for any company.
-- A work-authorization, sponsorship or 18-or-older entry whose statement (heading, option, description) also hits the
-  demographic topic is refused, and the field is read as a personal question.
+- **Safety does not rest on the net.** Apply for me never carries an answer from one company to another (7.1 "As
+  built") and never fills a checkbox, or an agreement, from the answer library (below), so a wording the lists miss can at
+  worst be saved by the student for that one company. The net is a best-effort refusal on top.
+- A question that hits the criminal, demographic (apart from an 18-or-older wording and the EEO decline path), money or
+  security topic, or follows one (its parent, when the child follows it by the follow-up rules, the parent is precisely
+  sensitive, or the net finds a topic in the parent; the text of a text field's description is read too), is **never
+  storable**: the what's-missing view offers no form and says why, `answer_missing` refuses it, the plan never fills it
+  from the answer library, even at the same company, and the extension's Save (`POST /api/v1/extension/answers`) refuses
+  it. A select's option labels are read for the status topics and for narrow pay and clearance phrases.
+- **No checkbox or agreement control is filled from the answer library** (D9 B). A checkbox, single or a group, never is;
+  nor is a select or multiselect whose option labels or heading agree to, accept, acknowledge, consent to, certify,
+  attest or confirm something, a Yes/No-shaped question that hits the agreement topic, or a typed signature. Only an
+  exact sensitive-store statement ticks or chooses it; otherwise it is left for the student.
+- **Every stored statement and tick-box entry is per company** (C). An acknowledgment or consent statement, and any
+  work-authorization, sponsorship or 18-or-older entry whose `answer_kind` is a tick box, is typed text, or whose question or
+  option also agrees to something, is refused for "any company" by `add_entry`, is not offered for it, and is ignored at
+  other companies when a row says otherwise (`lookup`). Any-company scope remains only for a select's exact option label
+  for those three kinds, and for an EEO decline. No word list decides what a statement names, so even a plain "I certify
+  that my answers are true" is one company's.
+- A work-authorization, sponsorship or 18-or-older entry whose statement (heading, option, description) or stored answer also
+  hits criminal, demographic, money or security is refused, and the field is read as a personal question. An
+  acknowledgment or consent that merely names such words ("EEOC poster") is an agreement and stays storable for one company.
+- Ordinary prompts are not over-read: "take charge of a project", "in a sentence" or "in 2-3 sentences", "network
+  security", "security tools", "exporting data" and "hourly availability" are removed before the topics are read
+  (`NET_BENIGN`, repeated in the engine and pinned by the same vectors). "Security clearance", "export control",
+  "charged with" and "hourly rate" are untouched.
+- In the extension, `mayUseAtCompany` still carries a reusable row for an ordinary question, but never onto a field that
+  hits the net, or whose immediately preceding field does, and a checkbox is never pre-ticked from a row saved at another
+  company (an option row never travels).
 
 The net over-reads on purpose ("Would you like to opt in to updates?" is immigration wording to it, and a question that
 only comes after a sensitive one takes that one's topics). Over-blocking costs some reuse; under-blocking is the bug. It
@@ -2632,7 +2659,7 @@ The wording is plain and never hardcodes anything about one student.
 
 | Reason | Inline action |
 | --- | --- |
-| Missing answer (non-sensitive) | The question, exactly as the form shows it, with a text box (or the option list for selects) and **Save and use for this question**. It saves an id-free `answer_library` row **for this company**. A **Use for any company** tick, for any field kind, adds the `reusable` tag; it is hidden for context-dependent questions (7.1). |
+| Missing answer (non-sensitive) | The question, exactly as the form shows it, with a text box (or the option list for selects) and **Save and use for this question**. It saves an id-free `answer_library` row **for this company** and says so ("This answer is saved for this company only."). |
 | Missing sensitive answer, category allowed (D5 B to E) | The same, plus the unticked consent checkbox, "Use this answer only to fill application forms that the app submits after I confirm each one". Saves to `apply_sensitive_answers` (browser session only). |
 | Sensitive, category not allowed | "The app doesn't answer this kind of question for you ({category}). Finish in browser leaves it for you." |
 | Typeahead label (school, location, degree) | A text box, filled in from the matching confirmed fact when there is one, and **Look up options** ("This sends what you typed to Greenhouse's lookup service"). Then the options as radio buttons, with **Use this one from now on** (saves `apply_ats_labels`). |
@@ -2645,6 +2672,12 @@ The wording is plain and never hardcodes anything about one student.
 | Duplicate asks (6.0 step 4) | The question, with its tick. The run starts only once it is ticked. |
 | Form changed, or plan changed | **Rehearse again**. |
 | After-click needs_you or unconfirmed | "This may have been sent." **It went through** / **It didn't go through** (disabled while the attempt is still running). |
+
+**As built (2026-09-30):** the **Use for any company** tick on a missing answer is gone. Apply for me v1 does no
+cross-company reuse (7.1 "As built"), so the tick would promise something the plan no longer does; `answer_missing`
+refuses `reusable=True`. The tick on the sensitive-answer form stays, and is offered only where the store may keep an
+answer for any company: a select's exact option label for work authorization, sponsorship or 18 or older, and an EEO
+decline (7.3 "As built").
 
 ### 10.4 The plan preview
 

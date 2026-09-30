@@ -45,13 +45,14 @@ value-free progress. The extension never receives the editable profile draft.
      following" names nothing). When the option is short, points elsewhere ("I
      agree to the above terms") or the box has a description, the statement is
      also filed under the question above it and saved for one company. A
-     statement is saved for one company, never for any company, unless the app
-     can prove it names no document, which it can only do for a plain
-     certification that the student's own answers are true ("I certify that the
-     information I have provided is accurate"). Any other agreement, whatever its
-     words (terms, rules, a code, a program, a capitalized name), a link, a
-     description of its own or a pointer elsewhere is one company's, as is any
-     question that depends on its company. The plan shows the form's own
+     statement is saved for one company, never for any company, whatever its
+     words: no list can prove a statement names no document, so even a plain
+     certification that the student's own answers are true is one company's. So
+     is any question that depends on its company. A tick box or a typed answer
+     for work authorization, sponsorship or 18 or older is one company's too,
+     and so is a choice that also agrees to something ("Yes, and I agree to an
+     E-Verify check"). Only a choice from the form's own option list and an EEO
+     decline may be kept for any company. The plan shows the form's own
      document addresses next to the tick; if the form links to other addresses
      than the ones saved, or to none, the box is left for the student, and so is
      a statement whose description is longer than the app keeps. A Yes/No
@@ -109,19 +110,29 @@ value-free progress. The extension never receives the editable profile draft.
    one list of topic words per topic (immigration, work authorization, criminal
    history, personal details such as age or gender, pay, security clearance,
    agreements, employer relatives). It never decides what a question is; it only
-   keeps a possibly sensitive question at its own company. A saved answer to a
-   question the net hits is never carried to another company, even when tagged
-   `reusable`, and the Apply for me check offers no "Use for any company" for
-   it. The agent goes further for criminal history, personal details, pay and
-   security: it never saves an answer to such a question, or to one filed under
-   it ("Please tell us what happened" under a felony question), and never fills
-   one from the answer library, even at the same company. A box or Yes/No
-   question that agrees to something, in any words, is never ticked from the
-   answer library; only a stored acknowledgment that matches word for word
-   ticks it, and that stays with one company unless it is a plain certification
-   that the student's own answers are true. The net over-reads on purpose (a
-   question that only comes after a sensitive one takes its topics too), so it
-   can cost a saved answer some reuse. Nothing is ever answered on its say-so.
+   keeps a possibly sensitive question at its own company. In the extension, a
+   reusable saved answer never carries onto a question the net hits, nor onto
+   one that comes right after a question the net hits, and a box is never
+   pre-ticked from an answer saved at another company. **Apply for me never
+   carries a saved answer from one company to another**, whatever it is tagged:
+   no list of words, the net included, is complete, so nothing travels, and the
+   Apply for me check offers no "Use for any company". (Your confirmed name,
+   email, phone and links are the same at every company.) The agent also, on a
+   best-effort basis, refuses criminal history, personal details, pay and
+   security: it never offers to save an answer to such a question, or to one
+   filed under it ("Please tell us what happened" under a felony question), and
+   never fills one from the answer library, even at the same company; the
+   extension's Save refuses the same wordings. A wording the net misses can at
+   worst be saved by the student for that one company, and is never carried
+   elsewhere. It never ticks a box, or a group of boxes, from the answer
+   library, nor chooses an option that agrees, accepts, acknowledges, consents
+   to or certifies something, nor types a signature; only a stored
+   acknowledgment or consent that matches word for word ticks or chooses it, and
+   that stays with one company. The net over-reads on purpose (a question that
+   only comes after a sensitive one takes its topics too), though it leaves
+   ordinary prompts alone ("take charge of a project", "in two sentences",
+   "network security", "exporting data", "hourly availability"). Nothing is ever
+   answered on its say-so.
    Radio and checkbox options, follow-ups that depend on the question above them
    ("if yes, please explain", "please provide more details", "which company was
    it?", also after numbering or tags such as "Q4b.", "Question 3:", "1.2.3",
