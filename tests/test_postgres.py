@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, automation, outreach_schedule, schema
+from opportunity_app import STATIC_DIR, apply_runs, automation, outreach_schedule, schema
 from opportunity_app.actions import record_intent, update_application
 from opportunity_app.api import create_app
 from opportunity_app.automation import Feature
@@ -1144,3 +1144,203 @@ class PostgresAutomationContractTests(unittest.TestCase):
             self.conn.execute("UPDATE outreach_scheduled_sends SET state='sending' WHERE user_id=? AND target_id IN ('t-10', 't-3')",
                               (AUTOMATION_USER,))
         self.assertEqual({target_id: hand_over(target_id) for target_id in ("t-10", "t-3")}, {"t-10": "handed_over", "t-3": "handed_over"})
+
+
+# The tables, indexes and columns 0044 adds; the columns by a guarded Python step, as the earlier migrations do.
+APPLY_TABLES = ("application_submit_claims", "apply_runs", "apply_sensitive_answers", "apply_ats_labels")
+APPLY_COLUMNS = (("application_mail_messages", "sender_verified"),
+                 ("generated_document_artifacts", "content_sha256"))
+APPLY_LOCKS = ("ux_submit_claims_live_application", "ux_submit_claims_live_job")
+
+
+@unittest.skipUnless(POSTGRES_TEST_URL, "POSTGRES_TEST_URL is not configured")
+class PostgresApplyContractTests(unittest.TestCase):
+    """Apply for me's claims, their two partial unique indexes, the hand-over and recovery on PostgreSQL (migration 0044, apply_runs.py).
+
+    The locks (a transaction that starts with an UPDATE of the student's users row, the partial unique
+    indexes, FOR UPDATE on the claim) are what make one attempt per application and per job hold across
+    threads and server processes; SQLite proves them only for its own single writer.
+    """
+
+    def setUp(self):
+        import psycopg
+
+        with psycopg.connect(POSTGRES_TEST_URL, autocommit=True) as conn:
+            conn.execute("DROP SCHEMA public CASCADE")
+            conn.execute("CREATE SCHEMA public")
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        root = Path(tempdir.name)
+        legacy = root / "pipeline.db"
+        with closing(sqlite3.connect(legacy)) as conn:
+            conn.executescript(LEGACY_SCHEMA)
+            conn.executemany("INSERT INTO jobs VALUES(" + ",".join("?" * 23) + ")", JOBS)
+            conn.commit()
+        migrate_legacy_database(legacy, POSTGRES_TEST_URL, build_profile(root))
+        self.conn = connect_product(POSTGRES_TEST_URL)
+        self.addCleanup(self.conn.close)
+        apply_runs.RUNNING.clear()
+        self.addCleanup(apply_runs.RUNNING.clear)
+        self.base = datetime.now(timezone.utc).replace(microsecond=0)
+
+    def at(self, minutes=0):
+        return self.base + timedelta(minutes=minutes)
+
+    def opportunity(self, opportunity_id, title="Controls Intern"):
+        stamp = utc_now()
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO opportunities(id, company, title, url, first_seen_at, last_seen_at, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                (opportunity_id, "Bluefin Robotics", title, f"https://boards.example.test/{opportunity_id}", stamp, stamp, stamp, stamp),
+            )
+
+    def claim(self, opportunity_id, mode="handoff", *, job="bluefin/1001", conn=None, now=None, **kwargs):
+        return apply_runs.claim(
+            conn or self.conn, user_id=AUTOMATION_USER, opportunity_id=opportunity_id, mode=mode, ats="greenhouse", board_token="bluefin",
+            job_ref=job, company=apply_runs.company_key("Bluefin Robotics"), now=now or self.at(1), **kwargs,
+        )
+
+    def state(self, token):
+        row = self.conn.execute("SELECT state, after_click FROM application_submit_claims WHERE token=?", (token,)).fetchone()
+        self.conn.commit()
+        return row["state"], row["after_click"]
+
+    def test_migration_0044_applies_and_a_rerun_repairs_a_half_applied_upgrade(self):
+        for table in APPLY_TABLES:
+            self.assertEqual(self.conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"], 0, table)
+        for table, column in APPLY_COLUMNS:
+            self.assertTrue(schema._has_column(self.conn, table, column), f"{table}.{column}")
+        for name in APPLY_LOCKS:
+            row = self.conn.execute("SELECT indexdef FROM pg_indexes WHERE schemaname=current_schema() AND indexname=?", (name,)).fetchone()
+            self.conn.commit()
+            self.assertIn("UNIQUE", row["indexdef"])
+            self.assertIn("released", row["indexdef"], "partial: a released row locks nothing")
+        # What a crash between the ALTERs and the marker leaves: a column gone, and no marker.
+        with self.conn:
+            self.conn.execute("ALTER TABLE application_mail_messages DROP COLUMN sender_verified")
+            self.conn.execute("DELETE FROM schema_migrations WHERE name='0044_apply_agent.sql'")
+        ensure_product_schema(self.conn)
+        for table, column in APPLY_COLUMNS:
+            self.assertTrue(schema._has_column(self.conn, table, column), f"{table}.{column} after the rerun")
+        self.assertIsNotNone(self.conn.execute("SELECT 1 FROM schema_migrations WHERE name='0044_apply_agent.sql'").fetchone())
+        schema._apply_apply_agent(self.conn, (MIGRATIONS_DIR / "0044_apply_agent.sql").read_text(encoding="utf-8"))
+        self.conn.commit()
+
+    def test_the_partial_unique_indexes_hold_one_live_attempt_per_application_and_per_job(self):
+        import psycopg
+
+        self.opportunity("job-1")
+        self.opportunity("job-2")
+        first = self.claim("job-1")
+        row = self.conn.execute("SELECT * FROM application_submit_claims WHERE token=?", (first["token"],)).fetchone()
+        self.conn.commit()
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO applications(id, opportunity_id, user_id, stage, created_at, updated_at) VALUES('app-job-2', 'job-2', ?, 'applying', ?, ?)",
+                (AUTOMATION_USER, utc_now(), utc_now()),
+            )
+
+        def insert(token, application_id, job_ref, state):
+            with self.conn:
+                self.conn.execute(
+                    "INSERT INTO application_submit_claims(token, application_id, user_id, opportunity_id, instance, mode, state, ats, board_token, "
+                    "job_ref, company_key, stage_policy, plan_hash, heartbeat_at, created_at, updated_at) "
+                    "VALUES(?, ?, ?, 'x', 'i', 'handoff', ?, 'greenhouse', 'bluefin', ?, 'bluefin robotics', 'ask', '', 't', 't', 't')",
+                    (token, application_id, AUTOMATION_USER, state, job_ref),
+                )
+
+        with self.assertRaises(psycopg.errors.UniqueViolation):
+            insert("dup-application", row["application_id"], "bluefin/other", "claimed")
+        with self.assertRaises(psycopg.errors.UniqueViolation):
+            insert("dup-job", "app-job-2", row["job_ref"], "claimed")
+        insert("tombstone", row["application_id"], row["job_ref"], "released")
+        with self.conn:
+            self.conn.execute("UPDATE application_submit_claims SET state='submitted' WHERE token=?", (first["token"],))
+        with self.assertRaises(psycopg.errors.UniqueViolation):
+            insert("after-submit", "app-job-2", row["job_ref"], "claimed")
+
+    def test_two_connections_claim_one_application_and_exactly_one_gets_it(self):
+        self.opportunity("job-1")
+        results = []
+        barrier = threading.Barrier(2)
+
+        def attempt(number):
+            conn = connect_product(POSTGRES_TEST_URL)
+            try:
+                barrier.wait()
+                try:
+                    results.append(("claimed", self.claim("job-1", conn=conn, now=self.at(number))["token"]))
+                except apply_runs.ClaimRefused as refusal:
+                    results.append(("refused", str(refusal)))
+            finally:
+                conn.close()
+
+        threads = [threading.Thread(target=attempt, args=(number,)) for number in (1, 2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(sorted(kind for kind, _ in results), ["claimed", "refused"])
+        self.assertEqual(dict(results)["refused"], apply_runs.LIVE_APPLICATION)
+        count = self.conn.execute("SELECT COUNT(*) AS n FROM application_submit_claims").fetchone()["n"]
+        self.conn.commit()
+        self.assertEqual(count, 1)
+
+    def test_the_job_lock_refuses_a_second_saved_copy_until_the_first_is_released(self):
+        self.opportunity("copy-a", "Controls Intern")
+        self.opportunity("copy-b", "Controls Intern (repost)")
+        first = self.claim("copy-a")
+        with self.assertRaises(apply_runs.ClaimRefused) as caught:
+            self.claim("copy-b", now=self.at(2))
+        self.assertEqual(caught.exception.code, "job")
+        with self.conn:
+            self.conn.execute("UPDATE application_submit_claims SET state='released' WHERE token=?", (first["token"],))
+        self.assertEqual(self.state(self.claim("copy-b", now=self.at(3))["token"]), ("claimed", 0))
+
+    def test_the_hand_over_takes_the_pause_row_and_the_claim_and_a_pause_after_it_reports_the_application(self):
+        self.opportunity("job-1")
+        self.opportunity("job-2", "Controls Co-op")
+        token = self.claim("job-1")["token"]
+        self.assertTrue(apply_runs.hand_over(self.conn, token, user_id=AUTOMATION_USER, now=self.at(2)))
+        self.assertEqual(self.state(token), ("clicking", 1))
+        self.assertFalse(apply_runs.hand_over(self.conn, token, user_id=AUTOMATION_USER, now=self.at(3)), "only a claimed attempt is handed over")
+        unattended = self.claim("job-2", "unattended", job="bluefin/2002", now=self.at(60))["token"]
+        result = automation.set_paused(self.conn, AUTOMATION_USER, True)
+        self.assertEqual([(item["action"], item["source"]) for item in result["in_flight"]], [("application", "apply_claim")])
+        self.assertFalse(apply_runs.hand_over(self.conn, unattended, user_id=AUTOMATION_USER, now=self.at(61)), "an unattended claim waits for the resume")
+        self.assertEqual(self.state(unattended), ("claimed", 0))
+
+    def test_a_pause_and_a_cancel_wait_for_a_hand_over_that_holds_the_locks(self):
+        import psycopg
+
+        self.opportunity("job-1")
+        token = self.claim("job-1")["token"]
+        other = connect_product(POSTGRES_TEST_URL)
+        self.addCleanup(other.close)
+        other.execute("SET lock_timeout = '200ms'")
+        other.commit()
+        # The hand-over's transaction has taken the pause row (FOR SHARE) and the student's row, and not yet committed.
+        automation.pause_guard(self.conn, AUTOMATION_USER)
+        apply_runs.lock_user(self.conn, AUTOMATION_USER)
+        with self.assertRaises(psycopg.errors.LockNotAvailable):
+            automation.set_paused(other, AUTOMATION_USER, True)
+        with self.assertRaises(psycopg.errors.LockNotAvailable):
+            apply_runs.request_cancel(other, token, user_id=AUTOMATION_USER)
+        self.conn.rollback()
+        self.assertTrue(apply_runs.request_cancel(other, token, user_id=AUTOMATION_USER), "once the transaction ends, the cancel lands")
+
+    def test_recovery_fails_a_stopped_claim_before_hand_over_and_leaves_a_clicking_one_unconfirmed(self):
+        self.opportunity("job-1")
+        self.opportunity("job-2", "Controls Co-op")
+        before = self.claim("job-1")["token"]
+        during = self.claim("job-2", job="bluefin/2002", now=self.at(2))["token"]
+        apply_runs.hand_over(self.conn, during, user_id=AUTOMATION_USER, now=self.at(3))
+        for token in (before, during):
+            apply_runs.forget(token)
+        counts = apply_runs.recover_stale(self.conn, self.at(10))
+        self.assertEqual((counts["failed"], counts["unconfirmed"]), (1, 1))
+        self.assertEqual(self.state(before), ("failed", 0))
+        self.assertEqual(self.state(during), ("unconfirmed", 1))
+        [item] = automation.unconfirmed(self.conn, AUTOMATION_USER, now=self.at(10))
+        self.conn.commit()
+        self.assertEqual((item["action"], item["company"]), ("application", "Bluefin Robotics"))

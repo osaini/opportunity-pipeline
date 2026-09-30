@@ -16,9 +16,10 @@ click. It never stops something the student does themselves, such as Send
 now. It does not stop the app reading Gmail either: replies and bounces are
 facts that have already happened, so they are still recorded (and move a
 company to Replied or Bounced), and notices still appear, since they only
-inform. An email already handed to Gmail, or a contact form whose button is
-being pressed, cannot be stopped, so pausing reports it (in_flight) instead
-of promising that nothing will go. A Gmail draft being saved is not a send
+inform. An email already handed to Gmail, a contact form whose button is
+being pressed, or an application handed to Greenhouse (apply_runs), cannot be
+stopped, so pausing reports it (in_flight) instead of promising that nothing
+will go. A Gmail draft being saved is not a send
 and is never reported.
 
 Ledger. perform() is the single way an automatic change is made. The change
@@ -528,11 +529,14 @@ FORM_HANDED_OVER = "clicking"
 
 
 def in_flight(conn: sqlite3.Connection, user_id: str, *, now: datetime | None = None) -> list[dict[str, Any]]:
-    """What is past stopping: emails handed to Gmail, and contact forms whose button is being pressed.
+    """What is past stopping: emails handed to Gmail, contact forms whose button is being pressed, and applications handed to Greenhouse.
 
-    Each item's action is 'send' or 'form'. A Gmail draft being saved is not
-    a send, and a form still being filled in can still be stopped by a pause
-    (for an automatic one), so neither is listed.
+    Each item's action is 'send', 'form' or 'application'. A Gmail draft being
+    saved is not a send, and a form still being filled in can still be stopped
+    by a pause (for an automatic one), so neither is listed. An application is
+    listed while its claim is 'clicking' and held (apply_runs.claim_held): by
+    its heartbeat, not its age, since a Finish in browser claim can be
+    minutes old at hand-over and still be running.
     """
     items = []
     for row in conn.execute(
@@ -569,6 +573,21 @@ def in_flight(conn: sqlite3.Connection, user_id: str, *, now: datetime | None = 
             "source": "form_claim" if form else "send_claim", "target_id": row["target_id"], "company": row["company"] or "",
             "kind": row["kind"], "action": "form" if form else "send", "label": "", "at": row["claimed_at"],
         })
+    from .apply_runs import claim_held  # imported here: it imports this module
+
+    for row in conn.execute(
+        """
+        SELECT c.application_id, c.token, c.instance, c.heartbeat_at, c.mode, c.handed_over_at, o.company
+        FROM application_submit_claims c LEFT JOIN opportunities o ON o.id=c.opportunity_id
+        WHERE c.user_id=? AND c.state='clicking' ORDER BY c.handed_over_at
+        """,
+        (user_id,),
+    ).fetchall():
+        if claim_held(row, now=now):
+            items.append({
+                "source": "apply_claim", "target_id": row["application_id"], "company": row["company"] or "",
+                "kind": row["mode"], "action": "application", "label": "", "at": row["handed_over_at"],
+            })
     return items
 
 
@@ -580,7 +599,10 @@ def unconfirmed(conn: sqlite3.Connection, user_id: str, *, now: datetime | None 
     email is left out once the company is recorded as sent ("I sent it"), a
     follow-up once the company has moved past Sent, and a thank-you after a
     decline once it was sent or the student dismissed or closed it (its card
-    then says whether Gmail confirmed the earlier try).
+    then says whether Gmail confirmed the earlier try). An application claim
+    is listed when its outcome is unknown: 'unconfirmed', 'clicking' that is
+    no longer held (the app stopped while submitting), or 'needs_you' or
+    'failed' after the hand-over (apply_runs, rule 6).
     """
     cutoff = (_now(now) - IN_FLIGHT_CLAIM_AGE).isoformat(timespec="microseconds")
     rows = conn.execute(
@@ -604,6 +626,23 @@ def unconfirmed(conn: sqlite3.Connection, user_id: str, *, now: datetime | None 
         items.append({
             "target_id": row["target_id"], "company": row["company"] or "", "kind": row["kind"],
             "action": row["action"], "at": row["claimed_at"],
+        })
+    from .apply_runs import claim_held  # imported here: it imports this module
+
+    for row in conn.execute(
+        """
+        SELECT c.application_id, c.token, c.instance, c.heartbeat_at, c.mode, c.state, c.handed_over_at, c.updated_at, o.company
+        FROM application_submit_claims c LEFT JOIN opportunities o ON o.id=c.opportunity_id
+        WHERE c.user_id=? AND (c.state IN ('unconfirmed', 'clicking') OR (c.state IN ('needs_you', 'failed') AND c.after_click=1))
+        ORDER BY c.updated_at
+        """,
+        (user_id,),
+    ).fetchall():
+        if row["state"] == FORM_HANDED_OVER and claim_held(row, now=now):
+            continue
+        items.append({
+            "target_id": row["application_id"], "company": row["company"] or "", "kind": row["mode"],
+            "action": "application", "at": row["handed_over_at"] or row["updated_at"],
         })
     return items
 
@@ -2159,16 +2198,23 @@ def paused_text(flights: list[dict[str, Any]]) -> str:
     """The pause banner, and a second sentence for whatever was already too far along to stop."""
     emails = sum(1 for item in flights if item["action"] == "send")
     forms = sum(1 for item in flights if item["action"] == "form")
+    applications = sum(1 for item in flights if item["action"] == "application")
     parts = []
     if emails:
         parts.append(f"{_counted(emails, 'email')} {'was' if emails == 1 else 'were'} already handed to Gmail")
     if forms:
         parts.append(f"{_counted(forms, 'contact form')} {'was' if forms == 1 else 'were'} already being sent")
+    if applications:
+        parts.append(f"{_counted(applications, 'application')} {'was' if applications == 1 else 'were'} already being submitted")
     if not parts:
         return PAUSED_BANNER
-    stop = "can't be stopped" if len(parts) == 1 else "neither can be stopped"
-    joined = parts[0] if len(parts) == 1 else f"{parts[0]} and {parts[1]}"
-    return f"{PAUSED_BANNER} {joined[:1].upper()}{joined[1:]}{' and ' if len(parts) == 1 else ', and '}{stop}."
+    if len(parts) == 1:
+        joined, stop, glue = parts[0], "can't be stopped", " and "
+    elif len(parts) == 2:
+        joined, stop, glue = f"{parts[0]} and {parts[1]}", "neither can be stopped", ", and "
+    else:
+        joined, stop, glue = f"{', '.join(parts[:-1])}, and {parts[-1]}", "none of them can be stopped", ", and "
+    return f"{PAUSED_BANNER} {joined[:1].upper()}{joined[1:]}{glue}{stop}."
 
 
 def breaker_off(conn: sqlite3.Connection, user_id: str, *, now: datetime | None = None) -> list[dict[str, Any]]:
