@@ -813,6 +813,10 @@ const FOLLOW_UPS = [
   "Q4b. Which company was it?", "Q4b. What was the reason?", "Question 3: Which company was it?", "Question 3b. When?",
   "Part B: What was the reason?", "Step 2. When?", "1.2.3 Which company was it?", "Section 2 - When?", "No. 3 What was the reason?",
   "Follow-up: Which company was it?", "Follow up question: When?",
+  "3. Follow-up: Which company was it?", "Q4 follow-up: which company was it?", "Question 3 - Follow-up: Which company was it?",
+  "1a. Follow-up: When?", "2) Follow-up: What was the reason?", "4. Follow up question: When?", "Follow up (optional): which company?",
+  "Follow-up questions: which company was it?", "Question no. 3: When?", "Question number 3: When?",
+  "Question 3 (optional): which company was it?", "Follow-on question: which company was it?", "Sub-question: which company was it?",
 ];
 
 tests.every_reviewed_follow_up_wording_is_saved_on_its_own_label = () => {
@@ -833,7 +837,9 @@ tests.every_reviewed_follow_up_wording_is_saved_on_its_own_label = () => {
 };
 
 tests.standalone_questions_stay_exact_at_their_company = () => {
-  for (const question of ["Why do you want to work here?", "Why are you interested in this role?", "Tell us about yourself", "Describe a time you worked on a team"]) {
+  for (const question of ["Why do you want to work here?", "Why are you interested in this role?", "Tell us about yourself", "Describe a time you worked on a team",
+    "Number of years of experience with Python", "Part-time availability: when can you start?", "Question 1: Why do you want to work at Acme?",
+    "Optional: Tell us about a project you are proud of", "Section 2: What motivates you to apply for this internship?"]) {
     const at = (name) => pageOf({ tag: "textarea", id: name, name, label: question });
     const first = loadContentScript(at("question_81")).scan(profile, [], "Acme Robotics").fields[0];
     assert.equal(first.answer_key, first.question, `${question}: a clean question`);
@@ -1078,7 +1084,8 @@ tests.employer_relative_questions_never_travel_even_when_reusable = () => {
 
 tests.relative_and_family_wordings_never_travel_even_when_reusable = () => {
   // Wordings that only the relatives / family-members alternatives catch.
-  for (const question of ["Do you have any relatives at Acme?", "Do you have family members who work here?"]) {
+  for (const question of ["Do you have any relatives at Acme?", "Do you have family members who work here?", "Are you related to anyone who works here?",
+    "Is your spouse employed here?", "Are you a current or former employee?", "Have you ever been employed here?"]) {
     const page = pageOf({ tag: "textarea", id: "question_33", name: "question_33", label: question });
     const rows = [{ id: "r", question, answer: "No", company: "Acme Robotics", tags: ["reusable"] }];
     assert.notEqual(loadContentScript(page).scan(profile, rows, "Orbit Systems").fields[0].confidence, 0.9, `${question}: not exact at another company`);

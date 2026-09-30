@@ -213,12 +213,15 @@
   // punctuation turned into spaces.
   function withoutEnumeration(key) {
     let text = key.replace(/(^|\s)'+/g, "$1").replace(/'+(?=\s|$)/g, "").trim();
-    text = text.replace(/^follow ?up(?: question)?\s+(?=\S)/, "");
-    for (let pass = 0; pass < 4; pass += 1) {
-      // A numbering word with its number ("question 3", "part b", "step 2", "no 3"), then a bare
-      // number or letter ("1", "1a", "b", "iv", "q4b"); four passes cover "1 2 3".
+    for (let pass = 0; pass < 6; pass += 1) {
+      // In any order: a "follow-up", "follow-on" or "sub-question" tag, an "optional" tag, a
+      // numbering word with its number ("question 3", "question no 3", "part b", "step 2", "no 3"),
+      // and a bare number or letter ("1", "1a", "b", "iv", "q4b"); six passes cover "1 2 3" and
+      // "3 follow up optional".
       const next = text
-        .replace(/^(?:question|part|step|section|item|no|number)\s+(?:\d{1,3}[a-z]?|[a-z]|[ivx]{1,4})\s+(?=\S)/, "")
+        .replace(/^(?:follow ?(?:up|on)s?|sub ?questions?)(?: questions?)?\s+(?=\S)/, "")
+        .replace(/^optional\s+(?=\S)/, "")
+        .replace(/^(?:question|part|step|section|item|no|number)(?:\s+(?:no|number))?\s+(?:\d{1,3}[a-z]?|[a-z]|[ivx]{1,4})\s+(?=\S)/, "")
         .replace(/^(?:[a-z]|[ivx]{1,4}|\d{1,3}[a-z]?|[a-z]\d{1,3}[a-z]?)\s+(?=\S)/, "");
       if (next === text) break;
       text = next;
@@ -230,7 +233,7 @@
   // smarter: a question worded some other way is not caught, and only the student not tagging it
   // reusable keeps it at one company. A saved answer to one of these never carries to another
   // company, even when the row is tagged reusable.
-  const CONTEXT_WORDING = /previously (?:worked|been employed|applied)|worked (?:here|for us|for this company|at)|applied (?:here|before|previously)|referr|who referred|know (?:anyone|someone)|how did you hear|where did you (?:hear|find)|current(?:ly)? (?:an )?employee|worked (?:for|with|at) (?:us|this|our|the company)|employed (?:by|at|with)|interviewed (?:with|at|here)|relatives?\b|family members?\b|this (?:organi[sz]ation|firm|company|employer)/;
+  const CONTEXT_WORDING = /previously (?:worked|been employed|applied)|worked (?:here|for us|for this company|at)|applied (?:here|before|previously)|referr|who referred|know (?:anyone|someone)|how did you hear|where did you (?:hear|find)|current(?:ly)? (?:an )?employee|worked (?:for|with|at) (?:us|this|our|the company)|employed (?:by|at|with)|interviewed (?:with|at|here)|relatives?\b|family members?\b|related to\b|spouse|immediate family|former employee|employed here\b|relations? working|this (?:organi[sz]ation|firm|company|employer)/;
 
   function needsLabelKey(key) {
     const text = withoutEnumeration(key);

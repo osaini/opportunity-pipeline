@@ -33,7 +33,10 @@ value-free progress. The extension never receives the editable profile draft.
    saying why it was proposed: an exact match reads "Same question saved for
    this company; verify before filling" (or "Same question, saved as reusable;
    verify before filling"), and anything saved at another company reads "Saved
-   for another company; direct review required" and is not prechecked. A saved
+   for another company; direct review required" and is not prechecked. A
+   matched field with no name to tell it apart reads "Same words saved before,
+   but this field has no name to tell it apart; direct review required", and a
+   fuzzy match reads "Similar saved question; direct review required". A saved
    answer is exact only for the company it was saved at, or when it is tagged
    `reusable`, is not a radio or checkbox option, and its question is not
    context-dependent. That holds for every saved row, including rows saved
@@ -43,13 +46,16 @@ value-free progress. The extension never receives the editable profile draft.
    question is kept at its own company when it is under three words, is a
    follow-up (see below), or matches a fixed list: previously worked, employed
    or applied here, worked for or with us or this company, employed by or at,
-   interviewed with us, relatives or family members, referred, know anyone,
-   how did you hear, current employee, "this organization/firm/company/
-   employer". An employer-relative question worded some other way is not
-   caught, so do not tag such an answer `reusable`.
+   interviewed with us, relatives or family members, related to, spouse,
+   immediate family, employed here, current or former employee, referred, know
+   anyone, how did you hear, "this organization/firm/company/employer". An
+   employer-relative question worded some other way is not caught, so do not
+   tag such an answer `reusable`.
    Radio and checkbox options, follow-ups that depend on the question above them
    ("if yes, please explain", "please provide more details", "which company was
-   it?"), very short questions, and a question that appears twice on one form
+   it?", also after numbering or tags such as "Q4b.", "Question 3:", "1.2.3",
+   "Follow-up:", "Sub-question:" or "(optional)"), very short questions, and a
+   question that appears twice on one form
    are saved on the field's own label plus its form name and id, so two
    different fields on one page never share a key. A field with no name and no
    id has no such key, and its answer cannot be saved; a row saved on its
