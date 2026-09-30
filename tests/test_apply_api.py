@@ -450,6 +450,22 @@ class SensitiveSettingsTests(SensitiveApiCase):
         for body in ({}, {"category": "age_18"}, {"category": "age_18", "question": "x", "links": ["a"] * 9}):
             self.assertEqual(self.send("POST", f"{self.BASE}/sensitive-answers", body).status_code, 422, body)
 
+    def test_a_question_that_depends_on_its_company_or_reads_as_another_kind_is_refused_by_the_route(self):
+        self.allow("sponsorship", "work_authorization")
+        prior = "Has this company previously filed an H-1B petition on your behalf?"
+        for body, needle in (
+            ({"category": "sponsorship", "question": prior, "answer": "Yes"}, "this company only"),
+            ({"category": "work_authorization", "question": "What is your race?", "answer": "Asian"}, "voluntary self-identification"),
+            ({"category": "work_authorization", "question": "Gender", "answer": "Female"}, "voluntary self-identification"),
+        ):
+            with self.subTest(body=body):
+                response = self.send("POST", f"{self.BASE}/sensitive-answers", {**body, "consent": True})
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertIn(needle, response.json()["detail"])
+        self.assertEqual(self.rows(), [], "no row, so nothing in the account export either")
+        kept = self.send("POST", f"{self.BASE}/sensitive-answers", {"category": "sponsorship", "question": prior, "answer": "Yes", "company": "Example Robotics", "consent": True})
+        self.assertEqual(kept.status_code, 200, kept.text)
+
     def test_an_eeo_decline_and_a_statement_for_one_company_are_stored(self):
         self.allow("eeo_gender", "acknowledgment")
         self.assertEqual(self.send("POST", f"{self.BASE}/sensitive-answers", {"category": "eeo_gender", "question": "Gender", "answer": "Decline To Self Identify", "consent": True}).status_code, 200)
@@ -563,11 +579,22 @@ class NeedsYouTests(SensitiveApiCase):
         gdpr = next((item for item in check["problems"] if item["key"] == "gdpr_consent_given"), None)
         self.assertEqual(gdpr["action"]["type"], "manual", "the statement is on the page only")
 
+    def test_a_decline_typed_on_the_settings_page_as_the_form_shows_it_fills_the_eeoc_field(self):
+        self.allow("eeo_gender")
+        saved = self.send("POST", f"{self.BASE}/sensitive-answers", {"category": "eeo_gender", "question": "Gender", "answer": "Decline To Self Identify", "consent": True})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        check = self.check().json()
+        field = next(item for item in check["fields"] if item["key"] == "gender")
+        self.assertEqual(field["disposition"], "fill", "the key is the field's own label, not the question above it")
+        self.assertNotIn("gender", [item["key"] for item in check["optional_sensitive"]])
+
     def test_an_answer_that_does_not_fit_this_form_is_a_mismatch_and_this_companys_entry_wins_over_it(self):
         self.allow("eeo_veteran")
         self.assertEqual(self.send("POST", f"{self.BASE}/sensitive-answers", {"category": "eeo_veteran", "question": "Veteran Status", "answer": "Decline To Self Identify", "consent": True}).status_code, 200)
         offered = {item["key"]: item for item in self.check().json()["optional_sensitive"]}
-        self.assertIn("veteran_status", offered, "the any-company answer is not this form's label")
+        # The key matches (the field's own label, at any company); what does not fit is the decline this form words differently.
+        self.assertIn("veteran_status", offered, "the any-company answer is not this form's decline label")
+        self.assertEqual(self.problem("veteran_status")["kind"], "sensitive_mismatch", "a miss on the decline's label, not on the key")
         self.assertTrue(offered["veteran_status"]["action"]["company_only"])
         self.assertEqual(self.needs("veteran_status", "I don't wish to answer", any_company=True).status_code, 422)
         self.assertEqual(self.needs("veteran_status", "I don't wish to answer").status_code, 200)

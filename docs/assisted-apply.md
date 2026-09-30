@@ -39,10 +39,15 @@ value-free progress. The extension never receives the editable profile draft.
      any other value, so no demographic value is ever stored);
    - a legal acknowledgment or a data-processing consent, stored word for word.
      Its box is ticked only when the form's statement is exactly the stored one.
-     A statement that says "I have read" or links a document is saved for one
-     company, never for any company, and the plan shows the document's address
-     next to the tick; if the form later links to another address the box is
-     left for the student.
+     The statement is the box's heading, its option and any description under
+     it, together, whenever the option is short, points elsewhere ("I agree to
+     the above terms") or the box has a description. A statement that says "I
+     have read", links a document, has a description of its own or points
+     elsewhere is saved for one company, never for any company, as is any
+     question that depends on its company. The plan shows the form's own
+     document addresses next to the tick; if the form links to other addresses
+     than the ones saved, or to none, the box is left for the student, and so is
+     a statement whose description is longer than the app keeps.
 
    Every entry records the exact question, the answer, and the student's consent
    with the time (the consent says the answer is used only to fill in
@@ -52,8 +57,12 @@ value-free progress. The extension never receives the editable profile draft.
    never stored or answered. The extension's `apply_context`, the answer
    library, employer views and every report never read the store
    (`tests/test_apply_sensitive.py` scans the source for it). Writing or reading
-   the store needs the student's own browser session, not the access token. The
-   student still presses Submit themselves.
+   the store needs the student's own browser session: a request that sends the
+   access token as an Authorization header is refused, and a write needs the
+   session's CSRF header. The access token can still sign in a browser session,
+   and the account export includes the stored answers, so this guards against a
+   stray script and is not a lock against whoever holds the token. The student
+   still presses Submit themselves.
 
    Where a sensitive field is not covered by a stored answer it stays manual,
    as above. A non-sensitive saved

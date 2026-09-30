@@ -588,15 +588,21 @@ fields too.
      as "Decline To Self Identify", never a real one, and a form that words the
      decline differently needs its own entry;
    - a legal acknowledgment or consent is ticked only when the form's statement
-     is word for word the stored one, and one that says "I have read" or links a
-     document is saved for one company only;
+     (its heading, its option and any description under it) is word for word the
+     stored one and links the same documents; one that says "I have read", links
+     a document, has a description of its own or points to "the above terms" is
+     saved for one company only, and so is any question that depends on the
+     company ("this company", a follow-up, a bare heading);
    - export control, citizenship, security clearance and salary questions, and
      personal ones such as age or birth date, are never answered.
 
    Nothing about their situation is written into the app: the kinds, the
    answers and the consent all live in their own copy. It works from the
-   student's browser session, so a script with the access token cannot read or
-   change it.
+   student's browser session: a request that sends the access token as an
+   Authorization header is refused, and a write needs the session's CSRF header.
+   That is a guard against a stray script, not a lock against anyone who holds
+   the access token (it can sign in a browser session), and the account export
+   includes the stored answers. Say so if they share the machine or the token.
 
 ## 7b. Call prep (optional)
 

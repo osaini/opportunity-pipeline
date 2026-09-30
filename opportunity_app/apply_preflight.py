@@ -150,10 +150,11 @@ def _sensitive_state(entry: apply_policy.PlanField, sources: apply_policy.Source
     Required or optional alike: an optional field left blank has lost its problem, so this asks the store again. A
     stored entry that exists but did not fit (another decline label, a statement's address changed) is a mismatch.
     """
-    if not entry.sensitive or entry.sensitive not in sources.sensitive_allowed or entry.source.kind != "none" or not entry.statement:
+    if not entry.sensitive or entry.sensitive not in sources.sensitive_allowed or entry.source.kind != "none" or not entry.statement or entry.text_cut:
         return ""
     stored = sources.sensitive_lookup(
         category=entry.sensitive, question_key=question_key(entry.statement), company_key=apply_sensitive.company_key(company), mode="submit",
+        company_only=entry.company_only,
     )
     return "mismatch" if stored else "missing"
 
@@ -169,7 +170,7 @@ def _sensitive_form(entry: apply_policy.PlanField, kind: str) -> dict[str, Any] 
     statement = category in apply_sensitive.STATEMENT_CATEGORIES
     # A data-processing consent's statement is on the page only, not in Greenhouse's listing, so there is nothing yet to
     # store it under: it is left for the student, or added word for word in Apply agent settings.
-    if entry.section == "data_compliance":
+    if entry.section == "data_compliance" or entry.text_cut:
         return None
     options = list(entry.options)
     if category in apply_sensitive.EEO_CATEGORIES:
@@ -180,12 +181,12 @@ def _sensitive_form(entry: apply_policy.PlanField, kind: str) -> dict[str, Any] 
         return None
     return {
         "type": "sensitive", "control": entry.control, "options": options, "category": category,
-        "words": apply_policy.CATEGORY_WORDS.get(category, ""), "statement": entry.statement if statement else "", "links": list(entry.links),
+        "words": apply_policy.CATEGORY_WORDS.get(category, ""), "statement": entry.statement if statement or entry.control == "checkbox" else "", "links": list(entry.links),
         "decline_only": category in apply_sensitive.EEO_CATEGORIES,
-        # A follow-up that depends on its company, a mismatch (this form's own wording or address) and a statement that
-        # points to a document are saved for this company only; the tick for any company is then not offered.
-        "company_only": entry.context_dependent or kind == "sensitive_mismatch"
-        or (statement and apply_sensitive.cites_document(entry.statement, entry.links)),
+        # A question that depends on its company, a mismatch (this form's own wording or address) and a statement that
+        # points to a document or leans on text elsewhere are saved for this company only; the tick for any company is then
+        # not offered.
+        "company_only": entry.company_only or kind == "sensitive_mismatch",
         "consent_text": apply_sensitive.CONSENT_TEXT,
     }
 

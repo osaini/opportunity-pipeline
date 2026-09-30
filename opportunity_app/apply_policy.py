@@ -48,7 +48,7 @@ __all__ = [
     "ALLOWED_ATS_LABEL_FIELDS", "ATS_GREENHOUSE", "CATEGORY_WORDS", "Plan", "PlanField", "SchemaField", "Source", "Sources",
     "build_plan", "canonical_url", "classify_item", "classify_sensitive", "company_matches", "context_dependent", "control_of", "cover_letter_for",
     "identify", "mac_key", "match_options", "name_parts", "needs_label_key", "parse_schema", "plan_entries", "plan_hash",
-    "question_key", "resume_for", "schema_url", "sources_for", "statement_of", "stored_sensitive_answer", "value_mac", "with_page_labels",
+    "question_key", "resume_for", "schema_url", "sources_for", "statement_needs_company", "statement_of", "stored_sensitive_answer", "value_mac", "with_page_labels",
     "without_enumeration",
 ]
 
@@ -137,6 +137,7 @@ _EEOC_NAMES = {
     "veteran_status": "eeo_veteran", "disability_status": "eeo_disability",
 }
 _SELECTS = frozenset({"multi_value_single_select", "multi_value_multi_select"})
+MAX_DESCRIPTION_CHARS = 2000
 
 
 @dataclass(frozen=True)
@@ -148,6 +149,7 @@ class SchemaField:
     ``derived_name`` marks a name the live listing does not carry (a demographic question has only an id,
     a data_compliance entry only its consent flags): it is derived, and the page's own controls decide.
     ``label_from_page`` marks a label the listing does not carry: a consent statement is on the form only.
+    ``description_cut`` marks a description longer than the app keeps: text a statement is built from must be whole.
     """
 
     name: str
@@ -161,6 +163,7 @@ class SchemaField:
     compliance_type: str = ""
     derived_name: bool = False
     label_from_page: bool = False
+    description_cut: bool = False
 
 
 def _text(value: Any) -> str:
@@ -201,7 +204,8 @@ def parse_schema(listing: Mapping[str, Any]) -> list[SchemaField]:
         nonlocal previous
         label = _text(block.get("label"))
         required = bool(block.get("required"))
-        description = str(block.get("description") or "")[:2000]
+        raw_description = str(block.get("description") or "")
+        description = raw_description[:MAX_DESCRIPTION_CHARS]
         shown = False
         for entry in block.get("fields") if isinstance(block.get("fields"), list) else []:
             if not isinstance(entry, Mapping) or not entry.get("name"):
@@ -213,7 +217,9 @@ def parse_schema(listing: Mapping[str, Any]) -> list[SchemaField]:
             found.append(SchemaField(
                 name=name, label=label or name, required=required and name not in ALTERNATE_TEXT_FIELDS, type=kind,
                 options=_option_labels(entry.get("values")),
-                section=_section_of(name, section), parent=previous, description=description, compliance_type=compliance_type,
+                # An EEOC question is named by its field, never by the question above it: it continues no other question.
+                section=_section_of(name, section), parent="" if section == "compliance" else previous, description=description,
+                compliance_type=compliance_type, description_cut=len(raw_description) > MAX_DESCRIPTION_CHARS,
             ))
             shown = shown or kind != "input_hidden"
         if label and shown:
@@ -239,7 +245,7 @@ def parse_schema(listing: Mapping[str, Any]) -> list[SchemaField]:
             name=f"question_{question['id']}", label=_text(question.get("label")) or f"question_{question['id']}",
             required=bool(question.get("required")), type=str(question.get("type") or ""),
             options=_option_labels(question.get("answer_options")), section="demographic",
-            description=str(question.get("description") or "")[:2000], derived_name=True,
+            description=str(question.get("description") or "")[:MAX_DESCRIPTION_CHARS], derived_name=True,
         ))
     for entry in listing.get("data_compliance") or []:
         if not isinstance(entry, Mapping):
@@ -248,7 +254,7 @@ def parse_schema(listing: Mapping[str, Any]) -> list[SchemaField]:
         # Consent is required when Greenhouse says so. Its statement is only on the form, and so is its control's name.
         if kind and any(entry.get(flag) for flag in ("requires_consent", "requires_processing_consent", "requires_retention_consent")):
             found.append(SchemaField(
-                name=f"{kind}_consent_given", label=f"{kind.upper()} data consent (the statement is on the form)", required=True,
+                name=f"{kind}_consent_given", label=f"{kind.upper()} data consent {apply_sensitive.PLACEHOLDER_NOTE}", required=True,
                 type="multi_value_multi_select", options=(), section="data_compliance", compliance_type=kind,
                 derived_name=True, label_from_page=True,
             ))
@@ -486,6 +492,10 @@ _AGREE_BOX_WORDS = re.compile(r"\bagree|\baccept|\bpolicy\b|\bcertif")
 _TAGS = re.compile(r"<[^>]*>")
 # An option this long names what it agrees to; a shorter one ("I agree", "Yes", "I accept the terms") does not.
 _SPECIFIC_STATEMENT_WORDS = 6
+# An option that points at text elsewhere on the form names nothing itself, however long it is.
+_REFERS_ELSEWHERE = re.compile(
+    r"\b(?:above|below|following|foregoing|aforementioned|herein|(?:the|these|those|this) (?:terms|statement|notice|policy|policies|agreement|document|declaration))\b"
+)
 
 
 def _yes_no(options: Iterable[str]) -> bool:
@@ -493,19 +503,37 @@ def _yes_no(options: Iterable[str]) -> bool:
     return bool(words) and words <= {"yes", "no"}
 
 
+def _plain(html_text: str) -> str:
+    return " ".join(html.unescape(_TAGS.sub(" ", html_text)).split())
+
+
+def _statement_parts(item: SchemaField, control: str) -> tuple[str, bool]:
+    """(the text a stored answer to this field is matched on, whether that text leans on words outside the option)."""
+    if control != "checkbox" or not item.options:
+        return item.label, False
+    option = item.options[0]
+    description = _plain(item.description)
+    short = len(_words(option).split()) < _SPECIFIC_STATEMENT_WORDS
+    refers = bool(_REFERS_ELSEWHERE.search(_words(option)))
+    if not (short or refers or description):
+        return option, False
+    return " ".join(part for part in (item.label, option, description) if part.strip()), bool(description) or refers
+
+
 def statement_of(item: SchemaField, control: str) -> str:
     """The text a stored answer to this field is matched on: a checkbox's own statement, else its question.
 
-    A checkbox's option is its statement when it says something ("I have read and agree to the Candidate Privacy
-    Statement"). A bare "I agree", "Yes" or "I accept" says nothing, so the heading and the description are part
-    of the statement then: two boxes that agree to different things never share a stored answer.
+    A checkbox's option is its statement only when it says something whole ("I certify that the information I have
+    provided is accurate"). A bare "I agree" or "Yes", an option that points elsewhere ("I agree to the above terms")
+    and any box that has a description of its own do not: the heading and the description are part of the statement
+    then, so two boxes that agree to different things never share a stored answer.
     """
-    if control != "checkbox" or not item.options:
-        return item.label
-    option = item.options[0]
-    if len(_words(option).split()) >= _SPECIFIC_STATEMENT_WORDS:
-        return option
-    return " ".join(part for part in (item.label, option, html.unescape(_TAGS.sub(" ", item.description))) if part.strip())
+    return _statement_parts(item, control)[0]
+
+
+def statement_needs_company(item: SchemaField, control: str) -> bool:
+    """Whether a checkbox's statement leans on a description or on text elsewhere, so a stored answer is kept for one company."""
+    return _statement_parts(item, control)[1]
 
 
 def classify_item(item: SchemaField, control: str, parent: str | None = None, follows: bool = False) -> str | None:
@@ -532,16 +560,19 @@ def classify_item(item: SchemaField, control: str, parent: str | None = None, fo
 
 
 def stored_sensitive_answer(
-    conn: sqlite3.Connection, user_id: str, *, category: str, question_key: str, company_key: str, mode: str,
+    conn: sqlite3.Connection, user_id: str, *, category: str, question_key: str, company_key: str, mode: str, company_only: bool = False,
 ) -> dict[str, Any] | None:
     """The stored answer the student deliberately added for this sensitive question, or None.
 
     The one place the plan asks (apply_sensitive.lookup, spec 5.4). The entry it returns holds ``id``,
     ``answer_kind`` (option, options, text or checkbox), ``answer``, the statement's ``links`` and ``added``,
-    and only when the exact key, the category, the company and the consent scope for ``mode`` all match.
+    and only when the exact key, the category, the company and the consent scope for ``mode`` all match. ``company_only``
+    (the form's question depends on its company, or its statement on a document) skips a row saved for any company.
     It reads only: the check and the plan write nothing.
     """
-    return apply_sensitive.lookup(conn, user_id, category=category, question_key=question_key, company_key=company_key, mode=mode)
+    return apply_sensitive.lookup(
+        conn, user_id, category=category, question_key=question_key, company_key=company_key, mode=mode, company_only=company_only,
+    )
 
 
 # --- Where a value may come from (7.1) --------------------------------------------------------------
@@ -758,6 +789,11 @@ class PlanField:
     # the addresses of the documents the form's statement links to. Never a value.
     statement: str = ""
     links: tuple[str, ...] = ()
+    # A sensitive field whose stored answer may only be one saved for this company: its question depends on the company,
+    # or its statement points to a document or leans on text elsewhere on the form.
+    company_only: bool = False
+    # A sensitive field whose statement is built from text the app did not keep whole, so it cannot be matched word for word.
+    text_cut: bool = False
 
 
 @dataclass
@@ -881,6 +917,9 @@ def _answer_key(item: SchemaField, repeated: Mapping[str, list[str]]) -> tuple[s
     A follow-up, an opener, a very short question, or a question the form asks twice is filed under its
     parent: "{parent} / {question}" (spec 7.1), so the same words under two questions are two keys.
     """
+    if item.section == "compliance":
+        # An EEOC field is found by its own name and label (7.3 step 2): one decline serves every company and every form.
+        return item.label, False
     key = question_key(item.label)
     dependent = context_dependent(key)
     if needs_label_key(key) or len(repeated.get(key, [])) > 1:
@@ -981,10 +1020,21 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
     words = CATEGORY_WORDS.get(category, "a personal question")
     sources = ctx.sources
     # A checkbox is matched on its own statement, a follow-up on its parent's question too: neither on the bare heading.
-    entry.statement = statement_of(item, entry.control) if entry.control == "checkbox" else entry.answer_key or item.label
+    checkbox = entry.control == "checkbox"
+    entry.statement = statement_of(item, entry.control) if checkbox else entry.answer_key or item.label
     key = question_key(entry.statement)
-    if category in apply_sensitive.STATEMENT_CATEGORIES:
+    if checkbox or category in apply_sensitive.STATEMENT_CATEGORIES:
         entry.links = apply_sensitive.links_in(item.label, *item.options, item.description)
+    # Text the app cut off is text it cannot compare, and a link past the cut is a link it never saw (D9 B).
+    entry.text_cut = item.description_cut and (checkbox or category in apply_sensitive.STATEMENT_CATEGORIES)
+    # A question that depends on its company is never answered from another company's entry (7.1), and neither is a
+    # statement that points to a document or leans on words outside its option. An EEOC field is found by its own
+    # name and holds only a decline, so it is the same at every company.
+    entry.company_only = (
+        (item.section != "compliance" and (context_dependent(key) or (not checkbox and entry.context_dependent)))
+        or (checkbox and (statement_needs_company(item, entry.control) or apply_sensitive.cites_document(entry.statement, entry.links)))
+        or (category in apply_sensitive.STATEMENT_CATEGORIES and apply_sensitive.cites_document(entry.statement, entry.links))
+    )
     if category == "uncategorized" or category not in sources.sensitive_allowed:
         entry.problem_kind = "sensitive_never" if category == "uncategorized" else "sensitive_not_allowed"
         entry.problem = (
@@ -992,7 +1042,19 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
             if follows else f"The app doesn't answer this kind of question for you ({words}). Finish in browser leaves it for you"
         )
         return entry
-    stored = sources.sensitive_lookup(category=category, question_key=key, company_key=apply_sensitive.company_key(ctx.company), mode=ctx.mode)
+    if item.label_from_page or entry.text_cut:
+        # A consent's statement is on the page only until the page is read, and a description the app cut is text it cannot
+        # compare: nothing stored is matched to either, so the student reads it and ticks it (5.4, D9 B).
+        entry.problem_kind = "sensitive_never"
+        entry.problem = (
+            "The statement for this box is only on the form, so the app can't match it to one you stored. Finish in browser leaves it for you"
+            if item.label_from_page else
+            "The text around this box is too long for the app to check word for word, so it is left for you. Finish in browser leaves it for you"
+        )
+        return entry
+    stored = sources.sensitive_lookup(
+        category=category, question_key=key, company_key=apply_sensitive.company_key(ctx.company), mode=ctx.mode, company_only=entry.company_only,
+    )
     if not stored:
         entry.problem_kind = "sensitive_missing"
         entry.problem = f"You haven't added an answer for this ({words}) in Apply agent settings"
@@ -1000,11 +1062,16 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
     kind = str(stored.get("answer_kind") or "")
     answer = str(stored.get("answer") or "")
     stored_links = tuple(stored.get("links") or ())
-    if entry.control == "checkbox":
-        value, why = (True, "") if kind == "checkbox" and _norm(answer) == "checked" else (None, "The stored statement is not the one on this form")
-        # The words are the same, but a notice is its document: a form that now links to another one is not agreed to.
-        if value and stored_links and entry.links and set(stored_links) != set(entry.links):
+    if checkbox:
+        value, why = (True, "") if kind == "checkbox" and _norm(answer) == "checked" else (None, "This box needs a statement you ticked. Add it again as one")
+        # The words are the same, but a notice is its document: a form that links to other documents than the ones the
+        # student agreed to, or to none, is not agreed to. No links on either side is a value too.
+        if value and set(stored_links) != set(entry.links):
             value, why = None, "The document this statement links to is not the one you agreed to. Read it again, then add it again"
+    elif category in apply_sensitive.STATEMENT_CATEGORIES and entry.control == "select" and kind == "checkbox" and _norm(answer) == "checked":
+        # A Yes/No question that asks for agreement: a statement stored as ticked is the form's one "Yes".
+        yes = [option for option in entry.options if _norm(option) == "yes"]
+        value, why = (yes[0], "") if len(yes) == 1 else (None, "This question has no single Yes option")
     else:
         value, why = _choice_value(entry.control, answer, entry.options)
     if value is None:
@@ -1013,7 +1080,6 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
     if category in apply_sensitive.STATEMENT_CATEGORIES:
         noun = "acknowledgment" if category == "acknowledgment" else "consent"
         label = f"Your {noun} (any company)" if not stored.get("company_key") else f"Your {noun} for {ctx.company}"
-        entry.links = entry.links or stored_links
     else:
         label = "Sensitive answer you added" + (f" {stored['added']}" if stored.get("added") else "")
     entry.source = Source("sensitive", str(stored.get("id") or ""), label=label, links=entry.links)

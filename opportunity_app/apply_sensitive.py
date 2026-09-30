@@ -10,8 +10,10 @@ and for which kind of use). Nothing else is ever stored here:
   classifier places as ``uncategorized`` (age, birth date, pronouns, religion, criminal history, ...);
 - an EEO question is stored only as a decline ("Decline To Self Identify", "I don't wish to answer"), so this
   table holds no demographic value, and the service refuses anything else. This is the student's D5 C (i);
+- a question is stored only under the kind the wording reads as (a consent may be worded as an acknowledgment), so a
+  demographic question cannot be filed as work authorization to get a real value past the decline check;
 - a statement that says "I have read" or points to a document is saved for one company, never for any company:
-  one employer's notice is not another's.
+  one employer's notice is not another's. So is any question that depends on its company (7.1).
 
 Who reads it. ``lookup`` is asked by apply_policy (the plan) and by nothing else: the extension's apply context,
 ``/api/v1/extension/*``, the saved-answer library, employer views and every report never read this table
@@ -41,7 +43,7 @@ from .schema import utc_now
 
 __all__ = [
     "CATEGORY_GROUPS", "CONSENT_TEXT", "DECLINE_EXAMPLES", "EEO_CATEGORIES", "LABELS", "STATEMENT_CATEGORIES", "STORABLE", "StoreRefused", "add_entry", "allowed_categories",
-    "cites_document", "company_key", "delete_entry", "is_decline", "links_in", "list_entries", "lookup", "set_allowed_categories",
+    "PLACEHOLDER_NOTE", "TICKABLE", "cites_document", "company_key", "delete_entry", "is_decline", "links_in", "list_entries", "lookup", "set_allowed_categories",
 ]
 
 SETTING_KEY = "apply_sensitive_categories"
@@ -66,6 +68,10 @@ STORABLE = (
 )
 EEO_CATEGORIES = tuple(category for category in STORABLE if category.startswith("eeo_"))
 STATEMENT_CATEGORIES = ("acknowledgment", "consent")
+# A single box that states the answer ("I confirm that I am at least 18 years of age") is stored as ticked too.
+TICKABLE = ("work_authorization", "sponsorship", "age_18")
+# What the app writes in place of a consent statement the listing does not carry. It is never a statement to store.
+PLACEHOLDER_NOTE = "(the statement is on the form)"
 # What the student switches on, in words. One switch covers the five EEO fields, which are stored as declines only.
 CATEGORY_GROUPS = (
     ("work_authorization", "Work authorization", ("work_authorization",)),
@@ -98,6 +104,8 @@ _WORDS = {
 
 _ANSWER_KINDS = ("option", "options", "text", "checkbox")
 _CHECKED = "checked"
+# The kinds of answer that may be stored under a second name for the wording: a consent is often worded as an acknowledgment.
+_PAIRED = frozenset({("acknowledgment", "consent"), ("consent", "acknowledgment")})
 
 
 class StoreRefused(ValueError):
@@ -225,7 +233,7 @@ def add_entry(
 
     ``question`` is the exact wording the form showed (for a statement, the whole statement). ``company`` is the
     employer's name: empty means any company, which a statement that cites a document and a follow-up that depends
-    on its company (``company_only``) are refused. ``consent`` must be True: the student ticked the box in
+    on its company (``company_only``, or wording that says so) are refused. ``consent`` must be True: the student ticked the box in
     ``CONSENT_TEXT``. The write is one transaction.
     """
     if category in _NEVER or category not in STORABLE:
@@ -245,8 +253,15 @@ def add_entry(
     read_as = classify_sensitive(text)
     if read_as in _NEVER:
         raise StoreRefused(f"This question reads as one the app never answers. {_NEVER[read_as]}")
+    # The plan files this wording under ``read_as``, so a row under another kind is never read. Refusing it here also keeps a
+    # real demographic value out of the table when it is filed as, say, work authorization (D5 C (i)).
+    if read_as is not None and read_as != category and (category, read_as) not in _PAIRED:
+        raise StoreRefused(f"This question reads as {_WORDS.get(read_as, 'another kind of answer')}. Add it under that kind of answer instead")
+    if PLACEHOLDER_NOTE in text:
+        raise StoreRefused("That is the app's own placeholder, not the statement. Give the statement as the form shows it, word for word")
     statement = category in STATEMENT_CATEGORIES
-    if statement:
+    ticked = statement or (category in TICKABLE and answer_kind == "checkbox")
+    if ticked:
         kind, stored = "checkbox", _CHECKED
         if str(answer).strip().casefold() not in ("", _CHECKED, "true", "yes", "1"):
             raise StoreRefused("A statement is stored only as ticked")
@@ -274,7 +289,11 @@ def add_entry(
         raise StoreRefused("This role has no company name the app can match on")
     if not mine and company_only:
         raise StoreRefused("This question depends on the company, so its answer is saved for this company only")
-    if not mine and statement and cites_document(text, cited):
+    # Whatever the caller says: an EEO decline holds nothing about a company, anything else that reads as depending on its
+    # employer ("this company", a follow-up, a bare heading) is never kept for every company (7.1).
+    if not mine and category not in EEO_CATEGORIES and _depends_on_company(key):
+        raise StoreRefused("This question depends on the company, so its answer is saved for this company only")
+    if not mine and ticked and cites_document(text, cited):
         raise StoreRefused("This statement points to a document, so it is saved for one company only, never for any company")
     stamp = _now(now)
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
@@ -294,6 +313,12 @@ def add_entry(
             "SELECT * FROM apply_sensitive_answers WHERE user_id=? AND question_hash=? AND company_key=?", (user_id, digest, mine),
         ).fetchone()
     return _view(row, allowed_categories(conn, user_id))
+
+
+def _depends_on_company(key: str) -> bool:
+    from .apply_policy import context_dependent
+
+    return context_dependent(key)
 
 
 def _clean_links(urls: Iterable[str]) -> tuple[str, ...]:
@@ -352,13 +377,15 @@ def _covers(scope: str, mode: str) -> bool:
 
 
 def lookup(
-    conn: sqlite3.Connection, user_id: str, *, category: str, question_key: str, company_key: str, mode: str,
+    conn: sqlite3.Connection, user_id: str, *, category: str, question_key: str, company_key: str, mode: str, company_only: bool = False,
 ) -> dict[str, Any] | None:
     """The stored answer for this exact question and company (or "any company"), or None. Reads only.
 
     All must hold: a storable category, the same category, the same normalized question key, an entry for this company
     or for any company (this company's wins), a consent timestamp, and a consent scope that covers ``mode``. A statement
-    that cites a document must be for this company, whatever the row says. The answer is returned to the plan only.
+    that cites a document must be for this company, whatever the row says. ``company_only`` is the form's own word that
+    its question depends on its company or points to a document: a row for any company is then never used, whatever it
+    was saved as. The answer is returned to the plan only.
     """
     if category not in STORABLE:
         return None
@@ -373,6 +400,8 @@ def lookup(
         mine = str(row["company_key"] or "")
         links = _loads_links(row["statement_links_json"])
         if not row["consented_at"] or not _covers(str(row["consent_scope"]), mode) or str(row["question_text"]) == "":
+            continue
+        if not mine and company_only:
             continue
         if category in STATEMENT_CATEGORIES and not mine and cites_document(str(row["question_text"]), links):
             continue

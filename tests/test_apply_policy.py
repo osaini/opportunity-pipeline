@@ -91,9 +91,11 @@ class Store:
     def __init__(self, *entries):
         self.entries = entries
 
-    def __call__(self, *, category, question_key, company_key, mode):
+    def __call__(self, *, category, question_key, company_key, mode, company_only=False):
         for entry in self.entries:
             if entry["category"] == category and entry["question_key"] == question_key and entry.get("company_key", "") in ("", company_key):
+                if company_only and not entry.get("company_key", ""):
+                    continue
                 return entry
         return None
 
@@ -697,7 +699,7 @@ class TruthTablePlanRows(unittest.TestCase):
         self.assertEqual(len(keys), 3)
         asked = []
 
-        def lookup(*, category, question_key, company_key, mode):
+        def lookup(*, category, question_key, company_key, mode, company_only=False):
             asked.append(question_key)
             return {"id": "s1", "answer_kind": "checkbox", "answer": "checked"} if question_key == "candidate privacy notice i agree" else None
 
