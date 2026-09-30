@@ -202,7 +202,8 @@
           checkbox.disabled = editor.value === "";
         });
         copy.append(editor);
-        if (!field.requires_review) {
+        // A question about a criminal record, personal details, pay or security is never offered for saving (the API refuses it too).
+        if (!field.requires_review && !field.never_storable) {
           const saveAnswer = node("button", "Save this answer", "quiet");
           saveAnswer.type = "button";
           saveAnswer.disabled = editor.value === "";

@@ -1169,6 +1169,60 @@ tests.a_nameless_label_keyed_field_is_never_an_exact_match = () => {
   assert.equal(loadContentScript(alone).scan(profile, clean, "Acme Robotics").fields[0].confidence, 0.9);
 };
 
+// --- Round 2 design change: a reusable row never carries after a question the net finds something in, and never ticks a box ---
+
+tests.a_reusable_row_never_carries_a_question_that_follows_one_the_net_finds_something_in = () => {
+  // PR #52 wordings: the follow-up's own words say nothing, so only the question right before it can tell.
+  const pairs = [
+    ["Have you ever been convicted of a felony?", "Please tell us what happened"],
+    ["Have you ever been convicted of a felony?", "What did you learn from that experience?"],
+    ["Do you now or will you in the future require visa sponsorship?", "What is the expiration date of your current status?"],
+    ["Are you currently on probation or parole?", "How much longer is it expected to last?"],
+    ["Have you ever pleaded guilty or no contest to a crime?", "Tell us the circumstances of that"],
+  ];
+  for (const [parent, child] of pairs) {
+    const page = pageOf(
+      { tag: "textarea", id: "question_1", name: "question_1", label: parent },
+      { tag: "textarea", id: "question_2", name: "question_2", label: child },
+    );
+    const rows = [{ id: "r", question: child, answer: "Answer", company: "Acme Robotics", tags: ["reusable"] }];
+    const away = fieldById(loadContentScript(page).scan(profile, rows, "Orbit Systems"), "question_2");
+    assert.notEqual(away.confidence, 0.9, `${child} under ${parent}: a reusable row is not exact at another company`);
+    const scan = loadContentScript(page).scan(profile, rows, "Orbit Systems");
+    assert.equal(preTicked(scan, "question_2"), false, `${child}: not pre-ticked`);
+    // At the company it was saved for it is still that company's own answer.
+    const home = fieldById(loadContentScript(page).scan(profile, rows, "Acme Robotics"), "question_2");
+    assert.equal(home.confidence, 0.9, `${child}: the same company's own row is still exact`);
+  }
+  // The same wording after an ordinary question still travels when the row is reusable.
+  const ordinary = pageOf(
+    { tag: "textarea", id: "question_1", name: "question_1", label: "Tell us about yourself" },
+    { tag: "textarea", id: "question_2", name: "question_2", label: "What did you learn from that experience?" },
+  );
+  const row = { id: "r", question: "What did you learn from that experience?", answer: "Answer", company: "Acme Robotics", tags: ["reusable"] };
+  assert.equal(fieldById(loadContentScript(ordinary).scan(profile, [row], "Orbit Systems"), "question_2").confidence, 0.9);
+};
+
+tests.a_reusable_row_never_ticks_a_box_at_another_company = () => {
+  const box = pageOf({ tag: "input", type: "checkbox", id: "coe", name: "question_900[]", value: "I will adhere to the Code of Ethics at all times", label: "I will adhere to the Code of Ethics at all times", groupQuestion: { legend: "Code of Ethics" } });
+  const key = loadContentScript(box).scan(profile, [], "Acme Robotics").fields[0].answer_key;
+  const rows = [{ id: "c", question: key, answer: "true", company: "Acme Robotics", tags: ["reusable"] }];
+  const away = loadContentScript(box).scan(profile, rows, "Orbit Systems");
+  assert.notEqual(away.fields[0].confidence, 0.9);
+  assert.equal(preTicked(away, "coe"), false, "a box is never pre-ticked from a row saved at another company");
+  assert.equal(preTicked(loadContentScript(box).scan(profile, [{ ...rows[0], company: "" }], "Orbit Systems"), "coe"), false, "nor from a row with no company");
+};
+
+tests.a_question_the_net_calls_never_storable_is_marked_so_the_panel_offers_no_save = () => {
+  const cases = [["Have you ever pleaded guilty or no contest to a crime?", true], ["What is your desired annual income?", true], ["Tell us about yourself", false]];
+  for (const [question, never] of cases) {
+    const page = pageOf({ tag: "textarea", id: "question_5", name: "question_5", label: question });
+    assert.equal(fieldById(loadContentScript(page).scan(profile, [], "Acme Robotics"), "question_5").never_storable, never, question);
+  }
+  const sidepanel = readFileSync(path.join(ROOT, "apps", "extension", "sidepanel.js"), "utf8");
+  assert.match(sidepanel, /!field\.requires_review && !field\.never_storable/, "the panel hides Save for a never-storable question");
+};
+
 let failed = 0;
 for (const [name, fn] of Object.entries(tests)) {
   try {

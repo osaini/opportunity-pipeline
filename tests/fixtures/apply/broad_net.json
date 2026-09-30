@@ -1,5 +1,5 @@
 {
-  "_comment": "Vectors for the broad net (docs/phase5-apply-agent-spec.md 7.3, 'As built'). 'topics' is the sorted list of topics the net finds in the text (immigration, work_authorization, criminal, demographic, money, security, agreement, relative, and 'adult' for an 18-or-older wording), 'possibly_sensitive' is whether it finds any, and 'never_storable' whether it finds criminal, demographic, money or security: the topics no answer may be saved for or filled from the answer library. The net never says a question IS sensitive; the precise classifier still decides categories. apply_policy.net_topics, possibly_sensitive and never_storable and the engine's netTopics, possiblySensitive and neverStorable (apps/extension/apply-engine.js) must agree on every row. Node runs this in tests/extension/run_tests.mjs; the Python suites reuse this file. A few rows document deliberate over-reading ('Would you like to opt in to updates?', 'Are you interested in security engineering?'): over-blocking costs only some reuse, under-blocking is the bug.",
+  "_comment": "Vectors for the broad net (docs/phase5-apply-agent-spec.md 7.3, 'As built'). 'topics' is the sorted list of topics the net finds in the text (immigration, work_authorization, criminal, demographic, money, security, agreement, relative, and 'adult' for an 18-or-older wording), 'possibly_sensitive' is whether it finds any, and 'never_storable' whether it finds criminal, demographic, money or security: the topics no answer may be saved for or filled from the answer library. The net never says a question IS sensitive; the precise classifier still decides categories. apply_policy.net_topics, possibly_sensitive and never_storable and the engine's netTopics, possiblySensitive and neverStorable (apps/extension/apply-engine.js) must agree on every row. Node runs this in tests/extension/run_tests.mjs; the Python suites reuse this file. Rows added after review round 2 pin wordings the first lists missed (a guilty plea, a police caution, a person of color, income, CTC, TS/SCI, EAD, H-4, a blue card...). A few rows document deliberate over-reading ('Would you like to opt in to updates?', 'Are you interested in security engineering?'): over-blocking costs only some reuse, under-blocking is the bug.",
   "vectors": [
     {
       "text": "Why are you interested in this role?",
@@ -1250,6 +1250,557 @@
       ],
       "possibly_sensitive": true,
       "never_storable": false
+    },
+    {
+      "text": "Have you ever pleaded guilty or no contest to a crime?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Have you ever been found guilty of an offense?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you have any outstanding warrants?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Have you ever been charged with a DUI or DWI?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Have you ever spent time in jail or prison?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Have you ever received a police caution?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are there any legal proceedings pending against you?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Have you received deferred adjudication?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Have you ever been indicted?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Did you plead nolo contendere?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Have you ever been detained by law enforcement?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Has any record been expunged or sealed?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you identify as Black, Indigenous, or a person of color?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you a person of color?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you Native American or Alaska Native?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you from an underrepresented group?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you a member of a minority group?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you over 40?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you have any medical conditions?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you have a health condition that needs an accommodation?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you in the National Guard or Reserves?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you identify as neurodivergent?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "What year were you born?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Where were you born?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "What is your national origin?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Which of the following best describes you: Asian, Pacific Islander, White",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Please select your pronouns: He/him, She/her, They/them",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Which races do you identify with?",
+      "topics": [
+        "demographic"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "What is your desired annual income?",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "How much do you currently make?",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "What were you making at your last internship?",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "What is your expected monthly income?",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "What is your expected CTC?",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "What is your target OTE?",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "What is your price per hour?",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "What is your expected hourly pay?",
+      "topics": [
+        "money"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you hold a TS/SCI clearance with polygraph?",
+      "topics": [
+        "security"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you hold a DoD Secret clearance?",
+      "topics": [
+        "security"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you hold a Public Trust?",
+      "topics": [
+        "security"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Will you consent to a government background investigation?",
+      "topics": [
+        "agreement",
+        "security"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Are you on any OFAC or sanctions list?",
+      "topics": [
+        "security"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you have an active Secret clearance?",
+      "topics": [
+        "security"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you hold an EAD?",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Are you a foreign national?",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Are you lawfully present in the United States?",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Are you on an H-4 visa?",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Do you have DACA?",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Are you on TPS?",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Are you an asylee or refugee?",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Do you have the right to live and work in the UK?",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Do you have leave to remain?",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Do you have settled status?",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Do you have Australian working rights?",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Do you hold an EU Blue Card?",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "Do you hold an Employment Pass?",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "What is your status in the United States?",
+      "topics": [
+        "immigration"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": false
+    },
+    {
+      "text": "What is your favorite programming language?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Describe a project you are proud of.",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Tell us about a time you were making progress on a hard problem",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Which package manager do you prefer?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "What is your GitHub username?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Tell us about a time you took charge of a project",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Summarize yourself in a sentence",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "In 2-3 sentences, describe a project you are proud of",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Describe your experience with network security",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "What security tools have you used?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Describe your experience exporting data from SQL",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "What is your hourly availability during the semester?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "Who will take charge of the follow-up?",
+      "topics": [],
+      "possibly_sensitive": false,
+      "never_storable": false
+    },
+    {
+      "text": "What sentence were you given after being charged?",
+      "topics": [
+        "criminal"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Do you hold a security clearance for network security work?",
+      "topics": [
+        "security"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
+    },
+    {
+      "text": "Have you exported controlled data under ITAR?",
+      "topics": [
+        "security"
+      ],
+      "possibly_sensitive": true,
+      "never_storable": true
     }
   ]
 }

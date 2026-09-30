@@ -6,7 +6,7 @@ application, no interaction, no event, no run. Opening the section changes nothi
 
 ``answer_missing`` is the one write that goes with it, and it is the student's own act: a question the check
 listed as missing is answered once and saved to the answer library, for this company, as a row with no field
-ids in it, so it carries over to the next posting that asks the same words.
+ids in it, so it carries over to the next posting at the same company that asks the same words.
 
 Neither returns a field's value. The check names questions, options, sources and sentences only.
 """
@@ -118,8 +118,8 @@ def _asks(conn: sqlite3.Connection, user_id: str, opportunity_id: str, ident: tu
 def _action(entry: apply_policy.PlanField, facts: dict[str, Any]) -> dict[str, Any]:
     kind = entry.problem_kind
     if kind in ("missing_answer", "answer_mismatch"):
-        return {"type": "answer", "control": entry.control, "options": list(entry.options), "answer_key": entry.answer_key,
-                "reusable_allowed": not entry.context_dependent}
+        # Apply for me saves an answer for this company only: there is no "use for any company" (spec 7.1 "As built").
+        return {"type": "answer", "control": entry.control, "options": list(entry.options), "answer_key": entry.answer_key}
     if kind == "conflicting_answers":
         return {"type": "library"}
     if kind == "name":
@@ -402,8 +402,8 @@ def answer_missing(
     """Save the student's answer to one question the check listed as missing. The one write of the missing-answers view.
 
     The answer goes to the answer library for this role's company, filed under the question's own words (or, for a
-    follow-up, under its parent's as well), with no field id in it. The "use for any company" tick adds the
-    ``reusable`` tag, and is refused for a question that depends on the company. A sensitive question is never saved
+    follow-up, under its parent's as well), with no field id in it, and it is used at this company only: there is no
+    "use for any company" here, so ``reusable=True`` is refused (spec 7.1 "As built"). A sensitive question is never saved
     here: it has no ordinary answer. When the form Greenhouse returned does not look like the saved role, the answer is
     refused until the student says it is the right posting (``posting_confirmed``), because it is filed under the
     role's company. Returns the fresh check.
@@ -424,16 +424,12 @@ def answer_missing(
     if entry.problem_kind not in ("missing_answer", "answer_mismatch") and entry.source.kind != "answer":
         raise AnswerRefused("The app can't fill this question from a saved answer")
     text = _stored_answer(entry, answer)
-    if reusable and entry.context_dependent:
-        raise AnswerRefused(
-            "This question may be personal or legal, so its answer is saved for this company only" if entry.net_company
-            else "This question depends on the company, so its answer is saved for this company only"
-        )
+    if reusable:
+        raise AnswerRefused("Apply for me saves an answer for this company only, so it is not saved for any company")
     company = result["company"]
     existing = _existing_row(conn, user_id, entry.answer_key, company)
-    tags = [tag for tag in (json.loads(existing["tags_json"] or "[]") if existing else []) if str(tag).lower() != "reusable"]
-    if reusable:
-        tags.append("reusable")
+    # A row this company already has keeps its tags: the student's own tagging (the extension may reuse a reusable row) is theirs.
+    tags = [str(tag) for tag in (json.loads(existing["tags_json"] or "[]") if existing else [])]
     saved = preparation.save_answer(
         conn, entry.answer_key, text, company, tags, answer_id=existing["id"] if existing else None, user_id=user_id,
     )

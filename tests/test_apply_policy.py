@@ -479,13 +479,19 @@ class TruthTablePlanRows(unittest.TestCase):
             self.assertEqual((result.get("gender").disposition, result.get("gender").sensitive), ("blank", "eeo_gender"))
             self.assertIn("Finish in browser leaves it for you", result.get("gender").note)
 
-    def test_rows_12_and_13_an_answer_from_another_company_travels_only_when_marked_reusable(self):
-        elsewhere = answer(WHY, "I build robot arms", company=OTHER)
-        self.assert_needs(BASE + [TEXTAREA], sources(answers=[elsewhere]), "missing_answer", "question_1")
-        reusable = answer(WHY, "I build robot arms", company=OTHER, tags=["Reusable"])
-        submit, handoff = self.both(BASE + [TEXTAREA], sources(answers=[reusable]))
+    def test_rows_12_and_13_an_answer_from_another_company_never_travels_whatever_its_tag(self):
+        # Apply for me carries no answer from one company to another (spec 7.1 "As built"): the reusable tag is ignored.
+        for tags in ([], ["Reusable"], ["reusable"]):
+            with self.subTest(tags=tags):
+                elsewhere = answer(WHY, "I build robot arms", company=OTHER, tags=tags)
+                submit, handoff = self.assert_needs(BASE + [TEXTAREA], sources(answers=[elsewhere]), "missing_answer", "question_1")
+                self.assertIn("No saved answer for this company", submit.problems[0].message)
+                blank = answer(WHY, "I build robot arms", company="", tags=tags)
+                self.assert_needs(BASE + [TEXTAREA], sources(answers=[blank]), "missing_answer", "question_1")
+        here = answer(WHY, "I build robot arms", company=COMPANY, tags=["reusable"])
+        submit, handoff = self.both(BASE + [TEXTAREA], sources(answers=[here]))
         self.assertEqual(submit.status, "ready")
-        self.assertEqual((submit.get("question_1").value, submit.get("question_1").source.reusable, submit.get("question_1").source.company), ("I build robot arms", True, OTHER))
+        self.assertEqual((submit.get("question_1").value, submit.get("question_1").source.reusable, submit.get("question_1").source.company), ("I build robot arms", False, COMPANY))
         self.assertEqual(handoff.get("question_1").disposition, "fill")
 
     def test_row_14_two_different_saved_answers_for_one_question_are_a_problem(self):
@@ -592,9 +598,11 @@ class TruthTablePlanRows(unittest.TestCase):
         field = F("q", WORKED, SINGLE, options=("Yes", "No"))
         self.assert_needs(BASE + [field], sources(answers=[answer(WORKED, "1")]), "answer_mismatch", "q")
         multi = F("q", "Which programming languages have you used?", MULTI, options=("Python", "C++", "Rust"))
-        got = plan(BASE + [multi], sources(answers=[answer("Which programming languages have you used?", "Rust\nPython")]))
-        self.assertEqual(sorted(got.get("q").value), ["Python", "Rust"])
-        self.assert_needs(BASE + [multi], sources(answers=[answer("Which programming languages have you used?", "Rust; Go")]), "answer_mismatch", "q")
+        # A group of boxes is never filled from the answer library (spec 7.1 "As built"): it is left for the student.
+        got = plan(BASE + [multi], sources(answers=[answer("Which programming languages have you used?", "Rust\nPython")])).get("q")
+        self.assertEqual((got.value, got.source.kind, got.problem_kind, got.net_never), (None, "none", "sensitive_never", ("tick",)))
+        self.assertEqual(apply_policy.match_options("Rust\nPython", multi.options, several=True), (["Rust", "Python"], ""))
+        self.assertIsNone(apply_policy.match_options("Rust; Go", multi.options, several=True)[0])
 
     def test_row_37_how_did_you_hear_about_us_is_not_sensitive(self):
         field = F("q", "How did you hear about us?")
@@ -816,17 +824,17 @@ class TruthTablePlanRows(unittest.TestCase):
         self.assertIsNone(plan(BASE + [marketing], sources()).get("question_4").sensitive)
         remote = F("question_5", "Would you accept a remote position?", SINGLE, required=False, options=("Yes", "No"))
         self.assertIsNone(plan(BASE + [remote], sources()).get("question_5").sensitive)
-    def test_this_companys_saved_answer_wins_over_a_reusable_one_from_another_company(self):
+    def test_this_companys_saved_answer_is_used_and_a_reusable_one_from_another_company_never_is(self):
         field = F("q", "Which team are you most interested in?", SINGLE, options=("Perception", "Controls", "Robotics"))
         elsewhere = answer("Which team are you most interested in?", "Robotics", company=OTHER, tags=["reusable"])
         here = answer("Which team are you most interested in?", "Controls")
         got = plan(BASE + [field], sources(answers=[elsewhere, here])).get("q")
         self.assertEqual((got.value, got.source.company), ("Controls", COMPANY))
-        # Two different answers for this company are still a conflict, and so are two reusable ones with none of its own.
+        # Two different answers for this company are still a conflict. Reusable ones saved elsewhere are not one: none of them is used.
         other_here = answer("Which team are you most interested in?", "Perception", tags=["reusable"])
         self.assertEqual(kinds(plan(BASE + [field], sources(answers=[here, other_here])))["q"], "conflicting_answers")
         second = answer("Which team are you most interested in?", "Perception", company="Third Co", tags=["reusable"])
-        self.assertEqual(kinds(plan(BASE + [field], sources(answers=[elsewhere, second])))["q"], "conflicting_answers")
+        self.assertEqual(kinds(plan(BASE + [field], sources(answers=[elsewhere, second])))["q"], "missing_answer")
 
     def test_a_board_that_uploads_as_you_attach_defers_the_resume(self):
         result = plan(BASE, sources(), "rehearse", uploads_on_attach=True)
@@ -857,9 +865,13 @@ class TruthTablePlanRows(unittest.TestCase):
     def test_a_checkbox_answer_is_yes_or_no(self):
         box = F("q", "Keep me informed about future openings at Example Robotics", MULTI, required=False, options=("Keep me informed about future openings at Example Robotics",))
         text = "Keep me informed about future openings at Example Robotics"
-        self.assertIs(plan(BASE + [box], sources(answers=[answer(text, "Yes")])).get("q").value, True)
-        self.assertIs(plan(BASE + [box], sources(answers=[answer(text, "no")])).get("q").value, False)
-        self.assertEqual(plan(BASE + [box], sources(answers=[answer(text, "maybe")])).get("q").disposition, "blank")
+        # No box is ticked from the answer library, whatever it says (spec 7.1 "As built"): only an exact stored statement ticks one.
+        for saved in ("Yes", "no", "maybe"):
+            got = plan(BASE + [box], sources(answers=[answer(text, saved)])).get("q")
+            self.assertEqual((got.value, got.disposition, got.source.kind, got.net_never), (None, "blank", "none", ("tick",)), saved)
+            self.assertIn("never ticks a box", got.note)
+        # It is a real, ordinary box for the plan: no sensitive kind, and no form that offers to save it.
+        self.assertIsNone(plan(BASE + [box], sources()).get("q").sensitive)
 
     def test_the_whole_fixture_listing_plans_without_a_value_leaking_and_only_the_listed_problems(self):
         fields = parse_schema(SCHEMA)
@@ -1355,7 +1367,7 @@ class AnswerMissingTests(PolicyCase):
         before = self.run_check()
         self.assertEqual(before["status"], "needs_you")
         self.assertEqual({item["key"] for item in before["problems"]}, {"question_1", "question_2"})
-        self.assertEqual(before["problems"][0]["action"], {"type": "answer", "control": "textarea", "options": [], "answer_key": "Why do you want to work at Bluefin Robotics?", "reusable_allowed": True})
+        self.assertEqual(before["problems"][0]["action"], {"type": "answer", "control": "textarea", "options": [], "answer_key": "Why do you want to work at Bluefin Robotics?"})
         done = self.answer("question_1", "  I build robot arms  ")
         self.assertEqual([item["key"] for item in done["check"]["problems"]], ["question_2"])
         self.answer("question_2", "controls")
@@ -1368,16 +1380,22 @@ class AnswerMissingTests(PolicyCase):
         self.role("gh-2", job="4000000002")
         self.assertEqual(self.run_check("gh-2")["status"], "ready")
 
-    def test_the_use_for_any_company_tick_adds_the_reusable_tag_and_carries_to_another_company(self):
+    def test_there_is_no_use_for_any_company_tick_and_nothing_saved_at_one_company_carries_to_another(self):
         self.role("gh-1")
-        self.answer("question_2", "Controls", reusable=True)
-        row = self.conn.execute("SELECT tags_json FROM answer_library").fetchone()
-        self.assertEqual(json.loads(row["tags_json"]), ["reusable"])
+        with self.assertRaisesRegex(apply_preflight.AnswerRefused, "this company only"):
+            self.answer("question_2", "Controls", reusable=True)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM answer_library").fetchone()[0], 0)
+        self.answer("question_2", "Controls")
+        self.assertEqual(json.loads(self.conn.execute("SELECT tags_json FROM answer_library").fetchone()["tags_json"]), [])
+        # An older row for this company that carries the tag keeps it, and still does not travel.
+        self.conn.execute("UPDATE answer_library SET tags_json='[\"reusable\"]'")
+        self.conn.commit()
         other = self.role("gh-2", company=OTHER, job="4000000002")
         after = self.run_check(other)
-        self.assertEqual([item["key"] for item in after["problems"]], ["question_1"], "the reusable answer travels; the other one is still missing")
-        field = next(item for item in after["fields"] if item["key"] == "question_2")
-        self.assertIn("reusable", field["source"].lower())
+        self.assertEqual({item["key"] for item in after["problems"]}, {"question_1", "question_2"}, "nothing saved at another company carries over")
+        problem = next(item for item in after["problems"] if item["key"] == "question_2")
+        self.assertEqual(problem["action"]["type"], "answer")
+        self.assertNotIn("reusable_allowed", problem["action"])
 
     def test_answering_again_replaces_this_companys_row_and_does_not_add_another(self):
         self.role("gh-1")
@@ -1406,14 +1424,14 @@ class AnswerMissingTests(PolicyCase):
         self.assertEqual((problem["kind"], problem["action"]["type"], problem["action"]["category"]), ("sensitive_not_allowed", "manual", "work_authorization"))
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM answer_library").fetchone()[0], 0)
 
-    def test_a_question_that_depends_on_the_company_refuses_the_reusable_tick(self):
+    def test_a_question_that_depends_on_the_company_is_saved_for_this_company_only(self):
         listing = copy.deepcopy(SIMPLE)
         listing["questions"].append({"label": WORKED, "required": True, "fields": [{"name": "question_9", "type": SINGLE, "values": [{"label": "Yes", "value": 1}, {"label": "No", "value": 0}]}]})
         self.client = StaticClient(listing)
         self.role("gh-1")
         problem = next(item for item in self.run_check()["problems"] if item["key"] == "question_9")
-        self.assertFalse(problem["action"]["reusable_allowed"], "the view hides the tick")
-        with self.assertRaisesRegex(apply_preflight.AnswerRefused, "depends on the company"):
+        self.assertNotIn("reusable_allowed", problem["action"], "the view offers no tick")
+        with self.assertRaisesRegex(apply_preflight.AnswerRefused, "this company only"):
             self.answer("question_9", "No", reusable=True)
         self.answer("question_9", "No")
         self.assertEqual(self.conn.execute("SELECT tags_json FROM answer_library WHERE question LIKE 'Have you previously%'").fetchone()[0], "[]")
@@ -1431,12 +1449,13 @@ class AnswerMissingTests(PolicyCase):
         self.answer("question_9", "I interned here in 2025")
         self.assertEqual(self.conn.execute("SELECT question FROM answer_library WHERE answer LIKE 'I interned%'").fetchone()[0], f"{WORKED} / If yes, please explain")
 
-    def test_answering_from_the_options_settles_a_reusable_answer_that_did_not_fit(self):
+    def test_answering_from_the_options_settles_an_answer_saved_elsewhere_that_did_not_fit(self):
         self.role("gh-1")
-        # Saved as reusable at another company, and not one of this form's options.
+        # Saved as reusable at another company, and not one of this form's options: not used, so this question is simply missing.
         preparation.save_answer(self.conn, "Which team are you most interested in?", "Robotics", OTHER, ["reusable"], user_id=USER)
         problem = next(item for item in self.run_check()["problems"] if item["key"] == "question_2")
-        self.assertEqual(problem["kind"], "answer_mismatch")
+        self.assertEqual(problem["kind"], "missing_answer")
+        self.assertIn("saved for", problem["message"])
         self.assertEqual(problem["action"]["type"], "answer")
         done = self.answer("question_2", "Controls")
         self.assertNotIn("question_2", [item["key"] for item in done["check"]["problems"]], "the student's own answer settles it")
@@ -1444,8 +1463,8 @@ class AnswerMissingTests(PolicyCase):
         self.assertNotIn("conflicting_answers", [item["kind"] for item in fresh["problems"]])
         field = next(item for item in fresh["fields"] if item["key"] == "question_2")
         self.assertEqual(field["source"], f"Saved answer for {runs_tests.BLUEFIN}")
-        # Ticking "use for any company" over an older reusable answer elsewhere is settled here the same way.
-        self.answer("question_2", "Perception", reusable=True)
+        # An older reusable answer elsewhere is never a conflict: it is not used.
+        self.answer("question_2", "Perception")
         self.assertNotIn("conflicting_answers", [item["kind"] for item in self.run_check()["problems"]])
 
     def test_a_privacy_box_gets_no_answer_form_and_no_reusable_tick(self):

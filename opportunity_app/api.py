@@ -4181,7 +4181,9 @@ def create_app(
         context: tuple[sqlite3.Connection, dict[str, str]] = Depends(extension_connection),
     ) -> dict[str, Any]:
         conn, device = context
-        if answer_is_sensitive(payload.question):
+        # The precise rule, and the broad net's never-storable topics (criminal history, personal details, pay, security): a wording
+        # the precise rule misses is still never offered for saving here (spec 7.3 "As built").
+        if answer_is_sensitive(payload.question) or apply_policy.never_storable(payload.question):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Sensitive or consequential answers cannot enter the reusable library",

@@ -302,6 +302,21 @@ class ExtensionApplyTests(unittest.TestCase):
         )
         self.assertEqual(saved.status_code, 201, saved.text)
 
+    def test_extension_answer_endpoint_refuses_the_never_storable_topics_the_precise_rule_misses(self) -> None:
+        token, _ = self.pair()
+        headers = self.extension_headers(token)
+        for question in (
+            "Are you currently on probation or parole?", "What sentence were you given?", "Do you have any pending cases?",
+            "How old are you?", "Are you okay with the stipend?", "Polygraph", "Have you ever pleaded guilty or no contest to a crime?",
+            "What is your desired annual income?", "Do you hold a TS/SCI clearance?",
+        ):
+            with self.subTest(question=question):
+                refused = self.client.post("/api/v1/extension/answers", headers=headers, json={"question": question, "answer": "Anything"})
+                self.assertEqual(refused.status_code, 422, question)
+                self.assertIn("cannot enter the reusable library", refused.json()["detail"])
+        with closing(connect_product(self.database)) as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM answer_library").fetchone()[0], 0)
+
     def test_account_deletion_revokes_device_and_removes_pairing_state(self) -> None:
         token, _ = self.pair()
         deleted = self.client.delete(

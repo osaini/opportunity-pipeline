@@ -134,8 +134,11 @@ class WritingTests(StoreCase):
         self.refused("not stored", category="work_authorization", question=AUTH, answer="Yes", answer_kind="anything")
         self.refused("Give the question", category="work_authorization", question="  ?! ", answer="Yes")
         self.refused("too long", category="work_authorization", question="Are you authorized to work? " * 300, answer="Yes")
-        entry = self.add(category="sponsorship", question=SPONSOR, answer=["No", "Not now"], answer_kind="options")
-        self.assertEqual((entry["answer_kind"], entry["answer"]), ("options", "No\nNot now"))
+        # A list of options or a typed answer is kept for one company (spec 5.4 "As built"); only a select's one exact label is kept for any.
+        self.refused("never for any company", category="sponsorship", question=SPONSOR, answer=["No", "Not now"], answer_kind="options")
+        self.refused("never for any company", category="sponsorship", question=SPONSOR, answer="No, I will not", answer_kind="text")
+        entry = self.add(category="sponsorship", question=SPONSOR, answer=["No", "Not now"], answer_kind="options", company="Example Robotics")
+        self.assertEqual((entry["answer_kind"], entry["answer"], entry["any_company"]), ("options", "No\nNot now", False))
 
     def test_the_number_of_entries_is_capped(self):
         self.allow("work_authorization")
@@ -275,10 +278,12 @@ class NeverStoredTests(StoreCase):
 class StatementTests(StoreCase):
     def test_a_statement_is_stored_word_for_word_as_ticked_and_a_changed_word_is_a_miss(self):
         self.allow("acknowledgment", "consent")
-        entry = self.add(category="acknowledgment", question=ACCURATE, answer="checked")
+        # Every statement is kept for one company, even a plain "what I wrote is true" (D9 B, spec 5.4 "As built").
+        self.refused("never for any company", category="acknowledgment", question=ACCURATE, answer="checked")
+        entry = self.add(category="acknowledgment", question=ACCURATE, answer="checked", company="Example Robotics")
         row = self.rows()[0]
-        self.assertEqual((row["answer_kind"], row["answer"], row["question_text"], row["company_key"]), ("checkbox", "checked", ACCURATE, ""))
-        self.assertTrue(entry["any_company"], "a statement that reads no document may be kept for any company")
+        self.assertEqual((row["answer_kind"], row["answer"], row["question_text"], row["company_key"]), ("checkbox", "checked", ACCURATE, "example robotics"))
+        self.assertFalse(entry["any_company"])
         found = apply_sensitive.lookup(self.conn, USER, category="acknowledgment", question_key=question_key(ACCURATE), company_key="example robotics", mode="submit")
         self.assertEqual((found["answer_kind"], found["answer"]), ("checkbox", "checked"))
         for changed in (ACCURATE + " today", ACCURATE.replace("accurate", "correct"), "I certify the information I provided is accurate"):
@@ -310,7 +315,7 @@ class StatementTests(StoreCase):
                      links=[f"https://example.test/{n}" for n in range(9)])
         self.assertEqual(apply_sensitive.links_in("no links here", None, "see http://example.test/a."), ("http://example.test/a",))
         self.assertTrue(apply_sensitive.cites_document("I have read the notice"))
-        self.assertFalse(apply_sensitive.cites_document("I certify that all of this is true"))
+        self.assertFalse(apply_sensitive.cites_document("I certify that all of this is true"), "the word test alone; a statement is kept for one company either way")
 
     def test_a_consent_statement_is_stored_the_same_way(self):
         self.allow("consent")
@@ -507,13 +512,23 @@ class PlanFromTheStoreTests(StoreCase):
         self.assertEqual(self.plan(BASE + [moved]).get("q").problem_kind, "sensitive_mismatch")
         self.assertIn("not the one you agreed to", self.plan(BASE + [moved]).get("q").problem)
 
-    def test_an_any_company_statement_that_reads_no_document_ticks_at_every_company(self):
+    def test_a_plain_certification_ticks_at_the_company_it_was_saved_for_and_at_no_other(self):
         box = F("q", ACCURATE, MULTI, options=(ACCURATE,))
         self.allow("acknowledgment")
-        self.add(category="acknowledgment", question=apply_policy.statement_of(box, "checkbox"), answer="checked")
+        statement = apply_policy.statement_of(box, "checkbox")
+        self.refused("never for any company", category="acknowledgment", question=statement, answer="checked")
+        self.add(category="acknowledgment", question=statement, answer="checked", company=COMPANY)
+        got = self.plan(BASE + [box], company=COMPANY).get("q")
+        self.assertEqual((got.value, got.source.label), (True, f"Your acknowledgment for {COMPANY}"))
+        self.assertTrue(got.company_only)
+        other = self.plan(BASE + [box], company=OTHER).get("q")
+        self.assertEqual((other.value, other.problem_kind), (None, "sensitive_missing"))
+        # A row for any company put there some other way (an older version) is used at no company.
+        with self.conn:
+            self.conn.execute("UPDATE apply_sensitive_answers SET company_key=''")
         for company in (COMPANY, OTHER):
-            got = self.plan(BASE + [box], company=company).get("q")
-            self.assertEqual((got.value, got.source.label), (True, "Your acknowledgment (any company)"), company)
+            legacy = self.plan(BASE + [box], company=company).get("q")
+            self.assertEqual((legacy.value, legacy.problem_kind), (None, "sensitive_missing"), company)
 
     def test_an_eeo_decline_fills_the_form_label_and_a_different_label_needs_its_own_entry(self):
         gender = F("gender", GENDER, SINGLE, required=False, options=("Male", "Female", DECLINE), section="compliance")
@@ -652,8 +667,8 @@ class KeyAndCategoryRuleTests(StoreCase):
                 before = self.plan(BASE + [field]).get("question_5")
                 self.assertEqual((before.sensitive, before.problem_kind, before.statement), (category, "sensitive_missing", statement))
                 form = apply_preflight._sensitive_form(before, "sensitive_missing")
-                self.assertEqual((form["control"], form["statement"], form["company_only"]), ("checkbox", statement, False))
-                self.add(category=category, question=before.statement, answer="checked", answer_kind="checkbox", links=before.links)
+                self.assertEqual((form["control"], form["statement"], form["company_only"]), ("checkbox", statement, True))
+                self.add(category=category, question=before.statement, answer="checked", answer_kind="checkbox", links=before.links, company=COMPANY)
                 after = self.plan(BASE + [field]).get("question_5")
                 self.assertEqual((after.value, after.source.kind, after.disposition), (True, "sensitive", "fill"))
         self.refused("not stored", category="eeo_gender", question=GENDER, answer="checked", answer_kind="checkbox")
@@ -683,8 +698,9 @@ class KeyAndCategoryRuleTests(StoreCase):
     def test_a_statement_saved_for_any_company_is_not_ticked_where_its_box_links_a_document(self):
         self.allow("acknowledgment")
         plain = self.box("Certification", ACCURATE)
-        self.add(category="acknowledgment", question=apply_policy.statement_of(plain, "checkbox"), answer="checked")
-        self.assertEqual(self.plan(BASE + [plain], company=OTHER).get("q").value, True)
+        self.add(category="acknowledgment", question=apply_policy.statement_of(plain, "checkbox"), answer="checked", company=COMPANY)
+        self.assertEqual(self.plan(BASE + [plain], company=COMPANY).get("q").value, True)
+        self.assertEqual(self.plan(BASE + [plain], company=OTHER).get("q").value, None)
         linked = self.box("Certification", ACCURATE, '<p>Details at <a href="https://orbit.test/legal/attestation">this page</a>.</p>')
         # A row for the linked box's whole text, saved for any company where the same words linked nothing (a legacy row: the store now
         # refuses any-company for it, so it is put there by hand).
@@ -803,10 +819,13 @@ class KeyAndCategoryRuleTests(StoreCase):
         us = self.box("Are you legally authorized to work in the United States?", option)
         canada = self.box("Are you legally authorized to work in Canada?", option)
         before = self.plan(BASE + [us]).get("q")
-        self.assertEqual((before.sensitive, before.statement, before.company_only), ("work_authorization", f"{us.label} {option}", False))
-        self.add(category="work_authorization", question=before.statement, answer="checked", answer_kind="checkbox")
-        self.assertEqual(self.plan(BASE + [us], company=OTHER).get("q").value, True, "the same question at another company")
-        self.assert_needs(BASE + [canada], "sensitive_missing", "q", company=OTHER)
+        # A tick box is kept for one company (spec 5.4 "As built"): the statement is matched on its heading, and never carries elsewhere.
+        self.assertEqual((before.sensitive, before.statement, before.company_only), ("work_authorization", f"{us.label} {option}", True))
+        self.refused("never for any company", category="work_authorization", question=before.statement, answer="checked", answer_kind="checkbox")
+        self.add(category="work_authorization", question=before.statement, answer="checked", answer_kind="checkbox", company=COMPANY)
+        self.assertEqual(self.plan(BASE + [us]).get("q").value, True)
+        self.assert_needs(BASE + [us], "sensitive_missing", "q", company=OTHER)
+        self.assert_needs(BASE + [canada], "sensitive_missing", "q")
 
     def test_an_acknowledgment_that_leans_on_the_heading_is_kept_for_one_company_and_matched_on_it(self):
         option = "I understand and accept this condition of employment"
@@ -1032,12 +1051,15 @@ class LeftoverReviewTests(StoreCase):
                 with self.conn:
                     self.conn.execute("DELETE FROM apply_sensitive_answers")
 
-    def test_a_statement_that_names_no_document_is_still_kept_for_any_company(self):
+    def test_a_statement_that_names_no_document_is_kept_for_one_company_too(self):
         self.allow("acknowledgment", "work_authorization")
-        self.add(category="acknowledgment", question=f"Certification {ACCURATE}", answer="checked")
-        self.assertIs(self.plan(BASE + [self.box("Certification", ACCURATE)], company=OTHER).get("q").value, True)
-        # A box that states a fact about the student names a place ("the United States"), not a document.
-        self.add(category="work_authorization", question=f"{AUTH} I am authorized to work in the United States", answer="checked", answer_kind="checkbox")
+        self.refused("never for any company", category="acknowledgment", question=f"Certification {ACCURATE}", answer="checked")
+        self.add(category="acknowledgment", question=f"Certification {ACCURATE}", answer="checked", company=COMPANY)
+        self.assertIs(self.plan(BASE + [self.box("Certification", ACCURATE)], company=COMPANY).get("q").value, True)
+        self.assertIsNone(self.plan(BASE + [self.box("Certification", ACCURATE)], company=OTHER).get("q").value)
+        # A tick box that states a fact about the student is kept for one company as well; only a select's exact label travels.
+        self.refused("never for any company", category="work_authorization", question=f"{AUTH} I am authorized to work in the United States", answer="checked", answer_kind="checkbox")
+        self.add(category="work_authorization", question=f"{AUTH} I am authorized to work in the United States", answer="checked", answer_kind="checkbox", company=COMPANY)
         self.assertFalse(apply_sensitive.cites_document("I am authorized to work in the United States", names=False))
         self.assertTrue(apply_sensitive.cites_document("I am authorized to work in the United States"))
 

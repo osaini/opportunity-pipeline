@@ -10526,16 +10526,8 @@
       read = () => control.value;
       write = (value) => { control.value = value; };
     }
-    let reusable = null;
-    if (action.reusable_allowed) {
-      const row = element("label", "confirmation-row");
-      reusable = document.createElement("input");
-      reusable.type = "checkbox";
-      row.append(reusable, element("span", "", "Use for any company"));
-      form.appendChild(row);
-    } else {
-      form.appendChild(element("p", "profile-help", "This answer depends on the company, so it is saved for this company only."));
-    }
+    // Apply for me keeps an answer for one company: nothing here carries an answer to another employer.
+    form.appendChild(element("p", "profile-help", "This answer is saved for this company only."));
     const save = element("button", "secondary-button", "Save and use for this question");
     save.type = "submit";
     const status = element("p", "form-status");
@@ -10545,12 +10537,10 @@
     form.applyDraft = {
       read() {
         const answer = read();
-        const ticked = Boolean(reusable?.checked);
-        return (Array.isArray(answer) ? answer.length : answer) || ticked ? { answer, ticked } : null;
+        return (Array.isArray(answer) ? answer.length : answer) ? { answer } : null;
       },
       write(draft) {
         write(draft.answer);
-        if (reusable) reusable.checked = draft.ticked;
       },
     };
     // Busy is aria-disabled, not disabled: a disabled button that has focus drops it to the page, outside the open panel.
@@ -10569,7 +10559,7 @@
       try {
         const saved = await api(`/api/v1/apply-agent/opportunities/${encodeURIComponent(problem.opportunityId)}/answers`, {
           method: "POST",
-          body: JSON.stringify({ key: problem.key, answer, reusable: Boolean(reusable?.checked), posting_confirmed: Boolean(problem.postingConfirmed?.()) }),
+          body: JSON.stringify({ key: problem.key, answer, posting_confirmed: Boolean(problem.postingConfirmed?.()) }),
         });
         onSaved(saved.check, `Saved for ${company}.`);
       } catch (error) {
@@ -11192,7 +11182,9 @@
         tickRow.hidden = !chosen.tickable;
         answerLabel.hidden = Boolean(chosen.statement) || ticked;
         linksLabel.hidden = !chosen.statement && !ticked;
-        companyCaption.textContent = chosen.statement ? "Company (required when the statement mentions a notice or a document)" : "Company (leave empty for any company)";
+        companyCaption.textContent = chosen.statement || ticked
+          ? "Company (required: a statement or a tick box is kept for one company only)"
+          : "Company (leave empty for any company; only a choice from the form's own list is kept for any company)";
         examples.replaceChildren(...(chosen.decline_only ? data.decline_examples : []).map((label) => {
           const option = document.createElement("option");
           option.value = label;
