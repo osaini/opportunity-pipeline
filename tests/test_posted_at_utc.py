@@ -39,6 +39,7 @@ def schema_at_0019(path: Path) -> sqlite3.Connection:
     """A database as it stood before this migration, ready to be upgraded."""
 
     conn = connect_product(path)
+    conn.execute("PRAGMA synchronous = OFF")  # a throwaway file: skip the fsync each migration commit pays
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
     )
