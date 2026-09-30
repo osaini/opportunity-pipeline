@@ -298,7 +298,7 @@ from .outreach_inbox import InboxWatcher, PossibleReplyNotFound, PossibleReplySe
 from .outreach_forms import default_submitter_factory as default_form_submitter_factory, set_contact_form, submit_contact_form
 from .outreach_automation import AutomationWorker, settings as automation_settings, update_settings as update_automation_settings
 from .outreach_schedule import cancel_send, schedule_send
-from . import outreach_thank_you
+from . import outreach_labels, outreach_thank_you
 from .outreach_gmail import (
     GmailAuthError,
     SendConflictError,
@@ -597,6 +597,11 @@ class OutreachSettingsRequest(BaseModel):
     company_research_agent: str | None = Field(default=None, max_length=40)
     linkedin_account: str | None = Field(default=None, max_length=300)
     attachment_resume_id: str | None = Field(default=None, max_length=100)
+
+
+class GmailLabelRequest(BaseModel):
+    # None goes back to the default label name; an empty string turns the label off.
+    value: str | None = Field(default=None, max_length=100)
 
 
 class BoardLookupRequest(BaseModel):
@@ -2588,6 +2593,37 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
         return {"available": True, **view}
+
+    def gmail_label_view(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
+        value = outreach_labels.label_name(conn, user_id)
+        gmail = gmail_drafts_status(conn, user_id=user_id)
+        return {
+            "value": value,
+            "default": outreach_labels.DEFAULT_LABEL,
+            "search": outreach_labels.search_form(value),
+            "mailbox": {"connected": gmail["connected"], "connected_as": gmail["connected_as"], "expected": gmail["account"]},
+            "permission": gmail["label_check"],
+        }
+
+    @app.get("/api/v1/outreach/gmail-label")
+    def get_gmail_label(
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        """The Gmail label put on every thread where someone at a company replied, and whether Gmail lets the app add it."""
+        return gmail_label_view(conn, user_id)
+
+    @app.put("/api/v1/outreach/gmail-label")
+    def put_gmail_label(
+        payload: GmailLabelRequest,
+        conn: sqlite3.Connection = Depends(writable_connection),
+        user_id: str = Depends(require_auth),
+    ) -> dict[str, Any]:
+        try:
+            outreach_labels.set_label_name(conn, user_id, payload.value)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+        return gmail_label_view(conn, user_id)
 
     @app.get("/api/v1/outreach/recontact")
     def outreach_recontact_status(

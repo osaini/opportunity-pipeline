@@ -975,7 +975,7 @@ class OutreachPossibleReplyRecordTests(MailCase):
 
 
 class WatcherTests(MailCase):
-    def test_the_watcher_runs_it_as_a_fourth_step_only_when_it_is_not_off(self):
+    def test_the_watcher_runs_it_as_a_fifth_step_only_when_it_is_not_off(self):
         from opportunity_app.outreach_inbox import InboxWatcher
 
         watcher = InboxWatcher(self.platform_path, client_factory=self.factory, decisions_for=lambda conn, user_id: None)

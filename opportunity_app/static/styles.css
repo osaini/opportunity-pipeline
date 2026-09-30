@@ -445,6 +445,10 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 .settings-field select { width: 100%; min-height: var(--control-md); padding: var(--space-3) var(--field-pad-x); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); color: var(--ink); font-size: 12px; font-weight: 400; }
 .settings-field select:focus { outline: 3px solid var(--focus); border-color: var(--accent); }
 .settings-field select:disabled { opacity: 0.6; }
+.settings-field input[type="text"] { width: 100%; min-height: var(--control-md); padding: var(--space-3) var(--field-pad-x); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); color: var(--ink); font-size: 12px; font-weight: 400; }
+.settings-field input[type="text"]:focus { outline: 3px solid var(--focus); border-color: var(--accent); }
+.settings-field input[type="text"]:disabled { opacity: 0.6; }
+.settings-field .gmail-label-mailbox:empty, .settings-field .gmail-label-permission:empty, .settings-field .gmail-label-status:empty { display: none; }
 .board-tracker h4 { margin: 0; font-size: 13px; }
 .board-tracker p { margin: 0; }
 .board-tracker-form { display: flex; flex-wrap: wrap; gap: 8px; }

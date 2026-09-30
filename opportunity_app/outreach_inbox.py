@@ -31,7 +31,10 @@ older rules is read again under the current ones, whoever wrote it.
 
 ``InboxWatcher`` runs both checks on a background thread, so a reply or a
 bounce is caught even when the page is closed. Each of its steps stands alone:
-one that fails is recorded in automation_health and the next still runs.
+one that fails is recorded in automation_health and the next still runs. In
+order: sends, deliveries, replies, then outreach_labels (a Gmail label on the
+thread of every confirmed reply), then application mail when the student turned
+it on.
 """
 
 from __future__ import annotations
@@ -58,7 +61,7 @@ import httpx
 
 from pipeline import identity_tokens, normalized
 
-from . import automation
+from . import automation, outreach_labels
 from .inbox_classifiers import read_reply
 from .mail_trust import FREEMAIL, READ_CATEGORIES, authenticate, host_of, listed, not_an_employer, registrable_domain, sender_lists
 from .outreach import (
@@ -1818,6 +1821,12 @@ STEP_ERRORS = {
     "not_connected": "Gmail is not connected",
     "unreachable": "Gmail could not be reached",
     "throttled": "Gmail asked the app to slow down",
+    "needs_label_permission": (
+        "Reconnect Gmail and tick the permission Google lists as reading, composing and sending, "
+        "so the app can label reply threads"
+    ),
+    "wrong_account": "Gmail is connected as a different account from your outreach address; reconnect with that address",
+    "label_refused": "Gmail would not create a label with that name; choose another in Outreach settings",
     "message_errors": "Some job emails could not be read and were set aside",
     "database_busy": "The database was busy, so the job-email check stopped; it tries again next time",
 }
@@ -1982,6 +1991,10 @@ class InboxWatcher:
             ("inbox.replies", lambda: capture_replies(
                 conn, user_id=user_id, client_factory=factory,
                 decisions=self._decisions_for(conn, user_id), on_reply=self._on_reply,
+            )),
+            # The label goes on a confirmed reply's thread as soon as the reply is captured (a no-op when off or paused).
+            (outreach_labels.HEALTH_COMPONENT, lambda: outreach_labels.label_replies(
+                conn, user_id=user_id, client_factory=factory,
             )),
         ]
         # Job-system mail after the replies, so a reply outreach owns is never read as one.

@@ -39,12 +39,20 @@ OAUTH_PROVIDERS = {
     # Approved outreach, as drafts or sent after a confirm click, with the
     # resume attached. gmail.compose drafts and sends. gmail.readonly lets the
     # app find and read the delivery failure notice for a send that bounced
-    # (outreach_delivery.py). Not gmail.metadata: with that granted, Gmail
-    # refuses to return a message's text even alongside gmail.readonly.
+    # (outreach_delivery.py). gmail.modify is used only to add the student's
+    # reply label to reply threads (outreach_labels.py: messages.batchModify
+    # with addLabelIds, and labels.list and labels.create); nothing in the app
+    # removes a label, trashes, archives or marks mail read. Not
+    # gmail.metadata: with that granted, Gmail refuses to return a message's
+    # text even alongside gmail.readonly.
     "gmail_drafts": {
         "authorize": "https://accounts.google.com/o/oauth2/v2/auth",
         "token": "https://oauth2.googleapis.com/token",
-        "scopes": ["https://www.googleapis.com/auth/gmail.compose", "https://www.googleapis.com/auth/gmail.readonly"],
+        "scopes": [
+            "https://www.googleapis.com/auth/gmail.compose",
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.modify",
+        ],
         "client_id_env": "GOOGLE_OAUTH_CLIENT_ID",
         "client_secret_env": "GOOGLE_OAUTH_CLIENT_SECRET",
     },
@@ -56,6 +64,9 @@ OAUTH_PROVIDERS = {
         "client_secret_env": "MICROSOFT_OAUTH_CLIENT_SECRET",
     },
 }
+
+
+GMAIL_PROFILE_URL = "https://gmail.googleapis.com/gmail/v1/users/me/profile"
 
 
 def begin_oauth(conn: sqlite3.Connection, provider: str, redirect_uri: str, *, user_id: str, login_hint: str = "") -> dict[str, Any]:
@@ -81,6 +92,55 @@ def begin_oauth(conn: sqlite3.Connection, provider: str, redirect_uri: str, *, u
     return {"provider": provider, "authorization_url": f"{config['authorize']}?{query}", "expires_at": (created + timedelta(minutes=10)).isoformat()}
 
 
+def _google_reasons(response: httpx.Response) -> set[str]:
+    """The reasons Google gave an error (status, errors[].reason, details[].reason); empty for anything unreadable."""
+    reasons: set[str] = set()
+    try:
+        error = response.json().get("error")
+    except (ValueError, AttributeError):
+        return reasons
+    if not isinstance(error, dict):
+        return reasons
+    if isinstance(error.get("status"), str):
+        reasons.add(error["status"])
+    for key in ("errors", "details"):
+        for item in error.get(key) or []:
+            if isinstance(item, dict) and isinstance(item.get("reason"), str):
+                reasons.add(item["reason"])
+    return reasons
+
+
+async def _gmail_account(client: httpx.AsyncClient, access_token: str) -> str:
+    """The address a new Gmail connection signed into, or a ValueError that refuses the connection.
+
+    Fails closed: a connection whose account cannot be confirmed is not saved.
+    PIPELINE_OUTREACH_ACCOUNT is read here rather than through outreach_drafting,
+    which imports this module.
+    """
+    try:
+        profile = await client.get(GMAIL_PROFILE_URL, headers={"Authorization": f"Bearer {access_token}"})
+    except httpx.HTTPError as exc:
+        raise ValueError("Could not confirm which Gmail account connected; try connecting again") from exc
+    if profile.status_code == 403:
+        # A 403 is not always a missing permission: the Gmail API may be off in the project, or Google may be rate limiting.
+        reasons = _google_reasons(profile)
+        if reasons & {"accessNotConfigured", "SERVICE_DISABLED"}:
+            raise ValueError("Enable the Gmail API in your Google Cloud project (README, Gmail drafts setup), then connect again")
+        if reasons & {"rateLimitExceeded", "userRateLimitExceeded", "quotaExceeded", "RESOURCE_EXHAUSTED"}:
+            raise ValueError("Could not confirm which Gmail account connected; try connecting again")
+        raise ValueError("Google did not grant the Gmail permissions; connect again and tick every box on Google's screen")
+    try:
+        address = str(profile.json().get("emailAddress") or "").strip() if profile.status_code == 200 else ""
+    except (ValueError, AttributeError):
+        address = ""
+    if not address:
+        raise ValueError("Could not confirm which Gmail account connected; try connecting again")
+    expected = os.environ.get("PIPELINE_OUTREACH_ACCOUNT", "").strip()
+    if expected and expected.casefold() != address.casefold():
+        raise ValueError(f"Google signed in as {address}, but this pipeline's mailbox is {expected}. Connect again and choose {expected}.")
+    return address
+
+
 async def complete_oauth(conn: sqlite3.Connection, provider: str, state: str, code: str, encryption_key: str, *, user_id: str) -> dict[str, Any]:
     config = OAUTH_PROVIDERS.get(provider)
     state_hash = hashlib.sha256(state.encode()).hexdigest()
@@ -95,14 +155,27 @@ async def complete_oauth(conn: sqlite3.Connection, provider: str, state: str, co
         fernet = Fernet(encryption_key.encode())
     except Exception as exc:
         raise ValueError("PIPELINE_CONNECTION_KEY must be a valid Fernet key") from exc
+    account_email = ""
     async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
         response = await client.post(config["token"], data={"grant_type": "authorization_code", "client_id": client_id,
             "client_secret": client_secret, "redirect_uri": row["redirect_uri"], "code": code, "code_verifier": row["code_verifier"]})
+        if response.status_code == 200 and provider == "gmail_drafts":
+            # Which mailbox this connection reads, before anything is written: a connection made
+            # with the wrong Google account is refused here, not found out by a reply that never comes.
+            try:
+                access_token = str(response.json().get("access_token") or "")
+            except ValueError:
+                access_token = ""
+            if access_token:
+                account_email = await _gmail_account(client, access_token)
     if response.status_code != 200:
         raise ValueError("Provider rejected the OAuth exchange")
     tokens = response.json()
     if not tokens.get("access_token"):
         raise ValueError("Provider response did not contain an access token")
+    # Google names the permissions it actually granted, and the student may leave a box unticked.
+    granted = str(tokens.get("scope") or "").split() if provider == "gmail_drafts" else []
+    scopes = sorted(set(granted)) if granted else config["scopes"]
     connector_id = f"connector-{provider}-{user_id}"
     timestamp = utc_now()
     existing_connector = conn.execute(
@@ -124,13 +197,13 @@ async def complete_oauth(conn: sqlite3.Connection, provider: str, state: str, co
         token_granted_at = None
     with conn:
         # A fresh connection clears the error that asked for it.
-        conn.execute("""INSERT INTO connector_accounts(id, user_id, provider, scopes_json, encrypted_access_token, encrypted_refresh_token, status, created_at, updated_at, token_granted_at, last_error)
-            VALUES(?, ?, ?, ?, ?, ?, 'connected', ?, ?, ?, '') ON CONFLICT(user_id, provider) DO UPDATE SET scopes_json=excluded.scopes_json,
+        conn.execute("""INSERT INTO connector_accounts(id, user_id, provider, scopes_json, encrypted_access_token, encrypted_refresh_token, status, created_at, updated_at, token_granted_at, last_error, account_email)
+            VALUES(?, ?, ?, ?, ?, ?, 'connected', ?, ?, ?, '', ?) ON CONFLICT(user_id, provider) DO UPDATE SET scopes_json=excluded.scopes_json,
             encrypted_access_token=excluded.encrypted_access_token, encrypted_refresh_token=excluded.encrypted_refresh_token,
             status='connected', updated_at=excluded.updated_at, disconnected_at=NULL,
-            token_granted_at=excluded.token_granted_at, last_error=''""",
-            (connector_id, user_id, provider, json.dumps(config["scopes"]), fernet.encrypt(tokens["access_token"].encode()).decode(),
-             encrypted_refresh_token, timestamp, timestamp, token_granted_at))
+            token_granted_at=excluded.token_granted_at, last_error='', account_email=excluded.account_email""",
+            (connector_id, user_id, provider, json.dumps(scopes), fernet.encrypt(tokens["access_token"].encode()).decode(),
+             encrypted_refresh_token, timestamp, timestamp, token_granted_at, account_email))
         conn.execute("UPDATE oauth_states SET consumed_at=? WHERE state_hash=?", (timestamp, state_hash))
     return connector_record(conn, connector_id, user_id=user_id)
 

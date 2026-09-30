@@ -110,6 +110,10 @@ class PostgresConnection:
             raise RuntimeError("PostgreSQL requires `pip install psycopg[binary]`") from exc
         self._conn = psycopg.connect(url, row_factory=dict_row)
         if read_only:
+            # The connection-level flag makes every later transaction read-only too; a
+            # SET TRANSACTION covers only the first, and a commit would end it. It has
+            # to be set before any statement opens a transaction.
+            self._conn.read_only = True
             self._conn.execute("SET TRANSACTION READ ONLY")
 
     def execute(self, sql: str, params: Any = ()) -> PostgresCursor:

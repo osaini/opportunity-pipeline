@@ -381,6 +381,24 @@ def _apply_tech_brief(conn: sqlite3.Connection, sql: str) -> None:
     conn.executescript(sql)
 
 
+# The Gmail label a reply carries (outreach_labels.py), and which account the
+# Gmail connection signed into.
+_GMAIL_REPLY_LABELS_COLUMNS = (
+    ("outreach_inbox_messages", "label_name", "TEXT NOT NULL DEFAULT ''"),
+    ("outreach_inbox_messages", "labeled_at", "TEXT"),
+    ("outreach_inbox_messages", "label_note", "TEXT NOT NULL DEFAULT ''"),
+    ("connector_accounts", "account_email", "TEXT NOT NULL DEFAULT ''"),
+)
+
+
+def _apply_gmail_reply_labels(conn: sqlite3.Connection, sql: str) -> None:
+    # Guarded like _apply_automation: running it again after a crash repairs it.
+    for table, column, definition in _GMAIL_REPLY_LABELS_COLUMNS:
+        if not _has_column(conn, table, column):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    conn.executescript(sql)
+
+
 # Migrations whose SQL alone cannot express the change: parsing timestamps is
 # not portable across SQLite and PostgreSQL, so a Python step owns it. Adding a
 # column is not repeatable, so a step owns that too.
@@ -393,6 +411,7 @@ _MIGRATION_STEPS: dict[str, Callable[[Any, str], None]] = {
     "0040_decline_thank_you.sql": _apply_decline_thank_you,
     "0041_outreach_reply_rules.sql": _apply_outreach_reply_rules,
     "0042_outreach_tech_brief.sql": _apply_tech_brief,
+    "0043_gmail_reply_labels.sql": _apply_gmail_reply_labels,
 }
 
 

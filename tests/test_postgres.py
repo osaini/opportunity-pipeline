@@ -39,6 +39,13 @@ AUTOMATION_COLUMNS = [
 REPLY_RULES_COLUMNS = ("via", "rules", "candidates_json", "thread_id", "message_id", "from_name", "subject", "text", "reason", "in_spam",
                        "decided_at", "meta_json")
 REPLY_RULES_INDEX = "idx_outreach_inbox_messages_target"
+# The columns 0043 adds (the reply label, and the account a Gmail connection signed into), and its index.
+GMAIL_REPLY_LABELS_MIGRATION = "0043_gmail_reply_labels.sql"
+GMAIL_REPLY_LABELS_COLUMNS = (
+    ("outreach_inbox_messages", "label_name"), ("outreach_inbox_messages", "labeled_at"),
+    ("outreach_inbox_messages", "label_note"), ("connector_accounts", "account_email"),
+)
+GMAIL_REPLY_LABELS_INDEX = "idx_outreach_inbox_messages_labels"
 RECEIVED = "2026-09-25T15:00:00+00:00"
 
 
@@ -807,6 +814,89 @@ class PostgresAutomationContractTests(unittest.TestCase):
                                                      "careers@bovi.example", RECEIVED, via="domain", reason="shared_address",
                                                      text="Could you send your availability?"))
         self.assertEqual(self.inbox_row("careers-1")["text"], "Could you send your availability?")
+
+    # --- The reply label (migration 0043, outreach_labels.py) and read-only connections -----------
+
+    def test_migration_0043_applies_and_a_rerun_repairs_a_half_applied_upgrade(self):
+        self.assertEqual({(table, column) for table, column, _definition in schema._GMAIL_REPLY_LABELS_COLUMNS},
+                         set(GMAIL_REPLY_LABELS_COLUMNS), "the columns dropped below are every column 0043 adds")
+        for table, column in GMAIL_REPLY_LABELS_COLUMNS:
+            self.assertTrue(schema._has_column(self.conn, table, column), f"{table}.{column}")
+        self.assertIn("(user_id, kind, label_name)", self.index_definition(GMAIL_REPLY_LABELS_INDEX) or "")
+        # The tables as 0042 left them, holding what the old code read; then a crash after the first ALTER and
+        # before the marker. SQLite keeps ALTERs a crash interrupts and PostgreSQL rolls them back; the rerun
+        # must work either way.
+        with self.conn:
+            # The index first: PostgreSQL drops it along with its column, and a second DROP INDEX would then fail.
+            self.conn.execute(f"DROP INDEX {GMAIL_REPLY_LABELS_INDEX}")
+            for table, column in GMAIL_REPLY_LABELS_COLUMNS:
+                self.conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+            self.conn.execute("DELETE FROM schema_migrations WHERE name=?", (GMAIL_REPLY_LABELS_MIGRATION,))
+        self.outreach_target("t-1", "Bovi")
+        self.inbox_message("old-reply", "reply")
+        with self.conn:
+            self.conn.execute("ALTER TABLE outreach_inbox_messages ADD COLUMN label_name TEXT NOT NULL DEFAULT ''")
+        ensure_product_schema(self.conn)
+        for table, column in GMAIL_REPLY_LABELS_COLUMNS:
+            self.assertTrue(schema._has_column(self.conn, table, column), f"{table}.{column} after the rerun")
+        self.assertIn("(user_id, kind, label_name)", self.index_definition(GMAIL_REPLY_LABELS_INDEX) or "")
+        markers = self.conn.execute("SELECT COUNT(*) AS n FROM schema_migrations WHERE name=?", (GMAIL_REPLY_LABELS_MIGRATION,)).fetchone()["n"]
+        types = {(row["table_name"], row["column_name"]): (row["data_type"], row["is_nullable"]) for row in self.conn.execute(
+            "SELECT table_name, column_name, data_type, is_nullable FROM information_schema.columns "
+            "WHERE table_schema=current_schema() AND table_name IN ('outreach_inbox_messages', 'connector_accounts')",
+        ).fetchall()}
+        self.conn.commit()
+        self.assertEqual(markers, 1)
+        self.assertEqual(types[("outreach_inbox_messages", "label_name")], ("text", "NO"))
+        self.assertEqual(types[("outreach_inbox_messages", "labeled_at")], ("text", "YES"), "unlabelled until the app adds it")
+        self.assertEqual(types[("outreach_inbox_messages", "label_note")], ("text", "NO"), "'' until a row is settled without a label")
+        self.assertEqual(types[("connector_accounts", "account_email")], ("text", "NO"))
+        # A reply the old code logged is waiting to be labelled: no name, no time.
+        old = self.inbox_row("old-reply")
+        self.assertEqual((old["kind"], old["label_name"], old["labeled_at"], old["label_note"]), ("reply", "", None, ""))
+        # Running the step itself again is harmless.
+        schema._apply_gmail_reply_labels(self.conn, (MIGRATIONS_DIR / GMAIL_REPLY_LABELS_MIGRATION).read_text(encoding="utf-8"))
+        self.conn.commit()
+
+    def test_migration_0043_looks_for_its_columns_in_this_schema_only(self):
+        """A copy of the tables in another schema already has the columns: 0043 still adds them here (see 0041's test)."""
+        import psycopg
+
+        copy = "gmail_labels_copy"
+        with psycopg.connect(POSTGRES_TEST_URL, autocommit=True) as admin:
+            admin.execute(f"DROP SCHEMA IF EXISTS {copy} CASCADE")
+            admin.execute(f"CREATE SCHEMA {copy}")
+            admin.execute(f"CREATE TABLE {copy}.outreach_inbox_messages (label_name TEXT, labeled_at TEXT, label_note TEXT)")
+            admin.execute(f"CREATE TABLE {copy}.connector_accounts (account_email TEXT)")
+
+        def drop_copy():
+            with psycopg.connect(POSTGRES_TEST_URL, autocommit=True) as admin:
+                admin.execute(f"DROP SCHEMA IF EXISTS {copy} CASCADE")
+
+        self.addCleanup(drop_copy)
+        with self.conn:
+            self.conn.execute("ALTER TABLE connector_accounts DROP COLUMN account_email")
+            self.conn.execute("DELETE FROM schema_migrations WHERE name=?", (GMAIL_REPLY_LABELS_MIGRATION,))
+        self.assertFalse(schema._has_column(self.conn, "connector_accounts", "account_email"), "the other schema's column is not this one's")
+        self.conn.commit()
+        ensure_product_schema(self.conn)
+        self.assertTrue(schema._has_column(self.conn, "connector_accounts", "account_email"))
+        self.conn.commit()
+
+    def test_a_read_only_connection_stays_read_only_after_a_commit(self):
+        """connect_product(read_only=True): SET TRANSACTION covers only the first transaction, so the connection is read-only too."""
+        conn = connect_product(POSTGRES_TEST_URL, read_only=True)
+        self.addCleanup(conn.close)
+        self.assertEqual(conn.execute("SELECT COUNT(*) AS n FROM schema_migrations").fetchone()["n"] > 0, True)
+        conn.commit()
+        for attempt in ("in the transaction after a commit", "in the one after that"):
+            with self.subTest(attempt):
+                with self.assertRaises(Exception) as caught:
+                    conn.execute("INSERT INTO schema_migrations(name, applied_at) VALUES('read-only-check', ?)", (utc_now(),))
+                self.assertIn("read-only", str(caught.exception).lower())
+                conn.rollback()
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM schema_migrations WHERE name='read-only-check'").fetchone())
+        self.conn.commit()
 
     def test_remember_takes_the_place_only_of_a_row_older_rules_set_aside_or_took_as_automatic(self):
         """outreach_inbox._remember's INSERT ... ON CONFLICT DO UPDATE ... WHERE kind IN ('ignored', 'automatic') AND rules < RULES.
