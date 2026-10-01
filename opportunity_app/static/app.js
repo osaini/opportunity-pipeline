@@ -179,9 +179,13 @@
     return "";
   }
 
+  // What api() throws after a 401 has raised the sign-in gate. Callers use it to
+  // stay quiet about a session that ended, so the gate is the only thing shown.
+  const AUTH_REQUIRED = "Authentication required";
+  const isAuthError = (error) => error.message === AUTH_REQUIRED;
+
   async function api(path, options = {}) {
     const isFormData = options.body instanceof FormData;
-    const csrf = document.cookie.split("; ").find((entry) => entry.startsWith("pipeline_csrf="))?.split("=")[1];
     const method = (options.method || "GET").toUpperCase();
     // The session this request was sent under: a 401 that answers after it ended is old news.
     const sentUnder = state.sessionEpoch;
@@ -192,7 +196,7 @@
         ...options,
         headers: {
           ...(isFormData ? {} : { "Content-Type": "application/json" }),
-          ...(csrf && !["GET", "HEAD", "OPTIONS"].includes(method) ? { "X-CSRF-Token": decodeURIComponent(csrf) } : {}),
+          ...csrfHeaders(method),
           ...(options.headers || {}),
         },
       });
@@ -210,7 +214,7 @@
       // would blank the sign-in error and move focus.
       const gateShowing = els.authGate.classList.contains("is-visible");
       if (state.sessionEpoch === sentUnder && !gateShowing) showAuth();
-      throw new Error("Authentication required");
+      throw new Error(AUTH_REQUIRED);
     }
     if (!response.ok) {
       let detail = `Request failed (${response.status})`;
@@ -415,7 +419,7 @@
             els.pageTitle.focus();
           } catch (error) {
             resume.disabled = false;
-            if (error.message !== "Authentication required") showError(error.message);
+            if (!isAuthError(error)) showError(error.message);
           }
         });
         row.appendChild(resume);
@@ -480,7 +484,7 @@
           const result = await automationWrite(() => api(`/api/v1/automation/actions/${encodeURIComponent(first.id)}/undo`, { method: "POST" }));
           announce(withUndoNote(result.feature_paused ? automationBreakerMessage(first.feature, result.breaker_notice) : "Undid the automatic change.", result));
         } catch (error) {
-          if (error.message !== "Authentication required") announce(error.message);
+          if (!isAuthError(error)) announce(error.message);
         }
         refreshAutomationStatus();
         refreshViewAfterAutomatic();
@@ -501,7 +505,7 @@
     const active = document.activeElement;
     if (active && els.results.contains(active) && active.matches("input, textarea, select")) return;
     Promise.all([loadApplications(), loadStats()]).catch((error) => {
-      if (error.message !== "Authentication required") showError(error.message);
+      if (!isAuthError(error)) showError(error.message);
     });
   }
 
@@ -637,7 +641,7 @@
         synced += 1;
       } catch (error) {
         // The session ended mid-flush; leave the queue for this user's next sign-in.
-        if (error.message === "Authentication required") return;
+        if (isAuthError(error)) return;
         const attempts = (action.attempts || 0) + 1;
         if (error.network && attempts < MAX_OUTBOX_ATTEMPTS) remaining.push({ ...action, attempts });
         else rejected.push(error.network ? "still unreachable after several attempts" : error.message);
@@ -1518,7 +1522,7 @@
       if (error.network) {
         queueAction({ path, action, key });
         showError("Connection lost. Your action is queued and will retry after reconnection.");
-      } else if (error.message !== "Authentication required") {
+      } else if (!isAuthError(error)) {
         showError(error.message);
       }
     } finally {
@@ -1989,7 +1993,7 @@
       }
       return true;
     } catch (error) {
-      if (error.message !== "Authentication required") showError(error.message);
+      if (!isAuthError(error)) showError(error.message);
       return false;
     }
   }
@@ -7008,7 +7012,7 @@
         announce(saved.variant_label ? `${record.original_name} is now your ${saved.variant_label} variant.` : `${record.original_name} is no longer a variant.`);
         await loadProfile();
       } catch (error) {
-        if (error.message !== "Authentication required") status.textContent = error.message;
+        if (!isAuthError(error)) status.textContent = error.message;
         save.disabled = false;
       }
     });
@@ -7182,7 +7186,7 @@
           try {
             await api(`/api/v1/monitored-events/${encodeURIComponent(item.id)}/decision`, { method: "POST", body: JSON.stringify({ decision, application_id: applicationId }) });
           } catch (error) {
-            if (error.message === "Authentication required") {
+            if (isAuthError(error)) {
               confirm.disabled = false;
               ignore.disabled = false;
               cardStatus.textContent = "";
@@ -7667,7 +7671,7 @@
         status.textContent = `${feature.label}: ${AUTOMATION_MODE_WORDS[updated?.mode ?? wanted] || wanted}.`;
       } catch (error) {
         box.checked = savedAutomationMode(feature.key) === "on";
-        if (error.message !== "Authentication required") status.textContent = error.message;
+        if (!isAuthError(error)) status.textContent = error.message;
       } finally {
         box.disabled = false;
       }
@@ -7709,7 +7713,7 @@
             status.textContent = `${feature.label}: ${AUTOMATION_MODE_WORDS[updated?.mode ?? value] || value}.`;
           } catch (error) {
             select.value = savedAutomationMode(feature.key, feature.mode);
-            if (error.message !== "Authentication required") status.textContent = error.message;
+            if (!isAuthError(error)) status.textContent = error.message;
           } finally {
             select.disabled = false;
           }
@@ -7853,7 +7857,7 @@
           ? `${AUTOMATION_PAUSE_TEXT.true}${flight ? ` ${flight}` : ""}`
           : "Resumed. Each switch below decides what runs again.";
       } catch (error) {
-        if (error.message !== "Authentication required") pauseStatus.textContent = error.message;
+        if (!isAuthError(error)) pauseStatus.textContent = error.message;
       } finally {
         pause.disabled = false;
         if (!document.activeElement || document.activeElement === document.body) pause.focus();
@@ -7925,7 +7929,7 @@
             const result = await automationWrite(() => api(`/api/v1/automation/actions/${encodeURIComponent(item.action_id)}/undo`, { method: "POST" }));
             message = withUndoNote(result.feature_paused ? automationBreakerMessage("auto_pass", result.breaker_notice) : `Restored ${name}.`, result);
           } catch (error) {
-            if (error.message === "Authentication required") {
+            if (isAuthError(error)) {
               restoring.delete(item.action_id);
               return;
             }
@@ -7949,7 +7953,7 @@
         const payload = await api("/api/v1/automation/auto-passed");
         autoPassed = { items: Array.isArray(payload?.items) ? payload.items : [], error: "" };
       } catch (error) {
-        if (error.message === "Authentication required") return;
+        if (isAuthError(error)) return;
         autoPassed = { items: [], error: error.message };
       }
       paintAutoPassed();
@@ -8025,7 +8029,7 @@
               const left = result.left ? `. ${plural(result.left, "update waits", "updates wait")} for you to look at one by one` : "";
               message = `Approved ${plural(result.approved, "update", "updates")}${kept}${left}.`;
             } catch (error) {
-              if (error.message !== "Authentication required") message = error.message;
+              if (!isAuthError(error)) message = error.message;
             } finally {
               mailBusy.all = false;
               paintMail();
@@ -8066,7 +8070,7 @@
               message = `Could not check Gmail (${String(result.state).replaceAll("_", " ")}).`;
             }
           } catch (error) {
-            if (error.message !== "Authentication required") message = error.message;
+            if (!isAuthError(error)) message = error.message;
           } finally {
             mailBusy.check = false;
             paintMail();
@@ -8132,7 +8136,7 @@
         const answer = await api("/api/v1/automation/employer-domains");
         domains = { items: Array.isArray(answer.items) ? answer.items : [], error: "" };
       } catch (error) {
-        if (error.message === "Authentication required") return;
+        if (isAuthError(error)) return;
         domains = { items: [], error: error.message };
       }
       paintDomains();
@@ -8154,7 +8158,7 @@
           domainStatus.textContent = `Dismissed ${what}. Its emails are no longer read, unless a job system sends them.`;
         }
       } catch (error) {
-        if (error.message === "Authentication required") return;
+        if (isAuthError(error)) return;
         domainStatus.textContent = error.message;
       }
       await loadDomains();
@@ -8220,7 +8224,7 @@
         noticeStatus.textContent = `Marked ${plural(result.marked, "notice", "notices")} read.`;
         noticeHeading.focus();
       } catch (error) {
-        if (error.message !== "Authentication required") noticeStatus.textContent = error.message;
+        if (!isAuthError(error)) noticeStatus.textContent = error.message;
       } finally {
         markAll.disabled = false;
       }
@@ -8321,13 +8325,13 @@
               await reload();
             });
           } catch (error) {
-            if (error.message !== "Authentication required") {
+            if (!isAuthError(error)) {
               message = `The capture draft was made, but it could not be opened (${error.message}). Open it from Recent.`;
             }
           }
         }
       } catch (error) {
-        if (error.message === "Authentication required") {
+        if (isAuthError(error)) {
           deciding.delete(action.id);
           syncRowButtons();
           return;
@@ -8381,7 +8385,7 @@
           await reload();
         });
       } catch (error) {
-        if (error.message !== "Authentication required") entry.status.textContent = error.message;
+        if (!isAuthError(error)) entry.status.textContent = error.message;
       }
     }
 
@@ -8498,7 +8502,7 @@
         syncEmailCards();
         return true;
       } catch (error) {
-        if (ticket === reloads && error.message !== "Authentication required") showError(error.message);
+        if (ticket === reloads && !isAuthError(error)) showError(error.message);
         return false;
       }
     }
@@ -8605,7 +8609,7 @@
           const result = await automationWrite(() => api(`/api/v1/automation/actions/${encodeURIComponent(action.id)}/undo`, { method: "POST" }));
           message = withUndoNote(result.feature_paused ? automationBreakerMessage(action.feature, result.breaker_notice) : "Undid the automatic change.", result);
         } catch (error) {
-          if (error.message === "Authentication required") return;
+          if (isAuthError(error)) return;
           message = error.message;
         }
         announce(message);
@@ -10319,7 +10323,7 @@
         const result = await api(`/api/v1/opportunities/${encodeURIComponent(item.id)}/resume-check`);
         if (!stale()) paintCheck(result);
       } catch (error) {
-        if (!stale() && error.message !== "Authentication required") check.replaceChildren(element("p", "form-error", `The skills check could not run: ${error.message}`));
+        if (!stale() && !isAuthError(error)) check.replaceChildren(element("p", "form-error", `The skills check could not run: ${error.message}`));
       }
     }
 
@@ -10388,7 +10392,7 @@
             if (stale()) return;
             select.value = view.pick?.resume_file_id || "";
             select.disabled = false;
-            if (error.message !== "Authentication required") status.textContent = error.message;
+            if (!isAuthError(error)) status.textContent = error.message;
           }
         },
       });
@@ -10400,7 +10404,7 @@
       paint();
       refreshCheck();
     }).catch((error) => {
-      if (stale() || error.message === "Authentication required") return;
+      if (stale() || isAuthError(error)) return;
       current.textContent = `Your résumé choice could not be loaded: ${error.message}`;
     });
     return section;
@@ -10565,7 +10569,7 @@
       } catch (error) {
         saving = false;
         save.removeAttribute("aria-disabled");
-        if (error.message !== "Authentication required") status.textContent = error.message;
+        if (!isAuthError(error)) status.textContent = error.message;
       }
     });
     return form;
@@ -10608,7 +10612,7 @@
       } catch (error) {
         saving = false;
         save.removeAttribute("aria-disabled");
-        if (error.message !== "Authentication required") status.textContent = error.message;
+        if (!isAuthError(error)) status.textContent = error.message;
       }
     });
     return form;
@@ -10749,7 +10753,7 @@
       } catch (error) {
         saving = false;
         save.removeAttribute("aria-disabled");
-        if (error.message !== "Authentication required") status.textContent = error.message;
+        if (!isAuthError(error)) status.textContent = error.message;
       }
     });
     return form;
@@ -10972,7 +10976,7 @@
           section.remove();
           return;
         }
-        if (error.message === "Authentication required") return;
+        if (isAuthError(error)) return;
         settled = true;
         section.hidden = false;
         summary.textContent = `The Apply for me check could not run: ${error.message}`;
@@ -11022,7 +11026,7 @@
           failure = error.message;
         }
         pending -= 1;
-        if (failure && failure !== "Authentication required") status.textContent = failure;
+        if (failure && failure !== AUTH_REQUIRED) status.textContent = failure;
         if (failure && !pending) await load();
       });
     }
@@ -11081,7 +11085,7 @@
           } catch (error) {
             removing = false;
             remove.removeAttribute("aria-disabled");
-            if (error.message !== "Authentication required") status.textContent = error.message;
+            if (!isAuthError(error)) status.textContent = error.message;
           }
         });
         row.appendChild(remove);
@@ -11216,7 +11220,7 @@
         } catch (error) {
           adding = false;
           add.removeAttribute("aria-disabled");
-          if (error.message !== "Authentication required") status.textContent = error.message;
+          if (!isAuthError(error)) status.textContent = error.message;
         }
       });
       host.append(form, status);
@@ -11293,7 +11297,7 @@
             await load();
           } catch (error) {
             remove.disabled = false;
-            if (error.message !== "Authentication required") status.textContent = error.message;
+            if (!isAuthError(error)) status.textContent = error.message;
           }
         });
         row.appendChild(remove);
@@ -11330,7 +11334,7 @@
           await load();
         } catch (error) {
           add.disabled = false;
-          if (error.message !== "Authentication required") status.textContent = error.message;
+          if (!isAuthError(error)) status.textContent = error.message;
         }
       });
       host.append(form, status);
@@ -11508,7 +11512,7 @@
     } catch (error) {
       if (state.launchTicketFailed) {
         showAuth("That sign-in link was already used or expired. Run the launcher again, or sign in below.");
-      } else if (error.message !== "Authentication required") {
+      } else if (!isAuthError(error)) {
         showAuth(error.message);
       }
     }
@@ -11538,7 +11542,7 @@
       if (match) await openDetail(decodeURIComponent(match[1]), { updateHistory: false });
     } catch (error) {
       showAuth(
-        error.message === "Authentication required" ? "That token was not accepted." : error.message,
+        isAuthError(error) ? "That token was not accepted." : error.message,
         { focus: usedToken ? els.tokenInput : els.authEmail }
       );
     } finally {
@@ -11596,7 +11600,7 @@
       await flushOutbox();
       await api("/api/v1/session", { method: "DELETE" });
     } catch (error) {
-      if (error.message !== "Authentication required") message = `Sign-out may not have reached the server: ${error.message}`;
+      if (!isAuthError(error)) message = `Sign-out may not have reached the server: ${error.message}`;
     } finally {
       // An explicit sign-out on a shared browser must not leave actions behind.
       writeOutbox([]);
