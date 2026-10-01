@@ -1219,8 +1219,13 @@ def list_targets(
     query: str = "",
     today: date | None = None,
     interested_only: bool = False,
+    statuses: tuple[str, ...] = (),
 ) -> list[dict[str, Any]]:
-    """Every target, or with ``interested_only`` the ones not marked not interested (what automation may act on)."""
+    """Every target, or with ``interested_only`` the ones not marked not interested (what automation may act on).
+
+    ``statuses`` keeps only targets in one of those stored statuses (the same column ``status`` matches), so a
+    caller that would drop the rest anyway does not build their records.
+    """
     today = today or local_today(conn, user_id)
     conn.row_factory = sqlite3.Row
     where = ["user_id=?"]
@@ -1230,6 +1235,9 @@ def list_targets(
     if status:
         where.append("status=?")
         params.append(status)
+    if statuses:
+        where.append(f"status IN ({', '.join('?' for _ in statuses)})")
+        params.extend(statuses)
     if channel:
         where.append("channel=?")
         params.append(channel)
