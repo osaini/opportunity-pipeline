@@ -48,7 +48,6 @@ from datetime import date, datetime, timedelta, timezone
 from email import policy
 from email.message import EmailMessage
 from email.utils import getaddresses, parseaddr, parsedate_to_datetime
-from pathlib import Path
 from typing import Any, Callable, Iterable
 from urllib.parse import quote, urlsplit
 

@@ -96,6 +96,11 @@ DRAFT_KINDS = {
     "initial": ("email_subject", "email_body", "draft_status"),
     "follow_up": ("follow_up_subject", "follow_up_body", "follow_up_status"),
 }
+# Where each kind keeps its claims and provenance, beside DRAFT_KINDS' text fields.
+DRAFT_META = {
+    "initial": ("draft_claims_json", "draft_generated_by"),
+    "follow_up": ("follow_up_claims_json", "follow_up_generated_by"),
+}
 # Each target row with how many of its stored drafts differ from the text in
 # the editor now, which is what the student could go back to.
 SELECT_TARGETS = """
@@ -1824,8 +1829,7 @@ def approve_draft(
     if kind not in DRAFT_KINDS:
         raise ValueError("kind must be initial or follow_up")
     subject_field, body_field, status_field = DRAFT_KINDS[kind]
-    claims_field = "draft_claims_json" if kind == "initial" else "follow_up_claims_json"
-    generated_field = "draft_generated_by" if kind == "initial" else "follow_up_generated_by"
+    claims_field, generated_field = DRAFT_META[kind]
     snapshot = conn.execute(
         f"SELECT {subject_field}, {body_field}, contact_email, {claims_field}, {generated_field}, contact_cc "
         "FROM outreach_targets WHERE id=? AND user_id=?",

@@ -285,11 +285,10 @@ from .system_status import SystemStatus
 from .boards import BoardLookupExpired, BoardTracker
 from .outreach_settings import OutreachSettings
 from .document_pdf import markdown_to_html, pdf_renderer
-from .outreach_drafting import (
-    MAX_COMMENT_CHARS as MAX_DRAFT_COMMENT_CHARS,
+from .outreach_drafting import MAX_COMMENT_CHARS as MAX_DRAFT_COMMENT_CHARS, generate_draft as generate_outreach_draft
+from .outreach_versions import (
     DraftVersionNotFoundError,
     draft_versions as outreach_draft_versions,
-    generate_draft as generate_outreach_draft,
     restore_draft_version as restore_outreach_draft_version,
 )
 from .outreach_config import sender_account

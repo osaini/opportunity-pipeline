@@ -32,7 +32,7 @@ from urllib.parse import quote
 import httpx
 
 from .outreach import AWAITING_REPLY, _log, get_target
-from .outreach_drafting import _keep_current_draft
+from .outreach_versions import keep_current_draft
 from .outreach_gmail import (
     BOUNCE_EVENT,
     SENT_EVENT,
@@ -151,7 +151,7 @@ def record_bounce(
     }
     with conn:
         # The words that bounced stay in the draft history once a new contact changes them.
-        _keep_current_draft(conn, target_id, user_id, "initial")
+        keep_current_draft(conn, target_id, user_id, "initial")
         conn.execute(
             f"UPDATE outreach_targets SET {', '.join(f'{column}=?' for column in assignments)}, updated_at=? WHERE id=? AND user_id=?",
             [*assignments.values(), timestamp, target_id, user_id],

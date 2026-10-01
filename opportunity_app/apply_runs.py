@@ -50,7 +50,7 @@ from uuid import uuid4
 
 from pipeline import identity_tokens, normalized
 
-from . import APPLY_ROOT, SERVER_INSTANCE, actions, automation
+from . import SERVER_INSTANCE, actions, automation
 from .background import step_error
 from .database import is_unique_violation
 from .schema import utc_now
