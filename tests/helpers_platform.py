@@ -3,12 +3,14 @@
 import atexit
 import gc
 import hashlib
+import io
 import json
 import os
 import shutil
 import sqlite3
 import tempfile
 import threading
+import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
@@ -360,3 +362,33 @@ def use_profile_regions(case, path: Path = PROFILE_REGIONS_FIXTURE) -> None:
     patcher = mock.patch("opportunity_app.outreach.PROFILE_PATH", path)
     patcher.start()
     case.addCleanup(patcher.stop)
+
+
+def sample_docx(extra_members=None):
+    """A minimal résumé .docx, optionally with extra zip members (a macro project, say)."""
+    paragraphs = [
+        "Test Student",
+        "test@example.com | (512) 555-0123 | https://github.com/test",
+        "EDUCATION",
+        "The University of Texas at Austin — B.S. Mechanical Engineering — 2030",
+        "EXPERIENCE",
+        "Prototype Lab — Engineering Intern",
+        "Built and tested a robotic fixture using SolidWorks.",
+        "SKILLS",
+        "CAD: SolidWorks, Fusion 360; Software: Python, MATLAB",
+    ]
+    body = "".join(
+        f"<w:p><w:r><w:t>{line}</w:t></w:r></w:p>" for line in paragraphs
+    )
+    document = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body>{body}</w:body></w:document>"
+    )
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("word/document.xml", document)
+        for member_name, member_data in (extra_members or {}).items():
+            archive.writestr(member_name, member_data)
+    return output.getvalue()
