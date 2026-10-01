@@ -405,7 +405,7 @@ class CliAgentProvider:
 
         The prompt is never part of it: it goes over stdin, the CLI gets no
         tools or MCP servers (Codex: a read-only sandbox), and _invoke runs it
-        outside the project directory, so text taken from the web cannot steer
+        in a directory of its own outside the project, so text taken from the web cannot steer
         it into local files or be re-parsed by a cmd.exe shim.
         """
         if self.provider_id == "claude-code":
@@ -417,11 +417,13 @@ class CliAgentProvider:
             if self._runner is not None:
                 completed = self._runner([*command, stdin])
             else:
-                completed = subprocess.run(
-                    command, input=stdin, capture_output=True, text=True, encoding="utf-8",
-                    errors="replace", timeout=self.timeout, cwd=tempfile.gettempdir(),
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
+                # A directory of its own and empty, as the sibling CLI runners use, not the shared system temp.
+                with tempfile.TemporaryDirectory(prefix="agent-cli-", ignore_cleanup_errors=True) as workdir:
+                    completed = subprocess.run(
+                        command, input=stdin, capture_output=True, text=True, encoding="utf-8",
+                        errors="replace", timeout=self.timeout, cwd=workdir,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
         except (OSError, subprocess.SubprocessError) as exc:
             raise RuntimeError(f"{self.provider_id} CLI could not start: {exc}") from exc
         if getattr(completed, "returncode", 1) != 0:

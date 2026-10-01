@@ -4,6 +4,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -180,7 +181,7 @@ class CliAgentProviderTests(unittest.TestCase):
 
 
 # A stand-in for the CLI: reports the stdin it received, its working directory
-# and its argv size inside a JSON answer, writing UTF-8 bytes like the real CLIs.
+# inside a JSON answer, writing UTF-8 bytes like the real CLIs.
 _FAKE_CLI = r"""
 import json, os, sys
 data = sys.stdin.buffer.read().decode("utf-8")
@@ -194,6 +195,12 @@ SCRAPED = {"description": "SCRAPED “quote” & whoami | calc"}
 class CliAgentProviderSubprocessTests(unittest.TestCase):
     """The chat path must be as sandboxed as complete_text: no scraped text on
     argv, no project cwd, no default tools, UTF-8 decoding."""
+
+    def assert_throwaway_cwd(self, cwd):
+        """A fresh directory under the system temp, gone once the CLI has finished."""
+        self.assertEqual(Path(cwd).parent, Path(tempfile.gettempdir()))
+        self.assertNotEqual(Path(cwd), Path(tempfile.gettempdir()))
+        self.assertFalse(Path(cwd).exists(), "the working directory is removed afterwards")
 
     def _run_chat(self, provider_id):
         captured = []
@@ -221,7 +228,8 @@ class CliAgentProviderSubprocessTests(unittest.TestCase):
         self.assertEqual(command, ["claude-code", "-p", "--output-format", "text", "--tools", "", "--strict-mcp-config"])
         self.assertIn("SCRAPED", kwargs["input"])
         self.assertIn("Be careful.", kwargs["input"])
-        self.assertEqual(kwargs["cwd"], tempfile.gettempdir())
+        self.assertFalse(any("SCRAPED" in part or "Be careful." in part for part in command), "the prompt is not on argv")
+        self.assert_throwaway_cwd(kwargs["cwd"])
         self.assertEqual(kwargs["encoding"], "utf-8")
         self.assertEqual(kwargs["errors"], "replace")
 
@@ -230,13 +238,13 @@ class CliAgentProviderSubprocessTests(unittest.TestCase):
         command, kwargs = captured[0]
         self.assertEqual(command, ["codex-cli", "exec", "--skip-git-repo-check", "--sandbox", "read-only", "-"])
         self.assertIn("SCRAPED", kwargs["input"])
-        self.assertEqual(kwargs["cwd"], tempfile.gettempdir())
+        self.assertFalse(any("SCRAPED" in part for part in command), "the prompt is not on argv")
+        self.assert_throwaway_cwd(kwargs["cwd"])
         self.assertEqual(kwargs["encoding"], "utf-8")
 
     def test_chat_reply_with_non_ascii_text_is_decoded_as_utf8(self):
         reply, _ = self._run_chat("claude-code")
         self.assertIn("dash=— snow=☃ emoji=\U0001F600", reply.text)
-        self.assertIn("argc=1", reply.text)  # nothing but the interpreter's own argv
 
 
 if __name__ == "__main__":
