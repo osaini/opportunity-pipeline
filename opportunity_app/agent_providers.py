@@ -8,8 +8,10 @@ import os
 import shutil
 import subprocess
 import tempfile
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Iterator, Protocol
 
 
 @dataclass(frozen=True)
@@ -60,9 +62,43 @@ class AgentProvider(Protocol):
     ) -> ProviderReply: ...
 
 
+# Inside catalog_snapshot(): [the catalog built by the first provider_catalog() call there, or None before it].
+_catalog_snapshot: ContextVar[list[Any] | None] = ContextVar("provider_catalog_snapshot", default=None)
+
+
+@contextmanager
+def catalog_snapshot() -> Iterator[None]:
+    """Let one request build the provider catalog once, however many helpers ask for it.
+
+    Building it scans PATH for each CLI, and one Outreach settings load asks
+    for it a dozen times (the writer, the reviewer twice, each one's default).
+    Inside this block the first provider_catalog() call builds it and the rest
+    get copies. The snapshot lasts only for the block and only in this context
+    (thread), so nothing is cached between requests: a CLI installed a moment
+    later shows on the next one. Patching provider_catalog still wins.
+    """
+    if _catalog_snapshot.get() is not None:
+        yield
+        return
+    token = _catalog_snapshot.set([None])
+    try:
+        yield
+    finally:
+        _catalog_snapshot.reset(token)
+
+
 def provider_catalog() -> list[dict[str, Any]]:
     """Return safe provider metadata; secrets never leave the server."""
 
+    snapshot = _catalog_snapshot.get()
+    if snapshot is None:
+        return _build_provider_catalog()
+    if snapshot[0] is None:
+        snapshot[0] = _build_provider_catalog()
+    return [dict(item) for item in snapshot[0]]
+
+
+def _build_provider_catalog() -> list[dict[str, Any]]:
     values = [
         (
             "openai",
@@ -133,12 +169,11 @@ def configured_provider(provider: str) -> dict[str, Any]:
 def default_provider() -> str:
     """Prefer a real model provider when credentials exist; legacy keyword
     mode stays as the honest degraded fallback."""
+    # One catalog for every candidate (configured_provider would build it again for each).
+    catalog = {item["id"]: item for item in provider_catalog()}
     for candidate in ("openai", "anthropic", "claude-code", "codex-cli"):
-        try:
-            configured_provider(candidate)
+        if candidate in catalog and catalog[candidate]["configured"]:
             return candidate
-        except ValueError:
-            continue
     return "legacy"
 
 
