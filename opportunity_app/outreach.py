@@ -20,6 +20,7 @@ import os
 import re
 import sqlite3
 import unicodedata
+from functools import lru_cache
 from datetime import date, datetime, timedelta
 from typing import Any, Callable
 from urllib.parse import quote, urlsplit
@@ -145,6 +146,7 @@ US_STATES = {
     "UT": "utah", "VT": "vermont", "VA": "virginia", "WA": "washington", "WV": "west virginia",
     "WI": "wisconsin", "WY": "wyoming", "DC": "district of columbia",
 }
+_STATE_NAME_PATTERNS = {code: re.compile(rf"\b{name}\b") for code, name in US_STATES.items()}
 EXPORT_FIELDS = [
     "id", "company", "channel", "priority", "status", "contact_name", "contact_role",
     "contact_email", "contact_cc", "contact_linkedin", "contact_route", "contact_confidence",
@@ -297,9 +299,14 @@ def _region_states(region: dict[str, Any]) -> set[str]:
     return codes
 
 
+@lru_cache(maxsize=1024)
+def _word_pattern(needle: str) -> re.Pattern[str]:
+    return re.compile(rf"\b{re.escape(needle)}\b")
+
+
 def _mentions(lowered: str, term: Any) -> bool:
     needle = " ".join(str(term or "").casefold().split())
-    return bool(needle) and re.search(rf"\b{re.escape(needle)}\b", lowered) is not None
+    return bool(needle) and _word_pattern(needle).search(lowered) is not None
 
 
 def location_region(text: str, regions: list[dict[str, Any]] | None = None) -> str:
@@ -321,7 +328,8 @@ def location_region(text: str, regions: list[dict[str, Any]] | None = None) -> s
     if not lowered:
         return ""
     states = {code for code in re.findall(r",\s*([A-Z]{2})\b", raw) if code in US_STATES}
-    states |= {code for code, name in US_STATES.items() if re.search(rf"\b{name}\b", lowered)}
+    # One pattern per state, not one alternation: "west virginia" must still match both "virginia" and "west virginia".
+    states |= {code for code, pattern in _STATE_NAME_PATTERNS.items() if pattern.search(lowered)}
     for region in _profile_regions() if regions is None else regions:
         name = str(region.get("name") or "")
         if not name:
@@ -1210,19 +1218,12 @@ CONTACT_RANK_SQL = (
 )
 
 
-def list_targets(
-    conn: sqlite3.Connection,
-    *,
-    user_id: str,
-    status: str = "",
-    channel: str = "",
-    query: str = "",
-    today: date | None = None,
-    interested_only: bool = False,
-) -> list[dict[str, Any]]:
-    """Every target, or with ``interested_only`` the ones not marked not interested (what automation may act on)."""
-    today = today or local_today(conn, user_id)
-    conn.row_factory = sqlite3.Row
+TARGET_ORDER_SQL = (
+    f"{CONTACT_RANK_SQL}, priority, CASE WHEN follow_up_at IS NULL THEN 1 ELSE 0 END, follow_up_at, company COLLATE NOCASE"
+)
+
+
+def _target_filter(user_id: str, status: str, channel: str, query: str, interested_only: bool) -> tuple[list[str], list[Any]]:
     where = ["user_id=?"]
     params: list[Any] = [user_id]
     if interested_only:
@@ -1237,13 +1238,35 @@ def list_targets(
         term = f"%{query.strip()}%"
         where.append("(company LIKE ? OR contact_name LIKE ? OR location LIKE ? OR summary LIKE ? OR fit_rationale LIKE ? OR notes LIKE ?)")
         params.extend([term] * 6)
-    rows = conn.execute(
-        f"""
-        {SELECT_TARGETS} WHERE {' AND '.join(where)}
-        ORDER BY {CONTACT_RANK_SQL}, priority, CASE WHEN follow_up_at IS NULL THEN 1 ELSE 0 END, follow_up_at, company COLLATE NOCASE
-        """,
-        params,
-    ).fetchall()
+    return where, params
+
+
+def filtered_target_ids(conn: sqlite3.Connection, *, user_id: str, status: str = "", channel: str = "", query: str = "") -> list[str]:
+    """Ids list_targets(status=, channel=, query=) would return, in its order, without building any record.
+
+    The filter and the ORDER BY come from the same SQL list_targets runs (LIKE's case rules and wildcards included), so a
+    caller that already holds every record can pick the filtered ones out of it instead of building them a second time.
+    """
+    where, params = _target_filter(user_id, status, channel, query, False)
+    sql = f"SELECT id FROM outreach_targets WHERE {' AND '.join(where)} ORDER BY {TARGET_ORDER_SQL}"
+    return [row[0] for row in conn.execute(sql, params).fetchall()]
+
+
+def list_targets(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+    status: str = "",
+    channel: str = "",
+    query: str = "",
+    today: date | None = None,
+    interested_only: bool = False,
+) -> list[dict[str, Any]]:
+    """Every target, or with ``interested_only`` the ones not marked not interested (what automation may act on)."""
+    today = today or local_today(conn, user_id)
+    conn.row_factory = sqlite3.Row
+    where, params = _target_filter(user_id, status, channel, query, interested_only)
+    rows = conn.execute(f"{SELECT_TARGETS} WHERE {' AND '.join(where)} ORDER BY {TARGET_ORDER_SQL}", params).fetchall()
     regions = user_regions(conn, user_id)
     home = user_home(conn, user_id, regions)
     schedules = _schedules(conn, user_id)

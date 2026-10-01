@@ -631,6 +631,16 @@ class RecontactTests(DatabaseCase):
         with httpx.Client(transport=transport) as client:
             return recontact_targets(self.conn, user_id=USER, fetcher=safe_fetcher(client), verifier=self.Verifier(), contact_delay=0, **kwargs)
 
+    def test_a_malformed_due_row_fails_the_pass_before_anything_is_searched(self):
+        self.target(company="Aardvark", contact_email="hello@aardvark.test", website="https://aardvark.test")
+        broken = self.target(company="Acme", contact_email="hello@acme.test")
+        self.conn.execute("UPDATE outreach_targets SET source_urls_json='{bad' WHERE id=?", (broken["id"],))
+        self.conn.commit()
+        with mock.patch("opportunity_app.outreach_recontact.find_contacts") as search:
+            with self.assertRaises(json.JSONDecodeError):
+                self.recontact(apply=True)
+        search.assert_not_called()
+
     def test_a_shared_inbox_target_is_upgraded_only_when_asked(self):
         target = self.target(contact_email="hello@acme.test", contact_confidence="confirmed")
         report = self.recontact()

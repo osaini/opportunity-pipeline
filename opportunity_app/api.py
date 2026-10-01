@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
 
 import httpx
-import uvicorn
 from fastapi import Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import FileResponse
 from fastapi.responses import HTMLResponse
@@ -60,7 +59,7 @@ from .company_tags import (
     decorate_with_tags,
     set_company_tag,
     sync_outreach_tags,
-    tag_facets,
+    tag_facets_for_keys,
 )
 from .early_programs import (
     DEFAULT_EARLY_PROGRAMS,
@@ -257,6 +256,7 @@ from .outreach import (
     delete_target as delete_outreach_target,
     dismiss_reply_suggestion,
     export_csv as export_outreach_csv,
+    filtered_target_ids as filtered_outreach_target_ids,
     get_target as get_outreach_target,
     import_targets as import_outreach_targets,
     list_targets as list_outreach_targets,
@@ -2482,11 +2482,13 @@ def create_app(
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Unknown outreach status")
         sync_outreach_tags(conn, user_id)
         everything = list_outreach_targets(conn, user_id=user_id)
-        items = (
-            list_outreach_targets(conn, user_id=user_id, status=status_filter, channel=channel, query=q)
-            if status_filter or channel or q.strip()
-            else everything
-        )
+        if status_filter or channel or q.strip():
+            # The filter and its order come from SQL (LIKE's rules included); the records are the ones already built.
+            by_id = {item["id"]: item for item in everything}
+            wanted = filtered_outreach_target_ids(conn, user_id=user_id, status=status_filter, channel=channel, query=q)
+            items = [by_id[target_id] for target_id in wanted if target_id in by_id]
+        else:
+            items = everything
         items, tags = decorate_outreach_with_tags(conn, items, user_id=user_id)
         # Not available when no agent is installed here, and why, so the pane can say so.
         company_research: dict[str, Any] = {"available": call_prep_worker.can_research}
@@ -5001,20 +5003,18 @@ def create_app(
 
     @app.get("/api/v1/facets")
     def facets(repo: OpportunityRepository = Depends(repository)) -> dict[str, list[Any]]:
-        result: dict[str, list[Any]] = dict(repo.facets())
+        facet_values, company_keys = repo.facets_with_company_keys()
+        result: dict[str, list[Any]] = dict(facet_values)
         if repo.user_id:
-            result["tags"] = tag_facets(repo.connection, user_id=repo.user_id)
+            # The same active, visible rows the facets were just collected from, so the view is scanned once.
+            result["tags"] = tag_facets_for_keys(repo.connection, company_keys, user_id=repo.user_id)
         return result
 
     @app.get("/api/v1/stats")
-    def stats(
-        repo: OpportunityRepository = Depends(repository),
-        conn: sqlite3.Connection = Depends(writable_connection),
-        user_id: str = Depends(require_auth),
-    ) -> dict[str, int]:
+    def stats(repo: OpportunityRepository = Depends(repository)) -> dict[str, int]:
         # "tracked" counts any status past discovered, shortlisted roles included;
         # "applications" matches what the Applications view lists.
-        applications = conn.execute("SELECT COUNT(*) FROM applications WHERE user_id=?", (user_id,)).fetchone()[0]
+        applications = repo.connection.execute("SELECT COUNT(*) FROM applications WHERE user_id=?", (repo.user_id,)).fetchone()[0]
         return {**repo.stats(), "applications": int(applications)}
 
     app.mount("/assets", StaticFiles(directory=static_dir), name="assets")
@@ -5048,7 +5048,22 @@ def create_app(
     return app
 
 
-app = create_app()
+_DEFAULT_APP_LOCK = threading.Lock()
+
+
+def __getattr__(name: str) -> Any:
+    """Build the default app on first access to `app`, not at import.
+
+    `uvicorn opportunity_app.api:app` (the Dockerfile) resolves the attribute with getattr, which lands here.
+    Importing this module builds nothing and reads no .env; a server start through `main()` or
+    `launch.serve()` builds its own configured app exactly once.
+    """
+    if name == "app":
+        with _DEFAULT_APP_LOCK:
+            if "app" not in globals():
+                globals()["app"] = create_app()
+            return globals()["app"]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -5089,6 +5104,8 @@ def main() -> int:
     print(f"Access token: {configured_app.state.access_token}")
     print(f"Employer API token: {configured_app.state.employer_token}")
     print(f"Admin API token: {configured_app.state.admin_token}")
+    import uvicorn
+
     uvicorn.run(configured_app, host=args.host, port=args.port, log_level="info")
     return 0
 

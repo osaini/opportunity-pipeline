@@ -37,7 +37,15 @@ Runner = Callable[[str], str]
 PERSON_BASES = {"confirmed", "strong_guess", "weak_guess"}
 
 
+# The raw outreach_targets columns upgradeable() reads. Selecting a pass's candidates from these alone (not through
+# get_target, which also builds the replies, schedules and thank-you state for every row) is only equivalent while
+# upgradeable() reads nothing that _record derives or rewrites. If it ever needs a derived field, widen the selection.
+# One difference remains: a malformed row that is not upgradeable is no longer built, so it no longer fails a pass.
+_UPGRADEABLE_COLUMNS = ("sent_at", "status", "not_interested_at", "draft_status", "website", "contact_email")
+
+
 def upgradeable(target: dict[str, Any]) -> bool:
+    """Whether a pass would look again at this target. Reads only the columns in _UPGRADEABLE_COLUMNS."""
     if target["sent_at"] or target["status"] not in {"not_started", "drafted"} or target.get("not_interested_at"):
         return False
     if target["draft_status"] == "approved" or not target["website"]:
@@ -45,13 +53,22 @@ def upgradeable(target: dict[str, Any]) -> bool:
     return not target["contact_email"] or _is_generic(target["contact_email"])
 
 
-def eligible_targets(conn: sqlite3.Connection, *, user_id: str) -> list[str]:
-    """Ids of the targets a recontact pass would look at, in company order."""
+def _upgradeable_ids(conn: sqlite3.Connection, *, user_id: str, chosen: set[str] | None = None) -> list[str]:
+    """Ids of the upgradeable targets in company order, from one query over the raw columns."""
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
-        "SELECT id FROM outreach_targets WHERE user_id=? ORDER BY company COLLATE NOCASE", (user_id,),
+        f"SELECT id, {', '.join(_UPGRADEABLE_COLUMNS)} FROM outreach_targets WHERE user_id=? ORDER BY company COLLATE NOCASE",
+        (user_id,),
     ).fetchall()
-    return [row["id"] for row in rows if upgradeable(get_target(conn, row["id"], user_id=user_id))]
+    return [
+        row["id"] for row in rows
+        if (chosen is None or row["id"] in chosen) and upgradeable({column: row[column] for column in _UPGRADEABLE_COLUMNS})
+    ]
+
+
+def eligible_targets(conn: sqlite3.Connection, *, user_id: str) -> list[str]:
+    """Ids of the targets a recontact pass would look at, in company order."""
+    return _upgradeable_ids(conn, user_id=user_id)
 
 
 def recontact_targets(
@@ -70,17 +87,14 @@ def recontact_targets(
     draft_provider: str | None = None,
     contact_delay: float = 1.0,
 ) -> dict[str, Any]:
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT id FROM outreach_targets WHERE user_id=? ORDER BY company COLLATE NOCASE", (user_id,),
-    ).fetchall()
-    chosen = set(target_ids) if target_ids is not None else None
-    due = [
-        row["id"] for row in rows
-        if (chosen is None or row["id"] in chosen) and upgradeable(get_target(conn, row["id"], user_id=user_id))
-    ]
+    due = _upgradeable_ids(conn, user_id=user_id, chosen=set(target_ids) if target_ids is not None else None)
     if limit is not None:
         due = due[:max(0, limit)]
+    # Build each due target once before any search runs, as the old selection did, so a malformed row (bad JSON, a bad
+    # follow_up_at) fails the pass before find_contacts fetches or writes anything. Only the due targets are built; a
+    # malformed row that is not due no longer fails the pass.
+    for target_id in due:
+        get_target(conn, target_id, user_id=user_id)
 
     errors: dict[str, str] = {}
     for target_id in due:
