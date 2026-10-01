@@ -37,7 +37,8 @@ from helpers_platform import build_and_migrate
 from test_outreach_discovery import safe_fetcher, site_transport
 from test_outreach_drafting import confirm_facts
 from test_outreach_gmail import ACCOUNT
-from test_outreach_inbox import ReplyCaptureTests, mail, now_ms
+import test_outreach_inbox as inbox_tests
+from test_outreach_inbox import mail, now_ms
 
 AUTH = {"Authorization": "Bearer forms-owner"}
 USER = "local-user"
@@ -530,13 +531,13 @@ class FormSendTests(unittest.TestCase):
 class FormReplyTests(unittest.TestCase):
     """Replies to a message sent through a form are read from Gmail by the company's domain."""
 
-    setUp = ReplyCaptureTests.setUp
-    tearDown = ReplyCaptureTests.tearDown
-    connect = ReplyCaptureTests.connect
-    arrive = ReplyCaptureTests.arrive
-    check = ReplyCaptureTests.check
-    target = ReplyCaptureTests.target
-    replies = ReplyCaptureTests.replies
+    setUp = inbox_tests.ReplyCaptureTests.setUp
+    tearDown = inbox_tests.ReplyCaptureTests.tearDown
+    connect = inbox_tests.ReplyCaptureTests.connect
+    arrive = inbox_tests.ReplyCaptureTests.arrive
+    check = inbox_tests.ReplyCaptureTests.check
+    target = inbox_tests.ReplyCaptureTests.target
+    replies = inbox_tests.ReplyCaptureTests.replies
 
     def form_target(self):
         created = self.client.post("/api/v1/outreach", headers=AUTH_INBOX, json={

@@ -35,7 +35,8 @@ from opportunity_app.schema import LOCAL_USER_ID, connect_product
 from opportunity_app.typesafe_decisions import TypeSafeNotConfigured, TypeSafeResponseError
 
 from helpers_platform import build_and_migrate
-from test_outreach_inbox import ReplyCaptureTests, mail as inbox_mail
+import test_outreach_inbox as inbox_tests
+from test_outreach_inbox import mail as inbox_mail
 
 AUTH = {"Authorization": "Bearer inbox-owner"}
 # The rules read this as declined; a reader sees the call it proposes.
@@ -344,13 +345,13 @@ class InboxSuggestionApiTests(unittest.TestCase):
 class PausedInboxWatcherTests(unittest.TestCase):
     """The background inbox check still records a reply while paused, but never sends its text to Jev."""
 
-    setUp = ReplyCaptureTests.setUp
-    tearDown = ReplyCaptureTests.tearDown
-    connect = ReplyCaptureTests.connect
-    sent_target = ReplyCaptureTests.sent_target
-    arrive = ReplyCaptureTests.arrive
-    target = ReplyCaptureTests.target
-    replies = ReplyCaptureTests.replies
+    setUp = inbox_tests.ReplyCaptureTests.setUp
+    tearDown = inbox_tests.ReplyCaptureTests.tearDown
+    connect = inbox_tests.ReplyCaptureTests.connect
+    sent_target = inbox_tests.ReplyCaptureTests.sent_target
+    arrive = inbox_tests.ReplyCaptureTests.arrive
+    target = inbox_tests.ReplyCaptureTests.target
+    replies = inbox_tests.ReplyCaptureTests.replies
 
     def test_a_paused_watcher_records_the_reply_with_the_rules(self):
         target = self.sent_target()
