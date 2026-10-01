@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import re
 import sys
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from fastapi.testclient import TestClient
 
@@ -131,6 +133,71 @@ class AssetCachingTests(unittest.TestCase):
         with TestClient(self.app) as client:
             response = client.get("/assets/does-not-exist.js?v=0")
         self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.headers["Cache-Control"], "no-cache")
+
+    def outside_file(self):
+        """A readable file next to, not inside, the static directory."""
+
+        outside = self.static.parent / "outside.txt"
+        outside.write_bytes(b"secret outside the asset directory")
+        digest = hashlib.sha256(outside.read_bytes()).hexdigest()[:12]
+        return outside, digest
+
+    def test_paths_outside_the_static_directory_are_never_hashed_or_cacheable(self):
+        """`/assets//<absolute path>` makes pathlib discard static_dir, and
+        `%2e%2e` escapes it; neither may confirm a guessed content hash."""
+
+        outside, digest = self.outside_file()
+        absolute = outside.resolve().as_posix()
+        probes = (
+            f"/assets//{absolute}?v={digest}",
+            f"/assets/%2e%2e/outside.txt?v={digest}",
+            f"/assets/%2e%2e%2foutside.txt?v={digest}",
+            f"/assets/..%5coutside.txt?v={digest}",
+        )
+        with TestClient(self.app) as client:
+            for probe in probes:
+                with self.subTest(probe=probe):
+                    hashed = []
+                    real_sha256 = hashlib.sha256
+
+                    def spy(data=b"", *args, **kwargs):
+                        hashed.append(data)
+                        return real_sha256(data, *args, **kwargs)
+
+                    with mock.patch("opportunity_app.api.hashlib.sha256", spy):
+                        response = client.get(probe)
+                    self.assertEqual(response.headers["Cache-Control"], "no-cache")
+                    self.assertNotIn(outside.read_bytes(), hashed)
+
+    def test_a_revalidation_304_keeps_the_immutable_header(self):
+        """A browser updates its stored headers from a 304, so it must not
+        downgrade an immutable entry."""
+
+        with TestClient(self.app) as client:
+            version = dict(self.references(client, "/"))["styles.css"]
+            url = f"/assets/styles.css?v={version}"
+            first = client.get(url)
+            second = client.get(url, headers={"If-None-Match": first.headers["ETag"]})
+        self.assertEqual(second.status_code, 304)
+        self.assertIn("immutable", second.headers["Cache-Control"])
+
+    def test_the_version_cache_does_not_grow_with_arbitrary_requests(self):
+        """Only names that are real static files may be remembered."""
+
+        real_sha256 = hashlib.sha256
+        hashed = []
+
+        def spy(data=b"", *args, **kwargs):
+            hashed.append(data)
+            return real_sha256(data, *args, **kwargs)
+
+        with TestClient(self.app) as client:
+            with mock.patch("opportunity_app.api.hashlib.sha256", spy):
+                for index in range(20):
+                    client.get(f"/assets/missing-{index}.js?v=0")
+                    client.get(f"/assets/missing-{index}.js")
+        self.assertEqual(hashed, [])
 
 
 if __name__ == "__main__":

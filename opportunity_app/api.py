@@ -326,6 +326,7 @@ from .notifications import build_provider as build_notification_provider
 from .notifications import connector_health
 
 
+_ASSET_NAME = re.compile(r"[A-Za-z0-9._-]+")
 _ASSET_REFERENCE = re.compile(r"""/assets/([A-Za-z0-9._-]+)(?:\?v=[^"']*)?""")
 
 LOGGER = logging.getLogger("opportunity_app")
@@ -1264,10 +1265,19 @@ def create_app(
     _asset_versions: dict[str, tuple[tuple[int, int], str]] = {}
 
     def asset_version(name: str) -> str:
+        # Only a plain file name directly inside static_dir has a version. A
+        # name with a separator or an absolute path would make pathlib leave
+        # static_dir, turning this into a hash oracle for any readable file.
+        if not _ASSET_NAME.fullmatch(name) or name in {".", ".."}:
+            return "0"
         path = static_dir / name
         try:
+            if path.resolve().parent != static_dir.resolve():
+                return "0"
             stat = path.stat()
         except OSError:
+            return "0"
+        if not path.is_file():
             return "0"
         signature = (stat.st_mtime_ns, stat.st_size)
         cached = _asset_versions.get(name)
@@ -1316,10 +1326,16 @@ def create_app(
                 # stale: changing the file changes the URL. Anything else --
                 # no version, or an old one -- revalidates as before.
                 asset = request.url.path.removeprefix("/assets/")
+                # A 404 or any other error is never immutable, but a 304
+                # revalidation must be: browsers refresh their stored headers
+                # from it. Unknown or foreign names have version "0", which
+                # `?v=0` must not be able to match.
                 if (
                     request.url.path.startswith("/assets/")
-                    and asset
-                    and request.query_params.get("v") == asset_version(asset)
+                    and response.status_code in (200, 304)
+                    and _ASSET_NAME.fullmatch(asset)
+                    and (version := asset_version(asset)) != "0"
+                    and request.query_params.get("v") == version
                 ):
                     response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
                 else:
