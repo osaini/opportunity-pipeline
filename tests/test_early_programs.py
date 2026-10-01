@@ -21,7 +21,7 @@ from opportunity_app.operations import export_account
 from opportunity_app.schema import LOCAL_USER_ID, connect_product
 from opportunity_app.setup import Paths, programs_report
 from opportunity_app.urgent import urgent_queue
-from tests.helpers_platform import build_and_migrate
+from helpers_platform import build_and_migrate
 from helpers_source import static_pages
 
 

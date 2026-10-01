@@ -1,7 +1,10 @@
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import httpx
 from fastapi.testclient import TestClient
@@ -16,7 +19,7 @@ from opportunity_app.typesafe_decisions import (
     opportunity_review_state,
     review_opportunity,
 )
-from tests.helpers_platform import build_and_migrate
+from helpers_platform import build_and_migrate
 
 
 def response_for(questions, *, model="jev-1.13.0"):

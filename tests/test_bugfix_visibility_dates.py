@@ -12,12 +12,15 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import unittest
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
@@ -27,7 +30,7 @@ from opportunity_app.api import create_app
 from opportunity_app.auth import issue_user_token
 from opportunity_app.schema import LOCAL_USER_ID, connect_product
 from pipeline_core import OpportunityFilters, OpportunityRepository, capture_visible_sql
-from tests.helpers_platform import build_and_migrate
+from helpers_platform import build_and_migrate
 
 OTHER = "student-b"
 STAMP = "2026-09-01T00:00:00+00:00"
