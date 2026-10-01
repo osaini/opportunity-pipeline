@@ -21,8 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-import pipeline
-from pipeline_core import paths, store
+from pipeline_core import paths, reports, store
 from helpers_platform import LEGACY_SCHEMA, build_profile, migrate_cached
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
@@ -133,7 +132,7 @@ class EmployerCapShortlistTests(unittest.TestCase):
 
     def write(self, limit: int) -> str:
         with redirect_stdout(StringIO()):
-            pipeline.report(self.conn, {"manual_check_sources": []}, limit)
+            reports.report(self.conn, {"manual_check_sources": []}, limit)
         return (self.root / "output" / "shortlist.md").read_text(encoding="utf-8")
 
     def listed_companies(self, markdown: str) -> list[str]:

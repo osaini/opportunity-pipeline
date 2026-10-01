@@ -12,8 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import pipeline
-from pipeline_core import artifacts, clock, config as core_config, sources as core_sources, discovery, importers, liveness, paths, retention, scoring, store, text
+from pipeline_core import artifacts, clock, config as core_config, sources as core_sources, discovery, importers, liveness, paths, reports, retention, scoring, store, text
 from pipeline_core.regions import match_region, region_label
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -340,8 +339,8 @@ class PipelineTests(unittest.TestCase):
 
     def test_display_reasons_excludes_base_and_caps_length(self):
         reasons = ["35 base", "r1", "r2", "r3", "r4", "r5", "r6"]
-        self.assertEqual(pipeline.display_reasons(reasons), ["r1", "r2", "r3", "r4", "r5"])
-        self.assertEqual(pipeline.display_reasons(reasons, limit=2), ["r1", "r2"])
+        self.assertEqual(reports.display_reasons(reasons), ["r1", "r2", "r3", "r4", "r5"])
+        self.assertEqual(reports.display_reasons(reasons, limit=2), ["r1", "r2"])
 
     def _sample_dashboard_jobs(self, title="Mechanical Engineering Intern"):
         return [
@@ -365,7 +364,7 @@ class PipelineTests(unittest.TestCase):
 
     def test_build_dashboard_html_embeds_valid_json(self):
         jobs = self._sample_dashboard_jobs()
-        doc = pipeline.build_dashboard_html(jobs, "2026-07-24T00:00:00+00:00")
+        doc = reports.build_dashboard_html(jobs, "2026-07-24T00:00:00+00:00")
         match = re.search(
             r'<script id="job-data" type="application/json">(.*?)</script>', doc, re.S
         )
@@ -376,7 +375,7 @@ class PipelineTests(unittest.TestCase):
     def test_build_dashboard_html_escapes_script_injection(self):
         malicious_title = "Intern</script><script>alert(1)</script>"
         jobs = self._sample_dashboard_jobs(title=malicious_title)
-        doc = pipeline.build_dashboard_html(jobs, "2026-07-24T00:00:00+00:00")
+        doc = reports.build_dashboard_html(jobs, "2026-07-24T00:00:00+00:00")
         self.assertNotIn("</script><script>", doc)
         match = re.search(
             r'<script id="job-data" type="application/json">(.*?)</script>', doc, re.S
@@ -1689,11 +1688,11 @@ class PipelineTests(unittest.TestCase):
         profile["preferred_locations"] = []
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            pipeline.doctor(profile, {"ats_sources": []})
+            reports.doctor(profile, {"ats_sources": []})
         self.assertNotIn("preferred_locations", output.getvalue())
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            pipeline.doctor({**profile, "regions": []}, {"ats_sources": []})
+            reports.doctor({**profile, "regions": []}, {"ats_sources": []})
         self.assertIn("preferred_locations", output.getvalue())
 
     def test_missing_profile_points_at_setup(self):
