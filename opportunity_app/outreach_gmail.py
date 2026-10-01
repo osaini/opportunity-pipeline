@@ -793,8 +793,25 @@ def _since(stamp: str, bounce: datetime | None) -> bool:
     return bounce is None or datetime.fromisoformat(stamp) > bounce
 
 
-def _already_sent(conn: sqlite3.Connection, target_id: str, user_id: str, kind: str) -> bool:
-    bounce = last_bounce(conn, target_id, user_id)
+_LOOK_UP = object()
+
+
+def last_bounces(conn: sqlite3.Connection, user_id: str) -> dict[str, datetime]:
+    """When each target's email last bounced, for every target that has bounced: last_bounce for all of them in one query."""
+    return {
+        str(row[0]): datetime.fromisoformat(row[1])
+        for row in conn.execute(
+            "SELECT target_id, MAX(created_at) FROM outreach_events WHERE user_id=? AND event_type=? GROUP BY target_id",
+            (user_id, BOUNCE_EVENT),
+        ).fetchall()
+        if row[1]
+    }
+
+
+def _already_sent(conn: sqlite3.Connection, target_id: str, user_id: str, kind: str, *, bounce: Any = _LOOK_UP) -> bool:
+    """Whether an email of this kind went out since the last bounce. ``bounce`` is that bounce (None for none) when the caller has it already."""
+    if bounce is _LOOK_UP:
+        bounce = last_bounce(conn, target_id, user_id)
     rows = conn.execute(
         "SELECT detail, created_at FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=?",
         (target_id, user_id, SENT_EVENT),
