@@ -393,8 +393,12 @@ def _other_entries_named(body: str, inputs: dict[str, Any]) -> list[str]:
     return named
 
 
+# Keys whose values only name or locate a record: "project-123" is not 123 of anything. Call prep's number
+# check skips the same keys (outreach_call_prep._NOT_A_SOURCE). Its other keys (sent_on, logged_on, status,
+# research_gaps, unverified_research) are not in a draft's inputs, except sent_on, a date the draft may cite.
+IDENTIFIER_KEYS = frozenset({"id", "source_urls"})
 # Inputs that tell the model how to write, not facts it may quote: 150 is not a number the student earned.
-_NOT_A_FACT = frozenset({"max_words"})
+_NOT_A_FACT = IDENTIFIER_KEYS | {"max_words"}
 
 
 def _input_text(value: Any):
@@ -445,13 +449,14 @@ def _supported_numbers(pieces) -> set[str]:
     return {key for piece in pieces for pair in _number_keys(piece) for key in pair}
 
 
-def _unsupported_numbers(body: str, inputs: dict[str, Any]) -> list[str]:
-    """Numbers in the draft that are no whole number in the inputs' own words (see _number_keys)."""
+def _unsupported_numbers(text: str, inputs: dict[str, Any], *more: str) -> list[str]:
+    """Numbers in the draft's text (the body, and the subject when given as ``more``) that are no whole number in the inputs' own words (see _number_keys)."""
     allowed = _supported_numbers(_input_text(inputs))
     found = []
-    for key, needed in _number_keys(_ADDRESS.sub(" ", body)):
-        if needed not in allowed and needed not in found:
-            found.append(needed)
+    for piece in (text, *more):
+        for key, needed in _number_keys(_ADDRESS.sub(" ", piece)):
+            if needed not in allowed and needed not in found:
+                found.append(needed)
     return found
 
 
@@ -496,7 +501,7 @@ def validate_draft(
     unnamed = _unnamed_greeting_problem(body, inputs)
     if unnamed:
         problems.append(unnamed)
-    numbers = _unsupported_numbers(body, inputs)
+    numbers = _unsupported_numbers(body, inputs, subject)
     if numbers:
         problems.append("it states numbers found in neither your profile nor the research: " + ", ".join(numbers))
     if kind == "initial":

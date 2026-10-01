@@ -37,7 +37,7 @@ from opportunity_app.outreach_drafting import (
     draft_versions,
     generate_draft,
     restore_draft_version,
-    _states_a_lead_result, _unsupported_numbers,
+    _states_a_lead_result, _unsupported_numbers, validate_draft,
 )
 from opportunity_app.schema import connect_product, ensure_product_schema, utc_now
 
@@ -830,6 +830,35 @@ class UnsupportedNumbersTests(unittest.TestCase):
     def test_numbers_inside_an_address_are_not_the_drafts_claims(self):
         body = "Write to me at student2024@example.edu or see https://example.edu/p/99."
         self.assertEqual(_unsupported_numbers(body, self.inputs(name="Test Student")), [])
+
+    @staticmethod
+    def number_problems(subject, body, inputs):
+        raw = draft_json(subject, body, [{"text": "my work", "basis": "profile:experience"}])
+        _, problems = validate_draft(raw, {**inputs, "unverified_research": {}, "source_urls": []}, "follow_up")
+        return [problem for problem in problems if "numbers" in problem]
+
+    def test_an_invented_number_only_in_the_subject_is_flagged(self):
+        inputs = self.inputs(experience=[{"title": "Cut scrap 45%"}])
+        problems = self.number_problems("7 ideas for Bovi", "Hi Greg,\n\nI cut scrap 45%.\n\nTest Student", inputs)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("7", problems[0])
+        self.assertEqual(self.number_problems("Cut scrap 45%", "Hi Greg,\n\nI cut scrap 45%.\n\nTest Student", inputs), [])
+
+    def test_a_number_in_the_subject_and_body_is_listed_once(self):
+        inputs = self.inputs(experience=[{"title": "Cut scrap 45%"}])
+        problems = self.number_problems("9 plants", "Hi Greg,\n\nI visited 9 plants.\n\nTest Student", inputs)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertEqual(problems[0].count("9"), 1)
+
+    def test_an_identifier_is_not_a_source_of_numbers(self):
+        inputs = self.inputs(experience=[{"id": "project-123", "title": "Cut scrap 45%"}])
+        self.assertEqual(_unsupported_numbers("I completed 123 trials and cut scrap 45%.", inputs), ["123"])
+        problems = self.number_problems("Hello", "Hi Greg,\n\nI completed 123 trials.\n\nTest Student", inputs)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("123", problems[0])
+        # The same number written in the entry's own words still counts.
+        inputs = self.inputs(experience=[{"id": "project-123", "title": "Ran 123 trials"}])
+        self.assertEqual(_unsupported_numbers("I completed 123 trials.", inputs), [])
 
 
 class LifecycleTests(unittest.TestCase):
