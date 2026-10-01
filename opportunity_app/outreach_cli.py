@@ -55,9 +55,9 @@ from pipeline import load_env_file
 
 from . import DEFAULT_PLATFORM_DB
 from .agent_providers import build_provider
+from .daily_lock import TEMPFAIL_EXIT
 from .database import is_postgres_target
 from .outreach import queue_follow_up_reminders
-from .web_fetch import default_fetcher
 from .outreach_discovery import DEFAULT_SCOPES, MAX_PER_SCOPE, RUNNERS, SCOPES, DiscoveryBusy, run_discovery
 from .outreach_locate import BATCH_SIZE, locate_targets
 from .outreach_profile import SEC_USER_AGENT_ENV, enrich_targets, sec_fetcher
@@ -66,10 +66,7 @@ from .outreach_research import available_agent, due_for_research, research_compa
 from .outreach_render import default_renderer
 from .outreach_smtp import default_verifier
 from .schema import LOCAL_USER_ID, connect_product, ensure_product_schema
-
-# pipeline.py's temporary-failure exit code, so the daily script can tell a
-# busy or skipped run from a broken one.
-TEMPFAIL_EXIT = 75
+from .web_fetch import default_fetcher
 
 
 def build_parser() -> argparse.ArgumentParser:
