@@ -27,6 +27,9 @@
     // The per-employer cap the last list was served with (0: none).
     perCompany: 0,
     userId: null,
+    // Counts sessions: the owner is the same 'local-user' every time they sign in, so the
+    // user id cannot tell a request sent before sign-out from one sent after signing back in.
+    sessionEpoch: 0,
     refresh: null,
     refreshTimer: null,
     detailReturnFocus: null,
@@ -180,6 +183,8 @@
     const isFormData = options.body instanceof FormData;
     const csrf = document.cookie.split("; ").find((entry) => entry.startsWith("pipeline_csrf="))?.split("=")[1];
     const method = (options.method || "GET").toUpperCase();
+    // The session this request was sent under: a 401 that answers after it ended is old news.
+    const sentUnder = state.sessionEpoch;
     let response;
     try {
       response = await fetch(path, {
@@ -200,7 +205,11 @@
       throw error;
     }
     if (response.status === 401) {
-      showAuth();
+      // The gate is already up when the session ended meanwhile (a poll still in
+      // flight at sign-out) or a sign-in attempt is on screen; showing it again
+      // would blank the sign-in error and move focus.
+      const gateShowing = els.authGate.classList.contains("is-visible");
+      if (state.sessionEpoch === sentUnder && !gateShowing) showAuth();
       throw new Error("Authentication required");
     }
     if (!response.ok) {
@@ -734,6 +743,7 @@
     // Nothing from the previous session may stay readable behind the gate.
     closeDetail({ updateHistory: false });
     state.userId = null;
+    state.sessionEpoch += 1;
     state.selectedId = null;
     state.loadSequence += 1;
     clearUrgentBadge();
@@ -749,11 +759,29 @@
     renderCompanyFilter();
     els.personalizePrompt.hidden = true;
     window.clearTimeout(state.refreshTimer);
+    stopSessionPollers();
     state.refresh = null;
     els.refreshOpen.hidden = true;
     if (els.refreshDialog.open) els.refreshDialog.close();
     clearError();
     announce("");
+  }
+
+  // Every background poll belongs to the session that started it. One left
+  // running after sign-out gets a 401 each time, and api() answers every 401
+  // by re-running showAuth, which blanks the sign-in error and moves focus to
+  // the email field. The bindings are declared further down; this only runs
+  // once the whole script has loaded. Signing in again restarts what is
+  // still running, because the Outreach render watches every active job.
+  function stopSessionPollers() {
+    callPrepWatches.forEach((timer) => window.clearTimeout(timer));
+    callPrepWatches.clear();
+    bounceTimers.forEach((timer) => window.clearTimeout(timer));
+    bounceTimers = [];
+    window.clearTimeout(deepSearchTimer);
+    deepSearchTimer = null;
+    window.clearTimeout(recontactTimer);
+    recontactTimer = null;
   }
 
   // The gate and the detail panel are modal: while either is open nothing
@@ -784,6 +812,7 @@
 
   function hideAuth(session) {
     state.userId = session.user_id || "local-user";
+    state.sessionEpoch += 1;
     els.authGate.classList.remove("is-visible");
     els.authGate.setAttribute("aria-hidden", "true");
     setBackgroundInert("auth", false);
@@ -3061,8 +3090,12 @@
   let bounceTimers = [];
 
   async function checkForBounces() {
+    if (!state.userId) return;
+    const epoch = state.sessionEpoch;
     try {
       const result = await api("/api/v1/outreach/inbox-check", { method: "POST" });
+      // Signed out while Gmail was being read: the news belongs to the session that asked.
+      if (state.sessionEpoch !== epoch) return;
       const news = [];
       if (result.bounced?.length) {
         const names = result.bounced.map((entry) => `${entry.company} (${entry.addresses.join(", ")})`).join("; ");
@@ -3085,6 +3118,8 @@
       }
       if (!news.length) return;
       if (state.view === "outreach") await loadOutreach();
+      // Signed out while the list reloaded: the news is the old session's.
+      if (state.sessionEpoch !== epoch) return;
       announce(news.join(" "));
     } catch (_error) {
       // A failed look is retried on the next load; it never blocks the page.
@@ -3999,9 +4034,11 @@
     if (deepSearchTimer) return;
     deepSearchTimer = window.setTimeout(async () => {
       deepSearchTimer = null;
-      if (state.view !== "outreach") return;
+      if (!state.userId || state.view !== "outreach") return;
+      const epoch = state.sessionEpoch;
       try {
         const discovery = await api("/api/v1/outreach/discovery");
+        if (state.sessionEpoch !== epoch) return;
         if (discovery.active?.state === "running") {
           scheduleDeepSearchPoll();
           return;
@@ -4014,7 +4051,7 @@
         if (result?.imported && state.subtabs.outreach === "deep-search") state.subtabs.outreach = "from-search";
         if (!state.loading) await loadOutreach();
       } catch (error) {
-        showError(error.message);
+        if (state.sessionEpoch === epoch) showError(error.message);
       }
     }, 5000);
   }
@@ -4102,9 +4139,11 @@
     if (recontactTimer) return;
     recontactTimer = window.setTimeout(async () => {
       recontactTimer = null;
-      if (state.view !== "outreach") return;
+      if (!state.userId || state.view !== "outreach") return;
+      const epoch = state.sessionEpoch;
       try {
         const recontact = await api("/api/v1/outreach/recontact");
+        if (state.sessionEpoch !== epoch) return;
         const active = recontact.active;
         if (active?.state === "running") {
           scheduleRecontactPoll();
@@ -4115,7 +4154,7 @@
         else announce(`Contact search finished: ${plural(active?.result?.upgraded || 0, "person", "people")} found.`);
         if (!state.loading) await loadOutreach();
       } catch (error) {
-        showError(error.message);
+        if (state.sessionEpoch === epoch) showError(error.message);
       }
     }, 4000);
   }
@@ -4875,12 +4914,19 @@
   }
 
   async function checkCallPrep(id) {
+    const epoch = state.sessionEpoch;
     let active = true;
     try {
       const target = await api(`/api/v1/outreach/${encodeURIComponent(id)}`);
       active = CALL_PREP_ACTIVE.includes(target.call_prep_job?.state) || CALL_PREP_ACTIVE.includes(target.tech_brief_job?.state);
     } catch (error) {
       active = error.status !== 404;
+    }
+    // Signed out meanwhile (or by this very request's 401), possibly signed back in
+    // since: this watch belongs to the old session, and the new one starts its own.
+    if (!state.userId || state.sessionEpoch !== epoch) {
+      if (state.sessionEpoch === epoch) callPrepWatches.delete(id);
+      return;
     }
     if (active) {
       callPrepWatches.set(id, window.setTimeout(() => checkCallPrep(id), 5000));

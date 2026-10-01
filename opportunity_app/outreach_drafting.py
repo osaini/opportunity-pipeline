@@ -351,12 +351,17 @@ def _opening(body: str) -> str:
     return paragraphs[0]
 
 
-_NUMBER = re.compile(r"(?<![\w@.])\d[\d,.]*%?")
-_ADDRESS = re.compile(r"\S+@\S+|https?://\S+")
-
-
-def _numbers(text: str) -> set[str]:
-    return {match.rstrip(".,") for match in _NUMBER.findall(text)} - {""}
+# What a number check takes out of the text first, on both sides (the draft and the inputs): email addresses,
+# links with a scheme, and links without one (github.com/t/arm-2024, acme360.com), whose digits name a page,
+# not a fact. A scheme-less link is a dotted host ending in a 2+ letter TLD, optionally followed by a path. The
+# label before the TLD must hold a letter and the TLD must end the word, so 3.5, U.S., Ph.D., e.g. and v2.0
+# are not hosts, nor is "2024.Then" (a missing space after a full stop). Call prep's number check shares this.
+_ADDRESS = re.compile(
+    r"\S+@\S+|https?://\S+"
+    # A scheme-less host such as github.com/t/x or acme360.com. The ending must be lowercase, so a number run into the
+    # next sentence ("$2.5M.Series A", "40k.Users") stays a number rather than being taken for a domain.
+    r"|(?<![\w@.-])(?:[A-Za-z0-9-]+\.)*[A-Za-z0-9-]*[A-Za-z][A-Za-z0-9-]*\.[a-z]{2,}(?![\w-])(?:/\S*)?"
+)
 
 
 def _entry_names(entry: Any) -> set[str]:
@@ -378,8 +383,8 @@ def _primary_entries(inputs: dict[str, Any]) -> list[Any]:
 def _states_a_lead_result(body: str, inputs: dict[str, Any]) -> bool:
     """Whether the body gives a number from the primary experience, not one that only belongs to the company."""
     research = {**inputs["company_research"], **inputs["unverified_research"]}
-    lead_numbers = _numbers(json.dumps(_primary_entries(inputs), ensure_ascii=False)) - _numbers(json.dumps(research, ensure_ascii=False))
-    return bool(lead_numbers & _numbers(_ADDRESS.sub(" ", body)))
+    lead_numbers = _supported_numbers(_input_text(_primary_entries(inputs))) - _supported_numbers(_input_text(research))
+    return any(needed in lead_numbers for _, needed in _number_keys(_ADDRESS.sub(" ", body)))
 
 
 def _other_entries_named(body: str, inputs: dict[str, Any]) -> list[str]:
@@ -398,15 +403,70 @@ def _other_entries_named(body: str, inputs: dict[str, Any]) -> list[str]:
     return named
 
 
-def _unsupported_numbers(body: str, inputs: dict[str, Any]) -> list[str]:
-    """Numbers in the draft that appear nowhere in its inputs."""
-    haystack = json.dumps(inputs, ensure_ascii=False)
-    without_addresses = _ADDRESS.sub(" ", body)
+# Keys whose values only name or locate a record: "project-123" is not 123 of anything. Call prep's number
+# check skips the same keys (outreach_call_prep._NOT_A_SOURCE). Its other keys (sent_on, logged_on, status,
+# research_gaps, unverified_research) are not in a draft's inputs, except sent_on, a date the draft may cite.
+IDENTIFIER_KEYS = frozenset({"id", "source_urls"})
+# Inputs that tell the model how to write, not facts it may quote: 150 is not a number the student earned.
+_NOT_A_FACT = IDENTIFIER_KEYS | {"max_words"}
+
+
+def _input_text(value: Any):
+    """Every piece of the inputs' own words a number may come from, with addresses taken out."""
+    if isinstance(value, str):
+        yield _ADDRESS.sub(" ", value)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            if key not in _NOT_A_FACT:
+                yield from _input_text(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _input_text(item)
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        yield str(value)
+
+
+def _number_key(token: str) -> str:
+    """The number as a comparison key: 09 and 9 are one number, 3.50 and 3.5 are one, 3.5 and 5 are not."""
+    whole, point, fraction = token.partition(".")
+    whole = whole.lstrip("0") or "0"
+    fraction = fraction.rstrip("0")
+    return f"{whole}.{fraction}" if fraction else whole
+
+
+def _number_keys(text: str) -> list[tuple[str, str]]:
+    """Each number in the text as (its key, the key a draft needs to claim it).
+
+    Whole numbers, as outreach_call_prep checks them, not pieces of text: the tokenizer
+    is the research module's, so 1,500 and 1500 are one number and a range such as
+    2019-2023 is two. A number written as a percentage (45% or 45 percent) is claimed
+    as a percentage, so it needs 45% in the inputs, not a headcount of 45.
+    """
+    # Imported here: outreach_research pulls in outreach_discovery, which imports this module.
+    from . import outreach_research as research
+
+    tokens = research._tokens(text)
+    keys = []
+    for index, token in enumerate(tokens):
+        if token[0].isdigit():
+            key = _number_key(token)
+            keys.append((key, key + "%" if tokens[index + 1:index + 2] == ["percent"] else key))
+    return keys
+
+
+def _supported_numbers(pieces) -> set[str]:
+    """What the pieces of the inputs' own words let a draft claim: a bare 45 may be a 45% too, a 45% is only a percentage."""
+    return {key for piece in pieces for pair in _number_keys(piece) for key in pair}
+
+
+def _unsupported_numbers(text: str, inputs: dict[str, Any], *more: str) -> list[str]:
+    """Numbers in the draft's text (the body, and the subject when given as ``more``) that are no whole number in the inputs' own words (see _number_keys)."""
+    allowed = _supported_numbers(_input_text(inputs))
     found = []
-    for match in _NUMBER.findall(without_addresses):
-        token = match.rstrip(".,")
-        if token and token not in haystack and token not in found:
-            found.append(token)
+    for piece in (text, *more):
+        for key, needed in _number_keys(_ADDRESS.sub(" ", piece)):
+            if needed not in allowed and needed not in found:
+                found.append(needed)
     return found
 
 
@@ -451,7 +511,7 @@ def validate_draft(
     unnamed = _unnamed_greeting_problem(body, inputs)
     if unnamed:
         problems.append(unnamed)
-    numbers = _unsupported_numbers(body, inputs)
+    numbers = _unsupported_numbers(body, inputs, subject)
     if numbers:
         problems.append("it states numbers found in neither your profile nor the research: " + ", ".join(numbers))
     if kind == "initial":

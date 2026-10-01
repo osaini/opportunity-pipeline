@@ -473,6 +473,16 @@ class CallPrepTests(unittest.TestCase):
         written = "28 engineers, 9 seconds, 90 seconds, 3pm, 30 percent, 2026"
         self.assertEqual(outreach_call_prep._unsupported_numbers(written, inputs), ["28", "9", "30", "2026"])
 
+    def test_a_scheme_less_link_is_not_a_source_of_numbers_and_naming_one_is_not_a_claim(self):
+        inputs = {
+            "technical_research": [{"id": "f1", "section": "technology", "text": "Their site is acme360.com and the arm plugs in within 90 seconds"}],
+            "student_links": ["github.com/t/arm-2024", "linkedin.com/in/t-512"],
+        }
+        written = "360 engineers, 512 people, 2024 builds, 90 seconds, see github.com/t/arm-2024 or acme360.com/careers"
+        self.assertEqual(outreach_call_prep._unsupported_numbers(written, inputs), ["360", "512", "2024"])
+        self.assertEqual(outreach_call_prep._unsupported_numbers("Their site: acme360.com, linkedin.com/in/t-512.", inputs), [])
+        self.assertEqual(outreach_call_prep._unsupported_numbers("A 3.5 GPA, U.S. only, Ph.D. track, 9 seconds.", inputs), ["3.5", "9"])
+
     def test_the_sent_date_reaches_the_model_as_a_day_not_a_timestamp(self):
         self.reply_and_mark()
         provider = ScriptedProvider([prep_json()])

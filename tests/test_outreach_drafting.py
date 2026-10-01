@@ -37,6 +37,7 @@ from opportunity_app.outreach_drafting import (
     draft_versions,
     generate_draft,
     restore_draft_version,
+    _states_a_lead_result, _unsupported_numbers, validate_draft,
 )
 from opportunity_app.schema import connect_product, ensure_product_schema, utc_now
 
@@ -742,6 +743,153 @@ class DraftingTests(unittest.TestCase):
                 self.conn, self.target["id"], user_id=USER, kind="follow_up",
                 fingerprint=drafted["follow_up_fingerprint"],
             )
+
+
+class UnsupportedNumbersTests(unittest.TestCase):
+    """A number in a draft is supported only when the same whole number is in the inputs.
+
+    The check once looked for the number as a piece of the inputs' JSON text, so an
+    invented 9 passed whenever 90 or 2019 appeared anywhere in them.
+    """
+
+    @staticmethod
+    def inputs(**student):
+        return {
+            "student": student,
+            "company_research": {"summary": "Dairy robotics for small farms"},
+            "suggested_ask": "whether they would consider an intern, or a 15 minute call",
+            "max_words": 150,
+        }
+
+    def test_an_invented_number_that_is_a_piece_of_a_real_one_is_flagged(self):
+        inputs = self.inputs(experience=[{"title": "Cut scrap 90 percent", "dates": "2019-2023"}])
+        self.assertEqual(_unsupported_numbers("I cut waste for 9 plants in 201 days.", inputs), ["9", "201"])
+
+    def test_a_number_in_a_url_or_id_does_not_license_the_same_digits(self):
+        inputs = self.inputs(name="Test Student")
+        inputs["source_urls"] = ["https://bovi.example/about-2024"]
+        inputs["sender_address"] = "student2024@example.edu"
+        self.assertEqual(_unsupported_numbers("I read your 2024 note.", inputs), ["2024"])
+
+    def test_the_word_limit_is_not_a_source_of_numbers(self):
+        self.assertEqual(_unsupported_numbers("I ran 150 trials.", self.inputs(name="Test Student")), ["150"])
+
+    def test_numbers_that_are_in_the_inputs_pass_in_every_written_form(self):
+        inputs = self.inputs(
+            experience=[
+                {"title": "Raised $1,500 and cut scrap 45%", "dates": "2019-2023", "note": "ranked 3rd of 40, scored 3.5"},
+                {"title": "Shipped 12000 units in Q3"},
+            ],
+        )
+        body = (
+            "I raised $1500 and later 1,500 again, cut scrap 45 percent, worked 2019-2023 (2019 – 2023), "
+            "ranked 3rd of 40, scored 3.5, shipped 12,000 units in Q3, and would like a 15 minute call."
+        )
+        self.assertEqual(_unsupported_numbers(body, inputs), [])
+
+    def test_a_date_in_the_inputs_supports_its_day_and_month_with_or_without_a_leading_zero(self):
+        inputs = self.inputs(name="Test Student")
+        inputs["sent_on"] = "2026-09-08T10:00:00+00:00"
+        self.assertEqual(_unsupported_numbers("I wrote on September 8, 2026, month 9.", inputs), [])
+        self.assertEqual(_unsupported_numbers("I wrote on September 7.", inputs), ["7"])
+
+    def test_a_decimal_does_not_support_its_fractional_part(self):
+        inputs = self.inputs(experience=[{"title": "Held a 3.5 GPA"}])
+        self.assertEqual(_unsupported_numbers("I held a 3.5 GPA and a 5 point lead.", inputs), ["5"])
+
+    def test_a_decimal_or_amount_in_the_inputs_passes_with_or_without_trailing_zeros(self):
+        inputs = self.inputs(experience=[{"title": "GPA 3.50", "note": "Saved $725.00 a month, shipped v1.0"}])
+        self.assertEqual(_unsupported_numbers("I held a 3.5 GPA, saved $725 a month and shipped version 1.", inputs), [])
+        inputs = self.inputs(experience=[{"title": "GPA 3.5", "note": "Saved $725 a month"}])
+        self.assertEqual(_unsupported_numbers("I held a 3.50 GPA and saved $725.00 a month.", inputs), [])
+        self.assertEqual(_unsupported_numbers("I held a 3.55 GPA.", inputs), ["3.55"])
+
+    def test_a_percentage_needs_a_percentage_in_the_inputs_not_a_headcount(self):
+        headcount = self.inputs(experience=[{"title": "Led 45 employees"}])
+        self.assertEqual(_unsupported_numbers("I cut costs 45%.", headcount), ["45%"])
+        self.assertEqual(_unsupported_numbers("I cut costs 45 percent.", headcount), ["45%"])
+        percentage = self.inputs(experience=[{"title": "Cut scrap 45%"}])
+        self.assertEqual(_unsupported_numbers("I cut scrap 45% and 45 percent, and met 45 people.", percentage), [])
+
+    def test_the_lead_result_check_reads_numbers_the_same_way(self):
+        def lead(title, body, research=""):
+            inputs = {
+                "student": {"experience": [{"title": title}, {"title": "Other"}]},
+                "primary_experience": title,
+                "company_research": {"summary": research},
+                "unverified_research": {},
+            }
+            return _states_a_lead_result(body, inputs)
+
+        self.assertTrue(lead("Raised 1500 dollars", "I raised $1,500 at Acme."))
+        self.assertTrue(lead("Cut scrap 45%", "I cut scrap 45 percent."))
+        self.assertTrue(lead("Held GPA 3.50", "I held a 3.5 GPA."))
+        self.assertFalse(lead("Cut scrap 45%", "I cut scrap by half."))
+        self.assertFalse(lead("Cut scrap 45%", "I know your 45 person team.", research="a team of 45"))
+
+    def test_numbers_inside_an_address_are_not_the_drafts_claims(self):
+        body = "Write to me at student2024@example.edu or see https://example.edu/p/99."
+        self.assertEqual(_unsupported_numbers(body, self.inputs(name="Test Student")), [])
+
+    def test_a_scheme_less_link_does_not_license_its_digits(self):
+        inputs = self.inputs(name="Test Student", links=["github.com/t/arm-2024", "linkedin.com/in/t-512"])
+        inputs["company_website"] = "acme360.com"
+        body = "I built 2024 robots, met 512 people and read about 360 sensors."
+        self.assertEqual(_unsupported_numbers(body, inputs), ["2024", "512", "360"])
+
+    def test_a_draft_that_names_the_same_domain_is_not_flagged(self):
+        inputs = self.inputs(name="Test Student", links=["github.com/t/arm-2024", "linkedin.com/in/t-512"])
+        inputs["company_website"] = "acme360.com"
+        body = "See github.com/t/arm-2024 and linkedin.com/in/t-512, or visit www.acme360.com, acme360.com/careers."
+        self.assertEqual(_unsupported_numbers(body, inputs), [])
+        # A draft may name a domain whether or not the inputs do: its digits are the address's, not a claim.
+        self.assertEqual(_unsupported_numbers("Visit acme360.com.", self.inputs(name="Test Student")), [])
+
+    def test_a_number_run_into_the_next_sentence_is_still_a_source(self):
+        # Research text often drops the space after a full stop; "$2.5M.Series" is a stated number, not a domain.
+        inputs = self.inputs(name="Test Student")
+        inputs["company_research"] = {
+            "funding": "They raised $2.5M.Series A was led by X. The team grew to 40k.Users love it. Shipped GPT-4.Turbo after COVID-19.Then"
+        }
+        body = "Congrats on the $2.5M round and 40k users, shipping on GPT-4 after COVID-19."
+        self.assertEqual(_unsupported_numbers(body, inputs), [])
+
+    def test_decimals_abbreviations_and_versions_are_not_taken_for_hosts(self):
+        inputs = self.inputs(experience=[{"title": "Held a 3.5 GPA as a U.S. student, e.g. on v2.0 of the Ph.D. tool"}])
+        # Each stays a number the draft must support: if 3.5 or v2.0 were stripped as a host, 7 and 2.5 would hide too.
+        body = "As a U.S. student with a 3.5 GPA, e.g. on v2.0, in a Ph.D. lab I ran 7 trials at 2.5 volts."
+        self.assertEqual(_unsupported_numbers(body, inputs), ["7", "2.5"])
+        self.assertEqual(_unsupported_numbers("I held a 3.5 GPA.Then I shipped 7.", inputs), ["7"])
+        self.assertEqual(_unsupported_numbers("Ph.D. students ran 7 trials in 2024.Then 8.", inputs), ["7", "2024", "8"])
+
+    @staticmethod
+    def number_problems(subject, body, inputs):
+        raw = draft_json(subject, body, [{"text": "my work", "basis": "profile:experience"}])
+        _, problems = validate_draft(raw, {**inputs, "unverified_research": {}, "source_urls": []}, "follow_up")
+        return [problem for problem in problems if "numbers" in problem]
+
+    def test_an_invented_number_only_in_the_subject_is_flagged(self):
+        inputs = self.inputs(experience=[{"title": "Cut scrap 45%"}])
+        problems = self.number_problems("7 ideas for Bovi", "Hi Greg,\n\nI cut scrap 45%.\n\nTest Student", inputs)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("7", problems[0])
+        self.assertEqual(self.number_problems("Cut scrap 45%", "Hi Greg,\n\nI cut scrap 45%.\n\nTest Student", inputs), [])
+
+    def test_a_number_in_the_subject_and_body_is_listed_once(self):
+        inputs = self.inputs(experience=[{"title": "Cut scrap 45%"}])
+        problems = self.number_problems("9 plants", "Hi Greg,\n\nI visited 9 plants.\n\nTest Student", inputs)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertEqual(problems[0].count("9"), 1)
+
+    def test_an_identifier_is_not_a_source_of_numbers(self):
+        inputs = self.inputs(experience=[{"id": "project-123", "title": "Cut scrap 45%"}])
+        self.assertEqual(_unsupported_numbers("I completed 123 trials and cut scrap 45%.", inputs), ["123"])
+        problems = self.number_problems("Hello", "Hi Greg,\n\nI completed 123 trials.\n\nTest Student", inputs)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn("123", problems[0])
+        # The same number written in the entry's own words still counts.
+        inputs = self.inputs(experience=[{"id": "project-123", "title": "Ran 123 trials"}])
+        self.assertEqual(_unsupported_numbers("I completed 123 trials.", inputs), [])
 
 
 class LifecycleTests(unittest.TestCase):
