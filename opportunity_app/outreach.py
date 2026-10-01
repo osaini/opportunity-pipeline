@@ -25,6 +25,7 @@ from typing import Any, Callable
 from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
+from . import outreach_callbacks
 from .database import is_unique_violation
 from .inbox_classifiers import read_reply
 from .contact_names import website_domain
@@ -979,8 +980,6 @@ def _stop_sends_not_interested(conn: sqlite3.Connection, target_id: str, user_id
     already handed to Gmail ('transmitting') is too far along. Runs inside the
     caller's transaction.
     """
-    from .outreach_thank_you import on_not_interested  # imported here: it imports this module
-
     for kind in ("initial", "follow_up"):
         if conn.execute(
             "UPDATE outreach_scheduled_sends SET state='cancelled', error=?, updated_at=? "
@@ -988,7 +987,7 @@ def _stop_sends_not_interested(conn: sqlite3.Connection, target_id: str, user_id
             (f"{NOT_INTERESTED}, so it was not sent", utc_now(), target_id, user_id, kind),
         ).rowcount:
             log_event(conn, target_id, user_id, "send_cancelled", detail=f"{NOT_INTERESTED}, so it was not sent")
-    on_not_interested(conn, target_id, user_id)
+    outreach_callbacks.on_not_interested(conn, target_id, user_id)
 
 
 def _apply_draft_side_effects(values: dict[str, Any], previous: dict[str, Any] | None) -> list[str]:
@@ -1979,9 +1978,7 @@ def log_reply(
         # A pasted reply has no Gmail thread, so nothing automatic ever answers it.
         log_event(conn, target_id, user_id, "reply_logged", detail=body, data={"source": "pasted", "readings": readings})
         # They wrote again: a thank-you after their earlier decline that has not gone stops now.
-        from .outreach_thank_you import on_new_reply  # imported here: it imports this module
-
-        on_new_reply(conn, target_id, user_id)
+        outreach_callbacks.on_new_reply(conn, target_id, user_id)
         # A pasted reply that is an email waiting as a possible reply (outreach_inbox.py) settles it:
         # it is their reply, and it is not asked about again or logged twice. The event stays "pasted":
         # the student logged it themselves, so nothing automatic answers it either.

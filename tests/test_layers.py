@@ -97,7 +97,7 @@ LAYER_NAMES = {
 LAYER_MEMBERS: dict[int, frozenset[str]] = {
     # L0 stdlib leaves. `opportunity_app` and `pipeline_core` are the package __init__ modules (constants and re-exports).
     0: (
-        _app(". timestamps user_time database json_values mail_message opportunity_metadata storage_paths contact_names daily_lock")
+        _app(". timestamps user_time database json_values mail_message opportunity_metadata storage_paths contact_names daily_lock hooks")
         | _core(". env identity visibility regions read_model")
         | frozenset({"pipeline"})
     ),
@@ -110,7 +110,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
         "actions auth apply_checks apply_claims apply_classify apply_greenhouse apply_policy apply_sensitive apply_schema_client automation automation_health boards captures connections "
         "dossier employer market early_programs extension_apply mail_trust notifications purge ingestion profile resumes "
         "resume_variants preparation document_artifacts inbox_classifiers "
-        "outreach outreach_config outreach_identity outreach_versions outreach_contacts outreach_linkedin outreach_batch "
+        "outreach outreach_callbacks outreach_config outreach_identity outreach_versions outreach_contacts outreach_linkedin outreach_batch "
         "outreach_render"
     ),
     # L4 workflows. refresh is the manual refresh/purge workflow run in a background thread; api (L5) is its only importer.
@@ -132,7 +132,6 @@ _P = "opportunity_app."
 ALLOWLIST: tuple[tuple[str, str, str], ...] = (
     # --- Upward: a lower layer reaches a higher one at call time. Each is a registry or callback that is looked up late.
     (_P + "connections", _P + "application_inbox", "decide_event: deciding a monitored mail event is delegated to the inbox workflow"),
-    (_P + "outreach", _P + "outreach_thank_you", "on_not_interested and on_new_reply: outreach records notify the thank-you workflow after a decline or reply"),
     (_P + "outreach_contacts", _P + "outreach_forms", "record_contact_form: contact search records the contact form the form workflow found"),
     (_P + "outreach_contacts", _P + "outreach_profile", "rendered_pages and record_site_location: contact search re-reads pages in a browser and records the site location"),
     (_P + "outreach_settings", _P + "setup", "set_env_values: the settings page writes .env through the setup CLI's helper"),
@@ -142,10 +141,6 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
     (_P + "outreach_discovery", _P + "outreach_locate", "locate_targets: outreach_locate imports discovery at the top"),
     (_P + "outreach_drafting", _P + "outreach_research", "the research module: outreach_research imports outreach_discovery, which imports drafting at the top"),
     (_P + "outreach_gmail", _P + "outreach_labels", "label_name: outreach_labels imports outreach_gmail at the top"),
-    (_P + "outreach_gmail", _P + "outreach_thank_you", "problem_now: outreach_thank_you imports outreach_gmail at the top"),
-    (_P + "outreach_inbox", _P + "outreach_thank_you", "on_new_reply: outreach_thank_you reaches outreach_inbox through outreach_review"),
-    (_P + "outreach_schedule", _P + "outreach_automation", "settings: outreach_automation imports the schedule at the top"),
-    (_P + "outreach_schedule", _P + "outreach_thank_you", "settle_in, gate, recover_stuck, in_window and more: outreach_thank_you imports the schedule at the top"),
     (_P + "profile", _P + "outreach", "greeting_style_error: outreach imports preparation, which imports profile"),
 )
 

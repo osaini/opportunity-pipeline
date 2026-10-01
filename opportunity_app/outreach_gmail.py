@@ -47,7 +47,7 @@ from uuid import uuid4
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
 
-from . import ROOT, SERVER_INSTANCE, automation, automation_health
+from . import ROOT, SERVER_INSTANCE, automation, automation_health, outreach_callbacks
 from .connections import OAUTH_PROVIDERS
 from .gmail_client import (
     GMAIL_API,
@@ -1103,12 +1103,10 @@ def _thank_you_ready(
         "SELECT 1 FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=?", (target_id, user_id, THANK_YOU_SENT_EVENT),
     ).fetchone() is not None:
         raise ValueError("The thank-you was already sent")
-    from .outreach_thank_you import problem_now  # imported here: it imports this module
-
     # Read under the claim's write lock: a reply, or a send of the student's, logged since the last check
     # (while the reviewer ran, say) still stops it. The student's own Send it anyway is not stopped by the
     # company's status, only by their newer message or the student's.
-    stop = problem_now(conn, target_id, user_id, row, manual=states != ("transmitting",))
+    stop = outreach_callbacks.thank_you_problem_now(conn, target_id, user_id, row, manual=states != ("transmitting",))
     if stop is not None:
         raise ThankYouChanged(stop[1])
     return {**row, "target": target}

@@ -109,7 +109,7 @@ import httpx
 
 from pipeline_core.identity import identity_tokens, normalized
 
-from . import automation
+from . import automation, outreach_callbacks
 from .background import record_health_quietly, step_error
 from .database import rollback_quietly
 from .inbox_classifiers import JEV_NOT_ASKED, MIN_CONFIDENCE
@@ -145,7 +145,17 @@ from .outreach_gmail import (
     thank_you_fingerprint,
     thank_you_row,
 )
-from .outreach_schedule import send_time_label, next_morning, recipient_zone
+from .outreach_schedule import (
+    GMAIL_HOLD_MARGIN,
+    KindHooks,
+    finish_send,
+    hold_for_retry,
+    next_morning,
+    recipient_zone,
+    register_kind,
+    send_time_label,
+    wait_for_gmail,
+)
 from .timestamps import parse_app_instant, utc_now
 from .user_time import at_wall_clock, to_local
 
@@ -1461,6 +1471,22 @@ def back_in_line(conn: sqlite3.Connection, target_id: str, user_id: str) -> None
     )
 
 
+def schedule_moved(conn: sqlite3.Connection, row: Any, send_at: datetime, label: str) -> None:
+    """Its scheduled send was given a new time (the next weekday morning): the thank-you shows the same. Inside the caller's transaction."""
+    conn.execute(
+        "UPDATE outreach_thank_yous SET send_at=?, label=?, updated_at=? WHERE target_id=? AND user_id=? AND state='scheduled'",
+        (send_at.isoformat(timespec="seconds"), label, utc_now(), row["target_id"], row["user_id"]),
+    )
+
+
+def schedule_handed_over(conn: sqlite3.Connection, row: Any, stamp: str) -> None:
+    """Its scheduled send was handed to Gmail: the thank-you is transmitting. Inside the hand-over's transaction."""
+    conn.execute(
+        "UPDATE outreach_thank_yous SET state='transmitting', updated_at=? WHERE target_id=? AND user_id=? AND state='scheduled'",
+        (stamp, row["target_id"], row["user_id"]),
+    )
+
+
 # --- Just before it goes -----------------------------------------------------------------
 
 REVIEW_INSTRUCTIONS = """You check a thank-you email before it is sent automatically on a university student's behalf.
@@ -1681,7 +1707,6 @@ def gate(
     hand-over (which reads the records once more).
     """
     from .outreach_review import review_log_detail, review_runner
-    from .outreach_schedule import GMAIL_HOLD_MARGIN, finish_send, hold_for_retry, wait_for_gmail
 
     target_id, user_id = row["target_id"], row["user_id"]
     thank_you = thank_you_row(conn, target_id, user_id)
@@ -1933,5 +1958,17 @@ def send_anyway(
 
 
 def register() -> None:
-    """Hand the automation registry this feature's breaker grouping. Called once at startup (bootstrap.register_all)."""
+    """Hand in everything the lower modules call this workflow for. Called once at startup (bootstrap.register_all).
+
+    The automation breaker's grouping of a decline's two changes; the callbacks the outreach records and the Gmail
+    send path make (outreach_callbacks); and the scheduler's hooks for a scheduled send of this kind
+    (outreach_schedule.KindHooks), so outreach_schedule need not import this module.
+    """
     automation.register_breaker_group(FEATURE, _breaker_group, "decline")
+    outreach_callbacks.on_new_reply.register(on_new_reply)
+    outreach_callbacks.on_not_interested.register(on_not_interested)
+    outreach_callbacks.thank_you_problem_now.register(problem_now)
+    register_kind(THANK_YOU_KIND, KindHooks(
+        settle=settle_in, gate=gate, in_window=in_window, hand_over_stop=hand_over_stop, back_in_line=back_in_line,
+        moved=schedule_moved, handed_over=schedule_handed_over, recover_stuck=recover_stuck,
+    ))

@@ -52,7 +52,7 @@ import httpx
 
 from pipeline_core.identity import normalized
 
-from . import automation, mail_message
+from . import automation, mail_message, outreach_callbacks
 from .inbox_classifiers import read_reply
 from .mail_message import (
     FULL_TEXT_LIMIT,
@@ -719,9 +719,7 @@ def _record_reply(
         if not any(_same_words(earlier, text) for earlier in logged):
             log_event(conn, target["id"], user_id, "reply_logged", detail=text, data=data)
             # They wrote again: a thank-you after their earlier decline that has not gone stops now.
-            from .outreach_thank_you import on_new_reply  # imported here: it imports this module's neighbours
-
-            on_new_reply(conn, target["id"], user_id)
+            outreach_callbacks.on_new_reply(conn, target["id"], user_id)
         if reason and claim is None:
             log_event(conn, target["id"], user_id, "reply_found",
                  detail=_found_words(reason, sender, {"addresses": addresses if addresses is not None else target.get("addresses")}))
