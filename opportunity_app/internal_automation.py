@@ -283,7 +283,7 @@ def automatic_archive(conn: sqlite3.Connection, application_id: str) -> dict[str
             and action["action_type"] == "application.stage"):
         return None
     # The daily sync can move an imported application back without a stage_changed
-    # event (schema._migrate_status), so the archive stands only while the stage is still archived.
+    # event (legacy_sync._migrate_status), so the archive stands only while the stage is still archived.
     stage = conn.execute("SELECT stage FROM applications WHERE id=?", (application_id,)).fetchone()
     if stage is None or stage["stage"] != "archived":
         return None

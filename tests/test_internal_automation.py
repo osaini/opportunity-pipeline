@@ -686,7 +686,7 @@ class ArchiveTests(Case):
         self.on("archive_silent_applications")
         internal_automation.archive_silent_applications(self.conn, USER, force=True)
         self.assertTrue(internal_automation.automation_archived(self.conn, "app-job-b"))
-        # The sync resets an imported application's stage with no stage_changed event (schema._migrate_status).
+        # The sync resets an imported application's stage with no stage_changed event (legacy_sync._migrate_status).
         with self.conn:
             self.conn.execute("UPDATE applications SET stage='applied' WHERE id='app-job-b'")
         self.assertFalse(internal_automation.automation_archived(self.conn, "app-job-b"), "it sits at Applied, not archived")
