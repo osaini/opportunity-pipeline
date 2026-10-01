@@ -16,7 +16,8 @@ import logging
 import re
 from typing import Any, Callable
 
-from .outreach import company_key, spoken_company
+from .outreach_greeting import spoken_company
+from .outreach_identity import company_key
 from .outreach_config import resolve_provider
 
 # One logger for the whole thank-you feature (what its tests and the student's log filters name), whichever module logs.

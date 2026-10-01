@@ -12,9 +12,10 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from opportunity_app import notifications as notif
-from opportunity_app import outreach
+from opportunity_app import outreach_location
 from opportunity_app.connections import update_preferences
-from opportunity_app.outreach import create_target, get_target, list_targets, location_region, user_regions
+from opportunity_app.outreach import create_target, get_target, list_targets
+from opportunity_app.outreach_location import location_region, user_regions
 from opportunity_app.outreach_drafting import INSTRUCTIONS, location_line, validate_draft
 from opportunity_app.schema import LOCAL_USER_ID, ensure_product_schema
 from opportunity_app.database import connect_product
@@ -134,7 +135,7 @@ class LocationPhraseValidationTests(unittest.TestCase):
     """Item 14: location_line writes the region's phrase; validation must accept it."""
 
     def test_a_phrase_that_omits_the_region_name_passes(self):
-        with mock.patch.object(outreach, "_profile_regions", return_value=NORCAL):
+        with mock.patch.object(outreach_location, "_profile_regions", return_value=NORCAL):
             facts = {"break_location": "Oakland, CA", "school": "Somewhere U"}
             target = {"location": "Oakland, CA", "location_basis": "company_site"}
             line = location_line(facts, target)
@@ -149,7 +150,7 @@ class LocationPhraseValidationTests(unittest.TestCase):
         self.assertFalse([p for p in problems if "location_line" in p], problems)
 
     def test_a_missing_location_is_still_sent_back(self):
-        with mock.patch.object(outreach, "_profile_regions", return_value=NORCAL):
+        with mock.patch.object(outreach_location, "_profile_regions", return_value=NORCAL):
             body = "Hi Sam,\n\nI'm a student at Somewhere U.\n\nThanks,\nMe"
             raw = json.dumps({"subject": "Hello", "body": body, "claims": [{"text": "x", "basis": "profile:school"}]})
             inputs = {

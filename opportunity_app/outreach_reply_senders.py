@@ -265,7 +265,7 @@ def thank_you_blockers(conn: sqlite3.Connection, target: dict[str, Any], reply: 
     - R1: in the student's thread (the Gmail thread of an email the app sent
       them), or from the contact's own address or the Cc. A reply matched only
       by the company's domain fails. A reply read under outreach_inbox's reply
-      rules says how it was matched (data "reason", outreach.REPLY_REASONS):
+      rules says how it was matched (data "reason", outreach_replies.REPLY_REASONS):
       it must also be "thread" or "written_to", so one the student confirmed
       from a possible reply ("confirmed") never passes.
     - R2: logged at most DETECTION_LIMIT after Gmail received it.

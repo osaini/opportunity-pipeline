@@ -3381,7 +3381,7 @@
   }
 
   function renderDraftChecks(host, subject, body, place = null) {
-    // Mirrors outreach.draft_checks, and for a cold email outreach.location_line_gap,
+    // Mirrors outreach.draft_checks, and for a cold email outreach_location.location_line_gap,
     // on the server so feedback is live while typing.
     const text = `${subject}\n${body}`;
     const dashes = (text.match(/[–—]/g) || []).length;
@@ -3391,7 +3391,7 @@
     if (dashes) host.appendChild(chip(`${dashes} em/en dash${dashes === 1 ? "" : "es"}`, "is-warning"));
     if (placeholders.length) host.appendChild(chip(`Fill in ${placeholders.join(", ")}`, "is-soon"));
     if (body && !subject) host.appendChild(chip("No subject", "is-soon"));
-    // "in Portland", not a bare "Portland": a school's name can carry the place (outreach.mentions_home).
+    // "in Portland", not a bare "Portland": a school's name can carry the place (outreach_location.mentions_home).
     const flat = body.replace(/\s+/g, " ");
     const saysHome = (term) => new RegExp(`\\bin ${term.replace(/\s+/g, " ").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(flat);
     if (place && place.terms && place.terms.length && body.trim() && !place.terms.some(saysHome)) {

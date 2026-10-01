@@ -43,10 +43,8 @@ import httpx
 from . import apply_runs, automation, internal_automation, outreach_thank_you
 from .background import PollingWorker, record_health_quietly, step_error
 from .database import rollback_quietly, connect_product
-from .outreach import (
-    get_target, greeting_style, greets_contact, heard_back, latest_event_stamp, list_targets, log_event, without_greeting,
-    withdraw_auto_approval,
-)
+from .outreach import get_target, heard_back, latest_event_stamp, list_targets, log_event, withdraw_auto_approval
+from .outreach_greeting import greeting_style, greets_contact, without_greeting
 from .outreach_contacts import apply_choice, choose_contact, find_contacts, list_candidates
 from .outreach_forms import form_due
 from .outreach_gmail import last_bounce
@@ -192,9 +190,9 @@ def resend_refusal(
     ones they approved, with only the greeting changed for the new contact; a
     guessed address goes only with an inbox their site lists in Cc, so a wrong
     guess still reaches the company; and it happens once per company. The
-    greeting must fit the new contact (outreach.greets_contact): one the
+    greeting must fit the new contact (outreach_greeting.greets_contact): one the
     student wrote to someone else is left as it was when the contact changes.
-    ``style`` is the student's greeting style (outreach.greeting_style).
+    ``style`` is the student's greeting style (outreach_greeting.greeting_style).
     """
     if resent_before:
         return "It was already resent once automatically, so this time it waits for you"

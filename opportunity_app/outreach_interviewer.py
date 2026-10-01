@@ -59,7 +59,8 @@ from . import outreach_research as research
 from .agent_providers import CliAgentProvider, complete_text
 from .mail_message import mailbox_key
 from .mail_trust import registrable_domain
-from .outreach import LEGAL_SUFFIXES, log_event, get_target
+from .outreach import log_event, get_target
+from .outreach_identity import LEGAL_SUFFIXES
 from .outreach_config import resolve_provider
 from .outreach_contacts import is_shared_inbox
 from .outreach_identity import (

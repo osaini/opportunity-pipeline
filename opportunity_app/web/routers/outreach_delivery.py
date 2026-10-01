@@ -22,12 +22,12 @@ from ...outreach_schedule import cancel_send, schedule_send
 from ... import outreach_thank_you
 from ...gmail_client import GmailAuthError
 from ...outreach_gmail import (
-    SendConflictError,
     SendNeedsCheckError,
     ThankYouChanged,
     create_gmail_draft,
     send_gmail_message,
 )
+from ...send_claims import SendConflictError
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection
 from ..errors import outreach_not_found, send_needs_check

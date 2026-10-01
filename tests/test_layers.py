@@ -98,7 +98,7 @@ LAYER_NAMES = {
 LAYER_MEMBERS: dict[int, frozenset[str]] = {
     # L0 stdlib leaves. `opportunity_app` and `pipeline_core` are the package __init__ modules (constants and re-exports).
     0: (
-        _app(". timestamps user_time database json_values mail_message opportunity_metadata storage_paths contact_names daily_lock hooks monitored_classifier")
+        _app(". timestamps user_time database json_values mail_message opportunity_metadata storage_paths contact_names daily_lock hooks monitored_classifier outreach_replies")
         | _core(". env identity visibility regions read_model paths clock text http config sources scoring artifacts store liveness retention importers discovery fetch reports cli")
         | frozenset({"pipeline"})
     ),
@@ -111,13 +111,14 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
     3: _app(
         "actions apply_sessions auth apply_checks apply_claims apply_classify apply_greenhouse apply_policy apply_sensitive apply_schema_client "
         "automation automation_health boards captures connections dossier employer market early_programs extension_apply mail_trust "
-        "notifications purge ingestion profile resumes resume_variants preparation document_artifacts inbox_classifiers "
-        "outreach outreach_callbacks outreach_config outreach_decline_reading outreach_identity outreach_label_name outreach_versions "
-        "outreach_contacts outreach_linkedin outreach_batch outreach_thank_you_writing outreach_render"
+        "notifications purge ingestion profile resumes resume_variants preparation document_artifacts inbox_classifiers gmail_connection "
+        "send_claims outreach outreach_callbacks outreach_config outreach_decline_reading outreach_identity outreach_label_name "
+        "outreach_location outreach_greeting outreach_versions outreach_contacts outreach_linkedin outreach_batch "
+        "outreach_thank_you_writing outreach_render"
     ),
     # L4 workflows. refresh is the manual refresh/purge workflow run in a background thread; api (L5) is its only importer.
     4: _app(
-        "background application_inbox inbox_watcher internal_automation automation_handlers auto_triage apply_runs apply_preflight "
+        "background application_inbox application_mail_rules inbox_watcher internal_automation automation_handlers auto_triage apply_runs apply_preflight "
         "outreach_gmail outreach_gmail_sends outreach_delivery outreach_inbox outreach_labels outreach_schedule "
         "outreach_thank_you outreach_reply_senders outreach_automation outreach_recontact outreach_review outreach_call_prep "
         "outreach_call_questions outreach_forms outreach_discovery outreach_research outreach_drafting "
@@ -157,7 +158,7 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
     (_P + "launch", _P + "web.context", "LOOPBACK_HOSTS: web.context imports system_status, which would import launch if that were hoisted too"),
     (_P + "outreach_discovery", _P + "outreach_locate", "locate_targets: outreach_locate imports discovery at the top"),
     (_P + "outreach_drafting", _P + "outreach_research", "the research module: outreach_research imports outreach_discovery, which imports drafting at the top"),
-    (_P + "profile", _P + "outreach", "greeting_style_error: outreach imports preparation, which imports profile"),
+    (_P + "profile", _P + "outreach_greeting", "greeting_style_error: outreach_greeting and outreach_location read confirmed facts through preparation, which imports profile"),
 )
 
 

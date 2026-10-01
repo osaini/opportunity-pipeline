@@ -20,7 +20,7 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import SERVER_INSTANCE, STATIC_DIR, automation, automation_health, gmail_client, outreach_delivery, outreach_gmail
+from opportunity_app import SERVER_INSTANCE, STATIC_DIR, automation, automation_health, gmail_client, gmail_connection, outreach_delivery, outreach_gmail
 from opportunity_app.api import create_app
 from opportunity_app.database import connect_product
 from opportunity_app.timestamps import utc_now
@@ -718,7 +718,7 @@ class GmailDraftTests(unittest.TestCase):
         self.connect(scopes=SCOPES)
         self.gmail.read_response = rate_limited
         with closing(connect_product(self.platform_path)) as conn, self.gmail_client() as client:
-            gmail = outreach_gmail._Gmail(conn, client, USER)
+            gmail = gmail_connection.GmailClient(conn, client, USER)
             with self.assertRaises(gmail_client.GmailThrottled):
                 gmail.request("GET", "/messages", params={"q": "from:greg@bovi.example"})
             self.assertIsInstance(gmail_client.GmailThrottled("x"), httpx.TransportError, "read as could not reach Gmail")
@@ -756,15 +756,15 @@ class GmailDraftTests(unittest.TestCase):
         ):
             with self.subTest(retry_after=header):
                 # Forget the last subtest's hold, in memory and on the row (a new connection would read it back).
-                outreach_gmail._BACKOFF.clear()
+                gmail_connection._BACKOFF.clear()
                 with closing(connect_product(self.platform_path)) as conn:
                     conn.execute("UPDATE connector_accounts SET backoff_until=NULL")
                     conn.commit()
                 self.gmail.read_response = lambda header=header: rate_limited(status=429, headers={"Retry-After": header})
                 with closing(connect_product(self.platform_path)) as conn, self.gmail_client() as client, \
-                        mock.patch.object(outreach_gmail, "_now", return_value=now):
+                        mock.patch.object(gmail_connection, "_now", return_value=now):
                     with self.assertRaises(gmail_client.GmailThrottled) as caught:
-                        outreach_gmail._Gmail(conn, client, USER).request("GET", "/messages")
+                        gmail_connection.GmailClient(conn, client, USER).request("GET", "/messages")
                 self.assertEqual(caught.exception.until - now, expected)
                 self.assertEqual(self.connector()["backoff_until"], (now + expected).isoformat(timespec="seconds"))
 
@@ -773,8 +773,8 @@ class GmailDraftTests(unittest.TestCase):
         clock = [datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)]
         self.gmail.read_response = rate_limited
         with closing(connect_product(self.platform_path)) as conn, self.gmail_client() as client, \
-                mock.patch.object(outreach_gmail, "_now", side_effect=lambda: clock[0]):
-            gmail = outreach_gmail._Gmail(conn, client, USER)
+                mock.patch.object(gmail_connection, "_now", side_effect=lambda: clock[0]):
+            gmail = gmail_connection.GmailClient(conn, client, USER)
 
             def throttled_wait():
                 with self.assertRaises(gmail_client.GmailThrottled) as caught:
@@ -786,7 +786,7 @@ class GmailDraftTests(unittest.TestCase):
             self.assertEqual([throttled_wait() for _ in range(7)], [60, 120, 240, 480, 960, 1800, 1800])
             self.gmail.read_response = None
             self.assertEqual(gmail.request("GET", "/profile").status_code, 200)
-            self.assertIsNone(outreach_gmail.backoff_until(USER, now=clock[0]))
+            self.assertIsNone(gmail_connection.backoff_until(USER, now=clock[0]))
             self.assertIsNone(self.connector()["backoff_until"], "a success clears the stored hold at once")
             self.gmail.read_response = rate_limited
             self.assertEqual(throttled_wait(), 60)
@@ -803,7 +803,7 @@ class GmailDraftTests(unittest.TestCase):
                 outreach_delivery._LAST_LOOK.clear()
                 self.gmail.read_response = lambda refusal=refusal: refusal
                 self.assertEqual(self.check()["state"], "needs_reconnect")
-                self.assertIsNone(outreach_gmail.backoff_until(USER))
+                self.assertIsNone(gmail_connection.backoff_until(USER))
                 self.assertIsNone(self.connector()["backoff_until"])
 
     def test_a_rate_limited_send_is_refused_as_today_and_not_left_uncertain(self):
@@ -815,18 +815,18 @@ class GmailDraftTests(unittest.TestCase):
         self.assertIn("Nothing was sent", response.json()["detail"])
         self.assertIsNone(self.claim(target), "Gmail refused it, so it can be sent again at once")
         self.assertEqual(self.gmail.sent, [])
-        self.assertIsNotNone(outreach_gmail.backoff_until(USER), "reads slow down too")
+        self.assertIsNotNone(gmail_connection.backoff_until(USER), "reads slow down too")
         self.assertTrue(self.connector()["backoff_until"])
         self.assertEqual(self.connector()["status"], "connected")
 
     def test_the_students_own_send_still_goes_while_reads_are_held_back(self):
         self.connect()
         target = self.approved_target()
-        outreach_gmail._BACKOFF[USER] = (datetime.now(timezone.utc) + timedelta(minutes=10), 1)
+        gmail_connection._BACKOFF[USER] = (datetime.now(timezone.utc) + timedelta(minutes=10), 1)
         response = self.send(target)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(len(self.gmail.sent), 1)
-        self.assertIsNone(outreach_gmail.backoff_until(USER), "Gmail answered, so reads resume")
+        self.assertIsNone(gmail_connection.backoff_until(USER), "Gmail answered, so reads resume")
 
     def test_a_hold_stored_before_a_restart_is_honoured(self):
         self.connect()
@@ -836,7 +836,7 @@ class GmailDraftTests(unittest.TestCase):
             conn.commit()
         with closing(connect_product(self.platform_path)) as conn, self.gmail_client() as client:
             with self.assertRaises(gmail_client.GmailThrottled):
-                outreach_gmail._Gmail(conn, client, USER).request("GET", "/profile")
+                gmail_connection.GmailClient(conn, client, USER).request("GET", "/profile")
         self.assertEqual(self.gmail.requests, [])
 
     def test_a_renewal_google_asks_to_wait_on_is_not_a_broken_connection(self):
@@ -846,7 +846,7 @@ class GmailDraftTests(unittest.TestCase):
         response = self.draft(self.approved_target())
         self.assertEqual(response.status_code, 502)
         self.assertEqual(self.connector()["status"], "connected")
-        self.assertIsNotNone(outreach_gmail.backoff_until(USER))
+        self.assertIsNotNone(gmail_connection.backoff_until(USER))
         self.assertEqual(self.gmail.drafts, {})
 
     def test_a_working_read_records_itself_at_most_every_five_minutes(self):
@@ -857,8 +857,8 @@ class GmailDraftTests(unittest.TestCase):
             conn.execute("UPDATE connector_accounts SET last_error='Gmail could not be reached'")
             conn.commit()
         with closing(connect_product(self.platform_path)) as conn, self.gmail_client() as client, \
-                mock.patch.object(outreach_gmail, "_now", side_effect=lambda: clock[0]):
-            gmail = outreach_gmail._Gmail(conn, client, USER)
+                mock.patch.object(gmail_connection, "_now", side_effect=lambda: clock[0]):
+            gmail = gmail_connection.GmailClient(conn, client, USER)
             gmail.request("GET", "/profile")
             self.assertEqual((self.connector()["last_ok_at"], self.connector()["last_error"]), (start.isoformat(timespec="microseconds"), ""))
             clock[0] = start + timedelta(minutes=4)
@@ -877,7 +877,7 @@ class GmailDraftTests(unittest.TestCase):
             clock[0] = start + timedelta(minutes=8)
             gmail.request("GET", "/profile")
             self.assertIsNone(self.connector()["backoff_until"])
-            self.assertIsNone(outreach_gmail.backoff_until(USER, now=clock[0]))
+            self.assertIsNone(gmail_connection.backoff_until(USER, now=clock[0]))
 
     def test_nothing_is_written_inside_the_callers_transaction(self):
         self.connect()
@@ -886,7 +886,7 @@ class GmailDraftTests(unittest.TestCase):
             pass
 
         with closing(connect_product(self.platform_path)) as conn, self.gmail_client() as client:
-            gmail = outreach_gmail._Gmail(conn, client, USER)
+            gmail = gmail_connection.GmailClient(conn, client, USER)
             with self.assertRaises(Rollback):
                 with conn:
                     conn.execute(
@@ -902,7 +902,7 @@ class GmailDraftTests(unittest.TestCase):
         self.assertIsNone(marker, "no nested commit: the caller's rollback still undid its own write")
         row = self.connector()
         self.assertEqual((row["last_ok_at"], row["backoff_until"]), (None, None))
-        self.assertIsNotNone(outreach_gmail.backoff_until(USER), "memory still holds reads back")
+        self.assertIsNotNone(gmail_connection.backoff_until(USER), "memory still holds reads back")
 
     def test_on_postgresql_the_health_waits_mid_transaction_and_persisting_saves_it(self):
         # On PostgreSQL every connection is "in a transaction" after its first read, so
@@ -910,7 +910,7 @@ class GmailDraftTests(unittest.TestCase):
         self.connect()
         with closing(connect_product(self.platform_path)) as raw, self.gmail_client() as client:
             conn = AlwaysInTransaction(raw)
-            gmail = outreach_gmail._Gmail(conn, client, USER)
+            gmail = gmail_connection.GmailClient(conn, client, USER)
             self.assertEqual(gmail.request("GET", "/profile").status_code, 200)
             self.gmail.read_response = lambda: rate_limited(status=429)
             with self.assertRaises(gmail_client.GmailThrottled):
@@ -918,36 +918,36 @@ class GmailDraftTests(unittest.TestCase):
             row = self.connector()
             self.assertEqual((row["last_ok_at"], row["backoff_until"], row["last_error"]), (None, None, ""),
                              "the instrument: nothing is written while a transaction is open")
-            self.assertTrue(outreach_gmail.persist_gmail_health(conn, USER))
+            self.assertTrue(gmail_connection.persist_gmail_health(conn, USER))
             row = self.connector()
             self.assertIsNotNone(row["last_ok_at"])
             self.assertIsNotNone(row["backoff_until"])
             self.assertEqual(row["last_error"], "Gmail asked the app to slow down (HTTP 429)")
             self.assertEqual(automation_health.gmail_health(raw, USER)["state"], "throttled")
-            self.assertFalse(outreach_gmail.persist_gmail_health(conn, USER), "nothing new, nothing written")
+            self.assertFalse(gmail_connection.persist_gmail_health(conn, USER), "nothing new, nothing written")
             # A restart forgets memory; the saved hold still keeps reads back.
-            outreach_gmail._BACKOFF.clear()
+            gmail_connection._BACKOFF.clear()
             asked = len(self.gmail.requests)
             with self.assertRaises(gmail_client.GmailThrottled):
-                outreach_gmail._Gmail(raw, client, USER).request("GET", "/profile")
+                gmail_connection.GmailClient(raw, client, USER).request("GET", "/profile")
             self.assertEqual(len(self.gmail.requests), asked)
             # Once Gmail answers again, the success clears the hold and the error, again on persisting.
-            outreach_gmail._BACKOFF.clear()
+            gmail_connection._BACKOFF.clear()
             self.gmail.read_response = None
             with closing(connect_product(self.platform_path)) as other:
                 other.execute("UPDATE connector_accounts SET backoff_until=NULL")
                 other.commit()
-            gmail = outreach_gmail._Gmail(conn, client, USER)
+            gmail = gmail_connection.GmailClient(conn, client, USER)
             self.assertEqual(gmail.request("GET", "/profile").status_code, 200)
             self.assertEqual(self.connector()["last_error"], "Gmail asked the app to slow down (HTTP 429)")
-            self.assertTrue(outreach_gmail.persist_gmail_health(conn, USER))
+            self.assertTrue(gmail_connection.persist_gmail_health(conn, USER))
             self.assertEqual((self.connector()["last_error"], self.connector()["backoff_until"]), ("", None))
 
     def test_a_gmail_server_error_on_a_read_holds_reads_back_instead_of_failing_them(self):
         self.connect()
         self.gmail.read_response = lambda: httpx.Response(503)
         with closing(connect_product(self.platform_path)) as conn, self.gmail_client() as client:
-            gmail = outreach_gmail._Gmail(conn, client, USER)
+            gmail = gmail_connection.GmailClient(conn, client, USER)
             with self.assertRaises(gmail_client.GmailThrottled):
                 gmail.request("GET", "/messages")
             asked = len(self.gmail.requests)
@@ -959,9 +959,9 @@ class GmailDraftTests(unittest.TestCase):
             self.assertTrue(row["backoff_until"])
             self.assertEqual(row["last_error"], "Gmail had a temporary problem (HTTP 503)")
             # Gmail's wait is over and it answers: the error is cleared with the hold.
-            outreach_gmail._BACKOFF.clear()
+            gmail_connection._BACKOFF.clear()
             self.gmail.read_response = None
-            self.assertEqual(outreach_gmail._Gmail(conn, client, USER, wait_out_backoff=False).request("GET", "/profile").status_code, 200)
+            self.assertEqual(gmail_connection.GmailClient(conn, client, USER, wait_out_backoff=False).request("GET", "/profile").status_code, 200)
             row = self.connector()
             self.assertEqual((row["last_error"], row["backoff_until"]), ("", None))
             self.assertIsNotNone(row["last_ok_at"])
@@ -973,7 +973,7 @@ class GmailDraftTests(unittest.TestCase):
         response = self.send(target)
         self.assertEqual(response.status_code, 502)
         self.assertEqual(self.claim(target), ("unconfirmed", "send"), "Gmail may have sent it, as before")
-        self.assertIsNotNone(outreach_gmail.backoff_until(USER), "reads slow down too")
+        self.assertIsNotNone(gmail_connection.backoff_until(USER), "reads slow down too")
         row = self.connector()
         self.assertTrue(row["backoff_until"])
         self.assertEqual(row["last_error"], "Gmail had a temporary problem (HTTP 503)")
@@ -989,13 +989,13 @@ class GmailDraftTests(unittest.TestCase):
         self.assertEqual(row["status"], "connected", "no reconnect for a passing fault at Google")
         self.assertTrue(row["backoff_until"])
         self.assertEqual(row["last_error"], "Google could not renew the connection just now (HTTP 503)")
-        self.assertIsNotNone(outreach_gmail.backoff_until(USER))
+        self.assertIsNotNone(gmail_connection.backoff_until(USER))
         self.assertEqual(self.gmail.drafts, {})
         with closing(connect_product(self.platform_path)) as conn:
             self.assertEqual(automation_health.gmail_health(conn, USER)["state"], "throttled")
             self.assertEqual(automation.list_notices(conn, USER), [])
         # A real refusal still asks for a reconnect, and says why.
-        outreach_gmail._BACKOFF.clear()
+        gmail_connection._BACKOFF.clear()
         with closing(connect_product(self.platform_path)) as conn:
             conn.execute("UPDATE connector_accounts SET backoff_until=NULL")
             conn.commit()
@@ -1003,15 +1003,15 @@ class GmailDraftTests(unittest.TestCase):
         self.gmail.refresh_ok = False
         self.assertEqual(self.draft(target).status_code, 409)
         row = self.connector()
-        self.assertEqual((row["status"], row["last_error"]), ("error", outreach_gmail.RENEW_REFUSED))
+        self.assertEqual((row["status"], row["last_error"]), ("error", gmail_connection.RENEW_REFUSED))
 
     def test_gmail_that_cannot_be_reached_is_noted_until_a_call_works(self):
         self.connect()
         target = self.approved_target()
         self.gmail.send_unreached = httpx.ConnectError("no route to Gmail")
         self.assertEqual(self.send(target).status_code, 502)
-        self.assertEqual(self.connector()["last_error"], outreach_gmail.UNREACHABLE)
-        self.assertIsNone(outreach_gmail.backoff_until(USER), "not a reason to hold reads back")
+        self.assertEqual(self.connector()["last_error"], gmail_connection.UNREACHABLE)
+        self.assertIsNone(gmail_connection.backoff_until(USER), "not a reason to hold reads back")
         self.gmail.send_unreached = None
         self.assertEqual(self.send(target).status_code, 200)
         self.assertEqual(self.connector()["last_error"], "")
@@ -1030,7 +1030,7 @@ class GmailDraftTests(unittest.TestCase):
 
     def gmail_waited(self):
         """Gmail's wait is over: no hold in memory or on the row."""
-        outreach_gmail._BACKOFF.clear()
+        gmail_connection._BACKOFF.clear()
         with closing(connect_product(self.platform_path)) as conn:
             conn.execute("UPDATE connector_accounts SET backoff_until=NULL")
             conn.commit()
@@ -1060,7 +1060,7 @@ class GmailDraftTests(unittest.TestCase):
 
         def raw_after_a_hold(gmail, message_id):
             # Another thread (the watcher, a page) was told to slow down between the search and this read.
-            outreach_gmail._BACKOFF[USER] = (datetime.now(timezone.utc) + timedelta(minutes=10), 1)
+            gmail_connection._BACKOFF[USER] = (datetime.now(timezone.utc) + timedelta(minutes=10), 1)
             return real_raw(gmail, message_id)
 
         with mock.patch.object(outreach_delivery, "_raw", raw_after_a_hold):

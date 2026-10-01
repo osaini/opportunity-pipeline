@@ -1,6 +1,6 @@
 """Reading a reply strictly: is it a no, and nothing else?
 
-The rules' own reading (outreach.suggest_reply_status) stops at its first match, so "we're not hiring, but happy to set up a
+The rules' own reading (outreach_replies.suggest_reply_status) stops at its first match, so "we're not hiring, but happy to set up a
 call" reads as declined there. A thank-you goes without the student reading the reply first, so it needs the stricter question
 this module answers: ``plain_decline_problem`` returns "" only when the decline is there and no door is left open (a call,
 "later", a referral, a job board, another person), nothing is asked, and every clause is the rules' own no, a stock
@@ -16,7 +16,7 @@ import re
 from typing import Any, Iterable
 
 from .inbox_classifiers import JEV_NOT_ASKED
-from .outreach import REPLY_PATTERNS
+from .outreach_replies import REPLY_PATTERNS
 
 
 def readings_words(readings: dict[str, Any]) -> str:

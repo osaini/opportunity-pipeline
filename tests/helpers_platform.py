@@ -372,7 +372,7 @@ def use_profile_regions(case, path: Path = PROFILE_REGIONS_FIXTURE) -> None:
     Outreach reads regions only from the student's config/profile.json, so an
     unpatched test would read whatever profile the machine running it has.
     """
-    patcher = mock.patch("opportunity_app.outreach.PROFILE_PATH", path)
+    patcher = mock.patch("opportunity_app.outreach_location.PROFILE_PATH", path)
     patcher.start()
     case.addCleanup(patcher.stop)
 

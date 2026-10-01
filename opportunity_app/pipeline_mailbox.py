@@ -12,7 +12,7 @@ which calls main() here:
 
 Nothing here writes. The database is opened read-only, the only POST is the
 token refresh (in memory, nothing stored), and every Gmail call is a GET. It
-does not use outreach_gmail._Gmail: that renews tokens into the database and
+does not use gmail_connection.GmailClient: that renews tokens into the database and
 records health there. Everything it prints is meant for the agent's
 conversation, so it prints no token, key or secret, and no value from .env
 except PIPELINE_OUTREACH_ACCOUNT.

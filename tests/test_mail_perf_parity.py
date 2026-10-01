@@ -118,7 +118,7 @@ class PendingDraftsParityTests(unittest.TestCase):
         sends._LAST_LOOK.clear()
         self.addCleanup(sends._LAST_LOOK.clear)
         self.assertTrue(sends._pending(conn, USER, now))
-        with mock.patch.object(sends, "_connector", return_value={"status": "connected"}),                 mock.patch.object(sends, "_with_targets", side_effect=ValueError("bad date")):
+        with mock.patch.object(sends, "connector_row", return_value={"status": "connected"}),                 mock.patch.object(sends, "_with_targets", side_effect=ValueError("bad date")):
             with self.assertRaises(ValueError):
                 sends.capture_gmail_sends(conn, user_id=USER, client_factory=lambda: None, now=now)
         self.assertEqual(sends._LAST_LOOK, {}, "a look that fails is forgotten")

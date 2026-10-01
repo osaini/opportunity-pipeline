@@ -29,7 +29,7 @@ from opportunity_app.inbox_classifiers import (
     enabled,
     set_enabled,
 )
-from opportunity_app.outreach import suggest_reply_status
+from opportunity_app.outreach_replies import suggest_reply_status
 from opportunity_app.inbox_watcher import InboxWatcher
 from opportunity_app.schema import LOCAL_USER_ID
 from opportunity_app.database import connect_product

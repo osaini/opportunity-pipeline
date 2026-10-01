@@ -23,13 +23,12 @@ from opportunity_app.outreach import (
     get_target,
     list_targets,
     local_today,
-    location_region,
-    region_phrase,
     log_reply,
     queue_follow_up_reminders,
-    suggest_reply_status,
     update_target,
 )
+from opportunity_app.outreach_location import location_region, region_phrase
+from opportunity_app.outreach_replies import suggest_reply_status
 from opportunity_app.outreach_drafting import (
     INSTRUCTIONS,
     DraftRejected,
@@ -282,12 +281,12 @@ class DraftingTests(unittest.TestCase):
             profile.write_text(json.dumps({"regions": [{
                 "name": "Atlanta", "state_markers": ["ga", "georgia"], "places": ["atlanta", "marietta"],
             }]}), encoding="utf-8")
-            with mock.patch("opportunity_app.outreach.PROFILE_PATH", profile):
+            with mock.patch("opportunity_app.outreach_location.PROFILE_PATH", profile):
                 self.assertEqual(location_region("Marietta, GA"), "Atlanta")
                 self.assertEqual(location_region("Atlanta, Texas"), "")
                 self.assertEqual(location_region("Austin, TX"), "", "no metro is built in")
                 self.assertEqual(region_phrase("Atlanta"), "Atlanta")
-            with mock.patch("opportunity_app.outreach.PROFILE_PATH", Path(tmp) / "missing.json"):
+            with mock.patch("opportunity_app.outreach_location.PROFILE_PATH", Path(tmp) / "missing.json"):
                 self.assertEqual(location_region("Marietta, GA"), "")
                 self.assertEqual(location_region("San Francisco, CA"), "")
                 self.assertEqual(region_phrase("Research Triangle Area"), "the Research Triangle Area")

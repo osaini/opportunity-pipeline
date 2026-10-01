@@ -133,6 +133,14 @@ LEAVES: dict[str, tuple[set[str], set[str]]] = {
     "opportunity_app/__init__.py": (set(), set()),
     # Storage over outreach, not a pure leaf: it may import only outreach and the clock.
     "opportunity_app/outreach_versions.py": (dotted("outreach", "timestamps"), set()),
+    # Split out of outreach.py. Replies is pure text rules; location and greeting read the student's profile (the owner's
+    # file, or another user's confirmed facts through preparation, which is imported where used).
+    "opportunity_app/outreach_replies.py": (set(), set()),
+    "opportunity_app/outreach_location.py": (dotted("legacy", "schema"), dotted("preparation")),
+    "opportunity_app/outreach_greeting.py": (dotted("outreach_identity", "outreach_location", "schema"), dotted("preparation")),
+    # Split out of outreach_gmail.py. The claim ledger needs only the process id, the unique-violation test and the clock, so
+    # the contact-form submitter and the thank-you recovery can hold claims without loading the Gmail REST client.
+    "opportunity_app/send_claims.py": ({f"{PACKAGE}.SERVER_INSTANCE", *dotted("database", "timestamps")}, set()),
 }
 
 # Leaves that load nothing late: no function-level import at all, not even of the standard library.
@@ -528,13 +536,13 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         self.assertIs(read_model.sort_key, identity.sort_key)
 
     def test_outreach_company_key_is_a_different_rule_and_stays_separate(self):
-        from opportunity_app import outreach
+        from opportunity_app import outreach_identity
         from pipeline_core.identity import employer_key, sort_key
 
         # NFKC, "&" becomes "and", a leading "The" and trailing legal words dropped, word order kept.
-        self.assertEqual(outreach.company_key("The Smith & Sons Holdings Group"), "smith and sons holdings group")
-        self.assertNotEqual(outreach.company_key("Robotics Acme"), employer_key("Robotics Acme"))
-        self.assertNotEqual(outreach.company_key("Acme Robotics Inc"), sort_key("Acme Robotics Inc"))
+        self.assertEqual(outreach_identity.company_key("The Smith & Sons Holdings Group"), "smith and sons holdings group")
+        self.assertNotEqual(outreach_identity.company_key("Robotics Acme"), employer_key("Robotics Acme"))
+        self.assertNotEqual(outreach_identity.company_key("Acme Robotics Inc"), sort_key("Acme Robotics Inc"))
 
     def test_normalized_text_reads_none_as_empty_but_not_zero_or_false(self):
         from pipeline_core.identity import normalized, normalized_text

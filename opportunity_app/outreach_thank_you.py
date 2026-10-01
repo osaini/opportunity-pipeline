@@ -115,16 +115,9 @@ from .database import rollback_quietly
 from .inbox_classifiers import MIN_CONFIDENCE
 from .json_values import json_dict
 from .mail_message import FULL_TEXT_LIMIT, written_between_quotes
-from .outreach import (
-    OutreachNotFoundError,
-    log_event,
-    contact_first_name,
-    get_target,
-    greeting_line,
-    greeting_style,
-    spoken_company,
-    suggest_reply_status,
-)
+from .outreach import OutreachNotFoundError, log_event, get_target
+from .outreach_greeting import contact_first_name, greeting_line, greeting_style, spoken_company
+from .outreach_replies import suggest_reply_status
 from .gmail_client import GmailAuthError, GmailThrottled
 from .outreach_decline_reading import plain_decline_problem, readings_words
 from .outreach_gmail import (
@@ -132,11 +125,8 @@ from .outreach_gmail import (
     THANK_YOU_DRAFT_EVENT,
     THANK_YOU_KIND,
     THANK_YOU_SENT_EVENT,
-    SendConflictError,
     SendUnconfirmedError,
     ThankYouChanged,
-    _Gmail,
-    backoff_until,
     create_thank_you_draft,
     gmail_drafts_status,
     send_thank_you,
@@ -151,6 +141,8 @@ from .outreach_reply_senders import (
     sent_texts,
     thank_you_blockers,
 )
+from .send_claims import SendConflictError
+from .gmail_connection import GmailClient, backoff_until
 from .outreach_schedule import (
     GMAIL_HOLD_MARGIN,
     KindHooks,
@@ -759,7 +751,7 @@ def _thread_news(conn: sqlite3.Connection, client_factory: Callable[[], Any], us
     """
     try:
         with client_factory() as client:
-            gmail = _Gmail(conn, client, user_id)
+            gmail = GmailClient(conn, client, user_id)
             response = gmail.request("GET", f"/threads/{quote(thank_you['thread_id'], safe='')}", params={"format": "minimal"})
     except GmailThrottled:
         return "throttled", "Gmail asked the app to slow down"
@@ -950,7 +942,7 @@ def recover_stuck(conn: sqlite3.Connection, now: datetime, stuck_after: timedelt
     can offer it again; a claim it left unconfirmed makes the next Send it
     anyway ask for that look first. Returns how many were stopped.
     """
-    from .outreach_gmail import send_claim_row, send_claim_held
+    from .send_claims import send_claim_row, send_claim_held
 
     cutoff = (now - stuck_after).isoformat(timespec="microseconds")
     stopped = 0

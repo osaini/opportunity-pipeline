@@ -24,11 +24,11 @@ from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
 from opportunity_app import (
-    STATIC_DIR, automation, automation_health, mail_message, outreach, outreach_decline_reading, outreach_delivery, outreach_inbox,
-    outreach_reply_senders, outreach_thank_you,
+    STATIC_DIR, automation, automation_health, mail_message, outreach, outreach_decline_reading, outreach_delivery, outreach_greeting,
+    outreach_inbox, outreach_location, outreach_replies, outreach_reply_senders, outreach_thank_you,
 )
 from opportunity_app.api import create_app
-from opportunity_app.outreach import greeting_line
+from opportunity_app.outreach_greeting import greeting_line
 from opportunity_app.outreach_config import resolve_provider
 from opportunity_app.outreach_gmail import THANK_YOU_KIND, send_thank_you, thank_you_row
 from opportunity_app.outreach_schedule import run_due_sends
@@ -337,10 +337,10 @@ class DeclineCase(unittest.TestCase):
         })
         self.env.start()
         # The student's greeting comes from their own profile file; this one names none, so the defaults apply.
-        profile = mock.patch.object(outreach, "PROFILE_PATH", self.root / "no-profile.json")
+        profile = mock.patch.object(outreach_location, "PROFILE_PATH", self.root / "no-profile.json")
         profile.start()
         self.addCleanup(profile.stop)
-        outreach._PROFILE_DATA_CACHE.update(key=None, data={})
+        outreach_location._PROFILE_DATA_CACHE.update(key=None, data={})
         self.gmail = ThreadedGmail()
         self.factory = lambda: httpx.Client(transport=httpx.MockTransport(self.gmail.handler))
         self.jev = FakeJev("declined", 0.93)
@@ -853,7 +853,7 @@ class ThankYouRulesTests(DeclineCase):
                         extra="Auto-Submitted: auto-generated\nX-Auto-Response-Suppress: All\n", gmail_id="desk-1")
         # Both readings call it a decline, and it is from the very address written to (R1 passes).
         target = outreach.get_target(self.conn, desk["id"], user_id=USER)
-        self.assertEqual(outreach.suggest_reply_status(HELP_DESK)["status"], "declined")
+        self.assertEqual(outreach_replies.suggest_reply_status(HELP_DESK)["status"], "declined")
         self.assertEqual(thank_you_blockers(self.conn, target, self.record(raw, thread="t-desk")), ["R4", "R6"])
         # From Gmail it is noted as an automatic reply and never logged as one to thank.
         self.deliver(raw, message_id="desk-1", thread="t-desk")
@@ -1676,14 +1676,14 @@ class StrictRulesTests(unittest.TestCase):
             "Not hiring now; when we're hiring again I'll forward your note.",
         ):
             with self.subTest(text=text):
-                self.assertEqual(outreach.suggest_reply_status(text)["status"], "declined", "the rules alone read each as a no")
+                self.assertEqual(outreach_replies.suggest_reply_status(text)["status"], "declined", "the rules alone read each as a no")
                 self.assertTrue(outreach_decline_reading.plain_decline_problem(text))
 
     def test_anything_the_list_does_not_know_is_more_than_no(self):
         for more in MORE_THAN_NO:
             text = f"Unfortunately we're not hiring interns right now. {more}"
             with self.subTest(text=text):
-                self.assertEqual(outreach.suggest_reply_status(text)["status"], "declined", "the rules alone read each as a no")
+                self.assertEqual(outreach_replies.suggest_reply_status(text)["status"], "declined", "the rules alone read each as a no")
                 self.assertIn("says more than no", outreach_decline_reading.plain_decline_problem(text, NAMES))
         for text in (
             "We're not hiring interns yet.",
@@ -1932,7 +1932,7 @@ class ReviewFindingEligibilityTests(DeclineCase):
             with self.subTest(sender=sender):
                 domain = f"acme{number}.com"
                 target = self.sent_target(company=f"Acme {number}", contact_email=f"dana@{domain}", website=f"https://{domain}")
-                greeting = greeting or greeting_line(target["company"], "", outreach.greeting_style(self.conn, USER))
+                greeting = greeting or greeting_line(target["company"], "", outreach_greeting.greeting_style(self.conn, USER))
                 self.decline(message_id=f"name-{number}", sender=sender.format(n=number), thread=self.sent_thread(target["id"]))
                 self.assertTrue(self.plan(target["id"])["planned"])
                 row = thank_you_row(self.conn, target["id"], USER)

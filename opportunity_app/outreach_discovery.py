@@ -43,16 +43,9 @@ from . import ROOT
 from .agent_providers import CODEX_READ_ONLY, CliAgentProvider, cli_binary, failure_detail, run_headless
 from .background import SingleFlightManager
 from .legacy import SOURCES_LOCAL_PATH
-from .outreach import (
-    OUTREACH_PRIORITIES,
-    log_event,
-    company_key,
-    existing_keys,
-    get_target,
-    import_targets,
-    local_today,
-    location_usable,
-)
+from .outreach import OUTREACH_PRIORITIES, log_event, existing_keys, get_target, import_targets, local_today
+from .outreach_identity import company_key
+from .outreach_location import location_usable
 from .contact_names import website_domain
 from .outreach_config import discovery_provider
 from .outreach_contacts import apply_choice, choose_contact, find_contacts, list_candidates

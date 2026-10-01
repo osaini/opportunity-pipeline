@@ -3,7 +3,7 @@
 A leaf module (standard library and httpx, nothing else of this package): the
 reply, delivery, send, label and job-mail watchers and the agent mailbox reader
 all import from here, and none of them has to load the others, or the token and
-health machinery of ``outreach_gmail``, to know what a Gmail answer means.
+health machinery of ``gmail_connection``, to know what a Gmail answer means.
 
 The errors. ``GmailAuthError``: the connection is missing, revoked or for the
 wrong account. ``GmailThrottled``: Gmail asked the app to slow down; a
