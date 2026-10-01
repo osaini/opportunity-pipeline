@@ -113,6 +113,33 @@ def _turned_down(rows: list[Any]) -> bool:
     )
 
 
+# Up to this many emails, last_heard asks the ledger for each email's own rows instead of reading every one.
+_LEDGER_PER_EMAIL_MAX = 50
+
+
+def _ledger_rows(conn: sqlite3.Connection, user_id: str, gmail_ids: set[str]) -> list[Any]:
+    """The application_mail ledger rows last_heard needs: those whose key may be gmail:<id>:... for one of ``gmail_ids``.
+
+    Few ids on SQLite: one range read per id on UNIQUE(user_id, idempotency_key),
+    keys from 'gmail:<id>:' up to 'gmail:<id>;' (';' follows ':'), which a LIKE
+    cannot use. The caller's own split(':') stays the filter, so this only skips
+    rows it would not have kept. Otherwise every row, as before: a PostgreSQL
+    collation need not order those bounds the way SQLite's BINARY one does.
+    """
+    if gmail_ids and len(gmail_ids) <= _LEDGER_PER_EMAIL_MAX and getattr(conn, "backend", "sqlite") != "postgresql":
+        rows: list[Any] = []
+        for gmail_id in sorted(gmail_ids):
+            rows.extend(conn.execute(
+                "SELECT idempotency_key, status, review FROM automation_actions "
+                "WHERE user_id=? AND feature='application_mail' AND idempotency_key >= ? AND idempotency_key < ?",
+                (user_id, f"gmail:{gmail_id}:", f"gmail:{gmail_id};"),
+            ).fetchall())
+        return rows
+    return conn.execute(
+        "SELECT idempotency_key, status, review FROM automation_actions WHERE user_id=? AND feature='application_mail'", (user_id,),
+    ).fetchall()
+
+
 def last_heard(conn: sqlite3.Connection, user_id: str, application_id: str | None = None) -> dict[str, str]:
     """When a job email about each application last arrived: {application_id: received_at}.
 
@@ -139,9 +166,7 @@ def last_heard(conn: sqlite3.Connection, user_id: str, application_id: str | Non
         return {}
     # What the student did with each email's changes: the ledger rows it made all have keys gmail:<id>:...
     decided: dict[str, list[Any]] = {}
-    for row in conn.execute(
-        "SELECT idempotency_key, status, review FROM automation_actions WHERE user_id=? AND feature='application_mail'", (user_id,),
-    ).fetchall():
+    for row in _ledger_rows(conn, user_id, {str(message["gmail_id"]) for message in messages}):
         parts = str(row["idempotency_key"] or "").split(":")
         if len(parts) >= 3 and parts[0] == "gmail":
             decided.setdefault(parts[1], []).append(row)
