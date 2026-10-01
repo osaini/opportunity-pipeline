@@ -717,7 +717,8 @@ class DeferredDedupeTests(TempDbCase):
                 def eager(conn, source_key, source_name, batch, seen=None, **_ignored):
                     return _reference_upsert_jobs(conn, source_key, source_name, batch, seen)
 
-                with unittest.mock.patch.object(pipeline, "upsert_jobs", eager):
+                # The old side runs the frozen upsert and the frozen link pass, so it shares no changed code with the new side.
+                with unittest.mock.patch.object(pipeline, "upsert_jobs", eager),                         unittest.mock.patch.object(pipeline, "deduplicate", _reference_deduplicate):
                     pipeline.import_discovered(old, path)
         self.assertGreater(new.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 0)
         self.assertEqual(links(old), links(new))

@@ -1341,10 +1341,11 @@ def upsert_jobs(
     *,
     dedupe: bool = True,
 ) -> int:
-    # `dedupe=False` leaves the duplicate_of pass to the caller. A fetch cycle
-    # upserts dozens of sources and deduplicates the whole table once at the end
-    # instead of once per source; the pass is a pure function of the table, so
-    # the final links are the same.
+    # `dedupe=False` leaves the duplicate_of pass to the caller: import_discovered
+    # upserts every channel and deduplicates once before its single commit. The
+    # pass is a pure function of the table, so the final links are the same.
+    # fetch_all keeps the per-source pass, so a failing pass rolls that source
+    # back and records an error instead of committing it as a success.
     #
     # `seen` becomes first_seen_at/last_seen_at, both of which are ranking keys:
     # `discovered` sorts on first_seen_at and `score` falls back to
