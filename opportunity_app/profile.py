@@ -8,9 +8,10 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from pipeline import score_job
+from pipeline_core.read_model import RULESET_VERSION
 
 from .json_values import json_dict
+from .legacy import score_job
 from .schema import LOCAL_USER_ID
 from .timestamps import utc_now
 
@@ -162,12 +163,12 @@ def _write_scores(
             """INSERT INTO fit_scores(
                    opportunity_id, user_id, ruleset_version, score,
                    explanation_json, created_at
-               ) VALUES(?, ?, 'legacy-v1', ?, ?, ?)
+               ) VALUES(?, ?, ?, ?, ?, ?)
                ON CONFLICT(opportunity_id, user_id, ruleset_version) DO UPDATE SET
                    score=excluded.score,
                    explanation_json=excluded.explanation_json,
                    created_at=excluded.created_at""",
-            (opportunity_id, user_id, score, json.dumps(reasons), timestamp),
+            (opportunity_id, user_id, RULESET_VERSION, score, json.dumps(reasons), timestamp),
         )
 
 

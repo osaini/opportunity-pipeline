@@ -13,6 +13,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pipeline
+from pipeline_core.regions import match_region, region_label
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -110,7 +111,7 @@ class PipelineTests(unittest.TestCase):
         )["regions"]
 
         def matched(location):
-            hit = pipeline.match_region(location, regions)
+            hit = match_region(location, regions)
             return hit["region"]["name"] if hit else None
 
         self.assertEqual(matched("Austin, TX"), "Austin")
@@ -171,11 +172,11 @@ class PipelineTests(unittest.TestCase):
                 {"name": "Austin", "state_markers": ["tx"], "places": ["austin"]},
             ]
         }
-        self.assertEqual(pipeline.region_label("Austin, TX", profile), "Austin")
-        self.assertEqual(pipeline.region_label("Remote - US", profile), "Remote")
-        self.assertEqual(pipeline.region_label("Seattle, WA", profile), "Other")
-        self.assertEqual(pipeline.region_label("3 Locations", profile), "Unknown")
-        self.assertEqual(pipeline.region_label("", profile), "Unknown")
+        self.assertEqual(region_label("Austin, TX", profile), "Austin")
+        self.assertEqual(region_label("Remote - US", profile), "Remote")
+        self.assertEqual(region_label("Seattle, WA", profile), "Other")
+        self.assertEqual(region_label("3 Locations", profile), "Unknown")
+        self.assertEqual(region_label("", profile), "Unknown")
 
     def test_placeholder_location_is_not_penalised(self):
         profile = {
@@ -1589,7 +1590,7 @@ class PipelineTests(unittest.TestCase):
         )
         writer = unittest.mock.Mock()
         with unittest.mock.patch.dict(pipeline.DISCOVERY_VENDORS, {"greenhouse": probe}):
-            with unittest.mock.patch.object(pipeline, "_write_discovered_sources", writer):
+            with unittest.mock.patch.object(pipeline, "write_discovered_sources", writer):
                 pipeline.report_discovery(["Acme Robotics"], sources, write=False)
         writer.assert_not_called()
 
@@ -1604,7 +1605,7 @@ class PipelineTests(unittest.TestCase):
         )
         writer = unittest.mock.Mock()
         with unittest.mock.patch.dict(pipeline.DISCOVERY_VENDORS, {"greenhouse": probe}):
-            with unittest.mock.patch.object(pipeline, "_write_discovered_sources", writer):
+            with unittest.mock.patch.object(pipeline, "write_discovered_sources", writer):
                 pipeline.report_discovery(["Archer Aviation"], sources, write=True)
         # A mismatched board name must never be written, even with --write.
         writer.assert_not_called()
@@ -1613,7 +1614,7 @@ class PipelineTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             local = Path(tmp) / "sources.local.json"
             with unittest.mock.patch.object(pipeline, "SOURCES_LOCAL_PATH", local):
-                written = pipeline._write_discovered_sources(
+                written = pipeline.write_discovered_sources(
                     [{"kind": "ashby", "company": "Base Power", "board": "base-power"}]
                 )
             self.assertEqual(written, local)
@@ -1727,7 +1728,7 @@ class PipelineTests(unittest.TestCase):
                 "rejected_sources": {"note": "keep me"},
             }
             path.write_text(json.dumps(original, indent=2) + "\n", encoding="utf-8")
-            pipeline._write_discovered_sources(
+            pipeline.write_discovered_sources(
                 [{"kind": "ashby", "company": "Base Power", "board": "base-power"}], path
             )
             written = json.loads(path.read_text(encoding="utf-8"))

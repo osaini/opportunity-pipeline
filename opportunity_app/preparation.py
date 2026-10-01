@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from .agent_providers import AgentProvider
 from .profile import is_answered
+from .storage_paths import confined_path
 from .timestamps import utc_now
 
 
@@ -523,9 +524,8 @@ def recorded_mock_answer_path(
     ).fetchone()
     if not row or not row["audio_path"]:
         raise PreparationNotFoundError(answer_id)
-    root = storage_root.expanduser().resolve()
-    path = (root / str(row["audio_path"])).resolve()
-    if path.parent != root or not path.is_file():
+    path = confined_path(storage_root, str(row["audio_path"]))
+    if path is None or not path.is_file():
         raise PreparationNotFoundError(answer_id)
     media_type = {
         ".webm": "audio/webm",

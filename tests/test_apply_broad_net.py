@@ -20,6 +20,7 @@ from opportunity_app import apply_policy, apply_preflight, apply_sensitive
 from opportunity_app.apply_checks import question_key
 from opportunity_app.apply_policy import SchemaField, classify_item, net_topics, never_storable, possibly_sensitive
 from opportunity_app.apply_sensitive import StoreRefused
+from pipeline_core.identity import employer_key
 
 import helpers_apply as apply_helpers
 from helpers_apply import BASE, COMPANY, F, MULTI, OTHER, SINGLE, USER, answer, kinds, plan, sources
@@ -310,7 +311,7 @@ class AgreementQuestionTests(unittest.TestCase):
     def test_only_an_exact_stored_statement_ticks_it(self):
         field = box("Code of Ethics", "I will comply with the Code of Ethics", parent="Resume/CV")
         statement = apply_policy.statement_of(field, "checkbox", "acknowledgment", plan(BASE + [field]).get("q").answer_key)
-        store = apply_helpers.Store(apply_helpers.entry("acknowledgment", statement, "checked", "checkbox", company_key=apply_policy.apply_sensitive.company_key(COMPANY)))
+        store = apply_helpers.Store(apply_helpers.entry("acknowledgment", statement, "checked", "checkbox", company_key=employer_key(COMPANY)))
         got = plan(BASE + [field], sources(allowed=["acknowledgment"], store=store)).get("q")
         self.assertEqual((got.sensitive, got.source.kind, got.value), ("acknowledgment", "sensitive", True))
 
@@ -676,7 +677,7 @@ class NoBoxOrAgreementFromTheLibraryTests(unittest.TestCase):
     def test_only_an_exact_stored_statement_ticks_a_box(self):
         field = box("Code of Ethics", "I will comply with the Code of Ethics", parent="Resume/CV")
         statement = apply_policy.statement_of(field, "checkbox", "acknowledgment", plan(BASE + [field]).get("q").answer_key)
-        store = apply_helpers.Store(apply_helpers.entry("acknowledgment", statement, "checked", "checkbox", company_key=apply_sensitive.company_key(COMPANY)))
+        store = apply_helpers.Store(apply_helpers.entry("acknowledgment", statement, "checked", "checkbox", company_key=employer_key(COMPANY)))
         got = plan(BASE + [field], sources(allowed=["acknowledgment"], store=store)).get("q")
         self.assertEqual((got.sensitive, got.source.kind, got.value), ("acknowledgment", "sensitive", True))
         # A statement stored for another company, or one that is not word for word this one, ticks nothing.
@@ -689,7 +690,7 @@ class NoBoxOrAgreementFromTheLibraryTests(unittest.TestCase):
         # is one more box the student ticks; nothing is ticked on a guess.
         field = box("Code of Ethics", "I will adhere to the Code of Ethics at all times", parent="Resume/CV")
         statement = apply_policy.statement_of(field, "checkbox", "acknowledgment", plan(BASE + [field]).get("q").answer_key)
-        store = apply_helpers.Store(apply_helpers.entry("acknowledgment", statement, "checked", "checkbox", company_key=apply_sensitive.company_key(COMPANY)))
+        store = apply_helpers.Store(apply_helpers.entry("acknowledgment", statement, "checked", "checkbox", company_key=employer_key(COMPANY)))
         got = plan(BASE + [field], sources(allowed=["acknowledgment"], store=store)).get("q")
         self.assertEqual((got.sensitive, got.source.kind, got.value, got.problem_kind), (None, "none", None, "sensitive_never"))
 

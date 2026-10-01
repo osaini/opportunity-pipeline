@@ -9,6 +9,8 @@ from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from pipeline_core.read_model import RULESET_VERSION
+
 from .timestamps import utc_now
 from .user_time import named_timezone, user_timezone
 
@@ -26,7 +28,7 @@ APPLICATION_STAGES = {
 TERMINAL_APPLICATION_STAGES = {"offer", "rejected", "withdrawn", "archived"}
 # Stages whose tasks and follow-ups no longer need doing. Unlike reminder
 # delivery above, an offer stays open here: replying to it is real work.
-CLOSED_APPLICATION_STAGES = {"rejected", "withdrawn", "archived"}
+CLOSED_APPLICATION_STAGES = ("rejected", "withdrawn", "archived")
 
 
 class OpportunityNotFoundError(LookupError):
@@ -227,11 +229,11 @@ def list_applications(conn: sqlite3.Connection, *, user_id: str) -> list[dict[st
         LEFT JOIN fit_scores fs
           ON fs.opportunity_id = o.id
          AND fs.user_id = a.user_id
-         AND fs.ruleset_version = 'legacy-v1'
+         AND fs.ruleset_version = ?
         WHERE a.user_id=?
         ORDER BY a.updated_at DESC, a.id ASC
         """,
-        (user_id,),
+        (RULESET_VERSION, user_id),
     ).fetchall()
     zone = user_timezone(conn, user_id)
     today = zone.today()

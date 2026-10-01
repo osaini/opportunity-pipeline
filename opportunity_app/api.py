@@ -32,11 +32,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from pipeline import load_env_file
 from pipeline_core import MAX_PER_COMPANY, OpportunityFilters, OpportunityRepository
 
 from . import DEFAULT_PLATFORM_DB, DEFAULT_PROFILE, STATIC_DIR
 from . import application_inbox
+from .legacy import load_env_file
 from . import automation as automation_core
 from . import auto_triage, mail_trust, resume_variants
 from .actions import (

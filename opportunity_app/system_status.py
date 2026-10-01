@@ -115,7 +115,7 @@ def source_health(
     legacy_path: Path, sources_path: Path = SOURCES_CONFIG, *, now: datetime | None = None,
 ) -> dict[str, Any]:
     """The latest fetch of every enabled board, failing and stale ones first."""
-    from pipeline import _source_identity, load_sources
+    from .legacy import load_sources, source_key
 
     now = now or datetime.now(timezone.utc)
     try:
@@ -127,7 +127,7 @@ def source_health(
         if not source.get("enabled", True):
             continue
         try:
-            key = f'{source["kind"]}:{_source_identity(source)}'
+            key = source_key(source)
         except KeyError:
             continue
         enabled.append((key, source.get("name") or source.get("company") or key))

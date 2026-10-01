@@ -47,7 +47,7 @@ from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from pipeline import identity_tokens
+from pipeline_core.identity import employer_key
 
 from .timestamps import utc_now
 
@@ -284,8 +284,8 @@ def authenticate(message: EmailMessage) -> Authentication:
 
 
 def company_key(company: str) -> str:
-    """identity_tokens(company), sorted and joined: how employer_domains names a company."""
-    return " ".join(sorted(identity_tokens(str(company or ""))))
+    """employer_key(company), how employer_domains names a company; unlike employer_key it reads None as ''."""
+    return employer_key(str(company or ""))
 
 
 def _row(row: Any) -> dict[str, Any]:

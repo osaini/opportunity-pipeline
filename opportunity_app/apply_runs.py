@@ -48,7 +48,7 @@ from time import monotonic
 from typing import Any, Iterator
 from uuid import uuid4
 
-from pipeline import identity_tokens, normalized
+from pipeline_core.identity import normalized
 
 from . import ROOT, actions, automation
 from .database import is_unique_violation
@@ -164,11 +164,6 @@ def _iso(moment: datetime) -> str:
 
 def _dumps(value: Any) -> str:
     return json.dumps(value, sort_keys=True)
-
-
-def company_key(company: str) -> str:
-    """The words that identify an employer, sorted and joined: "Acme Robotics Inc." and "ACME robotics" match."""
-    return " ".join(sorted(identity_tokens(company)))
 
 
 def lock_user(conn: sqlite3.Connection, user_id: str) -> None:
@@ -339,7 +334,7 @@ def limits_block(
 ) -> str | None:
     """The sentence for the first limit that stops a submit or Finish in browser now, or None (9.1).
 
-    ``company`` is company_key(name). Finish in browser (handoff) counts toward the spacing and the company limit
+    ``company`` is employer_key(name). Finish in browser (handoff) counts toward the spacing and the company limit
     but not the daily cap, because the student presses Submit.
     """
     block = _limit_check(conn, user_id, company, board_token, mode, _at(now))
@@ -497,7 +492,7 @@ def claim(
     server process either lands first and is seen, or waits); then the insert. A unique-index conflict, which the
     checks should already have caught, is refused with the same sentences. Nothing is created when it is refused.
 
-    ``company`` is company_key(name). ``acknowledged`` holds the codes of the "ask" refusals the student ticked
+    ``company`` is employer_key(name). ``acknowledged`` holds the codes of the "ask" refusals the student ticked
     (ASK_*); they are recorded on the claim. ``rehearsal_run_id`` is the rehearsal a one-click confirm approved.
     """
     if mode not in MODES:

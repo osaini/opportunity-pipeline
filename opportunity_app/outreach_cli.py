@@ -51,11 +51,10 @@ import sys
 from contextlib import ExitStack, closing
 from pathlib import Path
 
-from pipeline import load_env_file
-
 from . import DEFAULT_PLATFORM_DB
 from .agent_providers import build_provider
 from .database import is_postgres_target
+from .legacy import load_env_file
 from .outreach import queue_follow_up_reminders
 from .outreach_contacts import default_fetcher
 from .outreach_discovery import DEFAULT_SCOPES, MAX_PER_SCOPE, RUNNERS, SCOPES, DiscoveryBusy, run_discovery

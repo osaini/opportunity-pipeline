@@ -49,7 +49,7 @@ numbers are an optimistic description of it, not a promise about real mail.
 Which application. match_application tries, strongest first: an ATS job id or
 job URL in a link that equals an application's source (job_id); the company
 named in the sender, subject or opening of the email, equal by
-pipeline.identity_tokens, plus at least 0.8 of the role's words (company_title);
+identity.identity_tokens, plus at least 0.8 of the role's words (company_title);
 the company alone, when exactly one open application has it (company_single;
 one the app archived after no reply counts as open, counts_as_open).
 Otherwise ambiguous (the candidates are ranked for the student's picker) or
@@ -149,7 +149,7 @@ from uuid import uuid4
 
 import httpx
 
-from pipeline import identity_tokens, normalized
+from pipeline_core.identity import identity_tokens, normalized
 
 from . import automation, internal_automation, mail_trust
 from .actions import log_application_event

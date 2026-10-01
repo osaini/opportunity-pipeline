@@ -26,10 +26,9 @@ from typing import Any, Callable
 from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
-from pipeline import PROFILE_PATH
-
 from .database import is_unique_violation as _is_unique_violation
 from .inbox_classifiers import read_reply
+from .legacy import PROFILE_PATH
 from .schema import LOCAL_USER_ID
 from .timestamps import utc_now
 from .typesafe_decisions import DecisionClient

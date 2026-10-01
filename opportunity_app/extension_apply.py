@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from pipeline_core.read_model import RULESET_VERSION
+
 from .actions import ApplicationNotFoundError, log_application_event, update_application
 from .auth import hash_secret
 from .timestamps import utc_now
@@ -415,10 +417,10 @@ def apply_context(
         FROM applications a
         JOIN opportunities o ON o.id=a.opportunity_id
         LEFT JOIN fit_scores fs ON fs.opportunity_id=o.id
-             AND fs.user_id=a.user_id AND fs.ruleset_version='legacy-v1'
+             AND fs.user_id=a.user_id AND fs.ruleset_version=?
         WHERE a.id=? AND a.user_id=?
         """,
-        (application_id, user_id),
+        (RULESET_VERSION, application_id, user_id),
     ).fetchone()
     if not row:
         raise ApplicationNotFoundError(application_id)
@@ -444,7 +446,7 @@ def apply_context(
         "match": {
             "score": int(row["score"] or 0),
             "explanation": json.loads(row["explanation_json"] or "[]"),
-            "ruleset_version": "legacy-v1",
+            "ruleset_version": RULESET_VERSION,
         },
         "confirmed_profile": _confirmed_profile(conn, user_id),
         "answers": _safe_answers(conn, user_id),

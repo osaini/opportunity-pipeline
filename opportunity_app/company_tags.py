@@ -28,6 +28,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from pipeline_core.identity import sort_key
 from pipeline_core.visibility import capture_visible_sql
 
 from .timestamps import utc_now
@@ -301,12 +302,6 @@ def ensure_company_tags_current(conn: sqlite3.Connection) -> bool:
     return True
 
 
-def tag_key(company: str) -> str:
-    """The key tags are stored under: the fold schema.sort_key stores."""
-
-    return str(company or "").casefold()
-
-
 def classify_outreach(company: str, summary: str, notes: str, *, unverified: bool) -> list[dict[str, Any]]:
     """Tags for an outreach company, from the student's research on it.
 
@@ -342,7 +337,7 @@ def _write_outreach_tags(conn: sqlite3.Connection, user_id: str, rows: list[tupl
     timestamp = utc_now()
     best: dict[tuple[str, str], dict[str, Any]] = {}
     for company, summary, notes, confidence in rows:
-        key = tag_key(company)
+        key = sort_key(company)
         if not key:
             continue
         for item in classify_outreach(company, summary, notes, unverified=confidence == "unverified"):
@@ -400,7 +395,7 @@ def decorate_outreach_with_tags(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Outreach items with their tags, and each tag's company count among them."""
 
-    keyed = [{**item, "company_sort_key": tag_key(item.get("company") or "")} for item in items]
+    keyed = [{**item, "company_sort_key": sort_key(item.get("company") or "")} for item in items]
     tags = tags_for_companies(conn, (item["company_sort_key"] for item in keyed), user_id=user_id)
     decorated = [{**item, "tags": tags.get(item["company_sort_key"], [])} for item in keyed]
     counts: dict[str, int] = defaultdict(int)
@@ -499,7 +494,7 @@ class CompanyNotFoundError(LookupError):
 def _company_key(conn: sqlite3.Connection, company: str, *, user_id: str) -> str:
     """The key of a company this student can see: a posting or their own outreach."""
 
-    key = tag_key(company)
+    key = sort_key(company)
     if not key.strip():
         raise CompanyNotFoundError("Company not found")
     visible = capture_visible_sql("o")
@@ -507,7 +502,7 @@ def _company_key(conn: sqlite3.Connection, company: str, *, user_id: str) -> str
         f"SELECT 1 FROM opportunities o WHERE o.company_sort_key = ? AND {visible} LIMIT 1",
         [key, user_id],
     ).fetchone()
-    if row is None and not any(tag_key(name) == key for name, *_ in _outreach_rows(conn, user_id)):
+    if row is None and not any(sort_key(name) == key for name, *_ in _outreach_rows(conn, user_id)):
         raise CompanyNotFoundError("Company not found")
     return key
 

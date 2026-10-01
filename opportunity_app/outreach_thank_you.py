@@ -107,6 +107,8 @@ from urllib.parse import quote
 
 import httpx
 
+from pipeline_core.identity import identity_tokens, normalized
+
 from . import automation
 from .database import rollback_quietly
 from .json_values import json_dict
@@ -1010,8 +1012,6 @@ def _job_system_mail(domain: str, target: dict[str, Any]) -> bool:
     careers page on a job system (website acme.bamboohr.com) is not Acme's
     domain, and a company named like one ("Lever Industries") does not own it.
     """
-    from pipeline import identity_tokens, normalized
-
     from .mail_trust import registrable_domain, sender_lists
     from .outreach import website_domain
 
@@ -1033,8 +1033,6 @@ def _no_reply(local: str) -> bool:
 def _company_inbox(local: str, target: dict[str, Any]) -> bool:
     """A local part that is the company's own name or slug, alone or with role words or a word that joins it
     ("acme", "acme-robotics", "acme.careers", "acmecareers", "careersacme", "teamacme", "joinacme")."""
-    from pipeline import identity_tokens, normalized
-
     from .mail_trust import registrable_domain
     from .outreach import website_domain
     from .outreach_contacts import GENERIC_LOCAL_PARTS, ROLE_INBOX_LOCAL_PARTS, ROLE_INBOX_QUALIFIERS, made_of
