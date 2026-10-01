@@ -6356,7 +6356,9 @@
     return [add, transfer];
   }
 
-  function outreachListToolbar(tags = []) {
+  // ``leaving``: cards acted on here that stay put (so nothing moves from under
+  // the pointer) but no longer belong to this tab or search. Refresh files them.
+  function outreachListToolbar(tags = [], leaving = 0) {
     const toolbar = element("div", "outreach-toolbar");
     const search = element("div", "search-field outreach-search");
     const label = element("label", "search-label");
@@ -6415,7 +6417,27 @@
       els.results.querySelector(".outreach-filter select")?.focus();
     });
     sortLabel.appendChild(sort);
-    toolbar.append(search, sortLabel);
+
+    const refresh = element("button", "secondary-button outreach-refresh");
+    refresh.type = "button";
+    refresh.appendChild(element("span", "", "Refresh"));
+    if (leaving) {
+      const count = element("span", "outreach-refresh-count", String(leaving));
+      count.setAttribute("aria-hidden", "true");
+      refresh.appendChild(count);
+      refresh.setAttribute("aria-label", `Refresh: ${plural(leaving, "company moves", "companies move")} out of this list`);
+    }
+    refresh.title = leaving
+      ? `${plural(leaving, "company", "companies")} you acted on will move to where ${leaving === 1 ? "it" : "they"} now belong${leaving === 1 ? "s" : ""}`
+      : "Load the latest from the server";
+    refresh.addEventListener("click", async () => {
+      refresh.disabled = true;
+      state.outreachKeep.clear();
+      await loadOutreach();
+      announce(leaving ? `${plural(leaving, "company", "companies")} moved out of this list.` : "Outreach is up to date.");
+      els.results.querySelector(".outreach-refresh")?.focus();
+    });
+    toolbar.append(search, sortLabel, refresh);
     return toolbar;
   }
 
@@ -6548,7 +6570,8 @@
         const items = payload.items
           .filter((item) => (tab.test(item) && matches(item)) || kept(item))
           .sort(compare);
-        els.results.appendChild(outreachListToolbar(payload.tags || []));
+        const leaving = items.filter((item) => kept(item) && !(tab.test(item) && matches(item))).length;
+        els.results.appendChild(outreachListToolbar(payload.tags || [], leaving));
         if (running) {
           const banner = element("div", "outreach-banner");
           banner.appendChild(element("p", "", "The deep search is running. New companies land in From deep search when it finishes."));
@@ -6632,6 +6655,38 @@
     return select;
   }
 
+  // One titled group of the career profile form.
+  function profileGroup(form, title, help = "") {
+    const group = element("div", "profile-group");
+    group.appendChild(element("h4", "", title));
+    if (help) group.appendChild(element("p", "profile-help", help));
+    form.appendChild(group);
+    return group;
+  }
+
+  // A titled part of a Profile card, set off from the one above it.
+  function profileBlock(section, title, help = "") {
+    const block = element("div", "profile-block");
+    block.appendChild(element("h4", "", title));
+    if (help) block.appendChild(element("p", "profile-help", help));
+    section.appendChild(block);
+    return block;
+  }
+
+  // The red asterisk on a field the profile counts toward being complete
+  // (profile.COMPLETENESS_FIELDS). The key above the form says what it means;
+  // a screen reader hears that key as the field's description instead.
+  function requiredMark() {
+    const mark = element("span", "required-mark", "*");
+    mark.setAttribute("aria-hidden", "true");
+    return mark;
+  }
+
+  function markNeeded(control) {
+    control.closest("label").querySelector("span").appendChild(requiredMark());
+    control.setAttribute("aria-describedby", "profile-required-key");
+  }
+
   function commaList(value) {
     if (!value) return [];
     return value.split(/[,\n]/).map((item) => item.trim()).filter(Boolean);
@@ -6647,7 +6702,6 @@
     const card = element("section", "profile-card");
     const top = element("div", "profile-card-heading");
     const copy = element("div");
-    copy.appendChild(element("p", "eyebrow", "Confirmed career facts"));
     copy.appendChild(element("h3", "", "Profile and preferences"));
     copy.appendChild(element("p", "profile-help", "Saving is an explicit confirmation of these fields. Changes feed the deterministic scoring profile."));
     const meter = element("div", "completeness-meter");
@@ -6675,11 +6729,16 @@
     }
 
     const form = element("form", "profile-form");
-    const name = profileField(form, "Name", "name", profile.name);
+    const key = element("p", "profile-required-key");
+    key.id = "profile-required-key";
+    key.append(requiredMark(), document.createTextNode(" Needed to finish your profile. You can save without them; for pay, either answer counts."));
+    form.appendChild(key);
+    const about = profileGroup(form, "About you");
+    const name = profileField(about, "Name", "name", profile.name);
     // Apply for me types these into an employer's application form, and it will not run without a confirmed email.
     const contactSaved = profile.contact && typeof profile.contact === "object" && !Array.isArray(profile.contact) ? profile.contact : {};
-    const contactEmail = profileField(form, "Email for applications", "contact_email", contactSaved.email, { type: "email", placeholder: "you@example.com" });
-    const contactPhone = profileField(form, "Phone for applications (optional)", "contact_phone", contactSaved.phone, { type: "tel" });
+    const contactEmail = profileField(about, "Email for applications", "contact_email", contactSaved.email, { type: "email", placeholder: "you@example.com" });
+    const contactPhone = profileField(about, "Phone for applications (optional)", "contact_phone", contactSaved.phone, { type: "tel" });
     // How your name is typed into an employer's application form (Apply for me). A name of more than two words is never split for you.
     const nameParts = profile.name_parts && typeof profile.name_parts === "object" ? profile.name_parts : {};
     const nameForApplications = element("fieldset", "profile-fieldset");
@@ -6688,32 +6747,42 @@
     const firstForApplications = profileField(nameForApplications, "First name", "name_parts_first", nameParts.first);
     const lastForApplications = profileField(nameForApplications, "Last name", "name_parts_last", nameParts.last);
     const preferredForApplications = profileField(nameForApplications, "Preferred name (optional)", "name_parts_preferred", nameParts.preferred);
-    form.appendChild(nameForApplications);
-    const school = profileField(form, "School", "school", profile.school);
-    const degree = profileField(form, "Degree", "degree", profile.degree);
-    const graduation = profileField(form, "Graduation year", "graduation_year", profile.graduation_year, { type: "number", min: 2000, max: 2200 });
-    const skills = profileField(form, "Skills (comma or line separated)", "skills", (profile.skills || []).join(", "), { multiline: true });
-    const interests = profileField(form, "Interests", "interest_keywords", (profile.interest_keywords || []).join(", "), { multiline: true });
-    const terms = profileField(form, "Available terms", "available_terms", (profile.available_terms || []).join(", "), { multiline: true });
+    about.appendChild(nameForApplications);
+    const education = profileGroup(form, "Education");
+    const school = profileField(education, "School", "school", profile.school);
+    const degree = profileField(education, "Degree", "degree", profile.degree);
+    const graduation = profileField(education, "Graduation year", "graduation_year", profile.graduation_year, { type: "number", min: 2000, max: 2200 });
+    const looking = profileGroup(form, "What you're looking for");
+    const skills = profileField(looking, "Skills (comma or line separated)", "skills", (profile.skills || []).join(", "), { multiline: true });
+    const interests = profileField(looking, "Interests", "interest_keywords", (profile.interest_keywords || []).join(", "), { multiline: true });
+    const terms = profileField(looking, "Available terms", "available_terms", (profile.available_terms || []).join(", "), { multiline: true });
+    const hours = profileField(looking, "Hours per week", "hours_per_week", profile.hours_per_week, { type: "number", min: 1, max: 80 });
+    const where = profileGroup(form, "Where");
     const locations = profileField(
-      form,
+      where,
       "Target regions",
       "regions",
       (profile.regions || []).map((region) => typeof region === "string" ? region : region.name).filter(Boolean).join(", "),
       { placeholder: "Atlanta, Bay Area" }
     );
-    const breakLocation = profileField(form, "Home during breaks and summers", "break_location", profile.break_location, { placeholder: "City, ST or a target region" });
-    // How outreach emails open, in the student's own words: "Hi Dana," or "Hello there,".
-    const greetingWord = profileField(form, "Email greeting", "greeting_word", profile.greeting_word, { placeholder: "Hi" });
-    const unnamedGreeting = profileField(form, "Greeting for a shared inbox", "unnamed_greeting", profile.unnamed_greeting, { placeholder: "{company} team" });
-    const hours = profileField(form, "Hours per week", "hours_per_week", profile.hours_per_week, { type: "number", min: 1, max: 80 });
-    const workAuthorized = profileSelect(form, "Authorized to work in the U.S.", "work_authorized_us", profile.work_authorized_us);
-    const citizen = profileSelect(form, "U.S. citizen", "us_citizen", profile.us_citizen);
-    const sponsorship = profileSelect(form, "Requires sponsorship", "requires_sponsorship", profile.requires_sponsorship);
-    const relocation = profileSelect(form, "Willing to relocate", "willing_to_relocate", profile.willing_to_relocate);
+    const breakLocation = profileField(where, "Home during breaks and summers", "break_location", profile.break_location, { placeholder: "City, ST or a target region" });
+    const relocation = profileSelect(where, "Willing to relocate", "willing_to_relocate", profile.willing_to_relocate);
+    const eligibility = profileGroup(form, "Work eligibility");
+    const workAuthorized = profileSelect(eligibility, "Authorized to work in the U.S.", "work_authorized_us", profile.work_authorized_us);
+    const citizen = profileSelect(eligibility, "U.S. citizen", "us_citizen", profile.us_citizen);
+    const sponsorship = profileSelect(eligibility, "Requires sponsorship", "requires_sponsorship", profile.requires_sponsorship);
+    // Pay preferences count as answered once either one is.
+    const pay = profileGroup(form, "Pay", "Either answer completes your pay preferences.");
+    pay.querySelector("h4").appendChild(requiredMark());
     const compensation = profile.compensation_preferences || {};
-    const paidOnly = profileSelect(form, "Paid roles only", "paid_only", compensation.paid_only);
-    const minimumPay = profileField(form, "Minimum hourly pay (USD)", "minimum_pay", compensation.minimum_hourly, { type: "number", min: 0 });
+    const paidOnly = profileSelect(pay, "Paid roles only", "paid_only", compensation.paid_only);
+    const minimumPay = profileField(pay, "Minimum hourly pay (USD)", "minimum_pay", compensation.minimum_hourly, { type: "number", min: 0 });
+    [paidOnly, minimumPay].forEach((control) => control.setAttribute("aria-describedby", "profile-required-key"));
+    // How outreach emails open, in the student's own words: "Hi Dana," or "Hello there,".
+    const greetings = profileGroup(form, "Outreach emails", "How your cold emails greet someone.");
+    const greetingWord = profileField(greetings, "Email greeting", "greeting_word", profile.greeting_word, { placeholder: "Hi" });
+    const unnamedGreeting = profileField(greetings, "Greeting for a shared inbox", "unnamed_greeting", profile.unnamed_greeting, { placeholder: "{company} team" });
+    [name, school, degree, graduation, skills, interests, terms, locations, workAuthorized, sponsorship].forEach(markNeeded);
 
     const statusLine = element("p", "form-status");
     statusLine.setAttribute("aria-live", "polite");
@@ -6725,7 +6794,10 @@
     save.type = "submit";
     const exportLink = element("a", "secondary-button profile-export", "Export scoring profile");
     exportLink.href = "/api/v1/profile/export";
-    form.append(save, exportLink, statusLine);
+    // Pinned to the bottom of the screen while the form scrolls, so Save is always in reach.
+    const actions = element("div", "profile-actions");
+    actions.append(statusLine, exportLink, save);
+    form.appendChild(actions);
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       save.disabled = true;
@@ -6978,7 +7050,6 @@
 
   function notificationSettingsSection(connections, preferences, events, applications, automation = null) {
     const section = element("section", "profile-card connection-section");
-    section.appendChild(element("p", "eyebrow", "Connections and notifications"));
     section.appendChild(element("h3", "", "Monitoring controls"));
     section.appendChild(element("p", "profile-help", "Provider activity is previewed before tracker changes. Google/Microsoft use least-privilege OAuth when configured; notification delivery remains sandbox-suppressed by default."));
     const connectionList = element("div", "connection-list");
@@ -7017,7 +7088,7 @@
       });
       connectionList.appendChild(connect);
     });
-    section.appendChild(connectionList);
+    profileBlock(section, "Accounts").appendChild(connectionList);
 
     const form = element("form", "notification-form");
     const timezone = profileField(form, "Timezone", "timezone", preferences.timezone);
@@ -7070,7 +7141,8 @@
         save.disabled = false;
       }
     });
-    section.appendChild(form);
+    const alerts = profileBlock(section, "Notifications", "When and how the app tells you about something.");
+    alerts.appendChild(form);
 
     // Saved at once through the automation switches, outside the form above,
     // so it needs no Save press and Enter never submits the form for it.
@@ -7083,8 +7155,8 @@
       const help = element("p", "profile-help", "Windows, macOS or Linux pop-ups for notices like 'Gmail needs reconnecting'. They never include email text or links. Quiet hours apply.");
       help.id = "notification-desktop-popups-help";
       box.setAttribute("aria-describedby", help.id);
-      field.append(label, help, status);
-      section.appendChild(field);
+      field.append(label, box, help, status);
+      alerts.appendChild(field);
     }
 
     const phoneForm = element("form", "phone-form");
@@ -7110,7 +7182,7 @@
         requestCode.disabled = false;
       }
     });
-    section.appendChild(phoneForm);
+    profileBlock(section, "Phone", "Verify a number before the app may text or call it.").appendChild(phoneForm);
 
     const pending = (events.items || []).filter((item) => item.status === "pending");
     if (pending.length) {
@@ -7267,7 +7339,6 @@
 
   function dossierSection(payload) {
     const section = element("section", "profile-card dossier-section");
-    section.appendChild(element("p", "eyebrow", "Private career memory"));
     section.appendChild(element("h3", "", "Evidence dossier and consent"));
     section.appendChild(element("p", "profile-help", "Nothing here is employer-visible until you preview and create a named, expiring share."));
     const settings = element("form", "notification-form");
@@ -7282,7 +7353,7 @@
       await api("/api/v1/dossier/settings", {method: "PUT", body: JSON.stringify({paused: paused.checked, retention_days: Number(retention.value)})});
       await loadProfile();
     });
-    section.appendChild(settings);
+    profileBlock(section, "Memory").appendChild(settings);
     const itemForm = element("form", "notification-form");
     const kindLabel = element("label", "profile-field"); kindLabel.appendChild(element("span", "", "Item classification"));
     const kind = document.createElement("select"); ["user_opinion", "deterministic_analysis", "ai_suggestion"].forEach((value) => { const option = document.createElement("option"); option.value = value; option.textContent = humanizeKey(value); kind.appendChild(option); }); kindLabel.appendChild(kind); itemForm.appendChild(kindLabel);
@@ -7290,7 +7361,8 @@
     const value = profileField(itemForm, "Value", "value", "", {multiline: true});
     const add = element("button", "secondary-button", "Add classified item"); add.type = "submit"; itemForm.appendChild(add);
     itemForm.addEventListener("submit", async (event) => { event.preventDefault(); await api("/api/v1/dossier/items", {method: "POST", body: JSON.stringify({item_type: kind.value, field_path: fieldPath.value, value: value.value, evidence: []})}); await loadProfile(); });
-    section.appendChild(itemForm);
+    const itemsBlock = profileBlock(section, "Items", "Tick the items to share below.");
+    itemsBlock.appendChild(itemForm);
     const items = element("div", "dossier-list");
     (payload.items || []).forEach((item) => {
       const row = element("div", "dossier-item");
@@ -7307,7 +7379,7 @@
       row.append(check, main, remove);
       items.appendChild(row);
     });
-    section.appendChild(items);
+    itemsBlock.appendChild(items);
     const shareForm = element("form", "notification-form");
     const recipient = profileField(shareForm, "Share recipient (exact organization name)", "recipient", "");
     const days = profileField(shareForm, "Expires in days", "expires", 30, {type: "number"});
@@ -7325,7 +7397,8 @@
         await loadProfile();
       } catch (error) { shareStatus.textContent = error.message; }
     });
-    section.appendChild(shareForm);
+    const sharing = profileBlock(section, "Sharing", "A named, expiring share of the ticked items. You preview it first.");
+    sharing.appendChild(shareForm);
     (payload.shares || []).forEach((grant) => {
       const row = element("div", "connection-row");
       row.appendChild(element("span", "", `${grant.recipient} · ${grant.status} · expires ${formatDate(grant.expires_at)} · ${plural(grant.access_log.length, "log event", "log events")}`));
@@ -7334,9 +7407,9 @@
         revoke.addEventListener("click", async () => { await api(`/api/v1/dossier/shares/${encodeURIComponent(grant.id)}`, {method: "DELETE"}); await loadProfile(); });
         row.appendChild(revoke);
       }
-      section.appendChild(row);
+      sharing.appendChild(row);
     });
-    const actions = element("div", "tracker-exports");
+    const actions = element("div", "tracker-exports profile-foot");
     const exportLink = element("a", "secondary-button", "Export dossier"); exportLink.href = "/api/v1/dossier/export";
     const deleteAll = element("button", "danger-button", "Delete dossier"); deleteAll.type = "button";
     deleteAll.addEventListener("click", async () => { if (window.confirm("Delete every dossier item and revoke every share?")) { await api("/api/v1/dossier", {method: "DELETE"}); await loadProfile(); } });
@@ -7346,9 +7419,9 @@
 
   function accountSection() {
     const section = element("section", "profile-card account-section");
-    section.appendChild(element("p", "eyebrow", "Account controls"));
     section.appendChild(element("h3", "", "Export or permanently delete"));
-    const actions = element("div", "tracker-exports");
+    section.appendChild(element("p", "profile-help", "Export downloads everything the app keeps for your account. Delete removes your private data and files for good; it cannot be undone."));
+    const actions = element("div", "tracker-exports profile-actions-row");
     const exportLink = element("a", "secondary-button", "Export full account"); exportLink.href = "/api/v1/account/export";
     const remove = element("button", "danger-button", "Delete account"); remove.type = "button";
     remove.addEventListener("click", async () => {
@@ -7361,10 +7434,9 @@
 
   function extensionSection(devicesPayload = {items: []}) {
     const section = element("section", "profile-card extension-section");
-    section.appendChild(element("p", "eyebrow", "Assisted Apply extension"));
     section.appendChild(element("h3", "", "Pair or revoke Chrome devices"));
     section.appendChild(element("p", "profile-help", "Pairing codes expire after 10 minutes and work once. The extension receives a revocable Apply-only credential, never your account token."));
-    const pairingActions = element("div", "tracker-exports");
+    const pairingActions = element("div", "tracker-exports profile-actions-row");
     const create = element("button", "secondary-button", "Create one-time pairing code");
     create.type = "button";
     const pairingStatus = element("p", "form-status");
@@ -7487,9 +7559,11 @@
       const blocked = !feature.can_turn_on && feature.mode !== "on" && Boolean(feature.can_turn_on_reason);
       // A switch left on can lose what it needs later (a threshold taken out of the profile).
       const stuck = feature.mode === "on" && Boolean(feature.requirement);
+      // Some reasons end in a full stop of their own; the sentence gets exactly one.
+      const sentence = (text) => `${String(text).replace(/[.]+$/, "")}.`;
       reason.textContent = blocked
-        ? `On is not available yet: ${feature.can_turn_on_reason}.`
-        : stuck ? `On, but it can't act yet: ${feature.requirement}.` : "";
+        ? `On is not available yet: ${sentence(feature.can_turn_on_reason)}`
+        : stuck ? `On, but it can't act yet: ${sentence(feature.requirement)}` : "";
       reason.hidden = !(blocked || stuck);
     }
   }
@@ -7616,13 +7690,16 @@
 
   // A checkbox for a two-mode feature. Saves at once; a refusal puts it back
   // and shows the server's reason in the status line.
+  // A switch and its label, kept apart so the row can put the switch at its end.
   function automationCheckbox(feature, id, text, status) {
-    const label = element("label", "settings-checkbox");
+    const label = element("label", "", text);
+    label.htmlFor = id;
     const box = document.createElement("input");
     box.type = "checkbox";
+    box.className = "settings-switch";
+    box.setAttribute("role", "switch");
     box.id = id;
     box.dataset.automationKey = feature.key;
-    label.append(box, document.createTextNode(` ${text}`));
     paintAutomationControl(box, feature);
     box.addEventListener("change", async () => {
       const wanted = box.checked ? "on" : "off";
@@ -7692,7 +7769,7 @@
       box.setAttribute("aria-describedby", `${reason.id} ${help.id}`);
       head.appendChild(label);
       if (external) head.appendChild(external);
-      field.append(head, reason, help);
+      field.append(head, box, reason, help);
       paintAutomationControl(box, feature);
     }
     return field;
@@ -7772,7 +7849,6 @@
   function automationSection(payload, actionsPayload, applicationsPayload = null) {
     const section = element("section", "profile-card automation-section");
     section.setAttribute("aria-labelledby", "automation-heading");
-    section.appendChild(element("p", "eyebrow", "Automation"));
     const title = element("h3", "", "What the app does on its own");
     title.id = "automation-heading";
     section.append(title, element("p", "profile-help", "Nothing here is on until you turn it on."));
@@ -8610,7 +8686,6 @@
     els.results.appendChild(tagSection(automationSection(automation, automationActions, applications), "automation", "Automation"));
 
     const resumeSection = element("section", "profile-card resume-section");
-    resumeSection.appendChild(element("p", "eyebrow", "Private documents"));
     resumeSection.appendChild(element("h3", "", "Resume versions"));
     resumeSection.appendChild(element("p", "profile-help", "PDF and DOCX only, up to 5 MB. Parsed suggestions remain drafts until you confirm each fact."));
     resumeSection.appendChild(element("p", "profile-help resume-variant-summary", resumeVariantSummary(resumesPayload)));
