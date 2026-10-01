@@ -11,8 +11,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, api
+import time
+
+from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
+from opportunity_app.web import context
 from opportunity_app.auth import issue_user_token
 from opportunity_app.schema import LOCAL_USER_ID, connect_product
 
@@ -40,7 +43,7 @@ class LaunchTicketTests(unittest.TestCase):
             minted = self.mint(launcher)
             self.assertEqual(minted.status_code, 200, minted.text)
             ticket = minted.json()["ticket"]
-            self.assertEqual(minted.json()["expires_in"], api.LAUNCH_TICKET_SECONDS)
+            self.assertEqual(minted.json()["expires_in"], context.LAUNCH_TICKET_SECONDS)
 
             session = browser.post("/api/v1/session", json={"launch_ticket": ticket})
             self.assertEqual(session.status_code, 200, session.text)
@@ -48,8 +51,8 @@ class LaunchTicketTests(unittest.TestCase):
             cookies = session.headers.get_list("set-cookie")
             owner_cookie = next(value for value in cookies if value.startswith("pipeline_session="))
             csrf_cookie = next(value for value in cookies if value.startswith("pipeline_csrf="))
-            self.assertIn(f"Max-Age={api.LAUNCH_SESSION_SECONDS}", owner_cookie)
-            self.assertIn(f"Max-Age={api.LAUNCH_SESSION_SECONDS}", csrf_cookie)
+            self.assertIn(f"Max-Age={context.LAUNCH_SESSION_SECONDS}", owner_cookie)
+            self.assertIn(f"Max-Age={context.LAUNCH_SESSION_SECONDS}", csrf_cookie)
             self.assertEqual(browser.get("/api/v1/session").status_code, 200)
             # Cookie-authenticated writes still need the CSRF header.
             write = browser.put(
@@ -74,8 +77,8 @@ class LaunchTicketTests(unittest.TestCase):
     def test_an_expired_ticket_is_refused(self):
         with TestClient(self.app) as client:
             ticket = self.mint(client).json()["ticket"]
-            later = api.time.monotonic() + api.LAUNCH_TICKET_SECONDS + 1
-            with mock.patch.object(api.time, "monotonic", return_value=later):
+            later = time.monotonic() + context.LAUNCH_TICKET_SECONDS + 1
+            with mock.patch.object(time, "monotonic", return_value=later):
                 session = client.post("/api/v1/session", json={"launch_ticket": ticket})
         self.assertEqual(session.status_code, 401)
 
@@ -119,7 +122,7 @@ class HostAllowlistTests(unittest.TestCase):
             _, platform_path = build_and_migrate(Path(tmp))
             app = create_app(
                 db_path=platform_path, access_token=OWNER, static_dir=STATIC_DIR,
-                allowed_hosts=list(api.LOOPBACK_HOSTS),
+                allowed_hosts=list(context.LOOPBACK_HOSTS),
             )
             with TestClient(app, base_url="http://127.0.0.1:8765") as client:
                 self.assertEqual(client.get("/api/v1/health").status_code, 200)

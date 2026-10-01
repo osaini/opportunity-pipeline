@@ -36,7 +36,8 @@ what puts a module there.
       records and configuration, the automation ledger, resumes and preparation documents, trust policy, profile.
   L4  workflows: code that runs the product across domain modules or on a schedule: sending, inbox capture, thank-you and
       schedule workflows, automation handlers, apply runs, discovery and research, and the background worker base.
-  L5  entry points: the FastAPI app, the launcher, the worker, and every CLI that is run as `python -m opportunity_app.X`.
+  L5  entry points: the FastAPI app (api and opportunity_app.web), the launcher, the worker, and every CLI that is run as
+      `python -m opportunity_app.X`.
       One exception: purge. It has a `__main__` guard (the daily run calls `python -m opportunity_app.purge`), but its
       logic is a domain operation (expire records) and main() is a thin wrapper, so it stays in L3 where refresh (L4),
       the manual refresh workflow, can import it at the top of the file. Do not move it up without moving refresh up too.
@@ -122,8 +123,23 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
         "outreach_interviewer outreach_email_search outreach_locate outreach_profile outreach_settings "
         "refresh desktop_notify operations student_agent urgent"
     ),
-    # L5 entry points.
-    5: _app("api launch worker daily system_status migrate ops_cli outreach_cli pipeline_mailbox setup"),
+    # L5 entry points. opportunity_app.web is the FastAPI app behind api: the composition root (app), the per-app context, the
+    # dependencies, middleware and asset handling, the request models, and one router module per feature.
+    5: (
+        _app("api launch worker daily system_status migrate ops_cli outreach_cli pipeline_mailbox setup")
+        | _mods("opportunity_app.web", ". app context dependencies middleware assets payloads")
+        | _mods(
+            "opportunity_app.web.models",
+            ". account admin agent applications apply_agent automation captures connections dossier employer extension market "
+            "opportunities outreach preparation resumes session system",
+        )
+        | _mods(
+            "opportunity_app.web.routers",
+            ". account admin agent applications apply_agent apply_sessions automation captures connections dossier employer "
+            "extension market opportunities outreach_contacts outreach_delivery outreach_drafting outreach_research "
+            "outreach_settings outreach_targets pages preparation resumes session system typesafe urgent",
+        )
+    ),
 }
 
 # (importer, imported module, reason). One entry per pair of modules; see the module docstring for what needs one.

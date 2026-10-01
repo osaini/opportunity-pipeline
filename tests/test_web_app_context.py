@@ -23,7 +23,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from starlette.routing import Mount
 
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
@@ -105,13 +107,14 @@ class TwoAppsInOneProcessTests(unittest.TestCase):
             self.assertNotIn("Alpha Only Robotics", beta_companies)
 
     def test_rate_limits_and_launch_tickets_are_per_app(self):
-        limited = build(self.roots[0], self.roots[0] / "platform.db", "limited-owner-token", rate_limit_per_minute=3)
-        with TestClient(limited) as small, TestClient(self.beta) as beta:
-            statuses = [small.get("/api/v1/session", headers=bearer("limited-owner-token")).status_code for _ in range(6)]
-            self.assertIn(429, statuses)
+        first = build(self.roots[0], self.roots[0] / "platform.db", "limited-one-token", rate_limit_per_minute=3)
+        second = build(self.roots[1], self.roots[1] / "platform.db", "limited-two-token", rate_limit_per_minute=3)
+        with TestClient(first) as one, TestClient(second) as two:
+            statuses = [one.get("/api/v1/session", headers=bearer("limited-one-token")).status_code for _ in range(5)]
+            self.assertEqual(statuses, [200, 200, 200, 429, 429])
             self.assertEqual(
-                [beta.get("/api/v1/session", headers=bearer("beta-owner-token")).status_code for _ in range(6)], [200] * 6,
-                "the other app's request window is its own",
+                [two.get("/api/v1/session", headers=bearer("limited-two-token")).status_code for _ in range(3)], [200] * 3,
+                "the other app's request window is its own, though both clients are the same host",
             )
         with TestClient(self.alpha) as alpha, TestClient(self.beta) as beta:
             ticket = alpha.post("/api/v1/auth/launch-ticket", headers=bearer("alpha-owner-token")).json()["ticket"]
@@ -129,6 +132,51 @@ class TwoAppsInOneProcessTests(unittest.TestCase):
                 return overview["metrics"]["requests"] if "metrics" in overview else overview["service"]["requests"]
 
             self.assertGreater(requests_seen(alpha, "alpha-owner-token-admin"), requests_seen(beta, "beta-owner-token-admin"))
+
+
+class SharedRouteTableTests(unittest.TestCase):
+    """The route table is built once per process and listed by every app; only the per-app parts differ."""
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tempdir.cleanup)
+        base = Path(self.tempdir.name)
+        self.apps = []
+        for name in ("one", "two"):
+            root = base / name
+            root.mkdir()
+            _, platform_path = build_and_migrate(root)
+            self.apps.append(build(root, platform_path, f"{name}-token"))
+
+    def test_two_apps_list_the_same_route_objects(self):
+        first, second = ([route for route in app.routes if isinstance(route, APIRoute)] for app in self.apps)
+        self.assertGreater(len(first), 200)
+        self.assertEqual(len(first), len(second))
+        self.assertTrue(all(a is b for a, b in zip(first, second)), "a route was rebuilt for the second app")
+
+    def test_a_shared_route_holds_no_reference_to_any_app(self):
+        # The sharing depends on this FastAPI behaviour: a route created on a standalone APIRouter has no
+        # dependency_overrides_provider, so it cannot serve one app's dependency_overrides to another. If a FastAPI upgrade
+        # binds routes to an app, this fails and the shared table has to be revisited.
+        for route in self.apps[0].routes:
+            if isinstance(route, APIRoute):
+                self.assertIsNone(route.dependency_overrides_provider, route.path)
+
+    def test_the_assets_mount_and_the_context_belong_to_one_app(self):
+        first, second = self.apps
+        mounts = [[route for route in app.routes if isinstance(route, Mount)] for app in self.apps]
+        self.assertEqual([len(group) for group in mounts], [1, 1])
+        self.assertIsNot(mounts[0][0], mounts[1][0])
+        self.assertIsNot(first.state.ctx, second.state.ctx)
+        for part in ("launch_tickets", "rate_windows", "metrics", "traces", "open_connections", "asset_versions", "apply_schema_cache"):
+            self.assertIsNot(getattr(first.state.ctx.runtime, part), getattr(second.state.ctx.runtime, part), part)
+        self.assertNotEqual(first.state.ctx.config.access_token, second.state.ctx.config.access_token)
+        self.assertEqual(first.state.access_token, first.state.ctx.config.access_token, "main() and the tests read app.state.access_token")
+        self.assertIs(first.state.call_prep_worker, first.state.ctx.services.call_prep_worker)
+
+    def test_an_unknown_keyword_is_still_refused(self):
+        with self.assertRaises(TypeError):
+            create_app(not_an_option=True)
 
 
 class AHandlersDatabaseErrorIsNotAMissingDatabaseTests(unittest.TestCase):

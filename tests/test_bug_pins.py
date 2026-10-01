@@ -108,9 +108,9 @@ class ReadOnlyTokenResolutionTests(unittest.TestCase):
 
         from helpers_platform import build_and_migrate
         from opportunity_app import STATIC_DIR
-        from opportunity_app import api as api_module
         from opportunity_app.api import create_app
         from opportunity_app.auth import resolve_user_token
+        from opportunity_app.web import dependencies
 
         with tempfile.TemporaryDirectory() as tempdir:
             _, platform_path = build_and_migrate(Path(tempdir))
@@ -142,10 +142,14 @@ class ReadOnlyTokenResolutionTests(unittest.TestCase):
 
                 # Same request, but token resolution now runs against a read-only
                 # PostgreSQL connection instead of SQLite.
+                resolved_over_postgres = []
+
                 def resolve_over_postgres(_conn, token):
+                    resolved_over_postgres.append(token)
                     return resolve_user_token(ReadOnlyPostgresLike(), token)
 
-                with mock.patch.object(api_module, "resolve_user_token", resolve_over_postgres):
+                # The dependency looks the name up when it runs, in the module that defines require_auth.
+                with mock.patch.object(dependencies, "resolve_user_token", resolve_over_postgres):
                     for path in ("/api/v1/opportunities", "/api/v1/stats"):
                         response = client.get(path, headers=headers)
                         self.assertNotEqual(
@@ -153,6 +157,10 @@ class ReadOnlyTokenResolutionTests(unittest.TestCase):
                             f"GET {path} returned 500: the read-only write escaped require_auth",
                         )
                         self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual(
+                        resolved_over_postgres, [student_token, student_token],
+                        "the patched resolver ran for each request; a patch that stops applying would pass this test for nothing",
+                    )
 
 
 class UnicodeCredentialComparisonTests(unittest.TestCase):

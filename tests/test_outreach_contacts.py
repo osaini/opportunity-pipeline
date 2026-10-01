@@ -709,7 +709,8 @@ class RecontactTests(DatabaseCase):
 
     def test_the_web_app_reports_first_and_applies_only_the_ticked_targets(self):
         from fastapi.testclient import TestClient
-        from opportunity_app.api import STATIC_DIR, create_app
+        from opportunity_app import STATIC_DIR
+        from opportunity_app.api import create_app
 
         target = self.target(contact_email="hello@acme.test", contact_confidence="confirmed")
         transport, _ = site_transport(copy.deepcopy(self.SITE))

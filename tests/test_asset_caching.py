@@ -167,7 +167,7 @@ class AssetCachingTests(unittest.TestCase):
                         hashed.append(data)
                         return real_sha256(data, *args, **kwargs)
 
-                    with mock.patch("opportunity_app.api.hashlib.sha256", spy):
+                    with mock.patch("opportunity_app.web.assets.hashlib.sha256", spy):
                         response = client.get(probe)
                     self.assertEqual(response.headers["Cache-Control"], "no-cache")
                     self.assertNotIn(outside.read_bytes(), hashed)
@@ -185,7 +185,7 @@ class AssetCachingTests(unittest.TestCase):
                 hashed.append(data)
                 return real_sha256(data, *args, **kwargs)
 
-            with mock.patch("opportunity_app.api.hashlib.sha256", spy):
+            with mock.patch("opportunity_app.web.assets.hashlib.sha256", spy):
                 self.assertIn("immutable", client.get(f"/assets/styles.css?v={digest}").headers["Cache-Control"])
                 for alias in ("STYLES.CSS", "Styles.Css", "styles.css.", "styles.css..", "styles.css..."):
                     with self.subTest(alias=alias):
@@ -216,7 +216,7 @@ class AssetCachingTests(unittest.TestCase):
             return real_sha256(data, *args, **kwargs)
 
         with TestClient(self.app) as client:
-            with mock.patch("opportunity_app.api.hashlib.sha256", spy):
+            with mock.patch("opportunity_app.web.assets.hashlib.sha256", spy):
                 for index in range(20):
                     client.get(f"/assets/missing-{index}.js?v=0")
                     client.get(f"/assets/missing-{index}.js")
