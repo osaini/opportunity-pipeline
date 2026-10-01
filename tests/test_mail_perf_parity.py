@@ -130,7 +130,7 @@ class PendingDraftsParityTests(unittest.TestCase):
             self.assertTrue(sends._pending(conn, USER, now))
             # Nothing due (every draft was just looked at): no target is read at all.
             sends._LAST_LOOK.clear()
-            sends._take_due(USER, sends._pending(conn, USER, now), now)
+            sends._LOOKS.take_due(USER, sends._pending(conn, USER, now), now)
             self.assertEqual(sends.capture_gmail_sends(conn, user_id=USER, client_factory=lambda: None, now=now),
                              {"state": "ok", "sent": [], "scheduled": []})
 
@@ -141,7 +141,7 @@ class PendingDraftsParityTests(unittest.TestCase):
         self.addCleanup(sends._LAST_LOOK.clear)
         pending = sends._pending(conn, USER, now)
         self.assertGreater(len(pending), 3)
-        due = sends._take_due(USER, pending, now)
+        due = sends._LOOKS.take_due(USER, pending, now)
         self.assertEqual(len(due), len(pending))
         gone = due[0]
         with conn:

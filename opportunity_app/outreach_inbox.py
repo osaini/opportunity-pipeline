@@ -86,12 +86,16 @@ from .outreach import (
     update_target,
 )
 from .outreach_delivery import _headers_say_failure, check_deliveries
-from .outreach_gmail import (
-    PROVIDER,
-    SENT_EVENT,
+from .gmail_client import (
     ClientFactory,
     GmailAuthError,
+    GmailNeedsReadScope,
     GmailThrottled,
+    PROVIDER,
+    connection_state,
+)
+from .outreach_gmail import (
+    SENT_EVENT,
     _connector,
     _Gmail,
     gmail_notices,
@@ -1036,9 +1040,9 @@ def capture_replies(
                 "UPDATE outreach_inbox_messages SET rules=? WHERE user_id=? AND kind=? AND rules < ?", (RULES, user_id, AUTOMATIC, RULES),
             )
         return result
-    row = _connector(conn, user_id)
-    if not row or row["status"] != "connected":
-        return {**result, "state": "not_connected" if not row or row["status"] == "disconnected" else "needs_reconnect"}
+    state = connection_state(_connector(conn, user_id))
+    if state != "connected":
+        return {**result, "state": state}
     account = sender_account().casefold()
     activated = _activated_at(conn)
     budget = [READ_BUDGET]
@@ -1174,7 +1178,7 @@ def capture_replies(
         if response.status_code == 404:
             return True  # the thread was deleted: nothing left to find in it
         if response.status_code == 403:
-            raise _NeedsReconnect
+            raise GmailNeedsReadScope
         if response.status_code != 200:
             result["state"] = "unreachable"
             return False
@@ -1190,7 +1194,7 @@ def capture_replies(
         return complete
 
     def look(gmail: _Gmail) -> None:
-        """Every look of one check, in order. Raises _NeedsReconnect when Gmail refuses a read."""
+        """Every look of one check, in order. Raises GmailNeedsReadScope when Gmail refuses a read."""
         # The company an automatic send is about to go to: its threads and its mail, now, before anything else,
         # outside the budget, so the look before the send is complete for it.
         forced = next((target for target in watched if target["id"] == force_target), None)
@@ -1257,7 +1261,7 @@ def capture_replies(
         """A search's results, and whether it read them all. A failed one leaves the check not ok."""
         references, failed, more = _search(gmail, user_id, query, page_size=page_size)
         if failed == 403:
-            raise _NeedsReconnect
+            raise GmailNeedsReadScope
         if failed:
             # A search that failed found nothing yet; say so, so a send waiting on it holds.
             result["state"] = "unreachable"
@@ -1267,7 +1271,7 @@ def capture_replies(
     try:
         with client_factory() as client:
             look(_Gmail(conn, client, user_id))
-    except (_NeedsReconnect, GmailAuthError):
+    except (GmailNeedsReadScope, GmailAuthError):
         outcome = {**result, "state": "needs_reconnect"}
     except GmailThrottled:
         # Gmail asked to slow down: what was not read yet is read on a later check, and a send waiting on it holds.
@@ -1286,10 +1290,6 @@ def capture_replies(
 
 
 _THREAD_HEADERS = ("From", "To", "Cc", "Subject", "Content-Type", "X-Failed-Recipients")
-
-
-class _NeedsReconnect(Exception):
-    """Gmail refused a read: the connection predates the read scope."""
 
 
 # --- In the background ----------------------------------------------------------------

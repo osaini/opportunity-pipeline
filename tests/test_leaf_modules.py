@@ -150,6 +150,112 @@ class MailMessageLeafTests(unittest.TestCase):
         self.assertEqual(mailbox_key("no address"), "no address")
 
 
+class GmailClientLeafTests(unittest.TestCase):
+    def test_gmail_client_imports_only_the_standard_library_and_httpx(self):
+        self.assertEqual(outside_allowlist(APP / "gmail_client.py", {"httpx"}), set())
+
+    def test_a_connection_is_connected_not_connected_or_needing_a_reconnect(self):
+        from opportunity_app.gmail_client import connection_state
+
+        self.assertEqual(connection_state(None), "not_connected")
+        self.assertEqual(connection_state({"status": "disconnected"}), "not_connected")
+        self.assertEqual(connection_state({"status": "connected"}), "connected")
+        self.assertEqual(connection_state({"status": "error"}), "needs_reconnect")
+        self.assertEqual(connection_state({"status": "anything else"}), "needs_reconnect")
+
+    def test_granted_scopes_read_a_list_and_nothing_else(self):
+        from opportunity_app.gmail_client import MODIFY_SCOPE, READ_SCOPE, can_read_mail, granted_scopes
+
+        self.assertEqual(granted_scopes(f'["{READ_SCOPE}", 7]'), [READ_SCOPE, "7"])
+        for unreadable in (None, "", "not json", "null", '"a string"', '{"a": 1}', 5):
+            with self.subTest(value=unreadable):
+                self.assertEqual(granted_scopes(unreadable), [])
+        self.assertTrue(can_read_mail([READ_SCOPE]))
+        self.assertTrue(can_read_mail([MODIFY_SCOPE]))
+        self.assertFalse(can_read_mail(["https://www.googleapis.com/auth/gmail.compose"]))
+
+    def test_a_throttle_is_a_429_or_a_403_that_names_a_rate_limit(self):
+        import httpx
+
+        from opportunity_app.gmail_client import error_reasons, is_throttle
+
+        def answer(status, body=None):
+            return httpx.Response(status, json=body) if body is not None else httpx.Response(status, text="not json")
+
+        named = {"error": {"status": "RESOURCE_EXHAUSTED", "errors": [{"reason": "rateLimitExceeded"}, "junk", {"reason": 3}]}}
+        self.assertTrue(is_throttle(answer(429)))
+        self.assertTrue(is_throttle(answer(403, named)))
+        self.assertTrue(is_throttle(answer(403, {"error": {"errors": [{"reason": "userRateLimitExceeded"}]}})))
+        self.assertFalse(is_throttle(answer(403, {"error": {"status": "PERMISSION_DENIED", "errors": [{"reason": "forbidden"}]}})))
+        self.assertFalse(is_throttle(answer(403)))
+        self.assertFalse(is_throttle(answer(403, {"error": "denied"})))
+        self.assertFalse(is_throttle(answer(500, named)))
+        self.assertEqual(error_reasons(answer(403, named)), ["RESOURCE_EXHAUSTED", "rateLimitExceeded", 3])
+        self.assertEqual(error_reasons(answer(403, [1])), [])
+        self.assertEqual(error_reasons(answer(403)), [])
+
+    def test_a_throttle_is_read_as_could_not_reach_gmail_and_never_as_a_refused_connection(self):
+        import httpx
+
+        from opportunity_app.gmail_client import GmailAuthError, GmailNeedsReadScope, GmailThrottled
+
+        self.assertIsInstance(GmailThrottled("slow down"), httpx.HTTPError)
+        self.assertNotIsInstance(GmailAuthError("refused"), httpx.HTTPError)
+        self.assertNotIsInstance(GmailNeedsReadScope(), (httpx.HTTPError, GmailAuthError))
+
+    def test_a_look_schedule_spaces_looks_and_forgets_a_failed_one(self):
+        import threading
+        from datetime import timedelta
+
+        from opportunity_app.gmail_client import LookSchedule
+
+        last: dict = {}
+        schedule = LookSchedule(
+            last, threading.Lock(), interval=lambda age: timedelta(minutes=10) if age < timedelta(hours=1) else timedelta(hours=1),
+            key=lambda item: item["id"], started=lambda item: item["at"],
+        )
+        now = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
+        fresh, old = {"id": "a", "at": now - timedelta(minutes=5)}, {"id": "b", "at": now - timedelta(days=2)}
+        self.assertEqual(schedule.take_due("u", [fresh, old], now), [fresh, old])
+        self.assertEqual(schedule.take_due("u", [fresh, old], now + timedelta(minutes=9)), [])
+        self.assertEqual(schedule.take_due("u", [fresh, old], now + timedelta(minutes=11)), [fresh])
+        self.assertEqual(schedule.take_due("u", [fresh, old], now + timedelta(hours=2)), [fresh, old])
+        self.assertEqual(schedule.take_due("someone else", [fresh], now), [fresh], "kept per student")
+        schedule.forget("u", [fresh])
+        self.assertEqual(schedule.take_due("u", [fresh, old], now + timedelta(hours=2, minutes=1)), [fresh])
+        self.assertIs(schedule.last, last)
+
+    def test_the_send_watchers_look_key_is_forgotten_as_text_and_remembered_as_stored(self):
+        # Kept as it was (gmail-11): remembered under the id as stored, forgotten under str() of it. Harmless while
+        # a draft id is always text; this pins that nobody evens the two out without meaning to.
+        import threading
+        from datetime import timedelta
+
+        from opportunity_app.gmail_client import LookSchedule
+
+        schedule = LookSchedule(
+            {}, threading.Lock(), interval=lambda age: timedelta(hours=1), key=lambda item: item["id"], started=lambda item: item["at"],
+            forget_key=str,
+        )
+        now = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        item = {"id": 5, "at": now}
+        schedule.take_due("u", [item], now)
+        schedule.forget("u", [item])
+        self.assertEqual(schedule.take_due("u", [item], now), [], "the int key was not forgotten: forget looked for '5'")
+        text = {"id": "d-1", "at": now}
+        schedule.take_due("u", [text], now)
+        schedule.forget("u", [text])
+        self.assertEqual(schedule.take_due("u", [text], now), [text])
+
+    def test_each_watcher_keeps_its_own_look_state_under_its_own_name(self):
+        from opportunity_app import outreach_delivery, outreach_gmail_sends
+
+        self.assertIs(outreach_delivery._LOOKS.last, outreach_delivery._LAST_LOOK)
+        self.assertIs(outreach_gmail_sends._LOOKS.last, outreach_gmail_sends._LAST_LOOK)
+        self.assertIsNot(outreach_delivery._LAST_LOOK, outreach_gmail_sends._LAST_LOOK)
+        self.assertIs(outreach_delivery._LOOKS.lock, outreach_delivery._LOOK_LOCK, "which also guards _READ_NOTICES")
+
+
 class OutreachIdentityTests(unittest.TestCase):
     def test_company_identity_does_not_load_the_mail_readers(self):
         heavy = {".outreach_inbox", ".application_inbox", ".outreach_labels", ".outreach_delivery", ".automation", ".api"}

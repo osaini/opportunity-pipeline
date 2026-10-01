@@ -303,13 +303,12 @@ from .apply_schema_client import SchemaClient, default_schema_client_factory
 from .outreach_automation import AutomationWorker, settings as automation_settings, update_settings as update_automation_settings
 from .outreach_schedule import cancel_send, schedule_send
 from . import outreach_labels, outreach_thank_you
+from .gmail_client import GmailAuthError, default_client_factory as default_gmail_client_factory
 from .outreach_gmail import (
-    GmailAuthError,
     SendConflictError,
     SendNeedsCheckError,
     ThankYouChanged,
     create_gmail_draft,
-    default_client_factory as default_gmail_client_factory,
     gmail_drafts_status,
     send_gmail_message,
 )

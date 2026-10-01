@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import html
-import json
 import re
 import sqlite3
 import sys
@@ -36,12 +35,21 @@ from cryptography.fernet import Fernet, InvalidToken
 from . import ROOT
 from .connections import OAUTH_PROVIDERS
 from .database import is_postgres_target
+from .gmail_client import (
+    GMAIL_API,
+    MODIFY_SCOPE,
+    PROVIDER,
+    READ_SCOPE,
+    THROTTLE_REASONS,
+    ClientFactory,
+    can_read_mail,
+    default_client_factory,
+    error_reasons,
+    granted_scopes,
+)
 from .mail_message import decode_base64url
-from .outreach_gmail import GMAIL_API, MODIFY_SCOPE, PROVIDER, READ_SCOPE, THROTTLE_REASONS
-from .schema import LOCAL_USER_ID, _has_column, connect_product
+from .schema import LOCAL_USER_ID, connect_product
 from .setup import read_env
-
-ClientFactory = Callable[[], httpx.Client]
 
 TEXT_CAP = 4000
 DEFAULT_MAX = 20
@@ -103,14 +111,6 @@ def _connector(conn, root: Path, user: str | None) -> tuple[str, dict[str, Any]]
     return user, by_user[user]
 
 
-def _recorded_scopes(row: dict[str, Any]) -> list[str]:
-    try:
-        scopes = json.loads(row.get("scopes_json") or "[]")
-    except (TypeError, ValueError):
-        return []
-    return [str(scope) for scope in scopes] if isinstance(scopes, list) else []
-
-
 def _permissions(scopes: list[str]) -> list[str]:
     """Which of compose / read / label a list of scopes gives, in that order."""
     names = {"gmail.compose": "compose", "gmail.readonly": "read", "gmail.modify": "label"}
@@ -123,10 +123,10 @@ def _permissions(scopes: list[str]) -> list[str]:
 class _Session:
     """One access token for this run, and every Gmail GET made with it."""
 
-    def __init__(self, client: httpx.Client, root: Path, env: dict[str, str], row: dict[str, Any]):
+    def __init__(self, client: httpx.Client, env: dict[str, str], row: dict[str, Any]):
         self.client = client
-        self.recorded = _recorded_scopes(row)
-        if READ_SCOPE not in self.recorded and MODIFY_SCOPE not in self.recorded:
+        self.recorded = granted_scopes(row.get("scopes_json"))
+        if not can_read_mail(self.recorded):
             raise MailboxError(CANNOT_READ)
         self.token, self.response_scopes, self.narrowed = self._refresh(env, row)
         self._profile: dict[str, Any] | None = None
@@ -189,14 +189,7 @@ class _Session:
         if status == 401:
             raise MailboxError(REFUSED)
         if status == 403:
-            try:
-                error = response.json().get("error")
-            except (ValueError, AttributeError):
-                error = None
-            named = [error.get("status")] if isinstance(error, dict) else []
-            if isinstance(error, dict) and isinstance(error.get("errors"), list):
-                named += [item.get("reason") for item in error["errors"] if isinstance(item, dict)]
-            raise MailboxError(WAIT if any(name in THROTTLE_REASONS for name in named) else CANNOT_READ)
+            raise MailboxError(WAIT if any(name in THROTTLE_REASONS for name in error_reasons(response)) else CANNOT_READ)
         if status == 429 or status >= 500:
             raise MailboxError(WAIT)
         if status != 200:
@@ -251,7 +244,7 @@ def _whoami(session: _Session, conn, user: str, row: dict[str, Any], env: dict[s
     out(f"Permissions: {', '.join(_permissions(granted)) or 'none'} ({source})")
     try:
         # Imported here: the reader must still start on a checkout that predates reply labels.
-        from .outreach_labels import _search_candidates, label_name, search_form
+        from .outreach_labels import label_backlog, label_name, search_form
 
         label = label_name(conn, user)
     except (ImportError, sqlite3.Error):
@@ -261,32 +254,11 @@ def _whoami(session: _Session, conn, user: str, row: dict[str, Any], env: dict[s
             out("Reply label: off (the app labels nothing)")
         else:
             out(f'Reply label: {label}; search "label:{search_form(label)}"')
-            # Every column and table the figures below read: a half-applied 0043 has some of the columns, and a
-            # database before 0044 has no table of sent threads.
-            known = all(_has_column(conn, "outreach_inbox_messages", column) for column in ("label_name", "labeled_at", "label_note")) and all(
-                _has_column(conn, "outreach_label_threads", column) for column in ("label_name", "labeled_at", "label_note")
-            ) and _has_column(conn, "outreach_label_searches", "query")
-            if known:
-                waiting = conn.execute(
-                    "SELECT COUNT(*) FROM outreach_inbox_messages WHERE user_id=? AND kind='reply' AND label_name<>?", (user, label),
-                ).fetchone()[0] + conn.execute(
-                    "SELECT COUNT(*) FROM outreach_label_threads WHERE user_id=? AND label_name<>?", (user, label),
-                ).fetchone()[0]
-                # A thread the app could not label (Gmail refused it, or, for a reply, its thread's listing left the message out) is
-                # settled with the name, no time and the note 'failed'. One whose message or
-                # thread Gmail no longer has ('gone') is not counted: no search can find it, so it cannot make label: unreliable.
-                unlabelled = conn.execute(
-                    "SELECT COUNT(*) FROM outreach_inbox_messages WHERE user_id=? AND kind='reply' AND label_name=? AND labeled_at IS NULL AND label_note='failed'",
-                    (user, label),
-                ).fetchone()[0] + conn.execute(
-                    "SELECT COUNT(*) FROM outreach_label_threads WHERE user_id=? AND label_name=? AND labeled_at IS NULL AND label_note='failed'",
-                    (user, label),
-                ).fetchone()[0]
-                # A company that has gone out and whose Sent mail the app has not searched yet: threads it sent from Gmail may lack the label.
-                unsearched = len(_search_candidates(conn, user, 1_000_000, mailbox))
-                out(f"Outreach threads not labelled yet: {waiting}")
-                out(f"Outreach threads the app could not label: {unlabelled}")
-                out(f"Companies not yet searched for sent outreach: {unsearched}")
+            backlog = label_backlog(conn, user, label, mailbox)
+            if backlog is not None:
+                out(f"Outreach threads not labelled yet: {backlog['waiting']}")
+                out(f"Outreach threads the app could not label: {backlog['unlabelled']}")
+                out(f"Companies not yet searched for sent outreach: {backlog['unsearched']}")
                 out("Rely on label: alone only when all three are 0; otherwise also search by from:/to:/subject:")
             else:
                 out("Outreach threads not labelled yet: not known: this database predates labels on outreach threads")
@@ -446,8 +418,8 @@ def main(argv: list[str] | None = None, *, client_factory: ClientFactory | None 
         user, row = _connector(conn, root, args.user)
         if row.get("status") == "disconnected":
             raise MailboxError(NOT_CONNECTED)
-        with (client_factory or (lambda: httpx.Client(timeout=30, follow_redirects=False)))() as client:
-            session = _Session(client, root, env, row)
+        with (client_factory or default_client_factory)() as client:
+            session = _Session(client, env, row)
             if args.command == "whoami":
                 _whoami(session, conn, user, row, env, _print)
             elif args.command == "search":

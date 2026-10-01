@@ -165,7 +165,8 @@ from .mail_message import (
     strip_queries,
 )
 from .outreach_drafting import sender_account
-from .outreach_gmail import ClientFactory, GmailAuthError, GmailThrottled, _connector, _Gmail
+from .gmail_client import ClientFactory, GmailAuthError, GmailThrottled, connection_state
+from .outreach_gmail import _connector, _Gmail
 from .schema import utc_now
 from .typesafe_decisions import DecisionClient
 from .user_time import user_timezone
@@ -1703,9 +1704,9 @@ def run_pass(
         last = automation._parse(sync.get("last_pass_at"))
         if not force and last is not None and now - last < PASS_EVERY:
             return {**result, "skipped": True}
-        row = _connector(conn, user_id)
-        if not row or row["status"] != "connected":
-            return {**result, "state": "not_connected" if not row or row["status"] == "disconnected" else "needs_reconnect"}
+        state = connection_state(_connector(conn, user_id))
+        if state != "connected":
+            return {**result, "state": state}
         totals: dict[str, int] = {}
         try:
             with conn:

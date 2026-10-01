@@ -122,13 +122,12 @@ from .outreach import (
     spoken_company,
     suggest_reply_status,
 )
+from .gmail_client import GmailAuthError, GmailThrottled
 from .outreach_gmail import (
     SENT_EVENT,
     THANK_YOU_DRAFT_EVENT,
     THANK_YOU_KIND,
     THANK_YOU_SENT_EVENT,
-    GmailAuthError,
-    GmailThrottled,
     SendConflictError,
     SendUnconfirmedError,
     ThankYouChanged,

@@ -57,6 +57,17 @@ from urllib.parse import quote
 import httpx
 
 from . import automation
+from .gmail_client import (
+    MODIFY_SCOPE,
+    PROVIDER,
+    SERVER_ERRORS,
+    ClientFactory,
+    GmailAuthError,
+    GmailThrottled,
+    connection_state,
+    granted_scopes,
+    is_throttle,
+)
 from .mail_message import MAILER_DAEMONS, header_map
 from .mail_trust import FREEMAIL, registrable_domain
 from .outreach import UNSENT_STATUSES
@@ -64,19 +75,13 @@ from .outreach_delivery import _is_delivery_notice
 from .outreach_drafting import sender_account
 from .outreach_gmail import (
     DRAFT_EVENT,
-    MODIFY_SCOPE,
-    PROVIDER,
     SENT_EVENT,
-    SERVER_ERRORS,
     THANK_YOU_SENT_EVENT,
-    ClientFactory,
-    GmailAuthError,
-    GmailThrottled,
     _connector,
     _Gmail,
-    _is_throttle,
     backoff_until,
 )
+from .schema import _has_column
 
 LOGGER = logging.getLogger(__name__)
 
@@ -204,14 +209,6 @@ def _discard(conn: sqlite3.Connection) -> None:
         LOGGER.warning("Could not roll back after labelling replies", exc_info=True)
 
 
-def _granted(row: sqlite3.Row) -> list[str]:
-    try:
-        granted = json.loads(row["scopes_json"] or "[]")
-    except (TypeError, ValueError):
-        return []
-    return [str(scope) for scope in granted] if isinstance(granted, list) else []
-
-
 def label_replies(
     conn: sqlite3.Connection, *, user_id: str, client_factory: ClientFactory, now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -241,14 +238,13 @@ def label_replies(
 
 def _run(conn: sqlite3.Connection, user_id: str, client_factory: ClientFactory, now: datetime) -> dict[str, Any]:
     row = _connector(conn, user_id)
-    if row is None or row["status"] == "disconnected":
-        return {"state": "not_connected"}
-    if row["status"] != "connected":
-        return {"state": "needs_reconnect"}
+    state = connection_state(row)
+    if state != "connected":
+        return {"state": state}
     if backoff_until(user_id) is not None:
         return {"state": "throttled"}
     known = str(row["account_email"] or "") if "account_email" in row.keys() else ""
-    granted = _granted(row)
+    granted = granted_scopes(row["scopes_json"])
     _discard(conn)
     with ExitStack() as stack:
         gmail: list[_Gmail] = []
@@ -538,6 +534,43 @@ def _search_candidates(
     return wanted
 
 
+def label_backlog(conn: sqlite3.Connection, user_id: str, name: str, account: str) -> dict[str, int] | None:
+    """What stands between the reply label and being complete: the three counts ``pipeline_mailbox whoami`` reports.
+
+    ``waiting``: outreach threads not labelled under ``name`` yet. ``unlabelled``: threads the app could not label (Gmail
+    refused them, or, for a reply, its thread's listing left the message out): settled under the name, with no time and the
+    note 'failed'. One whose message or thread Gmail no longer has ('gone') is not counted: no search can find it, so it
+    cannot make label: unreliable. ``unsearched``: companies that have gone out and whose Sent mail the app has not
+    searched yet, so threads sent from Gmail may lack the label. ``account`` is the mailbox, as the app reads it.
+
+    None when the database predates labels: every column and table read here must exist (a half-applied 0043 has some of
+    the columns, and a database before 0044 has no table of sent threads).
+    """
+    columns = ("label_name", "labeled_at", "label_note")
+    if not (
+        all(_has_column(conn, "outreach_inbox_messages", column) for column in columns)
+        and all(_has_column(conn, "outreach_label_threads", column) for column in columns)
+        and _has_column(conn, "outreach_label_searches", "query")
+    ):
+        return None
+    waiting = conn.execute(
+        "SELECT COUNT(*) FROM outreach_inbox_messages WHERE user_id=? AND kind='reply' AND label_name<>?", (user_id, name),
+    ).fetchone()[0] + conn.execute(
+        "SELECT COUNT(*) FROM outreach_label_threads WHERE user_id=? AND label_name<>?", (user_id, name),
+    ).fetchone()[0]
+    unlabelled = conn.execute(
+        "SELECT COUNT(*) FROM outreach_inbox_messages WHERE user_id=? AND kind='reply' AND label_name=? AND labeled_at IS NULL AND label_note='failed'",
+        (user_id, name),
+    ).fetchone()[0] + conn.execute(
+        "SELECT COUNT(*) FROM outreach_label_threads WHERE user_id=? AND label_name=? AND labeled_at IS NULL AND label_note='failed'",
+        (user_id, name),
+    ).fetchone()[0]
+    return {
+        "waiting": waiting, "unlabelled": unlabelled,
+        "unsearched": len(_search_candidates(conn, user_id, 1_000_000, account)),
+    }
+
+
 def _history_query(mark: dict[str, Any] | None) -> str:
     """The Sent search for one company's history, or '' when it has no address or subject to search by."""
     if not mark:
@@ -560,6 +593,10 @@ def _epoch(text: str) -> int | None:
     except ValueError:
         return None
     return int((moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)).timestamp())
+
+
+# What _Labeller.get_json answers for a message or thread Gmail no longer has.
+MISSING = object()
 
 
 class _Labeller:
@@ -588,18 +625,29 @@ class _Labeller:
 
     def _refuse(self, response: httpx.Response) -> None:
         """Stop the pass when Gmail's answer to a label call was a rate limit, a server error or a refused permission."""
-        if _is_throttle(response) or response.status_code in SERVER_ERRORS:
+        if is_throttle(response) or response.status_code in SERVER_ERRORS:
             raise _Stop("throttled")
         if response.status_code == 403:
             raise _Stop("needs_label_permission")
 
-    def _listed(self) -> str:
-        """The id of the student's own label of this name, or ''. An exact name wins over one that differs in case or spacing."""
-        response = self.gmail.request("GET", "/labels")
+    def get_json(self, path: str, params: Any = None, *, missing_ok: bool = False) -> Any:
+        """One Gmail read, answered as JSON. A refused or rate-limited answer stops the pass (_refuse), as does any other that is not a 200.
+
+        ``missing_ok``: a 404 returns MISSING instead, before _refuse looks at it. (_Labeller.thread does not use
+        this: it answers "failed" for a thread Gmail will not give, where this stops the pass.)
+        """
+        response = self.gmail.request("GET", path, **({} if params is None else {"params": params}))
+        if missing_ok and response.status_code == 404:
+            return MISSING
         self._refuse(response)
         if response.status_code != 200:
             raise _Stop("unreachable")
-        mine = [item for item in response.json().get("labels", []) if isinstance(item, dict) and item.get("type") == "user"]
+        return response.json()
+
+    def _listed(self) -> str:
+        """The id of the student's own label of this name, or ''. An exact name wins over one that differs in case or spacing."""
+        listing = self.get_json("/labels")
+        mine = [item for item in listing.get("labels", []) if isinstance(item, dict) and item.get("type") == "user"]
         for match in (lambda text: text == self.name, lambda text: " ".join(text.split()).casefold() == self.name.casefold()):
             for item in mine:
                 if match(str(item.get("name", ""))) and item.get("id"):
@@ -882,13 +930,8 @@ def _search_history(
 
 def _thread_of(labeller: _Labeller, gmail_id: str) -> str:
     """The thread a captured message is in, read from Gmail; '' when Gmail no longer has the message."""
-    response = labeller.gmail.request("GET", f"/messages/{quote(gmail_id, safe='')}", params={"format": "minimal"})
-    if response.status_code == 404:
-        return ""
-    labeller._refuse(response)
-    if response.status_code != 200:
-        raise _Stop("unreachable")
-    return str(response.json().get("threadId") or "")
+    message = labeller.get_json(f"/messages/{quote(gmail_id, safe='')}", {"format": "minimal"}, missing_ok=True)
+    return "" if message is MISSING else str(message.get("threadId") or "")
 
 
 def _kept(conn: sqlite3.Connection, user_id: str, name: str) -> dict[str, Any] | None:
@@ -1051,15 +1094,12 @@ def _sweep_sent(
 
 def _outreach_target(labeller: _Labeller, gmail_id: str, addresses: dict[str, str], subjects: dict[str, str]) -> str:
     """The company a sent message is outreach to, going by who it went to and its subject; '' when it is not outreach."""
-    response = labeller.gmail.request("GET", f"/messages/{quote(gmail_id, safe='')}", params={
+    message = labeller.get_json(f"/messages/{quote(gmail_id, safe='')}", {
         "format": "metadata", "metadataHeaders": ["To", "Cc", "Bcc", "Subject"],
-    })
-    if response.status_code == 404:
+    }, missing_ok=True)
+    if message is MISSING:
         return ""
-    labeller._refuse(response)
-    if response.status_code != 200:
-        raise _Stop("unreachable")
-    headers = header_map(response.json(), guarded=True)
+    headers = header_map(message, guarded=True)
     for address in _addresses(headers.get("to"), headers.get("cc"), headers.get("bcc")):
         if address in addresses:
             return addresses[address]

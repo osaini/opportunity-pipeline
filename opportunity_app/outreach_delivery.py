@@ -33,12 +33,18 @@ import httpx
 from .mail_message import MAILER_DAEMONS, decode_base64url, header_map
 from .outreach import AWAITING_REPLY, _log, get_target
 from .outreach_drafting import _keep_current_draft
+from .gmail_client import (
+    ClientFactory,
+    GmailAuthError,
+    GmailNeedsReadScope,
+    GmailThrottled,
+    GmailUnreadable,
+    LookSchedule,
+    connection_state,
+)
 from .outreach_gmail import (
     BOUNCE_EVENT,
     SENT_EVENT,
-    ClientFactory,
-    GmailAuthError,
-    GmailThrottled,
     _connector,
     _Gmail,
     event_tie_order,
@@ -73,14 +79,6 @@ _READ_NOTICES: set[tuple[str, str]] = set()
 _LOOK_LOCK = threading.Lock()
 
 
-class _NeedsReconnect(Exception):
-    """Gmail refused a read: the connection predates the read scope."""
-
-
-class _Unreadable(Exception):
-    """Gmail answered a read with an error, so what it would have shown is unknown."""
-
-
 def _interval(age: timedelta) -> timedelta:
     """How long to wait between looks at one sent email: often while it is fresh."""
     if age < timedelta(minutes=15):
@@ -88,6 +86,11 @@ def _interval(age: timedelta) -> timedelta:
     if age < timedelta(hours=6):
         return timedelta(minutes=10)
     return timedelta(hours=1)
+
+
+_LOOKS = LookSchedule(
+    _LAST_LOOK, _LOOK_LOCK, interval=_interval, key=lambda item: item["detail"]["message_id"], started=lambda item: item["sent_at"],
+)
 
 
 def _recorded(conn: sqlite3.Connection, target_id: str, user_id: str, notice_id: str) -> bool:
@@ -247,7 +250,7 @@ def _raw(gmail: _Gmail, message_id: str) -> tuple[bytes, int] | None:
     """A message's full text and when Gmail received it (ms), or None when Gmail will not give it."""
     response = gmail.request("GET", f"/messages/{quote(message_id, safe='')}", params={"format": "raw"})
     if response.status_code == 403:
-        raise _NeedsReconnect
+        raise GmailNeedsReadScope
     if response.status_code != 200:
         return None
     data = response.json()
@@ -322,24 +325,6 @@ def _bounced_since(conn: sqlite3.Connection, user_id: str, item: dict[str, Any])
     return bounce is not None and bounce > item["sent_at"]
 
 
-def _take_due(user_id: str, watched: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
-    due = []
-    with _LOOK_LOCK:
-        for item in watched:
-            key = (user_id, item["detail"]["message_id"])
-            last = _LAST_LOOK.get(key)
-            if last is None or now - last >= _interval(now - item["sent_at"]):
-                _LAST_LOOK[key] = now
-                due.append(item)
-    return due
-
-
-def _forget(user_id: str, items: list[dict[str, Any]]) -> None:
-    with _LOOK_LOCK:
-        for item in items:
-            _LAST_LOOK.pop((user_id, item["detail"]["message_id"]), None)
-
-
 def _addressed(item: dict[str, Any]) -> set[str]:
     return {str(item["detail"].get(field) or "").strip().casefold() for field in ("to", "cc")} - {""}
 
@@ -376,9 +361,9 @@ def _searched_notices(gmail: _Gmail, conn: sqlite3.Connection, user_id: str, wat
     """
     response = gmail.request("GET", "/messages", params={"q": NOTICE_SEARCH, "maxResults": 25})
     if response.status_code == 403:
-        raise _NeedsReconnect
+        raise GmailNeedsReadScope
     if response.status_code != 200:
-        raise _Unreadable
+        raise GmailUnreadable
     found: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for reference in response.json().get("messages") or []:
         notice_id = str(reference.get("id", ""))
@@ -390,7 +375,7 @@ def _searched_notices(gmail: _Gmail, conn: sqlite3.Connection, user_id: str, wat
         try:
             fetched = _raw(gmail, notice_id)
             if fetched is None:
-                raise _Unreadable
+                raise GmailUnreadable
             read = read_notice(fetched[0])
             # Without a named address a notice outside the thread cannot be tied to a send.
             item = _match(conn, user_id, watched, read["failed"], fetched[1]) if read and read["failed"] else None
@@ -423,14 +408,14 @@ def check_deliveries(
     now = now or datetime.now(timezone.utc)
     result: dict[str, Any] = {"state": "ok", "checked": 0, "bounced": []}
     watched = _watched(conn, user_id, now, every_send_of=force_target)
-    due = _take_due(user_id, [item for item in watched if item["target_id"] != force_target], now)
+    due = _LOOKS.take_due(user_id, [item for item in watched if item["target_id"] != force_target], now)
     due += [item for item in watched if item["target_id"] == force_target]
     if not due:
         return result
-    row = _connector(conn, user_id)
-    if not row or row["status"] != "connected":
-        _forget(user_id, due)
-        return {**result, "state": "not_connected" if not row or row["status"] == "disconnected" else "needs_reconnect"}
+    state = connection_state(_connector(conn, user_id))
+    if state != "connected":
+        _LOOKS.forget(user_id, due)
+        return {**result, "state": state}
 
     reported: set[str] = set()
 
@@ -458,12 +443,12 @@ def check_deliveries(
                     params=[("format", "metadata"), *(("metadataHeaders", name) for name in _HEADERS)],
                 )
                 if response.status_code == 403:
-                    raise _NeedsReconnect
+                    raise GmailNeedsReadScope
                 if response.status_code == 404:
                     continue  # the thread was deleted: nothing left to find in it
                 if response.status_code != 200:
                     # Not read is not "no bounce": look again next time, and say so.
-                    _forget(user_id, [item])
+                    _LOOKS.forget(user_id, [item])
                     result["state"] = "unreachable"
                     continue
                 result["checked"] += 1
@@ -472,7 +457,7 @@ def check_deliveries(
                     record(item, notice)
             try:
                 searched = _searched_notices(gmail, conn, user_id, watched)
-            except _Unreadable:
+            except GmailUnreadable:
                 searched = []
                 result["state"] = "unreachable"
             for index, (item, notice) in enumerate(searched):
@@ -482,22 +467,22 @@ def check_deliveries(
                     # Read but not recorded: the next check reads these notices again.
                     _unread(user_id, [later["notice_id"] for _item, later in searched[index:]])
                     raise
-    except _NeedsReconnect:
+    except GmailNeedsReadScope:
         # Granted before the app asked to read mail: it can send but not see bounces.
-        _forget(user_id, due)
+        _LOOKS.forget(user_id, due)
         return {**result, "state": "needs_reconnect"}
     except GmailAuthError:
-        _forget(user_id, due)
+        _LOOKS.forget(user_id, due)
         return {**result, "state": "needs_reconnect"}
     except GmailThrottled:
         # Not read is not "no bounce": look again as soon as Gmail allows.
-        _forget(user_id, due)
+        _LOOKS.forget(user_id, due)
         return {**result, "state": "throttled"}
     except (httpx.HTTPError, ValueError):
         # ValueError: an answer that was not JSON. Not read is not "no bounce" either.
-        _forget(user_id, due)
+        _LOOKS.forget(user_id, due)
         return {**result, "state": "unreachable"}
     except BaseException:
-        _forget(user_id, due)
+        _LOOKS.forget(user_id, due)
         raise
     return result
