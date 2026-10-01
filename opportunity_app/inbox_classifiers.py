@@ -38,7 +38,7 @@ import sqlite3
 from typing import Any, Callable
 
 from . import automation
-from .schema import utc_now
+from .timestamps import utc_now
 from .typesafe_decisions import DecisionClient, TypeSafeClient, TypeSafeError
 
 SETTING_KEY = "jev_inbox_suggestions"

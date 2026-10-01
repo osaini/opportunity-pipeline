@@ -30,7 +30,8 @@ from typing import Any, Callable
 
 from .outreach import get_target
 from .outreach_contacts import SafeFetcher, _is_generic, apply_choice, choose_contact, default_fetcher, find_contacts, list_candidates
-from .schema import connect_product, utc_now
+from .schema import connect_product
+from .timestamps import utc_now
 
 Runner = Callable[[str], str]
 

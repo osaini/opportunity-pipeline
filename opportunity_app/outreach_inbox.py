@@ -96,7 +96,8 @@ from .outreach_forms import (
     UNCONFIRMED_EVENT as FORM_UNCONFIRMED,
     is_acknowledgement,
 )
-from .schema import connect_product, utc_now
+from .schema import connect_product
+from .timestamps import utc_now
 from .typesafe_decisions import DecisionClient
 from .user_time import user_timezone
 

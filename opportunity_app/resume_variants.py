@@ -33,7 +33,7 @@ from pipeline_core.visibility import capture_visible_sql
 
 from . import automation
 from .actions import OpportunityNotFoundError, _intent_state
-from .schema import utc_now
+from .timestamps import utc_now
 
 LOGGER = logging.getLogger(__name__)
 

@@ -60,7 +60,8 @@ from .outreach_drafting import outreach_proof
 from .outreach_profile import SecUnavailableError, form_d_lookup, record_form_d, render_site_location, sec_fetcher
 from .outreach_render import PlaywrightRenderer, default_renderer
 from .preparation import confirmed_facts
-from .schema import connect_product, utc_now
+from .schema import connect_product
+from .timestamps import utc_now
 
 # Briefs are templates filled from the student's confirmed profile, so every
 # student searches their own regions and fields. A student can replace any

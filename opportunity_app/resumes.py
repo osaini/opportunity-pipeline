@@ -16,7 +16,7 @@ from xml.etree import ElementTree
 
 from . import ROOT
 from .profile import is_answered, update_profile
-from .schema import utc_now
+from .timestamps import utc_now
 
 
 DEFAULT_STORAGE = ROOT / "data" / "resumes"

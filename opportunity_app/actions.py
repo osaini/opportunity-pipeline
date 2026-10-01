@@ -9,7 +9,7 @@ from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from .schema import utc_now
+from .timestamps import utc_now
 from .user_time import named_timezone, user_timezone
 
 

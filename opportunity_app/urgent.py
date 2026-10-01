@@ -30,7 +30,7 @@ from pipeline_core.visibility import CAPTURE_SOURCE_KEY, capture_visible_sql  # 
 from .early_programs import early_programs
 from .internal_automation import silence_rows
 from .outreach import CLOSED_STATUSES as OUTREACH_CLOSED, REVISIT_STATUSES as OUTREACH_REVISIT
-from .schema import utc_now
+from .timestamps import utc_now
 from .user_time import UserTimezone, user_timezone
 
 logger = logging.getLogger(__name__)

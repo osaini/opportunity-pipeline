@@ -53,7 +53,7 @@ from pipeline import identity_tokens, normalized
 from . import ROOT, actions, automation
 from .database import is_unique_violation
 from .outreach_gmail import SERVER_INSTANCE
-from .schema import utc_now
+from .timestamps import utc_now
 from .user_time import UserTimezone, user_timezone
 
 LOGGER = logging.getLogger(__name__)

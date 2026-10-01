@@ -20,7 +20,8 @@ from opportunity_app.apply_runs import company_key
 from opportunity_app.apply_sensitive import StoreRefused, add_entry
 from opportunity_app.outreach_gmail import SERVER_INSTANCE
 from opportunity_app.profile import update_profile
-from opportunity_app.schema import connect_product, utc_now
+from opportunity_app.schema import connect_product
+from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 

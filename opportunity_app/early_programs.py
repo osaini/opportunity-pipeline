@@ -54,7 +54,8 @@ from pathlib import Path
 from typing import Any
 
 from . import ROOT
-from .schema import LOCAL_USER_ID, utc_now
+from .schema import LOCAL_USER_ID
+from .timestamps import utc_now
 from .user_time import user_timezone
 
 DEFAULT_EARLY_PROGRAMS = ROOT / "config" / "early_programs.local.json"

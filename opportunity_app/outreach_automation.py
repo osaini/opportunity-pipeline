@@ -47,7 +47,8 @@ from .outreach_contacts import SafeFetcher, apply_choice, choose_contact, find_c
 from .outreach_forms import form_due
 from .outreach_gmail import last_bounce
 from .outreach_inbox import _discard_open_transaction, _record, _step_error
-from .schema import connect_product, utc_now
+from .schema import connect_product
+from .timestamps import utc_now
 
 LOGGER = logging.getLogger(__name__)
 

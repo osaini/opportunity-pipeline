@@ -214,7 +214,8 @@ from .resumes import (
     store_resume,
 )
 from .refresh import RefreshBusy, RefreshManager, fresh_steps
-from .schema import LOCAL_USER_ID, connect_product, ensure_product_schema, utc_now
+from .schema import LOCAL_USER_ID, connect_product, ensure_product_schema
+from .timestamps import utc_now
 from .database import is_postgres_target
 from .student_agent import (
     AgentNotFoundError,

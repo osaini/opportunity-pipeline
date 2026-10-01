@@ -23,7 +23,8 @@ from opportunity_app.apply_runs import ClaimHeldError, ClaimRefused, company_key
 from opportunity_app.operations import ACCOUNT_QUERIES, delete_account, export_account, run_retention
 from opportunity_app.outreach_automation import AutomationWorker
 from opportunity_app.outreach_gmail import SERVER_INSTANCE
-from opportunity_app.schema import connect_product, ensure_product_schema, utc_now
+from opportunity_app.schema import connect_product, ensure_product_schema
+from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 from helpers_apply import ApplyCase, BLUEFIN, USER, setUpModule, tearDownModule  # noqa: F401 (module fixtures: unittest and pytest find them here)

@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from .agent_providers import AgentProvider
 from .profile import is_answered
-from .schema import utc_now
+from .timestamps import utc_now
 
 
 class PreparationNotFoundError(LookupError):

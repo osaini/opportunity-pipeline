@@ -44,7 +44,7 @@ from .outreach_gmail import (
     event_tie_order,
     last_bounce,
 )
-from .schema import utc_now
+from .timestamps import utc_now
 
 # Some recipients failed and the rest were reached (a bad guess with the shared
 # inbox in Cc): the email did arrive, so nothing is reopened.

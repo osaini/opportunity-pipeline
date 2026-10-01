@@ -85,7 +85,7 @@ from .outreach_contacts import FetchResult, SafeFetcher, _PageParser, public_web
 from .outreach_discovery import RUNNERS, UNVERIFIABLE_STATUSES
 from .outreach_email_search import BLOCKED_HOSTS
 from .preparation import confirmed_facts
-from .schema import utc_now
+from .timestamps import utc_now
 
 Runner = Callable[[str], str]
 # Sends instructions and content to a model and returns its reply.

@@ -66,7 +66,8 @@ from uuid import uuid4
 
 from . import actions
 from .database import is_unique_violation
-from .schema import PAUSE_NEVER_CHANGED, utc_now
+from .schema import PAUSE_NEVER_CHANGED
+from .timestamps import utc_now
 from .user_time import user_timezone
 
 OFF_ON = ("off", "on")

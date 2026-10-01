@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from .schema import connect_product, utc_now
+from .schema import connect_product
+from .timestamps import utc_now
 from .database import is_postgres_target
 
 

@@ -65,7 +65,7 @@ from .outreach_inbox import (
     _website_domain, _website_strength, is_person,
 )
 from .outreach_linkedin import CMD_META, LinkedInClient, LinkedInUnavailable, username_from
-from .schema import utc_now
+from .timestamps import utc_now
 
 # Kinds of inbox message a person at the company wrote (outreach_inbox).
 PERSON_KINDS = ("reply", "possible")

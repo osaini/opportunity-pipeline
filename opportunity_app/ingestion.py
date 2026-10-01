@@ -21,7 +21,7 @@ from xml.etree import ElementTree
 
 from pipeline import load_sources
 
-from .schema import utc_now
+from .timestamps import utc_now
 
 PIPELINE_CLI = Path(__file__).resolve().parents[1] / "pipeline.py"
 DEFAULT_DISCOVERED_PATH = Path(__file__).resolve().parents[1] / "data" / "discovered_jobs.json"

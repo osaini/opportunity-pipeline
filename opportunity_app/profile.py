@@ -10,7 +10,8 @@ from typing import Any
 
 from pipeline import score_job
 
-from .schema import LOCAL_USER_ID, utc_now
+from .schema import LOCAL_USER_ID
+from .timestamps import utc_now
 
 
 ALLOWED_PROFILE_FIELDS = {

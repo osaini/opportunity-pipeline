@@ -14,7 +14,7 @@ from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import actions as actions_module, automation, schema
+from opportunity_app import actions as actions_module, automation, schema, timestamps
 from opportunity_app.operations import ACCOUNT_QUERIES, delete_account, export_account
 from opportunity_app.student_agent import decide_proposal
 from opportunity_app.actions import (
@@ -29,7 +29,8 @@ from opportunity_app.actions import (
 )
 from opportunity_app.automation import OFF_SHADOW_ON, AutomationGateError, Feature, Superseded
 from opportunity_app.outreach_automation import SETTINGS, settings, update_settings
-from opportunity_app.schema import connect_product, ensure_product_schema, utc_now
+from opportunity_app.schema import connect_product, ensure_product_schema
+from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 
@@ -1188,12 +1189,12 @@ class HealthTests(AutomationCase):
             def now(cls, tz=None):
                 return frozen
 
-        with mock.patch.object(schema, "datetime", CoarseClock), mock.patch.object(automation, "datetime", CoarseClock):
+        with mock.patch.object(timestamps, "datetime", CoarseClock), mock.patch.object(automation, "datetime", CoarseClock):
             automation.set_mode(self.conn, USER, "test_switch", "on")
             rows = [self.act(subject_id=f"s{n}") for n in range(2)]
             automation.undo(self.conn, rows[0]["id"], USER)
             # The breaker's write is the first in a new tick, so its stamp is the clock's own value.
-            schema._LAST_NOW = datetime.min.replace(tzinfo=timezone.utc)
+            timestamps._LAST_NOW = datetime.min.replace(tzinfo=timezone.utc)
             self.assertTrue(automation.undo(self.conn, rows[1]["id"], USER)["feature_paused"])
             self.assertEqual(len(automation.health_summary(self.conn, USER)["breaker_off"]), 1)
             automation.set_mode(self.conn, USER, "test_switch", "on")
@@ -1355,7 +1356,7 @@ class MonotonicClockTests(unittest.TestCase):
             def now(cls, tz=None):
                 return frozen
 
-        with mock.patch.object(schema, "datetime", CoarseClock), mock.patch.object(schema, "_LAST_NOW", real_datetime.min.replace(tzinfo=real_timezone.utc)):
+        with mock.patch.object(timestamps, "datetime", CoarseClock), mock.patch.object(timestamps, "_LAST_NOW", real_datetime.min.replace(tzinfo=real_timezone.utc)):
             stamps = [utc_now() for _ in range(50)]
         self.assertEqual(stamps, sorted(stamps))
         self.assertEqual(len(set(stamps)), 50)

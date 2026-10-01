@@ -10,7 +10,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
-from .schema import LOCAL_USER_ID, utc_now
+from .schema import LOCAL_USER_ID
+from .timestamps import utc_now
 
 
 def _password_hash(password: str, salt: bytes) -> str:

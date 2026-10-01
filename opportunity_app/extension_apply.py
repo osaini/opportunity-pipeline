@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from .actions import ApplicationNotFoundError, update_application
 from .auth import hash_secret
-from .schema import utc_now
+from .timestamps import utc_now
 
 
 PAIRING_TTL_MINUTES = 10

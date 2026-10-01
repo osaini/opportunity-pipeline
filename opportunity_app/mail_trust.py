@@ -49,7 +49,7 @@ from uuid import uuid4
 
 from pipeline import identity_tokens
 
-from .schema import utc_now
+from .timestamps import utc_now
 
 SENDERS_PATH = Path(__file__).resolve().parent / "data" / "application_senders.json"
 # The categories a message is read for. job_boards and reserved never make a message worth reading.

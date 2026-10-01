@@ -64,7 +64,7 @@ from .outreach_gmail import (
     send_gmail_message,
     send_thank_you,
 )
-from .schema import utc_now
+from .timestamps import utc_now
 from .user_time import user_timezone
 
 # Where a state spans zones, the zone most of its people live in.

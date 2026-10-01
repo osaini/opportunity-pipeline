@@ -158,7 +158,7 @@ from .extension_apply import _canonical_url
 from .inbox_classifiers import classify_email
 from .outreach_drafting import sender_account
 from .outreach_gmail import ClientFactory, GmailAuthError, GmailThrottled, _connector, _Gmail
-from .schema import utc_now
+from .timestamps import utc_now
 from .typesafe_decisions import DecisionClient
 from .user_time import user_timezone
 

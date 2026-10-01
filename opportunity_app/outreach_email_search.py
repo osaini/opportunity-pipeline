@@ -42,7 +42,7 @@ from .outreach_contacts import (
     store_candidate,
     USER_AGENT,
 )
-from .schema import utc_now
+from .timestamps import utc_now
 
 Runner = Callable[[str], str]
 

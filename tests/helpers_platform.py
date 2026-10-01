@@ -25,7 +25,7 @@ realdata_guard.install()
 
 PROFILE_REGIONS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "profile_regions.json"
 
-from opportunity_app import schema
+from opportunity_app import schema, timestamps
 from opportunity_app.schema import migrate_legacy_database
 
 LEGACY_SCHEMA = """
@@ -271,7 +271,7 @@ def _restamp(platform_path: Path, legacy_path: Path | None) -> None:
         conn.execute("PRAGMA synchronous = OFF")
         if legacy_path is not None:
             conn.execute("UPDATE migration_runs SET source_path=?", (str(legacy_path.resolve()),))
-        conn.execute("UPDATE schema_migrations SET applied_at=?", (schema.utc_now(),))
+        conn.execute("UPDATE schema_migrations SET applied_at=?", (timestamps.utc_now(),))
         conn.commit()
     finally:
         conn.close()

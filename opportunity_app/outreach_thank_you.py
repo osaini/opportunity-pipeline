@@ -140,7 +140,7 @@ from .outreach_gmail import (
     thank_you_row,
 )
 from .outreach_schedule import _label, next_morning, recipient_zone
-from .schema import utc_now
+from .timestamps import utc_now
 
 LOGGER = logging.getLogger(__name__)
 

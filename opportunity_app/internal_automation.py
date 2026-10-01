@@ -49,7 +49,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 
 from . import automation
-from .schema import utc_now
+from .timestamps import utc_now
 from .user_time import user_timezone
 
 LOGGER = logging.getLogger(__name__)

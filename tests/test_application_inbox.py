@@ -27,7 +27,8 @@ from opportunity_app.api import create_app
 from opportunity_app.application_inbox import match_application, parse_message
 from opportunity_app.connections import classify_monitored_message, decide_monitored_event, monitored_event
 from opportunity_app.operations import export_account
-from opportunity_app.schema import connect_product, utc_now
+from opportunity_app.schema import connect_product
+from opportunity_app.timestamps import utc_now
 from opportunity_app.urgent import urgent_queue
 
 from helpers_platform import build_and_migrate

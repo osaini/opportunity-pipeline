@@ -24,7 +24,8 @@ from . import ROOT
 from .company_tags import regenerate_company_tags
 from .opportunity_metadata import extract_opportunity_metadata
 from .resumes import ResumeValidationError, detect_media_type, extract_pdf, scan_resume_file
-from .schema import sort_key, RULESET_VERSION, utc_now
+from .schema import sort_key, RULESET_VERSION
+from .timestamps import utc_now
 
 
 DEFAULT_CAPTURE_STORAGE = ROOT / "data" / "captures"

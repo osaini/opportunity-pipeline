@@ -42,7 +42,7 @@ import httpx
 from .outreach import LOCATION_BASES, US_STATES, _log, company_key, get_target, local_today, website_domain
 from .outreach_contacts import USER_AGENT, SafeFetcher, _page_priority, _PageParser, _same_site, crawl_site, site_robots
 from .outreach_render import PlaywrightRenderer
-from .schema import utc_now
+from .timestamps import utc_now
 
 SEC_USER_AGENT_ENV = "PIPELINE_SEC_USER_AGENT"
 EDGAR_SEARCH = "https://efts.sec.gov/LATEST/search-index"

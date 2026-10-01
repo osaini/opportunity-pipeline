@@ -60,7 +60,7 @@ from .outreach import (
     update_target,
 )
 from .outreach_drafting import sender_account
-from .schema import utc_now
+from .timestamps import utc_now
 from .user_time import user_timezone
 
 LOGGER = logging.getLogger(__name__)

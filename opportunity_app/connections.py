@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet
 
 from .actions import ApplicationNotFoundError, add_application_task, update_application
 from .inbox_classifiers import classify_email
-from .schema import utc_now
+from .timestamps import utc_now
 from .typesafe_decisions import DecisionClient
 
 

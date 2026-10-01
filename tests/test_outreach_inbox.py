@@ -16,7 +16,8 @@ import httpx
 
 from opportunity_app import automation, outreach_gmail, outreach_inbox
 from opportunity_app.outreach_inbox import InboxWatcher, reply_text, strip_quoted
-from opportunity_app.schema import connect_product, utc_now
+from opportunity_app.schema import connect_product
+from opportunity_app.timestamps import utc_now
 
 from helpers_gmail import (
     ACCOUNT,

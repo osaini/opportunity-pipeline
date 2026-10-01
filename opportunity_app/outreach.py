@@ -30,7 +30,8 @@ from pipeline import PROFILE_PATH
 
 from .database import is_unique_violation as _is_unique_violation
 from .inbox_classifiers import read_reply
-from .schema import LOCAL_USER_ID, utc_now
+from .schema import LOCAL_USER_ID
+from .timestamps import utc_now
 from .typesafe_decisions import DecisionClient
 from .user_time import user_timezone
 

@@ -45,7 +45,7 @@ from pipeline import identity_tokens
 from pipeline_core.visibility import capture_visible_sql
 
 from .apply_checks import question_key
-from .schema import utc_now
+from .timestamps import utc_now
 
 __all__ = [
     "CATEGORY_GROUPS", "CONSENT_TEXT", "DECLINE_EXAMPLES", "EEO_CATEGORIES", "LABELS", "STATEMENT_CATEGORIES", "STORABLE", "StoreRefused", "add_entry", "allowed_categories",
