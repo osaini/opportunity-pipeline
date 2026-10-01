@@ -814,9 +814,9 @@ class SchemaClientTests(unittest.TestCase):
 
     def test_the_default_factory_gives_the_live_client_and_it_reaches_only_the_public_api_host(self):
         self.assertIsInstance(apply_schema_client.default_schema_client_factory(), GreenhouseSchemaClient)
-        from opportunity_app.apply_policy import schema_url
+        from opportunity_app.apply_greenhouse import API_HOST, schema_url
 
-        self.assertEqual(schema_url("a", "1").split("/")[2], apply_schema_client.API_HOST)
+        self.assertEqual(schema_url("a", "1").split("/")[2], API_HOST)
 
 
 if __name__ == "__main__":

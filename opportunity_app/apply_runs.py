@@ -58,22 +58,16 @@ from .profile_store import read_stored_profile
 from .settings_store import get_setting, put_setting, setting_updated_at
 from .timestamps import parse_app_instant, utc_now
 from .user_time import UserTimezone, user_timezone
+from .apply_greenhouse import ADAPTER_VERSION, ATS_GREENHOUSE, GREENHOUSE_SENDER_DOMAINS
+from .apply_claims import HELD_HEARTBEAT, RUNNING, claim_held, forget
 
 LOGGER = logging.getLogger(__name__)
 
-ATS_GREENHOUSE = "greenhouse"
-# The adapter's version (docs/phase5-apply-agent-spec.md 4.4). A rehearsal counts toward the gate only for
-# the version the adapter has now, so a change to its selectors or rules means rehearsing again.
-ADAPTER_VERSION = "greenhouse-1"
 MODES = ("one_click", "handoff", "unattended")
 CLAIM_STATES = ("claimed", "clicking", "submitted", "unconfirmed", "needs_you", "failed", "released")
 RUN_KINDS = ("lookup", "rehearsal", "submit", "handoff")
 # What a screenshot of a filled form is kept for, in days (PIPELINE_APPLY_EVIDENCE_DAYS).
 DEFAULT_EVIDENCE_DAYS = 90
-# Screenshots live under APPLY_ROOT (opportunity_app/__init__.py): <user folder>/<opportunity id>/<run id>-<step>.png.
-# The folder is per student, so deleting an account removes one folder. Not in output/: everything under data/ is ignored.
-# A claim, or a run, that another server process holds is held while its heartbeat is this fresh.
-HELD_HEARTBEAT = timedelta(minutes=2)
 # The one confirm clock: how old the rehearsal a one-click submit confirmed may be at hand-over.
 CONFIRM_MAX_AGE = timedelta(minutes=15)
 # After a submission, how long the app looks for Greenhouse's confirmation email.
@@ -91,8 +85,6 @@ BREAKER_WINDOW = 5
 RUNNER_COMPONENT = "apply_agent.runner"
 # The daily evidence purge's own health row, so a failed purge is not mixed with the runner's status.
 RETENTION_COMPONENT = "apply_agent.retention"
-# Greenhouse's own senders (data/application_senders.json), for a confirmation the reader could not match to a role.
-GREENHOUSE_SENDER_DOMAINS = ("greenhouse.io", "greenhouse-mail.io")
 
 # Per-student limits: defaults here, overridable in the profile under "apply_agent", read the way
 # internal_automation.follow_up_days reads its day count. A value that is not an integer in range is the default.
@@ -121,10 +113,6 @@ ASK_RELEASED_JOB = "released_job"
 ASK_UNMATCHED_CONFIRMATION = "unmatched_confirmation"
 ASK_APPLYING_OLD = "applying_old"
 
-# Tokens of the claims whose runs are working in this process. A claim is added by claim() and leaves when its
-# result is recorded (settle, record_result) or the runner calls forget(); a claim this process made that is not
-# in here was left by a run that ended without settling it.
-RUNNING: set[str] = set()
 RUNNING_RUNS: set[str] = set()
 
 
@@ -194,6 +182,8 @@ def evidence_days() -> int:
     return days if days > 0 else DEFAULT_EVIDENCE_DAYS
 
 
+# Screenshots live under APPLY_ROOT (opportunity_app/__init__.py): <user folder>/<opportunity id>/<run id>-<step>.png.
+# The folder is per student, so deleting an account removes one folder. Not in output/: everything under data/ is ignored.
 def user_folder(user_id: str) -> str:
     """Where this student's screenshots live under APPLY_ROOT: 16 hex characters of the id's SHA-256."""
     return hashlib.sha256(user_id.encode()).hexdigest()[:16]
@@ -226,24 +216,6 @@ def _title_of(conn: sqlite3.Connection, opportunity_id: str) -> tuple[str, str]:
 
 
 # --- Which claims are held ----------------------------------------------------------------
-
-
-def claim_held(row: Any, *, now: datetime | None = None) -> bool:
-    """Whether a run may still be working under this claim (any row with token, instance and heartbeat_at).
-
-    One this process made is held while its token is in RUNNING: when it is not, the run ended without settling
-    it. One another server process made is held while its heartbeat is fresh, so a claim that process left when it
-    died is recovered, and one it is still working is not.
-    """
-    if row["instance"] == SERVER_INSTANCE:
-        return row["token"] in RUNNING
-    beat = parse_app_instant(row["heartbeat_at"])
-    return beat is not None and _at(now) - beat < HELD_HEARTBEAT
-
-
-def forget(token: str) -> None:
-    """The run under this claim has ended in this process (the runner's finally)."""
-    RUNNING.discard(token)
 
 
 @contextmanager
@@ -1483,6 +1455,11 @@ def setup_requirement(conn: sqlite3.Connection, user_id: str) -> str:
     if conn.execute("SELECT 1 FROM resume_versions WHERE user_id=? AND status='confirmed' LIMIT 1", (user_id,)).fetchone() is None:
         return NEEDS_RESUME
     return ""
+
+
+def register() -> None:
+    """Tell the automation registry what apply_agent needs. Called once at startup (bootstrap.register_all)."""
+    automation.register_requirement("apply_agent", lambda conn, user_id: setup_requirement(conn, user_id))
 
 
 def list_ats_labels(conn: sqlite3.Connection, user_id: str, ats: str = ATS_GREENHOUSE) -> dict[str, dict[str, str]]:

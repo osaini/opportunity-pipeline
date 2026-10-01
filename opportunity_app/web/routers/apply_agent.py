@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from ... import automation as automation_core
 from ...actions import OpportunityNotFoundError
-from ... import apply_policy, apply_preflight, apply_runs, apply_sensitive
+from ... import apply_classify, apply_policy, apply_preflight, apply_runs, apply_sensitive
 from ...apply_schema_client import SchemaClient
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, require_browser_session, writable_connection
@@ -49,9 +49,9 @@ def sensitive_answers_payload(conn: sqlite3.Connection, user_id: str) -> dict[st
             for key, label, categories in apply_sensitive.CATEGORY_GROUPS
         ],
         "categories": [
-            {"category": category, "label": apply_sensitive.LABELS[category], "statement": category in apply_sensitive.STATEMENT_CATEGORIES,
+            {"category": category, "label": apply_sensitive.LABELS[category], "statement": category in apply_classify.STATEMENT_CATEGORIES,
              "decline_only": category in apply_sensitive.EEO_CATEGORIES,
-             "tickable": category in apply_sensitive.TICKABLE}
+             "tickable": category in apply_classify.TICKABLE}
             for category in apply_sensitive.STORABLE
         ],
         "entries": apply_sensitive.list_entries(conn, user_id),

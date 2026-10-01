@@ -244,7 +244,8 @@ def _whoami(session: _Session, conn, user: str, row: dict[str, Any], env: dict[s
     out(f"Permissions: {', '.join(_permissions(granted)) or 'none'} ({source})")
     try:
         # Imported here: the reader must still start on a checkout that predates reply labels.
-        from .outreach_labels import label_backlog, label_name, search_form
+        from .outreach_label_name import label_name
+        from .outreach_labels import label_backlog, search_form
 
         label = label_name(conn, user)
     except (ImportError, sqlite3.Error):

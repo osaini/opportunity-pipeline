@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from ... import application_inbox
 from ... import automation as automation_core
+from ... import automation_health
 from ... import auto_triage, mail_trust
 from ...actions import ApplicationNotFoundError
 from ...inbox_classifiers import client_for as inbox_client_for
@@ -30,7 +31,7 @@ router = APIRouter()
 def automation_view(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
     return {
         "settings": automation_core.settings_payload(conn, user_id),
-        "health": automation_core.health_summary(conn, user_id),
+        "health": automation_health.health_summary(conn, user_id),
         "application_mail": application_inbox.status(conn, user_id),
     }
 

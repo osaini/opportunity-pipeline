@@ -47,7 +47,7 @@ from uuid import uuid4
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
 
-from . import ROOT, SERVER_INSTANCE, automation
+from . import ROOT, SERVER_INSTANCE, automation, automation_health, outreach_callbacks
 from .connections import OAUTH_PROVIDERS
 from .gmail_client import (
     GMAIL_API,
@@ -76,6 +76,7 @@ from .outreach import (
 )
 from .database import is_unique_violation
 from .outreach_config import ATTACHMENT_ENV, gmail_web_url, sender_account
+from .outreach_label_name import label_name
 from .timestamps import parse_app_instant, utc_now
 from .user_time import user_timezone
 
@@ -122,7 +123,7 @@ def _connector(conn: sqlite3.Connection, user_id: str) -> sqlite3.Row | None:
 def gmail_drafts_status(conn: sqlite3.Connection, *, user_id: str, now: datetime | None = None) -> dict[str, Any]:
     """What the Outreach tab needs to offer Connect Gmail, Reconnect Gmail, or Create Gmail draft.
 
-    ``expiring_soon`` and ``likely_expires_at`` are automation.gmail_health's
+    ``expiring_soon`` and ``likely_expires_at`` are automation_health.gmail_health's
     estimate of when Google will ask for the grant again, so the tab can offer
     Reconnect Gmail before reply and bounce checks stop rather than after.
     """
@@ -131,9 +132,7 @@ def gmail_drafts_status(conn: sqlite3.Connection, *, user_id: str, now: datetime
     row = _connector(conn, user_id)
     path = attachment_path()
     granted = granted_scopes(row["scopes_json"]) if row else []
-    health = automation.gmail_health(conn, user_id, now=now)
-    from .outreach_labels import label_name  # imported here: it imports this module
-
+    health = automation_health.gmail_health(conn, user_id, now=now)
     connected = bool(configured and row and row["status"] == "connected")
     account = sender_account()
     connected_as = str(row["account_email"] or "") if connected and "account_email" in row.keys() else ""
@@ -1103,12 +1102,10 @@ def _thank_you_ready(
         "SELECT 1 FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=?", (target_id, user_id, THANK_YOU_SENT_EVENT),
     ).fetchone() is not None:
         raise ValueError("The thank-you was already sent")
-    from .outreach_thank_you import problem_now  # imported here: it imports this module
-
     # Read under the claim's write lock: a reply, or a send of the student's, logged since the last check
     # (while the reviewer ran, say) still stops it. The student's own Send it anyway is not stopped by the
     # company's status, only by their newer message or the student's.
-    stop = problem_now(conn, target_id, user_id, row, manual=states != ("transmitting",))
+    stop = outreach_callbacks.thank_you_problem_now(conn, target_id, user_id, row, manual=states != ("transmitting",))
     if stop is not None:
         raise ThankYouChanged(stop[1])
     return {**row, "target": target}
@@ -1288,13 +1285,13 @@ def gmail_notices(conn: sqlite3.Connection, user_id: str, *, now: datetime | Non
     Each is left once: the expiry notice once per grant, the reconnect notice
     once per time the connection broke. Returns the event keys of the notices
     that are new. automation.notice opens its own transaction, so this is never
-    called inside one. The expiry is an estimate (automation.gmail_health), and
+    called inside one. The expiry is an estimate (automation_health.gmail_health), and
     the notice says "likely". Once the estimated date has passed
     (``estimate_passed``) there is no date left to name: "before <that date>"
     would point the student at a time already behind them, so the notice says
     "soon" instead, as the banner does.
     """
-    health = automation.gmail_health(conn, user_id, now=now)
+    health = automation_health.gmail_health(conn, user_id, now=now)
     new = []
     if health["expiring_soon"]:
         if health.get("estimate_passed"):

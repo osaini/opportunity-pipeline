@@ -1955,10 +1955,6 @@ def _breaker_group(row: dict[str, Any]) -> str | None:
     return f"gmail:{key.split(':')[1]}" if key.startswith("gmail:") and key.count(":") >= 2 else str(row.get("id") or key)
 
 
-automation.register_correction(FEATURE, _correct)
-automation.register_breaker_group(FEATURE, _breaker_group, "email")
-
-
 def _expire(conn: sqlite3.Connection, user_id: str, action: dict[str, Any], note: str, timestamp: str) -> None:
     """Set a proposal aside without a verdict (the breaker never counts it), keeping only what the ledger may."""
     kept = automation.ledger_after(str(action["action_type"]), {key: value for key, value in action["after"].items()})
@@ -1968,7 +1964,7 @@ def _expire(conn: sqlite3.Connection, user_id: str, action: dict[str, Any], note
             UPDATE automation_actions SET status='expired', note=?, after_json=?, decided_at=?, decided_by='student'
             WHERE id=? AND user_id=? AND status='proposed'
             """,
-            (note, automation._dumps(kept), timestamp, action["id"], user_id),
+            (note, automation.dumps(kept), timestamp, action["id"], user_id),
         )
         automation.release_held(conn, str(action["id"]), user_id)
 
@@ -2216,7 +2212,7 @@ def purge_excerpts(conn: sqlite3.Connection, *, now: datetime | None = None) -> 
 # --- Ledger handlers this feature adds ----------------------------------------------------------
 
 
-class ApplicationDeadline:
+class ApplicationDeadline(automation.HandlerBase):
     """application.deadline: a deadline an email states, as an email_deadlines row (shown in Urgent).
 
     Each is new (the idempotency key stops a second copy, and so does the
@@ -2275,7 +2271,7 @@ class ApplicationDeadline:
         )
 
 
-class CaptureProposal:
+class CaptureProposal(automation.HandlerBase):
     """application.capture_proposal: an email about a role that is not tracked. Approving opens a capture draft.
 
     The draft goes through the ordinary capture confirmation (captures.py):
@@ -2321,5 +2317,9 @@ class CaptureProposal:
         raise ValueError("Opening a capture draft can't be undone")
 
 
-automation.register_handler("application.deadline", ApplicationDeadline())
-automation.register_handler("application.capture_proposal", CaptureProposal())
+def register() -> None:
+    """Add this feature's handlers, correction and breaker grouping to the automation registry. Called once at startup (bootstrap.register_all)."""
+    automation.register_correction(FEATURE, _correct)
+    automation.register_breaker_group(FEATURE, _breaker_group, "email")
+    automation.register_handler("application.deadline", ApplicationDeadline())
+    automation.register_handler("application.capture_proposal", CaptureProposal())

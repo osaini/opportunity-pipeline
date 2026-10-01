@@ -259,3 +259,9 @@ def auto_passed_this_week(conn: sqlite3.Connection, user_id: str, *, now: dateti
             "reasons": evidence.get("reasons") or [], "applied_at": row["applied_at"],
         })
     return items
+
+
+def register() -> None:
+    """Tell the automation registry what auto_save and auto_pass need. Called once at startup (bootstrap.register_all)."""
+    for feature in THRESHOLDS:
+        automation.register_requirement(feature, lambda conn, user_id, feature=feature: requirement(conn, user_id, feature))

@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import html
 import json
 import os
 import re
@@ -37,90 +36,45 @@ import sqlite3
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
-from urllib.parse import parse_qs, urlsplit
 
 from pipeline_core.identity import employer_key, identity_tokens, normalized_text
 
 from . import apply_sensitive, preparation, resume_variants
-from .apply_checks import ALTERNATE_TEXT_FIELDS, BOARD_HOSTS, Problem, join, question_key
-from .extension_apply import SENSITIVE_FIELD, ExtensionApplyError, confirmed_resume_file
+from .apply_checks import ALTERNATE_TEXT_FIELDS, Problem, join, question_key
+from .apply_classify import (
+    CATEGORY_TOPIC,
+    CATEGORY_WORDS,
+    INHERITING_PARENTS,
+    NET_WORDS,
+    NEVER_TOPICS,
+    SECOND_PERSON,
+    STATEMENT_CATEGORIES,
+    TICKABLE,
+    classify_item,
+    classify_sensitive,
+    context_dependent,
+    field_net,
+    follow_up_wording,
+    most_restrictive,
+    needs_label_key,
+    net_topics,
+    plain_text,
+    statement_control,
+    statement_of,
+    without_enumeration,
+)
+from .apply_greenhouse import ATS_GREENHOUSE
+from .extension_apply import ExtensionApplyError, confirmed_resume_file
 from .json_values import json_as
 
 __all__ = [
-    "ALLOWED_ATS_LABEL_FIELDS", "ATS_GREENHOUSE", "CATEGORY_WORDS", "NET_TOPICS", "NET_WORDS", "NEVER_STORABLE_TOPICS", "Plan", "PlanField", "SchemaField", "Source", "Sources",
-    "build_plan", "canonical_url", "claims_demographic", "claims_never_storable", "classify_item", "classify_sensitive", "company_matches", "context_dependent", "control_of", "cover_letter_for", "eeo_words",
-    "identify", "mac_key", "match_options", "name_parts", "needs_label_key", "net_topics", "never_storable", "parse_schema", "plan_entries", "plan_hash", "possibly_sensitive",
-    "question_key", "resume_for", "schema_url", "sources_for", "statement_control", "statement_needs_company", "statement_of", "stored_sensitive_answer", "value_mac", "with_page_labels",
-    "without_enumeration",
+    "ALLOWED_ATS_LABEL_FIELDS", "Plan", "PlanField", "SchemaField", "Source", "Sources", "build_plan", "company_matches", "control_of",
+    "cover_letter_for", "mac_key", "match_options", "name_parts", "parse_schema", "plan_entries", "plan_hash", "question_key", "resume_for",
+    "sources_for", "stored_sensitive_answer", "value_mac", "with_page_labels",
 ]
 
-ATS_GREENHOUSE = "greenhouse"
 
 # --- Identifying the posting (4.4) --------------------------------------------------------------
-
-_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
-_JOB_ID = re.compile(r"^\d+$")
-_JOB_PATH = re.compile(r"^/([A-Za-z0-9][A-Za-z0-9_-]{0,79})/jobs/(\d+)/?$")
-
-
-def canonical_url(board_token: str, job_id: str) -> str:
-    return f"https://job-boards.greenhouse.io/{board_token}/jobs/{job_id}"
-
-
-def schema_url(board_token: str, job_id: str) -> str:
-    """Greenhouse's public, keyless listing of what an application form asks (read-only GET)."""
-    return f"https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs/{job_id}?questions=true"
-
-
-def _from_url(url: str) -> tuple[str, str] | None:
-    try:
-        parts = urlsplit(str(url or "").strip())
-    except ValueError:
-        return None
-    host = (parts.hostname or "").lower().rstrip(".")
-    if parts.scheme not in ("http", "https") or host not in BOARD_HOSTS:
-        return None
-    match = _JOB_PATH.match(parts.path)
-    if match:
-        return match.group(1), match.group(2)
-    if parts.path.rstrip("/") == "/embed/job_app":
-        query = parse_qs(parts.query)
-        token, job = (query.get("for") or [""])[0], (query.get("token") or [""])[0]
-        if _TOKEN.match(token) and _JOB_ID.match(job):
-            return token, job
-    return None
-
-
-def identify(conn: sqlite3.Connection, opportunity_id: str) -> tuple[str, str] | None:
-    """The Greenhouse (board token, job id) this saved role is, or None when it is not one the app can fill.
-
-    A token parsed from the role's own URL, then from a source URL, wins. Otherwise the source key
-    ``greenhouse:<token>`` and the source's external id are used, and the id must be all digits. A company
-    site that carries only ``gh_jid`` is not supported.
-    """
-    row = conn.execute("SELECT url FROM opportunities WHERE id=?", (opportunity_id,)).fetchone()
-    if row is None:
-        return None
-    found = _from_url(row[0])
-    if found:
-        return found
-    sources = conn.execute(
-        "SELECT source_url, source_key, external_id FROM opportunity_sources WHERE opportunity_id=? ORDER BY last_seen_at DESC, source_key",
-        (opportunity_id,),
-    ).fetchall()
-    for source in sources:
-        found = _from_url(source[0])
-        if found:
-            return found
-    # The pattern is a parameter, not part of the SQL: a literal % breaks on PostgreSQL, where ? becomes %s.
-    for source in conn.execute(
-        "SELECT source_key, external_id FROM opportunity_sources WHERE opportunity_id=? AND source_key LIKE ? ORDER BY last_seen_at DESC, source_key",
-        (opportunity_id, "greenhouse:%"),
-    ).fetchall():
-        token, job = str(source[0])[len("greenhouse:"):], str(source[1] or "")
-        if _TOKEN.match(token) and _JOB_ID.match(job):
-            return token, job
-    return None
 
 
 # --- What the form asks: Greenhouse's own listing (4.5) ------------------------------------------
@@ -134,10 +88,6 @@ ALLOWED_ATS_LABEL_FIELDS = (
     "location", "school", "degree", "discipline", "phone_country",
     "education_start_month", "education_start_year", "education_end_month", "education_end_year",
 )
-_EEOC_NAMES = {
-    "gender": "eeo_gender", "hispanic_ethnicity": "eeo_hispanic", "race": "eeo_race",
-    "veteran_status": "eeo_veteran", "disability_status": "eeo_disability",
-}
 _SELECTS = frozenset({"multi_value_single_select", "multi_value_multi_select"})
 MAX_DESCRIPTION_CHARS = 2000
 
@@ -299,559 +249,7 @@ def control_of(item: SchemaField) -> str:
     return "unknown"
 
 
-# --- Which questions never take a stored answer, and which need a label (7.1) -------------------------
-
-# Text that takes its meaning from the question above it, not from the company. These mirror the shared
-# engine's rules (apps/extension/apply-engine.js: needsLabelKey, withoutEnumeration, CONTEXT_WORDING);
-# tests/fixtures/apply/context_keys.json is run by both suites, so they cannot drift apart. The Python side
-# must never be looser than the engine.
-_CONTEXT_OPENER = re.compile(r"^(?:if yes|if so|if no|if other|please specify|please explain|please describe|other|explain)\b")
-_CONTEXT_IF = re.compile(r"^if\b")
-_CONTEXT_IF_ANY = re.compile(r"\bif (?:yes|so|no|not|other|applicable|any)\b")
-_CONTEXT_PLEASE = re.compile(r"\bplease (?:explain|specify|describe|elaborate)\b")
-_CONTEXT_DETAILS = re.compile(r"\b(?:provide|give|share|include|add|list)\s+(?:[a-z']+\s+){0,3}?(?:details?|information|info|context|explanations?)\b")
-_CONTEXT_PRONOUN = re.compile(r"\b(?:list|name|give|provide|share|describe|explain|specify|identify) (?:them|it|those|these|each)\b")
-_CONTEXT_VERB = re.compile(r"\b(?:explain|explanation|specify|elaborate|clarify|expand)\b")
-_CONTEXT_DESCRIBE = re.compile(r"\bdescribe\b")
-_CONTEXT_PHRASE = re.compile(
-    r"\btell us (?:more|why)\b|\bwhy or why not\b|\bif applicable\b|\byour (?:answer|response)s? (?:above|to the previous)\b|\bprevious question\b|\bthe above\b"
-)
-_CONTEXT_WH = re.compile(r"^(?:which|what|when|where|who|whom|whose|how|why)\b")
-# Questions whose truth depends on the employer. Found from this wording list and nothing smarter.
-_CONTEXT_WORDING = re.compile(
-    r"previously (?:worked|been employed|applied)|worked (?:here|for us|for this company|at)|applied (?:here|before|previously)|referr|who referred"
-    r"|know (?:anyone|someone)|how did you hear|where did you (?:hear|find)|current(?:ly)? (?:an )?employee"
-    r"|worked (?:for|with|at) (?:us|this|our|the company)|employed (?:by|at|with)|interviewed (?:with|at|here)|relatives?\b|family members?\b"
-    r"|related to\b|spouse|immediate family|former employee|employed here\b|relations? working"
-    r"|this (?:organi[sz]ation|firm|company|employer)"
-    r"|\bwork (?:here|for us|with us)\b|\bour (?:company|team|organi[sz]ation|mission|products?)\b"
-    r"|\bthis (?:role|position|opportunity|team)\b|\binterest(?:ed|s)? (?:you )?(?:in|about) this\b|\bjoin (?:us|our)\b"
-)
-
-
-def without_enumeration(key: str) -> str:
-    """The key with leading tags taken off, in any order: a bullet or number ("b.", "1a)", "(ii)"), "Question 3:",
-    "Question no. 3:", "Follow-up:", "Follow-on question:", "Sub-question:" and "(Optional)"."""
-    text = re.sub(r"'+(?=\s|$)", "", re.sub(r"(^|\s)'+", r"\1", key)).strip()
-    for _ in range(6):
-        following = re.sub(r"^(?:follow ?(?:up|on)s?|sub ?questions?)(?: questions?)?\s+(?=\S)", "", text)
-        following = re.sub(r"^optional\s+(?=\S)", "", following)
-        following = re.sub(
-            r"^(?:question|part|step|section|item|no|number)(?:\s+(?:no|number))?\s+(?:\d{1,3}[a-z]?|[a-z]|[ivx]{1,4})\s+(?=\S)", "", following,
-        )
-        following = re.sub(r"^(?:[a-z]|[ivx]{1,4}|\d{1,3}[a-z]?|[a-z]\d{1,3}[a-z]?)\s+(?=\S)", "", following)
-        if following == text:
-            break
-        text = following
-    return text
-
-
-def needs_label_key(key: str) -> bool:
-    """Whether a question key is a follow-up, an opener or too short to stand on its own words."""
-    text = without_enumeration(key)
-    words = len([word for word in text.split(" ") if word])
-    return (
-        len([word for word in key.split(" ") if word]) < 3 or words < 3
-        or any(_CONTEXT_OPENER.search(item) or _CONTEXT_PLEASE.search(item) for item in (key, text))
-        or bool(_CONTEXT_IF.search(text)) or bool(_CONTEXT_IF_ANY.search(text)) or bool(_CONTEXT_DETAILS.search(text))
-        or bool(_CONTEXT_PRONOUN.search(text)) or bool(_CONTEXT_PHRASE.search(text))
-        or (words < 8 and bool(_CONTEXT_VERB.search(text))) or (words < 6 and bool(_CONTEXT_DESCRIBE.search(text)))
-        or (words < 6 and bool(_CONTEXT_WH.search(text)))
-    )
-
-
-# A short question that asks about the student ("When do you graduate?", "What is your GPA?") stands on its own; one that
-# asks nothing about them ("When?", "Which one?", "What type?", "Where?") can only be a follow-up.
-_SECOND_PERSON = re.compile(r"\b(?:you|your|yours|yourself|my|we|our|us)\b")
-_BARE_DETAIL = re.compile(r"^(?:the )?(?:details?|explanations?|dates?|circumstances|specifics|outcome)$")
-
-
-def follow_up_wording(key: str) -> bool:
-    """Whether the question's own words say it continues another question ("If yes, please explain", "When?", "Details").
-
-    Narrower than ``needs_label_key``, which also takes any short or repeated question: "GPA", "LinkedIn Profile" and
-    "When do you graduate?" stand on their own. A short question that asks about no one ("Which one?", "What type?",
-    "When does it expire?"), a short "describe" and a bare "Details" continue the question above them: leaving them
-    ordinary would put a felony's circumstances or a visa's type into the answer library.
-    """
-    text = without_enumeration(key)
-    words = len([word for word in text.split(" ") if word])
-    return (
-        any(_CONTEXT_OPENER.search(item) or _CONTEXT_PLEASE.search(item) for item in (key, text))
-        or bool(_CONTEXT_IF.search(text)) or bool(_CONTEXT_IF_ANY.search(text)) or bool(_CONTEXT_DETAILS.search(text))
-        or bool(_CONTEXT_PRONOUN.search(text)) or bool(_CONTEXT_PHRASE.search(text))
-        or (words < 8 and bool(_CONTEXT_VERB.search(text)))
-        or bool(_BARE_DETAIL.search(text))
-        or (words < 6 and bool(_CONTEXT_DESCRIBE.search(text)))
-        or (words < 6 and bool(_CONTEXT_WH.search(text)) and not _SECOND_PERSON.search(text))
-    )
-
-
-def context_dependent(key: str) -> bool:
-    """A key whose saved answer is never reused for another company, even when the row is tagged reusable."""
-    return needs_label_key(key) or bool(_CONTEXT_WORDING.search(key))
-
-
-# --- What counts as sensitive (7.3) ----------------------------------------------------------------
-
-# On the normalized question: lower case, every run of anything but a-z and 0-9 one space.
-_OPT_NOT_MARKETING = r"\bopt\b(?! (?:in|out)\b(?! (?:the )?(?:us|u s|usa|united states|20\d\d)(?!\w)))"
-_AGE_TAIL = r"(?: years?)?(?: (?:of age|old|or older|or over|and older|and over))*"
-_AGE_18 = re.compile(
-    rf"\b(?:(?:at least|over|above|older than) (?:the age of )?18{_AGE_TAIL}|(?:the )?age of 18{_AGE_TAIL}"
-    rf"|18(?: years?)?(?: (?:of age|old|or older|or over|and older|and over))+"
-    # "Are you 18+?" loses its plus sign in the normalized text, so it reads "are you 18".
-    rf"|(?:are you|you are|must be) 18(?!\d){_AGE_TAIL})"
-)
-_PATTERNS: dict[str, re.Pattern[str]] = {
-    "work_authorization": re.compile(
-        r"authori[sz]ed to work|authori[sz]ation to work|work authori[sz]ation|legally (?:eligible|authori[sz]ed)|right to work|eligible to work"
-        r"|legally (?:(?:able|permitted|allowed) to )?work|eligib\w* (?:for|to) (?:employment|work)|work permit"
-    ),
-    "sponsorship": re.compile(
-        r"sponsor|immigration|petition|employment based|visa (?:sponsor|status|support|type|holder|transfer)"
-        rf"|(?:require|need|hold)\w* (?:a )?visa|work visa|student visa|\b(?:f ?1|j ?1|h ?1 ?b|tn|e ?3)\b|\bstem opt\b|{_OPT_NOT_MARKETING}|\bcpt\b|practical training"
-        # "What type of visa do you hold?", "Which visa are you on?", "Do you have a visa?". The company Visa is not caught.
-        r"|type of visa|\b(?:hold|have|has|current\w*|which) (?:(?:a|an|your|any|the) )?(?:\w+ )?visa\b"
-        # "What visa do you hold?", "Are you currently on a visa?", and a bare "Visa" heading.
-        r"|\bwhat (?:(?:is|are|s) )?(?:(?:your|the|my) )?(?:\w+ )?visa\b|\bon (?:a|an) (?:\w+ )?visa\b|^visas?$"
-        # Any other visa is immigration status ("What kind of visa do you have?", "Your visa", "Visa (if applicable)") unless it is
-        # plainly the company: at, for or with Visa, Visa's, Visa Inc. or its card.
-        r"|(?<!\bat )(?<!\bfor )(?<!\bwith )(?<!\babout )(?<!\bwhy )(?<!\bjoin )(?<!\bjoining )(?<!\blike )(?<!\bfrom )(?<!\bby )\bvisas?\b(?! s\b)(?! (?:inc|card|cards|payment|payments|network|corp|corporation|company|co|usa|international|gift)\b)"
-    ),
-    "age_18": _AGE_18,
-    "export_control": re.compile(
-        r"u s person|us person|\bitar\b|export administration regulations|export control|citizen|permanent resident|green card|clearance"
-        r"|nationalit|\b(?:u s|us|united states|american) national\b|\bnational of\b"
-    ),
-    "eeo_gender": re.compile(r"\bgender\b|\bsex\b"),
-    "eeo_hispanic": re.compile(r"hispanic|latin[oax]"),
-    "eeo_race": re.compile(r"\brace\b|ethnic"),
-    "eeo_veteran": re.compile(r"veteran|military|armed forces"),
-    "eeo_disability": re.compile(r"disab"),
-    "acknowledgment": re.compile(r"i (?:certify|attest|acknowledge|confirm|understand|agree)|accura|truthful|have read|privacy (?:notice|policy|statement)|acknowledg"),
-    "consent": re.compile(r"consent|retain|retention|process(?:ing)? (?:of )?(?:my|your) (?:personal )?(?:data|information)|gdpr"),
-    "salary": re.compile(r"salary|compensation|pay (?:expectation|range)|desired pay|expected pay|hourly rate|wages?\b|base pay|pay rate"),
-}
-_NEVER_STORABLE = re.compile(
-    r"\bage\b|birth|pronoun|marital|religio|genetic|pregnan|criminal|convict|felony|misdemeanor|arrest|background check|sexual|transgender|non ?compete"
-    r"|crimes?\b|offen[cs]es?\b|lgbt|queer"
-)
-# A question filed under a parent in one of these kinds is that kind too, whatever its own wording says (see build_plan).
-_INHERITING_PARENTS = frozenset({"uncategorized", "export_control", "sponsorship", "salary"})
-# Most restrictive first (7.3 step 3).
-_RESTRICTION = (
-    "uncategorized", "export_control", "salary", "sponsorship", "work_authorization", "age_18",
-    "eeo_gender", "eeo_hispanic", "eeo_race", "eeo_veteran", "eeo_disability", "acknowledgment", "consent",
-)
-_OPTION_FLAGS = (
-    ("export_control", re.compile(r"citizen|clearance|green card|permanent resident")),
-    ("sponsorship", re.compile(rf"visa|h ?1 ?b|{_OPT_NOT_MARKETING}|sponsor|\b(?:f ?1|j ?1)\b|\bcpt\b")),
-)
-_DECLINE = re.compile(
-    r"decline to (?:self identify|answer|state|identify|disclose)|do(?: not|n t) wish to (?:answer|disclose|identify|say)"
-    r"|do not want to answer|prefer not to (?:say|answer|disclose|identify)"
-)
-CATEGORY_WORDS = {
-    "work_authorization": "work authorization", "sponsorship": "visa sponsorship or immigration status", "age_18": "18 or older",
-    "export_control": "export control, citizenship or security clearance", "salary": "salary",
-    "eeo_gender": "voluntary self-identification", "eeo_hispanic": "voluntary self-identification",
-    "eeo_race": "voluntary self-identification", "eeo_veteran": "voluntary self-identification",
-    "eeo_disability": "voluntary self-identification", "acknowledgment": "a legal acknowledgment",
-    "consent": "a data-processing consent", "uncategorized": "a personal question",
-}
-
-
-def _most_restrictive(categories: Iterable[str | None]) -> str | None:
-    found = {category for category in categories if category}
-    return next((category for category in _RESTRICTION if category in found), None)
-
-
-def classify_sensitive(question: str, options: Iterable[str] = (), section: str = "", field_name: str = "") -> str | None:
-    """A sensitive category, ``"uncategorized"`` (sensitive, never storable), or None (an ordinary question).
-
-    The rules run in the order of spec 7.3. The result can only be stricter than the extension's own
-    ``SENSITIVE`` rule: anything that rule flags and nothing here places is ``"uncategorized"``.
-    """
-    text = re.sub(r"\beighteen\b", "18", normalized_text(question))
-    # 1. Never storable, for every section. An 18-or-older phrase goes first, or "years of age" would trip \bage\b.
-    if _NEVER_STORABLE.search(_AGE_18.sub(" ", text)):
-        return "uncategorized"
-    # 2. Section rules. EEO fields are mapped by their schema field names only.
-    if section in ("compliance", "demographic", "demographic_questions"):
-        return _EEOC_NAMES.get(field_name, "uncategorized")
-    if section == "data_compliance":
-        return "consent"
-    # 3. The question's own words.
-    found = {category for category, pattern in _PATTERNS.items() if pattern.search(text)}
-    # 4. Options fail closed: a vague question with visa, citizenship or clearance choices is sensitive too.
-    choices = [normalized_text(option) for option in options]
-    for category, pattern in _OPTION_FLAGS:
-        if any(pattern.search(choice) for choice in choices):
-            found.add(category)
-    if any(_DECLINE.search(choice) for choice in choices):
-        return "uncategorized"
-    result = _most_restrictive(found)
-    # 5. Anything the extension flags and no row places can never be answered, but is never ordinary either.
-    if result is None and SENSITIVE_FIELD.search(str(question or "")):
-        return "uncategorized"
-    return result
-
-
-# --- The broad net: what might be sensitive, kept apart from the precise classifier above ----------------------
-#
-# ``classify_sensitive`` decides a category from listed wordings, and every review round found wordings the lists miss. So
-# this is a second, deliberately wide reading of the same question: one list per topic, each item a topic word or a short
-# phrase (never a sentence shape). It never marks a question sensitive by itself, and it never says which category. It only
-# tightens what the app may do with a question the precise classifier called ordinary (spec 7.3, "As built"). Safety does not
-# rest on it: Apply for me never carries a saved answer from one company to another, and never fills a box or an agreement from
-# the answer library (spec 7.1 "As built"), so a wording the lists miss can at worst be saved by the student for that one company.
-# What the net adds is a best-effort refusal:
-#
-# - a question that hits a NEVER-STORABLE topic (criminal, demographic, money, security), or that is filed under or follows one,
-#   is left for the student: no form offers to save it, and nothing fills it from the answer library at all;
-# - a checkbox, a select whose options agree to something, a Yes/No-like question that hits the agreement topic and a typed
-#   signature are never filled from the answer library (only an exact stored statement may tick or choose it, D9 B).
-#
-# Over-blocking costs only some convenience, so a list leans wide. apps/extension/apply-engine.js repeats these lists as
-# ``NET_TOPICS`` and tests/fixtures/apply/broad_net.json is run by both suites, so the two cannot drift apart. The text is
-# normalized first: lower case, every run of anything but a-z and 0-9 one space ("visa's" reads "visa s", "H-1B" "h 1 b").
-NET_TOPICS: dict[str, tuple[str, ...]] = {
-    "immigration": (
-        r"\bvisa", r"\bsponsor", r"\bimmigra", r"\bcitizen", r"\bnationalit", r"\bpassport", r"\bgreen card", r"\bpermanent resident",
-        r"\bh ?1 ?b\b", r"\bopt\b", r"\bcpt\b", r"\bf ?1\b", r"\bj ?1\b", r"\btn (?:visa|status)", r"\be ?3\b", r"\bi ?9\b",
-        r"\be ?verify", r"\balien",
-        r"\bead\b", r"\bdaca\b", r"\btps\b", r"\basyl", r"\brefugee", r"\bforeign national", r"\blawful", r"\bh ?4\b", r"\bleave to remain", r"\bsettled status", r"\bblue card", r"\bemployment pass", r"\bworking rights", r"\blive and work", r"\bstatus in the (?:u s|us|united states)",
-    ),
-    "work_authorization": (
-        r"\b(?:able|permitted|allowed|free|eligible|entitled|authori[sz]ed|legally|cleared) to work",
-        r"\bwork (?:authori|eligib|right|permit|status|restriction|visa)", r"\bemployment (?:eligib|verification|authori|status)",
-        r"\bright to work", r"\bunrestricted", r"\bwithout restrictions?\b", r"\blegally\b",
-        r"\b(?:permission|right|authority|authori[sz]ation|eligibility) to (?:work|be employed)",
-        r"\bwork in the (?:u s|us|usa|united states|country)",
-    ),
-    "criminal": (
-        r"\bconvict", r"\bfelon", r"\bcriminal", r"\bcrimes?\b", r"\barrest", r"\boffen[cs]e", r"\bcourt", r"(?<!\bin )\bcharge[sd]?\b",
-        r"(?<!\bone )(?<!\btwo )(?<!\bthree )(?<!\bsingle )(?<!\bfew )\bsentenc(?:e|ed|es|ing)\b", r"\bprobation", r"\bparole",
-        r"\bmisdemeanou?r", r"\bbackground check", r"\bpending case", r"\bincarcerat", r"\bimprison",
-        r"\bguilty", r"\bno contest", r"\bnolo\b", r"\bplea(?:d|ded)?\b", r"\bpled\b", r"\bwarrant", r"\bdui\b", r"\bdwi\b", r"\bjail", r"\bprison", r"\bpolice", r"\bindict", r"\blegal proceeding", r"\badjudicat", r"\bexpunge", r"\bsealed\b", r"\bdetained\b",
-        r"\blegal matters?", r"\brestraining order", r"\blicen[sc]e\b.{0,40}\b(?:suspen|revo)", r"\blitigation", r"\blaw enforcement",
-        r"\bcaution(?:ed|s)?\b", r"\boffender",
-    ),
-    "demographic": (
-        r"\bgender", r"\bsex", r"\bfemales?\b", r"\bmales?\b", r"\bwom[ae]n\b", r"\bnon ?binary\b", r"\brace\b", r"\bracial", r"\bethnic", r"\bhispanic", r"\blatin[oax]", r"\bveteran", r"\bmilitary",
-        r"\barmed forces", r"\bdisab", r"\bpronoun", r"\borientation", r"\blgbt", r"\btransgender", r"\bqueer\b", r"\breligio",
-        r"\bmarital", r"\bmarried", r"\bpregnan", r"\bgenetic", r"\bage\b", r"\bbirth", r"\bdob\b", r"\byears old\b", r"\bhow old\b", r"\beeoc?\b",
-        r"\bself identif",
-        r"\bperson of colou?r", r"\bpeople of colou?r", r"\bbipoc", r"\bblack\b", r"\bindigenous", r"\bnative american", r"\balaska native", r"\bpacific islander", r"\bunderrepresent", r"\bminorit", r"\bover 40\b", r"\bborn\b", r"\bnational origin", r"\bmedical", r"\bhealth condition", r"\baccommodat", r"\bnational guard", r"\breserves\b", r"\bneurodiver", r"\bhe him\b", r"\bshe her\b", r"\bthey them\b", r"\braces\b",
-        r"\blearning (?:difference|disabilit)", r"\badhd\b", r"\bdyslex", r"\bautis", r"\bdeaf", r"\bhard of hearing", r"\bchronic", r"\bcaregiver",
-        r"\bchildren\b", r"\bcaste\b", r"\baboriginal", r"\btorres strait", r"\bfirst language", r"\bmother tongue",
-    ),
-    "money": (
-        r"\bsalar", r"\bcompensat", r"\bpay\b", r"\bpaid\b", r"\bwages?\b", r"\bstipend", r"\bhourly\b", r"\bremunerat",
-        r"\bearnings?\b", r"\bbonus", r"\b(?:pay|hourly|hour|day|week|wage|salary|desired|expected|minimum|target|base|starting|billing|annual) rate\b",
-        r"\brate of pay\b", r"\b(?:expected|desired) (?:salary|compensation|pay|rate|wages?|earnings?|hourly|stipend)",
-        r"\bincome", r"\bctc\b", r"\bote\b", r"\bper hour\b", r"\bhow much (?:do you |are you )?(?:currently |now )?(?:make|earn|paid)", r"\b(?:are|were|was) you (?:currently |now |still )?(?:making|earning)\b",
-        r"\bcomp\b(?! (?:sci|science|eng|engineering|arch|architecture|org|bio|lit|vision|geometry|neuro|networks?|theory|systems?)\b)",
-        r"\bfixed component", r"\blast drawn", r"\bvariable (?:pay|component)", r"\byour ask\b", r"\bbankrupt", r"\bcredit (?:score|check|history|report)",
-    ),
-    "security": (r"\bclearance", r"\bexport", r"\bitar\b", r"\bear\b", r"\bu s person", r"\bus person", r"\bsecurity", r"\bpolygraph", r"\btop secret", r"\bts sci\b", r"\bdod\b", r"\bpublic trust", r"\bbackground investigation", r"\bsanction", r"\bofac\b", r"\bsecret clearance", r"\bvetting", r"\bpoly\b", r"\baccess authori", r"\bnato\b"),
-    "agreement": (
-        r"\bagree", r"\backnowledg", r"\bconsent", r"\bcertif", r"\battest", r"\baffirm", r"\bdeclar", r"\bconfirm", r"\bunderstand that",
-        r"\bunderstood\b", r"\baccept", r"\bterms\b", r"\bpolic(?:y|ies)\b", r"\bprivacy", r"\bnotice", r"\bdisclos", r"\bstatement",
-        r"\barbitrat", r"\bhave read\b", r"\bi ve read\b", r"\breviewed\b", r"\bbound\b", r"\babide", r"\bsignature", r"\bsign here\b",
-        r"\be ?sign", r"\bauthori[sz]e\b", r"\bpermission", r"\bcompl(?:y|iance|ies)\b", r"\b(?:been|was|am|are|being) informed\b", r"\binformed (?:of|that)\b", r"\bwaive", r"\bretain\b",
-        r"\bretention", r"\bon file\b", r"\bhereby\b",
-    ),
-    "relative": (r"\brelative", r"\bfamily", r"\bspouse", r"\brelated to\b", r"\breferr", r"\bformer employee", r"\bcurrent employee", r"\bconflict of interest"),
-}
-# The topics no answer may be saved for or filled from the library, whichever company: the app leaves them for the student.
-NEVER_STORABLE_TOPICS = ("criminal", "demographic", "money", "security")
-# Topics read on a select's option labels as well as its wording. The others would over-read a plain choice list ("Security"
-# as one team among several), so an option is read for the topics a person's own status is answered in.
-_NET_OPTION_TOPICS = frozenset({"immigration", "work_authorization", "criminal", "demographic"})
-_NET_PATTERNS = {topic: re.compile("|".join(items)) for topic, items in NET_TOPICS.items()}
-# Ordinary phrases the topic lists would otherwise read as criminal or security ("take charge of a project", "in two sentences",
-# "network security", "exporting data") or as pay ("hourly availability"). They are removed before the topics are read, so
-# a common CS or essay prompt still gets its save form. Each is a whole phrase, never a bare topic word: "security clearance",
-# "export control", "charged with", "the sentence you served" and "hourly rate" are not touched. apps/extension/apply-engine.js
-# repeats this list as NET_BENIGN and tests/fixtures/apply/broad_net.json runs both.
-NET_BENIGN = (
-    r"\b(?:take|takes|took|taken|taking) charge\b",
-    r"\b(?:in|with|within|using|about|of) (?:a|an|one|two|three|four|five|\d+(?: \d+)?|a few|a couple of|few|several) sentences?\b",
-    r"\b(?:\d+(?: \d+)?|a few|few|several|a couple of|two|three|four|five) sentences\b",
-    r"\b(?:network|cyber|information|application|computer|software|web|cloud|mobile|embedded|platform|infrastructure) security\b",
-    r"\bsecurity (?:tools?|testing|concepts|best practices|research|vulnerabilit(?:y|ies))\b",
-    r"\bexport(?:s|ed|ing)? (?:data|files?|results?|reports?|tables?|to (?:csv|excel|pdf|json|xml))\b",
-    r"\bhourly (?:availability|schedule|commitment)\b",
-)
-_BENIGN = re.compile("|".join(NET_BENIGN))
-_ADULT = "adult"   # an 18-or-older wording: possibly sensitive, but a storable kind, so never on the never-storable list
-# What a question filed under a precisely sensitive one takes from it when the wording has no topic word of its own.
-_CATEGORY_TOPIC = {
-    "work_authorization": "work_authorization", "sponsorship": "immigration", "age_18": _ADULT, "export_control": "security",
-    "salary": "money", "acknowledgment": "agreement", "consent": "agreement", "uncategorized": "personal",
-    "eeo_gender": "demographic", "eeo_hispanic": "demographic", "eeo_race": "demographic", "eeo_veteran": "demographic",
-    "eeo_disability": "demographic",
-}
-# "personal" is what a question the precise classifier called uncategorized passes on: never storable, like the four above.
-_NEVER_TOPICS = frozenset((*NEVER_STORABLE_TOPICS, "personal"))
-NET_WORDS = {
-    "criminal": "criminal history", "demographic": "personal details such as age, gender or background", "money": "pay",
-    "security": "security clearance or export control", "agreement": "a legal agreement", "personal": "a personal question",
-}
-
-
-def net_topics(text: Any) -> tuple[str, ...]:
-    """The topics the broad net finds in a text, sorted. An 18-or-older wording is the topic ``adult``, not demographic."""
-    words = _BENIGN.sub(" ", re.sub(r"\beighteen\b", "18", normalized_text(text)))
-    plain = _AGE_18.sub(" ", words)
-    found = {topic for topic, pattern in _NET_PATTERNS.items() if pattern.search(plain if topic == "demographic" else words)}
-    if _AGE_18.search(words):
-        found.add(_ADULT)
-    return tuple(sorted(found))
-
-
-def possibly_sensitive(text: Any) -> bool:
-    """Whether the broad net finds anything in a text. It says "look closer", never which category."""
-    return bool(net_topics(text))
-
-
-def never_storable(text: Any) -> bool:
-    """Whether the text hits a topic no answer may be saved for or filled from the library (criminal, demographic, money, security)."""
-    return bool(set(net_topics(text)) & set(NEVER_STORABLE_TOPICS))
-
-
-def _plain_text(html_text: Any) -> str:
-    return " ".join(html.unescape(_TAGS.sub(" ", str(html_text or ""))).split())
-
-
-# Phrases read on a select's option labels for two more topics. They are narrower than the topic lists, because a plain choice list
-# ("Paid", "Security" as one team among several) must not read as a question about pay or clearance.
-_OPTION_EXTRA = {
-    "security": re.compile(r"clearance|top secret|ts sci|\bsecret\b|public trust|polygraph"),
-    "money": re.compile(r"\bsalar|\bcompensat|\bhourly\b|\bper hour\b|\bper year\b|\b\d+ ?k\b|\bhr\b|\bincome|\b\d{2,3} 000\b"),
-    "demographic": re.compile(r"\basian\b|\bwhite\b|\bcaucasian|\bafrican american|\bmiddle eastern"),
-}
-# An option that agrees to, accepts, acknowledges, consents to, certifies or confirms something (spec 7.1, D9 B).
-_AGREEMENT_OPTION = re.compile(r"\bagree|\baccept|\backnowledg|\bconsent|\bcertif|\battest|\bconfirm|\bi have read\b|\bi ve read\b|\bunderstand")
-# A field that asks for a typed signature is an agreement whatever else it says.
-# Typed initials are one too, and so is any "type ... to agree" instruction.
-_SIGNATURE = re.compile(
-    r"\bsignature\b|\be ?sign|\bsign here\b|\btype your (?:full )?(?:legal )?name\b|\binitials?\b"
-    r"|\b(?:type|enter|print|write|input)\b.{0,60}\b(?:to|as|in) (?:agree|accept|confirm|acknowledge|consent|certify|attest)"
-)
-_PAY_ATTENTION = re.compile(r"\bpay(?:s|ing)? (?:close |careful |special )?attention\b", re.IGNORECASE)
-# A choice that is Yes or No in the student's own words: two or more of yes, no, y, n among its options.
-_YES_NO_WORDS = frozenset({"yes", "no", "y", "n"})
-# The mark a control that is never filled from the answer library carries in ``net_never``, whatever it says (spec 7.1, B).
-TICK_MARK = "tick"
-
-
-def _yes_no_like(options: Iterable[str]) -> bool:
-    return len({normalized_text(option) for option in options} & _YES_NO_WORDS) >= 2
-
-
-def _field_net(item: SchemaField, control: str) -> tuple[frozenset[str], tuple[str, ...]]:
-    """(the topics a form field's own words hit, the marks that leave it for the student whatever its topics).
-
-    Its label is read, and its description; a box's options too, since that is where its statement is; a select's options for the
-    topics a person's own status is answered in and for a few narrow phrases (pay, clearance). The marks: a checkbox, a single one
-    or a group, is never filled from the answer library (``tick``); a box, a Yes/No-like question or a select whose options agree
-    to something, and a typed signature, are an ``agreement``. Only an exact stored statement may tick or choose those (D9 B).
-    """
-    box = control == "checkbox"
-    yes_no = control == "select" and (_yes_no(item.options) or _yes_no_like(item.options))
-    parts = [item.label]
-    if box:
-        parts.extend(item.options)
-    own = set(net_topics(" ".join(parts)))
-    description = net_topics(_PAY_ATTENTION.sub(" ", _plain_text(item.description)))
-    # A description is where a form sometimes puts the real question ("Please list any criminal convictions here"). Its own agreement
-    # and family words are usually boilerplate, so those count only on a box or a Yes/No question, whose whole point is the statement.
-    own |= set(description) if box or yes_no else set(description) - {"agreement", "relative"}
-    options = [normalized_text(option) for option in item.options]
-    if control in ("select", "multiselect") and options:
-        own |= set(net_topics(" ".join(options))) & _NET_OPTION_TOPICS
-        own |= {topic for topic, pattern in _OPTION_EXTRA.items() if any(pattern.search(option) for option in options)}
-    marks: list[str] = []
-    if control in ("checkbox", "multiselect"):
-        marks.append(TICK_MARK)
-    # A select, radio or multiselect is an agreement when an agreement word is in its options or in its heading or description:
-    # "Do you certify that your answers are true?" with the options "Yes I do" / "Yes I do not" says it in the heading alone.
-    choice_words = [normalized_text(item.label), normalized_text(_plain_text(item.description))]
-    if (
-        ((box or yes_no) and "agreement" in own)
-        or (control in ("select", "multiselect") and any(_AGREEMENT_OPTION.search(text) for text in (*options, *choice_words)))
-        or (control in ("text", "textarea") and _SIGNATURE.search(" ".join(choice_words)))
-    ):
-        marks.append("agreement")
-    return frozenset(own), tuple(marks)
-
-
-# A box or a Yes/No question that asks the student to agree to something is an acknowledgment, whatever its
-# heading says ("Candidate Privacy Statement"): the statement is in the option's text or the description. The
-# short list is read on both; the longer one only on a checkbox, whose whole job is to agree.
-_AGREE_WORDS = re.compile(r"acknowledg|\bterms\b|privacy (?:statement|notice|policy)|\baccepts? (?:the|our|its|these|this|all)\b|\babide\b|\bbound by\b")
-_AGREE_BOX_WORDS = re.compile(
-    r"\bagree|\baccept|\bpolicy\b|\bcertif|\bread\b|\breviewed?\b|\bunderstood\b|\babide|\bbound\b|\breceiv(?:e|ed|es|ing)\b|\bi ve read\b"
-    # The broad net (NET_TOPICS) is the safety floor for a box that agrees in other words; these are the common ones it caught.
-    r"|\bcompl(?:y|ies)\b|\bdeclar|\bauthori[sz]e\b|\bwaive|\bbeen informed\b|\bpermission\b"
-)
-_TAGS = re.compile(r"<[^>]*>")
-# An option this long names what it agrees to; a shorter one ("I agree", "Yes", "I accept the terms") does not.
-_SPECIFIC_STATEMENT_WORDS = 6
-# An option that points at text elsewhere on the form names nothing itself, however long it is.
-_REFERS_ELSEWHERE = re.compile(
-    r"\b(?:above|below|following|foregoing|aforementioned|herein"
-    r"|(?:the|these|those|this|that) (?:terms|statement|notice|policy|policies|agreement|document|declaration"
-    r"|conditions?|requirements?|provisions?|arrangements?|clauses?|obligations?|rules?|expectations?))\b"
-)
-
-
-def _yes_no(options: Iterable[str]) -> bool:
-    words = {normalized_text(option) for option in options}
-    return bool(words) and words <= {"yes", "no"}
-
-
-def statement_control(control: str, options: Iterable[str]) -> bool:
-    """Whether a stored, ticked statement can be put into this control: a box, or a Yes/No question with one "Yes"."""
-    return control == "checkbox" or (control == "select" and _yes_no(options))
-
-
-def _leaning_heading(item: SchemaField, heading: str) -> str:
-    """The heading with the question above it in front, for a statement that leans on text outside its own words."""
-    prefix = f"{item.parent} / "
-    return heading if not item.parent or heading.startswith(prefix) else f"{prefix}{heading}"
-
-
-def _statement_parts(item: SchemaField, control: str, category: str = "", answer_key: str = "") -> tuple[str, bool]:
-    """(the text a stored answer to this field is matched on, whether that text leans on words outside the option).
-
-    ``answer_key`` is the text the plan files the question under (``_answer_key``): the heading, with the question above it in
-    front for a follow-up, a short heading and a heading the form repeats. The whole statement the student sees is matched, never
-    the option alone: however long an option is, "I have read and agree to the following" names nothing.
-    """
-    heading = answer_key or item.label
-    yes_no = control == "select" and category in apply_sensitive.STATEMENT_CATEGORIES and _yes_no(item.options)
-    if not yes_no and (control != "checkbox" or not item.options):
-        return item.label, False
-    description = _plain_text(item.description)
-    # A box says what it agrees to in its option, a Yes/No question in its question: that is the text that has to be specific.
-    own = normalized_text(item.label) if yes_no else normalized_text(item.options[0])
-    short = len(own.split()) < _SPECIFIC_STATEMENT_WORDS
-    refers = bool(_REFERS_ELSEWHERE.search(own))
-    # A box that states a fact about the student ("Yes, this is true for me right now") is the answer to its heading, however
-    # short the option is: a work-authorization or 18-or-older box carries its heading, which is that question, and is not
-    # about the employer. Any other statement that is short or points elsewhere leans on the question above it as well.
-    about_student = category in apply_sensitive.TICKABLE
-    leans = short or refers
-    if leans and not about_student:
-        heading = _leaning_heading(item, heading)
-    option = "" if yes_no else item.options[0]
-    # What sits in front of the heading (the question above it) is kept whichever words repeat.
-    lead = heading[: -len(item.label)] if item.label and heading.endswith(item.label) else ""
-    label = item.label
-    if option and label:
-        # A heading and an option that say the same thing are one statement, not two.
-        title, chosen = f" {normalized_text(label)} ", f" {normalized_text(option)} "
-        if title.strip() and title in chosen:
-            label = ""
-        elif chosen.strip() and chosen in title:
-            option = ""
-    return (
-        lead + " ".join(part for part in (label, option, description) if part.strip()),
-        bool(description) or refers or (short and not about_student),
-    )
-
-
-def statement_of(item: SchemaField, control: str, category: str = "", answer_key: str = "") -> str:
-    """The text a stored answer to this field is matched on: a checkbox's whole statement, else its question.
-
-    A checkbox is its heading, its option and its description together, and a Yes/No agreement question is its
-    question and its description: an option alone ("I agree", or a long generic "I have read and agree to the following")
-    is never the statement, so two boxes that agree to different things never share a stored answer. A statement whose own words
-    are short or point elsewhere carries the question above it too. A box that answers a question about the student (work
-    authorization, sponsorship, 18 or older) carries its heading, which is that question. ``category`` says which kind of
-    question it is, and ``answer_key`` is the heading as the plan files it.
-    """
-    return _statement_parts(item, control, category, answer_key)[0]
-
-
-def statement_needs_company(item: SchemaField, control: str, category: str = "", answer_key: str = "") -> bool:
-    """Whether a statement leans on a description, on text elsewhere or on its heading, so a stored answer is kept for one company."""
-    return _statement_parts(item, control, category, answer_key)[1]
-
-
-def classify_item(item: SchemaField, control: str, parent: str | None = None, follows: bool = False) -> str | None:
-    """The category of one form field: its question, and for what has no wording of its own, what it depends on.
-
-    A checkbox and a Yes/No question are read on their heading, their option text and their description
-    together. ``follows`` says the field is filed under the question above it (a follow-up such as "If yes,
-    please explain"), which passes that question's own category on: ``parent`` is that question's category, and
-    its label is read as well, for a parent the listing does not carry. The most restrictive result wins.
-    """
-    found = [classify_sensitive(item.label, item.options, item.section, item.name)]
-    if item.section == "custom":
-        agreeing = control == "checkbox"
-        if agreeing or (control == "select" and _yes_no(item.options)):
-            statement = item.options[0] if agreeing and item.options else ""
-            description = html.unescape(_TAGS.sub(" ", item.description))
-            found.extend(classify_sensitive(text) for text in (statement, description) if text.strip())
-            words = normalized_text(f"{item.label} {statement} {description}")
-            if _AGREE_WORDS.search(words) or (agreeing and _AGREE_BOX_WORDS.search(words)):
-                found.append("acknowledgment")
-        if follows and item.parent:
-            found.extend((classify_sensitive(item.parent), parent))
-    result = _most_restrictive(found)
-    # A field whose own words ask for voluntary self-identification as well ("If other, please specify your gender" under a
-    # work authorization question, "Do you require sponsorship? What is your race?") is never offered as a work authorization,
-    # sponsorship or 18-or-older answer: no form for it may offer demographic options, and no such value is stored (D5 C (i)).
-    # The broad net's demographic topic reads the whole statement a box or Yes/No question shows (its heading, its option and its
-    # description), not only the heading: "I am authorized to work in the United States and I am a protected veteran" is a
-    # demographic claim, not a work-authorization one.
-    if result in _NOT_WITH_EEO and (eeo_words(item.label) or claims_never_storable(item, control)):
-        return "uncategorized"
-    return result
-
-
-_NOT_WITH_EEO = frozenset({"work_authorization", "sponsorship", "age_18"})
-
-
-def _claim_parts(item: SchemaField, control: str) -> list[str]:
-    parts = [item.label]
-    if control == "checkbox" or (control == "select" and _yes_no(item.options)):
-        parts.append(_plain_text(item.description))
-    if control == "checkbox":
-        parts.extend(item.options)
-    elif control in ("select", "multiselect"):
-        # A work-authorization list whose option is "Yes, and I am a protected veteran" asks for more than work authorization.
-        parts.extend(item.options)
-    return parts
-
-
-def claims_demographic(item: SchemaField, control: str) -> bool:
-    """Whether a field's heading, and for a box or a Yes/No question its option and description, hit the demographic topic.
-
-    An 18-or-older wording is not demographic here (``net_topics`` reads it as ``adult``). A work-authorization,
-    sponsorship or 18-or-older answer that also claims a demographic is never stored or filled (D5 C (i)).
-    """
-    return "demographic" in net_topics(" ".join(_claim_parts(item, control)))
-
-
-def claims_never_storable(item: SchemaField, control: str) -> bool:
-    """Whether a field's own words (heading, options and description) also hit criminal, demographic, money or security.
-
-    A work-authorization, sponsorship or 18-or-older answer that also claims a criminal record, a demographic, pay or clearance
-    ("...and I am not currently on probation") is never stored or filled: it is left for the student (D5 C (i), spec 7.3 "As built").
-    """
-    return never_storable(" ".join(_claim_parts(item, control)))
-
-
-def eeo_words(text: Any) -> bool:
-    """Whether the words themselves ask a voluntary self-identification (EEO) question, whatever else they ask."""
-    words = normalized_text(text)
-    return any(pattern.search(words) for category, pattern in _PATTERNS.items() if category.startswith("eeo_"))
+# --- The one stored answer a sensitive question may take (5.4) ----------------------------------------
 
 
 def stored_sensitive_answer(
@@ -1309,24 +707,24 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
     # A checkbox is matched on its own statement, a follow-up on its parent's question too: neither on the bare heading.
     checkbox = entry.control == "checkbox"
     # A Yes/No agreement question is matched like a box: on the question and its description, never on the question alone.
-    boxlike = checkbox or (category in apply_sensitive.STATEMENT_CATEGORIES and statement_control(entry.control, entry.options))
+    boxlike = checkbox or (category in STATEMENT_CATEGORIES and statement_control(entry.control, entry.options))
     entry.statement = statement_of(item, entry.control, category, entry.answer_key) if boxlike else entry.answer_key or item.label
     key = question_key(entry.statement)
-    if checkbox or category in apply_sensitive.STATEMENT_CATEGORIES:
+    if checkbox or category in STATEMENT_CATEGORIES:
         entry.links = apply_sensitive.links_in(item.label, *item.options, item.description)
     # Text the app cut off is text it cannot compare, and a link past the cut is a link it never saw (D9 B).
-    entry.text_cut = item.description_cut and (checkbox or category in apply_sensitive.STATEMENT_CATEGORIES)
+    entry.text_cut = item.description_cut and (checkbox or category in STATEMENT_CATEGORIES)
     # A question that depends on its company is never answered from another company's entry (7.1), and neither is a
     # statement that points to a document or leans on words outside its option. An EEOC field is found by its own
     # name and holds only a decline, so it is the same at every company. Every stored statement (an acknowledgment or a consent)
     # and every tick box or typed answer is kept for one company, whatever its words: no list can prove a statement names no
     # document. Only a select's exact option label, for work authorization, sponsorship or 18 or older, is kept for any company.
     entry.company_only = (
-        category in apply_sensitive.STATEMENT_CATEGORIES
-        or (category in apply_sensitive.TICKABLE and (entry.control != "select" or "agreement" in net_topics(" ".join((item.label, _plain_text(item.description), *item.options)))))
+        category in STATEMENT_CATEGORIES
+        or (category in TICKABLE and (entry.control != "select" or "agreement" in net_topics(" ".join((item.label, plain_text(item.description), *item.options)))))
         or (item.section != "compliance" and (context_dependent(key) or (not checkbox and entry.context_dependent)))
     )
-    if category in apply_sensitive.STATEMENT_CATEGORIES and not statement_control(entry.control, entry.options):
+    if category in STATEMENT_CATEGORIES and not statement_control(entry.control, entry.options):
         # A statement is stored only as ticked: a text field, a list or a choice that is not Yes/No has nothing it could be typed as.
         entry.problem_kind = "sensitive_never"
         entry.problem = f"This asks for {words} in a way the app can't answer for you. Finish in browser leaves it for you"
@@ -1348,7 +746,7 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
             "The text around this box is too long for the app to check word for word, so it is left for you. Finish in browser leaves it for you"
         )
         return entry
-    if boxlike and category in apply_sensitive.STATEMENT_CATEGORIES and len(normalized_text(entry.statement).split()) < 3:
+    if boxlike and category in STATEMENT_CATEGORIES and len(normalized_text(entry.statement).split()) < 3:
         # A statement of one or two words ("Acknowledgment") says nothing the student could be shown as agreed to, and the store
         # refuses to hold one: it is left for the student rather than offered a form that cannot be saved.
         entry.problem_kind = "sensitive_never"
@@ -1382,7 +780,7 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
     if value is None:
         entry.problem_kind, entry.problem = "sensitive_mismatch", f"Your stored answer doesn't fit this form. {why}"
         return entry
-    if category in apply_sensitive.STATEMENT_CATEGORIES:
+    if category in STATEMENT_CATEGORIES:
         noun = "acknowledgment" if category == "acknowledgment" else "consent"
         label = f"Your {noun} (any company)" if not stored.get("company_key") else f"Your {noun} for {ctx.company}"
     else:
@@ -1527,27 +925,27 @@ def build_plan(
             # words that continue another question count: a short question that stands alone ("GPA") does not.
             label_key = question_key(item.label)
             custom_child = item.section == "custom" and bool(item.parent) and label_key not in _PROFILE_KEYS
-            parent_category = _most_restrictive((own.get(item.parent), classify_sensitive(item.parent))) if custom_child else None
-            under_strict = custom_child and parent_category in _INHERITING_PARENTS
+            parent_category = most_restrictive((own.get(item.parent), classify_sensitive(item.parent))) if custom_child else None
+            under_strict = custom_child and parent_category in INHERITING_PARENTS
             # Under a question the app never answers, or one only the student may (a felony, a visa, salary, export control), a
             # question filed under it is that question's continuation whatever its own words: "Year" or "Type" says nothing about
             # what it is the year or the type of. So is a short phrase that asks about no one ("Nature of charge"). Under any
             # other parent only words that continue another question count.
             follows = custom_child and (
                 (text != item.label and (under_strict or follow_up_wording(label_key)))
-                or (under_strict and len(without_enumeration(label_key).split()) < 5 and not _SECOND_PERSON.search(label_key))
+                or (under_strict and len(without_enumeration(label_key).split()) < 5 and not SECOND_PERSON.search(label_key))
             )
             if follows:
                 inherited = classify_item(item, control, own.get(item.parent), True)
                 follows = inherited is not None and inherited != category
                 category = inherited
-            own[item.label] = _most_restrictive(found for found in (own.get(item.label), category) if found)
+            own[item.label] = most_restrictive(found for found in (own.get(item.label), category) if found)
             # The broad net, whatever the precise classifier said. A question is read on its own words, and takes the topics of the
             # question right above it (its parent: the group it is filed under) when it follows that one by the rules above, when
             # that one is precisely sensitive, or when the net finds a topic in it: then whatever the child says ("Please tell us
             # what happened", "Sentence received and date of release") is about the parent's subject. Only a profile field (a
             # LinkedIn or portfolio link) is exempt.
-            own_net, marks = _field_net(item, control)
+            own_net, marks = field_net(item, control)
             topics = set(own_net)
             continues = custom_child and (text != item.label or follow_up_wording(label_key))
             parent_net = net_own.get(item.parent, frozenset()) | set(net_topics(item.parent)) if custom_child else frozenset()
@@ -1558,14 +956,14 @@ def build_plan(
                     # one takes that one's own topics and does not pass them on to what follows it.
                     topics |= net_chain.get(item.parent, frozenset())
                 if parent_category is not None:
-                    topics.add(_CATEGORY_TOPIC[parent_category])
+                    topics.add(CATEGORY_TOPIC[parent_category])
             net = frozenset(topics)
             net_own[item.label] = frozenset(net_own.get(item.label, frozenset()) | own_net)
             net_chain[item.label] = frozenset(net_chain.get(item.label, frozenset()) | (net if continues else own_net))
         # The net tightens only an ordinary question: a sensitive one already goes through the store and never the library.
         ordinary = control != "file" and category is None
         net_company = ordinary and (bool(net) or bool(marks))
-        net_never = (tuple(sorted(net & _NEVER_TOPICS)) + marks) if ordinary else ()
+        net_never = (tuple(sorted(net & NEVER_TOPICS)) + marks) if ordinary else ()
         entry = PlanField(
             key=item.name, question=item.label, control=control, required=item.required, options=item.options, section=item.section,
             sensitive=category, answer_key=text, context_dependent=dependent or net_company,

@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from ...outreach_automation import settings as automation_settings, update_settings as update_automation_settings
-from ... import outreach_labels
+from ... import outreach_label_name, outreach_labels
 from ...outreach_gmail import gmail_drafts_status
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, require_owner, writable_connection
@@ -20,11 +20,11 @@ router = APIRouter()
 
 
 def gmail_label_view(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
-    value = outreach_labels.label_name(conn, user_id)
+    value = outreach_label_name.label_name(conn, user_id)
     gmail = gmail_drafts_status(conn, user_id=user_id)
     return {
         "value": value,
-        "default": outreach_labels.DEFAULT_LABEL,
+        "default": outreach_label_name.DEFAULT_LABEL,
         "search": outreach_labels.search_form(value),
         "mailbox": {"connected": gmail["connected"], "connected_as": gmail["connected_as"], "expected": gmail["account"]},
         "permission": gmail["label_check"],

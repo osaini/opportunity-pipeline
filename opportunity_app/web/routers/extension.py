@@ -28,7 +28,7 @@ from ...extension_apply import (
 )
 from ...preparation import save_answer
 from ...schema import connect_product
-from ... import apply_policy
+from ... import apply_classify
 from ..context import AppContext
 from ..dependencies import extension_connection, get_ctx, require_auth, writable_connection
 from ..models.extension import (
@@ -201,7 +201,7 @@ def save_extension_answer(
     conn, device = context
     # The precise rule, and the broad net's never-storable topics (criminal history, personal details, pay, security): a wording
     # the precise rule misses is still never offered for saving here (spec 7.3 "As built").
-    if answer_is_sensitive(payload.question) or apply_policy.never_storable(payload.question):
+    if answer_is_sensitive(payload.question) or apply_classify.never_storable(payload.question):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Sensitive or consequential answers cannot enter the reusable library",

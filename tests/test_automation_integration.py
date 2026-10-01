@@ -1,19 +1,20 @@
 """Application mail (application_inbox.py) and internal automation (internal_automation.py and friends) together.
 
-Both register into the one automation registry and write the one ledger. These
-tests pin what they share: the switches and their groups, the action types,
-and that each switch has its own circuit breaker, counted its own way.
+Both register into the one automation registry (bootstrap.register_all, called as the app starts) and write the one
+ledger. These tests pin what they share: the switches and their groups, the action types, that each switch has its own
+circuit breaker, counted its own way, and that the startup call is what fills the registries.
 """
 
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import api  # noqa: F401  (imports every module that registers a switch or a handler)
-from opportunity_app import automation
+from opportunity_app import automation, automation_handlers, bootstrap
+from opportunity_app.api import create_app
 from opportunity_app.actions import record_intent
 from opportunity_app.schema import connect_product
 from opportunity_app.timestamps import utc_now
@@ -24,6 +25,10 @@ USER = "local-user"
 
 
 class RegistryTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        bootstrap.register_all()  # what create_app does as the app starts (tests/helpers_platform.py does it too)
+
     def test_both_phases_share_one_registry(self):
         groups = {key: feature.group for key, feature in automation.FEATURES.items()}
         self.assertEqual(groups, {
@@ -47,6 +52,47 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(set(automation.BREAKER_GROUPS), {"application_mail", "decline_thank_you"},
                          "only one email's changes (a job email's, or a decline's) are counted together")
         self.assertEqual(set(automation.CORRECTIONS), {"application_mail"})
+
+
+class BootstrapTests(unittest.TestCase):
+    def test_create_app_fills_the_registries_through_bootstrap(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(bootstrap, "register_all") as register:
+            _, platform_path = build_and_migrate(Path(directory))
+            app = create_app(db_path=platform_path, access_token="registry-owner", start_inbox_watcher=False, start_automation_worker=False)
+        self.assertIsNotNone(app)
+        register.assert_called_once_with()
+
+    def test_the_registries_hold_what_each_module_registers_and_nothing_else(self):
+        bootstrap.register_all()
+        bootstrap.register_all()  # harmless to repeat
+        self.assertEqual(sorted(automation.HANDLERS), sorted([
+            "application.stage", "opportunity.intent", "application.task", "outreach.status", "outreach.follow_up_draft",
+            "resume.pick", "outreach.thank_you", "application.deadline", "application.capture_proposal",
+        ]))
+        self.assertEqual(sorted(automation.BREAKER_GROUPS), ["application_mail", "decline_thank_you"])
+        self.assertEqual(sorted(automation.CORRECTIONS), ["application_mail"])
+        unregistered = [key for key, check in automation.REQUIREMENTS.items() if getattr(check, "__qualname__", "").startswith("_unregistered_requirement")]
+        self.assertEqual(unregistered, [], "every requirement was filled in at startup")
+
+    def test_a_registry_nobody_filled_fails_loudly(self):
+        with mock.patch.dict(automation.HANDLERS, clear=True):
+            with self.assertRaisesRegex(ValueError, "Unknown automation action type"):
+                automation._handler("application.stage")
+            self.assertFalse(automation.undoable("application.stage"), "and nothing claims to be undoable")
+        for key in ("auto_save", "auto_pass", "resume_variant_pick", "apply_agent"):
+            with self.subTest(key=key), self.assertRaisesRegex(RuntimeError, f"requirement for {key} was never registered"):
+                automation._unregistered_requirement(key)(None, USER)
+
+    def test_a_handler_may_extend_the_base_and_keeps_todays_defaults(self):
+        class Plain(automation.HandlerBase):
+            fields = ("flag",)
+
+        handler = Plain()
+        self.assertTrue(handler.undoable)
+        after = {"flag": "x"}
+        self.assertIs(handler.ledger(after), after, "the ledger keeps all of it unless a handler says otherwise")
+        self.assertFalse(automation_handlers.OutreachThankYou.undoable, "only the handlers that set it say no")
+        self.assertTrue(automation_handlers.ApplicationStage.undoable)
 
 
 class BreakerTests(unittest.TestCase):

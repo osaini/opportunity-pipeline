@@ -21,7 +21,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .. import DEFAULT_PLATFORM_DB, STATIC_DIR
-from .. import application_inbox, outreach_thank_you  # noqa: F401  (each registers its automation handlers when imported)
+from .. import bootstrap
 from ..apply_runs import recover_stale as recover_stale_applications
 from ..captures import DEFAULT_CAPTURE_STORAGE
 from ..preparation import DEFAULT_MOCK_AUDIO_STORAGE
@@ -136,6 +136,8 @@ def create_app(
     The parameters are spelled out here so that help(), IDEs and type checkers see them; they mirror the fields of ``AppOptions``
     (web/context.py) one for one, each with the default it always had (tests/test_web_app_context.py pins that they stay equal).
     """
+
+    bootstrap.register_all()  # the automation, scheduler and callback registries, once per process (bootstrap.py)
 
     settings = AppOptions(
         db_path=db_path,

@@ -20,7 +20,7 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import SERVER_INSTANCE, STATIC_DIR, automation, gmail_client, outreach_delivery, outreach_gmail
+from opportunity_app import SERVER_INSTANCE, STATIC_DIR, automation, automation_health, gmail_client, outreach_delivery, outreach_gmail
 from opportunity_app.api import create_app
 from opportunity_app.schema import connect_product
 from opportunity_app.timestamps import utc_now
@@ -726,7 +726,7 @@ class GmailDraftTests(unittest.TestCase):
             with self.assertRaises(gmail_client.GmailThrottled):
                 gmail.request("GET", "/messages")
             self.assertEqual(len(self.gmail.requests), asked, "a read while held back never reaches Google")
-            self.assertEqual(automation.gmail_health(conn, USER)["state"], "throttled")
+            self.assertEqual(automation_health.gmail_health(conn, USER)["state"], "throttled")
         row = self.connector()
         self.assertEqual(row["status"], "connected")
         self.assertTrue(row["backoff_until"])
@@ -923,7 +923,7 @@ class GmailDraftTests(unittest.TestCase):
             self.assertIsNotNone(row["last_ok_at"])
             self.assertIsNotNone(row["backoff_until"])
             self.assertEqual(row["last_error"], "Gmail asked the app to slow down (HTTP 429)")
-            self.assertEqual(automation.gmail_health(raw, USER)["state"], "throttled")
+            self.assertEqual(automation_health.gmail_health(raw, USER)["state"], "throttled")
             self.assertFalse(outreach_gmail.persist_gmail_health(conn, USER), "nothing new, nothing written")
             # A restart forgets memory; the saved hold still keeps reads back.
             outreach_gmail._BACKOFF.clear()
@@ -992,7 +992,7 @@ class GmailDraftTests(unittest.TestCase):
         self.assertIsNotNone(outreach_gmail.backoff_until(USER))
         self.assertEqual(self.gmail.drafts, {})
         with closing(connect_product(self.platform_path)) as conn:
-            self.assertEqual(automation.gmail_health(conn, USER)["state"], "throttled")
+            self.assertEqual(automation_health.gmail_health(conn, USER)["state"], "throttled")
             self.assertEqual(automation.list_notices(conn, USER), [])
         # A real refusal still asks for a reconnect, and says why.
         outreach_gmail._BACKOFF.clear()

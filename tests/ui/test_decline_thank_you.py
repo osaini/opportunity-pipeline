@@ -216,7 +216,7 @@ def test_cancel_on_a_card_a_check_already_stopped_says_so(owner_page, base_url, 
 
 def test_a_reply_that_fails_a_rule_says_so_plainly_on_the_card(owner_page, base_url, live_server):
     target = declined_company(owner_page, base_url, live_server)
-    # The check before sending found the reply was sent by a system (outreach_thank_you.thank_you_blockers).
+    # The check before sending found the reply was sent by a system (outreach_reply_senders.thank_you_blockers).
     seed_thank_you(live_server, target["id"], state="cancelled", send_state="cancelled",
                    note="Not thanked automatically: sent by an automated system")
     open_outreach(owner_page, "closed")

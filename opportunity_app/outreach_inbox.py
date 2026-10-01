@@ -52,7 +52,7 @@ import httpx
 
 from pipeline_core.identity import normalized
 
-from . import automation, mail_message
+from . import automation, mail_message, outreach_callbacks
 from .inbox_classifiers import read_reply
 from .mail_message import (
     FULL_TEXT_LIMIT,
@@ -628,7 +628,7 @@ def _remember(
 # full_text is the whole message, quoted lines and anything typed between them included (a thank-you
 # after a decline reads it: outreach_thank_you); reply_to is its Reply-To address, when it has one;
 # headers are the KEPT_HEADERS as they arrived, and link_hosts the host of every link in it (hosts only;
-# None when they could not all be read), which outreach_thank_you.thank_you_blockers checks before anything
+# None when they could not all be read), which outreach_reply_senders.thank_you_blockers checks before anything
 # is sent on its own.
 REPLY_META = {"thread_id", "message_id", "subject", "from_name", "full_text", "reply_to", "headers", "link_hosts"}
 
@@ -719,9 +719,7 @@ def _record_reply(
         if not any(_same_words(earlier, text) for earlier in logged):
             log_event(conn, target["id"], user_id, "reply_logged", detail=text, data=data)
             # They wrote again: a thank-you after their earlier decline that has not gone stops now.
-            from .outreach_thank_you import on_new_reply  # imported here: it imports this module's neighbours
-
-            on_new_reply(conn, target["id"], user_id)
+            outreach_callbacks.on_new_reply(conn, target["id"], user_id)
         if reason and claim is None:
             log_event(conn, target["id"], user_id, "reply_found",
                  detail=_found_words(reason, sender, {"addresses": addresses if addresses is not None else target.get("addresses")}))

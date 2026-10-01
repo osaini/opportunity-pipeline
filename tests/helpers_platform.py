@@ -25,8 +25,13 @@ realdata_guard.install()
 
 PROFILE_REGIONS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "profile_regions.json"
 
-from opportunity_app import schema, timestamps
+from opportunity_app import bootstrap, schema, timestamps
 from opportunity_app.schema import migrate_legacy_database
+
+# What create_app (and the worker and CLI entry points) do as a process starts: fill the automation, scheduler and callback
+# registries. A test that calls the ledger, the scheduler or a record's callbacks without building an app needs it too, and
+# every test that builds a fixture database comes through this module. Calling it again is harmless.
+bootstrap.register_all()
 
 LEGACY_SCHEMA = """
 CREATE TABLE jobs (

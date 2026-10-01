@@ -1,4 +1,4 @@
-"""Apply for me's broad net (apply_policy.NET_TOPICS, docs/phase5-apply-agent-spec.md 7.3 "As built").
+"""Apply for me's broad net (apply_classify.NET_TOPICS, docs/phase5-apply-agent-spec.md 7.3 "As built").
 
 The precise classifier recognizes sensitive and agreement questions from listed wordings, and every review round found
 wordings the lists miss. The net is a second, deliberately wide reading that never marks a question sensitive by itself but
@@ -16,9 +16,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import apply_policy, apply_preflight, apply_sensitive
+from opportunity_app import apply_classify, apply_policy, apply_preflight, apply_sensitive
 from opportunity_app.apply_checks import question_key
-from opportunity_app.apply_policy import SchemaField, classify_item, net_topics, never_storable, possibly_sensitive
+from opportunity_app.apply_classify import classify_item, net_topics, never_storable, possibly_sensitive
+from opportunity_app.apply_policy import SchemaField
 from opportunity_app.apply_sensitive import StoreRefused
 from pipeline_core.identity import employer_key
 
@@ -62,9 +63,9 @@ class VectorTests(unittest.TestCase):
 
     def test_every_topic_and_every_never_storable_topic_is_covered_by_the_vectors(self):
         seen = {topic for row in net_vectors() for topic in row["topics"]}
-        self.assertEqual(seen, set(apply_policy.NET_TOPICS) | {"adult"})
-        self.assertTrue(set(apply_policy.NEVER_STORABLE_TOPICS) <= set(apply_policy.NET_TOPICS))
-        self.assertEqual(set(apply_policy.NEVER_STORABLE_TOPICS), {"criminal", "demographic", "money", "security"})
+        self.assertEqual(seen, set(apply_classify.NET_TOPICS) | {"adult"})
+        self.assertTrue(set(apply_classify.NEVER_STORABLE_TOPICS) <= set(apply_classify.NET_TOPICS))
+        self.assertEqual(set(apply_classify.NEVER_STORABLE_TOPICS), {"criminal", "demographic", "money", "security"})
 
     def test_it_reads_stems_and_short_phrases_not_sentence_shapes(self):
         for text in ("visa", "VISA'S", "h-1b", "H1B", "f 1", "U.S. person", "date of birth", "e-sign", "Statement"):
@@ -235,7 +236,7 @@ class NeverStorableTopicTests(unittest.TestCase):
         for label, topic in self.WORDINGS:
             with self.subTest(label=label):
                 field = F("q", label, "input_text", parent="Resume/CV")
-                if apply_policy.classify_sensitive(label):
+                if apply_classify.classify_sensitive(label):
                     continue   # the precise classifier already sends it through the store, and the store never holds it
                 got = plan(BASE + [field], sources(answers=[answer(label, "Answer", COMPANY), answer(label, "Answer", OTHER, ["reusable"])])).get("q")
                 self.assertEqual((got.source.kind, got.problem_kind, got.value), ("none", "sensitive_never", None))
@@ -310,7 +311,7 @@ class AgreementQuestionTests(unittest.TestCase):
 
     def test_only_an_exact_stored_statement_ticks_it(self):
         field = box("Code of Ethics", "I will comply with the Code of Ethics", parent="Resume/CV")
-        statement = apply_policy.statement_of(field, "checkbox", "acknowledgment", plan(BASE + [field]).get("q").answer_key)
+        statement = apply_classify.statement_of(field, "checkbox", "acknowledgment", plan(BASE + [field]).get("q").answer_key)
         store = apply_helpers.Store(apply_helpers.entry("acknowledgment", statement, "checked", "checkbox", company_key=employer_key(COMPANY)))
         got = plan(BASE + [field], sources(allowed=["acknowledgment"], store=store)).get("q")
         self.assertEqual((got.sensitive, got.source.kind, got.value), ("acknowledgment", "sensitive", True))
@@ -352,7 +353,7 @@ class StatementCompanyRuleTests(StorePlanCase):
     def test_a_row_saved_for_any_company_by_another_route_is_ignored_at_every_company(self):
         self.allow("acknowledgment")
         field = box("Arbitration", "I agree to the arbitration rules")
-        statement = apply_policy.statement_of(field, "checkbox")
+        statement = apply_classify.statement_of(field, "checkbox")
         self.add(category="acknowledgment", question=statement, answer="checked", company=COMPANY)
         with self.conn:
             self.conn.execute("UPDATE apply_sensitive_answers SET company_key=''")
@@ -397,7 +398,7 @@ class DemographicClaimTests(StorePlanCase):
                 got = self.plan(apply_helpers.BASE + [field]).get("q")
                 self.assertEqual((got.sensitive, got.problem_kind, got.source.kind), ("uncategorized", "sensitive_never", "none"))
                 self.assertEqual(apply_preflight._action(got, {})["type"], "manual", "no form")
-                statement = apply_policy.statement_of(field, "checkbox", category)
+                statement = apply_classify.statement_of(field, "checkbox", category)
                 for from_form in (False, True):
                     for question in (statement, option):
                         with self.assertRaises(StoreRefused, msg=question):
@@ -413,8 +414,8 @@ class DemographicClaimTests(StorePlanCase):
                 "INSERT INTO apply_sensitive_answers(id, user_id, category, question_text, question_key, question_hash, answer_kind, answer, company_key, "
                 "statement_links_json, consent_scope, consented_at, created_at, updated_at) VALUES('legacy', ?, 'work_authorization', ?, ?, ?, 'checkbox', 'checked', '', '[]', "
                 "'confirmed', '2026-09-01T00:00:00+00:00', '2026-09-01T00:00:00+00:00', '2026-09-01T00:00:00+00:00')",
-                (USER, apply_policy.statement_of(field, "checkbox", "work_authorization"), question_key(apply_policy.statement_of(field, "checkbox", "work_authorization")),
-                 __import__("hashlib").sha256(question_key(apply_policy.statement_of(field, "checkbox", "work_authorization")).encode()).hexdigest()),
+                (USER, apply_classify.statement_of(field, "checkbox", "work_authorization"), question_key(apply_classify.statement_of(field, "checkbox", "work_authorization")),
+                 __import__("hashlib").sha256(question_key(apply_classify.statement_of(field, "checkbox", "work_authorization")).encode()).hexdigest()),
             )
         got = self.plan(apply_helpers.BASE + [field], company=OTHER).get("q")
         self.assertNotEqual(got.source.kind, "sensitive")
@@ -431,7 +432,7 @@ class DemographicClaimTests(StorePlanCase):
             with self.subTest(option=option):
                 field = box(heading, option)
                 self.assertEqual(classify_item(field, "checkbox"), category)
-                statement = apply_policy.statement_of(field, "checkbox", category)
+                statement = apply_classify.statement_of(field, "checkbox", category)
                 # A tick box is kept for one company: it is refused for any company and ticks only where it was saved.
                 self.refused("never for any company", category=category, question=statement, answer="checked", answer_kind="checkbox")
                 self.add(category=category, question=statement, answer="checked", answer_kind="checkbox", company=COMPANY)
@@ -516,7 +517,7 @@ class NoCrossCompanyReuseTests(unittest.TestCase):
         for label in self.UNLISTED:
             with self.subTest(label=label):
                 self.assertEqual(net_topics(label), (), "the lists really do not know it")
-                self.assertIsNone(apply_policy.classify_sensitive(label))
+                self.assertIsNone(apply_classify.classify_sensitive(label))
                 field = yes_no(label, parent="Resume/CV")
                 for row in (answer(label, "No", OTHER, ["reusable"]), answer(label, "No", "", ["reusable"]), answer(label, "No", OTHER)):
                     got = plan(BASE + [field], sources(answers=[row])).get("q")
@@ -676,7 +677,7 @@ class NoBoxOrAgreementFromTheLibraryTests(unittest.TestCase):
 
     def test_only_an_exact_stored_statement_ticks_a_box(self):
         field = box("Code of Ethics", "I will comply with the Code of Ethics", parent="Resume/CV")
-        statement = apply_policy.statement_of(field, "checkbox", "acknowledgment", plan(BASE + [field]).get("q").answer_key)
+        statement = apply_classify.statement_of(field, "checkbox", "acknowledgment", plan(BASE + [field]).get("q").answer_key)
         store = apply_helpers.Store(apply_helpers.entry("acknowledgment", statement, "checked", "checkbox", company_key=employer_key(COMPANY)))
         got = plan(BASE + [field], sources(allowed=["acknowledgment"], store=store)).get("q")
         self.assertEqual((got.sensitive, got.source.kind, got.value), ("acknowledgment", "sensitive", True))
@@ -689,7 +690,7 @@ class NoBoxOrAgreementFromTheLibraryTests(unittest.TestCase):
         # "adhere" is in no list, so the plan reads this box as an ordinary one, and no stored statement is looked up for it. The cost
         # is one more box the student ticks; nothing is ticked on a guess.
         field = box("Code of Ethics", "I will adhere to the Code of Ethics at all times", parent="Resume/CV")
-        statement = apply_policy.statement_of(field, "checkbox", "acknowledgment", plan(BASE + [field]).get("q").answer_key)
+        statement = apply_classify.statement_of(field, "checkbox", "acknowledgment", plan(BASE + [field]).get("q").answer_key)
         store = apply_helpers.Store(apply_helpers.entry("acknowledgment", statement, "checked", "checkbox", company_key=employer_key(COMPANY)))
         got = plan(BASE + [field], sources(allowed=["acknowledgment"], store=store)).get("q")
         self.assertEqual((got.sensitive, got.source.kind, got.value, got.problem_kind), (None, "none", None, "sensitive_never"))
@@ -712,7 +713,7 @@ class StoredStatementsAndTickBoxesArePerCompanyTests(StorePlanCase):
                 got = self.plan(apply_helpers.BASE + [box("Statement", statement)]).get("q")
                 self.assertTrue(got.company_only)
                 self.assertTrue(apply_preflight._sensitive_form(got, "sensitive_missing")["company_only"])
-                saved = self.add(category=category, question=apply_policy.statement_of(box("Statement", statement), "checkbox", category), answer="checked", company=COMPANY)
+                saved = self.add(category=category, question=apply_classify.statement_of(box("Statement", statement), "checkbox", category), answer="checked", company=COMPANY)
                 self.assertFalse(saved["any_company"])
         self.assertEqual(len(self.rows()), len(self.STATEMENTS))
 
@@ -727,7 +728,7 @@ class StoredStatementsAndTickBoxesArePerCompanyTests(StorePlanCase):
         ):
             with self.subTest(option=option):
                 field = box(heading, option)
-                statement = apply_policy.statement_of(field, "checkbox", category)
+                statement = apply_classify.statement_of(field, "checkbox", category)
                 self.refused("never for any company", category=category, question=statement, answer="checked", answer_kind="checkbox")
                 got = self.plan(apply_helpers.BASE + [field]).get("q")
                 self.assertTrue(got.company_only)
@@ -744,7 +745,7 @@ class StoredStatementsAndTickBoxesArePerCompanyTests(StorePlanCase):
             with self.subTest(label=field.label):
                 kind = "text" if field.type == "input_text" else "checkbox"
                 text = "Yes" if kind == "text" else "checked"
-                self.add(category=category, question=apply_policy.statement_of(field, control_of(field), category) if kind == "checkbox" else field.label,
+                self.add(category=category, question=apply_classify.statement_of(field, control_of(field), category) if kind == "checkbox" else field.label,
                          answer=text, answer_kind=kind, company=COMPANY)
                 with self.conn:
                     self.conn.execute("UPDATE apply_sensitive_answers SET company_key=''")
@@ -801,7 +802,7 @@ class TickableEntriesNeverCarryANeverStorableClaimTests(StorePlanCase):
                 self.assertEqual(classify_item(field, "checkbox"), "uncategorized")
                 got = self.plan(apply_helpers.BASE + [field]).get("q")
                 self.assertEqual((got.sensitive, got.problem_kind, got.source.kind), ("uncategorized", "sensitive_never", "none"))
-                statement = apply_policy.statement_of(field, "checkbox", category)
+                statement = apply_classify.statement_of(field, "checkbox", category)
                 for company in ("", COMPANY):
                     for from_form in (False, True):
                         with self.assertRaises(StoreRefused, msg=option):
@@ -960,7 +961,7 @@ class FollowUpInheritanceTests(unittest.TestCase):
             ("Are you currently on probation or parole?", ("Please tell us what happened", "How much longer is it expected to last?", "What conditions were imposed on you?")),
             ("Do you have any pending cases?", ("What was the final disposition of the matter?", "Which court is handling it?")),
         ):
-            self.assertIsNone(apply_policy.classify_sensitive(parent), "the precise classifier does not know the parent")
+            self.assertIsNone(apply_classify.classify_sensitive(parent), "the precise classifier does not know the parent")
             for child in children:
                 with self.subTest(parent=parent, child=child):
                     fields = self.form(parent, child)
