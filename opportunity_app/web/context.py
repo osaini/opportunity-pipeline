@@ -221,6 +221,8 @@ class AppRuntime:
     open_connections: set[Any] = field(default_factory=set)
     # name -> ((mtime_ns, size), content hash): see web/assets.py.
     asset_versions: dict[str, tuple[tuple[int, int], str]] = field(default_factory=dict)
+    # (static_dir resolved, its mtime_ns, the names it lists, name -> resolves inside it): see web/assets.py.
+    asset_listing: tuple[Any, int, frozenset[str], dict[str, bool]] | None = None
     apply_schema_cache: apply_preflight.SchemaCache = field(default_factory=apply_preflight.SchemaCache)
 
 

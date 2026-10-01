@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 import sys
 import hashlib
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -119,6 +120,21 @@ class AssetCachingTests(unittest.TestCase):
             response = client.get(f"/assets/styles.css?v={after}")
         self.assertNotEqual(before, after, "editing the file left its URL unchanged")
         self.assertIn("immutable", response.headers["Cache-Control"])
+
+    def test_a_file_added_after_the_listing_was_cached_gets_a_version(self):
+        """The folder listing is cached until the directory changes, so a new asset is stamped once it exists."""
+        from opportunity_app.web.assets import asset_version
+
+        ctx = self.app.state.ctx
+        with TestClient(self.app) as client:
+            self.references(client, "/")
+        self.assertEqual(asset_version(ctx, "added-later.js"), "0", "a file that does not exist has no version")
+        (self.static / "added-later.js").write_text("// added" + chr(10), encoding="utf-8")
+        # Some file systems keep coarse directory times; make sure this one moved, as adding a file does on NTFS/APFS/ext4.
+        stat = os.stat(self.static)
+        os.utime(self.static, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+        self.assertNotEqual(asset_version(ctx, "added-later.js"), "0")
+        self.assertEqual(asset_version(ctx, "ADDED-LATER.JS"), "0", "only the listed spelling is a key")
 
     def test_pages_themselves_are_never_cached_immutably(self):
         """A page must revalidate, or a deploy never reaches the browser."""
