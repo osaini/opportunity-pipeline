@@ -2574,11 +2574,11 @@ def fetch_all(
     if done:
         print(f"Resuming: {len(done)} source(s) already fetched in this run", flush=True)
 
-    queue = [
-        (source, f'{source["kind"]}:{_source_identity(source)}')
-        for source in enabled
-        if f'{source["kind"]}:{_source_identity(source)}' not in done
-    ]
+    queue = []
+    for source in enabled:
+        source_key = f'{source["kind"]}:{_source_identity(source)}'
+        if source_key not in done:
+            queue.append((source, source_key))
     # One observation timestamp for the whole cycle. See upsert_jobs: reading
     # the clock per source would make undated postings rank by completion
     # order, which under concurrency is arbitrary.
@@ -3547,6 +3547,7 @@ def repost_flags(conn: sqlite3.Connection, window_days: int = REPOST_WINDOW_DAYS
 def score_all(conn: sqlite3.Connection, profile: dict[str, Any]) -> int:
     jobs = conn.execute("SELECT * FROM jobs").fetchall()
     reposts = repost_flags(conn)
+    changed: list[tuple[str, int, str, str]] = []
     for job in jobs:
         role_type = classify_role(job["title"], job["description"])
         score_input = dict(job)
@@ -3561,9 +3562,15 @@ def score_all(conn: sqlite3.Connection, profile: dict[str, Any]) -> int:
                 f"FLAG: this role has been listed under {listings} different URLs "
                 f"since {since}—may be an evergreen or re-listed req"
             )
-        conn.execute(
-            "UPDATE jobs SET role_type=?, score=?, score_explanation=? WHERE id=?",
-            (role_type, score, json.dumps(reasons), job["id"]),
+        explanation = json.dumps(reasons)
+        # Rewriting a row with the values it already holds changes nothing, so
+        # only rows whose result moved are written; most of a daily run's
+        # table is unchanged.
+        if (job["role_type"], job["score"], job["score_explanation"]) != (role_type, score, explanation):
+            changed.append((role_type, score, explanation, job["id"]))
+    if changed:
+        conn.executemany(
+            "UPDATE jobs SET role_type=?, score=?, score_explanation=? WHERE id=?", changed
         )
     conn.commit()
     print(f"Scored {len(jobs)} postings")
