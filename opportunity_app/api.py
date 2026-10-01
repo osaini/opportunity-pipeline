@@ -1273,10 +1273,11 @@ def create_app(
         path = static_dir / name
         try:
             resolved = path.resolve()
-            # Windows ignores case and trailing dots, so STYLES.CSS and "styles.css.." open
-            # styles.css; only the file's real name is a version key, or every alias would
+            # Case-insensitive volumes open styles.css for STYLES.CSS, and Windows for
+            # "styles.css.." too, and macOS does not correct the case on resolve(). Only a
+            # name exactly as the directory lists it is a version key, or every alias would
             # be one more cache entry and one more full read of the file.
-            if resolved.parent != static_dir.resolve() or resolved.name != name:
+            if resolved.parent != static_dir.resolve() or name not in os.listdir(static_dir):
                 return "0"
             stat = path.stat()
         except OSError:
@@ -1288,8 +1289,7 @@ def create_app(
         if cached is not None and cached[0] == signature:
             return cached[1]
         digest = hashlib.sha256(path.read_bytes()).hexdigest()[:12]
-        # A case-insensitive volume that keeps the spelling it was asked with (macOS) still
-        # lets spellings through; the cache is a convenience, so it simply starts over at a cap.
+        # Only listed names reach here, so this cap is a backstop; the cache simply starts over.
         if len(_asset_versions) >= 256:
             _asset_versions.clear()
         _asset_versions[name] = (signature, digest)
