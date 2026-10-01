@@ -118,6 +118,28 @@ def _apply_company_sort_keys(conn: sqlite3.Connection, sql: str) -> None:
     backfill_sort_keys(conn)
 
 
+def _add_columns(conn: sqlite3.Connection, columns: tuple[tuple[str, str, str], ...]) -> None:
+    """ALTER TABLE ... ADD COLUMN for each (table, column, definition) the table does not have yet.
+
+    ADD COLUMN is not idempotent and DDL commits on its own in SQLite, so a crash between a column and
+    the migration marker would make the next start fail on a duplicate column. Guarding each add makes
+    the step repeatable: running it again after a crash repairs it.
+    """
+    for table, column, definition in columns:
+        if not has_column(conn, table, column):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _columns_step(columns: tuple[tuple[str, str, str], ...]) -> Callable[[Any, str], None]:
+    """A migration step that adds the guarded columns, then runs the migration's SQL (every statement IF NOT EXISTS)."""
+
+    def step(conn: sqlite3.Connection, sql: str) -> None:
+        _add_columns(conn, columns)
+        conn.executescript(sql)
+
+    return step
+
+
 # Columns the automation ledger needs on existing tables: who made an
 # interaction or a task, and how the Gmail connection is doing.
 _AUTOMATION_COLUMNS = (
@@ -135,9 +157,7 @@ def _apply_automation(conn: sqlite3.Connection, sql: str) -> None:
     # The same reasoning as _apply_posted_at_utc: every column is guarded, the
     # tables are IF NOT EXISTS, and the seed skips rows that exist, so a crash
     # anywhere before the migration marker is repaired by running it again.
-    for table, column, definition in _AUTOMATION_COLUMNS:
-        if not has_column(conn, table, column):
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    _add_columns(conn, _AUTOMATION_COLUMNS)
     conn.executescript(sql)
     # Every student starts unpaused, with the row in place: pausing is then an
     # UPDATE that takes the row's lock, which the hand-over to Gmail waits on.
@@ -159,13 +179,7 @@ _APPLICATION_MAIL_COLUMNS = (
     ("monitored_events", "decided_by", "TEXT NOT NULL DEFAULT ''"),
 )
 
-
-def _apply_application_mail(conn: sqlite3.Connection, sql: str) -> None:
-    # Guarded like _apply_automation, so a crash before the marker is repaired by running it again.
-    for table, column, definition in _APPLICATION_MAIL_COLUMNS:
-        if not has_column(conn, table, column):
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-    conn.executescript(sql)
+_apply_application_mail = _columns_step(_APPLICATION_MAIL_COLUMNS)
 
 
 # The student's own name for a résumé kept for one kind of role (resume_variants.py).
@@ -173,13 +187,7 @@ _INTERNAL_AUTOMATION_COLUMNS = (
     ("resume_files", "variant_label", "TEXT NOT NULL DEFAULT ''"),
 )
 
-
-def _apply_internal_automation(conn: sqlite3.Connection, sql: str) -> None:
-    # Guarded like _apply_automation: running it again after a crash repairs it.
-    for table, column, definition in _INTERNAL_AUTOMATION_COLUMNS:
-        if not has_column(conn, table, column):
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-    conn.executescript(sql)
+_apply_internal_automation = _columns_step(_INTERNAL_AUTOMATION_COLUMNS)
 
 
 # What an outreach event records beside its text (outreach.log_event's ``data``): a
@@ -188,13 +196,7 @@ _DECLINE_THANK_YOU_COLUMNS = (
     ("outreach_events", "detail_json", "TEXT NOT NULL DEFAULT '{}'"),
 )
 
-
-def _apply_decline_thank_you(conn: sqlite3.Connection, sql: str) -> None:
-    # Guarded like _apply_automation: running it again after a crash repairs it.
-    for table, column, definition in _DECLINE_THANK_YOU_COLUMNS:
-        if not has_column(conn, table, column):
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-    conn.executescript(sql)
+_apply_decline_thank_you = _columns_step(_DECLINE_THANK_YOU_COLUMNS)
 
 
 # What a message outreach read keeps beyond its kind: how it was matched to a
@@ -218,13 +220,7 @@ _OUTREACH_REPLY_RULES_COLUMNS = (
     ("outreach_inbox_messages", "meta_json", "TEXT NOT NULL DEFAULT '{}'"),
 )
 
-
-def _apply_outreach_reply_rules(conn: sqlite3.Connection, sql: str) -> None:
-    # Guarded like _apply_automation: running it again after a crash repairs it.
-    for table, column, definition in _OUTREACH_REPLY_RULES_COLUMNS:
-        if not has_column(conn, table, column):
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-    conn.executescript(sql)
+_apply_outreach_reply_rules = _columns_step(_OUTREACH_REPLY_RULES_COLUMNS)
 
 
 # Research for call prep: the company from the web (outreach_research.py), and the interviewer.
@@ -245,13 +241,7 @@ _TECH_BRIEF_COLUMNS = (
     ("outreach_targets", "interviewer_linkedin", "TEXT NOT NULL DEFAULT ''"),
 )
 
-
-def _apply_tech_brief(conn: sqlite3.Connection, sql: str) -> None:
-    # Guarded like _apply_automation: running it again after a crash repairs it.
-    for table, column, definition in _TECH_BRIEF_COLUMNS:
-        if not has_column(conn, table, column):
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-    conn.executescript(sql)
+_apply_tech_brief = _columns_step(_TECH_BRIEF_COLUMNS)
 
 
 # The Gmail label a reply carries (outreach_labels.py), and which account the
@@ -263,13 +253,7 @@ _GMAIL_REPLY_LABELS_COLUMNS = (
     ("connector_accounts", "account_email", "TEXT NOT NULL DEFAULT ''"),
 )
 
-
-def _apply_gmail_reply_labels(conn: sqlite3.Connection, sql: str) -> None:
-    # Guarded like _apply_automation: running it again after a crash repairs it.
-    for table, column, definition in _GMAIL_REPLY_LABELS_COLUMNS:
-        if not has_column(conn, table, column):
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-    conn.executescript(sql)
+_apply_gmail_reply_labels = _columns_step(_GMAIL_REPLY_LABELS_COLUMNS)
 
 
 # Apply for me (apply_runs.py): whether a job email's sender was vouched for, and
@@ -280,13 +264,7 @@ _APPLY_AGENT_COLUMNS = (
     ("generated_document_artifacts", "content_sha256", "TEXT NOT NULL DEFAULT ''"),
 )
 
-
-def _apply_apply_agent(conn: sqlite3.Connection, sql: str) -> None:
-    # Guarded like _apply_automation: running it again after a crash repairs it.
-    for table, column, definition in _APPLY_AGENT_COLUMNS:
-        if not has_column(conn, table, column):
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-    conn.executescript(sql)
+_apply_apply_agent = _columns_step(_APPLY_AGENT_COLUMNS)
 
 
 # The company name as the student typed it, beside the matching key of a stored sensitive answer.
@@ -294,13 +272,7 @@ _APPLY_SENSITIVE_COMPANY_NAME_COLUMNS = (
     ("apply_sensitive_answers", "company_name", "TEXT NOT NULL DEFAULT ''"),
 )
 
-
-def _apply_apply_sensitive_company_name(conn: sqlite3.Connection, sql: str) -> None:
-    # Guarded like _apply_automation: running it again after a crash repairs it.
-    for table, column, definition in _APPLY_SENSITIVE_COMPANY_NAME_COLUMNS:
-        if not has_column(conn, table, column):
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-    conn.executescript(sql)
+_apply_apply_sensitive_company_name = _columns_step(_APPLY_SENSITIVE_COMPANY_NAME_COLUMNS)
 
 
 # When the student marked an outreach company not interested; NULL while it is in play.
@@ -308,13 +280,7 @@ _OUTREACH_NOT_INTERESTED_COLUMNS = (
     ("outreach_targets", "not_interested_at", "TEXT"),
 )
 
-
-def _apply_outreach_not_interested(conn: sqlite3.Connection, sql: str) -> None:
-    # Guarded like _apply_automation: running it again after a crash repairs it.
-    for table, column, definition in _OUTREACH_NOT_INTERESTED_COLUMNS:
-        if not has_column(conn, table, column):
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-    conn.executescript(sql)
+_apply_outreach_not_interested = _columns_step(_OUTREACH_NOT_INTERESTED_COLUMNS)
 
 
 # Migrations whose SQL alone cannot express the change: parsing timestamps is
