@@ -508,7 +508,7 @@ class MailIndexMigrationTests(unittest.TestCase):
         """Without ANALYZE SQLite picks the index with the most equality columns: these must not read a whole kind of event."""
         conn, _ids = database(self, 30, 1, datetime.now(timezone.utc))
         indexes = {row[0]: row[1] for row in conn.execute("SELECT name, sql FROM sqlite_master WHERE type='index'")}
-        self.assertIn("(target_id, user_id, event_type, created_at)", " ".join(indexes["idx_outreach_events_target_type"].split()))
+        self.assertIn("(target_id, user_id, event_type, created_at DESC)", " ".join(indexes["idx_outreach_events_target_type"].split()))
         queries = {
             "one kind (_already_sent, _followed_up)":
                 ("SELECT detail, created_at FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=?", ("t", USER, "gmail_sent")),
@@ -541,6 +541,61 @@ class MailIndexMigrationTests(unittest.TestCase):
         conn.execute("DROP INDEX idx_outreach_events_target_type")
         conn.execute("DROP INDEX idx_opportunities_company_sort_key")
         self.assertEqual(sends._pending(conn, USER, now), with_indexes)
+
+    def tied_events(self, now):
+        """Companies whose drafts, and whose sends, share a created_at, as the coarse Windows clock once produced."""
+        conn, _ids = database(self, 3, 11, now)
+        drafting, sending = "outreach-tie-drafts", "outreach-tie-sends"
+        stamp = (now - timedelta(hours=2)).isoformat(timespec="microseconds")
+        for target in (drafting, sending):
+            conn.execute(
+                "INSERT INTO outreach_targets(id, user_id, company, contact_name, contact_email, contact_cc, location, email_subject, "
+                "email_body, follow_up_subject, status, sent_at, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (target, USER, f"{target} Labs", "Pat", f"pat@{target}.example", "", "Austin, TX", "Question", "Hi Pat", "",
+                 "drafted", None, stamp, stamp))
+        order = iter(range(100))
+
+        def event(target, kind, detail):
+            conn.execute(
+                "INSERT INTO outreach_events(id, target_id, user_id, event_type, detail, created_at) VALUES(?,?,?,?,?,?)",
+                (f"tie-{next(order):03d}", target, USER, kind, json.dumps(detail), stamp))
+
+        # Inserted first, second: the ids are in insertion order and not in sort order.
+        for name in ("first", "second"):
+            event(drafting, "gmail_draft_created", {"kind": "initial", "draft_id": name, "message_id": f"m-{name}", "fingerprint": "f"})
+            event(sending, "gmail_sent", {"kind": "initial", "message_id": f"s-{name}", "thread_id": f"t-{name}"})
+        conn.commit()
+        return conn, drafting, sending
+
+    def answers(self, conn, drafting, sending, now):
+        from opportunity_app import outreach_delivery as delivery
+        from opportunity_app.outreach_gmail import _draft_events, _previous_draft
+
+        pending = [item["detail"]["draft_id"] for item in sends._pending(conn, USER, now) if item["target_id"] == drafting]
+        watched = [item["detail"]["message_id"] for item in delivery._watched(conn, USER, now) if item["target_id"] == sending]
+        previous = _previous_draft(conn, drafting, USER, "initial", "f", "", "")
+        return {
+            "pending": pending,
+            "watched": watched,
+            "previous": previous["draft_id"],
+            "draft_events": [detail["draft_id"] for _id, detail in _draft_events(conn, drafting, USER, "initial")],
+        }
+
+    def test_tied_events_are_picked_the_same_with_and_without_the_indexes(self):
+        """0048 changes the plan of these queries; which of two events with one created_at they keep must not move."""
+        now = datetime.now(timezone.utc)
+        conn, drafting, sending = self.tied_events(now)
+        with_indexes = self.answers(conn, drafting, sending, now)
+        for name in ("idx_outreach_events_user_type", "idx_outreach_events_target_type", "idx_opportunities_company_sort_key"):
+            conn.execute(f"DROP INDEX {name}")
+        self.assertEqual(self.answers(conn, drafting, sending, now), with_indexes)
+        # Frozen: what the code answered before 0048 existed. The newest draft kept for the company is the first one
+        # stored (the last row of a list that listed ties newest-stored first), the sends are watched second then
+        # first, and the per-company queries read ties in insertion order.
+        self.assertEqual(
+            with_indexes,
+            {"pending": ["first"], "watched": ["s-second", "s-first"], "previous": "first", "draft_events": ["first", "second"]},
+        )
 
 
 if __name__ == "__main__":

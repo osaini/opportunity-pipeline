@@ -40,6 +40,7 @@ from .outreach_gmail import (
     _already_sent,
     _connector,
     _Gmail,
+    event_tie_order,
     last_bounces,
 )
 from .schema import utc_now
@@ -79,10 +80,10 @@ def _pending(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict
     """
     cutoff = (now - WATCH_DRAFTS_FOR).isoformat(timespec="microseconds")
     rows = conn.execute(
-        """
+        f"""
         SELECT e.target_id, e.detail, e.created_at FROM outreach_events e
         JOIN outreach_targets t ON t.id=e.target_id AND t.user_id=e.user_id
-        WHERE e.user_id=? AND e.event_type=? AND e.created_at>=? ORDER BY e.created_at
+        WHERE e.user_id=? AND e.event_type=? AND e.created_at>=? ORDER BY e.created_at{event_tie_order(conn)}
         """,
         (user_id, DRAFT_EVENT, cutoff),
     ).fetchall()

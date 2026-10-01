@@ -17,17 +17,68 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from uuid import uuid4
+
 from opportunity_app import outreach
 from opportunity_app.outreach import (
-    IMPORT_IGNORED_FIELDS, company_key, create_target, existing_keys, get_target, import_targets, website_domain,
+    IMPORT_IGNORED_FIELDS, OUTREACH_ORIGINS, _apply_draft_side_effects, _apply_status_side_effects, _claim_detail,
+    _is_unique_violation, _log, _normalize, company_key, create_target, existing_keys, get_target, import_targets,
+    website_domain,
 )
-from opportunity_app.schema import connect_product
+from opportunity_app.schema import connect_product, utc_now
 
 from helpers_platform import build_and_migrate
 
 USER = "local-user"
 TIMESTAMP = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d")
 EVENT_ID = re.compile(r"^[a-z-]+-[0-9a-f]{32}$")  # an event's own id: a prefix and a uuid
+
+
+def reference_create_target(conn, payload, *, user_id, today=None, origin="manual", discovery_run_id=None):
+    """REFERENCE: create_target exactly as it was before the importer stopped reading each new target back.
+
+    Frozen on purpose. The live create_target now delegates to the same _create_target the new importer calls, so a
+    reference that called it would share the code under test; this copy shares only the unchanged helpers.
+    """
+    if origin not in OUTREACH_ORIGINS:
+        raise ValueError(f"origin must be one of: {', '.join(OUTREACH_ORIGINS)}")
+    today = today or outreach.local_today(conn, user_id)  # looked up on the module, so a test can patch it
+    values = _normalize(payload, partial=False)
+    values.setdefault("status", "not_started")
+    _apply_status_side_effects(values, None, today)
+    _apply_draft_side_effects(values, None)
+    values["origin"] = origin
+    if origin == "discovery":
+        values["research_confidence"] = "unverified"
+    if values.get("location"):
+        values["location_basis"] = {"discovery": "research", "manual": "manual"}.get(origin, "")
+    if discovery_run_id:
+        values["discovery_run_id"] = discovery_run_id
+    target_id = f"outreach-{uuid4().hex}"
+    timestamp = utc_now()
+    columns = ["id", "user_id", *values.keys(), "created_at", "updated_at"]
+    try:
+        with conn:
+            tracked = conn.execute("SELECT company FROM outreach_targets WHERE user_id=?", (user_id,)).fetchall()
+            same = next((row[0] for row in tracked if company_key(row[0]) == company_key(values["company"])), None)
+            if same is not None:
+                raise ValueError(f"{same} is already in your outreach list")
+            conn.execute(
+                f"INSERT INTO outreach_targets({', '.join(columns)}) VALUES({', '.join('?' * len(columns))})",
+                [target_id, user_id, *values.values(), timestamp, timestamp],
+            )
+            _log(conn, target_id, user_id, "created", to_status=values["status"])
+            if values.get("location") and origin == "import":
+                _log(conn, target_id, user_id, "location_import_claim", detail=_claim_detail(payload))
+            conn.execute(
+                "DELETE FROM outreach_dismissed WHERE user_id=? AND company_key=?",
+                (user_id, company_key(values["company"])),
+            )
+    except Exception as exc:
+        if _is_unique_violation(exc):
+            raise ValueError(f"{values['company']} is already in your outreach list") from exc
+        raise
+    return get_target(conn, target_id, user_id=user_id, today=today)
 
 
 def old_import_targets(conn, records, *, user_id, origin="import", discovery_run_id=None):
@@ -47,7 +98,7 @@ def old_import_targets(conn, records, *, user_id, origin="import", discovery_run
             continue
         try:
             internal_confidence = record.pop("_research_confidence", None)
-            target = create_target(conn, record, user_id=user_id, origin=origin, discovery_run_id=discovery_run_id)
+            target = reference_create_target(conn, record, user_id=user_id, origin=origin, discovery_run_id=discovery_run_id)
             if internal_confidence == "unverified" and target["research_confidence"] != "unverified":
                 with conn:
                     conn.execute(

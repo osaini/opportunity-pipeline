@@ -946,7 +946,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
         marker = "0048_mail_hot_path_indexes.sql"
         wanted = {
             "idx_outreach_events_user_type": ("outreach_events", "(user_id, event_type, created_at)"),
-            "idx_outreach_events_target_type": ("outreach_events", "(target_id, user_id, event_type, created_at)"),
+            "idx_outreach_events_target_type": ("outreach_events", "(target_id, user_id, event_type, created_at DESC)"),
             "idx_opportunities_company_sort_key": ("opportunities", "(company_sort_key)"),
         }
         for name, (table, columns) in wanted.items():

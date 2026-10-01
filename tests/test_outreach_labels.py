@@ -1818,7 +1818,7 @@ class SentSweepTests(LabelCase):
 class MarksSharedTests(LabelCase):
     """One pass builds the companies' marks once per set of own addresses, and everything it does is as if each step built them itself."""
 
-    PLAY = "test_a_pass_builds_the_marks_once_per_set_of_own_addresses"
+    PLAY = "test_a_pass_shares_one_build_between_steps_with_no_wait_on_gmail_between_them"
 
     def counting(self):
         real = outreach_labels._outreach_marks
@@ -1890,22 +1890,51 @@ class MarksSharedTests(LabelCase):
                 self.assertTrue(kept["searches"] and kept["modifies"] and kept["searched"], "the scenario must reach the search and the sweep")
                 self.assertEqual(kept, self.played(rebuilding=True, **kwargs))
 
-    def test_a_pass_builds_the_marks_once_per_set_of_own_addresses(self):
+    def test_a_pass_shares_one_build_between_steps_with_no_wait_on_gmail_between_them(self):
         self.target("t-1", contact_email="greg@bovi.example", email_subject="Robotics internship plan")
         patch, calls = self.counting()
         with patch:
             self.run_pass()
-        self.assertEqual(calls, [{ACCOUNT}], "the work check, the history search and the search itself share one build")
-        # The next pass has a sweep to start: its work check, search and sweep share one build too.
+        # The work check builds; the history search follows a wait on Gmail (the replies), so it builds its own, once
+        # for its candidates and its search.
+        self.assertEqual(calls, [{ACCOUNT}, {ACCOUNT}])
+        # The next pass has a sweep to start: the sweep follows the history searches, so it builds once more.
         calls.clear()
         SentSweepTests.sent_message(self, "n-1", "th-new")
         with patch:
             self.run_pass(START + timedelta(minutes=10))
-        self.assertEqual(calls, [{ACCOUNT}])
+        self.assertEqual(calls, [{ACCOUNT}] * 3)
         calls.clear()
         with patch:
             self.run_pass(START + timedelta(minutes=13))
-        self.assertEqual(calls, [{ACCOUNT}])
+        self.assertEqual(calls, [{ACCOUNT}] * 3)
+
+    def test_a_company_deleted_while_the_pass_waits_on_gmail_is_not_labelled_by_the_sweep(self):
+        """The marks the sweep matches sent mail against are read after the waits that precede it, as before they were shared."""
+        self.target("t-1", contact_email="greg@bovi.example", email_subject="Robotics internship plan")
+        self.target("t-2", contact_email="ann@orbit.example", email_subject="Orbit systems internship")
+        self.run_pass()  # starts the sweep; both companies searched
+        # A new address for the first company gives the history search something to ask Gmail (a wait before the
+        # sweep), and mail to the second company waits in Sent for the sweep to find.
+        with self.conn:
+            self.conn.execute("UPDATE outreach_targets SET contact_email='greg2@bovi.example' WHERE id='t-1'")
+        SentSweepTests.sent_message(self, "n-2", "th-ann", to="ann@orbit.example", subject="Lunch")
+        deleted = []
+        real_handler = self.gmail.handler
+
+        def deleting_while_waiting(request):
+            if not deleted and "greg2" in request.url.params.get("q", ""):
+                # The student deletes company t-2 in the app while this pass is waiting on Gmail.
+                with closing(connect_product(self.platform_path)) as other, other:
+                    other.execute("DELETE FROM outreach_targets WHERE id='t-2'")
+                deleted.append(request.url.params["q"])
+            return real_handler(request)
+
+        self.gmail.handler = deleting_while_waiting
+        self.run_pass(START + timedelta(minutes=10))
+        self.assertTrue(deleted, "the scenario must delete a company while the pass waits on Gmail")
+        self.assertNotIn("th-ann", self.sent_rows())
+        self.assertNotIn("n-2", [message for body in self.modifies() for message in body["ids"]])
 
     def test_without_the_account_in_the_environment_each_distinct_set_is_built_once_as_before(self):
         self.target("t-1", contact_email="greg@bovi.example", email_subject="Robotics internship plan")

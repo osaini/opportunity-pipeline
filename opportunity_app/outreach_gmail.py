@@ -780,6 +780,17 @@ def _settle_claim(conn: sqlite3.Connection, target_id: str, kind: str, token: st
         pass
 
 
+def event_tie_order(conn: sqlite3.Connection, alias: str = "e") -> str:
+    """The ORDER BY tail that settles events sharing a created_at, for a query that sorts the student's events ascending.
+
+    Such a query used to sort in a temporary b-tree, which hands tied rows back newest-inserted first; reading
+    through an index now would hand them back oldest-inserted first and change which of two tied drafts or sends a
+    caller keeps. Naming the old order here keeps the answer the same whatever plan SQLite picks. PostgreSQL has no
+    row id and never promised an order for ties, so it gets none.
+    """
+    return "" if getattr(conn, "backend", "sqlite") == "postgresql" else f", {alias}.rowid DESC"
+
+
 def last_bounce(conn: sqlite3.Connection, target_id: str, user_id: str) -> datetime | None:
     """When this target's email last bounced, or None."""
     row = conn.execute(

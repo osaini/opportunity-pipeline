@@ -454,17 +454,24 @@ def _outreach_marks(conn: sqlite3.Connection, user_id: str, own: set[str]) -> di
 
 
 class _Marks:
-    """_outreach_marks for one label pass: built the first time a set of own addresses asks, then shared.
+    """_outreach_marks for steps of one label pass that run back to back: built the first time a set of own addresses asks, then shared.
 
-    Nothing a pass does changes the targets or events the marks read (it writes only outreach_label_threads,
-    outreach_label_searches and the label columns), so one build serves every step. Each caller still names its own
-    addresses and gets the marks for exactly that set, as before; a caller that names none builds nothing until it asks.
-    The marks are shared, so callers only read them.
+    A pass writes only outreach_label_threads, outreach_label_searches and the label columns, never the targets or
+    events the marks read. But the student can change those at any moment, and a pass waits on Gmail between its steps
+    with no transaction open, so marks built before a wait may name a company deleted or edited during it. A step that
+    follows a wait calls ``forget`` first and builds its own, as it did before the marks were shared; only steps with
+    nothing between them but reads of this database share one build. Each caller still names its own addresses and
+    gets the marks for exactly that set; a caller that names none builds nothing until it asks. The marks are shared,
+    so callers only read them.
     """
 
     def __init__(self, conn: sqlite3.Connection, user_id: str):
         self.conn, self.user_id = conn, user_id
         self._built: dict[frozenset[str], dict[str, dict[str, Any]]] = {}
+
+    def forget(self) -> None:
+        """Drop what was built, because Gmail was waited on since (the next ``get`` reads the database again)."""
+        self._built.clear()
 
     def get(self, own: set[str]) -> dict[str, dict[str, Any]]:
         key = frozenset(own)
@@ -771,6 +778,7 @@ def _label(
                 settle([gmail_id], thread_id, outcome)
         more = more or len(pending) > PER_PASS  # the window was the oldest rows only
         _discard(conn)
+        marks.forget()  # the replies above were labelled by waiting on Gmail
         _search_history(conn, labeller, user_id, now, counts, detail, marks)
         sent = _sent_rows(conn, user_id, name, PER_PASS + 1)
         for item in sent:
@@ -785,6 +793,7 @@ def _label(
             done[thread_id] = labeller.thread(thread_id)[0]
             settle_sent(thread_id, done[thread_id])
         more = more or len(sent) > PER_PASS
+        marks.forget()  # the history searches and sent threads above waited on Gmail
         _sweep(conn, labeller, user_id, name, now, done, detail, fresh, counts, marks)
     except _Stop as stop:
         return result(stop.state)

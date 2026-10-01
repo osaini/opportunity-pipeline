@@ -11,8 +11,10 @@ What changed, and what is compared:
 * fingerprint_text: a column-count SimHash replaced the per-bit loop.
 * deduplicate: pass 3 precomputes per-row values and tests the cheap condition
   first; the blanket `UPDATE ... duplicate_of=NULL` became a diff write.
-* upsert_jobs(dedupe=False) + one deduplicate at the end of fetch_all and
-  import_discovered, instead of one per source / channel.
+* upsert_jobs(dedupe=False) + one deduplicate at the end of import_discovered,
+  instead of one per channel. fetch_all still deduplicates inside each source's
+  upsert, so a failing pass rolls that source back. `_reference_upsert_jobs` is
+  the whole old upsert, so the "old" side of these comparisons shares no changed code.
 * upsert_jobs reuses a stored content_fingerprint when the description is
   unchanged.
 * score_all writes only rows whose result changed, with executemany.
@@ -160,6 +162,61 @@ def _reference_deduplicate(conn):
 
     for duplicate, canonical in resolved.items():
         conn.execute("UPDATE jobs SET duplicate_of=? WHERE id=?", (canonical, duplicate))
+
+
+def _reference_upsert_jobs(conn, source_key, source_name, records, seen=None):
+    """upsert_jobs before Phase 2: always the per-bit SimHash, a deduplicate after every call, nothing reused.
+
+    Calls only the _reference_* copies above for the two functions that changed, and the unchanged pipeline helpers.
+    """
+    seen = seen or pipeline.now_iso()
+    ids = []
+    for record in records:
+        url = pipeline.canonical_url(record["url"])
+        external_id = record["external_id"]
+        job_id = pipeline.stable_id(source_key, external_id)
+        ids.append(job_id)
+        description = record["description"]
+        location = record["location"]
+        existing = conn.execute(
+            "SELECT description, location FROM jobs WHERE source_key=? AND external_id=?",
+            (source_key, external_id),
+        ).fetchone()
+        if existing:
+            description = pipeline._richer_description(existing["description"], description)
+            location = location or existing["location"]
+        role_type = pipeline.classify_role(record["title"], description)
+        fp = pipeline.fingerprint(record["company"], record["title"], location)
+        content_fp = _reference_fingerprint_text(description)
+        conn.execute(
+            """
+            INSERT INTO jobs (
+                id, source_key, source_name, external_id, company, title, location,
+                role_type, url, description, posted_at, first_seen_at, last_seen_at,
+                active, fingerprint, content_fingerprint
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            ON CONFLICT(source_key, external_id) DO UPDATE SET
+                source_name=excluded.source_name,
+                company=excluded.company,
+                title=excluded.title,
+                location=excluded.location,
+                role_type=excluded.role_type,
+                url=excluded.url,
+                description=excluded.description,
+                posted_at=COALESCE(excluded.posted_at, jobs.posted_at),
+                last_seen_at=excluded.last_seen_at,
+                active=1,
+                fingerprint=excluded.fingerprint,
+                content_fingerprint=excluded.content_fingerprint
+            """,
+            (
+                job_id, source_key, source_name, external_id, record["company"], record["title"], location,
+                role_type, url, description, record.get("posted_at"), seen, seen, fp, content_fp,
+            ),
+        )
+    pipeline._retire_absent(conn, source_key, records, set(ids), seen)
+    _reference_deduplicate(conn)
+    return len(records)
 
 
 def _reference_score_all(conn, profile):
@@ -447,7 +504,7 @@ class DeferredDedupeTests(TempDbCase):
             old, new = self.open_db("old.db"), self.open_db("new.db")
             # The old behaviour: upsert one source at a time, deduplicating after each.
             for key, records in batches.items():
-                pipeline.upsert_jobs(old, key, key, records, "2026-09-01T00:00:00+00:00")
+                _reference_upsert_jobs(old, key, key, records, "2026-09-01T00:00:00+00:00")
                 old.commit()
             self.run_fetch(new, batches)
             # fetch_all stamps first/last seen with the cycle clock; compare what dedupe sees.
@@ -463,35 +520,41 @@ class DeferredDedupeTests(TempDbCase):
         old, new = self.open_db("old.db"), self.open_db("new.db")
         for conn in (old, new):
             for key, records in batches.items():
-                pipeline.upsert_jobs(conn, key, key, records, "2026-09-01T00:00:00+00:00")
+                _reference_upsert_jobs(conn, key, key, records, "2026-09-01T00:00:00+00:00")
         rng = random.Random(5)
         for records in batches.values():  # drop some postings, edit some bodies
             del records[: len(records) // 4]
             for record in records[: len(records) // 3]:
                 record["description"] = perturbed(rng, record["description"], 3)
         for key, records in batches.items():
-            pipeline.upsert_jobs(old, key, key, records, "2026-09-02T00:00:00+00:00")
+            _reference_upsert_jobs(old, key, key, records, "2026-09-02T00:00:00+00:00")
             old.commit()
         self.run_fetch(new, batches)
         self.assertEqual(links(old), links(new))
 
-    def test_fetch_all_deduplicates_once(self):
+    def test_fetch_all_deduplicates_inside_each_source(self):
         batches = per_source_postings(1)
         conn = self.open_db()
         with unittest.mock.patch.object(pipeline, "deduplicate", wraps=pipeline.deduplicate) as spy:
             self.run_fetch(conn, batches)
-        self.assertEqual(spy.call_count, 1)
+        # One pass per source, inside that source's upsert, so a failing pass
+        # rolls that source back.
+        self.assertEqual(spy.call_count, len(batches))
 
     def test_dedupe_false_defers_and_the_default_still_links(self):
         batches = per_source_postings(1)
         deferred, eager = self.open_db("deferred.db"), self.open_db("eager.db")
+        reference = self.open_db("reference.db")
         for key, records in batches.items():
             pipeline.upsert_jobs(deferred, key, key, records, "2026-09-01T00:00:00+00:00", dedupe=False)
             pipeline.upsert_jobs(eager, key, key, records, "2026-09-01T00:00:00+00:00")
+            _reference_upsert_jobs(reference, key, key, records, "2026-09-01T00:00:00+00:00")
         self.assertFalse(any(links(deferred).values()))
         self.assertTrue(any(links(eager).values()))
         pipeline.deduplicate(deferred)
         self.assertEqual(links(deferred), links(eager))
+        self.assertEqual(links(reference), links(eager))
+        self.assertEqual(state_digest(reference), state_digest(eager))
 
     def test_a_fetch_where_every_source_fails_does_not_touch_links(self):
         conn = self.open_db()
@@ -543,7 +606,7 @@ class DeferredDedupeTests(TempDbCase):
         old, new = self.open_db("old.db"), self.open_db("new.db")
         for key, records in batches.items():  # the old behaviour: a failed source stores nothing
             if key not in (fetch_fail, upsert_fail):
-                pipeline.upsert_jobs(old, key, key, records, "2026-09-01T00:00:00+00:00")
+                _reference_upsert_jobs(old, key, key, records, "2026-09-01T00:00:00+00:00")
                 old.commit()
         real = pipeline.upsert_jobs
 
@@ -564,45 +627,74 @@ class DeferredDedupeTests(TempDbCase):
         )
         self.assertEqual(links(old), links(new))
 
-    def test_a_failure_in_the_final_link_pass_is_tolerated_and_the_next_pass_repairs_it(self):
+    def test_a_failing_link_pass_rolls_the_source_back_and_records_an_error(self):
         batches = per_source_postings(2)
-        eager, conn = self.open_db("eager.db"), self.open_db("deferred.db")
-        for key, records in batches.items():
-            pipeline.upsert_jobs(eager, key, key, records, "2026-09-01T00:00:00+00:00")
-            eager.commit()
-        with unittest.mock.patch.object(
-            pipeline, "deduplicate", side_effect=sqlite3.OperationalError("database is locked")
-        ):
-            result, stderr = self.run_fetch_ex(conn, batches)  # must not raise
-        self.assertEqual(result, 0)
-        self.assertIn("database is locked", stderr)
-        outcomes = {row[0] for row in conn.execute("SELECT outcome FROM fetch_runs")}
-        self.assertEqual(outcomes, {"success"})
-        self.assertEqual(
-            conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0],
-            eager.execute("SELECT COUNT(*) FROM jobs").fetchone()[0],
-        )
-        self.assertFalse(any(links(conn).values()))
-        pipeline.deduplicate(conn)  # what import_manual does next in `run`
-        conn.commit()
-        self.assertEqual(links(eager), links(conn))
+        keys = list(batches)
+        broken = keys[3]
+        old, new = self.open_db("old.db"), self.open_db("new.db")
+        real_dedupe = pipeline.deduplicate
 
-    def test_a_resumed_fetch_links_rows_an_interrupted_run_left_unlinked(self):
-        batches = per_source_postings(3)
-        eager, conn = self.open_db("eager.db"), self.open_db("resumed.db")
+        # The reference: a source whose link pass fails stores nothing.
         for key, records in batches.items():
-            pipeline.upsert_jobs(eager, key, key, records, "2026-09-01T00:00:00+00:00")
-            eager.commit()
-        # The earlier run landed every source, then died before the link pass.
-        with unittest.mock.patch.object(
-            pipeline, "deduplicate", side_effect=sqlite3.OperationalError("interrupted")
-        ):
+            if key != broken:
+                _reference_upsert_jobs(old, key, key, records, "2026-09-01T00:00:00+00:00")
+                old.commit()
+
+        real_upsert = pipeline.upsert_jobs
+        current = {}
+
+        def tracking_upsert(conn, source_key, *args, **kwargs):
+            current["key"] = source_key
+            return real_upsert(conn, source_key, *args, **kwargs)
+
+        def flaky_dedupe(conn):
+            if current.get("key") == broken:
+                raise sqlite3.OperationalError("database is locked")
+            return real_dedupe(conn)
+
+        with unittest.mock.patch.object(pipeline, "upsert_jobs", tracking_upsert), \
+                unittest.mock.patch.object(pipeline, "deduplicate", flaky_dedupe):
+            result, stderr = self.run_fetch_ex(new, batches)  # must not raise
+        self.assertIn("database is locked", stderr)
+        outcomes = dict(new.execute("SELECT source_key, outcome FROM fetch_runs").fetchall())
+        self.assertEqual(outcomes[broken], "error")
+        self.assertEqual({v for k, v in outcomes.items() if k != broken}, {"success"})
+        self.assertEqual(new.execute("SELECT COUNT(*) FROM jobs WHERE source_key=?", (broken,)).fetchone()[0], 0)
+        self.assertEqual(
+            [row[:-1] for row in state_digest(old)], [row[:-1] for row in state_digest(new)]
+        )
+        self.assertEqual(links(old), links(new))
+
+    def test_a_resume_refetches_the_source_whose_link_pass_failed(self):
+        batches = per_source_postings(3)
+        keys = list(batches)
+        broken = keys[1]
+        conn = self.open_db("resumed.db")
+        real_upsert = pipeline.upsert_jobs
+        real_dedupe = pipeline.deduplicate
+        current = {}
+
+        def tracking_upsert(c, source_key, *args, **kwargs):
+            current["key"] = source_key
+            return real_upsert(c, source_key, *args, **kwargs)
+
+        def flaky_dedupe(c):
+            if current.get("key") == broken:
+                raise sqlite3.OperationalError("database is locked")
+            return real_dedupe(c)
+
+        with unittest.mock.patch.object(pipeline, "upsert_jobs", tracking_upsert), \
+                unittest.mock.patch.object(pipeline, "deduplicate", flaky_dedupe):
             self.run_fetch_ex(conn, batches)
-        self.assertFalse(any(links(conn).values()))
-        # The retry has nothing left to fetch, yet must still finish the links.
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM jobs WHERE source_key=?", (broken,)).fetchone()[0], 0)
+        # Only the failed source is fetched again, and its rows and links land.
         self.run_fetch_ex(conn, batches, resume_since="2000-01-01T00:00:00+00:00")
+        self.assertGreater(conn.execute("SELECT COUNT(*) FROM jobs WHERE source_key=?", (broken,)).fetchone()[0], 0)
+        eager = self.open_db("eager.db")
+        for key, records in batches.items():
+            _reference_upsert_jobs(eager, key, key, records, "2026-09-01T00:00:00+00:00")
+            eager.commit()
         self.assertEqual(links(eager), links(conn))
-        self.assertTrue(any(links(conn).values()))
 
     def test_import_discovered_matches_per_channel_dedupe_and_runs_it_once(self):
         payload = json.loads((FIXTURES / "discovered_jobs_sample.json").read_text(encoding="utf-8"))
@@ -621,10 +713,9 @@ class DeferredDedupeTests(TempDbCase):
                 with unittest.mock.patch.object(pipeline, "deduplicate", wraps=pipeline.deduplicate) as spy:
                     pipeline.import_discovered(new, path)
                 self.assertEqual(spy.call_count, 1)
-                real = pipeline.upsert_jobs
 
                 def eager(conn, source_key, source_name, batch, seen=None, **_ignored):
-                    return real(conn, source_key, source_name, batch, seen)
+                    return _reference_upsert_jobs(conn, source_key, source_name, batch, seen)
 
                 with unittest.mock.patch.object(pipeline, "upsert_jobs", eager):
                     pipeline.import_discovered(old, path)

@@ -2584,7 +2584,6 @@ def fetch_all(
     # order, which under concurrency is arbitrary.
     cycle_seen = now_iso()
     transient_failures = 0
-    upserted_any = False
     host_active: dict[str, int] = {}
     in_flight: dict[Any, tuple[dict[str, Any], str, int, str]] = {}
 
@@ -2664,19 +2663,14 @@ def fetch_all(
                         print(f"  Done {label}: failed", flush=True)
                         continue
                     try:
-                        # The duplicate_of pass runs once after the last source
-                        # rather than after each one: it is a pure function of
-                        # the table, so the final links are the same, and it was
-                        # the dominant cost of a many-source run.
+                        # The duplicate_of pass stays inside each source's upsert:
+                        # a failure in it rolls that source back (inserts,
+                        # retirements and links together) and records an error,
+                        # which a single pass after the last source could not do
+                        # once earlier sources were marked successful.
                         count = upsert_jobs(
-                            conn,
-                            source_key,
-                            source.get("label", source["company"]),
-                            records,
-                            cycle_seen,
-                            dedupe=False,
+                            conn, source_key, source.get("label", source["company"]), records, cycle_seen
                         )
-                        upserted_any = True
                     except FatalDatabaseError:
                         raise
                     except Exception as exc:
@@ -2695,25 +2689,6 @@ def fetch_all(
                         continue
                     record_outcome(run_id, "success", count=count, listed=getattr(records, "listed", None))
                     print(f"  Done {label}: {count} candidate postings saved", flush=True)
-
-        # Only when some source landed rows, or a resumed run skipped sources an
-        # earlier (possibly interrupted) run landed without linking: a run where
-        # every source failed and nothing was resumed leaves the table as it
-        # found it, as it always did.
-        if upserted_any or done:
-            try:
-                deduplicate(conn)
-                conn.commit()
-            except sqlite3.Error as exc:
-                # Tolerated, as it was when this pass ran inside each source's
-                # upsert: report it and finish. The rows are already committed,
-                # and the next deduplicate (import_manual in `run`) repairs the
-                # links, since the pass is a pure function of the table.
-                try:
-                    conn.rollback()
-                except sqlite3.Error:
-                    pass
-                print(f"  ERROR linking duplicate postings: {exc}", file=sys.stderr, flush=True)
     finally:
         # A fatal database error must not wait on eleven other sources first.
         # Queued work is dropped immediately; anything already inside a socket

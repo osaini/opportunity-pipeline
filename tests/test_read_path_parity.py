@@ -22,11 +22,14 @@ import helpers_platform
 from helpers_platform import build_and_migrate
 from opportunity_app import STATIC_DIR, outreach_recontact
 from opportunity_app.api import create_app
-from opportunity_app.company_tags import tag_facets, tag_facets_for_keys
+from collections import defaultdict
+
+from opportunity_app.company_tags import capture_visible_sql, tag_facets, tag_facets_for_keys, tags_for_companies
 from opportunity_app.outreach import create_target, filtered_target_ids, get_target, list_targets
 from opportunity_app.outreach_recontact import eligible_targets, upgradeable
 from opportunity_app.schema import connect_product, migrate_legacy_database, utc_now
-from pipeline_core import OpportunityRepository
+from pipeline_core import OpportunityFilters, OpportunityRepository
+from pipeline_core.read_model import _decode_list, _nocase_key
 
 USER = "local-user"
 OTHER = "student-b"
@@ -297,6 +300,56 @@ OLD_TAG_FACET_KEYS = (
 )
 
 
+def reference_facets(conn, user_id):
+    """REFERENCE: OpportunityRepository.facets as it was before it shared a scan with the tag facets (frozen).
+
+    The live facets() now delegates to facets_with_company_keys(), so comparing the two would compare the code with
+    itself; this copy shares only the unchanged helpers.
+    """
+    repo = OpportunityRepository(conn, user_id=user_id)
+    columns = {"role_types": "role_type", "statuses": "status", "regions": "region", "sources": "source_name", "remote_modes": "remote_mode"}
+    collected = {key: set() for key in columns}
+    terms = set()
+    if user_id is None:
+        cursor = conn.execute(
+            "SELECT role_type, status, region, source_name, remote_mode, terms_json "
+            "FROM opportunity_read_model WHERE active=1 AND duplicate_of IS NULL"
+        )
+    else:
+        cursor = conn.execute(
+            *repo._tenant_sql(
+                OpportunityFilters(),
+                "tenant.role_type, tenant.status, tenant.region, tenant.source_name, tenant.remote_mode, tenant.terms_json",
+            )
+        )
+    for row in cursor:
+        for key, column in columns.items():
+            value = row[column]
+            if value is not None and str(value) != "":
+                collected[key].add(str(value))
+        terms.update(str(term) for term in _decode_list(row["terms_json"]))
+    result = {key: sorted(values, key=_nocase_key) for key, values in collected.items()}
+    result["terms"] = sorted(terms, key=str.casefold)
+    return result
+
+
+def reference_tag_facets(conn, user_id):
+    """REFERENCE: company_tags.tag_facets as it was before it handed its keys to tag_facets_for_keys (frozen)."""
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT o.company_sort_key AS company_key
+        FROM opportunity_read_model o
+        WHERE o.active = 1 AND o.duplicate_of IS NULL AND {capture_visible_sql("o")}
+        """,
+        [user_id],
+    ).fetchall()
+    counts = defaultdict(int)
+    for tags in tags_for_companies(conn, (row["company_key"] for row in rows), user_id=user_id).values():
+        for item in tags:
+            counts[item["tag"]] += 1
+    return [{"tag": tag, "companies": count} for tag, count in sorted(counts.items())]
+
+
 class FacetsAndStatsParityTests(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
@@ -311,8 +364,11 @@ class FacetsAndStatsParityTests(unittest.TestCase):
             with self.subTest(user=user_id):
                 repo = OpportunityRepository(self.conn, user_id=user_id)
                 facets, company_keys = repo.facets_with_company_keys()
-                self.assertEqual(facets, repo.facets())
-                self.assertEqual(tag_facets_for_keys(self.conn, company_keys, user_id=user_id), tag_facets(self.conn, user_id=user_id))
+                self.assertEqual(facets, reference_facets(self.conn, user_id))
+                self.assertEqual(repo.facets(), reference_facets(self.conn, user_id))
+                reference_tags = reference_tag_facets(self.conn, user_id)
+                self.assertEqual(tag_facets_for_keys(self.conn, company_keys, user_id=user_id), reference_tags)
+                self.assertEqual(tag_facets(self.conn, user_id=user_id), reference_tags)
                 old_keys = {row[0] for row in self.conn.execute(OLD_TAG_FACET_KEYS, (user_id,)) if row[0]}
                 self.assertEqual(company_keys, old_keys)
         # The private capture's company (and its drone tag) reaches its owner only.
@@ -325,7 +381,8 @@ class FacetsAndStatsParityTests(unittest.TestCase):
         repo = OpportunityRepository(self.conn)
         facets, company_keys = repo.facets_with_company_keys()
         self.assertEqual(company_keys, set())
-        self.assertEqual(facets, repo.facets())
+        self.assertEqual(facets, reference_facets(self.conn, None))
+        self.assertEqual(repo.facets(), facets)
         self.assertTrue(facets["regions"] or facets["role_types"])
 
     def test_the_http_facets_and_stats_equal_the_two_step_reference(self):
@@ -337,8 +394,8 @@ class FacetsAndStatsParityTests(unittest.TestCase):
         repo = OpportunityRepository(self.conn, user_id=USER)
         with TestClient(app) as client:
             facets = client.get("/api/v1/facets", headers=headers).json()
-            expected = dict(repo.facets())
-            expected["tags"] = tag_facets(self.conn, user_id=USER)
+            expected = dict(reference_facets(self.conn, USER))
+            expected["tags"] = reference_tag_facets(self.conn, USER)
             self.assertEqual(facets, expected)
             self.assertEqual(list(facets), list(expected), "key order is part of the response")
             stats = client.get("/api/v1/stats", headers=headers).json()
