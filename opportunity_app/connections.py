@@ -721,3 +721,14 @@ def confirm_phone(conn: sqlite3.Connection, challenge_id: str, code: str, secret
         conn.execute("UPDATE phone_verifications SET status='verified' WHERE id=?", (challenge_id,))
         conn.execute("UPDATE notification_preferences SET phone_e164=?, phone_verified=1, updated_at=? WHERE user_id=?", (row["phone_e164"], timestamp, user_id))
     return ensure_preferences(conn, user_id=user_id)
+
+
+def connector_owner(conn: sqlite3.Connection, connector_id: str) -> str:
+    """The user a connector account belongs to. A webhook authenticates by signature, not session, so its event belongs to
+    whoever owns the connector it names. Raises ConnectionNotFoundError for an unknown connector."""
+    owner = conn.execute(
+        "SELECT user_id FROM connector_accounts WHERE id=?", (connector_id,)
+    ).fetchone()
+    if not owner:
+        raise ConnectionNotFoundError(connector_id)
+    return str(owner["user_id"])

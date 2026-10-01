@@ -17,6 +17,7 @@ from ...actions import ApplicationNotFoundError
 from ...auth import constant_time_equal
 from ...connections import (
     ConnectionNotFoundError,
+    connector_owner,
     begin_oauth,
     complete_oauth,
     apply_channel_opt_out,
@@ -159,12 +160,7 @@ async def verified_connector_webhook(
         with closing(connect_product(ctx.config.database_target)) as conn:
             # Webhook callers authenticate by HMAC, not session; the event
             # belongs to whichever user owns the referenced connector.
-            owner = conn.execute(
-                "SELECT user_id FROM connector_accounts WHERE id=?", (payload.connector_id,)
-            ).fetchone()
-            if not owner:
-                raise ConnectionNotFoundError(payload.connector_id)
-            owner_id = str(owner["user_id"])
+            owner_id = connector_owner(conn, payload.connector_id)
             return ingest_message(
                 conn, **payload.model_dump(), user_id=owner_id,
                 decisions=inbox_client_for(conn, ctx.services.inbox_client_factory, user_id=owner_id),
