@@ -62,6 +62,7 @@ import httpx
 from pipeline import identity_tokens, normalized
 
 from . import automation, outreach_labels
+from .database import rollback_quietly
 from .inbox_classifiers import read_reply
 from .mail_trust import FREEMAIL, READ_CATEGORIES, authenticate, host_of, listed, not_an_employer, registrable_domain, sender_lists
 from .outreach import (
@@ -1856,11 +1857,7 @@ def _record(
 
 def _discard_open_transaction(conn: sqlite3.Connection) -> None:
     """After a step failed: roll back what it left uncommitted, so recording its health does not commit it."""
-    try:
-        if getattr(conn, "in_transaction", False):
-            conn.rollback()
-    except Exception:  # noqa: BLE001
-        LOGGER.warning("Could not roll back after an inbox step failed", exc_info=True)
+    rollback_quietly(conn, LOGGER, "an inbox step failed")
 
 
 def _save_gmail_health(conn: sqlite3.Connection, user_id: str) -> None:

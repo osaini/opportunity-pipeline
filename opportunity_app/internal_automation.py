@@ -49,6 +49,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 
 from . import automation
+from .database import rollback_quietly
 from .timestamps import parse_app_instant, utc_now
 from .user_time import user_timezone
 
@@ -710,7 +711,7 @@ def run_for_user(
             ))
         except Exception as exc:  # noqa: BLE001 - the next step still runs
             LOGGER.exception("Closing unanswered companies failed")
-            _rollback(conn)
+            rollback_quietly(conn, LOGGER, "an automatic step failed")
             first_error = first_error or exc
     if provider_factory is not None and not report.get("follow_up_drafts") and automation.is_enabled(conn, user_id, "auto_follow_up_drafts"):
         try:
@@ -721,22 +722,14 @@ def run_for_user(
                 )
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Writing a follow-up draft failed")
-            _rollback(conn)
+            rollback_quietly(conn, LOGGER, "an automatic step failed")
             first_error = first_error or exc
     if automation.is_enabled(conn, user_id, "archive_silent_applications"):
         try:
             report.setdefault("archived", []).extend(archive_silent_applications(conn, user_id, now=now))
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Archiving silent applications failed")
-            _rollback(conn)
+            rollback_quietly(conn, LOGGER, "an automatic step failed")
             first_error = first_error or exc
     if first_error is not None:
         raise first_error
-
-
-def _rollback(conn: sqlite3.Connection) -> None:
-    try:
-        if getattr(conn, "in_transaction", False):
-            conn.rollback()
-    except Exception:  # noqa: BLE001
-        LOGGER.warning("Could not roll back after an automatic step failed", exc_info=True)

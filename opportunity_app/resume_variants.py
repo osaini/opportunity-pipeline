@@ -33,6 +33,7 @@ from pipeline_core.visibility import capture_visible_sql
 
 from . import automation
 from .actions import OpportunityNotFoundError, _intent_state
+from .database import rollback_quietly
 from .timestamps import utc_now
 
 LOGGER = logging.getLogger(__name__)
@@ -283,11 +284,7 @@ def safe_pick_after_save(conn: sqlite3.Connection, user_id: str, opportunity_id:
         pick_after_save(conn, user_id, opportunity_id)
     except Exception:  # noqa: BLE001 - the save already committed; the pick is a convenience
         LOGGER.exception("The résumé variant for a saved role was not picked")
-        try:
-            if getattr(conn, "in_transaction", False):
-                conn.rollback()
-        except Exception:  # noqa: BLE001
-            LOGGER.warning("Could not roll back after a résumé pick failed", exc_info=True)
+        rollback_quietly(conn, LOGGER, "a résumé pick failed")
 
 
 def stored_pick(conn: sqlite3.Connection, user_id: str, opportunity_id: str) -> dict[str, Any] | None:

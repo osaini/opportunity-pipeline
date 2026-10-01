@@ -57,11 +57,11 @@ from urllib.parse import quote
 import httpx
 
 from . import automation
+from .database import rollback_quietly
 from .mail_trust import FREEMAIL, registrable_domain
 from .outreach import UNSENT_STATUSES
 from .outreach_delivery import _DAEMONS, _is_delivery_notice
 from .outreach_drafting import sender_account
-from .timestamps import parse_app_instant, utc_now
 from .outreach_gmail import (
     DRAFT_EVENT,
     MODIFY_SCOPE,
@@ -77,6 +77,7 @@ from .outreach_gmail import (
     _is_throttle,
     backoff_until,
 )
+from .timestamps import parse_app_instant, utc_now
 
 LOGGER = logging.getLogger(__name__)
 
@@ -193,11 +194,7 @@ class _Stop(Exception):
 
 def _discard(conn: sqlite3.Connection) -> None:
     """Roll back a transaction left open, so no network call is made inside one and none is left behind."""
-    try:
-        if getattr(conn, "in_transaction", False):
-            conn.rollback()
-    except Exception:  # noqa: BLE001
-        LOGGER.warning("Could not roll back after labelling replies", exc_info=True)
+    rollback_quietly(conn, LOGGER, "labelling replies")
 
 
 def _granted(row: sqlite3.Row) -> list[str]:

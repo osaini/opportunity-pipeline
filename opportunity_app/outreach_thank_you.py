@@ -108,6 +108,7 @@ from urllib.parse import quote
 import httpx
 
 from . import automation
+from .database import rollback_quietly
 from .inbox_classifiers import JEV_NOT_ASKED, MIN_CONFIDENCE
 from .outreach import (
     REPLY_PATTERNS,
@@ -1391,14 +1392,6 @@ def _record(conn: sqlite3.Connection, user_id: str, *, ok: bool, error: str = ""
     record(conn, user_id, HEALTH_COMPONENT, ok=ok, error=error, detail=detail)
 
 
-def _rollback(conn: sqlite3.Connection) -> None:
-    try:
-        if getattr(conn, "in_transaction", False):
-            conn.rollback()
-    except Exception:  # noqa: BLE001
-        LOGGER.warning("Could not roll back after planning a thank-you failed", exc_info=True)
-
-
 def run_for_user(
     conn: sqlite3.Connection, user_id: str, report: dict[str, Any], *,
     provider_factory: Callable[[str, str], Any] | None, provider: str | None = None, now: datetime | None = None,
@@ -1424,7 +1417,7 @@ def run_for_user(
                 planned.append(outcome)
     except Exception as exc:
         LOGGER.exception("Planning thank-yous failed")
-        _rollback(conn)
+        rollback_quietly(conn, LOGGER, "planning a thank-you failed")
         from .outreach_inbox import _step_error
 
         _record(conn, user_id, ok=False, error=_step_error(exc))
