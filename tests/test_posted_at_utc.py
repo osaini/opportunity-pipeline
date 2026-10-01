@@ -23,7 +23,7 @@ from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import legacy_sync, schema
+from opportunity_app import legacy_sync
 from opportunity_app.schema import (
     backfill_posted_at_utc,
     ensure_product_schema,

@@ -16,7 +16,6 @@ from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
 from opportunity_app.captures import ocr_image
 from opportunity_app.schema import LOCAL_USER_ID
-from opportunity_app.database import connect_product
 
 from helpers_platform import build_and_migrate
 
