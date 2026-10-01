@@ -105,7 +105,7 @@ from .agent_providers import CliAgentProvider, complete_text
 from .operations import JobDeferred, enqueue_job, recover_stale_jobs, run_next_job
 from .outreach import CALL_PREP_STATUSES, OutreachNotFoundError, _log, get_target, local_today
 from .outreach_drafting import (
-    DRAFT_FACT_FIELDS, IDENTIFIER_KEYS, INFERENCE_BASIS, RESEARCH_FIELDS, ProviderFactory, _entry_name, _field_basis,
+    DRAFT_FACT_FIELDS, IDENTIFIER_KEYS, INFERENCE_BASIS, RESEARCH_FIELDS, ProviderFactory, _ADDRESS, _entry_name, _field_basis,
     outreach_proof, resolve_provider,
 )
 from .preparation import confirmed_facts
@@ -200,7 +200,6 @@ _STATES = re.compile(
 # Where a number in the notes may come from: what the student, the research, and the reply say. Not ids, links,
 # dates, the agent's list of gaps (it states nothing), or the research on file the model is not sent.
 _NOT_A_SOURCE = IDENTIFIER_KEYS | {"sent_on", "logged_on", "research_gaps", "unverified_research", "status"}
-_ADDRESS = re.compile(r"\S+@\S+|https?://\S+")
 
 INSTRUCTIONS = """You write call-prep notes for one university student. A small company answered the student's cold email about an internship, and the student will talk to someone there soon.
 

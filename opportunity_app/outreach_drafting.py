@@ -351,7 +351,15 @@ def _opening(body: str) -> str:
     return paragraphs[0]
 
 
-_ADDRESS = re.compile(r"\S+@\S+|https?://\S+")
+# What a number check takes out of the text first, on both sides (the draft and the inputs): email addresses,
+# links with a scheme, and links without one (github.com/t/arm-2024, acme360.com), whose digits name a page,
+# not a fact. A scheme-less link is a dotted host ending in a 2+ letter TLD, optionally followed by a path. The
+# label before the TLD must hold a letter and the TLD must end the word, so 3.5, U.S., Ph.D., e.g. and v2.0
+# are not hosts, nor is "2024.Then" (a missing space after a full stop). Call prep's number check shares this.
+_ADDRESS = re.compile(
+    r"\S+@\S+|https?://\S+"
+    r"|(?<![\w@.-])(?:[A-Za-z0-9-]+\.)*[A-Za-z0-9-]*[A-Za-z][A-Za-z0-9-]*\.[A-Za-z]{2,}(?![\w-])(?:/\S*)?"
+)
 
 
 def _entry_names(entry: Any) -> set[str]:

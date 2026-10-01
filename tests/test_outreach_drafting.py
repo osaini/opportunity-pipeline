@@ -831,6 +831,28 @@ class UnsupportedNumbersTests(unittest.TestCase):
         body = "Write to me at student2024@example.edu or see https://example.edu/p/99."
         self.assertEqual(_unsupported_numbers(body, self.inputs(name="Test Student")), [])
 
+    def test_a_scheme_less_link_does_not_license_its_digits(self):
+        inputs = self.inputs(name="Test Student", links=["github.com/t/arm-2024", "linkedin.com/in/t-512"])
+        inputs["company_website"] = "acme360.com"
+        body = "I built 2024 robots, met 512 people and read about 360 sensors."
+        self.assertEqual(_unsupported_numbers(body, inputs), ["2024", "512", "360"])
+
+    def test_a_draft_that_names_the_same_domain_is_not_flagged(self):
+        inputs = self.inputs(name="Test Student", links=["github.com/t/arm-2024", "linkedin.com/in/t-512"])
+        inputs["company_website"] = "acme360.com"
+        body = "See github.com/t/arm-2024 and linkedin.com/in/t-512, or visit www.acme360.com, acme360.com/careers."
+        self.assertEqual(_unsupported_numbers(body, inputs), [])
+        # A draft may name a domain whether or not the inputs do: its digits are the address's, not a claim.
+        self.assertEqual(_unsupported_numbers("Visit acme360.com.", self.inputs(name="Test Student")), [])
+
+    def test_decimals_abbreviations_and_versions_are_not_taken_for_hosts(self):
+        inputs = self.inputs(experience=[{"title": "Held a 3.5 GPA as a U.S. student, e.g. on v2.0 of the Ph.D. tool"}])
+        # Each stays a number the draft must support: if 3.5 or v2.0 were stripped as a host, 7 and 2.5 would hide too.
+        body = "As a U.S. student with a 3.5 GPA, e.g. on v2.0, in a Ph.D. lab I ran 7 trials at 2.5 volts."
+        self.assertEqual(_unsupported_numbers(body, inputs), ["7", "2.5"])
+        self.assertEqual(_unsupported_numbers("I held a 3.5 GPA.Then I shipped 7.", inputs), ["7"])
+        self.assertEqual(_unsupported_numbers("Ph.D. students ran 7 trials in 2024.Then 8.", inputs), ["7", "2024", "8"])
+
     @staticmethod
     def number_problems(subject, body, inputs):
         raw = draft_json(subject, body, [{"text": "my work", "basis": "profile:experience"}])
