@@ -412,7 +412,7 @@ class AutomationWorker:
                 deliver_desktop_notices(conn)
             except Exception as exc:  # noqa: BLE001 - a pop-up never holds up a send
                 LOGGER.exception("Desktop notices were not shown")
-                rollback_quietly(conn, LOGGER, "an automatic step failed")
+                rollback_quietly(conn, LOGGER, "an inbox step failed")
                 for user_id in desktop_users:
                     errors.setdefault(user_id, _step_error(exc))
             due_users: list[str] = []
@@ -427,7 +427,7 @@ class AutomationWorker:
                     )
                 except Exception as exc:  # noqa: BLE001 - the other steps still run, and the failure is recorded
                     LOGGER.exception("Scheduled emails were not sent")
-                    rollback_quietly(conn, LOGGER, "an automatic step failed")
+                    rollback_quietly(conn, LOGGER, "an inbox step failed")
                     for user_id in due_users:
                         errors.setdefault(user_id, _step_error(exc))
             users = self._users_with(conn, (*SETTINGS, *internal_automation.WORKER_FEATURES, *outreach_thank_you.WORKER_FEATURES))
@@ -436,7 +436,7 @@ class AutomationWorker:
                     self._run_for(conn, user_id, report)
                 except Exception as exc:  # noqa: BLE001 - one student's failure never stops the next student
                     LOGGER.exception("Outreach automation failed for one student")
-                    rollback_quietly(conn, LOGGER, "an automatic step failed")
+                    rollback_quietly(conn, LOGGER, "an inbox step failed")
                     errors.setdefault(user_id, _step_error(exc))
                 try:
                     # Changes that stay inside the app: auto-close, follow-up drafts, the daily archive.
@@ -446,13 +446,13 @@ class AutomationWorker:
                         decisions_for=self._decisions_for, on_reply=self._on_reply,
                     )
                 except Exception as exc:  # noqa: BLE001 - recorded like any other step's failure
-                    rollback_quietly(conn, LOGGER, "an automatic step failed")
+                    rollback_quietly(conn, LOGGER, "an inbox step failed")
                     errors.setdefault(user_id, _step_error(exc))
                 try:
                     # A thank-you after a plain decline, written and scheduled; sent above when due.
                     outreach_thank_you.run_for_user(conn, user_id, report, provider_factory=self._provider_factory)
                 except Exception as exc:  # noqa: BLE001 - recorded like any other step's failure
-                    rollback_quietly(conn, LOGGER, "an automatic step failed")
+                    rollback_quietly(conn, LOGGER, "an inbox step failed")
                     errors.setdefault(user_id, _step_error(exc))
             try:
                 # Independent of every switch; it records its own health (apply_agent.runner) per student.
@@ -461,7 +461,7 @@ class AutomationWorker:
                     report["apply"] = upkeep
             except Exception:  # noqa: BLE001 - the other students' passes are done; the next pass tries again
                 LOGGER.exception("Apply for me upkeep failed")
-                rollback_quietly(conn, LOGGER, "an automatic step failed")
+                rollback_quietly(conn, LOGGER, "an inbox step failed")
             for user_id in sorted({*desktop_users, *due_users, *users}):
                 _record(conn, user_id, WORKER_COMPONENT, ok=user_id not in errors, error=errors.get(user_id, ""))
         return report

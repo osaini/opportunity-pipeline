@@ -172,6 +172,7 @@ def set_label_name(conn: sqlite3.Connection, user_id: str, value: str | None) ->
         if name.upper() in _SYSTEM_NAMES or name.upper().startswith("CATEGORY_"):
             raise ValueError(f"Gmail keeps the name {name} for itself; choose another label name")
     with conn:
+        # The shared monotonic clock (the old local stamp had no tie-break); nothing reads this setting's updated_at, so a strictly later stamp is harmless.
         put_setting(conn, user_id, SETTING, name, utc_now())
         _search_again(conn, user_id, before, name)
     return name
