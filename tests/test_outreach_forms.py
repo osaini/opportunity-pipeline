@@ -34,11 +34,8 @@ from opportunity_app.schema import connect_product, utc_now
 
 from browser_support import requires_chromium
 from helpers_platform import build_and_migrate
-from test_outreach_discovery import safe_fetcher, site_transport
-from test_outreach_drafting import confirm_facts
-from test_outreach_gmail import ACCOUNT
-import test_outreach_inbox as inbox_tests
-from test_outreach_inbox import mail, now_ms
+from helpers_outreach import confirm_facts, safe_fetcher, site_transport
+from helpers_gmail import ACCOUNT, ReplyCaptureFixture, mail, now_ms
 
 AUTH = {"Authorization": "Bearer forms-owner"}
 USER = "local-user"
@@ -528,16 +525,8 @@ class FormSendTests(unittest.TestCase):
             self.assertIn(target["id"], draft_due(conn, user_id=USER))
 
 
-class FormReplyTests(unittest.TestCase):
+class FormReplyTests(ReplyCaptureFixture, unittest.TestCase):
     """Replies to a message sent through a form are read from Gmail by the company's domain."""
-
-    setUp = inbox_tests.ReplyCaptureTests.setUp
-    tearDown = inbox_tests.ReplyCaptureTests.tearDown
-    connect = inbox_tests.ReplyCaptureTests.connect
-    arrive = inbox_tests.ReplyCaptureTests.arrive
-    check = inbox_tests.ReplyCaptureTests.check
-    target = inbox_tests.ReplyCaptureTests.target
-    replies = inbox_tests.ReplyCaptureTests.replies
 
     def form_target(self):
         created = self.client.post("/api/v1/outreach", headers=AUTH_INBOX, json={

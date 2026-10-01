@@ -25,8 +25,8 @@ from opportunity_app.outreach_schedule import RESEND_LABEL, run_due_sends
 from opportunity_app.schema import connect_product, utc_now
 
 from helpers_platform import build_and_migrate
-from test_outreach_discovery import safe_fetcher, site_transport
-from test_outreach_gmail import ACCOUNT, PDF, SCOPES, FakeGmail
+from helpers_outreach import safe_fetcher, site_transport
+from helpers_gmail import ACCOUNT, PDF, SCOPES, FakeGmail
 
 AUTH = {"Authorization": "Bearer resend-owner"}
 STYLE = {"word": "Hi", "unnamed": "{company} team"}

@@ -23,7 +23,7 @@ from opportunity_app.outreach_schedule import next_morning, recipient_zone, run_
 from opportunity_app.schema import connect_product, ensure_product_schema, utc_now
 
 from helpers_platform import build_and_migrate
-from test_outreach_gmail import ACCOUNT, PDF, SCOPES, FakeGmail, forget_gmail_backoff
+from helpers_gmail import ACCOUNT, PDF, SCOPES, FakeGmail, forget_gmail_backoff
 
 AUTH = {"Authorization": "Bearer schedule-owner"}
 USER = "local-user"

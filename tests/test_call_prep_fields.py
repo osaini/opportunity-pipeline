@@ -21,8 +21,8 @@ from opportunity_app.schema import connect_product, ensure_product_schema
 
 from helpers_platform import build_and_migrate
 from helpers_source import static_script_text
-from test_outreach_call_prep import BRIEF, store_brief
-from test_outreach_drafting import AUTH, USER, ScriptedProvider
+from helpers_outreach import BRIEF, DRAFTING_AUTH as AUTH, USER, store_brief
+from helpers_outreach import DraftingScriptedProvider as ScriptedProvider
 
 LINK = "https://www.linkedin.com/in/riley-park/"
 

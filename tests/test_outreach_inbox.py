@@ -1,62 +1,36 @@
 """Replies to outreach read from Gmail: logged once, a quiet company moved to Replied, the rest suggested."""
 
 import json
-import re
 import sys
-import tempfile
 import unittest
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from email import policy
 from email.parser import BytesParser
-from email.utils import parseaddr
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import httpx
-from cryptography.fernet import Fernet
-from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, automation, outreach_delivery, outreach_gmail, outreach_inbox
-from opportunity_app.api import create_app
-from opportunity_app.mail_trust import Authentication
+from opportunity_app import automation, outreach_gmail, outreach_inbox
 from opportunity_app.outreach_inbox import InboxWatcher, reply_text, strip_quoted
 from opportunity_app.schema import connect_product, utc_now
 
-from helpers_platform import build_and_migrate
-from test_outreach_gmail import ACCOUNT, PDF, SCOPES, AlwaysInTransaction, FakeGmail, forget_gmail_backoff, rate_limited
+from helpers_gmail import (
+    ACCOUNT,
+    INBOX_AUTH,
+    INBOX_USER,
+    AlwaysInTransaction,
+    ReplyCaptureFixture,
+    mail,
+    now_ms,
+    rate_limited,
+)
 
-AUTH = {"Authorization": "Bearer inbox-owner"}
-USER = "local-user"
-
-
-def now_ms(offset=timedelta()):
-    return int((datetime.now(timezone.utc) + offset).timestamp() * 1000)
-
-
-def mail(body, *, sender="Greg Lee <greg@bovi.example>", subject="Re: Robotics internship question", headers="",
-         to=ACCOUNT, verified=True):
-    """A message as the raw text Gmail stores, with Gmail's own sender check on top unless ``verified`` is False."""
-    domain = re.findall(r"@([\w.-]+)", sender)[-1] if "@" in sender else ""
-    check = f"Authentication-Results: mx.google.com;\n       dkim=pass header.i=@{domain} header.s=s1\n" if verified else ""
-    return (
-        f"{check}From: {sender}\nTo: {to}\nSubject: {subject}\n{headers}"
-        "MIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\n\n"
-        f"{body}\n"
-    ).encode()
-
-
-def gmail_vouches(message):
-    """mail_trust.authenticate for the .example domains these tests use, which the public suffix list does not know.
-
-    Gmail vouches for a sender when its own check says the From domain signed the email (dkim=pass).
-    """
-    sender = parseaddr(str(message.get("From", "")))[1].casefold()
-    domain = sender.rsplit("@", 1)[-1]
-    ok = f"dkim=pass header.i=@{domain}" in str(message.get("Authentication-Results", ""))
-    return Authentication(ok, "dkim" if ok else "", "" if ok else "the sender did not pass Gmail's check", sender, domain)
+AUTH = INBOX_AUTH
+USER = INBOX_USER
 
 
 class QuotedTextTests(unittest.TestCase):
@@ -75,92 +49,7 @@ class QuotedTextTests(unittest.TestCase):
         self.assertEqual(reply_text(BytesParser(policy=policy.default).parsebytes(raw)), "Let's talk\nTuesday?")
 
 
-class ReplyCaptureTests(unittest.TestCase):
-    def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
-        root = Path(self.tempdir.name)
-        _, self.platform_path = build_and_migrate(root)
-        attachment = root / "Resume.pdf"
-        attachment.write_bytes(PDF)
-        self.key = Fernet.generate_key().decode()
-        self.env = mock.patch.dict("os.environ", {
-            "GOOGLE_OAUTH_CLIENT_ID": "client-id", "GOOGLE_OAUTH_CLIENT_SECRET": "client-secret",
-            "PIPELINE_CONNECTION_KEY": self.key, "PIPELINE_OUTREACH_ACCOUNT": ACCOUNT,
-            "PIPELINE_OUTREACH_COMPOSE": "gmail", "PIPELINE_OUTREACH_ATTACHMENT": str(attachment),
-        })
-        self.env.start()
-        self.gmail = FakeGmail()
-        self.factory = lambda: httpx.Client(transport=httpx.MockTransport(self.gmail.handler))
-        app = create_app(
-            db_path=self.platform_path, access_token="inbox-owner", static_dir=STATIC_DIR,
-            resume_storage=root / "resumes", capture_storage=root / "captures", interview_storage=root / "interviews",
-            outreach_gmail_client_factory=self.factory,
-        )
-        self.client = TestClient(app)
-        self.client.__enter__()
-        outreach_delivery._LAST_LOOK.clear()
-        outreach_delivery._READ_NOTICES.clear()
-        outreach_inbox._LAST_CAPTURE.clear()
-        forget_gmail_backoff(self)
-        vouches = mock.patch.object(outreach_inbox, "authenticate", gmail_vouches)
-        vouches.start()
-        self.addCleanup(vouches.stop)
-        self.connect()
-
-    def tearDown(self):
-        self.client.__exit__(None, None, None)
-        self.env.stop()
-        self.tempdir.cleanup()
-
-    def connect(self, scopes=SCOPES):
-        fernet = Fernet(self.key.encode())
-        with closing(connect_product(self.platform_path)) as conn:
-            conn.execute(
-                """INSERT INTO connector_accounts(id, user_id, provider, scopes_json, encrypted_access_token, encrypted_refresh_token, status, created_at, updated_at)
-                   VALUES(?, ?, 'gmail_drafts', ?, ?, ?, 'connected', ?, ?)""",
-                (f"connector-gmail_drafts-{USER}", USER, str(list(scopes)).replace("'", '"'),
-                 fernet.encrypt(b"valid-token").decode(), fernet.encrypt(b"refresh-token").decode(), utc_now(), utc_now()),
-            )
-            conn.commit()
-
-    def sent_target(self, **overrides):
-        created = self.client.post("/api/v1/outreach", headers=AUTH, json={
-            "company": "Bovi", "contact_email": "greg@bovi.example", "website": "https://bovi.example",
-            "email_subject": "Robotics internship question", "email_body": "Hi Greg,\n\nShort note about Bovi.\n\nSam",
-            **overrides,
-        }).json()
-        approved = self.client.post(f"/api/v1/outreach/{created['id']}/approve", headers=AUTH, json={
-            "kind": "initial", "fingerprint": created["draft_fingerprint"], "acknowledge_warnings": True,
-        }).json()
-        sent = self.client.post(f"/api/v1/outreach/{approved['id']}/gmail-send", headers=AUTH, json={
-            "kind": "initial", "fingerprint": approved["draft_fingerprint"],
-        })
-        self.assertEqual(sent.status_code, 200, sent.text)
-        return self.target(approved)
-
-    def arrive(self, message_id, raw, received=None, labels=None):
-        self.gmail.raw[message_id] = (raw, received if received is not None else now_ms(timedelta(minutes=5)))
-        self.gmail.inbox_replies.append(message_id)
-        if labels is not None:
-            self.gmail.labels[message_id] = labels
-
-    def arrive_in_thread(self, message_id, raw, thread_id="thread-1", received=None, labels=None):
-        """A message Gmail threaded with a sent email (thread-1 is the first one sent)."""
-        self.arrive(message_id, raw, received, labels)
-        self.gmail.threads[message_id] = thread_id
-
-    def check(self):
-        outreach_inbox._LAST_CAPTURE.clear()
-        response = self.client.post("/api/v1/outreach/inbox-check", headers=AUTH)
-        self.assertEqual(response.status_code, 200, response.text)
-        return response.json()
-
-    def target(self, target):
-        return self.client.get(f"/api/v1/outreach/{target['id']}", headers=AUTH).json()
-
-    def replies(self, target):
-        return [event["detail"] for event in self.target(target)["events"] if event["event_type"] == "reply_logged"]
-
+class ReplyCaptureTests(ReplyCaptureFixture, unittest.TestCase):
     def test_a_reply_is_logged_and_the_company_moves_to_replied(self):
         target = self.sent_target()
         self.assertTrue(target["follow_up_at"])

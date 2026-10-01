@@ -31,7 +31,9 @@ from opportunity_app.worker import WEB_APP_JOB_TYPES
 
 from helpers_platform import build_and_migrate
 from helpers_source import js_function, static_script_text
-from test_outreach_drafting import AUTH, USER, ScriptedProvider as DraftProvider, confirm_facts
+from helpers_outreach import BLOCKED_FACT, BRIEF, PORT_FACT, STACK_FACT, store_brief
+from helpers_outreach import DRAFTING_AUTH as AUTH, USER, confirm_facts
+from helpers_outreach import DraftingScriptedProvider as DraftProvider
 
 REPLY = "Thanks for writing! Could we set up a call Thursday at 3pm? I'd like to hear about your drone work."
 EXPERIENCE = [
@@ -79,30 +81,6 @@ def prep_json(**overrides):
     }
     sections.update(overrides)
     return json.dumps(sections)
-
-
-PORT_FACT = {
-    "section": "technology", "text": "The arm finds the charge port with a stereo camera within 90 seconds",
-    "source_url": "https://news.example/chargebot-seed", "quote": "finds the charge port with a stereo camera", "person": "",
-    "checked": True, "note": "",
-}
-STACK_FACT = {
-    "section": "engineering", "text": "Motion planning in C++ on ROS 2", "source_url": "https://chargebot.example/careers",
-    "quote": "motion planning code in C++", "person": "", "checked": True, "note": "",
-}
-BLOCKED_FACT = {
-    "section": "traction", "text": "Raised a $4.5M seed round", "source_url": "https://news.example/blocked",
-    "quote": "a $4.5M seed round", "person": "", "checked": False, "note": "the site turned the check away (HTTP 403)",
-}
-BRIEF = {"facts": [PORT_FACT, STACK_FACT, BLOCKED_FACT], "gaps": ["which motors the arm uses"], "refused": [], "proposed": 3}
-
-
-def store_brief(conn, target_id, brief=BRIEF, at="2026-09-20T12:00:00+00:00", error=""):
-    conn.execute(
-        "UPDATE outreach_targets SET tech_brief_json=?, tech_brief_at=?, tech_brief_by='claude-code', tech_brief_error=? WHERE id=?",
-        (json.dumps(brief), at, error, target_id),
-    )
-    conn.commit()
 
 
 class CallPrepTests(unittest.TestCase):

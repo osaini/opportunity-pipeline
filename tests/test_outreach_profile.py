@@ -34,7 +34,7 @@ from opportunity_app.outreach_profile import (
 from opportunity_app.schema import connect_product, ensure_product_schema
 
 from helpers_platform import build_and_migrate, use_profile_regions
-from test_outreach_discovery import company, only_for, proposals, safe_fetcher, site_transport
+from helpers_outreach import company, only_for, proposals, safe_fetcher, site_transport
 
 USER = "local-user"
 TODAY = date(2026, 9, 18)

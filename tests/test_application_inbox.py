@@ -31,7 +31,7 @@ from opportunity_app.schema import connect_product, utc_now
 from opportunity_app.urgent import urgent_queue
 
 from helpers_platform import build_and_migrate
-from test_outreach_gmail import ACCOUNT, FakeGmail, forget_gmail_backoff, rate_limited
+from helpers_gmail import ACCOUNT, FakeGmail, forget_gmail_backoff, rate_limited
 
 USER = "local-user"
 AUTH = {"Authorization": "Bearer mail-owner"}
@@ -1632,7 +1632,7 @@ class JevTests(MailCase):
                  "We regret to inform you that we will not be moving forward with your application.")
 
     def run_with(self, label, confidence, raw):
-        from test_inbox_classifiers import FakeJev
+        from helpers_outreach import FakeJev
 
         self.started()
         self.deliver("m-160", raw)
