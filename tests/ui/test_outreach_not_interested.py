@@ -37,3 +37,23 @@ def test_not_interested_files_a_company_under_its_own_tab_and_moving_back_return
     expect(row_for(owner_page, "Bovi")).to_have_count(1)
     open_tab(owner_page, "not-interested")
     expect(owner_page.locator(".empty-state")).to_contain_text("Mark a company Not interested on its card")
+
+
+def test_refresh_counts_the_companies_acted_on_then_moves_them(owner_page, base_url):
+    seed_target(owner_page, base_url)
+    seed_target(owner_page, base_url, company="Kiva", website="https://kiva.example", source_urls=["https://kiva.example/"])
+    open_outreach(owner_page, "to-contact")
+    refresh = owner_page.locator(".outreach-refresh")
+    expect(refresh).to_have_accessible_name("Refresh")
+    card_for(owner_page, "Bovi").get_by_role("button", name="Not interested", exact=True).click()
+    # It stays put until Refresh, which says how many will move.
+    expect(card_for(owner_page, "Bovi")).to_contain_text("Now in Not interested")
+    expect(row_for(owner_page, "Bovi")).to_have_count(1)
+    expect(owner_page.locator(".outreach-refresh-count")).to_have_text("1")
+    expect(refresh).to_have_accessible_name("Refresh: 1 company moves out of this list")
+
+    refresh.click()
+    expect(row_for(owner_page, "Bovi")).to_have_count(0)
+    expect(row_for(owner_page, "Kiva")).to_have_count(1)
+    expect(owner_page.locator(".outreach-refresh-count")).to_have_count(0)
+    expect(owner_page.locator(".outreach-refresh")).to_be_focused()
