@@ -13,9 +13,8 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from .schema import connect_product
+from .database import connect_product, is_postgres_target
 from .timestamps import utc_now
-from .database import is_postgres_target
 
 
 class OperationsError(RuntimeError):

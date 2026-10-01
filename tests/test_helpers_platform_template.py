@@ -185,14 +185,14 @@ class TemplateCopyTests(unittest.TestCase):
 
     def test_production_connections_keep_the_default_durability(self):
         """Only builds inside fast_throwaway_databases() skip the fsync."""
-        from opportunity_app import schema
+        from opportunity_app import database
 
-        with closing(schema.connect_product(self.root / "prod.db")) as conn:
+        with closing(database.connect_product(self.root / "prod.db")) as conn:
             self.assertEqual(conn.execute("PRAGMA synchronous").fetchone()[0], 2, "FULL")
         with helpers.fast_throwaway_databases():
-            with closing(schema.connect_product(self.root / "fast.db")) as conn:
+            with closing(database.connect_product(self.root / "fast.db")) as conn:
                 self.assertEqual(conn.execute("PRAGMA synchronous").fetchone()[0], 0, "OFF")
-        with closing(schema.connect_product(self.root / "after.db")) as conn:
+        with closing(database.connect_product(self.root / "after.db")) as conn:
             self.assertEqual(conn.execute("PRAGMA synchronous").fetchone()[0], 2, "FULL again")
 
 

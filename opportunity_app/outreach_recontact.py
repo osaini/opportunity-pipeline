@@ -28,7 +28,7 @@ from typing import Any, Callable
 from .background import SingleFlightManager
 from .outreach import get_target
 from .outreach_contacts import apply_choice, choose_contact, find_contacts, is_generic_address, list_candidates
-from .schema import connect_product
+from .database import connect_product
 from .web_fetch import SafeFetcher, default_fetcher
 
 Runner = Callable[[str], str]

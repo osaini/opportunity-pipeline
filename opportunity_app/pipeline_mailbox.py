@@ -34,7 +34,7 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from . import ROOT
 from .connections import OAUTH_PROVIDERS
-from .database import is_postgres_target
+from .database import is_postgres_target, connect_product
 from .gmail_client import (
     GMAIL_API,
     MODIFY_SCOPE,
@@ -48,7 +48,7 @@ from .gmail_client import (
     granted_scopes,
 )
 from .mail_message import decode_base64url
-from .schema import LOCAL_USER_ID, connect_product
+from .schema import LOCAL_USER_ID
 from .setup import read_env
 
 TEXT_CAP = 4000

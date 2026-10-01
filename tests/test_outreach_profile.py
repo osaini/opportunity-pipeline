@@ -31,7 +31,8 @@ from opportunity_app.outreach_profile import (
     sec_fetcher,
     site_location,
 )
-from opportunity_app.schema import connect_product, ensure_product_schema
+from opportunity_app.schema import ensure_product_schema
+from opportunity_app.database import connect_product
 
 from helpers_platform import build_and_migrate, use_profile_regions
 from helpers_outreach import company, only_for, proposals, safe_fetcher, site_transport

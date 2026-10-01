@@ -26,9 +26,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from opportunity_app import schema
 from opportunity_app.schema import (
     backfill_posted_at_utc,
-    connect_product,
     ensure_product_schema,
 )
+from opportunity_app.database import connect_product
 from opportunity_app.timestamps import canonical_utc
 from pipeline_core import OpportunityFilters, OpportunityRepository
 

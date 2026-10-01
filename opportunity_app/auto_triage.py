@@ -37,9 +37,9 @@ from pipeline_core.read_model import RULESET_VERSION
 from pipeline_core.visibility import capture_visible_sql
 
 from . import automation
-from .database import is_postgres_target
+from .database import is_postgres_target, connect_product
 from .profile_store import read_stored_profile
-from .schema import LOCAL_USER_ID, connect_product
+from .schema import LOCAL_USER_ID
 
 LOGGER = logging.getLogger(__name__)
 

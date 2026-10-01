@@ -23,7 +23,7 @@ import httpx
 from cryptography.fernet import Fernet
 
 from opportunity_app import outreach_labels, pipeline_mailbox
-from opportunity_app.schema import connect_product
+from opportunity_app.database import connect_product
 from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate

@@ -25,7 +25,8 @@ from opportunity_app.api import create_app
 from opportunity_app.operations import delete_account, export_account
 from opportunity_app.outreach import local_today
 from opportunity_app.purge import purge_expired_opportunities
-from opportunity_app.schema import LOCAL_USER_ID, connect_product
+from opportunity_app.schema import LOCAL_USER_ID
+from opportunity_app.database import connect_product
 from opportunity_app.student_agent import decide_proposal
 from opportunity_app.user_time import SYSTEM_LOCAL, UserTimezone, user_timezone
 from pipeline_core import OpportunityFilters, OpportunityRepository

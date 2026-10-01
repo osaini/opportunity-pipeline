@@ -23,7 +23,8 @@ from opportunity_app.apply_runs import ClaimHeldError, ClaimRefused
 from pipeline_core.identity import employer_key
 from opportunity_app.operations import ACCOUNT_QUERIES, delete_account, export_account, run_retention
 from opportunity_app.outreach_automation import AutomationWorker
-from opportunity_app.schema import connect_product, ensure_product_schema
+from opportunity_app.schema import ensure_product_schema
+from opportunity_app.database import connect_product
 from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate

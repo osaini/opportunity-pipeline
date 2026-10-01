@@ -10,12 +10,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import APPLY_ROOT, DEFAULT_PLATFORM_DB
-from .database import is_postgres_target
+from .database import is_postgres_target, connect_product
 from .ingestion import make_stage_handler
 from .notifications import connector_health, run_notification_digest, send_due_reminders
 from .outreach import queue_follow_up_reminders
 from .operations import enqueue_job, recover_stale_jobs, run_next_job, run_retention
-from .schema import connect_product
 
 STAGES = ("fetch", "enrich", "score", "liveness", "report")
 # Run by a thread inside the web app, which recovers its own interrupted jobs.

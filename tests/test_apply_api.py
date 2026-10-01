@@ -25,7 +25,7 @@ from opportunity_app import STATIC_DIR, apply_runs, apply_schema_client, apply_s
 from opportunity_app.api import create_app
 from opportunity_app.apply_schema_client import GreenhouseSchemaClient, SchemaUnavailable
 from opportunity_app.profile import update_profile
-from opportunity_app.schema import connect_product
+from opportunity_app.database import connect_product
 from opportunity_app.timestamps import utc_now
 
 from apply_fake_ats import FakeApplyAgentFactory, FakeSchemaClient, JOB_URL

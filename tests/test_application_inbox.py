@@ -27,7 +27,7 @@ from opportunity_app.api import create_app
 from opportunity_app.application_inbox import match_application, parse_message
 from opportunity_app.connections import classify_monitored_message, decide_monitored_event, monitored_event
 from opportunity_app.operations import export_account
-from opportunity_app.schema import connect_product
+from opportunity_app.database import connect_product
 from opportunity_app.timestamps import parse_app_instant, utc_now
 from opportunity_app.urgent import urgent_queue
 
@@ -993,6 +993,7 @@ class WatcherTests(MailCase):
 class MigrationTests(unittest.TestCase):
     def test_a_half_applied_0038_is_repaired_by_running_it_again(self):
         from opportunity_app import schema
+        from opportunity_app.database import has_column
 
         migrations = Path(__file__).resolve().parent.parent / "migrations"
         with tempfile.TemporaryDirectory() as directory:
@@ -1012,7 +1013,7 @@ class MigrationTests(unittest.TestCase):
                 conn.commit()
                 schema.ensure_product_schema(conn)
                 for table, column in (("application_tasks", "link"), ("monitored_events", "decided_by")):
-                    self.assertTrue(schema._has_column(conn, table, column), f"{table}.{column}")
+                    self.assertTrue(has_column(conn, table, column), f"{table}.{column}")
                 for table in ("application_mail_sync", "application_mail_messages", "email_deadlines", "employer_domains", "automation_held"):
                     self.assertIsNotNone(conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone(), table)
                 self.assertIsNotNone(conn.execute("SELECT 1 FROM schema_migrations WHERE name='0038_application_mail.sql'").fetchone())

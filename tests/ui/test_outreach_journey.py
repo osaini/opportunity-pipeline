@@ -15,7 +15,7 @@ import pytest
 from playwright.sync_api import expect
 
 from outreach_fakes import COMPOSE_ACCOUNT
-from opportunity_app.schema import connect_product
+from opportunity_app.database import connect_product
 from ui_helpers import BEARER, assert_accessible, card_for, open_details, open_outreach, open_tab, row_for, seed_target
 
 

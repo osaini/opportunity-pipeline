@@ -23,7 +23,7 @@ from . import DEFAULT_LEGACY_DB, DEFAULT_PLATFORM_DB, DEFAULT_PROFILE, ROOT
 from .company_tags import ensure_company_tags_current, regenerate_company_tags
 from .opportunity_metadata import extract_opportunity_metadata
 from .timestamps import canonical_utc, utc_now
-from .database import PostgresConnection, is_postgres_target
+from .database import connect_legacy_read_only, connect_product, has_column, is_postgres_target
 
 
 MIGRATIONS_DIR = ROOT / "migrations"
@@ -37,88 +37,6 @@ APPLICATION_STATUSES = {"applying", "applied", "interview", "offer", "rejected",
 # row that merely came into being must not look like a resume that happened
 # just now (outreach_schedule would then say a late send was held by a pause).
 PAUSE_NEVER_CHANGED = "1970-01-01T00:00:00+00:00"
-
-
-# Every request opens its own connection, so anything done per connection is
-# paid per request. Resolving the path costs two filesystem syscalls (~0.22ms)
-# and re-declaring WAL costs ~0.87ms; neither answer changes per connection.
-_RESOLVED_PATHS: dict[str, Path] = {}
-
-
-def _resolved_db_path(path: Path) -> Path:
-    """Resolve once per absolute spelling.
-
-    Only absolute paths are cached. A relative path resolves against the working
-    directory, so caching one by its spelling would keep answering with the old
-    database after a chdir -- a wrong-database bug in exchange for two syscalls.
-    """
-
-    if not path.is_absolute():
-        return path.expanduser().resolve()
-    key = str(path)
-    resolved = _RESOLVED_PATHS.get(key)
-    if resolved is None:
-        resolved = path.expanduser().resolve()
-        _RESOLVED_PATHS[key] = resolved
-    return resolved
-
-
-def connect_product(path: Path | str = DEFAULT_PLATFORM_DB, *, read_only: bool = False) -> sqlite3.Connection | PostgresConnection:
-    if is_postgres_target(path):
-        return PostgresConnection(str(path), read_only=read_only)
-    path = _resolved_db_path(path)
-    if read_only:
-        conn = sqlite3.connect(
-            f"file:{path.as_posix()}?mode=ro",
-            uri=True,
-            check_same_thread=False,
-        )
-    else:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # FastAPI may resolve a synchronous dependency in a worker thread and
-        # hand it to an async upload endpoint on the event-loop thread. Each
-        # request still gets its own connection; disabling only the thread
-        # affinity check is therefore safe and avoids cross-request sharing.
-        conn = sqlite3.connect(path, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    if not read_only:
-        # WAL is a persistent property of the database file, not of a
-        # connection, so declaring it on every writable connection redid work
-        # that already survived in the file. Asking what the mode is costs
-        # ~0.025ms; switching to it costs ~0.88ms. Reading first is therefore
-        # ~35x cheaper on the common path and, unlike remembering which files
-        # we have already declared, stays correct when a database is deleted
-        # and recreated at the same path.
-        if str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower() != "wal":
-            conn.execute("PRAGMA journal_mode = WAL")
-    return conn
-
-
-def connect_legacy_read_only(path: Path = DEFAULT_LEGACY_DB) -> sqlite3.Connection:
-    path = path.expanduser().resolve()
-    if not path.exists():
-        raise FileNotFoundError(f"Legacy pipeline database not found: {path}")
-    conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA query_only = ON")
-    return conn
-
-
-def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
-    """Backend-agnostic column check. PRAGMA is SQLite-only."""
-
-    if getattr(conn, "backend", "sqlite") == "postgresql":
-        row = conn.execute(
-            "SELECT 1 FROM information_schema.columns "
-            "WHERE table_schema=current_schema() AND table_name=? AND column_name=?",
-            (table, column),
-        ).fetchone()
-        return row is not None
-    return any(
-        str(row["name"]) == column
-        for row in conn.execute(f"PRAGMA table_info({table})")
-    )
 
 
 def backfill_posted_at_utc(conn: sqlite3.Connection) -> int:
@@ -181,7 +99,7 @@ def _apply_posted_at_utc(conn: sqlite3.Connection, sql: str) -> None:
     # the next start fail on a duplicate column. Guarding the add, recreating
     # the view with IF EXISTS, and recomputing the backfill are each repeatable,
     # which makes the whole step repeatable.
-    if not _has_column(conn, "opportunities", "posted_at_utc"):
+    if not has_column(conn, "opportunities", "posted_at_utc"):
         conn.execute("ALTER TABLE opportunities ADD COLUMN posted_at_utc TEXT")
     conn.executescript(sql)
     backfill_posted_at_utc(conn)
@@ -206,7 +124,7 @@ def backfill_sort_keys(conn: sqlite3.Connection) -> int:
 
 def _apply_company_sort_keys(conn: sqlite3.Connection, sql: str) -> None:
     for column in ("company_sort_key", "title_sort_key"):
-        if not _has_column(conn, "opportunities", column):
+        if not has_column(conn, "opportunities", column):
             conn.execute(f"ALTER TABLE opportunities ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
     conn.executescript(sql)
     backfill_sort_keys(conn)
@@ -230,7 +148,7 @@ def _apply_automation(conn: sqlite3.Connection, sql: str) -> None:
     # tables are IF NOT EXISTS, and the seed skips rows that exist, so a crash
     # anywhere before the migration marker is repaired by running it again.
     for table, column, definition in _AUTOMATION_COLUMNS:
-        if not _has_column(conn, table, column):
+        if not has_column(conn, table, column):
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
     conn.executescript(sql)
     # Every student starts unpaused, with the row in place: pausing is then an
@@ -257,7 +175,7 @@ _APPLICATION_MAIL_COLUMNS = (
 def _apply_application_mail(conn: sqlite3.Connection, sql: str) -> None:
     # Guarded like _apply_automation, so a crash before the marker is repaired by running it again.
     for table, column, definition in _APPLICATION_MAIL_COLUMNS:
-        if not _has_column(conn, table, column):
+        if not has_column(conn, table, column):
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
     conn.executescript(sql)
 
@@ -271,7 +189,7 @@ _INTERNAL_AUTOMATION_COLUMNS = (
 def _apply_internal_automation(conn: sqlite3.Connection, sql: str) -> None:
     # Guarded like _apply_automation: running it again after a crash repairs it.
     for table, column, definition in _INTERNAL_AUTOMATION_COLUMNS:
-        if not _has_column(conn, table, column):
+        if not has_column(conn, table, column):
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
     conn.executescript(sql)
 
@@ -286,7 +204,7 @@ _DECLINE_THANK_YOU_COLUMNS = (
 def _apply_decline_thank_you(conn: sqlite3.Connection, sql: str) -> None:
     # Guarded like _apply_automation: running it again after a crash repairs it.
     for table, column, definition in _DECLINE_THANK_YOU_COLUMNS:
-        if not _has_column(conn, table, column):
+        if not has_column(conn, table, column):
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
     conn.executescript(sql)
 
@@ -316,7 +234,7 @@ _OUTREACH_REPLY_RULES_COLUMNS = (
 def _apply_outreach_reply_rules(conn: sqlite3.Connection, sql: str) -> None:
     # Guarded like _apply_automation: running it again after a crash repairs it.
     for table, column, definition in _OUTREACH_REPLY_RULES_COLUMNS:
-        if not _has_column(conn, table, column):
+        if not has_column(conn, table, column):
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
     conn.executescript(sql)
 
@@ -343,7 +261,7 @@ _TECH_BRIEF_COLUMNS = (
 def _apply_tech_brief(conn: sqlite3.Connection, sql: str) -> None:
     # Guarded like _apply_automation: running it again after a crash repairs it.
     for table, column, definition in _TECH_BRIEF_COLUMNS:
-        if not _has_column(conn, table, column):
+        if not has_column(conn, table, column):
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
     conn.executescript(sql)
 
@@ -361,7 +279,7 @@ _GMAIL_REPLY_LABELS_COLUMNS = (
 def _apply_gmail_reply_labels(conn: sqlite3.Connection, sql: str) -> None:
     # Guarded like _apply_automation: running it again after a crash repairs it.
     for table, column, definition in _GMAIL_REPLY_LABELS_COLUMNS:
-        if not _has_column(conn, table, column):
+        if not has_column(conn, table, column):
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
     conn.executescript(sql)
 
@@ -378,7 +296,7 @@ _APPLY_AGENT_COLUMNS = (
 def _apply_apply_agent(conn: sqlite3.Connection, sql: str) -> None:
     # Guarded like _apply_automation: running it again after a crash repairs it.
     for table, column, definition in _APPLY_AGENT_COLUMNS:
-        if not _has_column(conn, table, column):
+        if not has_column(conn, table, column):
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
     conn.executescript(sql)
 
@@ -392,7 +310,7 @@ _APPLY_SENSITIVE_COMPANY_NAME_COLUMNS = (
 def _apply_apply_sensitive_company_name(conn: sqlite3.Connection, sql: str) -> None:
     # Guarded like _apply_automation: running it again after a crash repairs it.
     for table, column, definition in _APPLY_SENSITIVE_COMPANY_NAME_COLUMNS:
-        if not _has_column(conn, table, column):
+        if not has_column(conn, table, column):
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
     conn.executescript(sql)
 
@@ -406,7 +324,7 @@ _OUTREACH_NOT_INTERESTED_COLUMNS = (
 def _apply_outreach_not_interested(conn: sqlite3.Connection, sql: str) -> None:
     # Guarded like _apply_automation: running it again after a crash repairs it.
     for table, column, definition in _OUTREACH_NOT_INTERESTED_COLUMNS:
-        if not _has_column(conn, table, column):
+        if not has_column(conn, table, column):
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
     conn.executescript(sql)
 

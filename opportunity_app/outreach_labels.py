@@ -57,7 +57,7 @@ from urllib.parse import quote
 import httpx
 
 from . import automation
-from .database import rollback_quietly
+from .database import rollback_quietly, has_column
 from .gmail_client import (
     MODIFY_SCOPE,
     PROVIDER,
@@ -83,7 +83,6 @@ from .outreach_gmail import (
     _Gmail,
     backoff_until,
 )
-from .schema import _has_column
 from .settings_store import get_setting, put_setting
 from .timestamps import parse_app_instant, utc_now
 
@@ -537,9 +536,9 @@ def label_backlog(conn: sqlite3.Connection, user_id: str, name: str, account: st
     """
     columns = ("label_name", "labeled_at", "label_note")
     if not (
-        all(_has_column(conn, "outreach_inbox_messages", column) for column in columns)
-        and all(_has_column(conn, "outreach_label_threads", column) for column in columns)
-        and _has_column(conn, "outreach_label_searches", "query")
+        all(has_column(conn, "outreach_inbox_messages", column) for column in columns)
+        and all(has_column(conn, "outreach_label_threads", column) for column in columns)
+        and has_column(conn, "outreach_label_searches", "query")
     ):
         return None
     waiting = conn.execute(
