@@ -42,7 +42,7 @@ import httpx
 from pipeline import SOURCES_LOCAL_PATH
 
 from . import ROOT
-from .agent_providers import CliAgentProvider, _cli_binary
+from .agent_providers import CODEX_READ_ONLY, CliAgentProvider, cli_binary, failure_detail, run_headless
 from .background import SingleFlightManager
 from .outreach import (
     OUTREACH_PRIORITIES,
@@ -178,36 +178,25 @@ class DiscoveryBusy(RuntimeError):
 def claude_runner(prompt: str, *, timeout: float = RUNNER_TIMEOUT_SECONDS) -> str:
     """Headless Claude Code with web search and fetch only, outside the project."""
     command = [
-        _cli_binary("claude-code"), "-p", "--output-format", "text",
+        cli_binary("claude-code"), "-p", "--output-format", "text",
         "--tools", "WebSearch,WebFetch", "--allowedTools", "WebSearch,WebFetch",
         "--strict-mcp-config",
     ]
     with tempfile.TemporaryDirectory(prefix="outreach-discovery-") as workdir:
-        completed = subprocess.run(
-            command, input=prompt, capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=timeout, cwd=workdir,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        completed = run_headless(command, prompt, timeout=timeout, cwd=workdir)
     if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "").strip()
+        detail = failure_detail(completed)
         raise RuntimeError(f"Claude Code exited {completed.returncode}: {detail[:400] or 'no output'}")
     return completed.stdout
 
 
 def codex_runner(prompt: str, *, timeout: float = RUNNER_TIMEOUT_SECONDS) -> str:
     """Fallback: Codex CLI with web search, read-only sandbox, outside the project."""
-    command = [
-        _cli_binary("codex-cli"), "exec", "--skip-git-repo-check", "--sandbox", "read-only",
-        "-c", "tools.web_search=true", "-",
-    ]
+    command = [cli_binary("codex-cli"), *CODEX_READ_ONLY, "-c", "tools.web_search=true", "-"]
     with tempfile.TemporaryDirectory(prefix="outreach-discovery-") as workdir:
-        completed = subprocess.run(
-            command, input=prompt, capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=timeout, cwd=workdir,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        completed = run_headless(command, prompt, timeout=timeout, cwd=workdir)
     if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "").strip()
+        detail = failure_detail(completed)
         raise RuntimeError(f"Codex exited {completed.returncode}: {detail[-400:] or 'no output'}")
     return completed.stdout
 

@@ -32,7 +32,7 @@ from typing import Any, Callable
 
 import httpx
 
-from .agent_providers import _cli_binary
+from .agent_providers import CLAUDE_NO_TOOLS, CODEX_READ_ONLY, cli_binary, failure_detail, run_headless
 from .outreach import get_target
 from .outreach_delivery import check_deliveries
 from .outreach_inbox import OnReply, capture_replies
@@ -156,16 +156,12 @@ def review_runner(purpose: str = "follow_up") -> tuple[str, Runner]:
             answer = Path(workdir) / "answer.txt"
             if provider == "codex-cli":
                 # Read-only sandbox, and the final message alone from its own file.
-                command = [_cli_binary("codex-cli"), "exec", "--skip-git-repo-check", "--sandbox", "read-only",
-                           "--output-last-message", str(answer), "-"]
+                command = [cli_binary("codex-cli"), *CODEX_READ_ONLY, "--output-last-message", str(answer), "-"]
             else:
-                command = [_cli_binary("claude-code"), "-p", "--output-format", "text", "--tools", "", "--strict-mcp-config"]
-            completed = subprocess.run(
-                command, input=prompt, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=REVIEW_TIMEOUT_SECONDS, cwd=workdir, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
+                command = [cli_binary("claude-code"), *CLAUDE_NO_TOOLS]
+            completed = run_headless(command, prompt, timeout=REVIEW_TIMEOUT_SECONDS, cwd=workdir)
             if completed.returncode != 0:
-                detail = (completed.stderr or completed.stdout or "").strip()
+                detail = failure_detail(completed)
                 raise RuntimeError(f"{provider} exited {completed.returncode}: {detail[-300:] or 'no output'}")
             return answer.read_text(encoding="utf-8") if answer.exists() else completed.stdout
 

@@ -78,7 +78,7 @@ from typing import Any, Callable
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from .agent_providers import CliAgentProvider, _cli_available, _cli_binary, complete_text
+from .agent_providers import CliAgentProvider, cli_available, cli_binary, complete_text
 from .operations import enqueue_job
 from .outreach import LEGAL_SUFFIXES, OutreachNotFoundError, _log, company_key, get_target, website_domain
 from .outreach_contacts import FetchResult, SafeFetcher, _PageParser, public_web_url_error
@@ -292,16 +292,16 @@ def available_agent(preferred: str | None = None) -> tuple[str, str]:
     has allowed it (ALLOW_CODEX_ENV) and Claude Code is not installed.
     """
     chosen = preferred or research_agent()
-    claude_here = _cli_available(_cli_binary(CLAUDE_AGENT))
+    claude_here = cli_available(cli_binary(CLAUDE_AGENT))
     if chosen == CODEX_AGENT and claude_here:
         return CLAUDE_AGENT, f"{CODEX_AGENT} can read files on this computer, so {CLAUDE_AGENT} (web search and fetch only) did the research"
     candidates = [chosen, *(other for other in RUNNERS if other != chosen)]
     for agent in candidates:
         if agent == CODEX_AGENT and not _codex_allowed():
             continue
-        if _cli_available(_cli_binary(agent)):
+        if cli_available(cli_binary(agent)):
             return agent, "" if agent == chosen else f"{chosen} is not installed here, so {agent} did the research"
-    if not claude_here and _cli_available(_cli_binary(CODEX_AGENT)):
+    if not claude_here and cli_available(cli_binary(CODEX_AGENT)):
         raise ResearchUnavailable(
             "Only Codex CLI is installed here, and it can read files on this computer while it reads web pages. "
             f"Install Claude Code, or set {ALLOW_CODEX_ENV}=1 in .env to accept that."

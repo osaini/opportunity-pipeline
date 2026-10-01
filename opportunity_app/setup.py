@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from . import ROOT
+from .agent_providers import CLI_CONFIG, cli_available, cli_binary
 
 MIN_PYTHON = (3, 11)
 GENERATED_SECRETS = {
@@ -207,11 +208,8 @@ def set_env_values(path: Path, updates: dict[str, str], *, overwrite: bool = Fal
 
 
 def detect_agent_cli() -> str:
-    for provider, binary, override in (
-        ("claude-code", "claude", "PIPELINE_CLAUDE_BIN"),
-        ("codex-cli", "codex", "PIPELINE_CODEX_BIN"),
-    ):
-        if shutil.which(os.environ.get(override) or binary):
+    for provider in CLI_CONFIG:
+        if cli_available(cli_binary(provider)):
             return provider
     return ""
 
