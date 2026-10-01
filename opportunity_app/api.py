@@ -295,7 +295,8 @@ from .outreach_drafting import (
     sender_account,
 )
 from .outreach_delivery import bounce_from_text, check_deliveries
-from .outreach_inbox import InboxWatcher, PossibleReplyNotFound, PossibleReplySettled, capture_replies, decide_possible_reply
+from .inbox_watcher import InboxWatcher
+from .outreach_inbox import PossibleReplyNotFound, PossibleReplySettled, capture_replies, decide_possible_reply
 from .outreach_forms import default_submitter_factory as default_form_submitter_factory, set_contact_form, submit_contact_form
 from . import apply_policy, apply_preflight, apply_runs, apply_sensitive
 from .apply_runs import APPLY_ROOT, recover_stale as recover_stale_applications

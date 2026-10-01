@@ -87,7 +87,6 @@ import json
 import logging
 import re
 import sqlite3
-import threading
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -97,6 +96,7 @@ from uuid import uuid4
 
 from . import automation
 from . import outreach_research as research
+from .background import PollingWorker
 from .outreach_call_questions import standing_questions
 from .outreach_interviewer import (
     TOPICS as INTERVIEWER_TOPICS, _who_key, find_interviewer, interviewer_due, interviewer_of,
@@ -1030,7 +1030,7 @@ def auto_queue_call_prep(conn: sqlite3.Connection, target_id: str, *, user_id: s
     return True
 
 
-class CallPrepWorker:
+class CallPrepWorker(PollingWorker):
     """Runs queued call prep and company research jobs on one background thread inside the web app.
 
     The jobs live in job_queue, so nothing is lost when the process stops. On
@@ -1045,6 +1045,10 @@ class CallPrepWorker:
     ``interviewer`` finds who the call is with and reads their LinkedIn
     (outreach_interviewer.py), when interviewer_due says so.
     """
+
+    thread_name = "call-prep-worker"
+    failure_message = "Call prep worker pass failed"
+    logger = LOGGER
 
     def __init__(
         self,
@@ -1061,10 +1065,7 @@ class CallPrepWorker:
         self._provider = provider
         self._researcher = researcher
         self._interviewer = interviewer
-        self._poll_seconds = poll_seconds
-        self._wake = threading.Event()
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
+        super().__init__(poll_seconds)
 
     def recover_interrupted(self) -> int:
         with closing(connect_product(self.platform_target)) as conn:
@@ -1209,28 +1210,8 @@ class CallPrepWorker:
                     LOGGER.warning("%s job %s: %s (%s)", record.get("job_type", "Call prep"), record["id"], record["state"], record["last_error"])
         return ran
 
-    def wake(self) -> None:
-        self._wake.set()
-
-    def start(self) -> None:
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop.clear()
+    def before_start(self) -> None:
         self.recover_interrupted()
-        self._thread = threading.Thread(target=self._loop, name="call-prep-worker", daemon=True)
-        self._thread.start()
 
-    def stop(self) -> None:
-        self._stop.set()
-        self._wake.set()
-        if self._thread:
-            self._thread.join(timeout=5)
-
-    def _loop(self) -> None:
-        while not self._stop.is_set():
-            try:
-                self.run_pending()
-            except Exception:  # the thread must outlive any one bad pass
-                LOGGER.exception("Call prep worker pass failed")
-            self._wake.wait(self._poll_seconds)
-            self._wake.clear()
+    def _run_pass(self) -> None:
+        self.run_pending()

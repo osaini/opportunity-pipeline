@@ -14,8 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import httpx
 
-from opportunity_app import automation, outreach_gmail, outreach_inbox
-from opportunity_app.outreach_inbox import InboxWatcher, reply_text, strip_quoted
+from opportunity_app import automation, inbox_watcher, outreach_gmail, outreach_inbox
+from opportunity_app.inbox_watcher import InboxWatcher
+from opportunity_app.outreach_inbox import reply_text, strip_quoted
 from opportunity_app.schema import connect_product, utc_now
 
 from helpers_gmail import (
@@ -875,7 +876,7 @@ class ReplyCaptureTests(ReplyCaptureFixture, unittest.TestCase):
         deliveries = mock.Mock(return_value={"state": "ok", "checked": 0, "bounced": []})
         replies = mock.Mock(return_value={"state": "unreachable", "replies": [], "automatic": []})
         with mock.patch("opportunity_app.outreach_gmail_sends.capture_gmail_sends",
-                        side_effect=RuntimeError("could not read the draft to greg@bovi.example")),                 mock.patch.object(outreach_inbox, "check_deliveries", deliveries),                 mock.patch.object(outreach_inbox, "capture_replies", replies):
+                        side_effect=RuntimeError("could not read the draft to greg@bovi.example")),                 mock.patch.object(inbox_watcher, "check_deliveries", deliveries),                 mock.patch.object(inbox_watcher, "capture_replies", replies):
             self.watcher().run_once()
         deliveries.assert_called_once()
         replies.assert_called_once()
@@ -966,8 +967,8 @@ class ReplyCaptureTests(ReplyCaptureFixture, unittest.TestCase):
         outreach_gmail._HEALTH.clear()
         self.gmail.read_response = rate_limited
         outreach_inbox._LAST_CAPTURE.clear()
-        real_connect = outreach_inbox.connect_product
-        with mock.patch.object(outreach_inbox, "connect_product", lambda target: AlwaysInTransaction(real_connect(target))):
+        real_connect = inbox_watcher.connect_product
+        with mock.patch.object(inbox_watcher, "connect_product", lambda target: AlwaysInTransaction(real_connect(target))):
             self.watcher().run_once()
         with closing(connect_product(self.platform_path)) as conn:
             row = dict(conn.execute("SELECT * FROM connector_accounts WHERE provider='gmail_drafts'").fetchone())
@@ -981,7 +982,7 @@ class ReplyCaptureTests(ReplyCaptureFixture, unittest.TestCase):
             conn.commit()
         self.gmail.read_response = None
         outreach_inbox._LAST_CAPTURE.clear()
-        with mock.patch.object(outreach_inbox, "connect_product", lambda target: AlwaysInTransaction(real_connect(target))):
+        with mock.patch.object(inbox_watcher, "connect_product", lambda target: AlwaysInTransaction(real_connect(target))):
             self.watcher().run_once()
         with closing(connect_product(self.platform_path)) as conn:
             row = dict(conn.execute("SELECT * FROM connector_accounts WHERE provider='gmail_drafts'").fetchone())

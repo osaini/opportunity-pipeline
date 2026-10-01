@@ -20,17 +20,16 @@ approved is written again for the new recipient, so it greets them by name.
 
 from __future__ import annotations
 
-import json
 import os
 import sqlite3
-import threading
 from contextlib import ExitStack, closing
 from pathlib import Path
 from typing import Any, Callable
 
+from .background import SingleFlightManager
 from .outreach import get_target
 from .outreach_contacts import SafeFetcher, _is_generic, apply_choice, choose_contact, default_fetcher, find_contacts, list_candidates
-from .schema import connect_product, utc_now
+from .schema import connect_product
 
 Runner = Callable[[str], str]
 
@@ -209,13 +208,17 @@ class RecontactBusy(RuntimeError):
     pass
 
 
-class RecontactManager:
+class RecontactManager(SingleFlightManager):
     """Runs one recontact pass at a time in the background for the web app.
 
     A pass is either a report, which searches and stores candidates but changes
     no contact, or an apply, which takes the upgrades the student ticked in
     that report and searches nothing.
     """
+
+    busy_error = RecontactBusy
+    busy_message = "A contact search is already running"
+    idle_extra = {"mode": None}
 
     def __init__(
         self,
@@ -239,15 +242,7 @@ class RecontactManager:
         self._provider_factory = provider_factory
         self._draft_provider = draft_provider
         self._contact_delay = contact_delay
-        self._lock = threading.Lock()
-        self._state: dict[str, Any] = {
-            "state": "idle", "mode": None, "started_at": None, "finished_at": None, "error": None, "result": None,
-        }
-        self._thread: threading.Thread | None = None
-
-    def status(self) -> dict[str, Any]:
-        with self._lock:
-            return json.loads(json.dumps(self._state))
+        super().__init__()
 
     def start_report(self, *, user_id: str) -> dict[str, Any]:
         return self._start("report", lambda conn: self._report(conn, user_id))
@@ -277,27 +272,8 @@ class RecontactManager:
             )
 
     def _start(self, mode: str, work: Callable[[sqlite3.Connection], dict[str, Any]]) -> dict[str, Any]:
-        with self._lock:
-            if self._state["state"] == "running":
-                raise RecontactBusy("A contact search is already running")
-            self._state = {
-                "state": "running", "mode": mode, "started_at": utc_now(), "finished_at": None, "error": None, "result": None,
-            }
+        def run() -> dict[str, Any]:
+            with closing(connect_product(self.platform_target)) as conn:
+                return work(conn)
 
-        def run() -> None:
-            result, error = None, None
-            try:
-                with closing(connect_product(self.platform_target)) as conn:
-                    result = work(conn)
-            except Exception as exc:  # noqa: BLE001 - reported to the UI
-                error = str(exc)[:1_000]
-            with self._lock:
-                self._state.update(state="failed" if error else "succeeded", error=error, result=result, finished_at=utc_now())
-
-        self._thread = threading.Thread(target=run, name=f"outreach-recontact-{mode}", daemon=True)
-        self._thread.start()
-        return self.status()
-
-    def wait(self, timeout: float | None = None) -> None:
-        if self._thread is not None:
-            self._thread.join(timeout)
+        return self._launch(f"outreach-recontact-{mode}", run, mode=mode)

@@ -108,6 +108,7 @@ from urllib.parse import quote
 import httpx
 
 from . import automation
+from .background import record_health_quietly, step_error
 from .inbox_classifiers import JEV_NOT_ASKED, MIN_CONFIDENCE
 from .outreach import (
     REPLY_PATTERNS,
@@ -1393,9 +1394,7 @@ def plan(
 
 
 def _record(conn: sqlite3.Connection, user_id: str, *, ok: bool, error: str = "", detail: dict[str, Any] | None = None) -> None:
-    from .outreach_inbox import _record as record
-
-    record(conn, user_id, HEALTH_COMPONENT, ok=ok, error=error, detail=detail)
+    record_health_quietly(conn, user_id, HEALTH_COMPONENT, ok=ok, error=error, detail=detail)
 
 
 def _rollback(conn: sqlite3.Connection) -> None:
@@ -1432,9 +1431,7 @@ def run_for_user(
     except Exception as exc:
         LOGGER.exception("Planning thank-yous failed")
         _rollback(conn)
-        from .outreach_inbox import _step_error
-
-        _record(conn, user_id, ok=False, error=_step_error(exc))
+        _record(conn, user_id, ok=False, error=step_error(exc))
         raise
     report.setdefault("thank_yous", []).extend(planned)
     _record(conn, user_id, ok=True, detail={"planned": len(planned)})

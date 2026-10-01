@@ -31,7 +31,6 @@ import re
 import sqlite3
 import subprocess
 import tempfile
-import threading
 from contextlib import ExitStack, closing
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -44,6 +43,7 @@ from pipeline import SOURCES_LOCAL_PATH
 
 from . import ROOT
 from .agent_providers import CliAgentProvider, _cli_binary
+from .background import SingleFlightManager
 from .outreach import (
     OUTREACH_PRIORITIES,
     _log,
@@ -813,8 +813,11 @@ def _write_draft(
             _log(conn, target_id, user_id, "discovery_follow_through", detail="; ".join(outcome["errors"])[:2_000])
 
 
-class DiscoveryManager:
+class DiscoveryManager(SingleFlightManager):
     """Runs one deep search at a time in the background for the web app."""
+
+    busy_error = DiscoveryBusy
+    busy_message = "A deep search is already running"
 
     def __init__(
         self,
@@ -844,51 +847,26 @@ class DiscoveryManager:
         self._provider_factory = provider_factory
         self._report_dir = report_dir
         self._contact_delay = contact_delay
-        self._lock = threading.Lock()
-        self._state: dict[str, Any] = {"state": "idle", "started_at": None, "finished_at": None, "error": None, "result": None}
-        self._thread: threading.Thread | None = None
-
-    def status(self) -> dict[str, Any]:
-        with self._lock:
-            return json.loads(json.dumps(self._state))
+        super().__init__()
 
     def start(self, *, user_id: str, scopes: list[str] | None = None) -> dict[str, Any]:
-        with self._lock:
-            if self._state["state"] == "running":
-                raise DiscoveryBusy("A deep search is already running")
-            self._state = {"state": "running", "started_at": utc_now(), "finished_at": None, "error": None, "result": None}
-
-        def run() -> None:
-            result, error = None, None
-            try:
-                runner = self._runner or RUNNERS.get((os.environ.get("PIPELINE_OUTREACH_DISCOVERY_PROVIDER") or "claude-code"), claude_runner)
-                with ExitStack() as stack:
-                    conn = stack.enter_context(closing(connect_product(self.platform_target)))
-                    fetcher = stack.enter_context(self._client_factory())
-                    form_d = self._form_d_fetcher_factory()
-                    renderer = self._renderer_factory()
-                    verifier = self._verifier_factory()
-                    result = run_discovery(
-                        conn, user_id=user_id, runner=runner, fetcher=fetcher, scopes=scopes,
-                        report_dir=self._report_dir, provider_factory=self._provider_factory, draft_provider=self._draft_provider,
-                        contact_delay=self._contact_delay,
-                        form_d_fetcher=stack.enter_context(form_d) if form_d is not None else None,
-                        renderer=stack.enter_context(renderer) if renderer is not None else None,
-                        locate_runner=runner if self._locate else None,
-                        email_runner=runner if self._email_search else None,
-                        verifier=stack.enter_context(verifier) if verifier is not None else None,
-                    )
-            except Exception as exc:  # noqa: BLE001 - reported to the UI
-                error = str(exc)[:1_000]
-            with self._lock:
-                self._state.update(
-                    state="failed" if error else "succeeded", error=error, result=result, finished_at=utc_now(),
+        def run() -> dict[str, Any]:
+            runner = self._runner or RUNNERS.get((os.environ.get("PIPELINE_OUTREACH_DISCOVERY_PROVIDER") or "claude-code"), claude_runner)
+            with ExitStack() as stack:
+                conn = stack.enter_context(closing(connect_product(self.platform_target)))
+                fetcher = stack.enter_context(self._client_factory())
+                form_d = self._form_d_fetcher_factory()
+                renderer = self._renderer_factory()
+                verifier = self._verifier_factory()
+                return run_discovery(
+                    conn, user_id=user_id, runner=runner, fetcher=fetcher, scopes=scopes,
+                    report_dir=self._report_dir, provider_factory=self._provider_factory, draft_provider=self._draft_provider,
+                    contact_delay=self._contact_delay,
+                    form_d_fetcher=stack.enter_context(form_d) if form_d is not None else None,
+                    renderer=stack.enter_context(renderer) if renderer is not None else None,
+                    locate_runner=runner if self._locate else None,
+                    email_runner=runner if self._email_search else None,
+                    verifier=stack.enter_context(verifier) if verifier is not None else None,
                 )
 
-        self._thread = threading.Thread(target=run, name="outreach-discovery", daemon=True)
-        self._thread.start()
-        return self.status()
-
-    def wait(self, timeout: float | None = None) -> None:
-        if self._thread is not None:
-            self._thread.join(timeout)
+        return self._launch("outreach-discovery", run)

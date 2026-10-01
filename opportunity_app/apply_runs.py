@@ -51,6 +51,7 @@ from uuid import uuid4
 from pipeline import identity_tokens, normalized
 
 from . import ROOT, actions, automation
+from .background import step_error
 from .database import is_unique_violation
 from .outreach_gmail import SERVER_INSTANCE
 from .schema import utc_now
@@ -1290,10 +1291,8 @@ def _rollback(conn: sqlite3.Connection) -> None:
 def _record_runner(
     conn: sqlite3.Connection, user_id: str, *, ok: bool, error: Exception | None = None, component: str = RUNNER_COMPONENT,
 ) -> None:
-    from .outreach_inbox import _step_error  # imported here: it pulls in the whole mail reader
-
     try:
-        automation.record_health(conn, user_id, component, ok=ok, error=_step_error(error) if error else "")
+        automation.record_health(conn, user_id, component, ok=ok, error=step_error(error) if error else "")
     except Exception:  # noqa: BLE001 - a health row never stops the pass
         _rollback(conn)
 

@@ -37,7 +37,7 @@ Gmail call is made for labelling. Turned off (an empty name) or paused with
 connection asks Gmail which account it signed into, so a connection made with
 the wrong Google account is noticed (state "wrong_account", nothing labelled).
 
-``label_replies`` is a step of outreach_inbox.InboxWatcher and never imports it.
+``label_replies`` is a step of inbox_watcher.InboxWatcher and never imports it.
 """
 
 from __future__ import annotations
