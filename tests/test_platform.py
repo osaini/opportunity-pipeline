@@ -21,7 +21,7 @@ from PIL import Image
 from cryptography.fernet import Fernet
 
 import pipeline
-from helpers_platform import migrate_cached
+from helpers_platform import LEGACY_SCHEMA, migrate_cached
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
 from opportunity_app.agent_providers import ProviderReply, ToolCall
@@ -33,35 +33,6 @@ from opportunity_app.database import _postgres_schema, _postgres_sql
 from opportunity_app.operations import encrypted_backup, enqueue_job, queue_status, restore_backup, retry_dead_job, run_next_job
 from pipeline_core import OpportunityFilters, OpportunityRepository
 from helpers_source import read_all
-
-
-LEGACY_SCHEMA = """
-CREATE TABLE jobs (
-    id TEXT PRIMARY KEY,
-    source_key TEXT NOT NULL,
-    source_name TEXT NOT NULL,
-    external_id TEXT NOT NULL,
-    company TEXT NOT NULL,
-    title TEXT NOT NULL,
-    location TEXT NOT NULL DEFAULT '',
-    role_type TEXT NOT NULL DEFAULT 'other',
-    url TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    posted_at TEXT,
-    first_seen_at TEXT NOT NULL,
-    last_seen_at TEXT NOT NULL,
-    active INTEGER NOT NULL DEFAULT 1,
-    fingerprint TEXT NOT NULL,
-    content_fingerprint TEXT NOT NULL DEFAULT '',
-    duplicate_of TEXT,
-    score INTEGER NOT NULL DEFAULT 0,
-    score_explanation TEXT NOT NULL DEFAULT '[]',
-    status TEXT NOT NULL DEFAULT 'discovered',
-    notes TEXT NOT NULL DEFAULT '',
-    applied_at TEXT,
-    follow_up_at TEXT
-);
-"""
 
 
 class PlatformTests(unittest.TestCase):
