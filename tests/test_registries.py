@@ -6,6 +6,7 @@ once, by bootstrap.register_all(), as a process starts (create_app, the worker, 
 filled, that filling twice changes nothing, and that a slot nobody filled raises where it is read.
 """
 
+import ast
 import sys
 import unittest
 from pathlib import Path
@@ -79,6 +80,42 @@ class ScheduledKindTests(unittest.TestCase):
             conn = mock.MagicMock()
             conn.execute.return_value.fetchall.return_value = []
             outreach_schedule.run_due_sends(conn, client_factory=lambda: None)
+
+
+class EntryPointTests(unittest.TestCase):
+    """Every process that can reach the ledger, the scheduler or a reply's callbacks fills the registries as it starts.
+
+    The daily run's platform-sync step is `python -m opportunity_app.migrate`, which saves and passes on new roles through
+    the ledger without ever building an app: it must register too, or the daily triage would fail where nobody looks.
+    """
+
+    APP = Path(__file__).resolve().parent.parent / "opportunity_app"
+    ENTRY_POINTS = (("api", "create_app"), ("migrate", "main"), ("worker", "main"), ("outreach_cli", "main"))
+
+    def calls_register_all(self, module, function):
+        tree = ast.parse((self.APP / f"{module}.py").read_text(encoding="utf-8"))
+        node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == function)
+        return any(
+            isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr == "register_all"
+            and isinstance(call.func.value, ast.Name) and call.func.value.id == "bootstrap"
+            for call in ast.walk(node)
+        )
+
+    def test_each_entry_point_calls_bootstrap_register_all(self):
+        for module, function in self.ENTRY_POINTS:
+            with self.subTest(module=module):
+                self.assertTrue(self.calls_register_all(module, function), f"{module}.{function} must call bootstrap.register_all()")
+
+    def test_the_daily_triage_step_can_hand_a_change_to_the_ledger_after_registering(self):
+        from opportunity_app import automation, migrate
+
+        with mock.patch.dict(automation.HANDLERS, clear=True), mock.patch.object(bootstrap, "_registered", False):
+            with mock.patch.object(migrate, "build_parser") as parser, mock.patch.object(migrate, "migrate_legacy_database") as sync, \
+                    mock.patch.object(migrate, "triage_after_sync", return_value=None), mock.patch.object(migrate, "result_dict", return_value={}):
+                sync.return_value = mock.Mock(active_unique_source=1, active_unique_target=1, top_ids_match=True)
+                parser.return_value.parse_args.return_value = mock.Mock(source=None, target=None, profile=None)
+                self.assertEqual(migrate.main(), 0)
+            self.assertIn("opportunity.intent", automation.HANDLERS, "the handlers triage writes through are registered by main()")
 
 
 if __name__ == "__main__":

@@ -21,6 +21,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
+    # triage_after_sync below writes through the automation ledger, whose handlers are registered at startup.
+    from . import bootstrap  # imported here: --help should not load every workflow module
+
+    bootstrap.register_all()
     result = migrate_legacy_database(args.source, args.target, args.profile)
     print(json.dumps(result_dict(result), indent=2))
     # Save and pass on the new roles by the student's thresholds (auto_save,
