@@ -749,11 +749,29 @@
     renderCompanyFilter();
     els.personalizePrompt.hidden = true;
     window.clearTimeout(state.refreshTimer);
+    stopSessionPollers();
     state.refresh = null;
     els.refreshOpen.hidden = true;
     if (els.refreshDialog.open) els.refreshDialog.close();
     clearError();
     announce("");
+  }
+
+  // Every background poll belongs to the session that started it. One left
+  // running after sign-out gets a 401 each time, and api() answers every 401
+  // by re-running showAuth, which blanks the sign-in error and moves focus to
+  // the email field. The bindings are declared further down; this only runs
+  // once the whole script has loaded. Signing in again restarts what is
+  // still running, because the Outreach render watches every active job.
+  function stopSessionPollers() {
+    callPrepWatches.forEach((timer) => window.clearTimeout(timer));
+    callPrepWatches.clear();
+    bounceTimers.forEach((timer) => window.clearTimeout(timer));
+    bounceTimers = [];
+    window.clearTimeout(deepSearchTimer);
+    deepSearchTimer = null;
+    window.clearTimeout(recontactTimer);
+    recontactTimer = null;
   }
 
   // The gate and the detail panel are modal: while either is open nothing
@@ -3061,6 +3079,7 @@
   let bounceTimers = [];
 
   async function checkForBounces() {
+    if (!state.userId) return;
     try {
       const result = await api("/api/v1/outreach/inbox-check", { method: "POST" });
       const news = [];
@@ -3999,7 +4018,7 @@
     if (deepSearchTimer) return;
     deepSearchTimer = window.setTimeout(async () => {
       deepSearchTimer = null;
-      if (state.view !== "outreach") return;
+      if (!state.userId || state.view !== "outreach") return;
       try {
         const discovery = await api("/api/v1/outreach/discovery");
         if (discovery.active?.state === "running") {
@@ -4014,7 +4033,7 @@
         if (result?.imported && state.subtabs.outreach === "deep-search") state.subtabs.outreach = "from-search";
         if (!state.loading) await loadOutreach();
       } catch (error) {
-        showError(error.message);
+        if (state.userId) showError(error.message);
       }
     }, 5000);
   }
@@ -4102,7 +4121,7 @@
     if (recontactTimer) return;
     recontactTimer = window.setTimeout(async () => {
       recontactTimer = null;
-      if (state.view !== "outreach") return;
+      if (!state.userId || state.view !== "outreach") return;
       try {
         const recontact = await api("/api/v1/outreach/recontact");
         const active = recontact.active;
@@ -4115,7 +4134,7 @@
         else announce(`Contact search finished: ${plural(active?.result?.upgraded || 0, "person", "people")} found.`);
         if (!state.loading) await loadOutreach();
       } catch (error) {
-        showError(error.message);
+        if (state.userId) showError(error.message);
       }
     }, 4000);
   }
@@ -4881,6 +4900,11 @@
       active = CALL_PREP_ACTIVE.includes(target.call_prep_job?.state) || CALL_PREP_ACTIVE.includes(target.tech_brief_job?.state);
     } catch (error) {
       active = error.status !== 404;
+    }
+    // Signed out meanwhile (or by this very request's 401): watch no more.
+    if (!state.userId) {
+      callPrepWatches.delete(id);
+      return;
     }
     if (active) {
       callPrepWatches.set(id, window.setTimeout(() => checkCallPrep(id), 5000));
