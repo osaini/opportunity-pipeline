@@ -1338,7 +1338,14 @@ def upsert_jobs(
     source_name: str,
     records: list[dict[str, Any]],
     seen: str | None = None,
+    *,
+    dedupe: bool = True,
 ) -> int:
+    # `dedupe=False` leaves the duplicate_of pass to the caller. A fetch cycle
+    # upserts dozens of sources and deduplicates the whole table once at the end
+    # instead of once per source; the pass is a pure function of the table, so
+    # the final links are the same.
+    #
     # `seen` becomes first_seen_at/last_seen_at, both of which are ranking keys:
     # `discovered` sorts on first_seen_at and `score` falls back to
     # last_seen_at. Reading the clock here would make a posting with no
@@ -1414,7 +1421,8 @@ def upsert_jobs(
             ),
         )
     _retire_absent(conn, source_key, records, set(ids), seen)
-    deduplicate(conn)
+    if dedupe:
+        deduplicate(conn)
     return len(records)
 
 
@@ -1560,7 +1568,6 @@ def locations_compatible(left: str, right: str) -> bool:
 
 
 def deduplicate(conn: sqlite3.Connection) -> None:
-    conn.execute("UPDATE jobs SET duplicate_of=NULL")
     rows = conn.execute(
         """
         SELECT id, fingerprint, content_fingerprint, status, source_key, description,
@@ -1639,22 +1646,41 @@ def deduplicate(conn: sqlite3.Connection) -> None:
     candidates = [
         row for row in rows if row["id"] not in resolved and row["content_fingerprint"]
     ]
+
+    # The pair loop is quadratic in the fingerprintable rows, so what it does per
+    # pair is kept to integer work: each row's fingerprint and city set are
+    # computed once up front, and the similarity test (an XOR and a popcount)
+    # runs before the location test (a set intersection). Both are pure and
+    # joined by AND, so the order they run in cannot change which rows match.
+    # The threshold becomes the largest differing-bit count it admits, found by
+    # evaluating the same `(64 - distance) / 64 >= threshold` expression that
+    # fingerprint_similarity uses.
+    max_distance = max(
+        (distance for distance in range(65) if (64 - distance) / 64 >= CROSSLIST_THRESHOLD),
+        default=-1,
+    )
+    fingerprints = [int(row["content_fingerprint"], 16) for row in candidates]
+    cities = [location_cities(row["location"]) for row in candidates]
     clustered: set[str] = set()
     for index, row in enumerate(candidates):
         if row["id"] in clustered:
             continue
         cluster = [row]
-        for other in candidates[index + 1 :]:
-            if other["id"] in clustered or other["source_key"] == row["source_key"]:
+        row_fingerprint = fingerprints[index]
+        row_cities = cities[index]
+        row_source = row["source_key"]
+        for other_index in range(index + 1, len(candidates)):
+            other = candidates[other_index]
+            if other["id"] in clustered or other["source_key"] == row_source:
                 continue
-            if not locations_compatible(row["location"], other["location"]):
+            if (row_fingerprint ^ fingerprints[other_index]).bit_count() > max_distance:
                 continue
-            similarity = fingerprint_similarity(
-                row["content_fingerprint"], other["content_fingerprint"]
-            )
-            if similarity >= CROSSLIST_THRESHOLD:
-                cluster.append(other)
-                clustered.add(other["id"])
+            other_cities = cities[other_index]
+            # locations_compatible: a blank side matches anything.
+            if row_cities and other_cities and not (row_cities & other_cities):
+                continue
+            cluster.append(other)
+            clustered.add(other["id"])
         if len(cluster) > 1:
             clustered.add(row["id"])
             canonical = _canonical_of(cluster)["id"]
@@ -1662,8 +1688,23 @@ def deduplicate(conn: sqlite3.Connection) -> None:
                 if member["id"] != canonical:
                     resolved[member["id"]] = canonical
 
-    for duplicate, canonical in resolved.items():
-        conn.execute("UPDATE jobs SET duplicate_of=? WHERE id=?", (canonical, duplicate))
+    # Write only the rows whose link changed. `resolved` is the complete answer:
+    # a row that is not in it has no duplicate_of, so a row linked in the table
+    # but absent from `resolved` (including an inactive one) is cleared.
+    current = {
+        row["id"]: row["duplicate_of"]
+        for row in conn.execute("SELECT id, duplicate_of FROM jobs WHERE duplicate_of IS NOT NULL")
+    }
+    changes = [
+        (resolved.get(job_id), job_id)
+        for job_id, linked in current.items()
+        if resolved.get(job_id) != linked
+    ]
+    changes.extend(
+        (canonical, duplicate) for duplicate, canonical in resolved.items() if duplicate not in current
+    )
+    if changes:
+        conn.executemany("UPDATE jobs SET duplicate_of=? WHERE id=?", changes)
 
 
 # ---------------------------------------------------------------------------
@@ -2543,6 +2584,7 @@ def fetch_all(
     # order, which under concurrency is arbitrary.
     cycle_seen = now_iso()
     transient_failures = 0
+    upserted_any = False
     host_active: dict[str, int] = {}
     in_flight: dict[Any, tuple[dict[str, Any], str, int, str]] = {}
 
@@ -2622,9 +2664,19 @@ def fetch_all(
                         print(f"  Done {label}: failed", flush=True)
                         continue
                     try:
+                        # The duplicate_of pass runs once after the last source
+                        # rather than after each one: it is a pure function of
+                        # the table, so the final links are the same, and it was
+                        # the dominant cost of a many-source run.
                         count = upsert_jobs(
-                            conn, source_key, source.get("label", source["company"]), records, cycle_seen
+                            conn,
+                            source_key,
+                            source.get("label", source["company"]),
+                            records,
+                            cycle_seen,
+                            dedupe=False,
                         )
+                        upserted_any = True
                     except FatalDatabaseError:
                         raise
                     except Exception as exc:
@@ -2644,6 +2696,14 @@ def fetch_all(
                     record_outcome(run_id, "success", count=count, listed=getattr(records, "listed", None))
                     print(f"  Done {label}: {count} candidate postings saved", flush=True)
 
+        # Only when some source landed rows: a run where every source failed
+        # leaves the table as it found it, as it always did.
+        if upserted_any:
+            try:
+                deduplicate(conn)
+                conn.commit()
+            except sqlite3.Error as exc:
+                raise FatalDatabaseError(f"cannot link duplicate postings: {exc}") from exc
     finally:
         # A fatal database error must not wait on eleven other sources first.
         # Queued work is dropped immediately; anything already inside a socket
@@ -2962,10 +3022,16 @@ def import_discovered(conn: sqlite3.Connection, path: Path) -> int:
     # through upsert_jobs, with an empty batch, or its previous rows stay active
     # forever -- a channel going quiet is exactly when retirement matters.
     total = 0
-    for channel in sorted(searched_channels | set(by_channel)):
+    channels = sorted(searched_channels | set(by_channel))
+    for channel in channels:
         records = by_channel.get(channel, [])
-        total += upsert_jobs(conn, f"agent:{channel}", AGENT_CHANNELS[channel], records)
+        total += upsert_jobs(
+            conn, f"agent:{channel}", AGENT_CHANNELS[channel], records, dedupe=False
+        )
         print(f"  {channel}: {len(records)} postings")
+    if channels:
+        # One duplicate_of pass for the whole import instead of one per channel.
+        deduplicate(conn)
     conn.commit()
     print(
         f"Imported {total} agent-discovered postings from {display_path(path)} "
