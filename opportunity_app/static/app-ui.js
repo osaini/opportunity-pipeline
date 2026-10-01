@@ -131,16 +131,23 @@
     els.error.hidden = true;
   }
 
-  // One formatter per shape, built once: they run per card and per timeline
-  // row. The locale is the browser's own, which does not change mid-session.
+  // One formatter per shape, built on first use and then kept: they run per
+  // card and per timeline row, and the first Intl formatter costs a few
+  // milliseconds (locale data), which a page that shows no date should not pay
+  // at load. The locale is the browser's own, which does not change mid-session.
   // Each function below keeps its own answer for an empty or invalid value, and
   // they differ on purpose (see each one).
-  const DATE_FORMAT = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" });
-  const DATE_TIME_FORMAT = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-  const WEEKDAY_DATE_TIME_FORMAT = new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-  const WEEKDAY_DAY_FORMAT = new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric" });
-  const CLOCK_FORMAT = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
-  const RELATIVE_FORMAT = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+  function lazyFormat(make) {
+    let formatter = null;
+    return { format: (...args) => (formatter ||= make()).format(...args) };
+  }
+
+  const DATE_FORMAT = lazyFormat(() => new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }));
+  const DATE_TIME_FORMAT = lazyFormat(() => new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }));
+  const WEEKDAY_DATE_TIME_FORMAT = lazyFormat(() => new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }));
+  const WEEKDAY_DAY_FORMAT = lazyFormat(() => new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric" }));
+  const CLOCK_FORMAT = lazyFormat(() => new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }));
+  const RELATIVE_FORMAT = lazyFormat(() => new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }));
 
   // The browser's time zone name, or undefined when it reports none. The two
   // callers that send it choose their own fallback.
