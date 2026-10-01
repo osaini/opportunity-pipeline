@@ -1,6 +1,6 @@
 // Behavioral tests for apps/extension/sidepanel.js (see sidepanel_harness.mjs).
 import assert from "node:assert/strict";
-import { loadSidepanel } from "./sidepanel_harness.mjs";
+import { loadSidepanel, settle } from "./sidepanel_harness.mjs";
 
 const applications = [
   { id: "app-a", company: "Acme Robotics", title: "Software Intern" },
@@ -85,4 +85,43 @@ sidepanelTests.a_slow_context_for_the_application_left_behind_cannot_overwrite_t
   assert.match(panel.$("match-card").textContent, /Orbit Systems/, "the card still shows app-b after app-a's late answer");
   const synced = panel.requests.filter((item) => item.method === "PUT" && item.body?.application_id);
   assert.ok(synced.length > 0 && synced.every((item) => item.body.application_id === "app-b"), "the scan syncs against app-b only");
+};
+
+sidepanelTests.choosing_another_application_during_a_scan_cannot_mark_the_old_one_submitted = async () => {
+  // The scan of app-a is still working out its session id when the student chooses app-b.
+  const panel = await loadSidepanel({ applications });
+  await panel.findApplications();
+  await panel.chooseApplication("app-a");
+  await panel.scan();
+  const sessionA = sessionPath(panel, "app-a");
+  panel.holdNextDigest();
+  panel.$("scan").click();
+  await settle();
+  await panel.chooseApplication("app-b");
+  panel.releaseDigest();
+  await settle();
+
+  assert.match(panel.$("match-card").textContent, /Orbit Systems/, "the card shows app-b");
+  assert.equal(panel.$("review-form").hidden, true, "app-a's late scan did not render its fields");
+  await panel.forceMarkSubmitted();
+  assert.deepEqual(panel.confirmRequests().map((item) => item.path), [], `confirm-submitted must not be sent (it named ${sessionA})`);
+  assert.match(panel.$("status").textContent, /scan/i, "the panel tells the student to scan first");
+};
+
+sidepanelTests.a_late_attach_for_the_application_left_behind_leaves_no_download_link = async () => {
+  const panel = await loadSidepanel({ applications, withDocument: true });
+  await panel.findApplications();
+  await panel.chooseApplication("app-a");
+  await panel.scan();
+  assert.equal(panel.$("documents").hidden, false, "set-up: app-a offers its document");
+  panel.holdNextAttach();
+  panel.startAttach();
+  await settle();
+  await panel.chooseApplication("app-b");
+  await panel.scan();
+  panel.releaseAttach();
+  await settle();
+
+  assert.equal(panel.$("download-fallback").hidden, true, "app-a's late answer did not bring back its download link");
+  assert.doesNotMatch(panel.$("status").textContent, /resume-app-a|manual download/i, "the status is not app-a's attach error");
 };

@@ -76,9 +76,27 @@ class El {
 
 // Real crypto.subtle.digest finishes on a worker thread, outside the microtask queue settle() drains,
 // so it would make a test depend on machine load. This one is the same SHA-256, resolved in a microtask.
-const syncDigestCrypto = {
-  subtle: { digest: async (_algorithm, bytes) => Uint8Array.from(createHash("sha256").update(bytes).digest()).buffer },
-};
+// A test can hold the next digest (holdNextDigest) to widen the window between two awaits in the script.
+function makeDigestCrypto() {
+  let holdNext = false;
+  let release = null;
+  return {
+    holdNextDigest() { holdNext = true; },
+    releaseDigest() { release?.(); },
+    crypto: {
+      subtle: {
+        digest: async (_algorithm, bytes) => {
+          const value = Uint8Array.from(createHash("sha256").update(bytes).digest()).buffer;
+          if (holdNext) {
+            holdNext = false;
+            await new Promise((resolve) => { release = resolve; });
+          }
+          return value;
+        },
+      },
+    },
+  };
+}
 
 function pageElements() {
   const html = readFileSync(path.join(EXTENSION_DIR, "sidepanel.html"), "utf8");
@@ -102,7 +120,13 @@ export function settle() {
 
 // options.applications: [{id, company, title}] the tracker knows about for this page.
 // options.slowContext: application ids whose apply-context response waits for release().
-export async function loadSidepanel({ applications, slowContext = [] }) {
+// options.withDocument: every context offers one approved document and the scan finds a file field;
+//   the next attach request to the page waits for releaseAttach() after holdNextAttach().
+export async function loadSidepanel({ applications, slowContext = [], withDocument = false }) {
+  const digests = makeDigestCrypto();
+  const emptySha256 = createHash("sha256").update(Buffer.alloc(0)).digest("hex");
+  let holdAttach = false;
+  let releaseAttach = null;
   const elements = pageElements();
   const store = { serverOrigin: "http://127.0.0.1:8765", deviceToken: "device-token", deviceId: "device-1", pendingMetadata: [], unsupportedCounts: {} };
   const requests = [];
@@ -126,7 +150,7 @@ export async function loadSidepanel({ applications, slowContext = [] }) {
         match: { score: 80, explanation: [] },
         confirmed_profile: {},
         answers: [],
-        documents: [],
+        documents: withDocument ? [{ artifact_id: "doc-1", filename: `resume-${id}.pdf`, media_type: "application/pdf", byte_size: 0, sha256: emptySha256, document_type: "resume" }] : [],
       };
       if (slowContext.includes(id)) await new Promise((resolve) => held.set(id, resolve));
       return json(payload);
@@ -147,7 +171,16 @@ export async function loadSidepanel({ applications, slowContext = [] }) {
       query: async () => [{ id: 7, url: "https://jobs.example.com/apply/1" }],
       sendMessage: async (_tabId, message) => {
         if (message.type === "SCAN_FIELDS") {
-          return { ats_type: "generic", fields: [{ key: "email", label: "Email", type: "email", provenance: "confirmed_profile.contact.email", confidence: 1, proposed_value: "student@example.com" }] };
+          const fields = [{ key: "email", label: "Email", type: "email", provenance: "confirmed_profile.contact.email", confidence: 1, proposed_value: "student@example.com" }];
+          if (withDocument) fields.push({ key: "resume", label: "Resume", type: "file", provenance: "page", confidence: 1 });
+          return { ats_type: "generic", fields };
+        }
+        if (message.type === "ATTACH_REVIEWED_FILE") {
+          if (holdAttach) {
+            holdAttach = false;
+            await new Promise((resolve) => { releaseAttach = resolve; });
+          }
+          return { result: { filled: false, reason: "The page would not take the file" } };
         }
         return { results: [] };
       },
@@ -164,7 +197,7 @@ export async function loadSidepanel({ applications, slowContext = [] }) {
     createElement: (tag) => new El(tag),
   };
   const context = vm.createContext({
-    document, chrome: chromeStub, fetch: fetchStub, crypto: syncDigestCrypto, TextEncoder, URL, Blob, btoa,
+    document, chrome: chromeStub, fetch: fetchStub, crypto: digests.crypto, TextEncoder, URL, Blob, btoa,
     window: { addEventListener() {} },
     console,
   });
@@ -184,6 +217,17 @@ export async function loadSidepanel({ applications, slowContext = [] }) {
     $,
     requests,
     release: (id) => held.get(id)?.(),
+    holdNextDigest: () => digests.holdNextDigest(),
+    releaseDigest: () => digests.releaseDigest(),
+    holdNextAttach: () => { holdAttach = true; },
+    releaseAttach: () => releaseAttach?.(),
+    // Press Attach without waiting for the page to answer.
+    // (The stub select has no options to pick from, so it is set to what the script put in them.)
+    startAttach: () => {
+      $("document-select").value = "doc-1";
+      $("file-field-select").value = "resume";
+      $("attach").click();
+    },
     async findApplications() {
       $("find-context").click();
       await settle();

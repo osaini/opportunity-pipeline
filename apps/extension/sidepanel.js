@@ -19,6 +19,8 @@
   let applyContext = null;
   let scanResult = null;
   let sessionId = "";
+  // The application sessionId was made for; Mark as submitted refuses when it is not the one on screen.
+  let sessionApplicationId = "";
   let attachmentUrl = "";
 
   function node(tag, value, className) {
@@ -159,6 +161,7 @@
   function clearScan() {
     scanResult = null;
     sessionId = "";
+    sessionApplicationId = "";
     fieldsHost.replaceChildren();
     reviewForm.hidden = true;
     documentsHost.hidden = true;
@@ -294,24 +297,29 @@
       manual: fields.filter((item) => item.requires_review || !fieldValue(item)).length,
       required_unresolved: fields.filter((item) => item.required && !outcomes.get(item.key)?.filled).length
     };
-    const sessionPayload = { application_id: selectedApplicationId, page_url: activePageUrl, ats_type: scanResult.ats_type, fields: safe, status: stepStatus === "filled" ? "reviewed" : "draft" };
+    // The student may choose another application while this sync is in flight; it finishes for the one it started on.
+    const applicationId = selectedApplicationId;
+    const session = sessionId;
+    const sessionPayload = { application_id: applicationId, page_url: activePageUrl, ats_type: scanResult.ats_type, fields: safe, status: stepStatus === "filled" ? "reviewed" : "draft" };
     const stepKey = await stableId("step", `${activePageUrl}|${scanResult.ats_type}`);
     try {
-      await api(`/api/v1/extension/sessions/${encodeURIComponent(sessionId)}`, { method: "PUT", body: JSON.stringify(sessionPayload) });
-      await api(`/api/v1/extension/sessions/${encodeURIComponent(sessionId)}/steps/${encodeURIComponent(stepKey)}`, {
+      await api(`/api/v1/extension/sessions/${encodeURIComponent(session)}`, { method: "PUT", body: JSON.stringify(sessionPayload) });
+      await api(`/api/v1/extension/sessions/${encodeURIComponent(session)}/steps/${encodeURIComponent(stepKey)}`, {
         method: "PUT", body: JSON.stringify({ page_url: activePageUrl, ats_type: scanResult.ats_type, fields: safe, summary, status: stepStatus })
       });
       await flushPendingMetadata();
     } catch (error) {
       const auth = await storedAuth();
       if (error.retryable || error instanceof TypeError) {
-        const pending = [...auth.pendingMetadata, { session_id: sessionId, step_key: stepKey, session: sessionPayload, step: { page_url: activePageUrl, ats_type: scanResult.ats_type, fields: safe, summary, status: stepStatus } }].slice(-20);
+        const pending = [...auth.pendingMetadata, { session_id: session, step_key: stepKey, session: sessionPayload, step: { page_url: activePageUrl, ats_type: scanResult.ats_type, fields: safe, summary, status: stepStatus } }].slice(-20);
         await chrome.storage.local.set({ pendingMetadata: pending });
       }
       throw error;
     } finally {
-      $("progress").hidden = false;
-      $("progress-copy").textContent = `${summary.filled} filled · ${summary.failed} failed · ${summary.manual} manual · ${summary.required_unresolved} required unresolved`;
+      if (selectedApplicationId === applicationId) {
+        $("progress").hidden = false;
+        $("progress-copy").textContent = `${summary.filled} filled · ${summary.failed} failed · ${summary.manual} manual · ${summary.required_unresolved} required unresolved`;
+      }
     }
   }
 
@@ -333,19 +341,30 @@
   async function scan() {
     await activeTab();
     if (!selectedApplicationId || !applyContext) throw new Error("Choose and confirm an application context first.");
+    // The student can choose another application during any await below; the scan, its session and
+    // its fields then belong to the one they left, so nothing of it may reach the panel's state.
+    const applicationId = selectedApplicationId;
+    const context = applyContext;
+    const stillCurrent = () => selectedApplicationId === applicationId && applyContext === context;
     status.textContent = "Scanning visible controls…";
-    scanResult = await send({ type: "SCAN_FIELDS", profile: applyContext.confirmed_profile, answers: applyContext.answers, company: applyContext.application.company });
+    const scanned = await send({ type: "SCAN_FIELDS", profile: context.confirmed_profile, answers: context.answers, company: context.application.company });
+    if (!stillCurrent()) return;
     const auth = await storedAuth();
     const unsupportedCounts = { ...auth.unsupportedCounts };
-    for (const field of scanResult.fields.filter((item) => item.unsupported)) {
-      const key = `${scanResult.ats_type}:${field.reason || "unsupported control"}`;
+    for (const field of scanned.fields.filter((item) => item.unsupported)) {
+      const key = `${scanned.ats_type}:${field.reason || "unsupported control"}`;
       unsupportedCounts[key] = Math.min(1000000, Number(unsupportedCounts[key] || 0) + 1);
     }
     await chrome.storage.local.set({ unsupportedCounts });
-    sessionId = await stableId("extension", selectedApplicationId);
+    const id = await stableId("extension", applicationId);
+    if (!stillCurrent()) return;
+    scanResult = scanned;
+    sessionId = id;
+    sessionApplicationId = applicationId;
     renderFields();
     renderDocuments();
     await syncStep(scanResult.fields, null, "scanned");
+    if (!stillCurrent()) return;
     status.textContent = `${scanResult.fields.length} controls inventoried on ${scanResult.ats_type}. Nothing has been filled.`;
   }
 
@@ -360,17 +379,25 @@
   }
 
   async function attachDocument() {
+    const applicationId = selectedApplicationId;
+    const context = applyContext;
+    // Choosing another application while the file moves leaves this one's document with nothing to show.
+    const stillCurrent = () => selectedApplicationId === applicationId && applyContext === context;
     const artifact = (applyContext.documents || []).find((item) => item.artifact_id === documentSelect.value);
     if (!artifact) throw new Error("Choose an approved document.");
-    const response = await api(`/api/v1/extension/artifacts/${encodeURIComponent(artifact.artifact_id)}/file?application_id=${encodeURIComponent(selectedApplicationId)}`);
+    const response = await api(`/api/v1/extension/artifacts/${encodeURIComponent(artifact.artifact_id)}/file?application_id=${encodeURIComponent(applicationId)}`);
     const bytes = new Uint8Array(await response.arrayBuffer());
+    if (!stillCurrent()) return;
     if (bytes.byteLength !== artifact.byte_size || await digestHex(bytes) !== artifact.sha256.toLowerCase()) throw new Error("Document verification failed; no file was attached.");
+    if (!stillCurrent() || !scanResult) return;
     const field = scanResult.fields.find((item) => item.key === fileFieldSelect.value);
+    const scanned = scanResult;
     const responsePayload = await send({
       type: "ATTACH_REVIEWED_FILE", approved: true, field,
       artifact: { filename: artifact.filename, media_type: artifact.media_type, byte_size: artifact.byte_size, sha256: artifact.sha256 },
       data_base64: bytesToBase64(bytes)
     });
+    if (!stillCurrent() || scanResult !== scanned) return;
     const result = responsePayload.result;
     if (!result.filled) {
       if (attachmentUrl) URL.revokeObjectURL(attachmentUrl);
@@ -385,7 +412,7 @@
   }
 
   async function markSubmitted() {
-    if (!$("submitted-confirm").checked || !sessionId) throw new Error("Scan this application and confirm that you personally submitted it.");
+    if (!$("submitted-confirm").checked || !sessionId || sessionApplicationId !== selectedApplicationId) throw new Error("Scan this application and confirm that you personally submitted it.");
     const response = await api(`/api/v1/extension/sessions/${encodeURIComponent(sessionId)}/confirm-submitted`, { method: "POST", body: JSON.stringify({}) });
     const payload = await response.json();
     if (payload.inferred !== false || payload.stage !== "applied") throw new Error("The tracker did not confirm the explicit transition.");
