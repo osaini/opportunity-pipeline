@@ -314,3 +314,63 @@ def test_a_poll_in_flight_at_sign_out_that_comes_back_401_leaves_the_sign_in_gat
 
     assert_gate_undisturbed(page)
     page.unroute_all(behavior="ignoreErrors")
+
+
+@pytest.mark.allow_page_errors  # the held poll is answered with a 401 by design
+def test_a_401_from_the_old_session_after_a_successful_re_sign_in_leaves_the_new_session_signed_in(page, base_url):
+    """The owner is 'local-user' in every session, so the user id cannot tell the old session
+    from the new one. A poll sent before sign-out that answers 401 after the student signed
+    back in must not throw the new session to the gate."""
+    page.clock.install()
+    page.goto("/")
+    sign_in_as_owner(page)
+    wait_for_results(page)
+    target = seed_target(page, base_url, contact_email="jane@bovi.example", contact_name="Jane Doe")
+
+    held = []
+    polls_after_release = []
+
+    def listing(route):
+        response = route.fetch()
+        payload = response.json()
+        for item in payload["items"]:
+            item["status"] = "replied"
+            item["call_prep_job"] = {"state": "running", "attempts": 1}
+        route.fulfill(response=response, json=payload)
+
+    def one_company(route):
+        if not held:
+            held.append(route)
+            return
+        polls_after_release.append(route.request.url)
+        route.fulfill(json={"id": target["id"], "call_prep_job": {"state": "running", "attempts": 1}})
+
+    page.route(lambda url: is_list_url(url), listing)
+    page.route(re.compile(rf".*/api/v1/outreach/{re.escape(target['id'])}$"), one_company)
+
+    page.click("#outreach-nav")
+    wait_for_results(page)
+    page.locator('#subnav [data-subtab="replied"]').click()
+    wait_for_results(page)
+    page.clock.run_for(5_100)
+    for _ in range(50):
+        if held:
+            break
+        page.wait_for_timeout(50)
+    assert held, "the call prep watcher never polled, so this test proves nothing"
+
+    with page.expect_response(
+        lambda response: response.url.endswith("/api/v1/session") and response.request.method == "DELETE"
+    ):
+        page.click("#logout-button")
+    page.wait_for_selector("#auth-gate.is-visible")
+    sign_in_as_owner(page)
+    wait_for_results(page)
+
+    held[0].fulfill(status=401, json={"detail": "Authentication required"})
+    page.wait_for_timeout(300)
+    page.clock.run_for(100)
+    page.wait_for_timeout(100)
+
+    assert not page.locator("#auth-gate.is-visible").count(), "the old session's 401 threw the signed-in student to the gate"
+    page.unroute_all(behavior="ignoreErrors")
