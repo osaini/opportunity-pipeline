@@ -525,13 +525,13 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         self.assertIs(read_model.sort_key, identity.sort_key)
 
     def test_outreach_company_key_is_a_different_rule_and_stays_separate(self):
-        from opportunity_app import outreach
+        from opportunity_app import outreach_identity
         from pipeline_core.identity import employer_key, sort_key
 
         # NFKC, "&" becomes "and", a leading "The" and trailing legal words dropped, word order kept.
-        self.assertEqual(outreach.company_key("The Smith & Sons Holdings Group"), "smith and sons holdings group")
-        self.assertNotEqual(outreach.company_key("Robotics Acme"), employer_key("Robotics Acme"))
-        self.assertNotEqual(outreach.company_key("Acme Robotics Inc"), sort_key("Acme Robotics Inc"))
+        self.assertEqual(outreach_identity.company_key("The Smith & Sons Holdings Group"), "smith and sons holdings group")
+        self.assertNotEqual(outreach_identity.company_key("Robotics Acme"), employer_key("Robotics Acme"))
+        self.assertNotEqual(outreach_identity.company_key("Acme Robotics Inc"), sort_key("Acme Robotics Inc"))
 
     def test_normalized_text_reads_none_as_empty_but_not_zero_or_false(self):
         from pipeline_core.identity import normalized, normalized_text

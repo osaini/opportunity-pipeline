@@ -18,8 +18,6 @@ import io
 import json
 import re
 import sqlite3
-import unicodedata
-from functools import lru_cache
 from datetime import date, datetime, timedelta
 from typing import Any, Callable
 from urllib.parse import quote, urlsplit
@@ -28,9 +26,18 @@ from uuid import uuid4
 from .database import is_unique_violation
 from .inbox_classifiers import read_reply
 from .contact_names import website_domain
-from .legacy import PROFILE_PATH
 from .outreach_config import gmail_web_url, sender_account
-from .schema import LOCAL_USER_ID
+from .outreach_greeting import GENERIC_GREETINGS, contact_first_name, greeting_style, readdress_greeting, unnamed_greeting
+from .outreach_identity import company_key
+from .outreach_location import (
+    location_line_gap,
+    location_region,
+    location_usable,
+    missing_location_message,
+    user_home,
+    user_regions,
+)
+from .outreach_replies import BOUNCED, bounce_notice, reply_reason, suggest_reply_status
 from .timestamps import utc_now
 from .typesafe_decisions import DecisionClient
 from .user_time import user_timezone
@@ -69,19 +76,6 @@ CALL_PREP_STATUSES = {"replied", "call_scheduled", "offer"}
 NOT_INTERESTED = "You marked the company not interested"
 DEFAULT_FOLLOW_UP_DAYS = 7
 OUTREACH_ORIGINS = ("manual", "import", "discovery")
-# Where a target's location came from, most authoritative first. A deep search
-# location is the model's word until the company's site, a filing, or a searched
-# page that states it agrees, or the student confirms the research, so the
-# drafter does not rely on it.
-LOCATION_BASES = ("manual", "company_site", "sec_form_d", "web_search", "research")
-# The bases a draft may rely on. Membership is the test, not absence from a
-# denylist: a blank basis means nothing has established the location, and an
-# unrecognised one means this code does not know what established it. Both are
-# unverified, so the test fails closed.
-VERIFIED_BASES = frozenset({"manual", "company_site", "sec_form_d", "web_search"})
-# Bases that a page this app opened established, so a location carrying one
-# needs no further searching unless it was only inferred.
-PAGE_CHECKED_BASES = frozenset({"company_site", "sec_form_d", "web_search"})
 # An import file's word about where a company is based is not evidence, so the
 # claim is recorded as an event rather than as provenance on the row. These
 # bound that record: each field is clipped before serialising, and the finished
@@ -141,19 +135,6 @@ TEXT_LIMITS = {
     "fit_rationale": 5_000, "activity_signal": 5_000, "location": 200,
     "interviewer_name": 200, "interviewer_linkedin": 300,
 }
-US_STATES = {
-    "AL": "alabama", "AK": "alaska", "AZ": "arizona", "AR": "arkansas", "CA": "california", "CO": "colorado",
-    "CT": "connecticut", "DE": "delaware", "FL": "florida", "GA": "georgia", "HI": "hawaii", "ID": "idaho",
-    "IL": "illinois", "IN": "indiana", "IA": "iowa", "KS": "kansas", "KY": "kentucky", "LA": "louisiana",
-    "ME": "maine", "MD": "maryland", "MA": "massachusetts", "MI": "michigan", "MN": "minnesota",
-    "MS": "mississippi", "MO": "missouri", "MT": "montana", "NE": "nebraska", "NV": "nevada",
-    "NH": "new hampshire", "NJ": "new jersey", "NM": "new mexico", "NY": "new york", "NC": "north carolina",
-    "ND": "north dakota", "OH": "ohio", "OK": "oklahoma", "OR": "oregon", "PA": "pennsylvania",
-    "RI": "rhode island", "SC": "south carolina", "SD": "south dakota", "TN": "tennessee", "TX": "texas",
-    "UT": "utah", "VT": "vermont", "VA": "virginia", "WA": "washington", "WV": "west virginia",
-    "WI": "wisconsin", "WY": "wyoming", "DC": "district of columbia",
-}
-_STATE_NAME_PATTERNS = {code: re.compile(rf"\b{name}\b") for code, name in US_STATES.items()}
 EXPORT_FIELDS = [
     "id", "company", "channel", "priority", "status", "contact_name", "contact_role",
     "contact_email", "contact_cc", "contact_linkedin", "contact_route", "contact_confidence",
@@ -169,12 +150,6 @@ EXPORT_FIELDS = [
 # Set by the product, never by an import file or a PATCH.
 IMPORT_IGNORED_FIELDS = {"id", "created_at", "updated_at", "origin", "draft_status", "follow_up_status"}
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-# Legal-form words that do not tell two companies apart: "Acme Robotics, Inc."
-# and "Acme Robotics" are one company.
-LEGAL_SUFFIXES = {
-    "inc", "incorporated", "corp", "corporation", "co", "company", "llc", "ltd", "limited", "plc",
-    "pbc", "lp", "llp", "gmbh", "ag", "sa", "bv", "pty",
-}
 EMAIL_ADDRESS = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
@@ -291,217 +266,6 @@ def draft_checks(subject: str, body: str) -> dict[str, Any]:
     if body and not subject:
         warnings.append("No subject line")
     return {"word_count": words, "dash_count": dashes, "placeholders": placeholders, "warnings": warnings}
-
-
-def _region_states(region: dict[str, Any]) -> set[str]:
-    """The US state codes a profile region's state markers name ("tx", "texas")."""
-    codes = set()
-    for marker in region.get("state_markers") or []:
-        text = str(marker).strip()
-        if text.upper() in US_STATES:
-            codes.add(text.upper())
-        codes |= {code for code, name in US_STATES.items() if name == text.casefold()}
-    return codes
-
-
-@lru_cache(maxsize=1024)
-def _word_pattern(needle: str) -> re.Pattern[str]:
-    return re.compile(rf"\b{re.escape(needle)}\b")
-
-
-def _mentions(lowered: str, term: Any) -> bool:
-    needle = " ".join(str(term or "").casefold().split())
-    return bool(needle) and _word_pattern(needle).search(lowered) is not None
-
-
-def location_region(text: str, regions: list[dict[str, Any]] | None = None) -> str:
-    """The student's own region a place name falls in, or "" when it names none.
-
-    Regions come only from the student's config/profile.json, so every student
-    gets their own metros and none is built in. A named state has to agree, so
-    "Austin, MN" is not a Texas region; only a state code after a comma counts,
-    which keeps a school name that starts "UT" from reading as Utah. With a state named, the
-    region's places, aliases, and name all count. With none named, only an
-    alias or the region's own name does, because a bare town name is common
-    elsewhere and "Dublin, Ireland" must not become a California region.
-
-    ``regions`` defaults to the local owner's profile file; pass
-    ``user_regions(conn, user_id)`` for anyone else.
-    """
-    raw = str(text or "")
-    lowered = " ".join(raw.casefold().split())
-    if not lowered:
-        return ""
-    states = {code for code in re.findall(r",\s*([A-Z]{2})\b", raw) if code in US_STATES}
-    # One pattern per state, not one alternation: "west virginia" must still match both "virginia" and "west virginia".
-    states |= {code for code, pattern in _STATE_NAME_PATTERNS.items() if pattern.search(lowered)}
-    for region in _profile_regions() if regions is None else regions:
-        name = str(region.get("name") or "")
-        if not name:
-            continue
-        own = _region_states(region)
-        if states and own and not own & states:
-            continue
-        terms = [name, *(region.get("aliases") or [])]
-        if states:
-            terms += list(region.get("places") or [])
-        if any(_mentions(lowered, term) for term in terms):
-            return name
-    return ""
-
-
-def region_phrase(name: str, regions: list[dict[str, Any]] | None = None) -> str:
-    """How an email names the region: its profile "phrase", or "the Bay Area" style for "... Area"."""
-    for region in _profile_regions() if regions is None else regions:
-        if region.get("name") == name and str(region.get("phrase") or "").strip():
-            return str(region["phrase"]).strip()
-    return f"the {name}" if name.endswith(" Area") else name
-
-
-def city_state(text: str) -> tuple[str, str]:
-    """("seattle", "WA") from "Seattle, WA" or "Seattle, Washington"; the state is "" when none is named."""
-    parts = [part.strip() for part in str(text or "").split(",")]
-    city = " ".join(parts[0].casefold().split()) if parts else ""
-    for part in parts[1:]:
-        if part.upper() in US_STATES:
-            return city, part.upper()
-        code = next((code for code, name in US_STATES.items() if name == part.casefold()), "")
-        if code:
-            return city, code
-    return city, ""
-
-
-def student_home(facts: dict[str, Any], regions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """Where the student lives during breaks and summers, as an email names it, or {} when unknown.
-
-    Every student's break_location counts, not only one who has set up regions.
-    When it falls in one of their regions, the home is that whole metro. Otherwise
-    it is the one city it names, and only with a state ("Seattle, WA"), because a
-    bare town name is common elsewhere. "year_round" is true when the school is in
-    the same region, so the student is there during the school year as well.
-    """
-    raw = str(facts.get("break_location") or "").strip()
-    region = location_region(raw, regions)
-    if region:
-        return {
-            "region": region, "city": "", "state": "", "phrase": region_phrase(region, regions),
-            "year_round": region == location_region(str(facts.get("school") or ""), regions),
-        }
-    city, state = city_state(raw)
-    if not city or not state:
-        return {}
-    return {"region": "", "city": city, "state": state, "phrase": raw.split(",")[0].strip(), "year_round": False}
-
-
-def near_home(location: str, home: dict[str, Any], regions: list[dict[str, Any]] | None = None) -> bool:
-    """Whether a company's location is where the student lives: their home region, or their home city and state."""
-    if not home or not str(location or "").strip():
-        return False
-    if home["region"]:
-        return location_region(location, regions) == home["region"]
-    return city_state(location) == (home["city"], home["state"])
-
-
-def home_terms(home: dict[str, Any]) -> list[str]:
-    """The words a draft may name the student's home by; any one of them counts as saying it."""
-    return [term for term in dict.fromkeys((home.get("phrase", ""), home.get("region", ""))) if term]
-
-
-def mentions_home(body: str, terms: list[str]) -> bool:
-    """Whether the text says the student lives in their home place: "(live in Seattle)", "in the Twin Cities".
-
-    A bare name is not enough, because a school's name can carry it ("Portland State")
-    without saying anything about where the student lives.
-    """
-    text = " ".join(str(body or "").split())
-    return any(
-        re.search(rf"\bin {re.escape(' '.join(term.split()))}\b", text, re.IGNORECASE) for term in terms if term.strip()
-    )
-
-
-def user_home(conn: sqlite3.Connection, user_id: str, regions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    from .preparation import confirmed_facts
-
-    return student_home(confirmed_facts(conn, user_id), user_regions(conn, user_id) if regions is None else regions)
-
-
-def location_line_gap(item: dict[str, Any], home: dict[str, Any], regions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    """Whether a target's cold email must say the student lives nearby, and whether its draft does.
-
-    The line belongs in any draft to a company with a checked location where the
-    student lives (outreach_drafting.location_line). A draft written before that
-    location was checked, or hand-edited, can lack it; "missing" marks that, so
-    the draft is regenerated rather than approved as it stands.
-    """
-    if not item.get("location_verified") or not near_home(str(item.get("location") or ""), home, regions):
-        return {"phrase": "", "terms": [], "missing": False}
-    terms = home_terms(home)
-    body = str(item.get("email_body") or "")
-    return {"phrase": home["phrase"], "terms": terms, "missing": bool(body.strip()) and not mentions_home(body, terms)}
-
-
-def missing_location_message(target: dict[str, Any]) -> str:
-    return (
-        f"This draft never says you live in {target['draft_location']['phrase']}, though "
-        f"{target['company']} is in {target['location']}. "
-        f"Regenerate it, or add '(live in {target['draft_location']['phrase']})' after your school."
-    )
-
-
-def _profile_regions() -> list[dict[str, Any]]:
-    """The target regions in config/profile.json (read through _owner_profile, so the file is stat'ed and cached once)."""
-    regions = _owner_profile().get("regions") or []
-    return [region for region in regions if isinstance(region, dict)]
-
-
-def user_regions(conn: sqlite3.Connection | None, user_id: str = LOCAL_USER_ID) -> list[dict[str, Any]]:
-    """The outreach regions for one user.
-
-    config/profile.json belongs to the local owner, so only that user reads it.
-    Anyone else on the same install gets the regions in their own confirmed
-    profile facts, or none, never the owner's metros.
-    """
-    if conn is None or user_id == LOCAL_USER_ID:
-        return _profile_regions()
-    from .preparation import confirmed_facts
-
-    regions = confirmed_facts(conn, user_id).get("regions") or []
-    return [region for region in regions if isinstance(region, dict)] if isinstance(regions, list) else []
-
-
-def company_key(name: str) -> str:
-    """A company name reduced to what identifies it, for matching across sources.
-
-    Case, punctuation, "&" versus "and", a leading "The", and trailing legal
-    forms are ignored, so "The Acme Robotics Co." and "acme robotics" match.
-    "Acme Robotics Fund I LLC" does not: only trailing legal words are dropped.
-    """
-    text = unicodedata.normalize("NFKC", str(name or "")).casefold().replace("&", " and ").replace(".", "")
-    words = re.sub(r"[^\w\s]", " ", text).split()
-    core = list(words)
-    if len(core) > 1 and core[0] == "the":
-        core.pop(0)
-    while len(core) > 1 and core[-1] in LEGAL_SUFFIXES:
-        core.pop()
-    return " ".join(core or words)
-
-
-def location_usable(target: dict[str, Any]) -> bool:
-    """Whether a draft may rely on the target's location.
-
-    A location the deep search reported is unchecked model output until the
-    company's site or a filing states it, or the student confirms the research.
-    One inferred from the only place a site names waits for the student to
-    confirm it. A location with no basis — an import file's word, or anything
-    this code does not recognise — is unchecked too: only a basis in
-    ``VERIFIED_BASES`` counts, so an unknown value is never read as confirmed.
-    """
-    if not target.get("location") or target.get("location_inferred"):
-        return False
-    basis = target.get("location_basis") or ""
-    if basis in VERIFIED_BASES:
-        return True
-    return basis == "research" and target.get("research_confidence") == "confirmed"
 
 
 class LocationConflictError(ValueError):
@@ -683,54 +447,6 @@ def heard_back(item: dict[str, Any]) -> bool:
 
 
 POSSIBLE_REPLY_PREVIEW = 400
-# Why a message found in Gmail was taken as it was (outreach_inbox_messages.reason), in the student's words.
-# {sender} is who wrote, {local} the part of their address before the @.
-REPLY_REASONS = {
-    # Logged as replies.
-    "thread": "{sender} answered in the Gmail thread of your email",
-    "written_to": "{sender} is an address you wrote to",
-    "domain_person": "{sender} wrote to you from the company's own domain, as themselves and verified by Gmail",
-    "confirmed": "you said {sender}'s email is their reply",
-    # Possible replies.
-    "thread_outsider": "{sender} wrote in the thread of your email, but is not an address at the company",
-    "before_marked_sent": "{sender} wrote before the day you marked the email sent",
-    "mailing_tool": "it was sent through a mailing or sales tool",
-    "spam": "Gmail put it in Spam",
-    "ambiguous": "more than one company you wrote to could have sent it",
-    "mentions_company": "it names the company or your email's subject, from an address that is not the company's",
-    "reply_to": "only its reply-to address is one you wrote to",
-    "job_mail": "it looks like mail from a job-application system",
-    "shared_address": "{local}@ is a shared inbox, not one person",
-    "not_verified": "Gmail could not verify it came from the company's domain",
-    "not_addressed": "you were not in its To or Cc line",
-    "name_mismatch": "the sender's name does not match the address",
-    "weak_domain": "its domain is only linked to the company through your contact's address",
-    "found_late": "it arrived before this check existed, so the app did not count it then",
-    "unreadable": "the app could not read its headers; open it in Gmail",
-    "auto_generated": "it is marked as sent by an automated system",
-    "copied_outsider": "{sender} is someone you copied, not an address at the company",
-    # Set aside.
-    "own": "your own email",
-    "delivery": "a delivery notice",
-    "trash": "you moved it to Trash",
-    "before": "it arrived before your first email",
-    "list": "a mailing-list email",
-    "out_of_office": "an automatic reply",
-    "acknowledgement": "an automatic receipt",
-    "receipt": "a read receipt",
-    "spam_unverified": "Gmail put it in Spam and could not verify the sender",
-    "automated_sender": "an automated sender at the company's domain",
-    "no_company": "from no company you wrote to",
-    "gone": "no longer in Gmail",
-}
-
-
-def reply_reason(code: str, sender: str) -> str:
-    """A reason code as a sentence about this sender."""
-    template = REPLY_REASONS.get(code, code or "")
-    return template.format(sender=sender or "They", local=str(sender or "").split("@", 1)[0])
-
-
 def _possible_replies(conn: sqlite3.Connection, user_id: str, target_id: str | None = None) -> dict[str, list[dict[str, Any]]]:
     """Emails that may be replies, by target, oldest first, as the card shows them (outreach_inbox.py keeps them).
 
@@ -1020,166 +736,6 @@ def _apply_draft_side_effects(values: dict[str, Any], previous: dict[str, Any] |
     return withdrawn
 
 
-# The greeting is the draft's first line: "Hi Dana," or "Hi Acme team,". When
-# the contact changes it is the only part written to the old one, so it is
-# swapped here with no model call. The draft still goes back for approval.
-_GREETING = re.compile(
-    r"(?P<word>(?:hi|hello|hey|dear|good (?:morning|afternoon|evening))\s+)(?P<name>[^,!:\n]{1,80}?)(?P<end>\s*[,!:]?)",
-    re.IGNORECASE,
-)
-# The greeting and the first sentence on one line: "Hi Alex, I'm writing...".
-_LEADING_GREETING = re.compile(
-    r"(?P<word>(?:hi|hello|hey|dear|good (?:morning|afternoon|evening))\s+)(?P<name>[^,!:\n]{1,80}?)(?P<end>\s*[,!:])(?P<rest>\s+\S.*)",
-    re.IGNORECASE,
-)
-_HONORIFICS = {"dr", "mr", "mrs", "ms", "mx", "prof", "professor"}
-# Greetings to nobody in particular, which a named contact improves on.
-_GENERIC_GREETINGS = {"there", "team", "all", "everyone", "hiring team", "recruiting team"}
-
-
-# How a student opens an email, from their own profile (greeting_word and
-# unnamed_greeting). These are the fallbacks when they have not said.
-DEFAULT_GREETING = {"word": "Hi", "unnamed": "{company} team"}
-_GREETING_WORD = re.compile(r"[^\W\d_][^\W\d_ '\u2019.-]*(?:[ '\u2019.-][^\W\d_]+){0,3}")
-# The legal ending people leave off when they say a company's name.
-_LEGAL_ENDING = re.compile(r"[,\s]+(?:inc|incorporated|corp|corporation|llc|ltd|pbc)\.?$", re.IGNORECASE)
-_PROFILE_DATA_CACHE: dict[str, Any] = {"key": None, "data": {}}
-
-
-def greeting_style_error(word: Any, unnamed: Any) -> str | None:
-    """Why a greeting word or shared-inbox greeting cannot be used, or None."""
-    if word not in (None, "") and not (isinstance(word, str) and len(word.strip()) <= 30 and _GREETING_WORD.fullmatch(word.strip())):
-        return "The greeting word must be a word or two, like Hi, Hello, or Dear"
-    if unnamed not in (None, ""):
-        text = unnamed.strip() if isinstance(unnamed, str) else ""
-        if not text or len(text) > 60 or "\n" in text or text.replace("{company}", "").count("{") or text.replace("{company}", "").count("}"):
-            return "The shared-inbox greeting must be short, like {company} team or there"
-    return None
-
-
-def _owner_profile() -> dict[str, Any]:
-    """config/profile.json, re-read when the file changes."""
-    try:
-        key = (str(PROFILE_PATH), PROFILE_PATH.stat().st_mtime_ns)
-    except OSError:
-        return {}
-    if _PROFILE_DATA_CACHE["key"] != key:
-        try:
-            data = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            data = {}
-        _PROFILE_DATA_CACHE.update(key=key, data=data if isinstance(data, dict) else {})
-    return _PROFILE_DATA_CACHE["data"]
-
-
-def greeting_style(conn: sqlite3.Connection | None, user_id: str = LOCAL_USER_ID) -> dict[str, str]:
-    """How this student greets: their own words, never another student's.
-
-    The local owner's come from config/profile.json, like their regions; anyone
-    else's from their own confirmed profile. Missing or unusable values fall
-    back to DEFAULT_GREETING.
-    """
-    if conn is None or user_id == LOCAL_USER_ID:
-        source = _owner_profile()
-    else:
-        from .preparation import confirmed_facts
-
-        source = confirmed_facts(conn, user_id)
-    word = source.get("greeting_word")
-    unnamed = source.get("unnamed_greeting")
-    if greeting_style_error(word, None) or not word:
-        word = DEFAULT_GREETING["word"]
-    if greeting_style_error(None, unnamed) or not unnamed:
-        unnamed = DEFAULT_GREETING["unnamed"]
-    return {"word": " ".join(str(word).split()), "unnamed": " ".join(str(unnamed).split())}
-
-
-def spoken_company(company: str) -> str:
-    """The name people call a company by: "Acme Robotics, Inc." is "Acme Robotics"."""
-    name = str(company or "").strip()
-    while (shorter := _LEGAL_ENDING.sub("", name)) != name:
-        name = shorter
-    return name or str(company or "").strip()
-
-
-def unnamed_greeting(company: str, style: dict[str, str]) -> str:
-    return style["unnamed"].replace("{company}", spoken_company(company)).strip()
-
-
-def greeting_line(company: str, contact_name: str, style: dict[str, str]) -> str:
-    """The line a draft opens with: the contact's first name, or the student's shared-inbox greeting."""
-    return f"{style['word']} {contact_first_name(contact_name) or unnamed_greeting(company, style)},"
-
-
-def contact_first_name(name: str) -> str:
-    words = [word for word in str(name or "").replace(",", " ").split() if word.rstrip(".").casefold() not in _HONORIFICS]
-    return words[0] if words else ""
-
-
-def _own_team(greeted: str, company: str) -> bool:
-    """"acme robotics team" for Acme Robotics, Inc.; never another company's team."""
-    return bool(company) and greeted.endswith(" team") and company_key(greeted[: -len(" team")]) == company_key(company)
-
-
-def readdress_greeting(body: str, old_names: set[str], new_name: str, company: str = "") -> tuple[str, str, str] | None:
-    """The body greeting ``new_name``, with the old and new greetings.
-
-    The greeting is the first line, or the start of it when the first sentence
-    follows on the same line. None when it does not greet one of ``old_names``
-    (casefolded) or ``company``'s own team: a greeting the student wrote to
-    someone else is theirs.
-    """
-    lines = body.split("\n")
-    index = next((number for number, line in enumerate(lines) if line.strip()), None)
-    if index is None:
-        return None
-    line = lines[index].strip()
-    match = _GREETING.fullmatch(line) or _LEADING_GREETING.fullmatch(line)
-    greeted = " ".join(match["name"].split()).casefold() if match else ""
-    if not match or not (greeted in old_names or _own_team(greeted, company)):
-        return None
-    old_greeting = f"{match['word']}{match['name']}{match['end']}".strip()
-    new_greeting = f"{match['word']}{new_name}{match['end'] or ','}"
-    if new_greeting.strip() == old_greeting:
-        return None
-    lines[index] = new_greeting + (match.groupdict().get("rest") or "")
-    return "\n".join(lines), old_greeting, new_greeting.strip()
-
-
-def without_greeting(body: str) -> list[str]:
-    """The body's lines with the greeting taken out: the first line when it is only a
-    greeting, or its start when the first sentence follows on the same line."""
-    lines = (body or "").split("\n")
-    index = next((number for number, line in enumerate(lines) if line.strip()), None)
-    if index is None:
-        return lines
-    line = lines[index].strip()
-    leading = _LEADING_GREETING.fullmatch(line)
-    if leading:
-        return [*lines[:index], leading["rest"].strip(), *lines[index + 1:]]
-    if _GREETING.fullmatch(line):
-        return [*lines[:index], *lines[index + 1:]]
-    return lines
-
-
-def greets_contact(body: str, contact_name: str, company: str, style: dict[str, str]) -> bool:
-    """Whether the body opens with a greeting that fits this contact.
-
-    That is their first name, or a greeting to nobody in particular (the
-    company's team, "there"). False for a greeting to anyone else, and for a
-    body with no greeting line: the student looks before it goes on its own.
-    """
-    line = next((line.strip() for line in (body or "").split("\n") if line.strip()), "")
-    match = _GREETING.fullmatch(line) or _LEADING_GREETING.fullmatch(line)
-    if not match:
-        return False
-    greeted = " ".join(match["name"].split()).casefold()
-    if greeted in _GENERIC_GREETINGS or _own_team(greeted, company) or greeted == unnamed_greeting(company, style).casefold():
-        return True
-    first = contact_first_name(contact_name)
-    return bool(first) and greeted == first.casefold()
-
-
 def _readdress_drafts(values: dict[str, Any], previous: dict[str, Any], style: dict[str, str]) -> list[tuple[str, str, str]]:
     """Point unsent drafts' greetings at a changed contact. Returns (kind, old line, new line) per draft."""
     name_changed = "contact_name" in values and values["contact_name"] != previous["contact_name"]
@@ -1191,7 +747,7 @@ def _readdress_drafts(values: dict[str, Any], previous: dict[str, Any], style: d
     old_names = {
         name.casefold() for name in (
             contact_first_name(previous["contact_name"]), " ".join(previous["contact_name"].split()),
-            mailbox, f"{previous['company']} team", unnamed_greeting(previous["company"], style), *_GENERIC_GREETINGS,
+            mailbox, f"{previous['company']} team", unnamed_greeting(previous["company"], style), *GENERIC_GREETINGS,
         ) if name
     }
     company = values.get("company", previous["company"])
@@ -1902,50 +1458,6 @@ def confirm_research(conn: sqlite3.Connection, target_id: str, *, user_id: str) 
         )
         log_event(conn, target_id, user_id, "research_confirmed")
     return get_target(conn, target_id, user_id=user_id)
-
-
-# Ordered: the first match wins. Each is a suggestion the student confirms.
-REPLY_PATTERNS = (
-    ("offer", r"\b(pleased to offer|offer letter|extend (you )?an offer)\b", "It mentions an offer"),
-    ("declined", r"\b(not (currently |actively )?hiring|no (open )?(positions|roles|openings|internships?)|not (able|in a position) to (offer|take|hire|bring)|won'?t be able to|not a fit|pass on this)\b", "It says they are not hiring or cannot take you on"),
-    ("paused", r"\b(reach (back )?out (again )?(in|later|next|after)|check back|circle back|touch base (later|in|next)|next (semester|year|summer|spring|fall))\b", "It asks you to come back later"),
-    ("call_scheduled", r"\b(schedule|set up|hop on|book|grab|find)\b.{0,40}\b(call|chat|meeting|zoom|time)\b|\bcalendly\b|\bwhen are you (free|available)\b|\byour availability\b", "It proposes a call or asks for your availability"),
-)
-
-
-# A delivery failure notice is not a reply: nobody at the company read the
-# email. Read as "replied" it would close a company that never heard from the
-# student, so it is checked before REPLY_PATTERNS and before Jev. "bounced" is
-# not a status; applying it records the bounce (outreach_delivery.record_bounce).
-BOUNCED = "bounced"
-BOUNCE_REASON = "It is a delivery failure notice, not a reply: the email did not reach them"
-_BOUNCE_NOTICE = re.compile(
-    r"\b(mailer-daemon|mail delivery (subsystem|system|failed|failure)|delivery status notification \(failure\)"
-    r"|undeliverable|undelivered mail|returned mail|delivery (has )?failed|could ?n[o']t be delivered"
-    r"|message (was )?not delivered|address not found|recipient address rejected|user unknown|no such user"
-    r"|mailbox (is )?(unavailable|not found|does not exist)|group you tried to contact|permission to post messages"
-    r"|550[ -]5\.\d\.\d+)\b"
-)
-# Gmail is still trying; only a failure is a bounce.
-_DELAY_NOTICE = re.compile(r"\(delay\)|\bdelivery (has been |is )?delayed\b|\bwill (retry|keep trying)\b")
-_PERMANENT = re.compile(r"\(failure\)|\bpermanent(ly)?\b|\b5\d\d[ -]5\.\d\.\d+")
-
-
-def bounce_notice(text: str) -> bool:
-    lowered = " ".join(str(text).lower().split())
-    if _DELAY_NOTICE.search(lowered) and not _PERMANENT.search(lowered):
-        return False
-    return bool(_BOUNCE_NOTICE.search(lowered))
-
-
-def suggest_reply_status(text: str) -> dict[str, str]:
-    if bounce_notice(text):
-        return {"status": BOUNCED, "reason": BOUNCE_REASON}
-    lowered = " ".join(str(text).lower().split())
-    for status, pattern, reason in REPLY_PATTERNS:
-        if re.search(pattern, lowered):
-            return {"status": status, "reason": reason}
-    return {"status": "replied", "reason": "They replied; nothing in it matched a more specific outcome"}
 
 
 def log_reply(

@@ -29,11 +29,11 @@ from opportunity_app.outreach import (
     import_targets,
     list_targets,
     local_today,
-    location_usable,
     outreach_summary,
     parse_import,
     update_target,
 )
+from opportunity_app.outreach_location import location_usable
 from opportunity_app import outreach_profile as profile_module
 from opportunity_app.outreach_profile import apply_location
 from opportunity_app.schema import connect_product, ensure_product_schema

@@ -116,18 +116,10 @@ from .inbox_classifiers import JEV_NOT_ASKED, MIN_CONFIDENCE
 from .json_values import json_dict
 from .mail_message import FULL_TEXT_LIMIT, hosts_in, is_automatic, written_between_quotes
 from .outreach_config import resolve_provider, sender_account
-from .outreach import (
-    REPLY_PATTERNS,
-    OutreachNotFoundError,
-    log_event,
-    company_key,
-    contact_first_name,
-    get_target,
-    greeting_line,
-    greeting_style,
-    spoken_company,
-    suggest_reply_status,
-)
+from .outreach import OutreachNotFoundError, log_event, get_target
+from .outreach_replies import REPLY_PATTERNS, suggest_reply_status
+from .outreach_identity import company_key
+from .outreach_greeting import contact_first_name, greeting_line, greeting_style, spoken_company
 from .gmail_client import GmailAuthError, GmailThrottled
 from .outreach_gmail import (
     SENT_EVENT,
@@ -1058,7 +1050,7 @@ def thank_you_blockers(conn: sqlite3.Connection, target: dict[str, Any], reply: 
     - R1: in the student's thread (the Gmail thread of an email the app sent
       them), or from the contact's own address or the Cc. A reply matched only
       by the company's domain fails. A reply read under outreach_inbox's reply
-      rules says how it was matched (data "reason", outreach.REPLY_REASONS):
+      rules says how it was matched (data "reason", outreach_replies.REPLY_REASONS):
       it must also be "thread" or "written_to", so one the student confirmed
       from a possible reply ("confirmed") never passes.
     - R2: logged at most DETECTION_LIMIT after Gmail received it.

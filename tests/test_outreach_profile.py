@@ -13,7 +13,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import httpx
 
 from opportunity_app.outreach import (
-    company_key,
     confirm_research,
     create_target,
     delete_target,
@@ -21,6 +20,7 @@ from opportunity_app.outreach import (
     import_targets,
     update_target,
 )
+from opportunity_app.outreach_identity import company_key
 from opportunity_app.outreach_contacts import find_contacts
 from opportunity_app.outreach_drafting import location_line
 from opportunity_app.outreach_profile import (

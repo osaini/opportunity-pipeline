@@ -8,7 +8,7 @@ persisted or matched against stored values:
 * ``employer_key``: the sorted identity tokens that the apply run, apply answer
   and employer-domain tables store. A change to the identity rule orphans those
   rows, so ``tests/test_leaf_modules.py`` pins it.
-* ``opportunity_app.outreach.company_key``: a third, different rule (NFKC, "&"
+* ``opportunity_app.outreach_identity.company_key``: a third, different rule (NFKC, "&"
   becomes "and", drops a leading "The" and trailing legal suffixes, keeps word
   order) that outreach targets are matched on. It is not here and must not be
   folded into ``employer_key``: that would change which outreach targets match.

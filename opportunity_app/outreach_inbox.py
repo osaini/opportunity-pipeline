@@ -71,14 +71,8 @@ from .mail_message import (
     reply_text,
 )
 from .mail_trust import FREEMAIL, READ_CATEGORIES, authenticate, listed, sender_lists
-from .outreach import (
-    BOUNCED,
-    log_event,
-    get_target,
-    reply_reason,
-    suggest_reply_status,
-    update_target,
-)
+from .outreach import log_event, get_target, update_target
+from .outreach_replies import BOUNCED, reply_reason, suggest_reply_status
 from .gmail_client import (
     ClientFactory,
     GmailAuthError,
@@ -443,7 +437,7 @@ def _judge(
     message: EmailMessage, *, targets: list[dict[str, Any]], how: str, sender: str, display: str, account: str,
     labels: list[str], received_at: datetime, text: str, thread_id: str,
 ) -> tuple[str, str]:
-    """What a message found for a company is (REPLY, AUTOMATIC, POSSIBLE or IGNORED), and the reason code (outreach.REPLY_REASONS).
+    """What a message found for a company is (REPLY, AUTOMATIC, POSSIBLE or IGNORED), and the reason code (outreach_replies.REPLY_REASONS).
 
     Only plain machine mail is set aside. What is plainly someone at the
     company answering is a reply. Anything in between is a possible reply,
@@ -702,7 +696,7 @@ def _record_reply(
     data = {
         "source": "gmail", "gmail_id": gmail_id, "from": sender, "received_at": received, "readings": readings,
         **{key: _meta_value(value) for key, value in (meta or {}).items() if key in REPLY_META},
-        # How it was matched to the company (outreach.REPLY_REASONS). A thank-you answers only a reply in the
+        # How it was matched to the company (outreach_replies.REPLY_REASONS). A thank-you answers only a reply in the
         # student's thread or from an address they wrote to (outreach_thank_you, R1).
         "via": via, "reason": reason,
     }

@@ -46,14 +46,8 @@ from typing import Any, Callable
 
 from . import ROOT, automation
 from .contact_names import NO_REPLY_SENDER, website_domain
-from .outreach import (
-    UNSENT_STATUSES,
-    DraftChangedError,
-    log_event,
-    get_target,
-    missing_location_message,
-    update_target,
-)
+from .outreach import UNSENT_STATUSES, DraftChangedError, log_event, get_target, update_target
+from .outreach_location import missing_location_message
 from .outreach_config import sender_account
 from .outreach_gmail import (
     IN_PROGRESS,

@@ -21,10 +21,9 @@ import sqlite3
 from typing import Any, Callable
 
 from .agent_providers import AgentProvider, CliAgentProvider, complete_text
-from .outreach import (
-    AWAITING_REPLY, DEFAULT_GREETING, DRAFT_KINDS, DRAFT_META, cancel_schedules, log_event, draft_checks, get_target, greeting_line, greeting_style, home_terms, location_usable, mentions_home, near_home, student_home,
-    user_regions,
-)
+from .outreach import AWAITING_REPLY, DRAFT_KINDS, DRAFT_META, cancel_schedules, log_event, draft_checks, get_target
+from .outreach_greeting import DEFAULT_GREETING, greeting_line, greeting_style
+from .outreach_location import home_terms, location_usable, mentions_home, near_home, student_home, user_regions
 from .outreach_config import resolve_provider, sender_account
 from .outreach_versions import insert_version, keep_current_draft
 from .preparation import confirmed_facts
@@ -184,7 +183,7 @@ def location_line(
     """The sentence saying the student lives near the company, or "" when none belongs.
 
     Every company where the student lives gets one: in their home region, or in
-    their home city when that is not one of their regions (outreach.student_home).
+    their home city when that is not one of their regions (outreach_location.student_home).
     When the school is in the same region, the line says year-round. An
     unrecognized location gets none rather than a guess. Neither does a location
     only the deep search reported, until the company's site or a filing states

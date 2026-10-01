@@ -50,8 +50,15 @@ import httpx
 from . import automation
 from .gmail_client import ClientFactory, GmailAuthError
 from .outreach import (
-    NOT_INTERESTED, DraftChangedError, UNSENT_STATUSES, city_state, get_target, heard_back, log_event, withdraw_auto_approval,
+    NOT_INTERESTED,
+    DraftChangedError,
+    UNSENT_STATUSES,
+    get_target,
+    heard_back,
+    log_event,
+    withdraw_auto_approval,
 )
+from .outreach_location import city_state
 from .outreach_gmail import (
     SENT_EVENT,
     THANK_YOU_KIND,

@@ -187,7 +187,7 @@ class FilteredOutreachListParityTests(unittest.TestCase):
 
 def reference_location_region(text, regions):
     """location_region before its state patterns were compiled once: the same logic with re.search per call."""
-    from opportunity_app.outreach import US_STATES, _region_states
+    from opportunity_app.outreach_location import US_STATES, _region_states
     import re
 
     def mentions(lowered, term):
@@ -232,7 +232,7 @@ class LocationRegionParityTests(unittest.TestCase):
     ]
 
     def test_precompiled_state_patterns_give_the_same_region_for_every_text(self):
-        from opportunity_app.outreach import location_region
+        from opportunity_app.outreach_location import location_region
 
         for text in self.TEXTS:
             with self.subTest(text=text):

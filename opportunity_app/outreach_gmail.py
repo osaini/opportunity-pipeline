@@ -71,9 +71,9 @@ from .outreach import (
     log_event,
     get_target,
     latest_event_stamp,
-    missing_location_message,
     update_target,
 )
+from .outreach_location import missing_location_message
 from .database import is_unique_violation
 from .outreach_config import ATTACHMENT_ENV, gmail_web_url, sender_account
 from .timestamps import parse_app_instant, utc_now

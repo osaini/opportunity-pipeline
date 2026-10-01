@@ -1117,7 +1117,7 @@ class OutreachStatus:
             (subject_id, user_id),
         ).fetchone()
         if waiting is not None:
-            from .outreach import contact_first_name
+            from .outreach_greeting import contact_first_name
 
             who = contact_first_name(waiting["to_name"]) or waiting["to_email"]
             notes.append(

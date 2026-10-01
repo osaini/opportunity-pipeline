@@ -97,7 +97,7 @@ LAYER_NAMES = {
 LAYER_MEMBERS: dict[int, frozenset[str]] = {
     # L0 stdlib leaves. `opportunity_app` and `pipeline_core` are the package __init__ modules (constants and re-exports).
     0: (
-        _app(". timestamps user_time database json_values mail_message opportunity_metadata storage_paths contact_names daily_lock")
+        _app(". timestamps user_time database json_values mail_message opportunity_metadata storage_paths contact_names daily_lock outreach_replies")
         | _core(". env identity visibility regions read_model")
         | frozenset({"pipeline"})
     ),
@@ -110,7 +110,8 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
         "actions auth apply_checks apply_policy apply_sensitive apply_schema_client automation boards captures connections "
         "dossier employer market early_programs extension_apply mail_trust notifications purge ingestion profile resumes "
         "resume_variants preparation document_artifacts inbox_classifiers "
-        "outreach outreach_config outreach_identity outreach_versions outreach_contacts outreach_linkedin outreach_batch "
+        "outreach outreach_config outreach_identity outreach_location outreach_greeting outreach_versions outreach_contacts "
+        "outreach_linkedin outreach_batch "
         "outreach_render"
     ),
     # L4 workflows. refresh is the manual refresh/purge workflow run in a background thread; api (L5) is its only importer.
@@ -153,7 +154,7 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
     (_P + "outreach_inbox", _P + "outreach_thank_you", "on_new_reply: outreach_thank_you reaches outreach_inbox through outreach_review"),
     (_P + "outreach_schedule", _P + "outreach_automation", "settings: outreach_automation imports the schedule at the top"),
     (_P + "outreach_schedule", _P + "outreach_thank_you", "settle_in, gate, recover_stuck, in_window and more: outreach_thank_you imports the schedule at the top"),
-    (_P + "profile", _P + "outreach", "greeting_style_error: outreach imports preparation, which imports profile"),
+    (_P + "profile", _P + "outreach_greeting", "greeting_style_error: outreach_greeting and outreach_location read confirmed facts through preparation, which imports profile"),
 )
 
 

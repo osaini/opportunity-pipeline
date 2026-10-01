@@ -236,3 +236,28 @@ def is_distinctive(company: str) -> bool:
     """Whether a company's name is specific enough to search mail for: two words, or one of six letters or more."""
     words = company_words(company).split()
     return len(words) >= 2 or any(len(word) >= 6 for word in words)
+
+
+# Legal-form words that do not tell two companies apart: "Acme Robotics, Inc."
+# and "Acme Robotics" are one company.
+LEGAL_SUFFIXES = {
+    "inc", "incorporated", "corp", "corporation", "co", "company", "llc", "ltd", "limited", "plc",
+    "pbc", "lp", "llp", "gmbh", "ag", "sa", "bv", "pty",
+}
+
+
+def company_key(name: str) -> str:
+    """A company name reduced to what identifies it, for matching across sources.
+
+    Case, punctuation, "&" versus "and", a leading "The", and trailing legal
+    forms are ignored, so "The Acme Robotics Co." and "acme robotics" match.
+    "Acme Robotics Fund I LLC" does not: only trailing legal words are dropped.
+    """
+    text = unicodedata.normalize("NFKC", str(name or "")).casefold().replace("&", " and ").replace(".", "")
+    words = re.sub(r"[^\w\s]", " ", text).split()
+    core = list(words)
+    if len(core) > 1 and core[0] == "the":
+        core.pop(0)
+    while len(core) > 1 and core[-1] in LEGAL_SUFFIXES:
+        core.pop()
+    return " ".join(core or words)
