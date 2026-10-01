@@ -125,8 +125,14 @@ def hop_guard(fetcher: SafeFetcher) -> Callable[[str], str | None]:
     return check
 
 
-def check_person(proposal: dict[str, Any], target: dict[str, Any], *, fetcher: SafeFetcher) -> dict[str, Any]:
+def check_person(
+    proposal: dict[str, Any], target: dict[str, Any], *, fetcher: SafeFetcher,
+    hop_check: Callable[[str], str | None] | None = None,
+) -> dict[str, Any]:
     """Open the cited page and decide whether it prints this person's address.
+
+    ``hop_check`` is the guard to use; search_batch passes one for the whole batch so a site's robots.txt is
+    read once, not once per person. With none given, a fresh guard is built here.
 
     Returns a candidate to store, or {"reason": ...} saying why it was refused.
     """
@@ -145,7 +151,7 @@ def check_person(proposal: dict[str, Any], target: dict[str, Any], *, fetcher: S
         return {"reason": f"{email} is a shared inbox"}
     if public_web_url_error(source_url):
         return {"reason": "its source is not a public http(s) page"}
-    result = fetcher.fetch(source_url, same_host_only=False, hop_check=hop_guard(fetcher))
+    result = fetcher.fetch(source_url, same_host_only=False, hop_check=hop_check or hop_guard(fetcher))
     if result.error == "blocked host":
         return {"reason": "its source is, or redirects through, a people-search or email-finder site"}
     if result.error == "robots":
@@ -195,6 +201,7 @@ def search_batch(
     by_name = {target["company"].casefold(): target for target in targets}
     seen: set[str] = set()
     results: list[dict[str, Any]] = []
+    guard = hop_guard(fetcher)  # one robots.txt cache for the batch
     for answer in answers:
         if not isinstance(answer, dict):
             continue
@@ -205,7 +212,7 @@ def search_batch(
         seen.add(key)
         people = answer.get("people") if isinstance(answer.get("people"), list) else []
         checked = [
-            {**check_person(person, target, fetcher=fetcher), "proposed": str(person.get("email") or "")[:320]}
+            {**check_person(person, target, fetcher=fetcher, hop_check=guard), "proposed": str(person.get("email") or "")[:320]}
             for person in people[:MAX_PEOPLE_PER_COMPANY] if isinstance(person, dict)
         ]
         kept = [item for item in checked if not item["reason"]]
