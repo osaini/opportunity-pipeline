@@ -845,6 +845,15 @@ class UnsupportedNumbersTests(unittest.TestCase):
         # A draft may name a domain whether or not the inputs do: its digits are the address's, not a claim.
         self.assertEqual(_unsupported_numbers("Visit acme360.com.", self.inputs(name="Test Student")), [])
 
+    def test_a_number_run_into_the_next_sentence_is_still_a_source(self):
+        # Research text often drops the space after a full stop; "$2.5M.Series" is a stated number, not a domain.
+        inputs = self.inputs(name="Test Student")
+        inputs["company_research"] = {
+            "funding": "They raised $2.5M.Series A was led by X. The team grew to 40k.Users love it. Shipped GPT-4.Turbo after COVID-19.Then"
+        }
+        body = "Congrats on the $2.5M round and 40k users, shipping on GPT-4 after COVID-19."
+        self.assertEqual(_unsupported_numbers(body, inputs), [])
+
     def test_decimals_abbreviations_and_versions_are_not_taken_for_hosts(self):
         inputs = self.inputs(experience=[{"title": "Held a 3.5 GPA as a U.S. student, e.g. on v2.0 of the Ph.D. tool"}])
         # Each stays a number the draft must support: if 3.5 or v2.0 were stripped as a host, 7 and 2.5 would hide too.

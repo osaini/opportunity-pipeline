@@ -358,7 +358,9 @@ def _opening(body: str) -> str:
 # are not hosts, nor is "2024.Then" (a missing space after a full stop). Call prep's number check shares this.
 _ADDRESS = re.compile(
     r"\S+@\S+|https?://\S+"
-    r"|(?<![\w@.-])(?:[A-Za-z0-9-]+\.)*[A-Za-z0-9-]*[A-Za-z][A-Za-z0-9-]*\.[A-Za-z]{2,}(?![\w-])(?:/\S*)?"
+    # A scheme-less host such as github.com/t/x or acme360.com. The ending must be lowercase, so a number run into the
+    # next sentence ("$2.5M.Series A", "40k.Users") stays a number rather than being taken for a domain.
+    r"|(?<![\w@.-])(?:[A-Za-z0-9-]+\.)*[A-Za-z0-9-]*[A-Za-z][A-Za-z0-9-]*\.[a-z]{2,}(?![\w-])(?:/\S*)?"
 )
 
 
