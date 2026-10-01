@@ -1009,8 +1009,8 @@ def _job_system_mail(domain: str, target: dict[str, Any]) -> bool:
     careers page on a job system (website acme.bamboohr.com) is not Acme's
     domain, and a company named like one ("Lever Industries") does not own it.
     """
+    from .contact_names import website_domain
     from .mail_trust import registrable_domain, sender_lists
-    from .outreach import website_domain
 
     categories = tuple(category for category in sender_lists() if category not in _NOT_JOB_SYSTEMS)
     if not _job_system(domain, categories):
@@ -1031,8 +1031,8 @@ def _company_inbox(local: str, target: dict[str, Any]) -> bool:
     """A local part that is the company's own name or slug, alone or with role words or a word that joins it
     ("acme", "acme-robotics", "acme.careers", "acmecareers", "careersacme", "teamacme", "joinacme")."""
     from .mail_trust import registrable_domain
-    from .outreach import website_domain
-    from .outreach_contacts import GENERIC_LOCAL_PARTS, ROLE_INBOX_LOCAL_PARTS, ROLE_INBOX_QUALIFIERS, made_of
+    from .contact_names import GENERIC_LOCAL_PARTS, ROLE_INBOX_LOCAL_PARTS, ROLE_INBOX_QUALIFIERS, website_domain
+    from .outreach_contacts import made_of
 
     company = str(target.get("company") or "")
     tokens = identity_tokens(company)

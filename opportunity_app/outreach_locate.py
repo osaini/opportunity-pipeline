@@ -20,7 +20,8 @@ import re
 import sqlite3
 from typing import Any, Callable
 
-from .outreach import PAGE_CHECKED_BASES, website_domain
+from .contact_names import website_domain
+from .outreach import PAGE_CHECKED_BASES
 from .outreach_batch import answers_by_target
 from .web_fetch import SafeFetcher, public_web_url_error
 from .outreach_discovery import mentions_company

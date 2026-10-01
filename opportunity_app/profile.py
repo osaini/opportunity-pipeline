@@ -12,6 +12,7 @@ from pipeline_core.read_model import RULESET_VERSION
 
 from .json_values import json_dict
 from .legacy import score_job
+from .profile_store import read_stored_profile
 from .schema import LOCAL_USER_ID
 from .timestamps import utc_now
 
@@ -122,14 +123,8 @@ def profile_completeness(profile: dict[str, Any]) -> dict[str, Any]:
 def is_personalized(conn: sqlite3.Connection, *, user_id: str) -> bool:
     """Whether any scoring input is set, without provisioning a profile row."""
 
-    row = conn.execute("SELECT profile_json FROM profiles WHERE user_id=?", (user_id,)).fetchone()
-    if not row:
-        return False
-    try:
-        profile = json.loads(row[0] or "{}")
-    except (TypeError, json.JSONDecodeError):
-        return False
-    return isinstance(profile, dict) and any(_has_value(profile.get(field)) for field in SCORING_FIELDS)
+    profile = read_stored_profile(conn, user_id)
+    return any(_has_value(profile.get(field)) for field in SCORING_FIELDS)
 
 
 def _compute_scores(

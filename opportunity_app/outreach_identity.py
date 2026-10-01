@@ -25,11 +25,9 @@ from urllib.parse import urlsplit
 
 from pipeline_core.identity import identity_tokens, normalized
 
+from .contact_names import GENERIC_LOCAL_PARTS, NO_REPLY_SENDER, website_domain
 from .mail_trust import FREEMAIL, not_an_employer, registrable_domain
-from .outreach import website_domain
 from .outreach_config import sender_account
-from .outreach_contacts import GENERIC_LOCAL_PARTS
-from .outreach_forms import NO_REPLY_SENDER
 
 
 # Senders that are a machine rather than a person or a shared inbox.

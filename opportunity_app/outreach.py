@@ -27,6 +27,7 @@ from uuid import uuid4
 
 from .database import is_unique_violation
 from .inbox_classifiers import read_reply
+from .contact_names import website_domain
 from .legacy import PROFILE_PATH
 from .outreach_config import gmail_web_url, sender_account
 from .schema import LOCAL_USER_ID
@@ -537,15 +538,6 @@ def _claim_detail(payload: dict[str, Any]) -> str:
             # JSON string is exactly the failure this function exists to avoid.
             return json.dumps({"unverified_import_claim": "too long to record"}, sort_keys=True)
         budgets[widest] //= 2
-
-
-def website_domain(url: str) -> str:
-    """The host of a website URL, lowercased, without a leading www."""
-    text = str(url or "").strip()
-    if not text:
-        return ""
-    host = urlsplit(text if "//" in text else f"https://{text}").hostname or ""
-    return host.lower().removeprefix("www.")
 
 
 def local_today(conn: sqlite3.Connection, user_id: str, now: datetime | None = None) -> date:

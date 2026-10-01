@@ -52,8 +52,8 @@ from .outreach import (
     import_targets,
     local_today,
     location_usable,
-    website_domain,
 )
+from .contact_names import website_domain
 from .outreach_config import discovery_provider
 from .outreach_contacts import apply_choice, choose_contact, find_contacts, list_candidates
 from .outreach_drafting import outreach_proof

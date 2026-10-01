@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import ROOT, automation
+from .contact_names import NO_REPLY_SENDER, website_domain
 from .outreach import (
     UNSENT_STATUSES,
     DraftChangedError,
@@ -52,7 +53,6 @@ from .outreach import (
     get_target,
     missing_location_message,
     update_target,
-    website_domain,
 )
 from .outreach_config import sender_account
 from .outreach_gmail import (
@@ -120,7 +120,6 @@ ACKNOWLEDGEMENT = re.compile(
     re.IGNORECASE,
 )
 ALWAYS_AUTOMATIC = re.compile(r"copy of your (submission|message)|this is an automated|do not reply to this", re.IGNORECASE)
-NO_REPLY_SENDER = re.compile(r"^(no-?reply|do-?not-?reply|notifications?|mailer|forms?)[@+._-]", re.IGNORECASE)
 ACKNOWLEDGEMENT_WINDOW_MINUTES = 15
 PAUSED_BEFORE_SENDING = "Paused before sending; nothing was sent"
 

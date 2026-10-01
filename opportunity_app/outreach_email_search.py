@@ -26,7 +26,8 @@ import sqlite3
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
-from .outreach import log_event, website_domain
+from .contact_names import website_domain
+from .outreach import log_event
 from .outreach_batch import answers_by_target
 from .outreach_contacts import (
     EMAIL_PATTERN,

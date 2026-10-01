@@ -39,7 +39,8 @@ from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
 
-from .outreach import LOCATION_BASES, US_STATES, log_event, company_key, get_target, local_today, website_domain
+from .contact_names import website_domain
+from .outreach import LOCATION_BASES, US_STATES, log_event, company_key, get_target, local_today
 from .outreach_contacts import page_priority, PageParser, crawl_site
 from .web_fetch import USER_AGENT, SafeFetcher, same_site, site_robots
 from .outreach_render import PlaywrightRenderer

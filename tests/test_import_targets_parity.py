@@ -23,8 +23,8 @@ from opportunity_app import outreach
 from opportunity_app.outreach import (
     IMPORT_IGNORED_FIELDS, OUTREACH_ORIGINS, _apply_draft_side_effects, _apply_status_side_effects, _claim_detail,
     log_event, _normalize, company_key, create_target, existing_keys, get_target, import_targets,
-    website_domain,
 )
+from opportunity_app.contact_names import website_domain
 from opportunity_app.database import is_unique_violation
 from opportunity_app.schema import connect_product
 from opportunity_app.timestamps import utc_now

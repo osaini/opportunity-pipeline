@@ -122,6 +122,7 @@ LEAVES: dict[str, tuple[set[str], set[str]]] = {
     "opportunity_app/background.py": (dotted("mail_message", "timestamps"), dotted("automation")),
     "opportunity_app/web_fetch.py": ({"httpx", "httpcore"}, set()),
     "opportunity_app/outreach_config.py": (dotted("agent_providers"), set()),
+    "opportunity_app/contact_names.py": (set(), set()),
     "opportunity_app/outreach_batch.py": (dotted("agent_providers"), set()),
     "opportunity_app/daily_lock.py": ({f"{PACKAGE}.ROOT"}, set()),
     # The two API SDKs are imported where a provider is built, so a missing one fails only that provider.
@@ -921,6 +922,26 @@ class OutreachIdentityTests(unittest.TestCase):
     def test_company_identity_does_not_load_the_mail_readers(self):
         heavy = dotted("outreach_inbox", "application_inbox", "outreach_labels", "outreach_delivery", "automation", "api")
         self.assertEqual(all_imports(APP / "outreach_identity.py") & heavy, set())
+
+    def test_importing_it_in_a_fresh_process_loads_no_sender_gmail_or_automation(self):
+        # all_imports reads the imports one file writes; only a fresh interpreter shows what they pull in after them.
+        script = (
+            "import sys, opportunity_app.outreach_identity\n"
+            "print(sorted(name for name in sys.modules if name.startswith('opportunity_app.') or name in ('cryptography', 'httpx')))\n"
+        )
+        done = subprocess.run([sys.executable, "-c", script], cwd=ROOT, capture_output=True, text=True, timeout=120)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        loaded = set(ast.literal_eval(done.stdout.strip().splitlines()[-1]))
+        heavy = dotted(
+            "outreach", "outreach_contacts", "outreach_forms", "outreach_gmail", "outreach_inbox", "application_inbox",
+            "outreach_labels", "outreach_delivery", "automation", "schema", "gmail_client", "connections", "api",
+        ) | {"cryptography", "httpx"}
+        self.assertEqual(loaded & heavy, set())
+
+    def test_the_mailbox_names_it_shares_live_in_a_leaf_that_the_senders_import_from(self):
+        for module in ("outreach_contacts.py", "outreach_forms.py", "outreach_thank_you.py", "outreach_identity.py"):
+            with self.subTest(module=module):
+                self.assertIn(f"{PACKAGE}.contact_names", all_imports(APP / module))
 
     def test_the_interviewer_and_research_take_identity_from_it_not_from_the_mail_reader(self):
         for module in ("outreach_interviewer.py", "outreach_research.py"):

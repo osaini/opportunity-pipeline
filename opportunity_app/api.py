@@ -135,6 +135,7 @@ from .connections import (
     update_preferences,
 )
 from .profile import get_profile, is_personalized, update_profile
+from .profile_store import read_stored_profile
 from .dossier import (
     DossierNotFoundError,
     create_share,
@@ -2248,15 +2249,7 @@ def create_app(
         item = repo.get(opportunity_id)
         if not item:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Opportunity not found")
-        row = repo.connection.execute(
-            "SELECT profile_json FROM profiles WHERE user_id=?", (repo.user_id,)
-        ).fetchone()
-        try:
-            profile = json.loads(row[0] or "{}") if row else {}
-        except (TypeError, json.JSONDecodeError):
-            profile = {}
-        if not isinstance(profile, dict):
-            profile = {}
+        profile = read_stored_profile(repo.connection, repo.user_id)
         try:
             return review_opportunity_with_typesafe(
                 resolved_typesafe_client_factory(), item, profile

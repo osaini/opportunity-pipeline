@@ -80,7 +80,8 @@ from uuid import uuid4
 
 from .agent_providers import CliAgentProvider, cli_available, cli_binary, complete_text
 from .operations import enqueue_job
-from .outreach import LEGAL_SUFFIXES, OutreachNotFoundError, log_event, company_key, get_target, website_domain
+from .contact_names import website_domain
+from .outreach import LEGAL_SUFFIXES, OutreachNotFoundError, log_event, company_key, get_target
 from .outreach_config import COMPANY_RESEARCH_ENV, RESEARCH_ENV, resolve_provider
 from .outreach_contacts import PageParser
 from .outreach_discovery import RUNNERS, UNVERIFIABLE_STATUSES

@@ -60,6 +60,7 @@ from .gmail_client import (
     can_read_mail,
     connection_state,
     default_client_factory,
+    granted_scopes,
     is_throttle,
 )
 from .mail_message import URL_TAIL
@@ -129,10 +130,7 @@ def gmail_drafts_status(conn: sqlite3.Connection, *, user_id: str, now: datetime
     configured = all(os.environ.get(name, "").strip() for name in (config["client_id_env"], config["client_secret_env"], "PIPELINE_CONNECTION_KEY"))
     row = _connector(conn, user_id)
     path = attachment_path()
-    try:
-        granted = json.loads(row["scopes_json"] or "[]") if row else []
-    except (TypeError, ValueError):
-        granted = []
+    granted = granted_scopes(row["scopes_json"]) if row else []
     health = automation.gmail_health(conn, user_id, now=now)
     from .outreach_labels import label_name  # imported here: it imports this module
 
