@@ -18,6 +18,13 @@ from .identity import sort_key
 from .visibility import capture_visible_sql
 
 
+# The ruleset every fit score is stored and read under. The SQL views in
+# migrations/0001, 0020 and 0021 bake the same string in, so changing it needs a
+# migration as well as this constant. It is not `schema.LEGACY_MIGRATION_KEY`
+# (a migration_runs key that happens to read the same) and
+# `auto_triage` also stamps it as a policy_version.
+RULESET_VERSION = "legacy-v1"
+
 # Date sorts order by `posted_at_utc`, the derived fixed-width UTC column, not
 # by the raw `posted_at` the source sent. Sources disagree on spelling -- `Z`,
 # `.000Z`, and offsets like `-04:00` all occur -- and as text `...17Z` sorts
@@ -430,7 +437,7 @@ class OpportunityRepository:
             tenant AS (
                 SELECT """
             + ", ".join(f"o.{column}" for column in self._INVENTORY_COLUMNS)
-            + """,
+            + f""",
                     COALESCE(fit.score, 0) AS score,
                     COALESCE(fit.explanation_json, '[]') AS score_explanation,
                     COALESCE(fit.ruleset_version, '') AS ruleset_version,
@@ -451,7 +458,7 @@ class OpportunityRepository:
                 LEFT JOIN fit_scores fit
                     ON fit.opportunity_id = o.id
                     AND fit.user_id = ?
-                    AND fit.ruleset_version = 'legacy-v1'
+                    AND fit.ruleset_version = '{RULESET_VERSION}'
                 LEFT JOIN applications app
                     ON app.opportunity_id = o.id
                     AND app.user_id = ?

@@ -21,12 +21,13 @@ from typing import Any
 from uuid import uuid4
 
 from pipeline_core.identity import sort_key
+from pipeline_core.read_model import RULESET_VERSION
 
 from . import ROOT
 from .company_tags import regenerate_company_tags
 from .opportunity_metadata import extract_opportunity_metadata
 from .resumes import ResumeValidationError, detect_media_type, extract_pdf, scan_resume_file
-from .schema import RULESET_VERSION, utc_now
+from .schema import utc_now
 
 
 DEFAULT_CAPTURE_STORAGE = ROOT / "data" / "captures"

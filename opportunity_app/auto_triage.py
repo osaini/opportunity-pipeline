@@ -33,11 +33,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from pipeline_core.read_model import RULESET_VERSION
 from pipeline_core.visibility import capture_visible_sql
 
 from . import automation
 from .database import is_postgres_target
-from .schema import LOCAL_USER_ID, RULESET_VERSION, connect_product
+from .schema import LOCAL_USER_ID, connect_product
 
 LOGGER = logging.getLogger(__name__)
 

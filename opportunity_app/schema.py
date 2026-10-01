@@ -17,6 +17,7 @@ from typing import Any, Callable
 
 from pipeline_core import OpportunityFilters, OpportunityRepository
 from pipeline_core.identity import sort_key
+from pipeline_core.read_model import RULESET_VERSION
 from pipeline_core.regions import region_label
 
 from . import DEFAULT_LEGACY_DB, DEFAULT_PLATFORM_DB, DEFAULT_PROFILE, ROOT
@@ -27,9 +28,10 @@ from .database import PostgresConnection, is_postgres_target
 
 
 MIGRATIONS_DIR = ROOT / "migrations"
-SCHEMA_PATH = MIGRATIONS_DIR / "0001_platform_sqlite.sql"
 LOCAL_USER_ID = "local-user"
-RULESET_VERSION = "legacy-v1"
+# The migration_runs key of the one-time import from the legacy database. Not the
+# ruleset version (`pipeline_core.read_model.RULESET_VERSION`), though the string is the same.
+LEGACY_MIGRATION_KEY = "legacy-v1"
 APPLICATION_STATUSES = {"applying", "applied", "interview", "offer", "rejected", "withdrawn"}
 # The updated_at of an 'automation_paused' row that was made 'off' and never
 # flipped. That timestamp means "when the pause last started or ended", so a
@@ -898,9 +900,9 @@ def migrate_legacy_database(
                 INSERT INTO migration_runs(
                     migration_key, source_path, source_count, imported_count,
                     started_at, finished_at
-                ) VALUES('legacy-v1', ?, ?, ?, ?, ?)
+                ) VALUES(?, ?, ?, ?, ?, ?)
                 """,
-                (str(source_path), len(jobs), len(jobs), started_at, finished_at),
+                (LEGACY_MIGRATION_KEY, str(source_path), len(jobs), len(jobs), started_at, finished_at),
             )
 
         source_active_ids = _legacy_active_ids(source)
