@@ -398,14 +398,49 @@ def _other_entries_named(body: str, inputs: dict[str, Any]) -> list[str]:
     return named
 
 
+# Inputs that tell the model how to write, not facts it may quote: 150 is not a number the student earned.
+_NOT_A_FACT = frozenset({"max_words"})
+
+
+def _input_text(value: Any):
+    """Every piece of the inputs' own words a number may come from, with addresses taken out."""
+    if isinstance(value, str):
+        yield _ADDRESS.sub(" ", value)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            if key not in _NOT_A_FACT:
+                yield from _input_text(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _input_text(item)
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        yield str(value)
+
+
+def _whole_number(token: str) -> str:
+    """The number as a comparison key: 09 and 9 are one number, 3.5 stays itself."""
+    return (token.lstrip("0") or "0") if token.isdigit() else token
+
+
 def _unsupported_numbers(body: str, inputs: dict[str, Any]) -> list[str]:
-    """Numbers in the draft that appear nowhere in its inputs."""
-    haystack = json.dumps(inputs, ensure_ascii=False)
-    without_addresses = _ADDRESS.sub(" ", body)
+    """Numbers in the draft that are no whole number in the inputs' own words.
+
+    Whole numbers, as outreach_call_prep checks them, not pieces of text: an
+    invented 9 is not found in a 90 or in 2019. The tokenizer is the research
+    module's, so 1,500 and 1500 are one number, 45% and 45 percent are one, and
+    a range such as 2019-2023 is two.
+    """
+    # Imported here: outreach_research pulls in outreach_discovery, which imports this module.
+    from . import outreach_research as research
+
+    allowed = {
+        _whole_number(token)
+        for piece in _input_text(inputs)
+        for token in research._numbers(research._tokens(piece))
+    }
     found = []
-    for match in _NUMBER.findall(without_addresses):
-        token = match.rstrip(".,")
-        if token and token not in haystack and token not in found:
+    for token in research._tokens(_ADDRESS.sub(" ", body)):
+        if token[0].isdigit() and _whole_number(token) not in allowed and token not in found:
             found.append(token)
     return found
 

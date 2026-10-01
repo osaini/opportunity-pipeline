@@ -37,6 +37,7 @@ from opportunity_app.outreach_drafting import (
     draft_versions,
     generate_draft,
     restore_draft_version,
+    _unsupported_numbers,
 )
 from opportunity_app.schema import connect_product, ensure_product_schema, utc_now
 
@@ -742,6 +743,63 @@ class DraftingTests(unittest.TestCase):
                 self.conn, self.target["id"], user_id=USER, kind="follow_up",
                 fingerprint=drafted["follow_up_fingerprint"],
             )
+
+
+class UnsupportedNumbersTests(unittest.TestCase):
+    """A number in a draft is supported only when the same whole number is in the inputs.
+
+    The check once looked for the number as a piece of the inputs' JSON text, so an
+    invented 9 passed whenever 90 or 2019 appeared anywhere in them.
+    """
+
+    @staticmethod
+    def inputs(**student):
+        return {
+            "student": student,
+            "company_research": {"summary": "Dairy robotics for small farms"},
+            "suggested_ask": "whether they would consider an intern, or a 15 minute call",
+            "max_words": 150,
+        }
+
+    def test_an_invented_number_that_is_a_piece_of_a_real_one_is_flagged(self):
+        inputs = self.inputs(experience=[{"title": "Cut scrap 90 percent", "dates": "2019-2023"}])
+        self.assertEqual(_unsupported_numbers("I cut waste for 9 plants in 201 days.", inputs), ["9", "201"])
+
+    def test_a_number_in_a_url_or_id_does_not_license_the_same_digits(self):
+        inputs = self.inputs(name="Test Student")
+        inputs["source_urls"] = ["https://bovi.example/about-2024"]
+        inputs["sender_address"] = "student2024@example.edu"
+        self.assertEqual(_unsupported_numbers("I read your 2024 note.", inputs), ["2024"])
+
+    def test_the_word_limit_is_not_a_source_of_numbers(self):
+        self.assertEqual(_unsupported_numbers("I ran 150 trials.", self.inputs(name="Test Student")), ["150"])
+
+    def test_numbers_that_are_in_the_inputs_pass_in_every_written_form(self):
+        inputs = self.inputs(
+            experience=[
+                {"title": "Raised $1,500 and cut scrap 45%", "dates": "2019-2023", "note": "ranked 3rd of 40, scored 3.5"},
+                {"title": "Shipped 12000 units in Q3"},
+            ],
+        )
+        body = (
+            "I raised $1500 and later 1,500 again, cut scrap 45 percent, worked 2019-2023 (2019 – 2023), "
+            "ranked 3rd of 40, scored 3.5, shipped 12,000 units in Q3, and would like a 15 minute call."
+        )
+        self.assertEqual(_unsupported_numbers(body, inputs), [])
+
+    def test_a_date_in_the_inputs_supports_its_day_and_month_with_or_without_a_leading_zero(self):
+        inputs = self.inputs(name="Test Student")
+        inputs["sent_on"] = "2026-09-08T10:00:00+00:00"
+        self.assertEqual(_unsupported_numbers("I wrote on September 8, 2026, month 9.", inputs), [])
+        self.assertEqual(_unsupported_numbers("I wrote on September 7.", inputs), ["7"])
+
+    def test_a_decimal_does_not_support_its_fractional_part(self):
+        inputs = self.inputs(experience=[{"title": "Held a 3.5 GPA"}])
+        self.assertEqual(_unsupported_numbers("I held a 3.5 GPA and a 5 point lead.", inputs), ["5"])
+
+    def test_numbers_inside_an_address_are_not_the_drafts_claims(self):
+        body = "Write to me at student2024@example.edu or see https://example.edu/p/99."
+        self.assertEqual(_unsupported_numbers(body, self.inputs(name="Test Student")), [])
 
 
 class LifecycleTests(unittest.TestCase):

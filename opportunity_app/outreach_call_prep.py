@@ -560,7 +560,8 @@ def _unsupported_numbers(text: str, inputs: dict[str, Any]) -> list[str]:
     """Numbers in the notes that are no whole number in the inputs' own words.
 
     Whole numbers, not pieces of text: a 9 is not found in a 90 or a date.
-    Email drafts use outreach_drafting's check; call prep needs this stricter one.
+    Email drafts check whole numbers the same way (outreach_drafting); this one
+    also skips the inputs' ids and links, which are not the student's own words.
     """
     allowed: set[str] = set()
     for piece in _strings(inputs):
