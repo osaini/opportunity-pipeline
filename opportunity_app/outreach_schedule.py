@@ -62,16 +62,16 @@ from .outreach_location import city_state
 from .outreach_gmail import (
     SENT_EVENT,
     THANK_YOU_KIND,
-    SendConflictError,
     SendNeedsCheckError,
     SendUnconfirmedError,
     ThankYouChanged,
     _approved_for,
-    backoff_until,
     gmail_drafts_status,
     send_gmail_message,
     send_thank_you,
 )
+from .send_claims import SendConflictError
+from .gmail_connection import backoff_until
 from .settings_store import setting_updated_at
 from .timestamps import utc_now
 from .user_time import at_wall_clock, to_local, user_timezone

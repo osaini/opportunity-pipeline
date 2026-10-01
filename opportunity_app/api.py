@@ -307,13 +307,13 @@ from .outreach_schedule import cancel_send, schedule_send
 from . import outreach_labels, outreach_thank_you
 from .gmail_client import GmailAuthError, default_client_factory as default_gmail_client_factory
 from .outreach_gmail import (
-    SendConflictError,
     SendNeedsCheckError,
     ThankYouChanged,
     create_gmail_draft,
     gmail_drafts_status,
     send_gmail_message,
 )
+from .send_claims import SendConflictError
 from .operations import (
     OperationsError,
     delete_account,

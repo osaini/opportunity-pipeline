@@ -23,18 +23,12 @@ _GREETING = re.compile(
     r"(?P<word>(?:hi|hello|hey|dear|good (?:morning|afternoon|evening))\s+)(?P<name>[^,!:\n]{1,80}?)(?P<end>\s*[,!:]?)",
     re.IGNORECASE,
 )
-
-
 # The greeting and the first sentence on one line: "Hi Alex, I'm writing...".
 _LEADING_GREETING = re.compile(
     r"(?P<word>(?:hi|hello|hey|dear|good (?:morning|afternoon|evening))\s+)(?P<name>[^,!:\n]{1,80}?)(?P<end>\s*[,!:])(?P<rest>\s+\S.*)",
     re.IGNORECASE,
 )
-
-
 _HONORIFICS = {"dr", "mr", "mrs", "ms", "mx", "prof", "professor"}
-
-
 # Greetings to nobody in particular, which a named contact improves on.
 GENERIC_GREETINGS = {"there", "team", "all", "everyone", "hiring team", "recruiting team"}
 
@@ -42,11 +36,7 @@ GENERIC_GREETINGS = {"there", "team", "all", "everyone", "hiring team", "recruit
 # How a student opens an email, from their own profile (greeting_word and
 # unnamed_greeting). These are the fallbacks when they have not said.
 DEFAULT_GREETING = {"word": "Hi", "unnamed": "{company} team"}
-
-
 _GREETING_WORD = re.compile(r"[^\W\d_][^\W\d_ '\u2019.-]*(?:[ '\u2019.-][^\W\d_]+){0,3}")
-
-
 # The legal ending people leave off when they say a company's name.
 _LEGAL_ENDING = re.compile(r"[,\s]+(?:inc|incorporated|corp|corporation|llc|ltd|pbc)\.?$", re.IGNORECASE)
 

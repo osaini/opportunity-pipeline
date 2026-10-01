@@ -49,16 +49,14 @@ from .contact_names import NO_REPLY_SENDER, website_domain
 from .outreach import UNSENT_STATUSES, DraftChangedError, log_event, get_target, update_target
 from .outreach_location import missing_location_message
 from .outreach_config import sender_account
-from .outreach_gmail import (
+from .outreach_gmail import SendNeedsCheckError, attachment_path, attachment_problem
+from .send_claims import (
     IN_PROGRESS,
     SendConflictError,
-    SendNeedsCheckError,
     send_claim_row,
     send_claim_held,
     claimed_send,
     settle_send_claim,
-    attachment_path,
-    attachment_problem,
 )
 from .preparation import confirmed_facts
 from .timestamps import utc_now

@@ -109,7 +109,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
     3: _app(
         "actions auth apply_checks apply_policy apply_sensitive apply_schema_client automation boards captures connections "
         "dossier employer market early_programs extension_apply mail_trust notifications purge ingestion profile resumes "
-        "resume_variants preparation document_artifacts inbox_classifiers "
+        "resume_variants preparation document_artifacts inbox_classifiers gmail_connection send_claims "
         "outreach outreach_config outreach_identity outreach_location outreach_greeting outreach_versions outreach_contacts "
         "outreach_linkedin outreach_batch "
         "outreach_render"

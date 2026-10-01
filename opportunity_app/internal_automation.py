@@ -486,7 +486,7 @@ def auto_close(
     """
     from .outreach import NO_RESPONSE_AFTER_DAYS, get_target, heard_back, lifecycle_suggestion, local_today
     from .gmail_client import connection_state
-    from .outreach_gmail import _connector
+    from .gmail_connection import connector_row
     from .outreach_inbox import REPLY_WINDOW, watched_ids
     from .outreach_review import FRESH_LOOK_REASONS, fresh_look
 
@@ -508,7 +508,7 @@ def auto_close(
             checkable.append(item)
         else:
             results.append({"target_id": item["id"], "company": item["company"], "closed": False, "reason": not_searched})
-    connection = connection_state(_connector(conn, user_id))
+    connection = connection_state(connector_row(conn, user_id))
     if client_factory is None:
         gmail_problem = "Gmail is not set up, so replies could not be checked"
     elif connection != "connected":

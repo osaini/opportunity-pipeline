@@ -21,7 +21,7 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, application_inbox, automation, inbox_watcher, internal_automation, mail_trust, outreach_gmail
+from opportunity_app import STATIC_DIR, application_inbox, automation, inbox_watcher, internal_automation, mail_trust, gmail_connection
 from opportunity_app.actions import record_intent, update_application
 from opportunity_app.api import create_app
 from opportunity_app.application_inbox import match_application, parse_message
@@ -732,7 +732,7 @@ class CursorTests(MailCase):
         self.assertEqual(result["state"], "throttled")
         self.assertEqual(json.loads(self.sync()["pending_ids_json"]), ["m-31", "m-32"])
         # Gmail's hold is over.
-        outreach_gmail._BACKOFF.clear()
+        gmail_connection._BACKOFF.clear()
         with self.conn:
             self.conn.execute("UPDATE connector_accounts SET backoff_until=NULL")
         self.gmail.throttle_after = None
@@ -2312,7 +2312,7 @@ class OutreachHandoffTests(MailCase):
         # Not lost, not back with outreach, and still marked as read late, so reading it later only proposes.
         self.assertEqual((waiting["state"], waiting["origin"]), ("awaiting_resume", application_inbox.RECLAIMED))
         # Gmail's hold is over.
-        outreach_gmail._BACKOFF.clear()
+        gmail_connection._BACKOFF.clear()
         with self.conn:
             self.conn.execute("UPDATE connector_accounts SET backoff_until=NULL")
         self.gmail.throttle_after = None

@@ -126,17 +126,16 @@ from .outreach_gmail import (
     THANK_YOU_DRAFT_EVENT,
     THANK_YOU_KIND,
     THANK_YOU_SENT_EVENT,
-    SendConflictError,
     SendUnconfirmedError,
     ThankYouChanged,
-    _Gmail,
-    backoff_until,
     create_thank_you_draft,
     gmail_drafts_status,
     send_thank_you,
     thank_you_fingerprint,
     thank_you_row,
 )
+from .send_claims import SendConflictError
+from .gmail_connection import GmailClient, backoff_until
 from .outreach_schedule import send_time_label, next_morning, recipient_zone
 from .timestamps import parse_app_instant, utc_now
 from .user_time import at_wall_clock, to_local
@@ -1544,7 +1543,7 @@ def _thread_news(conn: sqlite3.Connection, client_factory: Callable[[], Any], us
     """
     try:
         with client_factory() as client:
-            gmail = _Gmail(conn, client, user_id)
+            gmail = GmailClient(conn, client, user_id)
             response = gmail.request("GET", f"/threads/{quote(thank_you['thread_id'], safe='')}", params={"format": "minimal"})
     except GmailThrottled:
         return "throttled", "Gmail asked the app to slow down"
@@ -1736,7 +1735,7 @@ def recover_stuck(conn: sqlite3.Connection, now: datetime, stuck_after: timedelt
     can offer it again; a claim it left unconfirmed makes the next Send it
     anyway ask for that look first. Returns how many were stopped.
     """
-    from .outreach_gmail import send_claim_row, send_claim_held
+    from .send_claims import send_claim_row, send_claim_held
 
     cutoff = (now - stuck_after).isoformat(timespec="microseconds")
     stopped = 0

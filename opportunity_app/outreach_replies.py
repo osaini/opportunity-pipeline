@@ -71,11 +71,7 @@ REPLY_PATTERNS = (
 # student, so it is checked before REPLY_PATTERNS and before Jev. "bounced" is
 # not a status; applying it records the bounce (outreach_delivery.record_bounce).
 BOUNCED = "bounced"
-
-
 BOUNCE_REASON = "It is a delivery failure notice, not a reply: the email did not reach them"
-
-
 _BOUNCE_NOTICE = re.compile(
     r"\b(mailer-daemon|mail delivery (subsystem|system|failed|failure)|delivery status notification \(failure\)"
     r"|undeliverable|undelivered mail|returned mail|delivery (has )?failed|could ?n[o']t be delivered"
@@ -83,12 +79,8 @@ _BOUNCE_NOTICE = re.compile(
     r"|mailbox (is )?(unavailable|not found|does not exist)|group you tried to contact|permission to post messages"
     r"|550[ -]5\.\d\.\d+)\b"
 )
-
-
 # Gmail is still trying; only a failure is a bounce.
 _DELAY_NOTICE = re.compile(r"\(delay\)|\bdelivery (has been |is )?delayed\b|\bwill (retry|keep trying)\b")
-
-
 _PERMANENT = re.compile(r"\(failure\)|\bpermanent(ly)?\b|\b5\d\d[ -]5\.\d\.\d+")
 
 

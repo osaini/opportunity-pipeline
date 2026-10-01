@@ -75,14 +75,8 @@ from .mail_trust import FREEMAIL, registrable_domain
 from .outreach import UNSENT_STATUSES
 from .outreach_config import sender_account
 from .outreach_delivery import is_delivery_notice
-from .outreach_gmail import (
-    DRAFT_EVENT,
-    SENT_EVENT,
-    THANK_YOU_SENT_EVENT,
-    _connector,
-    _Gmail,
-    backoff_until,
-)
+from .outreach_gmail import DRAFT_EVENT, SENT_EVENT, THANK_YOU_SENT_EVENT
+from .gmail_connection import connector_row, GmailClient, backoff_until
 from .schema import _has_column
 from .settings_store import get_setting, put_setting
 from .timestamps import parse_app_instant, utc_now
@@ -234,7 +228,7 @@ def label_replies(
 
 
 def _run(conn: sqlite3.Connection, user_id: str, client_factory: ClientFactory, now: datetime) -> dict[str, Any]:
-    row = _connector(conn, user_id)
+    row = connector_row(conn, user_id)
     state = connection_state(row)
     if state != "connected":
         return {"state": state}
@@ -244,11 +238,11 @@ def _run(conn: sqlite3.Connection, user_id: str, client_factory: ClientFactory, 
     granted = granted_scopes(row["scopes_json"])
     _discard(conn)
     with ExitStack() as stack:
-        gmail: list[_Gmail] = []
+        gmail: list[GmailClient] = []
 
-        def connection() -> _Gmail:
+        def connection() -> GmailClient:
             if not gmail:
-                gmail.append(_Gmail(conn, stack.enter_context(client_factory()), user_id))
+                gmail.append(GmailClient(conn, stack.enter_context(client_factory()), user_id))
                 _discard(conn)  # the constructor's SELECT opens a transaction on PostgreSQL; no call is made inside one
             return gmail[0]
 
@@ -588,7 +582,7 @@ MISSING = object()
 class _Labeller:
     """One pass: the label's id, and how many threads it has asked Gmail about."""
 
-    def __init__(self, gmail: _Gmail, user_id: str, account: str, name: str):
+    def __init__(self, gmail: GmailClient, user_id: str, account: str, name: str):
         self.gmail, self.user_id, self.name, self.account = gmail, user_id, name, account
         self.key = (user_id, account.casefold(), name)
         self.threads = 0
@@ -723,7 +717,7 @@ def _invalid_label(response: httpx.Response) -> bool:
 
 
 def _label(
-    conn: sqlite3.Connection, gmail: _Gmail, user_id: str, account: str, name: str, pending: list[dict[str, Any]],
+    conn: sqlite3.Connection, gmail: GmailClient, user_id: str, account: str, name: str, pending: list[dict[str, Any]],
     now: datetime, marks: _Marks | None = None,
 ) -> dict[str, Any]:
     labeller = _Labeller(gmail, user_id, account, name)

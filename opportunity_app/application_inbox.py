@@ -167,7 +167,7 @@ from .mail_message import (
     strip_queries,
 )
 from .outreach_config import sender_account
-from .outreach_gmail import _connector, _Gmail
+from .gmail_connection import connector_row, GmailClient
 from .outreach_inbox import RULES, owned_sql
 from .settings_store import setting_updated_at
 from .timestamps import parse_app_instant, utc_now
@@ -1100,7 +1100,7 @@ def _insert_event(
     *, label: str, verified: bool,
 ) -> str:
     """The monitored_events row for this email (made once), which the email card and the ledger both point to."""
-    connector = _connector(conn, user_id)
+    connector = connector_row(conn, user_id)
     connector_id = connector["id"] if connector is not None else None
     external_id = f"gmail:{mail.gmail_id}"
     payload = {
@@ -1393,7 +1393,7 @@ class _Budget:
         return True
 
 
-def _fetch(gmail: _Gmail, gmail_id: str) -> dict[str, Any] | None:
+def _fetch(gmail: GmailClient, gmail_id: str) -> dict[str, Any] | None:
     """messages.get in the raw format. None when the message is gone; raises _Stop when Gmail could not answer."""
     response = gmail.request("GET", f"/messages/{quote(gmail_id, safe='')}", params={"format": "raw"})
     if response.status_code == 404:
@@ -1404,7 +1404,7 @@ def _fetch(gmail: _Gmail, gmail_id: str) -> dict[str, Any] | None:
 
 
 def _drain(
-    conn: sqlite3.Connection, gmail: _Gmail, user_id: str, queue: str, origin: str, budget: _Budget,
+    conn: sqlite3.Connection, gmail: GmailClient, user_id: str, queue: str, origin: str, budget: _Budget,
     decisions: DecisionClient | None, now: datetime, totals: dict[str, int], *, expect: Any = _ANY,
 ) -> None:
     """Read and decide queued ids until the queue or the budget runs out."""
@@ -1428,7 +1428,7 @@ def _drain(
 
 
 def _rescan(
-    conn: sqlite3.Connection, gmail: _Gmail, user_id: str, budget: _Budget, decisions: DecisionClient | None,
+    conn: sqlite3.Connection, gmail: GmailClient, user_id: str, budget: _Budget, decisions: DecisionClient | None,
     now: datetime, totals: dict[str, int], *, expect: Any = _ANY,
 ) -> None:
     """Decide again the messages read while automation was paused."""
@@ -1492,7 +1492,7 @@ def _epoch(moment: datetime) -> int:
     return int(moment.timestamp())
 
 
-def _list_ids(gmail: _Gmail, query: str, page_token: str, pages: int) -> tuple[list[str], str]:
+def _list_ids(gmail: GmailClient, query: str, page_token: str, pages: int) -> tuple[list[str], str]:
     """Up to ``pages`` pages of a messages.list search from ``page_token``: the ids, and the token to go on from ('' when done)."""
     found: list[str] = []
     token = page_token
@@ -1511,7 +1511,7 @@ def _list_ids(gmail: _Gmail, query: str, page_token: str, pages: int) -> tuple[l
     return found, token
 
 
-def _profile_history(gmail: _Gmail) -> str:
+def _profile_history(gmail: GmailClient) -> str:
     response = gmail.request("GET", "/profile")
     if response.status_code != 200:
         raise _Stop(f"Gmail answered HTTP {response.status_code} for the profile")
@@ -1521,7 +1521,7 @@ def _profile_history(gmail: _Gmail) -> str:
     return history_id
 
 
-def _start(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, now: datetime) -> str:
+def _start(conn: sqlite3.Connection, gmail: GmailClient, user_id: str, now: datetime) -> str:
     """The first pass with the switch on: when it was turned on, the live cursor, and the backfill to run.
 
     Returns the enabled_at it recorded. The backfill's search ends a minute
@@ -1546,7 +1546,7 @@ def _start(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, now: datetime)
     return enabled_text
 
 
-def _collect_history(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, sync: dict[str, Any], now: datetime, *, expect: Any = _ANY) -> None:
+def _collect_history(conn: sqlite3.Connection, gmail: GmailClient, user_id: str, sync: dict[str, Any], now: datetime, *, expect: Any = _ANY) -> None:
     """Page through history.list from the cursor; store the new ids and the new cursor together. Starts recovery on a 404."""
     token = ""
     ids: list[str] = []
@@ -1578,7 +1578,7 @@ def _collect_history(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, sync
     _queue_ids(conn, user_id, "pending_ids_json", ids, expect=expect, history_id=cursor)
 
 
-def _begin_recovery(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, sync: dict[str, Any], now: datetime, *, expect: Any = _ANY) -> None:
+def _begin_recovery(conn: sqlite3.Connection, gmail: GmailClient, user_id: str, sync: dict[str, Any], now: datetime, *, expect: Any = _ANY) -> None:
     """Gmail forgot the cursor: take a fresh one first, then search from the last good pass (a day before, never before enabled_at)."""
     fresh = _profile_history(gmail)
     last_ok = parse_app_instant(sync.get("last_ok_at")) or parse_app_instant(sync.get("enabled_at")) or now
@@ -1593,7 +1593,7 @@ def _begin_recovery(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, sync:
     _recover(conn, gmail, user_id, now, expect=expect)
 
 
-def _recover(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, now: datetime, *, expect: Any = _ANY) -> None:
+def _recover(conn: sqlite3.Connection, gmail: GmailClient, user_id: str, now: datetime, *, expect: Any = _ANY) -> None:
     """Go on with a recovery search; when it is done, live reading resumes from the cursor taken before it began."""
     sync = dict(conn.execute("SELECT * FROM application_mail_sync WHERE user_id=?", (user_id,)).fetchone())
     query = f"in:inbox after:{sync['recovery_after']}"
@@ -1605,7 +1605,7 @@ def _recover(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, now: datetim
                    history_id=sync["recovery_history_id"] or sync["history_id"], recovery_history_id="")
 
 
-def _backfill(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, budget: _Budget, decisions: DecisionClient | None,
+def _backfill(conn: sqlite3.Connection, gmail: GmailClient, user_id: str, budget: _Budget, decisions: DecisionClient | None,
               now: datetime, totals: dict[str, int], *, expect: Any = _ANY) -> None:
     """The first-run look at the 60 days before enabled_at: one page at a time into its own queue, proposal-only."""
     sync = dict(conn.execute("SELECT * FROM application_mail_sync WHERE user_id=?", (user_id,)).fetchone())
@@ -1700,7 +1700,7 @@ def run_pass(
         last = parse_app_instant(sync.get("last_pass_at"))
         if not force and last is not None and now - last < PASS_EVERY:
             return {**result, "skipped": True}
-        state = connection_state(_connector(conn, user_id))
+        state = connection_state(connector_row(conn, user_id))
         if state != "connected":
             return {**result, "state": state}
         totals: dict[str, int] = {}
@@ -1712,7 +1712,7 @@ def run_pass(
             # not only once the student opens the Automation panel.
             mail_trust.refresh_suggestions(conn, user_id)
             with client_factory() as client:
-                gmail = _Gmail(conn, client, user_id)
+                gmail = GmailClient(conn, client, user_id)
                 budget = _Budget(MAX_GETS_PER_PASS)
                 expect = sync["enabled_at"]
                 if not sync["history_id"]:

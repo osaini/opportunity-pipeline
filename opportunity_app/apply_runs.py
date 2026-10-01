@@ -716,7 +716,7 @@ def _after_missed_settle(conn: sqlite3.Connection, token: str, user_id: str, det
                 title=f"Greenhouse showed its confirmation page for {company}, after this attempt was marked as not sent. Check it.",
                 body="", timestamp=stamp,
             )
-    except Exception:  # noqa: BLE001 - like outreach_gmail.settle_send_claim: a failed report never hides the result
+    except Exception:  # noqa: BLE001 - like send_claims.settle_send_claim: a failed report never hides the result
         LOGGER.exception("A late confirmation for an apply claim was not recorded")
 
 

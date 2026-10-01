@@ -17,7 +17,7 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, automation, inbox_watcher, outreach, outreach_gmail, outreach_inbox, outreach_labels, schema
+from opportunity_app import STATIC_DIR, automation, inbox_watcher, outreach, gmail_connection, outreach_gmail, outreach_inbox, outreach_labels, schema
 from opportunity_app.api import create_app
 from opportunity_app.inbox_watcher import InboxWatcher
 from opportunity_app.outreach_inbox import decide_possible_reply
@@ -378,7 +378,7 @@ class LabelPassTests(LabelCase):
 
     def test_a_held_back_gmail_is_not_asked(self):
         self.seeded(1)
-        outreach_gmail._BACKOFF[USER] = (datetime.now(timezone.utc) + timedelta(minutes=5), 1)
+        gmail_connection._BACKOFF[USER] = (datetime.now(timezone.utc) + timedelta(minutes=5), 1)
         self.assertEqual(self.run_pass(), {"state": "throttled"})
         self.assertEqual(self.gmail.requests, [])
 
@@ -828,7 +828,7 @@ class SweepTests(LabelCase):
         self.gmail.label_threads["m-thread-00"].append({"id": "m-thanks", "labelIds": ["SENT"]})
         self.gmail.inbox_replies.append("m-thanks")
         self.gmail.threads["m-thanks"] = "m-thread-00"
-        outreach_gmail._BACKOFF.clear()
+        gmail_connection._BACKOFF.clear()
         with self.conn:
             self.conn.execute("UPDATE connector_accounts SET backoff_until=NULL, last_error=''")
         result = self.run_pass(START + timedelta(minutes=10))
@@ -843,7 +843,7 @@ class StopTests(LabelCase):
         result = self.run_pass()
         self.assertEqual(result["state"], "throttled")
         self.assertEqual(len(self.modifies()), 1, "the rows behind it were not tried")
-        self.assertIsNotNone(outreach_gmail.backoff_until(USER))
+        self.assertIsNotNone(gmail_connection.backoff_until(USER))
         self.assertEqual([self.row(f"m-{number:02d}")["label_name"] for number in range(3)], ["", "", ""])
         self.assertEqual(self.run_pass(), {"state": "throttled"})
         self.assertEqual(len(self.modifies()), 1)
@@ -853,7 +853,7 @@ class StopTests(LabelCase):
 
         def refused_and_held():
             # Something else on this student's Gmail was told to slow down while this call was in flight.
-            outreach_gmail._BACKOFF[USER] = (datetime.now(timezone.utc) + timedelta(minutes=5), 1)
+            gmail_connection._BACKOFF[USER] = (datetime.now(timezone.utc) + timedelta(minutes=5), 1)
             return httpx.Response(400, json={"error": {"code": 400, "message": "Invalid value"}})
 
         self.gmail.modify_answers.append(refused_and_held)
@@ -870,7 +870,7 @@ class StopTests(LabelCase):
             real(labeller, response)
             if not calls:
                 calls.append(1)
-                outreach_gmail._BACKOFF[USER] = (datetime.now(timezone.utc) + timedelta(minutes=5), 1)
+                gmail_connection._BACKOFF[USER] = (datetime.now(timezone.utc) + timedelta(minutes=5), 1)
 
         with mock.patch.object(outreach_labels._Labeller, "_refuse", refuse_then_hold):
             self.assertEqual(self.run_pass()["state"], "throttled")
@@ -886,7 +886,7 @@ class StopTests(LabelCase):
             real(labeller, response)
             if not calls and "/threads/" in response.request.url.path:
                 calls.append(1)
-                outreach_gmail._BACKOFF[USER] = (datetime.now(timezone.utc) + timedelta(minutes=5), 1)
+                gmail_connection._BACKOFF[USER] = (datetime.now(timezone.utc) + timedelta(minutes=5), 1)
 
         with mock.patch.object(outreach_labels._Labeller, "_refuse", refuse_then_hold):
             self.assertEqual(self.run_pass()["state"], "throttled")

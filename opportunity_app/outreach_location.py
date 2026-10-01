@@ -22,15 +22,11 @@ from .schema import LOCAL_USER_ID
 # page that states it agrees, or the student confirms the research, so the
 # drafter does not rely on it.
 LOCATION_BASES = ("manual", "company_site", "sec_form_d", "web_search", "research")
-
-
 # The bases a draft may rely on. Membership is the test, not absence from a
 # denylist: a blank basis means nothing has established the location, and an
 # unrecognised one means this code does not know what established it. Both are
 # unverified, so the test fails closed.
 VERIFIED_BASES = frozenset({"manual", "company_site", "sec_form_d", "web_search"})
-
-
 # Bases that a page this app opened established, so a location carrying one
 # needs no further searching unless it was only inferred.
 PAGE_CHECKED_BASES = frozenset({"company_site", "sec_form_d", "web_search"})
@@ -48,8 +44,6 @@ US_STATES = {
     "UT": "utah", "VT": "vermont", "VA": "virginia", "WA": "washington", "WV": "west virginia",
     "WI": "wisconsin", "WY": "wyoming", "DC": "district of columbia",
 }
-
-
 _STATE_NAME_PATTERNS = {code: re.compile(rf"\b{name}\b") for code, name in US_STATES.items()}
 
 
