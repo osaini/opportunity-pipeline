@@ -17,6 +17,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pipeline
+from pipeline_core import paths
 
 SOURCE = {"kind": "greenhouse", "company": "Acme", "token": "acme"}
 KEY = "greenhouse:acme"
@@ -49,7 +50,7 @@ class BoardRetirementTests(unittest.TestCase):
     def setUp(self):
         tmp = TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        patcher = unittest.mock.patch.object(pipeline, "DB_PATH", Path(tmp.name) / "pipeline.db")
+        patcher = unittest.mock.patch.object(paths, "DB_PATH", Path(tmp.name) / "pipeline.db")
         patcher.start()
         self.addCleanup(patcher.stop)
         self.conn = pipeline.connect()

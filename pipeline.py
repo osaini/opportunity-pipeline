@@ -5,59 +5,47 @@ from __future__ import annotations
 
 import argparse
 import csv
-import email.utils
-import gzip
 import hashlib
 import html
 import json
 import os
-import random
 import re
 import sqlite3
-import subprocess
 import sys
-import threading
-import time
 import unicodedata
-import urllib.error
 import urllib.parse
-import urllib.request
-import zlib
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor
-from concurrent.futures import wait as futures_wait
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait as futures_wait
 from datetime import datetime, timedelta, timezone
-from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable
 
-from pipeline_core.env import iter_env_pairs
+from pipeline_core import paths
+from pipeline_core.clock import now_iso, parse_datetime
+from pipeline_core.config import load_env_file, load_json, load_profile, load_sources, source_key
+from pipeline_core.http import (
+    _http_json,
+    _source_host,
+    request_json,
+    request_json_post,
+    request_text,
+    TransientFetchError,
+)
 from pipeline_core.identity import identity_tokens, normalized, sort_key
+from pipeline_core.paths import display_path
 from pipeline_core.read_model import RANKED_VIEW_PER_COMPANY
 from pipeline_core.regions import is_uninformative_location, match_region, region_label
+from pipeline_core.text import (
+    apply_controls,
+    canonical_url,
+    classify_role,
+    CROSSLIST_THRESHOLD,
+    fingerprint,
+    fingerprint_text,
+    stable_id,
+    strip_html,
+)
 
 
-ROOT = Path(__file__).resolve().parent
-# PIPELINE_DB lets tests and the web worker target a hermetic database copy;
-# the default remains the operator's canonical pipeline database.
-DB_PATH = Path(os.environ.get("PIPELINE_DB", str(ROOT / "data" / "pipeline.db")))
-# profile.json and sources.local.json are personal and gitignored; setup copies
-# config/profile.example.json into place. sources.json is the shared, tracked
-# catalog, and sources.local.json layers one student's searches on top of it.
-# PIPELINE_PROFILE, like PIPELINE_DB, lets tests and the web worker point a
-# subprocess at a hermetic profile instead of the student's own.
-PROFILE_PATH = Path(os.environ.get("PIPELINE_PROFILE") or ROOT / "config" / "profile.json")
-PROFILE_EXAMPLE_PATH = ROOT / "config" / "profile.example.json"
-SOURCES_PATH = ROOT / "config" / "sources.json"
-SOURCES_LOCAL_PATH = ROOT / "config" / "sources.local.json"
-ENV_PATH = ROOT / ".env"
-MANUAL_PATH = ROOT / "data" / "manual_jobs.csv"
-EMAIL_IMPORT_PATH = ROOT / "data" / "linkedin_emails.json"
-DISCOVERED_IMPORT_PATH = ROOT / "data" / "discovered_jobs.json"
-ENRICHMENT_PATH = ROOT / "data" / "enrichment.json"
-OUTPUT_MD = ROOT / "output" / "shortlist.md"
-OUTPUT_CSV = ROOT / "output" / "shortlist.csv"
-OUTPUT_DASHBOARD = ROOT / "output" / "dashboard.html"
-USER_AGENT = "Opportunity-Pipeline/1.0 (personal research tool)"
 VALID_STATUSES = {
     "discovered",
     "shortlisted",
@@ -70,204 +58,9 @@ VALID_STATUSES = {
 }
 
 
-class _TextExtractor(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self.parts: list[str] = []
-
-    def handle_data(self, data: str) -> None:
-        self.parts.append(data)
-
-
-def strip_html(value: str | None) -> str:
-    parser = _TextExtractor()
-    parser.feed(html.unescape(value or ""))
-    return re.sub(r"\s+", " ", " ".join(parser.parts)).strip()
-
-
-class _ApplyControlExtractor(HTMLParser):
-    """Collect the labels of clickable controls (anchors, buttons, submits).
-
-    `classify_liveness` reads these separately from the body text: a visible
-    apply control is the single strongest evidence that a posting is still
-    open, and it has to be distinguishable from the same words appearing in
-    prose ("we will apply your feedback").
-    """
-
-    _CONTROL_TAGS = {"a", "button"}
-    _LABEL_ATTRS = ("value", "aria-label", "title")
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.controls: list[str] = []
-        self._depth = 0
-        self._buffer: list[str] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag in {"input", "button"}:
-            values = dict(attrs)
-            for key in self._LABEL_ATTRS:
-                label = (values.get(key) or "").strip()
-                if label:
-                    self.controls.append(label)
-        if tag in self._CONTROL_TAGS:
-            self._depth += 1
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag in self._CONTROL_TAGS and self._depth:
-            self._depth -= 1
-            if self._depth == 0:
-                self._flush()
-
-    def handle_data(self, data: str) -> None:
-        if self._depth:
-            self._buffer.append(data)
-
-    def _flush(self) -> None:
-        text = re.sub(r"\s+", " ", "".join(self._buffer)).strip()
-        self._buffer.clear()
-        if text:
-            self.controls.append(text)
-
-    def finish(self) -> list[str]:
-        # A page that never closes its last anchor still has a label worth
-        # reading, and unclosed tags are common enough in real ATS markup that
-        # dropping the tail would lose apply controls on exactly those pages.
-        self._flush()
-        return self.controls
-
-
-def apply_controls(markup: str | None) -> list[str]:
-    parser = _ApplyControlExtractor()
-    parser.feed(markup or "")
-    return parser.finish()
-
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-
-
-def display_path(path: Path) -> str:
-    """Project-relative when the file lives here, absolute when it does not.
-
-    Import and enrichment paths are user-supplied and may point anywhere on
-    disk. `Path.relative_to` raises for those, and formatting a success message
-    must never be what fails a command whose database work already committed.
-    """
-    try:
-        return str(path.relative_to(ROOT))
-    except ValueError:
-        return str(path)
-
-
-def load_env_file(path: Path = ENV_PATH) -> None:
-    """Load `KEY=value` lines from a gitignored .env into the process environment.
-
-    Credentials like USAJOBS_API_KEY otherwise have to be re-exported in every
-    new shell, which is exactly the kind of setup step that gets skipped and
-    then looks like a broken source. A real environment variable always wins,
-    so `USAJOBS_API_KEY=... python3 pipeline.py fetch` still overrides the file.
-    """
-    for key, value in iter_env_pairs(path):
-        if key and key not in os.environ:
-            os.environ[key] = value
-
-
-def load_json(path: Path) -> dict[str, Any]:
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        raise SystemExit(f"Missing {display_path(path)}. Restore it or run from the project root.")
-    except json.JSONDecodeError as exc:
-        raise SystemExit(f"Invalid JSON in {display_path(path)}: {exc}")
-
-
-def load_profile(path: Path | None = None) -> dict[str, Any]:
-    path = path or PROFILE_PATH
-    if not path.exists():
-        raise SystemExit(
-            f"Missing {display_path(path)}. Run `python -m opportunity_app.setup init` "
-            "to create it from config/profile.example.json, then fill it in (SETUP.md)."
-        )
-    return load_json(path)
-
-
-def _source_merge_key(source: dict[str, Any]) -> str:
-    return f'{source.get("kind", "")}:{source_identity(source)}'.lower()
-
-
-def merge_sources(base: dict[str, Any], local: dict[str, Any]) -> dict[str, Any]:
-    """Layer one student's sources.local.json over the shared catalog.
-
-    - Top-level keys in the local file replace the base value.
-    - `ats_sources` concatenate; a local entry with the same kind and identity
-      as a base entry replaces it, so a board can be retuned without editing
-      the tracked catalog.
-    - `include_base_catalog: false` drops every base ATS entry.
-    - `enabled_sources` and `disabled_sources` list `kind:identity` keys or
-      company names to switch on or off, e.g. a key-gated source once its key
-      is in .env.
-    - `agent_discovery` merges per channel; a local channel's keys win.
-    - `manual_check_sources` concatenate, de-duplicated by name.
-    """
-    merged = dict(base)
-    special = {
-        "ats_sources",
-        "include_base_catalog",
-        "enabled_sources",
-        "disabled_sources",
-        "agent_discovery",
-        "manual_check_sources",
-    }
-    for key, value in local.items():
-        if key not in special and not key.startswith("_"):
-            merged[key] = value
-
-    base_ats = list(base.get("ats_sources", [])) if local.get("include_base_catalog", True) else []
-    local_ats = list(local.get("ats_sources", []))
-    local_keys = {_source_merge_key(source) for source in local_ats}
-    ats = [source for source in base_ats if _source_merge_key(source) not in local_keys] + local_ats
-    for switch, enabled in (("enabled_sources", True), ("disabled_sources", False)):
-        names = {str(name).strip().lower() for name in local.get(switch, [])}
-        if names:
-            ats = [
-                {**source, "enabled": enabled}
-                if _source_merge_key(source) in names
-                or str(source.get("company", "")).strip().lower() in names
-                else source
-                for source in ats
-            ]
-    merged["ats_sources"] = ats
-
-    discovery = dict(base.get("agent_discovery", {}))
-    for channel, settings in local.get("agent_discovery", {}).items():
-        if isinstance(settings, dict) and isinstance(discovery.get(channel), dict):
-            discovery[channel] = {**discovery[channel], **settings}
-        else:
-            discovery[channel] = settings
-    merged["agent_discovery"] = discovery
-
-    manual = list(base.get("manual_check_sources", []))
-    names = {str(item.get("name", "")).lower() for item in manual}
-    for item in local.get("manual_check_sources", []):
-        if str(item.get("name", "")).lower() not in names:
-            manual.append(item)
-    merged["manual_check_sources"] = manual
-    return merged
-
-
-def load_sources(base_path: Path | None = None, local_path: Path | None = None) -> dict[str, Any]:
-    """The shared catalog plus this student's overlay, when one exists."""
-    base = load_json(base_path or SOURCES_PATH)
-    local_path = local_path or SOURCES_LOCAL_PATH
-    if not local_path.exists():
-        return base
-    return merge_sources(base, load_json(local_path))
-
-
 def connect(db_path: Path | None = None) -> sqlite3.Connection:
     """Open (and create) a pipeline database: `db_path`, or the module's DB_PATH read now."""
-    path = DB_PATH if db_path is None else db_path
+    path = paths.DB_PATH if db_path is None else db_path
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
@@ -332,12 +125,6 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
 EXIT_TEMPFAIL = 75
 
 
-class TransientFetchError(RuntimeError):
-    """A request that failed for reasons outside the posting: no network, a
-    timeout, a throttle or a server error. Typical right after the laptop wakes,
-    before Wi-Fi reconnects, and worth retrying where a 404 is not."""
-
-
 class FatalDatabaseError(RuntimeError):
     """The local database itself is unusable -- disk full, file gone, a dead
     connection. Unlike a source failing, this cannot be isolated to one source
@@ -362,12 +149,6 @@ class Listing(list):
         self.complete = complete
 
 
-def _is_transient(error: Exception | None) -> bool:
-    if isinstance(error, urllib.error.HTTPError):
-        return error.code == 429 or error.code >= 500
-    return isinstance(error, (urllib.error.URLError, TimeoutError, ConnectionError))
-
-
 # Concurrency ceilings for the fetch. 34 of the 73 enabled sources share
 # boards-api.greenhouse.io and 21 share api.ashbyhq.com, so a purely global
 # pool would put a third of its workers on one hostname. Four per host is
@@ -375,436 +156,6 @@ def _is_transient(error: Exception | None) -> bool:
 # busy across the other hosts while Greenhouse works through its queue.
 FETCH_MAX_WORKERS = 12
 FETCH_MAX_PER_HOST = 4
-
-# Minimum gap between two requests to the same host, applied across threads.
-# These are unauthenticated public boards with no published rate limit, so the
-# figure is judgement, not documentation.
-FETCH_HOST_INTERVAL_SECONDS = 0.25
-
-_SOURCE_HOSTS = {
-    "greenhouse": "boards-api.greenhouse.io",
-    "lever": "api.lever.co",
-    "ashby": "api.ashbyhq.com",
-    "smartrecruiters": "api.smartrecruiters.com",
-    "usajobs": "data.usajobs.gov",
-    "adzuna": "api.adzuna.com",
-}
-
-
-def _source_host(source: dict[str, Any]) -> str:
-    """The hostname a source's requests land on, for rate limiting.
-
-    Workday is per-tenant -- each employer has its own subdomain -- so those
-    sources do not contend with each other. Everything else shares one vendor
-    API host. An unrecognised kind groups under its own name, which throttles
-    it rather than exempting it.
-    """
-
-    kind = source.get("kind", "")
-    if kind == "workday":
-        return f'{source.get("tenant", "")}.{source.get("datacenter", "")}.myworkdayjobs.com'
-    return _SOURCE_HOSTS.get(kind, f"kind:{kind}")
-
-
-class _HostRateLimiter:
-    """Spaces out requests per host, and backs every thread off on a 429.
-
-    Jitter alone is not a rate limiter: four threads on one host can still
-    burst, and if they are all throttled at once they retry in lockstep. This
-    keeps one next-allowed time per host so a Retry-After from any thread
-    delays all of them.
-    """
-
-    def __init__(self, interval: float = FETCH_HOST_INTERVAL_SECONDS):
-        self._interval = interval
-        self._next_allowed: dict[str, float] = {}
-        self._lock = threading.Lock()
-
-    def acquire(self, host: str) -> None:
-        if not host:
-            return
-        while True:
-            with self._lock:
-                now = time.monotonic()
-                ready = self._next_allowed.get(host, 0.0)
-                if now >= ready:
-                    # A little jitter so threads released together do not
-                    # re-collide on the next request.
-                    self._next_allowed[host] = now + self._interval + random.uniform(0, self._interval)
-                    return
-                delay = ready - now
-            time.sleep(min(delay, 5.0))
-
-    def penalise(self, host: str, seconds: float) -> None:
-        """Hold every thread off this host for at least `seconds`."""
-
-        if not host or seconds <= 0:
-            return
-        with self._lock:
-            target = time.monotonic() + seconds
-            self._next_allowed[host] = max(self._next_allowed.get(host, 0.0), target)
-
-
-_HOST_LIMITER = _HostRateLimiter()
-
-def _request_host(url: str) -> str:
-    """Throttling key for a URL.
-
-    Taken from the URL itself rather than from a thread-local set by the fetch
-    workers: the liveness pass calls these helpers straight from the main
-    thread, where a thread-local would be empty and every acquire and penalise
-    would quietly do nothing.
-    """
-
-    try:
-        return (urllib.parse.urlsplit(url).hostname or "").lower()
-    except ValueError:
-        return ""
-
-
-def _retry_after_seconds(error: Exception | None) -> float:
-    """Seconds requested by a Retry-After header, if the server sent one."""
-
-    headers = getattr(error, "headers", None)
-    if headers is None:
-        return 0.0
-    raw = headers.get("Retry-After")
-    if not raw:
-        return 0.0
-    try:
-        return max(0.0, float(str(raw).strip()))
-    except ValueError:
-        pass
-    # The HTTP-date form. email.utils is stdlib, so honouring it costs nothing
-    # and retrying earlier than a server explicitly asked is not acceptable.
-    try:
-        when = email.utils.parsedate_to_datetime(str(raw).strip())
-    except (TypeError, ValueError):
-        return 0.0
-    if when is None:
-        return 0.0
-    if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
-    return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
-
-
-def _backoff_delay(attempt: int) -> float:
-    """Randomised exponential backoff, so throttled threads do not re-collide."""
-
-    return random.uniform(0.0, min(8.0, 1.5 * (2**attempt)))
-
-
-def _decoded_body(response: Any) -> bytes:
-    """Read a response, undoing Content-Encoding if the server used one.
-
-    urllib does not decompress. It only sends Accept-Encoding when it is going
-    to handle the result itself, so asking for gzip by hand means owning the
-    decode -- and a server is free to ignore the request and reply identity,
-    which is why this dispatches on what came back rather than on what was
-    asked for.
-
-    A body that claims to be gzip and is not raises, which the caller's retry
-    and error handling already treat as a failed request.
-    """
-
-    raw = response.read()
-    encoding = (response.headers.get("Content-Encoding") or "").strip().lower()
-    if encoding in ("gzip", "x-gzip"):
-        return gzip.decompress(raw)
-    if encoding == "deflate":
-        return zlib.decompress(raw)
-    return raw
-
-
-def _http_json(
-    url: str,
-    method: str = "GET",
-    payload: dict[str, Any] | None = None,
-    headers: dict[str, str] | None = None,
-    retries: int = 2,
-) -> Any:
-    body = json.dumps(payload).encode("utf-8") if payload is not None else None
-    request_headers = {
-        "Accept": "application/json",
-        "Accept-Encoding": "gzip",
-        "User-Agent": USER_AGENT,
-    }
-    if payload is not None:
-        request_headers["Content-Type"] = "application/json"
-    if headers:
-        request_headers.update(headers)
-    request = urllib.request.Request(url, data=body, method=method, headers=request_headers)
-    last_error: Exception | None = None
-    host = _request_host(url)
-    for attempt in range(retries + 1):
-        _HOST_LIMITER.acquire(host)
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                return json.loads(_decoded_body(response).decode("utf-8"))
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            last_error = exc
-            # A throttle applies to the host, not to this thread: hold every
-            # worker off it, for as long as the server asked if it said.
-            if isinstance(exc, urllib.error.HTTPError) and exc.code == 429:
-                _HOST_LIMITER.penalise(host, _retry_after_seconds(exc) or _backoff_delay(attempt))
-            # Some managed Macs have a system trust chain that Python cannot
-            # see. curl uses macOS SecureTransport and still verifies TLS.
-            if "CERTIFICATE_VERIFY_FAILED" in str(exc):
-                try:
-                    curl_cmd = [
-                        "curl",
-                        "--fail",
-                        "--compressed",
-                        "--silent",
-                        "--show-error",
-                        "--location",
-                        "--max-time",
-                        "30",
-                        "--request",
-                        method,
-                    ]
-                    for key, value in request_headers.items():
-                        curl_cmd += ["--header", f"{key}: {value}"]
-                    if body is not None:
-                        curl_cmd += ["--data", body.decode("utf-8")]
-                    curl_cmd.append(url)
-                    result = subprocess.run(
-                        curl_cmd,
-                        check=True,
-                        capture_output=True,
-                        text=True,
-                        timeout=35,
-                    )
-                    return json.loads(result.stdout)
-                except (FileNotFoundError, subprocess.SubprocessError, json.JSONDecodeError) as curl_exc:
-                    last_error = curl_exc
-            if attempt < retries:
-                time.sleep(_backoff_delay(attempt))
-    error_type = TransientFetchError if _is_transient(last_error) else RuntimeError
-    raise error_type(f"Request failed for {url}: {last_error}")
-
-
-def request_json(url: str, retries: int = 2) -> Any:
-    return _http_json(url, retries=retries)
-
-
-def request_json_post(url: str, payload: dict[str, Any], retries: int = 2) -> Any:
-    return _http_json(url, method="POST", payload=payload, retries=retries)
-
-
-def request_text(url: str, retries: int = 2) -> tuple[int, str, str]:
-    """Fetch a page as text: `(status, final_url, body)`.
-
-    Unlike `request_json` this never raises on an HTTP error status. 404, 403
-    and 5xx are exactly the signals `classify_liveness` reads, so they have to
-    reach the caller as data rather than as an exception. The final URL matters
-    too -- a dead permalink that redirects to a search page is only detectable
-    by comparing it against the URL that was requested.
-    """
-    request = urllib.request.Request(
-        url,
-        method="GET",
-        headers={
-            "Accept": "text/html,application/xhtml+xml",
-            "Accept-Encoding": "gzip",
-            "User-Agent": USER_AGENT,
-        },
-    )
-    last_error: Exception | None = None
-    host = _request_host(url)
-    for attempt in range(retries + 1):
-        _HOST_LIMITER.acquire(host)
-        try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                charset = response.headers.get_content_charset() or "utf-8"
-                return response.status, response.url, _decoded_body(response).decode(charset, "replace")
-        except urllib.error.HTTPError as exc:
-            # 4xx/5xx are data for classify_liveness, but a 429 still means
-            # back off before the next source touches this host.
-            if exc.code == 429:
-                _HOST_LIMITER.penalise(host, _retry_after_seconds(exc) or _backoff_delay(attempt))
-            body = ""
-            try:
-                charset = exc.headers.get_content_charset() or "utf-8"
-                body = _decoded_body(exc).decode(charset, "replace")
-            except (OSError, ValueError, zlib.error):
-                # classify_liveness reads this body; an unreadable one must
-                # leave it empty rather than abort the check.
-                pass
-            return exc.code, exc.url or url, body
-        except (urllib.error.URLError, TimeoutError) as exc:
-            last_error = exc
-            if "CERTIFICATE_VERIFY_FAILED" in str(exc):
-                try:
-                    result = subprocess.run(
-                        [
-                            "curl",
-                            "--compressed",
-                            "--silent",
-                            "--show-error",
-                            "--location",
-                            "--max-time",
-                            "30",
-                            "--user-agent",
-                            USER_AGENT,
-                            # Status and final URL are appended after the body so
-                            # a failing status still returns its page, which is
-                            # what carries the closure banner.
-                            "--write-out",
-                            "\n%{http_code}\t%{url_effective}",
-                            url,
-                        ],
-                        check=True,
-                        capture_output=True,
-                        text=True,
-                        timeout=35,
-                    )
-                    body, _, tail = result.stdout.rpartition("\n")
-                    code_text, _, final_url = tail.partition("\t")
-                    return int(code_text or 0), final_url or url, body
-                except (FileNotFoundError, subprocess.SubprocessError, ValueError) as curl_exc:
-                    last_error = curl_exc
-            if attempt < retries:
-                time.sleep(_backoff_delay(attempt))
-    raise RuntimeError(f"Request failed for {url}: {last_error}")
-
-
-def canonical_url(url: str) -> str:
-    parsed = urllib.parse.urlsplit(url.strip())
-    allowed = [
-        (key, value)
-        for key, value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-        if key.lower()
-        not in {
-            "gh_src",
-            "lever-source",
-            "source",
-            "utm_source",
-            "utm_medium",
-            "utm_campaign",
-            "trackingid",
-            "refid",
-            "trk",
-            "trkemail",
-            "midtoken",
-            "midsig",
-            "eid",
-            "licu",
-        }
-        and not key.lower().startswith("utm_")
-    ]
-    return urllib.parse.urlunsplit(
-        (parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/"), urllib.parse.urlencode(allowed), "")
-    )
-
-
-def fingerprint(company: str, title: str, location: str) -> str:
-    basis = "|".join((normalized(company), normalized(title), normalized(location)))
-    return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:24]
-
-
-# ---------------------------------------------------------------------------
-# Description fingerprinting
-#
-# Ported from career-ops (https://github.com/santifer/career-ops), MIT licence,
-# (c) 2026 Santiago Fernandez de Valderrama -- see THIRD_PARTY_NOTICES.md. The
-# upstream file is `fingerprint-core.mjs`.
-#
-# The same job can enter the pipeline twice under names that neither the exact
-# fingerprint nor the company+title pass can reconcile: once from the employer's
-# own ATS board and once from an aggregator that rewrote the title and restyled
-# the company name. Aggregators rarely rewrite the requirements text, so a
-# content fingerprint of the description body catches that pair.
-#
-# Design: 64-bit SimHash over 3-token shingles of the normalised description.
-# SimHash keeps near-duplicate texts within a few bits of each other, so one
-# 16-hex-character column per row is enough to compare any later pair without
-# storing the body twice. No dependencies, no model calls.
-# ---------------------------------------------------------------------------
-
-# Descriptions shorter than this carry too little signal to tell a real match
-# from shared boilerplate.
-FINGERPRINT_MIN_TEXT = 200
-
-# Similarity at or above this is treated as the same posting. 0.92 means at
-# most 5 of 64 SimHash bits differ -- near-verbatim bodies only.
-CROSSLIST_THRESHOLD = 0.92
-
-
-def normalize_jd_text(text: str | None) -> str:
-    """Reduce a description to a bare token stream: no tags, entities, or URLs."""
-    value = str(text or "").lower()
-    value = re.sub(r"<[^>]*>", " ", value)
-    value = re.sub(r"&[a-z#0-9]+;", " ", value)
-    value = re.sub(r"https?://\S+", " ", value)
-    value = re.sub(r"[\W_]+", " ", value, flags=re.UNICODE)
-    return value.strip()
-
-
-def fingerprint_text(text: str | None) -> str:
-    """64-bit SimHash of a description as 16 hex characters, or '' when unusable."""
-    normalised = normalize_jd_text(text)
-    if len(normalised) < FINGERPRINT_MIN_TEXT:
-        return ""
-    tokens = normalised.split(" ")
-    # Length alone can pass on fewer than 3 tokens -- an unspaced CJK body
-    # normalises to one giant token. No shingle would ever be hashed, leaving an
-    # all-zero hash that would then score 1.0 against every other degenerate
-    # body. Treat those as unfingerprintable instead.
-    if len(tokens) < 3:
-        return ""
-    # SimHash: bit i is set when more shingles have bit i set than clear. With
-    # `shingles` hashes, that is `2 * (shingles with the bit set) > shingles`; a
-    # tie leaves the bit unset. Counting one column of the 64-character binary
-    # strings at a time does the same tally as a per-bit Python loop per
-    # shingle, at about a third of the cost. format(..., "064b") is big-endian,
-    # so column `column` is bit 63 - column.
-    shingles = len(tokens) - 2
-    columns = zip(
-        *(
-            format(
-                int(hashlib.sha256(" ".join(tokens[index : index + 3]).encode("utf-8")).hexdigest()[:16], 16),
-                "064b",
-            )
-            for index in range(shingles)
-        )
-    )
-    value = 0
-    for column, bits in enumerate(columns):
-        if 2 * bits.count("1") > shingles:
-            value |= 1 << (63 - column)
-    return f"{value:016x}"
-
-
-def fingerprint_similarity(left: str, right: str) -> float:
-    """Share of the 64 SimHash bits two fingerprints agree on, 0.0 when either is blank."""
-    if not left or not right:
-        return 0.0
-    distance = bin(int(left, 16) ^ int(right, 16)).count("1")
-    return (64 - distance) / 64
-
-
-def stable_id(source_key: str, external_id: str) -> str:
-    return hashlib.sha256(f"{source_key}|{external_id}".encode("utf-8")).hexdigest()[:16]
-
-
-def classify_role(title: str, description: str) -> str:
-    # Role type is a property of the posting title. Descriptions often mention
-    # unrelated intern/co-op programs and otherwise create false classifications.
-    text = title.lower()
-    checks = (
-        ("co-op", ("co-op", "coop")),
-        ("externship", ("externship", "extern ")),
-        ("research", ("research experience", "research assistant", "undergraduate research", "reu ")),
-        ("internship", ("internship", "intern ", " intern", "summer analyst")),
-        ("part_time", ("part-time", "part time", "student assistant", "student technician")),
-        ("early_career", ("new grad", "early career", "entry level", "engineer i", "associate engineer")),
-    )
-    for role_type, terms in checks:
-        if any(term in text for term in terms):
-            return role_type
-    return "other"
-
 
 # Discovery terms are stems, so a term has to match a whole word or a word
 # carrying one of these suffixes -- and nothing else. Plain substring matching
@@ -2172,33 +1523,6 @@ def purge_expired(
     return tally
 
 
-def source_identity(source: dict[str, Any]) -> str:
-    if source["kind"] == "workday":
-        return f'{source["tenant"]}:{source["site"]}'
-    return (
-        # An explicit id keeps the source key stable for query-shaped sources
-        # (usajobs, adzuna), whose keyword list can be retuned without
-        # orphaning rows.
-        source.get("id")
-        or source.get("token")
-        or source.get("site")
-        or source.get("board")
-        or source.get("company_id")
-        or source.get("keyword")
-        or "default"
-    )
-
-
-def source_key(source: dict[str, Any]) -> str:
-    """The key a source's fetch runs and jobs are stored under: ``kind:identity``.
-
-    Raises KeyError for a source with no ``kind``; `system_status.source_health`
-    relies on that to skip a malformed entry. `_source_merge_key` is the same string
-    lowercased, used only to layer sources.local.json over sources.json.
-    """
-    return f'{source["kind"]}:{source_identity(source)}'
-
-
 # ---------------------------------------------------------------------------
 # ATS board discovery
 #
@@ -2378,7 +1702,7 @@ def write_discovered_sources(entries: list[dict[str, Any]], path: Path | None = 
     The default target is the student's own config/sources.local.json, so a
     `git pull` of the shared catalog never conflicts with boards they found.
     """
-    path = path or SOURCES_LOCAL_PATH
+    path = path or paths.SOURCES_LOCAL_PATH
     config = load_json(path) if path.exists() else {}
     config.setdefault("ats_sources", []).extend(entries)
     # Temp-then-replace so an interrupted write cannot truncate a curated file.
@@ -2469,7 +1793,7 @@ def report_discovery(
         print("\nNothing to write.")
         return results
     written = write_discovered_sources(
-        [result["entry"] for result in writable], SOURCES_PATH if shared else None
+        [result["entry"] for result in writable], paths.SOURCES_PATH if shared else None
     )
     print(f"\nAppended {len(writable)} source(s) to {display_path(written)}.")
     print("Confirm each employer's identity on its board before trusting the postings.")
@@ -3091,16 +2415,6 @@ def enrich_descriptions(conn: sqlite3.Connection, path: Path, force: bool = Fals
     return updated
 
 
-def parse_datetime(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-    except ValueError:
-        return None
-
-
 def term_hits(text: str, terms: Iterable[str]) -> list[str]:
     lower = text.lower()
     hits: list[str] = []
@@ -3593,10 +2907,10 @@ def report(conn: sqlite3.Connection, sources_config: dict[str, Any], limit: int)
             "",
         ]
     )
-    OUTPUT_MD.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT_MD.write_text("\n".join(lines), encoding="utf-8")
+    paths.OUTPUT_MD.parent.mkdir(parents=True, exist_ok=True)
+    paths.OUTPUT_MD.write_text("\n".join(lines), encoding="utf-8")
 
-    with OUTPUT_CSV.open("w", newline="", encoding="utf-8") as handle:
+    with paths.OUTPUT_CSV.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(
             ["id", "score", "status", "company", "title", "location", "role_type", "url", "source", "last_seen_at"]
@@ -3617,8 +2931,8 @@ def report(conn: sqlite3.Connection, sources_config: dict[str, Any], limit: int)
                 ]
             )
     print(
-        f"Wrote {len(shortlist)} matches to {OUTPUT_MD.relative_to(ROOT)} "
-        f"(top {RANKED_VIEW_PER_COMPANY} per employer) and {len(jobs)} to {OUTPUT_CSV.relative_to(ROOT)}"
+        f"Wrote {len(shortlist)} matches to {paths.OUTPUT_MD.relative_to(paths.ROOT)} "
+        f"(top {RANKED_VIEW_PER_COMPANY} per employer) and {len(jobs)} to {paths.OUTPUT_CSV.relative_to(paths.ROOT)}"
     )
     return len(jobs)
 
@@ -4058,9 +3372,9 @@ def render_dashboard(
         }
         for row in rows
     ]
-    OUTPUT_DASHBOARD.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT_DASHBOARD.write_text(build_dashboard_html(payload, now_iso()), encoding="utf-8")
-    print(f"Wrote {len(payload)} opportunities to {OUTPUT_DASHBOARD.relative_to(ROOT)}")
+    paths.OUTPUT_DASHBOARD.parent.mkdir(parents=True, exist_ok=True)
+    paths.OUTPUT_DASHBOARD.write_text(build_dashboard_html(payload, now_iso()), encoding="utf-8")
+    print(f"Wrote {len(payload)} opportunities to {paths.OUTPUT_DASHBOARD.relative_to(paths.ROOT)}")
     return len(payload)
 
 
@@ -4189,26 +3503,11 @@ def doctor(profile: dict[str, Any], sources_config: dict[str, Any]) -> int:
     return exit_code
 
 
-# ---------------------------------------------------------------------------
-# Application artifacts: resume and cover letter
-#
-# `config/resume.json` is the only source of factual claims. Matching against a
-# posting reorders and emphasises what is already there -- it never adds a
-# skill, a metric, or an experience. Anything the tool cannot know is emitted as
-# a visibly-marked TODO rather than invented.
-# ---------------------------------------------------------------------------
-
-RESUME_PATH = ROOT / "config" / "resume.json"
-RESUME_EXAMPLE_PATH = ROOT / "config" / "resume.example.json"
-TEMPLATE_DIR = ROOT / "templates"
-ARTIFACT_DIR = ROOT / "output" / "applications"
-
-
-def load_resume(path: Path = RESUME_PATH) -> dict[str, Any]:
+def load_resume(path: Path = paths.RESUME_PATH) -> dict[str, Any]:
     if not path.exists():
         raise SystemExit(
             f"Missing {display_path(path)}.\n"
-            f"Copy {display_path(RESUME_EXAMPLE_PATH)} to {display_path(path)} and fill it in.\n"
+            f"Copy {display_path(paths.RESUME_EXAMPLE_PATH)} to {display_path(path)} and fill it in.\n"
             "It is the only source of factual claims about you -- nothing is invented from it."
         )
     return load_json(path)
@@ -4401,7 +3700,7 @@ def build_resume_html(resume: dict[str, Any], job: sqlite3.Row | None = None) ->
         if str(value or "").strip()
     ]
 
-    template = (TEMPLATE_DIR / "resume.html").read_text(encoding="utf-8")
+    template = (paths.TEMPLATE_DIR / "resume.html").read_text(encoding="utf-8")
     title = f"{resume.get('name', 'Resume')} - Resume"
     if job:
         title += f" - {job['company']}"
@@ -4545,7 +3844,7 @@ def build_cover_letter_html(
         # States; South San Francisco, ..."); an address block wants one.
         recipient += f"<br>{_esc(job['location'].split(';')[0].strip())}"
 
-    template = (TEMPLATE_DIR / "cover-letter.html").read_text(encoding="utf-8")
+    template = (paths.TEMPLATE_DIR / "cover-letter.html").read_text(encoding="utf-8")
     _today = datetime.now(timezone.utc)
     return (
         template.replace("TITLE_PLACEHOLDER", _esc(f"Cover letter - {job['company']}"))
@@ -4620,13 +3919,13 @@ def write_artifact(
         # overwrite each other.
         stem = "resume" + (f"-{_slugify(job['company'])}-{job['id'][:8]}" if job else "")
 
-    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-    html_path = ARTIFACT_DIR / f"{stem}.html"
+    paths.ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+    html_path = paths.ARTIFACT_DIR / f"{stem}.html"
     html_path.write_text(markup, encoding="utf-8")
     print(f"Wrote {display_path(html_path)}")
 
     if as_pdf:
-        pdf_path = ARTIFACT_DIR / f"{stem}.pdf"
+        pdf_path = paths.ARTIFACT_DIR / f"{stem}.pdf"
         if html_to_pdf(html_path, pdf_path):
             print(f"Wrote {display_path(pdf_path)}")
         else:
@@ -4649,20 +3948,20 @@ def build_parser() -> argparse.ArgumentParser:
     fetch_parser = sub.add_parser("fetch", help="Fetch enabled public ATS sources")
     fetch_parser.add_argument("--resume-since", help=resume_help)
     import_parser = sub.add_parser("import-csv", help="Import login-only or manually found postings")
-    import_parser.add_argument("path", nargs="?", default=str(MANUAL_PATH))
+    import_parser.add_argument("path", nargs="?", default=str(paths.MANUAL_PATH))
     import_email_parser = sub.add_parser(
         "import-emails", help="Import LinkedIn job-alert email JSON (see README)"
     )
-    import_email_parser.add_argument("path", nargs="?", default=str(EMAIL_IMPORT_PATH))
+    import_email_parser.add_argument("path", nargs="?", default=str(paths.EMAIL_IMPORT_PATH))
     import_discovered_parser = sub.add_parser(
         "import-discovered",
         help="Import agent-discovered postings from search/public pages/lists (see README)",
     )
-    import_discovered_parser.add_argument("path", nargs="?", default=str(DISCOVERED_IMPORT_PATH))
+    import_discovered_parser.add_argument("path", nargs="?", default=str(paths.DISCOVERED_IMPORT_PATH))
     enrich_parser = sub.add_parser(
         "enrich", help="Backfill descriptions an agent read from public posting pages"
     )
-    enrich_parser.add_argument("path", nargs="?", default=str(ENRICHMENT_PATH))
+    enrich_parser.add_argument("path", nargs="?", default=str(paths.ENRICHMENT_PATH))
     enrich_parser.add_argument(
         "--force",
         action="store_true",
@@ -4785,7 +4084,7 @@ def main() -> int:
             transient_failures = fetch_all(conn, sources, args.resume_since)
             # Score and report even when some sources were unreachable, so the
             # shortlist reflects what did arrive; the exit code asks for a retry.
-            import_manual(conn, MANUAL_PATH)
+            import_manual(conn, paths.MANUAL_PATH)
             score_all(conn, profile)
             report(conn, sources, args.limit)
             render_dashboard(conn, sources, args.dashboard_limit, profile)

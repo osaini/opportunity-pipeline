@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fastapi.testclient import TestClient
 
 import pipeline
+from pipeline_core import paths
 from helpers_platform import LEGACY_SCHEMA, build_profile, migrate_cached
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
@@ -103,7 +104,7 @@ class EmployerCapShortlistTests(unittest.TestCase):
             ("OUTPUT_MD", self.root / "output" / "shortlist.md"),
             ("OUTPUT_CSV", self.root / "output" / "shortlist.csv"),
         ):
-            patcher = mock.patch.object(pipeline, name, value)
+            patcher = mock.patch.object(paths, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
         self.conn = pipeline.connect()

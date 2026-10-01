@@ -29,10 +29,10 @@ ROOT = Path(__file__).resolve().parent.parent
 PROBE = r"""
 import json, os, sys
 sys.path.insert(0, ".")
-import pipeline
+from pipeline_core import config
 calls = []
-real = pipeline.load_env_file
-pipeline.load_env_file = lambda *a, **k: (calls.append(1), real(*a, **k))[1]
+real = config.load_env_file
+config.load_env_file = lambda *a, **k: (calls.append(1), real(*a, **k))[1]
 before = dict(os.environ)
 import opportunity_app.api as api
 after_import = dict(os.environ)

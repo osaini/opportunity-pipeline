@@ -34,6 +34,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pipeline
+from pipeline_core import clock, text as core_text, http, paths
 from pipeline_core.identity import normalized
 
 try:
@@ -68,8 +69,8 @@ LOCATIONS = [
 
 @functools.lru_cache(maxsize=None)
 def _reference_fingerprint_text(text):
-    normalised = pipeline.normalize_jd_text(text)
-    if len(normalised) < pipeline.FINGERPRINT_MIN_TEXT:
+    normalised = core_text.normalize_jd_text(text)
+    if len(normalised) < core_text.FINGERPRINT_MIN_TEXT:
         return ""
     tokens = normalised.split(" ")
     if len(tokens) < 3:
@@ -148,10 +149,10 @@ def _reference_deduplicate(conn):
                 continue
             if not pipeline.locations_compatible(row["location"], other["location"]):
                 continue
-            similarity = pipeline.fingerprint_similarity(
+            similarity = core_text.fingerprint_similarity(
                 row["content_fingerprint"], other["content_fingerprint"]
             )
-            if similarity >= pipeline.CROSSLIST_THRESHOLD:
+            if similarity >= core_text.CROSSLIST_THRESHOLD:
                 cluster.append(other)
                 clustered.add(other["id"])
         if len(cluster) > 1:
@@ -170,12 +171,12 @@ def _reference_upsert_jobs(conn, source_key, source_name, records, seen=None):
 
     Calls only the _reference_* copies above for the two functions that changed, and the unchanged pipeline helpers.
     """
-    seen = seen or pipeline.now_iso()
+    seen = seen or clock.now_iso()
     ids = []
     for record in records:
-        url = pipeline.canonical_url(record["url"])
+        url = core_text.canonical_url(record["url"])
         external_id = record["external_id"]
-        job_id = pipeline.stable_id(source_key, external_id)
+        job_id = core_text.stable_id(source_key, external_id)
         ids.append(job_id)
         description = record["description"]
         location = record["location"]
@@ -186,8 +187,8 @@ def _reference_upsert_jobs(conn, source_key, source_name, records, seen=None):
         if existing:
             description = pipeline._richer_description(existing["description"], description)
             location = location or existing["location"]
-        role_type = pipeline.classify_role(record["title"], description)
-        fp = pipeline.fingerprint(record["company"], record["title"], location)
+        role_type = core_text.classify_role(record["title"], description)
+        fp = core_text.fingerprint(record["company"], record["title"], location)
         content_fp = _reference_fingerprint_text(description)
         conn.execute(
             """
@@ -224,7 +225,7 @@ def _reference_score_all(conn, profile):
     jobs = conn.execute("SELECT * FROM jobs").fetchall()
     reposts = pipeline.repost_flags(conn)
     for job in jobs:
-        role_type = pipeline.classify_role(job["title"], job["description"])
+        role_type = core_text.classify_role(job["title"], job["description"])
         score_input = dict(job)
         score_input["role_type"] = role_type
         score, reasons = pipeline.score_job(score_input, profile)
@@ -324,7 +325,7 @@ def populate(conn, rows, seed):
                 f"https://example.com/{index}",
                 row["description"],
                 0 if rng.random() < 0.1 else 1,
-                pipeline.fingerprint(row["company"], row["title"], row["location"]),
+                core_text.fingerprint(row["company"], row["title"], row["location"]),
                 _reference_fingerprint_text(row["description"]),
                 rng.choice(["discovered", "discovered", "saved", "applied", "rejected"]),
             ),
@@ -345,7 +346,7 @@ class TempDbCase(unittest.TestCase):
     def open_db(self, name="pipeline.db"):
         temp = TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        with unittest.mock.patch.object(pipeline, "DB_PATH", Path(temp.name) / name):
+        with unittest.mock.patch.object(paths, "DB_PATH", Path(temp.name) / name):
             conn = pipeline.connect()
         self.addCleanup(conn.close)
         return conn
@@ -358,7 +359,7 @@ class FingerprintTextParityTests(unittest.TestCase):
         for _ in range(300):
             text = body(rng, rng.randint(25, 900))
             self.assertEqual(
-                pipeline.fingerprint_text(text), _reference_fingerprint_text(text), text[:80]
+                core_text.fingerprint_text(text), _reference_fingerprint_text(text), text[:80]
             )
             checked += 1
         self.assertEqual(checked, 300)
@@ -369,14 +370,14 @@ class FingerprintTextParityTests(unittest.TestCase):
         for repeats in range(40, 60):
             text = " ".join(["alpha", "beta"] * repeats)
             self.assertEqual(
-                pipeline.fingerprint_text(text), _reference_fingerprint_text(text), repeats
+                core_text.fingerprint_text(text), _reference_fingerprint_text(text), repeats
             )
 
     def test_unusable_texts_are_still_blank(self):
         cases = [None, "", "too short", "x" * 400, "界" * 300, "<p>" + "a " * 10 + "</p>"]
         for text in cases:
-            self.assertEqual(pipeline.fingerprint_text(text), _reference_fingerprint_text(text))
-            self.assertEqual(pipeline.fingerprint_text(text), "")
+            self.assertEqual(core_text.fingerprint_text(text), _reference_fingerprint_text(text))
+            self.assertEqual(core_text.fingerprint_text(text), "")
 
 
 class DeduplicateParityTests(TempDbCase):
@@ -493,7 +494,7 @@ class DeferredDedupeTests(TempDbCase):
             return list(batches[f"greenhouse:{source['token']}"])
 
         with unittest.mock.patch.dict(pipeline._SOURCE_FETCHERS, {"greenhouse": fetcher}), \
-                unittest.mock.patch.object(pipeline, "_HOST_LIMITER", pipeline._HostRateLimiter(0.0)), \
+                unittest.mock.patch.object(http, "_HOST_LIMITER", http._HostRateLimiter(0.0)), \
                 unittest.mock.patch("sys.stdout", io.StringIO()), \
                 unittest.mock.patch("sys.stderr", io.StringIO()):
             return pipeline.fetch_all(conn, config, max_workers=1, max_per_host=1)
@@ -570,7 +571,7 @@ class DeferredDedupeTests(TempDbCase):
             "ats_sources": [{"kind": "greenhouse", "company": "G0", "token": "g0"}],
         }
         with unittest.mock.patch.dict(pipeline._SOURCE_FETCHERS, {"greenhouse": failing}), \
-                unittest.mock.patch.object(pipeline, "_HOST_LIMITER", pipeline._HostRateLimiter(0.0)), \
+                unittest.mock.patch.object(http, "_HOST_LIMITER", http._HostRateLimiter(0.0)), \
                 unittest.mock.patch("sys.stdout", io.StringIO()), \
                 unittest.mock.patch("sys.stderr", io.StringIO()):
             pipeline.fetch_all(conn, config, max_workers=1, max_per_host=1)
@@ -593,7 +594,7 @@ class DeferredDedupeTests(TempDbCase):
             return list(batches[key])
 
         stderr = io.StringIO()
-        with unittest.mock.patch.dict(pipeline._SOURCE_FETCHERS, {"greenhouse": fetcher}),                 unittest.mock.patch.object(pipeline, "_HOST_LIMITER", pipeline._HostRateLimiter(0.0)),                 unittest.mock.patch("sys.stdout", io.StringIO()),                 unittest.mock.patch("sys.stderr", stderr):
+        with unittest.mock.patch.dict(pipeline._SOURCE_FETCHERS, {"greenhouse": fetcher}),                 unittest.mock.patch.object(http, "_HOST_LIMITER", http._HostRateLimiter(0.0)),                 unittest.mock.patch("sys.stdout", io.StringIO()),                 unittest.mock.patch("sys.stderr", stderr):
             result = pipeline.fetch_all(
                 conn, config, resume_since=resume_since, max_workers=1, max_per_host=1
             )

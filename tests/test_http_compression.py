@@ -15,12 +15,16 @@ from __future__ import annotations
 import gzip
 import io
 import json
+import subprocess
+import time
 import unittest
 import unittest.mock
 import urllib.error
+import urllib.request
 import zlib
 
 import pipeline
+from pipeline_core import http
 
 try:
     import realdata_guard
@@ -64,7 +68,7 @@ class FakeResponse(io.BytesIO):
 
 def respond(body: bytes, headers: dict | None = None, **kwargs):
     return unittest.mock.patch.object(
-        pipeline.urllib.request, "urlopen",
+        urllib.request, "urlopen",
         return_value=FakeResponse(body, headers, **kwargs),
     )
 
@@ -80,9 +84,9 @@ class RequestedEncodingTests(unittest.TestCase):
             captured[request.full_url] = dict(request.header_items())
             return FakeResponse(b"{}", {"Content-Type": "application/json"})
 
-        with unittest.mock.patch.object(pipeline.urllib.request, "urlopen", side_effect=capture):
-            pipeline.request_json("https://example.com/json")
-            pipeline.request_text("https://example.com/page")
+        with unittest.mock.patch.object(urllib.request, "urlopen", side_effect=capture):
+            http.request_json("https://example.com/json")
+            http.request_text("https://example.com/page")
 
         for url, headers in captured.items():
             with self.subTest(url=url):
@@ -94,53 +98,53 @@ class JsonDecodeTests(unittest.TestCase):
     def test_a_gzip_body_is_decompressed(self):
         body = gzip.compress(json.dumps(PAYLOAD).encode())
         with respond(body, {"Content-Encoding": "gzip"}):
-            self.assertEqual(pipeline.request_json("https://x"), PAYLOAD)
+            self.assertEqual(http.request_json("https://x"), PAYLOAD)
 
     def test_an_identity_body_is_passed_through(self):
         """A server may ignore Accept-Encoding, and most small ones do."""
 
         with respond(json.dumps(PAYLOAD).encode(), {}):
-            self.assertEqual(pipeline.request_json("https://x"), PAYLOAD)
+            self.assertEqual(http.request_json("https://x"), PAYLOAD)
 
     def test_an_explicit_identity_encoding_is_passed_through(self):
         with respond(json.dumps(PAYLOAD).encode(), {"Content-Encoding": "identity"}):
-            self.assertEqual(pipeline.request_json("https://x"), PAYLOAD)
+            self.assertEqual(http.request_json("https://x"), PAYLOAD)
 
     def test_a_deflate_body_is_decompressed(self):
         body = zlib.compress(json.dumps(PAYLOAD).encode())
         with respond(body, {"Content-Encoding": "deflate"}):
-            self.assertEqual(pipeline.request_json("https://x"), PAYLOAD)
+            self.assertEqual(http.request_json("https://x"), PAYLOAD)
 
     def test_the_header_is_matched_case_insensitively(self):
         body = gzip.compress(json.dumps(PAYLOAD).encode())
         with respond(body, {"content-encoding": "GZIP"}):
-            self.assertEqual(pipeline.request_json("https://x"), PAYLOAD)
+            self.assertEqual(http.request_json("https://x"), PAYLOAD)
 
     def test_a_body_that_lies_about_being_gzip_fails_the_request(self):
         """Better a failed source than a source silently returning nothing."""
 
         with respond(b"this is not gzip", {"Content-Encoding": "gzip"}), \
-                unittest.mock.patch.object(pipeline.time, "sleep"):
+                unittest.mock.patch.object(time, "sleep"):
             with self.assertRaises(Exception) as caught:
-                pipeline.request_json("https://x")
+                http.request_json("https://x")
         self.assertNotIsInstance(caught.exception, SystemExit)
 
     def test_valid_gzip_holding_invalid_json_still_raises(self):
         with respond(gzip.compress(b"{not json"), {"Content-Encoding": "gzip"}), \
-                unittest.mock.patch.object(pipeline.time, "sleep"):
+                unittest.mock.patch.object(time, "sleep"):
             with self.assertRaises(Exception):
-                pipeline.request_json("https://x")
+                http.request_json("https://x")
 
 
 class TextDecodeTests(unittest.TestCase):
     def test_a_gzip_page_is_decompressed(self):
         with respond(gzip.compress("Apply now".encode()), {"Content-Encoding": "gzip"}):
-            status, _, body = pipeline.request_text("https://x")
+            status, _, body = http.request_text("https://x")
         self.assertEqual((status, body), (200, "Apply now"))
 
     def test_an_identity_page_is_passed_through(self):
         with respond("Apply now".encode(), {}):
-            status, _, body = pipeline.request_text("https://x")
+            status, _, body = http.request_text("https://x")
         self.assertEqual((status, body), (200, "Apply now"))
 
     def test_an_error_pages_compressed_body_still_reaches_the_caller(self):
@@ -151,8 +155,8 @@ class TextDecodeTests(unittest.TestCase):
             FakeHeaders({"Content-Encoding": "gzip"}),
             io.BytesIO(gzip.compress(b"This posting has closed.")),
         )
-        with unittest.mock.patch.object(pipeline.urllib.request, "urlopen", side_effect=error):
-            status, _, body = pipeline.request_text("https://x")
+        with unittest.mock.patch.object(urllib.request, "urlopen", side_effect=error):
+            status, _, body = http.request_text("https://x")
         self.assertEqual(status, 404)
         self.assertIn("closed", body)
 
@@ -164,8 +168,8 @@ class TextDecodeTests(unittest.TestCase):
             FakeHeaders({"Content-Encoding": "gzip"}),
             io.BytesIO(b"not gzip at all"),
         )
-        with unittest.mock.patch.object(pipeline.urllib.request, "urlopen", side_effect=error):
-            status, _, body = pipeline.request_text("https://x")
+        with unittest.mock.patch.object(urllib.request, "urlopen", side_effect=error):
+            status, _, body = http.request_text("https://x")
         self.assertEqual(status, 404)
         self.assertEqual(body, "")
 
@@ -187,22 +191,22 @@ class CurlFallbackTests(unittest.TestCase):
             captured["command"] = command
             return unittest.mock.Mock(stdout=stdout, returncode=0)
 
-        with unittest.mock.patch.object(pipeline.urllib.request, "urlopen", side_effect=self.CERT_FAILURE), \
-                unittest.mock.patch.object(pipeline.subprocess, "run", side_effect=fake_run), \
-                unittest.mock.patch.object(pipeline.time, "sleep"):
+        with unittest.mock.patch.object(urllib.request, "urlopen", side_effect=self.CERT_FAILURE), \
+                unittest.mock.patch.object(subprocess, "run", side_effect=fake_run), \
+                unittest.mock.patch.object(time, "sleep"):
             result = call()
         return result, captured["command"]
 
     def test_the_json_fallback_asks_curl_to_decompress(self):
         result, command = self.run_with_curl(
-            lambda: pipeline.request_json("https://x"), json.dumps(PAYLOAD)
+            lambda: http.request_json("https://x"), json.dumps(PAYLOAD)
         )
         self.assertEqual(result, PAYLOAD)
         self.assertIn("--compressed", command)
 
     def test_the_text_fallback_asks_curl_to_decompress(self):
         (status, _, body), command = self.run_with_curl(
-            lambda: pipeline.request_text("https://x"), "Apply now\n200\thttps://x"
+            lambda: http.request_text("https://x"), "Apply now\n200\thttps://x"
         )
         self.assertEqual((status, body.strip()), (200, "Apply now"))
         self.assertIn("--compressed", command)

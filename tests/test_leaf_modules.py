@@ -574,8 +574,8 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
     def test_env_lines_share_one_rule_and_differ_only_in_how_the_caller_treats_repeats(self):
         import os
 
-        import pipeline
         from opportunity_app import setup
+        from pipeline_core import config
         from pipeline_core.env import iter_env_pairs
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -589,12 +589,12 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
             )
             # setup.read_env keeps the last line of a repeated key and an empty key ...
             self.assertEqual(setup.read_env(path), {"A": "again", "B": "two", "": "orphan", "C": "'mixed\"", "D": ""})
-            # ... pipeline.load_env_file keeps the first and drops an empty key, and never overrides a real variable.
+            # ... config.load_env_file keeps the first and drops an empty key, and never overrides a real variable.
             names = ("A", "B", "C", "D")
             saved = {name: os.environ.pop(name, None) for name in names}
             try:
                 os.environ["B"] = "from the shell"
-                pipeline.load_env_file(path)
+                config.load_env_file(path)
                 self.assertEqual([os.environ.get(name) for name in names], ["one", "from the shell", "'mixed\"", ""])
                 self.assertNotIn("", os.environ)
             finally:
@@ -608,9 +608,10 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         import hashlib
 
         import pipeline
+        from pipeline_core.text import canonical_url
 
         url = "https://www.linkedin.com/jobs/view/3912345678/?trackingId=abc"
-        hashed = hashlib.sha256(pipeline.canonical_url(url).encode("utf-8")).hexdigest()[:20]
+        hashed = hashlib.sha256(canonical_url(url).encode("utf-8")).hexdigest()[:20]
         self.assertEqual(pipeline.url_external_id(url, linkedin_ids=True), "3912345678")
         self.assertEqual(pipeline.url_external_id(url, linkedin_ids=False), hashed)
         other = "https://boards.example.test/jobs/1"
@@ -619,28 +620,29 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         )
 
     def test_source_key_keeps_its_keyerror_that_system_status_relies_on(self):
-        import pipeline
+        from pipeline_core import config
 
-        self.assertEqual(pipeline.source_key({"kind": "greenhouse", "token": "acme"}), "greenhouse:acme")
-        self.assertEqual(pipeline.source_key({"kind": "workday", "tenant": "t", "site": "s"}), "workday:t:s")
+        self.assertEqual(config.source_key({"kind": "greenhouse", "token": "acme"}), "greenhouse:acme")
+        self.assertEqual(config.source_key({"kind": "workday", "tenant": "t", "site": "s"}), "workday:t:s")
         with self.assertRaises(KeyError):
-            pipeline.source_key({"token": "acme"})
+            config.source_key({"token": "acme"})
         # The merge key is the same string lowercased; its .get("kind", "") never helps, since source_identity needs kind too.
-        self.assertEqual(pipeline._source_merge_key({"kind": "Greenhouse", "token": "ACME"}), "greenhouse:acme")
+        self.assertEqual(config._source_merge_key({"kind": "Greenhouse", "token": "ACME"}), "greenhouse:acme")
         with self.assertRaises(KeyError):
-            pipeline._source_merge_key({"token": "acme"})
+            config._source_merge_key({"token": "acme"})
 
     def test_pipeline_connect_takes_a_path_and_defaults_to_the_module_path_read_at_call_time(self):
         import sqlite3
 
         import pipeline
+        from pipeline_core import paths
 
         with tempfile.TemporaryDirectory() as tmp:
             explicit = Path(tmp) / "nested" / "explicit.db"
             pipeline.connect(explicit).close()
             self.assertTrue(explicit.is_file())
             default = Path(tmp) / "default.db"
-            with mock.patch.object(pipeline, "DB_PATH", default):
+            with mock.patch.object(paths, "DB_PATH", default):
                 pipeline.connect().close()
             self.assertTrue(default.is_file())
             with closing(sqlite3.connect(explicit)) as conn:
@@ -648,15 +650,15 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
             self.assertIn("jobs", tables)
 
     def test_legacy_create_database_does_not_move_the_global_db_path(self):
-        import pipeline
         from opportunity_app import legacy
+        from pipeline_core import paths
 
-        before = pipeline.DB_PATH
+        before = paths.DB_PATH
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "data" / "pipeline.db"
             legacy.create_database(target)
             self.assertTrue(target.is_file())
-        self.assertEqual(pipeline.DB_PATH, before)
+        self.assertEqual(paths.DB_PATH, before)
 
     def test_one_ruleset_version_constant_backs_every_fit_score_read_and_write(self):
         from opportunity_app import schema
