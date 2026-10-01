@@ -28,6 +28,7 @@ from urllib.parse import urlsplit
 
 from .contact_names import website_domain
 from .outreach import log_event
+from .outreach_agents import Runner
 from .outreach_batch import answers_by_target
 from .outreach_contacts import (
     EMAIL_PATTERN,
@@ -41,7 +42,6 @@ from .outreach_contacts import (
 from .timestamps import utc_now
 from .web_fetch import USER_AGENT, SafeFetcher, fetch_site_robots, public_web_url_error, same_site
 
-Runner = Callable[[str], str]
 
 BATCH_SIZE = 6
 MAX_PEOPLE_PER_COMPANY = 4

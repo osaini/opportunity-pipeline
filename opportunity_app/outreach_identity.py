@@ -4,7 +4,8 @@ The rules the reply reader (outreach_inbox) uses to say whose mail something is,
 and that the interviewer and company research share: who is "anyone at the
 company" (its own website's domain, never a platform's, a university's or the
 student's own), whether an address is one person's or a shared inbox or a machine,
-and whether a From name and its address belong together. Pure functions over
+and whether a From name and its address belong together, and whether a page's text names a
+company (mentions_company, which the company searches check each page with). Pure functions over
 strings, plus the shipped sender lists of mail_trust and the student's own
 sending address. No database, no Gmail.
 
@@ -236,3 +237,25 @@ def is_distinctive(company: str) -> bool:
     """Whether a company's name is specific enough to search mail for: two words, or one of six letters or more."""
     words = company_words(company).split()
     return len(words) >= 2 or any(len(word) >= 6 for word in words)
+
+
+# A legal suffix at the end of a company name, with the comma that usually
+# introduces it. The comma is part of the suffix, not part of the name:
+# "Acme Robotics, Inc." is the same company as "Acme Robotics", and a site that
+# writes the plain name must still count as mentioning it.
+_LEGAL_SUFFIX_RE = re.compile(
+    r"[,\s]+(?:inc\.?|incorporated|corp\.?|corporation|llc|l\.l\.c\.?|ltd\.?|limited|co\.|company)$"
+)
+
+
+def mentions_company(text: str, company: str, domain: str) -> bool:
+    haystack = " ".join(text.casefold().split())
+    full = " ".join(company.casefold().split())
+    names = {full}
+    # Trailing punctuation is stripped too, so a name that ends up as
+    # "acme robotics," is never what gets searched for.
+    stripped = _LEGAL_SUFFIX_RE.sub("", full).strip(" ,.")
+    if stripped:
+        names.add(stripped)
+    # An empty domain (no website on file) is in every string, so it proves nothing.
+    return any(name and name in haystack for name in names) or bool(domain) and domain.casefold() in haystack

@@ -110,7 +110,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
         "actions auth apply_checks apply_policy apply_sensitive apply_schema_client automation boards captures connections "
         "dossier employer market early_programs extension_apply mail_trust notifications purge ingestion profile resumes "
         "resume_variants preparation document_artifacts inbox_classifiers "
-        "outreach outreach_config outreach_identity outreach_versions outreach_contacts outreach_linkedin outreach_batch "
+        "outreach outreach_agents outreach_config outreach_identity outreach_versions outreach_contacts outreach_linkedin outreach_batch "
         "outreach_render"
     ),
     # L4 workflows. refresh is the manual refresh/purge workflow run in a background thread; api (L5) is its only importer.
@@ -146,8 +146,7 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
     (_P + "automation", _P + "outreach", "ten handler bodies use outreach records: outreach imports the ledger at the top"),
     (_P + "automation", _P + "resume_variants", "setup_requirement: resume_variants imports the ledger at the top"),
     (_P + "launch", _P + "api", "create_app and LOOPBACK_HOSTS: api imports system_status, which would import launch if that were hoisted too"),
-    (_P + "outreach_discovery", _P + "outreach_locate", "locate_targets: outreach_locate imports discovery at the top"),
-    (_P + "outreach_drafting", _P + "outreach_research", "the research module: outreach_research imports outreach_discovery, which imports drafting at the top"),
+    (_P + "outreach_drafting", _P + "outreach_research", "the research module: outreach_research reaches drafting through operations, application_inbox and internal_automation"),
     (_P + "outreach_gmail", _P + "outreach_labels", "label_name: outreach_labels imports outreach_gmail at the top"),
     (_P + "outreach_gmail", _P + "outreach_thank_you", "problem_now: outreach_thank_you imports outreach_gmail at the top"),
     (_P + "outreach_inbox", _P + "outreach_thank_you", "on_new_reply: outreach_thank_you reaches outreach_inbox through outreach_review"),

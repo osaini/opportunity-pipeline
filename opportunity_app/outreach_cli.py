@@ -58,7 +58,8 @@ from .database import is_postgres_target
 from .legacy import load_env_file
 from .outreach import queue_follow_up_reminders
 from .outreach_config import RESEARCH_ENV, discovery_provider
-from .outreach_discovery import DEFAULT_SCOPES, MAX_PER_SCOPE, RUNNERS, SCOPES, DiscoveryBusy, run_discovery
+from .outreach_agents import RUNNERS
+from .outreach_discovery import DEFAULT_SCOPES, MAX_PER_SCOPE, SCOPES, DiscoveryBusy, run_discovery
 from .outreach_locate import BATCH_SIZE, locate_targets
 from .outreach_profile import SEC_USER_AGENT_ENV, enrich_targets, sec_fetcher
 from .outreach_recontact import recontact_targets

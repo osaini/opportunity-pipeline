@@ -341,7 +341,7 @@ class DiscoveryTests(unittest.TestCase):
         leaving the comma searched every page for "acme robotics," and rejected
         real companies with "no source mentions the company".
         """
-        from opportunity_app.outreach_discovery import mentions_company
+        from opportunity_app.outreach_identity import mentions_company
 
         page = "About Acme Robotics -- we build robots."
         for name in (
@@ -358,7 +358,7 @@ class DiscoveryTests(unittest.TestCase):
                 self.assertTrue(mentions_company(page, name, "acme.example"))
 
     def test_a_different_company_is_still_not_a_mention(self):
-        from opportunity_app.outreach_discovery import mentions_company
+        from opportunity_app.outreach_identity import mentions_company
 
         page = "About Acme Robotics -- we build robots."
         self.assertFalse(mentions_company(page, "Bovi Robotics, Inc.", "bovi.com"))

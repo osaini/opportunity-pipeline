@@ -82,16 +82,16 @@ from .agent_providers import CliAgentProvider, cli_available, cli_binary, comple
 from .operations import enqueue_job
 from .contact_names import website_domain
 from .outreach import LEGAL_SUFFIXES, OutreachNotFoundError, log_event, company_key, get_target
+from .outreach_agents import RUNNERS
+from .outreach_agents import Runner
 from .outreach_config import COMPANY_RESEARCH_ENV, RESEARCH_ENV, resolve_provider
 from .outreach_contacts import PageParser
-from .outreach_discovery import RUNNERS, UNVERIFIABLE_STATUSES
 from .outreach_email_search import BLOCKED_HOSTS
 from .outreach_identity import is_institution, is_platform_host, names_host
 from .preparation import confirmed_facts
 from .timestamps import parse_app_instant, utc_now
-from .web_fetch import FetchResult, SafeFetcher, public_web_url_error
+from .web_fetch import UNVERIFIABLE_STATUSES, FetchResult, SafeFetcher, public_web_url_error
 
-Runner = Callable[[str], str]
 # Sends instructions and content to a model and returns its reply.
 Judge = Callable[[str, str], str]
 

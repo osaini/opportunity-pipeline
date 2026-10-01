@@ -28,10 +28,11 @@ import subprocess
 import tempfile
 from datetime import date
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import httpx
 
+from .outreach_agents import Runner
 from .outreach_config import REVIEW_ENV, resolve_provider
 from .agent_providers import CLAUDE_NO_TOOLS, CODEX_READ_ONLY, cli_binary, failure_detail, run_headless
 from .outreach import get_target
@@ -41,7 +42,6 @@ from .gmail_client import ClientFactory, GmailThrottled
 from .preparation import confirmed_facts
 from .typesafe_decisions import DecisionClient
 
-Runner = Callable[[str], str]
 REVIEW_TIMEOUT_SECONDS = 240
 
 REVIEW_INSTRUCTIONS = """You check a follow-up email before it is sent automatically on a university student's behalf.

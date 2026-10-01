@@ -391,7 +391,7 @@ class CheckBriefTests(unittest.TestCase):
         self.assertEqual(self.refused(self.check(hidden)), {hidden["text"]: "its source does not name the company"})
 
     def test_the_shared_company_check_never_matches_an_empty_domain(self):
-        from opportunity_app.outreach_discovery import mentions_company
+        from opportunity_app.outreach_identity import mentions_company
 
         self.assertFalse(mentions_company(OTHER_COMPANY, "Chargebot", ""))
         self.assertTrue(mentions_company(PRESS, "Chargebot, Inc.", ""))

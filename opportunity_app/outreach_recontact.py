@@ -27,11 +27,13 @@ from typing import Any, Callable
 
 from .background import SingleFlightManager
 from .outreach import get_target
+from .outreach_agents import discovery_runner
+from .outreach_agents import Runner
 from .outreach_contacts import apply_choice, choose_contact, find_contacts, is_generic_address, list_candidates
+from .outreach_discovery import search_other_sites
 from .schema import connect_product
 from .web_fetch import SafeFetcher, default_fetcher
 
-Runner = Callable[[str], str]
 
 PERSON_BASES = {"confirmed", "strong_guess", "weak_guess"}
 
@@ -104,9 +106,6 @@ def recontact_targets(
             errors[target_id] = str(exc)[:300]
     search: dict[str, Any] = {"searched": 0, "found": 0, "results": []}
     if runner is not None:
-        # Imported here: outreach_discovery owns the error handling for a search run.
-        from .outreach_discovery import search_other_sites
-
         search = search_other_sites(conn, due, user_id=user_id, runner=runner, fetcher=fetcher, verifier=verifier)
 
     results = _decide(
@@ -256,11 +255,7 @@ class RecontactManager(SingleFlightManager):
     def _report(self, conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
         runner = self._runner
         if runner is None and self._email_search:
-            # Imported here: outreach_discovery owns the research runners.
-            from .outreach_config import discovery_provider
-            from .outreach_discovery import RUNNERS, claude_runner
-
-            runner = RUNNERS.get(discovery_provider(), claude_runner)
+            runner = discovery_runner()
         with ExitStack() as stack:
             fetcher = stack.enter_context(self._client_factory())
             renderer = self._renderer_factory()
