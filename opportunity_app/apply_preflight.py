@@ -25,7 +25,7 @@ from typing import Any
 from pipeline_core.identity import employer_key
 from pipeline_core.visibility import capture_visible_sql
 
-from . import apply_classify, apply_policy, apply_runs, apply_sensitive, preparation
+from . import apply_classify, apply_greenhouse, apply_policy, apply_runs, apply_sensitive, preparation
 from .actions import OpportunityNotFoundError
 from .apply_schema_client import SchemaClient, SchemaUnavailable
 from .apply_checks import question_key
@@ -107,7 +107,7 @@ def _asks(conn: sqlite3.Connection, user_id: str, opportunity_id: str, ident: tu
     asks: list[dict[str, str]] = []
     while True:
         block = apply_runs.duplicate_block(
-            conn, user_id, opportunity_id=opportunity_id, ats=apply_policy.ATS_GREENHOUSE, job_ref=f"{token}/{job}",
+            conn, user_id, opportunity_id=opportunity_id, ats=apply_greenhouse.ATS_GREENHOUSE, job_ref=f"{token}/{job}",
             company=employer_key(company), acknowledged=acknowledged, now=now,
         )
         if block is None or block.kind != "ask":
@@ -246,11 +246,11 @@ def _prepare(
         "checked_at": moment.isoformat(timespec="seconds"), "from_cache": False,
         "posting": {"title": "", "company": "", "url": "", "differs": False, "difference": ""},
     }
-    ident = apply_policy.identify(conn, opportunity_id)
+    ident = apply_greenhouse.identify(conn, opportunity_id)
     if ident is None:
         return result, None, None
     token, job = ident
-    result.update(ats=apply_policy.ATS_GREENHOUSE, board_token=token, job_id=job, canonical_url=apply_policy.canonical_url(token, job))
+    result.update(ats=apply_greenhouse.ATS_GREENHOUSE, board_token=token, job_id=job, canonical_url=apply_greenhouse.canonical_url(token, job))
     application = conn.execute("SELECT stage FROM applications WHERE opportunity_id=? AND user_id=?", (opportunity_id, user_id)).fetchone()
     if application is not None:
         result["application"] = {"exists": True, "stage": str(application["stage"])}
@@ -271,7 +271,7 @@ def _prepare(
     sources =apply_policy.sources_for(conn, user_id, opportunity_id, company=company, storage_root=resume_root)
     plan = apply_policy.build_plan(
         apply_policy.parse_schema(listing), None, sources, company, "check",
-        canonical_url=result["canonical_url"], adapter_version=apply_runs.ADAPTER_VERSION,
+        canonical_url=result["canonical_url"], adapter_version=apply_greenhouse.ADAPTER_VERSION,
     )
     return result, plan, sources
 
@@ -303,7 +303,7 @@ def _eligibility(
             "allowed": not blocked, "needs_tick": ticked and not blocked,
             "reason": "; ".join(part for part in ((block.message if block else ""), ask_reason if not blocked else "") if part),
         }
-    met, count, needed = apply_runs.gate(conn, user_id, apply_policy.ATS_GREENHOUSE)
+    met, count, needed = apply_runs.gate(conn, user_id, apply_greenhouse.ATS_GREENHOUSE)
     if result["status"] != "ready":
         rows["submit"].update(allowed=False, reason=result["message"])
     elif not met:

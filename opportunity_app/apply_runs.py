@@ -58,13 +58,10 @@ from .profile_store import read_stored_profile
 from .settings_store import get_setting, put_setting, setting_updated_at
 from .timestamps import parse_app_instant, utc_now
 from .user_time import UserTimezone, user_timezone
+from .apply_greenhouse import ADAPTER_VERSION, ATS_GREENHOUSE, GREENHOUSE_SENDER_DOMAINS
 
 LOGGER = logging.getLogger(__name__)
 
-ATS_GREENHOUSE = "greenhouse"
-# The adapter's version (docs/phase5-apply-agent-spec.md 4.4). A rehearsal counts toward the gate only for
-# the version the adapter has now, so a change to its selectors or rules means rehearsing again.
-ADAPTER_VERSION = "greenhouse-1"
 MODES = ("one_click", "handoff", "unattended")
 CLAIM_STATES = ("claimed", "clicking", "submitted", "unconfirmed", "needs_you", "failed", "released")
 RUN_KINDS = ("lookup", "rehearsal", "submit", "handoff")
@@ -91,8 +88,6 @@ BREAKER_WINDOW = 5
 RUNNER_COMPONENT = "apply_agent.runner"
 # The daily evidence purge's own health row, so a failed purge is not mixed with the runner's status.
 RETENTION_COMPONENT = "apply_agent.retention"
-# Greenhouse's own senders (data/application_senders.json), for a confirmation the reader could not match to a role.
-GREENHOUSE_SENDER_DOMAINS = ("greenhouse.io", "greenhouse-mail.io")
 
 # Per-student limits: defaults here, overridable in the profile under "apply_agent", read the way
 # internal_automation.follow_up_days reads its day count. A value that is not an integer in range is the default.

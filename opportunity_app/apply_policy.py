@@ -36,12 +36,11 @@ import sqlite3
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
-from urllib.parse import parse_qs, urlsplit
 
 from pipeline_core.identity import employer_key, identity_tokens, normalized_text
 
 from . import apply_sensitive, preparation, resume_variants
-from .apply_checks import ALTERNATE_TEXT_FIELDS, BOARD_HOSTS, Problem, join, question_key
+from .apply_checks import ALTERNATE_TEXT_FIELDS, Problem, join, question_key
 from .apply_classify import (
     CATEGORY_TOPIC,
     CATEGORY_WORDS,
@@ -64,82 +63,18 @@ from .apply_classify import (
     statement_of,
     without_enumeration,
 )
+from .apply_greenhouse import ATS_GREENHOUSE
 from .extension_apply import ExtensionApplyError, confirmed_resume_file
 from .json_values import json_as
 
 __all__ = [
-    "ALLOWED_ATS_LABEL_FIELDS", "ATS_GREENHOUSE", "Plan", "PlanField", "SchemaField", "Source", "Sources", "build_plan", "canonical_url",
-    "company_matches", "control_of", "cover_letter_for", "identify", "mac_key", "match_options", "name_parts", "parse_schema", "plan_entries",
-    "plan_hash", "question_key", "resume_for", "schema_url", "sources_for", "stored_sensitive_answer", "value_mac", "with_page_labels",
+    "ALLOWED_ATS_LABEL_FIELDS", "Plan", "PlanField", "SchemaField", "Source", "Sources", "build_plan", "company_matches", "control_of",
+    "cover_letter_for", "mac_key", "match_options", "name_parts", "parse_schema", "plan_entries", "plan_hash", "question_key", "resume_for",
+    "sources_for", "stored_sensitive_answer", "value_mac", "with_page_labels",
 ]
 
-ATS_GREENHOUSE = "greenhouse"
 
 # --- Identifying the posting (4.4) --------------------------------------------------------------
-
-_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
-_JOB_ID = re.compile(r"^\d+$")
-_JOB_PATH = re.compile(r"^/([A-Za-z0-9][A-Za-z0-9_-]{0,79})/jobs/(\d+)/?$")
-
-
-def canonical_url(board_token: str, job_id: str) -> str:
-    return f"https://job-boards.greenhouse.io/{board_token}/jobs/{job_id}"
-
-
-def schema_url(board_token: str, job_id: str) -> str:
-    """Greenhouse's public, keyless listing of what an application form asks (read-only GET)."""
-    return f"https://boards-api.greenhouse.io/v1/boards/{board_token}/jobs/{job_id}?questions=true"
-
-
-def _from_url(url: str) -> tuple[str, str] | None:
-    try:
-        parts = urlsplit(str(url or "").strip())
-    except ValueError:
-        return None
-    host = (parts.hostname or "").lower().rstrip(".")
-    if parts.scheme not in ("http", "https") or host not in BOARD_HOSTS:
-        return None
-    match = _JOB_PATH.match(parts.path)
-    if match:
-        return match.group(1), match.group(2)
-    if parts.path.rstrip("/") == "/embed/job_app":
-        query = parse_qs(parts.query)
-        token, job = (query.get("for") or [""])[0], (query.get("token") or [""])[0]
-        if _TOKEN.match(token) and _JOB_ID.match(job):
-            return token, job
-    return None
-
-
-def identify(conn: sqlite3.Connection, opportunity_id: str) -> tuple[str, str] | None:
-    """The Greenhouse (board token, job id) this saved role is, or None when it is not one the app can fill.
-
-    A token parsed from the role's own URL, then from a source URL, wins. Otherwise the source key
-    ``greenhouse:<token>`` and the source's external id are used, and the id must be all digits. A company
-    site that carries only ``gh_jid`` is not supported.
-    """
-    row = conn.execute("SELECT url FROM opportunities WHERE id=?", (opportunity_id,)).fetchone()
-    if row is None:
-        return None
-    found = _from_url(row[0])
-    if found:
-        return found
-    sources = conn.execute(
-        "SELECT source_url, source_key, external_id FROM opportunity_sources WHERE opportunity_id=? ORDER BY last_seen_at DESC, source_key",
-        (opportunity_id,),
-    ).fetchall()
-    for source in sources:
-        found = _from_url(source[0])
-        if found:
-            return found
-    # The pattern is a parameter, not part of the SQL: a literal % breaks on PostgreSQL, where ? becomes %s.
-    for source in conn.execute(
-        "SELECT source_key, external_id FROM opportunity_sources WHERE opportunity_id=? AND source_key LIKE ? ORDER BY last_seen_at DESC, source_key",
-        (opportunity_id, "greenhouse:%"),
-    ).fetchall():
-        token, job = str(source[0])[len("greenhouse:"):], str(source[1] or "")
-        if _TOKEN.match(token) and _JOB_ID.match(job):
-            return token, job
-    return None
 
 
 # --- What the form asks: Greenhouse's own listing (4.5) ------------------------------------------

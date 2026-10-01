@@ -29,17 +29,12 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, NamedTuple, Sequence
 from urllib.parse import parse_qs, quote, quote_plus, unquote, unquote_plus, urlsplit
+from .apply_greenhouse import BOARD_HOSTS, GREENHOUSE_DOMAIN, SUBMIT_HOST
 
 # ---------------------------------------------------------------------------------------------
 # Hosts and endpoints
 # ---------------------------------------------------------------------------------------------
 
-# Where a main-frame navigation may go. Never my.greenhouse.io: that is the
-# student's own MyGreenhouse account, which the agent never signs in to.
-BOARD_HOSTS = frozenset({"job-boards.greenhouse.io", "boards.greenhouse.io"})
-# The submit path in the served HTML belongs to this host, not the job-boards one.
-SUBMIT_HOST = "boards.greenhouse.io"
-GREENHOUSE_DOMAIN = "greenhouse.io"
 STATIC_RESOURCE_TYPES = frozenset({"image", "font", "stylesheet", "script", "media"})
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 # A planned value shorter than this ("Yes", "No") is not searched for in a
