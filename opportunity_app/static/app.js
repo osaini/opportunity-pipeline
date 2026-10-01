@@ -180,6 +180,8 @@
     const isFormData = options.body instanceof FormData;
     const csrf = document.cookie.split("; ").find((entry) => entry.startsWith("pipeline_csrf="))?.split("=")[1];
     const method = (options.method || "GET").toUpperCase();
+    // The session this request was sent under: a 401 that answers after it ended is old news.
+    const sentUnder = state.userId;
     let response;
     try {
       response = await fetch(path, {
@@ -200,7 +202,11 @@
       throw error;
     }
     if (response.status === 401) {
-      showAuth();
+      // The gate is already up when the session ended meanwhile (a poll still in
+      // flight at sign-out) or a sign-in attempt is on screen; showing it again
+      // would blank the sign-in error and move focus.
+      const gateShowing = els.authGate.classList.contains("is-visible");
+      if (state.userId === sentUnder && !gateShowing) showAuth();
       throw new Error("Authentication required");
     }
     if (!response.ok) {
@@ -3107,6 +3113,8 @@
       }
       if (!news.length) return;
       if (state.view === "outreach") await loadOutreach();
+      // Signed out while the list reloaded: the news is the old session's.
+      if (state.userId !== userId) return;
       announce(news.join(" "));
     } catch (_error) {
       // A failed look is retried on the next load; it never blocks the page.

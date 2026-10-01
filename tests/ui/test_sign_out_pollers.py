@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 from urllib.parse import urlsplit
 
+import pytest
 from playwright.sync_api import expect
 
 from conftest import OWNER_TOKEN, sign_in_as_owner, wait_for_results
@@ -216,5 +217,100 @@ def test_an_inbox_check_still_running_at_sign_out_says_nothing_and_loads_nothing
 
     assert lists_after_sign_out == [], f"the old session's inbox check reloaded the list behind the gate: {lists_after_sign_out}"
     expect(page.locator("#action-status")).to_have_text("")
+    assert_gate_undisturbed(page)
+    page.unroute_all(behavior="ignoreErrors")
+
+
+def test_an_inbox_check_whose_list_reload_is_in_flight_at_sign_out_says_nothing(page, base_url):
+    """The check answered while signed in, so the list reload it starts is still in flight when
+    the student signs out. When that reload comes back, the news is the old session's and must
+    not be announced behind the gate."""
+    page.clock.install()
+    page.goto("/")
+    sign_in_as_owner(page)
+    wait_for_results(page)
+    seed_target(page, base_url, contact_email="jane@bovi.example", contact_name="Jane Doe")
+    gmail = {"configured": True, "connected": True, "needs_reconnect": False, "account": COMPOSE_ACCOUNT,
+             "attachment": "resume.pdf", "attachment_problem": "", "bounce_check": True}
+
+    answered = []
+    held = []
+
+    def listing(route):
+        response = route.fetch()
+        payload = {**response.json(), "gmail_drafts": gmail}
+        if answered and not held:
+            held.append((route, payload))
+            return
+        route.fulfill(response=response, json=payload)
+
+    def inbox_check(route):
+        if answered:
+            route.fulfill(json={})
+            return
+        answered.append(True)
+        route.fulfill(json={"replies": [{"company": "Bovi", "from": "jane@bovi.example"}]})
+
+    page.route(lambda url: is_list_url(url), listing)
+    page.route("**/api/v1/outreach/inbox-check", inbox_check)
+
+    page.click("#outreach-nav")
+    for _ in range(100):
+        if held:
+            break
+        page.wait_for_timeout(50)
+    assert held, "the list reload after the inbox check never started, so this test proves nothing"
+
+    sign_out_and_fail_a_sign_in(page)
+    route, payload = held[0]
+    route.fulfill(json=payload)
+    page.wait_for_timeout(300)
+
+    expect(page.locator("#action-status")).to_have_text("")
+    assert_gate_undisturbed(page)
+    page.unroute_all(behavior="ignoreErrors")
+
+
+@pytest.mark.allow_page_errors  # the held poll is answered with a 401 by design
+def test_a_poll_in_flight_at_sign_out_that_comes_back_401_leaves_the_sign_in_gate_alone(page, base_url):
+    """The request started under a session that has since ended. Its 401 says nothing new:
+    the gate is already up, and re-running showAuth would blank the sign-in error and move focus."""
+    page.clock.install()
+    page.goto("/")
+    sign_in_as_owner(page)
+    wait_for_results(page)
+    target = seed_target(page, base_url, contact_email="jane@bovi.example", contact_name="Jane Doe")
+
+    held = []
+
+    def listing(route):
+        response = route.fetch()
+        payload = response.json()
+        for item in payload["items"]:
+            item["status"] = "replied"
+            item["call_prep_job"] = {"state": "running", "attempts": 1}
+        route.fulfill(response=response, json=payload)
+
+    page.route(lambda url: is_list_url(url), listing)
+    page.route(re.compile(rf".*/api/v1/outreach/{re.escape(target['id'])}$"), lambda route: held.append(route))
+
+    page.click("#outreach-nav")
+    wait_for_results(page)
+    page.locator('#subnav [data-subtab="replied"]').click()
+    wait_for_results(page)
+    page.clock.run_for(5_100)
+    for _ in range(50):
+        if held:
+            break
+        page.wait_for_timeout(50)
+    assert held, "the call prep watcher never polled, so this test proves nothing"
+
+    sign_out_and_fail_a_sign_in(page)
+    held[0].fulfill(status=401, json={"detail": "Authentication required"})
+    page.wait_for_timeout(200)
+    # showAuth moves focus on a zero-delay timer, which the fake clock holds.
+    page.clock.run_for(100)
+    page.wait_for_timeout(100)
+
     assert_gate_undisturbed(page)
     page.unroute_all(behavior="ignoreErrors")
