@@ -30,7 +30,8 @@ from opportunity_app.outreach_forms import (
     plan_fill,
     submit_contact_form,
 )
-from opportunity_app.schema import connect_product, utc_now
+from opportunity_app.schema import connect_product
+from opportunity_app.timestamps import utc_now
 
 from browser_support import requires_chromium
 from helpers_platform import build_and_migrate
@@ -909,9 +910,9 @@ class FormSubmitterCheckTests(unittest.TestCase):
 
 class _Page:
     def __init__(self, url, raw):
-        from opportunity_app.outreach_contacts import _PageParser
+        from opportunity_app.outreach_contacts import PageParser
 
-        self.parser = _PageParser()
+        self.parser = PageParser()
         self.parser.feed(raw)
         self.parser.close()
         self.record = {"url": url, "raw": raw, "parser": self.parser}

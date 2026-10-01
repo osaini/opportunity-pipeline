@@ -8,9 +8,13 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from pipeline import score_job
+from pipeline_core.read_model import RULESET_VERSION
 
-from .schema import LOCAL_USER_ID, utc_now
+from .json_values import json_dict
+from .legacy import score_job
+from .profile_store import read_stored_profile
+from .schema import LOCAL_USER_ID
+from .timestamps import utc_now
 
 
 ALLOWED_PROFILE_FIELDS = {
@@ -119,14 +123,8 @@ def profile_completeness(profile: dict[str, Any]) -> dict[str, Any]:
 def is_personalized(conn: sqlite3.Connection, *, user_id: str) -> bool:
     """Whether any scoring input is set, without provisioning a profile row."""
 
-    row = conn.execute("SELECT profile_json FROM profiles WHERE user_id=?", (user_id,)).fetchone()
-    if not row:
-        return False
-    try:
-        profile = json.loads(row[0] or "{}")
-    except (TypeError, json.JSONDecodeError):
-        return False
-    return isinstance(profile, dict) and any(_has_value(profile.get(field)) for field in SCORING_FIELDS)
+    profile = read_stored_profile(conn, user_id)
+    return any(_has_value(profile.get(field)) for field in SCORING_FIELDS)
 
 
 def _compute_scores(
@@ -160,12 +158,12 @@ def _write_scores(
             """INSERT INTO fit_scores(
                    opportunity_id, user_id, ruleset_version, score,
                    explanation_json, created_at
-               ) VALUES(?, ?, 'legacy-v1', ?, ?, ?)
+               ) VALUES(?, ?, ?, ?, ?, ?)
                ON CONFLICT(opportunity_id, user_id, ruleset_version) DO UPDATE SET
                    score=excluded.score,
                    explanation_json=excluded.explanation_json,
                    created_at=excluded.created_at""",
-            (opportunity_id, user_id, score, json.dumps(reasons), timestamp),
+            (opportunity_id, user_id, RULESET_VERSION, score, json.dumps(reasons), timestamp),
         )
 
 
@@ -295,7 +293,7 @@ def _region_errors(value: Any) -> list[str]:
     return errors
 
 
-def _name_parts_errors(value: Any) -> list[str]:
+def name_parts_errors(value: Any) -> list[str]:
     if not isinstance(value, dict):
         return ["name_parts must be an object with first, last and preferred"]
     errors = [f"name_parts.{key} is not one of first, last, preferred" for key in sorted(set(value) - set(_NAME_PARTS))]
@@ -366,7 +364,7 @@ def validate_profile_types(profile: dict[str, Any]) -> None:
         elif field == "compensation_preferences":
             errors.extend(_compensation_errors(value))
         elif field == "name_parts":
-            errors.extend(_name_parts_errors(value))
+            errors.extend(name_parts_errors(value))
         elif field == "contact":
             if not isinstance(value, dict):
                 errors.append("contact must be an object")
@@ -389,11 +387,7 @@ def _stored_profile(conn: sqlite3.Connection, *, user_id: str) -> dict[str, Any]
         if not conn.execute("SELECT id FROM users WHERE id=?", (user_id,)).fetchone():
             raise LookupError(user_id)
         return {}
-    try:
-        profile = json.loads(row[0] or "{}")
-    except (TypeError, ValueError):
-        return {}
-    return profile if isinstance(profile, dict) else {}
+    return json_dict(row[0])
 
 
 def _restore_file(path: Path, previous: bytes | None) -> None:

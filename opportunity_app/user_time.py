@@ -25,13 +25,28 @@ SYSTEM_LOCAL = "system-local"
 _DATE_ONLY = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
+def to_local(instant: datetime, zone: ZoneInfo | None) -> datetime:
+    """An instant in ``zone``, or in the machine's own zone when ``zone`` is None (system-local)."""
+    return instant.astimezone(zone) if zone else instant.astimezone()
+
+
+def at_wall_clock(naive: datetime, zone: ZoneInfo | None) -> datetime:
+    """A naive wall-clock time read as being in ``zone``, or in the machine's own zone when ``zone`` is None.
+
+    Unlike ``UserTimezone.localize`` this does not leave an aware value alone
+    (it replaces the zone), and it keeps the value's own ``fold``. It is for
+    values built by ``datetime.combine``, which are always naive and fold 0.
+    """
+    return naive.replace(tzinfo=zone) if zone else naive.astimezone()
+
+
 @dataclass(frozen=True)
 class UserTimezone:
     name: str
     zone: ZoneInfo | None = None
 
     def to_local(self, instant: datetime) -> datetime:
-        return instant.astimezone(self.zone) if self.zone else instant.astimezone()
+        return to_local(instant, self.zone)
 
     def today(self, now: datetime | None = None) -> date:
         return self.to_local(now or datetime.now(timezone.utc)).date()

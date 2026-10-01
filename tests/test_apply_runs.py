@@ -18,12 +18,13 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import actions, apply_runs, automation, schema, urgent
-from opportunity_app.apply_runs import ClaimHeldError, ClaimRefused, company_key
+from opportunity_app import SERVER_INSTANCE, actions, apply_runs, automation, schema, urgent
+from opportunity_app.apply_runs import ClaimHeldError, ClaimRefused
+from pipeline_core.identity import employer_key
 from opportunity_app.operations import ACCOUNT_QUERIES, delete_account, export_account, run_retention
 from opportunity_app.outreach_automation import AutomationWorker
-from opportunity_app.outreach_gmail import SERVER_INSTANCE
-from opportunity_app.schema import connect_product, ensure_product_schema, utc_now
+from opportunity_app.schema import connect_product, ensure_product_schema
+from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 from helpers_apply import ApplyCase, BLUEFIN, USER, setUpModule, tearDownModule  # noqa: F401 (module fixtures: unittest and pytest find them here)
@@ -82,7 +83,7 @@ class ClaimTests(ApplyCase):
                 try:
                     claim = apply_runs.claim(
                         conn, user_id=USER, opportunity_id="job-1", mode="handoff", ats="greenhouse", board_token="bluefin",
-                        job_ref="bluefin/1", company=company_key(BLUEFIN), now=self.at(number),
+                        job_ref="bluefin/1", company=employer_key(BLUEFIN), now=self.at(number),
                     )
                     results.append(("claimed", claim["token"]))
                 except ClaimRefused as refusal:
@@ -181,7 +182,7 @@ class ClaimTests(ApplyCase):
         self.assertEqual((row["state"], row["after_click"]), ("failed", 0))
         self.assertIn("Nothing was sent", row["note"])
         self.assertIsNone(apply_runs.duplicate_block(self.conn, USER, opportunity_id="job-1", ats="greenhouse", job_ref="bluefin/job-1",
-                                                     company=company_key(BLUEFIN), application_id="app-job-1", now=self.at()))
+                                                     company=employer_key(BLUEFIN), application_id="app-job-1", now=self.at()))
         again = self.start("job-1", "one_click", now=self.at(1), confirmed_at=self.at().isoformat(), acknowledged=())
         self.assertEqual(self.claim_row(first["token"])["state"], "released")
         self.assertEqual(self.claim_row(again["token"])["state"], "claimed")
@@ -208,7 +209,7 @@ class DuplicateChecks(ApplyCase):
     def check(self, opportunity_id, **kwargs):
         return apply_runs.duplicate_block(
             self.conn, USER, opportunity_id=opportunity_id, ats="greenhouse", job_ref=f"bluefin/{opportunity_id}",
-            company=company_key(self.companies[opportunity_id]), now=self.at(1), **kwargs,
+            company=employer_key(self.companies[opportunity_id]), now=self.at(1), **kwargs,
         )
 
     def test_an_application_that_is_not_applying_is_not_submitted(self):
@@ -676,7 +677,7 @@ class LimitTests(ApplyCase):
         self.base = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
 
     def block(self, *, mode="one_click", company=BLUEFIN, board="bluefin", now=None):
-        return apply_runs.limits_block(self.conn, USER, company_key(company), board, mode, now or self.at())
+        return apply_runs.limits_block(self.conn, USER, employer_key(company), board, mode, now or self.at())
 
     def stamp(self, minutes):
         return self.at(minutes).isoformat(timespec="microseconds")

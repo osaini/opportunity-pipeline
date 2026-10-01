@@ -17,11 +17,11 @@ from fastapi.testclient import TestClient
 from opportunity_app import STATIC_DIR
 from opportunity_app import outreach as outreach_module
 from opportunity_app.api import create_app
+from opportunity_app.database import is_unique_violation
 from opportunity_app.connections import update_preferences
 from opportunity_app.outreach import (
     CLAIM_DETAIL_LIMIT,
     _claim_detail,
-    _is_unique_violation,
     create_target,
     draft_checks,
     export_csv,
@@ -36,7 +36,8 @@ from opportunity_app.outreach import (
 )
 from opportunity_app import outreach_profile as profile_module
 from opportunity_app.outreach_profile import apply_location
-from opportunity_app.schema import connect_product, ensure_product_schema, utc_now
+from opportunity_app.schema import connect_product, ensure_product_schema
+from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 
@@ -359,9 +360,9 @@ class DraftCheckTests(unittest.TestCase):
     def test_postgres_unique_signals_are_recognized(self):
         with_sqlstate = type("PgError", (Exception,), {"sqlstate": "23505"})()
         fallback = type("UniqueViolation", (Exception,), {})()
-        self.assertTrue(_is_unique_violation(with_sqlstate))
-        self.assertTrue(_is_unique_violation(fallback))
-        self.assertFalse(_is_unique_violation(RuntimeError("other")))
+        self.assertTrue(is_unique_violation(with_sqlstate))
+        self.assertTrue(is_unique_violation(fallback))
+        self.assertFalse(is_unique_violation(RuntimeError("other")))
 
     def test_create_and_update_translate_postgres_unique_errors_only(self):
         class RaisingConnection:

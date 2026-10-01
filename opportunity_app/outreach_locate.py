@@ -20,11 +20,12 @@ import re
 import sqlite3
 from typing import Any, Callable
 
-from .agent_providers import CliAgentProvider
-from .outreach import PAGE_CHECKED_BASES, website_domain
-from .outreach_contacts import SafeFetcher, public_web_url_error
-from .outreach_discovery import _mentions_company
-from .outreach_profile import _state_code, apply_location, format_location
+from .contact_names import website_domain
+from .outreach import PAGE_CHECKED_BASES
+from .outreach_batch import answers_by_target
+from .web_fetch import SafeFetcher, public_web_url_error
+from .outreach_discovery import mentions_company
+from .outreach_profile import state_code, apply_location, format_location
 
 Runner = Callable[[str], str]
 
@@ -77,11 +78,11 @@ def _state_after(tail: str) -> str:
     """The state named right after a city, as a code or a full name, or ""."""
     code = re.match(r",\s*([A-Z]{2})\b", tail)
     if code:
-        return _state_code(code.group(1))
+        return state_code(code.group(1))
     for words in (2, 1):
         name = re.match(r"[,.]?\s*(" + r"\s+".join([r"[A-Za-z]+"] * words) + r")\b", tail)
-        if name and len(name.group(1)) > 2 and _state_code(name.group(1)):
-            return _state_code(name.group(1))
+        if name and len(name.group(1)) > 2 and state_code(name.group(1)):
+            return state_code(name.group(1))
     return ""
 
 
@@ -95,7 +96,7 @@ def _states_the_place(text: str, location: str) -> bool:
     city, _, rest = location.partition(",")
     city = " ".join(city.split())
     mentions = list(re.finditer(rf"\b{re.escape(city)}\b", page, re.IGNORECASE)) if city else []
-    state = _state_code(rest)
+    state = state_code(rest)
     if not mentions or not state:
         return bool(mentions)
     named = [_state_after(page[mention.end():mention.end() + STATE_AFTER_CITY]) for mention in mentions]
@@ -126,7 +127,7 @@ def check_proposal(
     if result.error or result.status >= 400:
         detail = result.error or f"HTTP {result.status}"
         return {"location": "", "source_url": "", "note": note, "reason": f"its source did not load ({detail})"}
-    if not _mentions_company(result.text, target["company"], website_domain(target.get("website", ""))):
+    if not mentions_company(result.text, target["company"], website_domain(target.get("website", ""))):
         return {"location": "", "source_url": "", "note": note, "reason": "its source does not mention the company"}
     if not _states_the_place(result.text, location):
         return {"location": "", "source_url": "", "note": note, "reason": f"its source does not place it in {location}"}
@@ -142,22 +143,9 @@ def locate_batch(
     fetcher: SafeFetcher,
 ) -> list[dict[str, Any]]:
     """Research one batch of companies and record every location its source backs up."""
-    raw = runner(build_prompt(targets))
-    parsed = CliAgentProvider.extract_json(raw)
-    proposals = parsed.get("companies")
-    if not isinstance(proposals, list):
-        raise ValueError("The location search reply had no companies list")
-    by_name = {target["company"].casefold(): target for target in targets}
-    seen: set[str] = set()
+    answered, unanswered = answers_by_target(runner(build_prompt(targets)), targets, "location search")
     results = []
-    for proposal in proposals:
-        if not isinstance(proposal, dict):
-            continue
-        name = " ".join(str(proposal.get("company") or "").split()).casefold()
-        target = by_name.get(name)
-        if target is None or name in seen:
-            continue
-        seen.add(name)
+    for proposal, target in answered:
         checked = check_proposal(proposal, target, fetcher=fetcher)
         outcome = "refused" if checked["reason"] else apply_location(
             conn, target["id"], user_id=user_id, location=checked["location"],
@@ -168,12 +156,11 @@ def locate_batch(
             "source_url": checked["source_url"], "note": checked["note"], "reason": checked["reason"],
             "outcome": outcome,
         })
-    for name, target in by_name.items():
-        if name not in seen:
-            results.append({
-                "target_id": target["id"], "company": target["company"], "location": "", "source_url": "",
-                "note": "", "reason": "the search did not answer for it", "outcome": "refused",
-            })
+    for target in unanswered:
+        results.append({
+            "target_id": target["id"], "company": target["company"], "location": "", "source_url": "",
+            "note": "", "reason": "the search did not answer for it", "outcome": "refused",
+        })
     return results
 
 

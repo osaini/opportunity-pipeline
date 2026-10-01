@@ -103,7 +103,7 @@ class ResearchAvailabilityTests(ApiCase):
     def test_research_is_not_offered_when_no_agent_is_installed(self):
         client, worker = self.researcher_client(web_researcher(lambda: None))
         created = self.create(client, website="https://patchco.example")
-        with mock.patch.object(outreach_research, "_cli_available", return_value=False):
+        with mock.patch.object(outreach_research, "cli_available", return_value=False):
             listing = client.get("/api/v1/outreach", headers=AUTH).json()["company_research"]
             self.assertFalse(listing["available"])
             self.assertIn("No research agent is set up", listing["reason"])
@@ -116,7 +116,7 @@ class ResearchAvailabilityTests(ApiCase):
     def test_research_is_offered_when_an_agent_is_installed(self):
         client, worker = self.researcher_client(web_researcher(lambda: None))
         created = self.create(client, website="https://patchco.example")
-        with mock.patch.object(outreach_research, "_cli_available", return_value=True):
+        with mock.patch.object(outreach_research, "cli_available", return_value=True):
             self.assertEqual(client.get("/api/v1/outreach", headers=AUTH).json()["company_research"], {"available": True})
             queued = client.post(f"/api/v1/outreach/{created['id']}/research", headers=AUTH)
             self.assertEqual(queued.status_code, 202, queued.text)
@@ -124,10 +124,10 @@ class ResearchAvailabilityTests(ApiCase):
     def test_a_queued_job_with_no_agent_ends_at_once_and_says_why(self):
         client, worker = self.researcher_client(web_researcher(lambda: None))
         created = self.create(client, website="https://patchco.example")
-        with mock.patch.object(outreach_research, "_cli_available", return_value=True):
+        with mock.patch.object(outreach_research, "cli_available", return_value=True):
             self.assertEqual(client.post(f"/api/v1/outreach/{created['id']}/research", headers=AUTH).status_code, 202)
         # The CLI went away after the job was queued.
-        with mock.patch.object(outreach_research, "_cli_available", return_value=False):
+        with mock.patch.object(outreach_research, "cli_available", return_value=False):
             worker.run_pending()
         target = client.get(f"/api/v1/outreach/{created['id']}", headers=AUTH).json()
         self.assertEqual(target["tech_brief_job"]["state"], "succeeded", "not retried until it dies")
@@ -136,7 +136,7 @@ class ResearchAvailabilityTests(ApiCase):
     def test_a_stand_in_researcher_needs_no_agent(self):
         client, worker = self.researcher_client(lambda conn, target_id, user_id: None)
         created = self.create(client)
-        with mock.patch.object(outreach_research, "_cli_available", return_value=False):
+        with mock.patch.object(outreach_research, "cli_available", return_value=False):
             self.assertEqual(client.get("/api/v1/outreach", headers=AUTH).json()["company_research"], {"available": True})
             self.assertEqual(client.post(f"/api/v1/outreach/{created['id']}/research", headers=AUTH).status_code, 202)
 

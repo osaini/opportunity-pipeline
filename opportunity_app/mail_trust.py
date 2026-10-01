@@ -44,12 +44,12 @@ from email.utils import getaddresses
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 from uuid import uuid4
 
-from pipeline import identity_tokens
+from pipeline_core.identity import employer_key
 
-from .schema import utc_now
+from .mail_message import host_of
+from .timestamps import utc_now
 
 SENDERS_PATH = Path(__file__).resolve().parent / "data" / "application_senders.json"
 # The categories a message is read for. job_boards and reserved never make a message worth reading.
@@ -145,13 +145,6 @@ def same_organization(first: str, second: str) -> bool:
     """Whether two hosts share a registrable domain. False when either has none."""
     a, b = registrable_domain(first), registrable_domain(second)
     return bool(a and b and a == b)
-
-
-def host_of(url: str) -> str:
-    try:
-        return (urlsplit(str(url or "").strip()).hostname or "").lower().rstrip(".")
-    except ValueError:
-        return ""
 
 
 # --- The shipped sender list -----------------------------------------------------------
@@ -284,8 +277,8 @@ def authenticate(message: EmailMessage) -> Authentication:
 
 
 def company_key(company: str) -> str:
-    """identity_tokens(company), sorted and joined: how employer_domains names a company."""
-    return " ".join(sorted(identity_tokens(str(company or ""))))
+    """employer_key(company), how employer_domains names a company; unlike employer_key it reads None as ''."""
+    return employer_key(str(company or ""))
 
 
 def _row(row: Any) -> dict[str, Any]:

@@ -14,8 +14,16 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterable
 
+from .identity import sort_key
 from .visibility import capture_visible_sql
 
+
+# The ruleset every fit score is stored and read under. The SQL views in
+# migrations/0001, 0020 and 0021 bake the same string in, so changing it needs a
+# migration as well as this constant. It is not `schema.LEGACY_MIGRATION_KEY`
+# (a migration_runs key that happens to read the same) and
+# `auto_triage` also stamps it as a policy_version.
+RULESET_VERSION = "legacy-v1"
 
 # Date sorts order by `posted_at_utc`, the derived fixed-width UTC column, not
 # by the raw `posted_at` the source sent. Sources disagree on spelling -- `Z`,
@@ -44,17 +52,6 @@ RANKED_VIEW_PER_COMPANY = 5
 MAX_PER_COMPANY = 50
 
 
-def company_key(value: str) -> str:
-    """The fold `company_sort_key` is stored with.
-
-    Must stay identical to `opportunity_app.schema.sort_key`, which writes the
-    column; it is repeated here because pipeline_core may not import the web
-    package (tests/test_dependency_boundary.py).
-    """
-
-    return str(value or "").casefold()
-
-
 @dataclass(frozen=True)
 class OpportunityFilters:
     """Validated filters supported by the first API/read-model slice."""
@@ -73,7 +70,7 @@ class OpportunityFilters:
     posted_since: str = ""
     deadline_before: str = ""
     tag: str = ""
-    # One employer, matched on the stored fold (see `company_key`).
+    # One employer, matched on the stored fold (see `identity.sort_key`).
     company: str = ""
     # Show at most this many postings per employer; 0 shows every posting.
     # Ignored while `company` is set, since that asks for one employer's all.
@@ -294,7 +291,7 @@ def _where(
         params.extend([term, term, term, term])
     if filters.company:
         clauses.append(f"{alias}.company_sort_key = ?")
-        params.append(company_key(filters.company))
+        params.append(sort_key(filters.company))
     for column, value in (
         (f"{alias}.role_type", filters.role_type),
         (f"{alias}.region", filters.region),
@@ -440,7 +437,7 @@ class OpportunityRepository:
             tenant AS (
                 SELECT """
             + ", ".join(f"o.{column}" for column in self._INVENTORY_COLUMNS)
-            + """,
+            + f""",
                     COALESCE(fit.score, 0) AS score,
                     COALESCE(fit.explanation_json, '[]') AS score_explanation,
                     COALESCE(fit.ruleset_version, '') AS ruleset_version,
@@ -461,7 +458,7 @@ class OpportunityRepository:
                 LEFT JOIN fit_scores fit
                     ON fit.opportunity_id = o.id
                     AND fit.user_id = ?
-                    AND fit.ruleset_version = 'legacy-v1'
+                    AND fit.ruleset_version = '{RULESET_VERSION}'
                 LEFT JOIN applications app
                     ON app.opportunity_id = o.id
                     AND app.user_id = ?

@@ -16,19 +16,19 @@ profile or the research for every fact.
 from __future__ import annotations
 
 import json
-import os
 import re
 import sqlite3
 from typing import Any, Callable
-from uuid import uuid4
 
-from .agent_providers import AgentProvider, CliAgentProvider, complete_text, default_provider, provider_catalog
+from .agent_providers import AgentProvider, CliAgentProvider, complete_text
 from .outreach import (
-    AWAITING_REPLY, DEFAULT_GREETING, DRAFT_KINDS, _cancel_schedules, _log, draft_checks, get_target, greeting_line, greeting_style, home_terms, location_usable, mentions_home, near_home, student_home,
+    AWAITING_REPLY, DEFAULT_GREETING, DRAFT_KINDS, DRAFT_META, cancel_schedules, log_event, draft_checks, get_target, greeting_line, greeting_style, home_terms, location_usable, mentions_home, near_home, student_home,
     user_regions,
 )
+from .outreach_config import resolve_provider, sender_account
+from .outreach_versions import insert_version, keep_current_draft
 from .preparation import confirmed_facts
-from .schema import utc_now
+from .timestamps import utc_now
 
 ProviderFactory = Callable[[str, str], AgentProvider]
 
@@ -47,11 +47,6 @@ RESEARCH_FIELDS = ("company", "website", "summary", "fit_rationale", "activity_s
 # an ask, which lands near 150 words; a draft is refused 30 words past this.
 MAX_WORDS = {"initial": 150, "follow_up": 80}
 MAX_COMMENT_CHARS = 2_000
-# Where each kind keeps its claims and provenance, beside DRAFT_KINDS' text fields.
-DRAFT_META = {
-    "initial": ("draft_claims_json", "draft_generated_by"),
-    "follow_up": ("follow_up_claims_json", "follow_up_generated_by"),
-}
 # The bridge's one claim about what the student would contribute may rest on inference.
 INFERENCE_BASIS = "inference"
 FILLER_PHRASES = (
@@ -152,41 +147,7 @@ class DraftRejected(ValueError):
     """The model's draft cited or stated something the inputs do not support."""
 
 
-class DraftVersionNotFoundError(LookupError):
-    pass
-
-
-def sender_account() -> str:
-    return os.environ.get("PIPELINE_OUTREACH_ACCOUNT", "").strip()
-
-
-# What each writer reads before falling back to the first-email drafts setting.
-PURPOSE_ENV = {
-    "follow_up": "PIPELINE_OUTREACH_FOLLOW_UP_PROVIDER",
-    "call_prep": "PIPELINE_OUTREACH_CALL_PREP_PROVIDER",
-    # The thank-you after a decline (outreach_thank_you); empty means the first-email writer.
-    "thank_you": "PIPELINE_OUTREACH_THANK_YOU_PROVIDER",
-}
-
-
-def resolve_provider(requested: str | None = None, purpose: str = "initial") -> tuple[str, str]:
-    """Pick the provider and model for one kind of writing.
-
-    Explicit, then the setting for this purpose (follow-ups, call prep, and the
-    thank-you after a decline have their own), then PIPELINE_OUTREACH_PROVIDER, then the first provider that
-    is set up on this computer.
-    """
-    own = os.environ.get(PURPOSE_ENV[purpose], "") if purpose in PURPOSE_ENV else ""
-    provider = (requested or own or os.environ.get("PIPELINE_OUTREACH_PROVIDER", "") or default_provider()).strip()
-    if provider == "legacy":
-        return "legacy", ""
-    record = next((item for item in provider_catalog() if item["id"] == provider), None)
-    if record is None:
-        raise ValueError("Draft provider must be openai, anthropic, claude-code, codex-cli, or legacy")
-    return provider, str(record["model"])
-
-
-def _entry_name(entry: Any) -> str:
+def entry_name(entry: Any) -> str:
     if isinstance(entry, dict):
         return str(entry.get("organization") or entry.get("title") or entry.get("name") or "").strip()
     return str(entry).strip()
@@ -207,8 +168,8 @@ def outreach_proof(facts: dict[str, Any]) -> tuple[dict[str, list[Any]], list[st
             use = entry.get("outreach", "support") if isinstance(entry, dict) else "support"
             if use == "omit":
                 continue
-            if use == "lead" and _entry_name(entry):
-                lead.append(_entry_name(entry))
+            if use == "lead" and entry_name(entry):
+                lead.append(entry_name(entry))
             kept.append({key: item for key, item in entry.items() if key != "outreach"} if isinstance(entry, dict) else entry)
         if kept:
             proof[field] = kept
@@ -356,7 +317,7 @@ def _opening(body: str) -> str:
 # not a fact. A scheme-less link is a dotted host ending in a 2+ letter TLD, optionally followed by a path. The
 # label before the TLD must hold a letter and the TLD must end the word, so 3.5, U.S., Ph.D., e.g. and v2.0
 # are not hosts, nor is "2024.Then" (a missing space after a full stop). Call prep's number check shares this.
-_ADDRESS = re.compile(
+ADDRESS_PATTERN = re.compile(
     r"\S+@\S+|https?://\S+"
     # A scheme-less host such as github.com/t/x or acme360.com. The ending must be lowercase, so a number run into the
     # next sentence ("$2.5M.Series A", "40k.Users") stays a number rather than being taken for a domain.
@@ -366,7 +327,7 @@ _ADDRESS = re.compile(
 
 def _entry_names(entry: Any) -> set[str]:
     """Every name a reader would recognize an entry by."""
-    names = {_entry_name(entry)}
+    names = {entry_name(entry)}
     if isinstance(entry, dict):
         names |= {str(entry.get(key) or "").strip() for key in ("organization", "name")}
     return {name for name in names if len(name) >= 3}
@@ -376,7 +337,7 @@ def _primary_entries(inputs: dict[str, Any]) -> list[Any]:
     primary = inputs.get("primary_experience")
     return [
         entry for field in PROOF_FIELDS for entry in inputs["student"].get(field, [])
-        if primary and _entry_name(entry) == primary
+        if primary and entry_name(entry) == primary
     ]
 
 
@@ -384,7 +345,7 @@ def _states_a_lead_result(body: str, inputs: dict[str, Any]) -> bool:
     """Whether the body gives a number from the primary experience, not one that only belongs to the company."""
     research = {**inputs["company_research"], **inputs["unverified_research"]}
     lead_numbers = _supported_numbers(_input_text(_primary_entries(inputs))) - _supported_numbers(_input_text(research))
-    return any(needed in lead_numbers for _, needed in _number_keys(_ADDRESS.sub(" ", body)))
+    return any(needed in lead_numbers for _, needed in _number_keys(ADDRESS_PATTERN.sub(" ", body)))
 
 
 def _other_entries_named(body: str, inputs: dict[str, Any]) -> list[str]:
@@ -414,7 +375,7 @@ _NOT_A_FACT = IDENTIFIER_KEYS | {"max_words"}
 def _input_text(value: Any):
     """Every piece of the inputs' own words a number may come from, with addresses taken out."""
     if isinstance(value, str):
-        yield _ADDRESS.sub(" ", value)
+        yield ADDRESS_PATTERN.sub(" ", value)
     elif isinstance(value, dict):
         for key, item in value.items():
             if key not in _NOT_A_FACT:
@@ -445,7 +406,7 @@ def _number_keys(text: str) -> list[tuple[str, str]]:
     # Imported here: outreach_research pulls in outreach_discovery, which imports this module.
     from . import outreach_research as research
 
-    tokens = research._tokens(text)
+    tokens = research.word_tokens(text)
     keys = []
     for index, token in enumerate(tokens):
         if token[0].isdigit():
@@ -464,7 +425,7 @@ def _unsupported_numbers(text: str, inputs: dict[str, Any], *more: str) -> list[
     allowed = _supported_numbers(_input_text(inputs))
     found = []
     for piece in (text, *more):
-        for key, needed in _number_keys(_ADDRESS.sub(" ", piece)):
+        for key, needed in _number_keys(ADDRESS_PATTERN.sub(" ", piece)):
             if needed not in allowed and needed not in found:
                 found.append(needed)
     return found
@@ -473,7 +434,7 @@ def _unsupported_numbers(text: str, inputs: dict[str, Any], *more: str) -> list[
 _FIELD_BASIS = re.compile(r"^((?:profile|research|unverified):\w+)[\[.]")
 
 
-def _field_basis(basis: str) -> str:
+def field_basis(basis: str) -> str:
     """Reduce a basis that points inside a field, like profile:experience[0].title, to the field itself."""
     match = _FIELD_BASIS.match(basis)
     return match.group(1) if match else basis
@@ -501,7 +462,7 @@ def validate_draft(
     for claim in claims:
         if not isinstance(claim, dict):
             continue
-        basis = _field_basis(str(claim.get("basis") or "").strip())
+        basis = field_basis(str(claim.get("basis") or "").strip())
         text = str(claim.get("text") or "").strip()[:500]
         if basis not in allowed:
             problems.append(f"the claim {text[:80]!r} cites {basis or 'nothing'}, which is not in the inputs")
@@ -582,7 +543,7 @@ def template_draft(inputs: dict[str, Any], kind: str) -> dict[str, Any]:
     lead = next(
         (
             (field, entry) for field in PROOF_FIELDS for entry in student.get(field, [])
-            if isinstance(entry, dict) and _entry_name(entry) in inputs["lead_with"] and entry.get("highlights")
+            if isinstance(entry, dict) and entry_name(entry) in inputs["lead_with"] and entry.get("highlights")
         ),
         None,
     )
@@ -591,7 +552,7 @@ def template_draft(inputs: dict[str, Any], kind: str) -> dict[str, Any]:
     if lead:
         field, entry = lead
         highlight = str(entry["highlights"][0]).rstrip(".")
-        skill_sentence = f" At {_entry_name(entry)}, I {highlight[:1].lower()}{highlight[1:]}."
+        skill_sentence = f" At {entry_name(entry)}, I {highlight[:1].lower()}{highlight[1:]}."
         claims.append({"text": highlight, "basis": f"profile:{field}"})
     elif skills:
         skill_sentence = f" I work with {', '.join(skills)}."
@@ -625,117 +586,6 @@ def revision_request(target: dict[str, Any], kind: str, comments: str) -> str:
         parts.append(f"Current draft:\nSubject: {target.get(subject_field, '')}\n\n{target[body_field]}")
     parts.append(f"The student's comments:\n{comments}")
     return "\n\n" + "\n\n".join(parts)
-
-
-def _insert_version(
-    conn: sqlite3.Connection, target_id: str, user_id: str, kind: str, *, source: str,
-    subject: str, body: str, claims_json: str, generated_by: str, comments: str, created_at: str,
-) -> str:
-    version_id = f"draft-version-{uuid4().hex}"
-    conn.execute(
-        """
-        INSERT INTO outreach_draft_versions(id, target_id, user_id, kind, source, subject, body, claims_json, generated_by, comments, created_at)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (version_id, target_id, user_id, kind, source, subject, body, claims_json, generated_by, comments, created_at),
-    )
-    return version_id
-
-
-def _keep_current_draft(conn: sqlite3.Connection, target_id: str, user_id: str, kind: str) -> None:
-    """Store the draft in the editor before it is replaced, unless a version already holds that text.
-
-    This is what keeps a hand-edited draft, or one written before versions were
-    kept, from being lost to a regeneration.
-    """
-    subject_field, body_field, _ = DRAFT_KINDS[kind]
-    claims_field, generated_field = DRAFT_META[kind]
-    row = conn.execute(
-        f"SELECT {subject_field}, {body_field}, {claims_field}, {generated_field}, updated_at "
-        "FROM outreach_targets WHERE id=? AND user_id=?",
-        (target_id, user_id),
-    ).fetchone()
-    if not row or not (row[0] or row[1]):
-        return
-    kept = conn.execute(
-        "SELECT 1 FROM outreach_draft_versions WHERE target_id=? AND user_id=? AND kind=? AND subject=? AND body=?",
-        (target_id, user_id, kind, row[0], row[1]),
-    ).fetchone()
-    if kept:
-        return
-    _insert_version(
-        conn, target_id, user_id, kind, source="saved", subject=row[0], body=row[1],
-        claims_json=row[2] or "[]", generated_by=row[3] or "", comments="", created_at=row[4],
-    )
-
-
-def draft_versions(conn: sqlite3.Connection, target_id: str, *, user_id: str, kind: str) -> list[dict[str, Any]]:
-    """Every stored draft of one kind, oldest first, marking the one in the editor now."""
-    if kind not in DRAFT_KINDS:
-        raise ValueError("kind must be initial or follow_up")
-    target = get_target(conn, target_id, user_id=user_id)
-    subject_field, body_field, _ = DRAFT_KINDS[kind]
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        """
-        SELECT id, kind, source, subject, body, claims_json, generated_by, comments, created_at
-        FROM outreach_draft_versions WHERE target_id=? AND user_id=? AND kind=?
-        ORDER BY created_at, id
-        """,
-        (target_id, user_id, kind),
-    ).fetchall()
-    versions = []
-    for row in rows:
-        version = dict(row)
-        version["claims"] = json.loads(version.pop("claims_json") or "[]")
-        version["is_current"] = version["subject"] == target[subject_field] and version["body"] == target[body_field]
-        versions.append(version)
-    return versions
-
-
-def restore_draft_version(conn: sqlite3.Connection, target_id: str, version_id: str, *, user_id: str) -> dict[str, Any]:
-    """Put an earlier draft back in the editor, keeping the one it replaces.
-
-    The restored draft goes back to "generated": it needs approval again, like
-    any draft whose words changed.
-    """
-    target = get_target(conn, target_id, user_id=user_id)
-    conn.row_factory = sqlite3.Row
-    version = conn.execute(
-        "SELECT * FROM outreach_draft_versions WHERE id=? AND target_id=? AND user_id=?",
-        (version_id, target_id, user_id),
-    ).fetchone()
-    if not version:
-        raise DraftVersionNotFoundError(version_id)
-    kind = version["kind"]
-    subject_field, body_field, status_field = DRAFT_KINDS[kind]
-    claims_field, generated_field = DRAFT_META[kind]
-    if target[subject_field] == version["subject"] and target[body_field] == version["body"]:
-        return target
-    timestamp = utc_now()
-    assignments: dict[str, Any] = {
-        subject_field: version["subject"], body_field: version["body"], status_field: "generated",
-        claims_field: version["claims_json"], generated_field: version["generated_by"],
-    }
-    if kind == "initial":
-        assignments.update(draft_generated_at=version["created_at"], draft_approved_at=None)
-        if target["status"] == "not_started":
-            assignments["status"] = "drafted"
-    label = "draft" if kind == "initial" else "follow-up"
-    with conn:
-        _keep_current_draft(conn, target_id, user_id, kind)
-        conn.execute(
-            f"UPDATE outreach_targets SET {', '.join(f'{column}=?' for column in assignments)}, updated_at=? WHERE id=? AND user_id=?",
-            [*assignments.values(), timestamp, target_id, user_id],
-        )
-        if target[status_field] == "approved":
-            _log(conn, target_id, user_id, "approval_withdrawn", detail=f"An earlier {label} was restored")
-            _cancel_schedules(conn, target_id, user_id, [kind], f"An earlier {label} was restored after you scheduled it")
-        _log(conn, target_id, user_id, "draft_restored" if kind == "initial" else "follow_up_restored",
-             detail=f"Restored the {label} from {version['created_at']}")
-        if assignments.get("status"):
-            _log(conn, target_id, user_id, "status", from_status=target["status"], to_status="drafted")
-    return get_target(conn, target_id, user_id=user_id)
 
 
 def generate_draft(
@@ -846,8 +696,8 @@ def save_draft_tx(conn: sqlite3.Connection, target_id: str, *, user_id: str, pre
         assignments.update(draft_generated_at=timestamp, draft_approved_at=None)
         if prepared["target_status"] == "not_started":
             assignments["status"] = "drafted"
-    _keep_current_draft(conn, target_id, user_id, kind)
-    version_id = _insert_version(
+    keep_current_draft(conn, target_id, user_id, kind)
+    version_id = insert_version(
         conn, target_id, user_id, kind, source="generated", subject=prepared["subject"], body=prepared["body"],
         claims_json=claims_json, generated_by=generated_by, comments=prepared.get("comments", ""), created_at=timestamp,
     )
@@ -856,9 +706,9 @@ def save_draft_tx(conn: sqlite3.Connection, target_id: str, *, user_id: str, pre
         [*assignments.values(), timestamp, target_id, user_id],
     )
     if prepared["target_draft_status"] == "approved":
-        _log(conn, target_id, user_id, "approval_withdrawn", detail=f"The {kind.replace('_', '-')} draft was regenerated")
-        _cancel_schedules(conn, target_id, user_id, [kind], "The draft was regenerated after you scheduled it")
-    _log(conn, target_id, user_id, "draft_generated" if kind == "initial" else "follow_up_generated", detail=generated_by)
+        log_event(conn, target_id, user_id, "approval_withdrawn", detail=f"The {kind.replace('_', '-')} draft was regenerated")
+        cancel_schedules(conn, target_id, user_id, [kind], "The draft was regenerated after you scheduled it")
+    log_event(conn, target_id, user_id, "draft_generated" if kind == "initial" else "follow_up_generated", detail=generated_by)
     if assignments.get("status"):
-        _log(conn, target_id, user_id, "status", from_status=prepared["target_status"], to_status="drafted")
+        log_event(conn, target_id, user_id, "status", from_status=prepared["target_status"], to_status="drafted")
     return version_id

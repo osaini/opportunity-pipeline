@@ -16,7 +16,8 @@ from opportunity_app import outreach
 from opportunity_app.connections import update_preferences
 from opportunity_app.outreach import create_target, get_target, list_targets, location_region, user_regions
 from opportunity_app.outreach_drafting import INSTRUCTIONS, location_line, validate_draft
-from opportunity_app.schema import LOCAL_USER_ID, connect_product, ensure_product_schema, utc_now
+from opportunity_app.schema import LOCAL_USER_ID, connect_product, ensure_product_schema
+from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate, use_profile_regions
 

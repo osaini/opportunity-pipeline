@@ -20,7 +20,8 @@ from opportunity_app.api import create_app
 from opportunity_app import automation, outreach_gmail, outreach_schedule
 from opportunity_app.outreach_automation import AutomationWorker, update_settings
 from opportunity_app.outreach_schedule import next_morning, recipient_zone, run_due_sends
-from opportunity_app.schema import connect_product, ensure_product_schema, utc_now
+from opportunity_app.schema import connect_product, ensure_product_schema
+from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 from helpers_gmail import ACCOUNT, PDF, SCOPES, FakeGmail, forget_gmail_backoff

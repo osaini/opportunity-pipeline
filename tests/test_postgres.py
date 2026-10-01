@@ -23,8 +23,10 @@ from opportunity_app import STATIC_DIR, apply_runs, automation, outreach_schedul
 from opportunity_app.actions import record_intent, update_application
 from opportunity_app.api import create_app
 from opportunity_app.automation import Feature
-from opportunity_app.schema import MIGRATIONS_DIR, connect_product, ensure_product_schema, migrate_legacy_database, utc_now
+from opportunity_app.schema import MIGRATIONS_DIR, connect_product, ensure_product_schema, migrate_legacy_database
+from opportunity_app.timestamps import utc_now
 from pipeline_core import OpportunityFilters, OpportunityRepository
+from pipeline_core.identity import employer_key
 from helpers_platform import JOBS, LEGACY_SCHEMA, build_profile
 
 AUTOMATION_USER = "local-user"
@@ -667,7 +669,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
         with self.conn:
             self.conn.execute("UPDATE outreach_targets SET status='replied', sent_at='2026-09-20', contact_email='greg@bovi.example', "
                               "location='Austin, TX' WHERE id='t-1'")
-            outreach._log(self.conn, "t-1", AUTOMATION_USER, "reply_logged", detail="We're not hiring right now.",
+            outreach.log_event(self.conn, "t-1", AUTOMATION_USER, "reply_logged", detail="We're not hiring right now.",
                           data={"source": "gmail", "gmail_id": "g-1", "readings": {"rules": {"status": "declined"}}})
         stored = self.conn.execute("SELECT detail_json FROM outreach_events WHERE target_id='t-1' AND event_type='reply_logged'").fetchone()
         self.conn.commit()
@@ -722,7 +724,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
         [flight] = automation.in_flight(self.conn, AUTOMATION_USER)
         self.conn.commit()
         self.assertEqual((flight["kind"], flight["action"]), ("thank_you", "send"))
-        outreach_schedule._finish(self.conn, row, "failed", "Gmail did not confirm it (HTTP 503)")
+        outreach_schedule.finish_send(self.conn, row, "failed", "Gmail did not confirm it (HTTP 503)")
         stored = self.conn.execute("SELECT state, note FROM outreach_thank_yous WHERE target_id='t-1'").fetchone()
         self.conn.commit()
         self.assertEqual((stored["state"], stored["note"]), ("failed", "Gmail did not confirm it (HTTP 503)"))
@@ -1282,7 +1284,7 @@ class PostgresApplyContractTests(unittest.TestCase):
     def claim(self, opportunity_id, mode="handoff", *, job="bluefin/1001", conn=None, now=None, company="Bluefin Robotics", board="bluefin", **kwargs):
         return apply_runs.claim(
             conn or self.conn, user_id=AUTOMATION_USER, opportunity_id=opportunity_id, mode=mode, ats="greenhouse", board_token=board,
-            job_ref=job, company=apply_runs.company_key(company), now=now or self.at(1), **kwargs,
+            job_ref=job, company=employer_key(company), now=now or self.at(1), **kwargs,
         )
 
     def state(self, token):

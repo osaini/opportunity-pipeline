@@ -28,22 +28,29 @@ from uuid import uuid4
 
 import httpx
 
-from .outreach import DRAFT_KINDS, UNSENT_STATUSES, OutreachNotFoundError, _log, get_target, update_target
+from . import SERVER_INSTANCE
+from .gmail_client import (
+    ClientFactory,
+    GmailAuthError,
+    GmailNeedsReadScope,
+    GmailThrottled,
+    GmailUnreadable,
+    LookSchedule,
+    connection_state,
+)
+from .mail_message import header_map, received_or_epoch
+from .outreach import DRAFT_KINDS, UNSENT_STATUSES, OutreachNotFoundError, log_event, get_target, update_target
 from .outreach_gmail import (
     DRAFT_EVENT,
     SENT_EVENT,
     SENT_STATUS,
-    SERVER_INSTANCE,
-    ClientFactory,
-    GmailAuthError,
-    GmailThrottled,
     _already_sent,
     _connector,
     _Gmail,
     event_tie_order,
     last_bounces,
 )
-from .schema import utc_now
+from .timestamps import utc_now
 from .user_time import user_timezone
 
 SCHEDULED_EVENT = "gmail_scheduled"
@@ -55,14 +62,6 @@ _LOOK_LOCK = threading.Lock()
 _IN_CHUNKS = 500
 
 
-class _Unreadable(Exception):
-    """Gmail answered a read with an error."""
-
-
-class _NeedsReconnect(Exception):
-    """Gmail refused a read: the connection predates the read scope."""
-
-
 def _interval(age: timedelta) -> timedelta:
     """Often while the draft is new (a quick send), then less and less."""
     if age < timedelta(hours=1):
@@ -70,6 +69,14 @@ def _interval(age: timedelta) -> timedelta:
     if age < timedelta(days=1):
         return timedelta(minutes=15)
     return timedelta(hours=1)
+
+
+# take_due marks the drafts due for a look as looked at now; forget gives the mark back for a look that failed: not read
+# is not "not sent", so those drafts are looked at again on the next check, not an interval later.
+_LOOKS = LookSchedule(
+    _LAST_LOOK, _LOOK_LOCK, interval=_interval, key=lambda item: item["detail"]["draft_id"], started=lambda item: item["made"],
+    forget_key=str,
+)
 
 
 def _pending(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict[str, Any]]:
@@ -142,30 +149,10 @@ def _with_targets(conn: sqlite3.Connection, user_id: str, items: list[dict[str, 
         try:
             target = get_target(conn, item["target_id"], user_id=user_id)
         except OutreachNotFoundError:
-            _forget(user_id, [item])
+            _LOOKS.forget(user_id, [item])
             continue
         full.append({**item, "target": target})
     return full
-
-
-def _take_due(user_id: str, pending: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
-    """The drafts due for a look, each marked looked at now. A look that fails is forgotten (_forget)."""
-    due = []
-    with _LOOK_LOCK:
-        for item in pending:
-            key = (user_id, item["detail"]["draft_id"])
-            last = _LAST_LOOK.get(key)
-            if last is None or now - last >= _interval(now - item["made"]):
-                _LAST_LOOK[key] = now
-                due.append(item)
-    return due
-
-
-def _forget(user_id: str, items: list[dict[str, Any]]) -> None:
-    """Not read is not "not sent": these drafts are looked at again on the next check, not an interval later."""
-    with _LOOK_LOCK:
-        for item in items:
-            _LAST_LOOK.pop((user_id, str(item["detail"]["draft_id"])), None)
 
 
 def _get(gmail: _Gmail, path: str, **params: Any) -> dict[str, Any] | None:
@@ -174,19 +161,15 @@ def _get(gmail: _Gmail, path: str, **params: Any) -> dict[str, Any] | None:
     if response.status_code == 404:
         return None
     if response.status_code == 403:
-        raise _NeedsReconnect
+        raise GmailNeedsReadScope
     if response.status_code != 200:
-        raise _Unreadable
+        raise GmailUnreadable
     return response.json()
 
 
 def _metadata(gmail: _Gmail, message_id: str) -> dict[str, Any] | None:
     return _get(gmail, f"/messages/{quote(message_id, safe='')}",
                 format="metadata", metadataHeaders=list(_HEADERS))
-
-
-def _headers(message: dict[str, Any]) -> dict[str, str]:
-    return {str(item.get("name", "")).lower(): str(item.get("value", "")) for item in (message.get("payload") or {}).get("headers") or []}
 
 
 def _addresses(value: str) -> set[str]:
@@ -223,7 +206,7 @@ def _find_sent(gmail: _Gmail, item: dict[str, Any], seen: dict[str, Any] | None 
         message = _metadata(gmail, str(reference.get("id", "")))
         if not message or int(message.get("internalDate") or 0) < made_ms:
             continue
-        headers = _headers(message)
+        headers = header_map(message)
         same_thread = bool(detail.get("thread_id")) and message.get("threadId") == detail.get("thread_id")
         to_contact = contact in _addresses(headers.get("to", ""))
         if same_thread or (to_contact and _same_subject(headers.get("subject", ""), subject)):
@@ -248,8 +231,8 @@ def _record_sent(conn: sqlite3.Connection, item: dict[str, Any], message: dict[s
     """Record a send made in Gmail exactly as a send from the app, and move the company on."""
     detail, target = item["detail"], item["target"]
     kind, target_id = detail["kind"], target["id"]
-    headers = _headers(message)
-    sent_at = datetime.fromtimestamp(int(message.get("internalDate") or 0) / 1000, tz=timezone.utc)
+    headers = header_map(message)
+    sent_at = received_or_epoch(message)
     record = {
         "kind": kind, "fingerprint": detail.get("fingerprint", ""), "attachment": detail.get("attachment", ""),
         "to": target["contact_email"], "cc": target["contact_cc"],
@@ -270,7 +253,7 @@ def _record_sent(conn: sqlite3.Connection, item: dict[str, Any], message: dict[s
             """,
             (target_id, user_id, kind, uuid4().hex, SERVER_INSTANCE, stamp),
         )
-        _log(conn, target_id, user_id, SENT_EVENT, detail=json.dumps(record, sort_keys=True))
+        log_event(conn, target_id, user_id, SENT_EVENT, detail=json.dumps(record, sort_keys=True))
     from .outreach_schedule import cancel_send  # imported here: scheduling imports the Gmail send path
 
     cancel_send(conn, target_id, user_id=user_id, kind=kind, reason="You sent it from Gmail instead")
@@ -308,16 +291,16 @@ def capture_gmail_sends(
     """
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     result: dict[str, Any] = {"state": "ok", "sent": [], "scheduled": []}
-    due = _take_due(user_id, _pending(conn, user_id, now), now)
+    due = _LOOKS.take_due(user_id, _pending(conn, user_id, now), now)
     if not due:
         return result
-    row = _connector(conn, user_id)
-    if not row or row["status"] != "connected":
-        return {**result, "state": "not_connected" if not row or row["status"] == "disconnected" else "needs_reconnect"}
+    state = connection_state(_connector(conn, user_id))
+    if state != "connected":
+        return {**result, "state": state}
     try:
         due = _with_targets(conn, user_id, due)
     except BaseException:
-        _forget(user_id, due)  # a look that fails is forgotten
+        _LOOKS.forget(user_id, due)  # a look that fails is forgotten
         raise
     try:
         with client_factory() as client:
@@ -335,28 +318,28 @@ def capture_gmail_sends(
                     target_id = item["target"]["id"]
                     if _scheduled(gmail, item, seen) and not _scheduled_noted(conn, target_id, user_id, str(detail["draft_id"])):
                         with conn:
-                            _log(conn, target_id, user_id, SCHEDULED_EVENT, detail=json.dumps(
+                            log_event(conn, target_id, user_id, SCHEDULED_EVENT, detail=json.dumps(
                                 {"draft_id": str(detail["draft_id"]), "kind": detail["kind"]}, sort_keys=True,
                             ))
                         result["scheduled"].append({"target_id": target_id, "company": item["target"]["company"]})
-                except _Unreadable:
+                except GmailUnreadable:
                     # Not read is not "not sent": look again next time.
-                    _forget(user_id, [item])
+                    _LOOKS.forget(user_id, [item])
                     result["state"] = "unreachable"
-    except _NeedsReconnect:
-        _forget(user_id, due)
+    except GmailNeedsReadScope:
+        _LOOKS.forget(user_id, due)
         return {**result, "state": "needs_reconnect"}
     except GmailAuthError:
-        _forget(user_id, due)
+        _LOOKS.forget(user_id, due)
         return {**result, "state": "needs_reconnect"}
     except GmailThrottled:
         # Not read is not "not sent": look again as soon as Gmail allows.
-        _forget(user_id, due)
+        _LOOKS.forget(user_id, due)
         return {**result, "state": "throttled"}
     except (httpx.HTTPError, ValueError):
-        _forget(user_id, due)
+        _LOOKS.forget(user_id, due)
         return {**result, "state": "unreachable"}
     except BaseException:
-        _forget(user_id, due)
+        _LOOKS.forget(user_id, due)
         raise
     return result

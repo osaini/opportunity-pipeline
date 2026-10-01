@@ -47,29 +47,41 @@ from uuid import uuid4
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
 
-from . import ROOT, automation
+from . import ROOT, SERVER_INSTANCE, automation
 from .connections import OAUTH_PROVIDERS
+from .gmail_client import (
+    GMAIL_API,
+    MODIFY_SCOPE,
+    PROVIDER,
+    SERVER_ERRORS,
+    ClientFactory,
+    GmailAuthError,
+    GmailThrottled,
+    can_read_mail,
+    connection_state,
+    default_client_factory,
+    granted_scopes,
+    is_throttle,
+)
+from .mail_message import URL_TAIL
 from .outreach import (
     DRAFT_KINDS,
     UNSENT_STATUSES,
     DraftChangedError,
-    _is_unique_violation,
-    _log,
+    log_event,
     get_target,
+    latest_event_stamp,
     missing_location_message,
     update_target,
 )
-from .outreach_drafting import sender_account
-from .schema import utc_now
+from .database import is_unique_violation
+from .outreach_config import ATTACHMENT_ENV, gmail_web_url, sender_account
+from .timestamps import parse_app_instant, utc_now
 from .user_time import user_timezone
 
 LOGGER = logging.getLogger(__name__)
 
-PROVIDER = "gmail_drafts"
-GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me"
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
-READ_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
-MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
 DRAFT_EVENT = "gmail_draft_created"
 SENT_EVENT = "gmail_sent"
 # Logged by outreach_delivery.record_bounce. Every send and draft before the
@@ -83,34 +95,10 @@ SENT_STATUS = {"initial": "sent", "follow_up": "followed_up"}
 # the compose window instead of flat text. Trailing sentence punctuation is left
 # outside the link.
 _URL = re.compile(r"""https?://[^\s<>"']+""")
-_URL_TAIL = ".,;:!?)]}'\""
-
-ClientFactory = Callable[[], httpx.Client]
-
-
-class GmailAuthError(RuntimeError):
-    """The Gmail connection is missing, revoked, or for the wrong account."""
-
-
-class GmailThrottled(httpx.TransportError):
-    """Gmail asked the app to slow down, so a read waits until ``until``; Gmail did nothing.
-
-    A TransportError, so every caller that reads httpx.HTTPError as "could not
-    reach Gmail" holds and tries again later, and none asks for a reconnect.
-    """
-
-    def __init__(self, message: str, until: datetime | None = None):
-        super().__init__(message)
-        self.until = until
-
-
-def default_client_factory() -> httpx.Client:
-    return httpx.Client(timeout=30, follow_redirects=False)
-
 
 def attachment_path() -> Path | None:
     """PIPELINE_OUTREACH_ATTACHMENT, resolved against the project root when relative."""
-    value = os.environ.get("PIPELINE_OUTREACH_ATTACHMENT", "").strip().strip('"')
+    value = os.environ.get(ATTACHMENT_ENV, "").strip().strip('"')
     if not value:
         return None
     path = Path(value).expanduser()
@@ -142,10 +130,7 @@ def gmail_drafts_status(conn: sqlite3.Connection, *, user_id: str, now: datetime
     configured = all(os.environ.get(name, "").strip() for name in (config["client_id_env"], config["client_secret_env"], "PIPELINE_CONNECTION_KEY"))
     row = _connector(conn, user_id)
     path = attachment_path()
-    try:
-        granted = json.loads(row["scopes_json"] or "[]") if row else []
-    except (TypeError, ValueError):
-        granted = []
+    granted = granted_scopes(row["scopes_json"]) if row else []
     health = automation.gmail_health(conn, user_id, now=now)
     from .outreach_labels import label_name  # imported here: it imports this module
 
@@ -158,7 +143,7 @@ def gmail_drafts_status(conn: sqlite3.Connection, *, user_id: str, now: datetime
         "needs_reconnect": bool(row and row["status"] == "error"),
         # A connection made before the app asked to read mail sends fine but
         # cannot see bounces until it is reconnected. gmail.modify reads mail too.
-        "bounce_check": bool(connected and (READ_SCOPE in granted or MODIFY_SCOPE in granted)),
+        "bounce_check": bool(connected and can_read_mail(granted)),
         # Likewise a connection made before the reply label cannot label until it is reconnected.
         "label_check": bool(connected and MODIFY_SCOPE in granted),
         "label": label_name(conn, user_id),
@@ -220,9 +205,6 @@ def _mark_error(conn: sqlite3.Connection, user_id: str) -> None:
 # transaction on the first statement, a read included, so in_transaction is True
 # after any query and the write at once almost never happens there.
 
-THROTTLE_REASONS = frozenset({"rateLimitExceeded", "userRateLimitExceeded", "quotaExceeded", "RESOURCE_EXHAUSTED"})
-# Gmail's own servers failing for a moment: held back like a rate limit, never taken as a refusal.
-SERVER_ERRORS = frozenset({500, 502, 503, 504})
 BACKOFF_FIRST = timedelta(seconds=60)
 BACKOFF_CAP = timedelta(minutes=30)
 # A read that works records last_ok_at at most this often, so polling does not write constantly.
@@ -260,40 +242,12 @@ def _in_transaction(conn: sqlite3.Connection) -> bool:
     return bool(getattr(conn, "in_transaction", False))
 
 
-def _stamp_time(value: Any) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-
-
 def backoff_until(user_id: str, *, now: datetime | None = None) -> datetime | None:
     """Until when this student's Gmail reads are held back, or None when they are not."""
     now = now or _now()
     with _BACKOFF_LOCK:
         until, _level = _BACKOFF.get(user_id, (_NEVER, 0))
     return until if until > now else None
-
-
-def _is_throttle(response: httpx.Response) -> bool:
-    """A 429, or a 403 whose error names a rate limit or quota. An answer that is not JSON is not one."""
-    if response.status_code == 429:
-        return True
-    if response.status_code != 403:
-        return False
-    try:
-        error = response.json().get("error")
-    except (ValueError, AttributeError):
-        return False
-    if not isinstance(error, dict):
-        return False
-    named = [error.get("status")]
-    if isinstance(error.get("errors"), list):
-        named += [item.get("reason") for item in error["errors"] if isinstance(item, dict)]
-    return any(isinstance(value, str) and value in THROTTLE_REASONS for value in named)
 
 
 def _retry_after(response: httpx.Response, now: datetime) -> timedelta | None:
@@ -363,7 +317,7 @@ def _saved(user_id: str, version: int, values: tuple[Any, ...]) -> None:
     with _BACKOFF_LOCK:
         health = _HEALTH.setdefault(user_id, _Health())
         health.saved = max(health.saved, version)
-        written = _stamp_time(values[1]) if values else None
+        written = parse_app_instant(values[1]) if values else None
         if written is not None and (health.ok_written is None or written > health.ok_written):
             health.ok_written = written
 
@@ -441,8 +395,9 @@ class _Gmail:
 
     def __init__(self, conn: sqlite3.Connection, client: httpx.Client, user_id: str, *, wait_out_backoff: bool = True):
         row = _connector(conn, user_id)
-        if not row or row["status"] != "connected":
-            raise GmailAuthError("Connect Gmail before creating a draft" if not row or row["status"] == "disconnected" else "Reconnect Gmail before creating a draft")
+        state = connection_state(row)
+        if state != "connected":
+            raise GmailAuthError("Connect Gmail before creating a draft" if state == "not_connected" else "Reconnect Gmail before creating a draft")
         self.conn, self.client, self.user_id, self.row = conn, client, user_id, row
         self.wait_out_backoff = wait_out_backoff
         self.fernet = _fernet()
@@ -454,7 +409,7 @@ class _Gmail:
         stored = row["backoff_until"] if "backoff_until" in columns else None
         # Whether the row still carries a hold or an error that a success must clear.
         self.row_flagged = bool(stored) or bool(row["last_error"] if "last_error" in columns else "")
-        until = _stamp_time(stored)
+        until = parse_app_instant(stored)
         if until is not None and until > _now():
             with _BACKOFF_LOCK:
                 # After a restart memory is empty; a hold this process already knows about stands.
@@ -483,7 +438,7 @@ class _Gmail:
         if response.status_code == 401:
             _mark_error(self.conn, self.user_id)
             raise GmailAuthError("Gmail rejected the connection; reconnect Gmail")
-        throttle = _is_throttle(response)
+        throttle = is_throttle(response)
         if throttle or response.status_code in SERVER_ERRORS:
             why = "Gmail asked the app to slow down" if throttle else "Gmail had a temporary problem"
             until = _note_throttle(self.user_id, response, _now(), f"{why} (HTTP {response.status_code})")
@@ -524,7 +479,7 @@ def html_body(body: str) -> str:
     def anchor(match: re.Match[str]) -> str:
         url = match.group(0)
         tail = ""
-        while url and url[-1] in _URL_TAIL:
+        while url and url[-1] in URL_TAIL:
             url, tail = url[:-1], url[-1] + tail
         if not url:
             return match.group(0)
@@ -551,9 +506,21 @@ def _mime(account: str, to: str, subject: str, body: str, attachment: Path | Non
     return base64.urlsafe_b64encode(message.as_bytes()).decode()
 
 
+def _sent_folder_check(reasons: dict[str, str]) -> str:
+    """What the student vouches for by checking their Sent folder: a hash of exactly these reasons, echoed back to send again.
+
+    The client keeps it between the two clicks, so the formula must never change.
+    """
+    return hashlib.sha256(json.dumps(sorted(reasons)).encode()).hexdigest()[:32]
+
+
+def _public_draft(detail: dict[str, Any]) -> dict[str, Any]:
+    """A recorded draft as the client sees it: without the attachment's hash."""
+    return {key: value for key, value in detail.items() if key != "attachment_sha256"}
+
+
 def draft_url(account: str, message_id: str) -> str:
-    authuser = quote(account) if account else "0"
-    return f"https://mail.google.com/mail/?authuser={authuser}#drafts?compose={quote(message_id)}"
+    return gmail_web_url(f"drafts?compose={quote(message_id)}", account)
 
 
 def _previous_draft(
@@ -657,8 +624,7 @@ def _draft_still_there(gmail: _Gmail, draft_id: str) -> bool:
 # The server runs as one process, so a claim from another instance was left by
 # a process that has since died or been replaced. Its request may still have
 # been finishing its one Gmail call, hence the grace period before it counts as
-# stale.
-SERVER_INSTANCE = uuid4().hex
+# stale. SERVER_INSTANCE is one id per process (opportunity_app/__init__.py), shared with Apply for me's claims.
 FOREIGN_CLAIM_GRACE = timedelta(minutes=5)
 IN_PROGRESS = "This email is already being sent or written to Gmail. Wait a moment, then reload"
 _SEND_UNCERTAIN = (
@@ -698,13 +664,13 @@ class SendUnconfirmedError(RuntimeError):
     """Gmail did not confirm a send it may have carried out."""
 
 
-def _claim(conn: sqlite3.Connection, target_id: str, user_id: str, kind: str) -> sqlite3.Row | None:
+def send_claim_row(conn: sqlite3.Connection, target_id: str, user_id: str, kind: str) -> sqlite3.Row | None:
     return conn.execute(
         "SELECT * FROM outreach_send_claims WHERE target_id=? AND user_id=? AND kind=?", (target_id, user_id, kind)
     ).fetchone()
 
 
-def _claim_held(row: sqlite3.Row) -> bool:
+def send_claim_held(row: sqlite3.Row) -> bool:
     """Whether a request may still be working under this claim."""
     if row["state"] not in {"drafting", "sending"}:
         return False
@@ -731,7 +697,7 @@ _RUNNING: set[str] = set()
 
 
 @contextmanager
-def _claimed(
+def claimed_send(
     conn: sqlite3.Connection, target_id: str, user_id: str, kind: str, action: str,
     revalidate: Callable[[], Any], *, stale_token: str = "",
 ) -> Iterator[tuple[str, Any]]:
@@ -759,7 +725,7 @@ def _claimed(
                 )
                 result = revalidate()
         except Exception as exc:
-            if _is_unique_violation(exc):
+            if is_unique_violation(exc):
                 raise SendConflictError(IN_PROGRESS) from exc
             raise
         yield token, result
@@ -767,7 +733,7 @@ def _claimed(
         _RUNNING.discard(token)
 
 
-def _settle_claim(conn: sqlite3.Connection, target_id: str, kind: str, token: str, state: str | None) -> None:
+def settle_send_claim(conn: sqlite3.Connection, target_id: str, kind: str, token: str, state: str | None) -> None:
     """Move our own claim to ``state``, or drop it when ``state`` is None. Never raises."""
     try:
         with conn:
@@ -793,11 +759,8 @@ def event_tie_order(conn: sqlite3.Connection, alias: str = "e") -> str:
 
 def last_bounce(conn: sqlite3.Connection, target_id: str, user_id: str) -> datetime | None:
     """When this target's email last bounced, or None."""
-    row = conn.execute(
-        "SELECT MAX(created_at) FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=?",
-        (target_id, user_id, BOUNCE_EVENT),
-    ).fetchone()
-    return datetime.fromisoformat(row[0]) if row and row[0] else None
+    stamp = latest_event_stamp(conn, target_id, user_id, BOUNCE_EVENT)
+    return datetime.fromisoformat(stamp) if stamp else None
 
 
 def _since(stamp: str, bounce: datetime | None) -> bool:
@@ -898,24 +861,24 @@ def _post_under_claim(
     try:
         response = gmail.request("POST", path, json=payload)
     except _NOTHING_SENT:
-        _settle_claim(conn, target_id, kind, token, None)
+        settle_send_claim(conn, target_id, kind, token, None)
         raise
     except httpx.HTTPError as exc:
-        _settle_claim(conn, target_id, kind, token, "unconfirmed")
+        settle_send_claim(conn, target_id, kind, token, "unconfirmed")
         raise SendUnconfirmedError(f"Gmail did not answer, so {uncertain}") from exc
     except BaseException:
-        _settle_claim(conn, target_id, kind, token, "unconfirmed")
+        settle_send_claim(conn, target_id, kind, token, "unconfirmed")
         raise
     if response.status_code == 200:
         try:
             return response.json()
         except BaseException:
-            _settle_claim(conn, target_id, kind, token, "unconfirmed")
+            settle_send_claim(conn, target_id, kind, token, "unconfirmed")
             raise
     if 400 <= response.status_code < 500:
-        _settle_claim(conn, target_id, kind, token, None)
+        settle_send_claim(conn, target_id, kind, token, None)
         raise RuntimeError(f"{refused} (HTTP {response.status_code}). Nothing was sent")
-    _settle_claim(conn, target_id, kind, token, "unconfirmed")
+    settle_send_claim(conn, target_id, kind, token, "unconfirmed")
     raise SendUnconfirmedError(f"Gmail did not confirm it (HTTP {response.status_code}), so {uncertain}")
 
 
@@ -936,9 +899,9 @@ def create_gmail_draft(
     """
     _approved_for(conn, target_id, user_id, kind, sending=False)
     stale_token = ""
-    existing = _claim(conn, target_id, user_id, kind)
+    existing = send_claim_row(conn, target_id, user_id, kind)
     if existing is not None:
-        if _claim_held(existing):
+        if send_claim_held(existing):
             raise SendConflictError(IN_PROGRESS)
         if _superseded(conn, existing, target_id, user_id):
             stale_token = existing["token"]
@@ -948,11 +911,11 @@ def create_gmail_draft(
             raise SendConflictError(f"{_claim_reason(existing)} Until then no new draft is made.")
     account = sender_account()
     revalidate = lambda: _approved_for(conn, target_id, user_id, kind, sending=False)  # noqa: E731
-    with _claimed(conn, target_id, user_id, kind, "draft", revalidate, stale_token=stale_token) as (token, approved):
+    with claimed_send(conn, target_id, user_id, kind, "draft", revalidate, stale_token=stale_token) as (token, approved):
         try:
             client = client_factory()
         except BaseException:
-            _settle_claim(conn, target_id, kind, token, None)
+            settle_send_claim(conn, target_id, kind, token, None)
             raise
         with client:
             try:
@@ -962,11 +925,11 @@ def create_gmail_draft(
                 previous = approved.live_draft(conn, gmail, user_id)
                 raw = None if previous else approved.raw(account)
             except BaseException:
-                _settle_claim(conn, target_id, kind, token, None)
+                settle_send_claim(conn, target_id, kind, token, None)
                 raise
             if previous:
-                _settle_claim(conn, target_id, kind, token, None)
-                public = {key: value for key, value in previous.items() if key != "attachment_sha256"}
+                settle_send_claim(conn, target_id, kind, token, None)
+                public = _public_draft(previous)
                 return {**public, "url": draft_url(account, previous["message_id"]), "reused": True}
             created = _post_under_claim(
                 conn, gmail, target_id, kind, token, "/drafts", {"message": {"raw": raw}},
@@ -982,13 +945,13 @@ def create_gmail_draft(
                     "thread_id": str(created["message"].get("threadId", "")),
                 }
                 with conn:
-                    _log(conn, target_id, user_id, DRAFT_EVENT, detail=json.dumps(detail, sort_keys=True))
+                    log_event(conn, target_id, user_id, DRAFT_EVENT, detail=json.dumps(detail, sort_keys=True))
                     conn.execute("DELETE FROM outreach_send_claims WHERE target_id=? AND kind=? AND token=?", (target_id, kind, token))
             except BaseException:
                 # The draft exists but is not recorded, so the next send asks first.
-                _settle_claim(conn, target_id, kind, token, "unconfirmed")
+                settle_send_claim(conn, target_id, kind, token, "unconfirmed")
                 raise
-    public = {key: value for key, value in detail.items() if key != "attachment_sha256"}
+    public = _public_draft(detail)
     return {**public, "url": draft_url(account, detail["message_id"]), "reused": False}
 
 
@@ -1019,9 +982,9 @@ def send_gmail_message(
     _approved_for(conn, target_id, user_id, kind, sending=True, fingerprint=fingerprint)
     reasons: dict[str, str] = {}
     stale_token = ""
-    existing = _claim(conn, target_id, user_id, kind)
+    existing = send_claim_row(conn, target_id, user_id, kind)
     if existing is not None:
-        if _claim_held(existing):
+        if send_claim_held(existing):
             raise SendConflictError(IN_PROGRESS)
         stale_token = existing["token"]
         if _superseded(conn, existing, target_id, user_id):
@@ -1048,7 +1011,7 @@ def send_gmail_message(
                 )
             reasons[f"draft:{detail['draft_id']}"] = _DRAFT_VANISHED
         if reasons:
-            check = hashlib.sha256(json.dumps(sorted(reasons)).encode()).hexdigest()[:32]
+            check = _sent_folder_check(reasons)
             if sent_folder_check != check:
                 raise SendNeedsCheckError(" ".join(dict.fromkeys(reasons.values())), check)
         seen = [event_id for event_id, _detail in drafts]
@@ -1059,7 +1022,7 @@ def send_gmail_message(
                 raise SendConflictError("A Gmail draft of this email was just made. Send it from Gmail, or delete it and send again")
             return fresh, fresh.raw(account)
 
-        with _claimed(conn, target_id, user_id, kind, "send", revalidate, stale_token=stale_token) as (token, (approved, raw)):
+        with claimed_send(conn, target_id, user_id, kind, "send", revalidate, stale_token=stale_token) as (token, (approved, raw)):
             sent = _post_under_claim(
                 conn, gmail, target_id, kind, token, "/messages/send", {"raw": raw},
                 refused="Gmail did not send the email",
@@ -1074,9 +1037,9 @@ def send_gmail_message(
                 }
                 with conn:
                     conn.execute("UPDATE outreach_send_claims SET state='sent' WHERE target_id=? AND kind=? AND token=?", (target_id, kind, token))
-                    _log(conn, target_id, user_id, SENT_EVENT, detail=json.dumps(detail, sort_keys=True))
+                    log_event(conn, target_id, user_id, SENT_EVENT, detail=json.dumps(detail, sort_keys=True))
             except BaseException:
-                _settle_claim(conn, target_id, kind, token, "sent")
+                settle_send_claim(conn, target_id, kind, token, "sent")
                 raise
     try:
         updated = update_target(conn, target_id, {"status": SENT_STATUS[kind]}, user_id=user_id)
@@ -1174,8 +1137,7 @@ def thank_you_mime(account: str, row: dict[str, Any]) -> str:
 
 
 def thread_url(account: str, thread_id: str) -> str:
-    authuser = quote(account) if account else "0"
-    return f"https://mail.google.com/mail/?authuser={authuser}#all/{quote(thread_id)}"
+    return gmail_web_url(f"all/{quote(thread_id)}", account)
 
 
 def send_thank_you(
@@ -1202,16 +1164,16 @@ def send_thank_you(
     _thank_you_ready(conn, target_id, user_id, fingerprint, states)
     reasons: dict[str, str] = {}
     stale_token = ""
-    existing = _claim(conn, target_id, user_id, THANK_YOU_KIND)
+    existing = send_claim_row(conn, target_id, user_id, THANK_YOU_KIND)
     if existing is not None:
-        if _claim_held(existing):
+        if send_claim_held(existing):
             raise SendConflictError(IN_PROGRESS)
         stale_token = existing["token"]
         if existing["state"] == "sent":
             raise ValueError("The thank-you was already sent from Gmail")
         reasons[f"claim:{stale_token}"] = _thank_you_claim_reason(existing)
     if reasons:
-        check = hashlib.sha256(json.dumps(sorted(reasons)).encode()).hexdigest()[:32]
+        check = _sent_folder_check(reasons)
         if automatic or sent_folder_check != check:
             raise SendNeedsCheckError(" ".join(dict.fromkeys(reasons.values())), check)
     account = sender_account()
@@ -1223,7 +1185,7 @@ def send_thank_you(
             fresh = _thank_you_ready(conn, target_id, user_id, fingerprint, states)
             return fresh, thank_you_mime(account, fresh)
 
-        with _claimed(conn, target_id, user_id, THANK_YOU_KIND, "send", revalidate, stale_token=stale_token) as (token, (row, raw)):
+        with claimed_send(conn, target_id, user_id, THANK_YOU_KIND, "send", revalidate, stale_token=stale_token) as (token, (row, raw)):
             sent = _post_under_claim(
                 conn, gmail, target_id, THANK_YOU_KIND, token, "/messages/send", {"raw": raw, "threadId": row["thread_id"]},
                 refused="Gmail did not send the thank-you",
@@ -1240,13 +1202,13 @@ def send_thank_you(
                 with conn:
                     conn.execute("UPDATE outreach_send_claims SET state='sent' WHERE target_id=? AND kind=? AND token=?",
                                  (target_id, THANK_YOU_KIND, token))
-                    _log(conn, target_id, user_id, THANK_YOU_SENT_EVENT, detail=json.dumps(detail, sort_keys=True))
+                    log_event(conn, target_id, user_id, THANK_YOU_SENT_EVENT, detail=json.dumps(detail, sort_keys=True))
                     conn.execute(
                         "UPDATE outreach_thank_yous SET state='sent', note='', updated_at=? WHERE target_id=? AND user_id=?",
                         (stamp, target_id, user_id),
                     )
             except BaseException:
-                _settle_claim(conn, target_id, THANK_YOU_KIND, token, "sent")
+                settle_send_claim(conn, target_id, THANK_YOU_KIND, token, "sent")
                 raise
     return {**detail, "account": account, "sent_at": stamp, "url": thread_url(account, detail["thread_id"])}
 
@@ -1266,9 +1228,9 @@ def create_thank_you_draft(
     row = thank_you_row(conn, target_id, user_id)
     if row is None:
         raise ThankYouChanged("There is no thank-you for this company")
-    existing = _claim(conn, target_id, user_id, THANK_YOU_KIND)
+    existing = send_claim_row(conn, target_id, user_id, THANK_YOU_KIND)
     if existing is not None:
-        if _claim_held(existing):
+        if send_claim_held(existing):
             raise SendConflictError(IN_PROGRESS)
         if existing["state"] == "sent":
             raise ValueError("The thank-you was already sent from Gmail")
@@ -1281,11 +1243,11 @@ def create_thank_you_draft(
             raise ThankYouChanged("The thank-you changed while its draft was being made. Reload and try again")
         return fresh
 
-    with _claimed(conn, target_id, user_id, THANK_YOU_KIND, "draft", revalidate) as (token, fresh):
+    with claimed_send(conn, target_id, user_id, THANK_YOU_KIND, "draft", revalidate) as (token, fresh):
         try:
             client = client_factory()
         except BaseException:
-            _settle_claim(conn, target_id, THANK_YOU_KIND, token, None)
+            settle_send_claim(conn, target_id, THANK_YOU_KIND, token, None)
             raise
         with client:
             try:
@@ -1294,7 +1256,7 @@ def create_thank_you_draft(
                 _require_account(gmail, account)
                 raw = thank_you_mime(account, fresh)
             except BaseException:
-                _settle_claim(conn, target_id, THANK_YOU_KIND, token, None)
+                settle_send_claim(conn, target_id, THANK_YOU_KIND, token, None)
                 raise
             created = _post_under_claim(
                 conn, gmail, target_id, THANK_YOU_KIND, token, "/drafts", {"message": {"raw": raw, "threadId": fresh["thread_id"]}},
@@ -1308,11 +1270,11 @@ def create_thank_you_draft(
                     "thread_id": str(message.get("threadId", "") or fresh["thread_id"]),
                 }
                 with conn:
-                    _log(conn, target_id, user_id, THANK_YOU_DRAFT_EVENT, detail=json.dumps(detail, sort_keys=True))
+                    log_event(conn, target_id, user_id, THANK_YOU_DRAFT_EVENT, detail=json.dumps(detail, sort_keys=True))
                     conn.execute("DELETE FROM outreach_send_claims WHERE target_id=? AND kind=? AND token=?", (target_id, THANK_YOU_KIND, token))
             except BaseException:
                 # The draft exists but is not recorded, so the next send asks first.
-                _settle_claim(conn, target_id, THANK_YOU_KIND, token, "unconfirmed")
+                settle_send_claim(conn, target_id, THANK_YOU_KIND, token, "unconfirmed")
                 raise
     return {**detail, "url": draft_url(account, detail["message_id"])}
 

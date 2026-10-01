@@ -48,12 +48,15 @@ from time import monotonic
 from typing import Any, Iterator
 from uuid import uuid4
 
-from pipeline import identity_tokens, normalized
+from pipeline_core.identity import normalized
 
-from . import ROOT, actions, automation
+from . import SERVER_INSTANCE, actions, automation
+from .background import step_error
 from .database import is_unique_violation
-from .outreach_gmail import SERVER_INSTANCE
-from .schema import utc_now
+from .json_values import json_as
+from .profile_store import read_stored_profile
+from .settings_store import get_setting, put_setting, setting_updated_at
+from .timestamps import parse_app_instant, utc_now
 from .user_time import UserTimezone, user_timezone
 
 LOGGER = logging.getLogger(__name__)
@@ -67,9 +70,8 @@ CLAIM_STATES = ("claimed", "clicking", "submitted", "unconfirmed", "needs_you", 
 RUN_KINDS = ("lookup", "rehearsal", "submit", "handoff")
 # What a screenshot of a filled form is kept for, in days (PIPELINE_APPLY_EVIDENCE_DAYS).
 DEFAULT_EVIDENCE_DAYS = 90
-# Where screenshots live: data/private/apply/<user folder>/<opportunity id>/<run id>-<step>.png. The folder is
-# per student, so deleting an account removes one folder. Not in output/: everything under data/ is ignored.
-APPLY_ROOT = ROOT / "data" / "private" / "apply"
+# Screenshots live under APPLY_ROOT (opportunity_app/__init__.py): <user folder>/<opportunity id>/<run id>-<step>.png.
+# The folder is per student, so deleting an account removes one folder. Not in output/: everything under data/ is ignored.
 # A claim, or a run, that another server process holds is held while its heartbeat is this fresh.
 HELD_HEARTBEAT = timedelta(minutes=2)
 # The one confirm clock: how old the rehearsal a one-click submit confirmed may be at hand-over.
@@ -159,31 +161,8 @@ def _iso(moment: datetime) -> str:
     return moment.astimezone(timezone.utc).isoformat(timespec="microseconds")
 
 
-def _parse(value: Any) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-
-
-def _loads(text: Any, default: Any) -> Any:
-    try:
-        value = json.loads(text or "")
-    except (TypeError, ValueError):
-        return default
-    return value if isinstance(value, type(default)) else default
-
-
 def _dumps(value: Any) -> str:
     return json.dumps(value, sort_keys=True)
-
-
-def company_key(company: str) -> str:
-    """The words that identify an employer, sorted and joined: "Acme Robotics Inc." and "ACME robotics" match."""
-    return " ".join(sorted(identity_tokens(company)))
 
 
 def lock_user(conn: sqlite3.Connection, user_id: str) -> None:
@@ -195,14 +174,9 @@ def lock_user(conn: sqlite3.Connection, user_id: str) -> None:
     conn.execute("UPDATE users SET id=id WHERE id=?", (user_id,))
 
 
-def _profile(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
-    row = conn.execute("SELECT profile_json FROM profiles WHERE user_id=?", (user_id,)).fetchone()
-    return _loads(row[0] if row else "", {})
-
-
 def limits(conn: sqlite3.Connection, user_id: str) -> dict[str, int]:
     """This student's limits: the profile's apply_agent values where they are sound, else the defaults."""
-    stored = _profile(conn, user_id).get("apply_agent")
+    stored = read_stored_profile(conn, user_id).get("apply_agent")
     stored = stored if isinstance(stored, dict) else {}
     result = {}
     for key, default in DEFAULT_LIMITS.items():
@@ -239,7 +213,7 @@ def _when_text(zone: UserTimezone, moment: datetime, now: datetime) -> str:
 
 
 def _day_text(zone: UserTimezone, value: Any) -> str:
-    moment = _parse(value)
+    moment = parse_app_instant(value)
     if moment is None:
         return "an earlier day"
     local = zone.to_local(moment)
@@ -263,7 +237,7 @@ def claim_held(row: Any, *, now: datetime | None = None) -> bool:
     """
     if row["instance"] == SERVER_INSTANCE:
         return row["token"] in RUNNING
-    beat = _parse(row["heartbeat_at"])
+    beat = parse_app_instant(row["heartbeat_at"])
     return beat is not None and _at(now) - beat < HELD_HEARTBEAT
 
 
@@ -303,7 +277,7 @@ def _limit_check(
     latest = conn.execute(
         "SELECT MAX(handed_over_at) FROM application_submit_claims WHERE user_id=? AND handed_over_at IS NOT NULL", (user_id,),
     ).fetchone()
-    last = _parse(latest[0]) if latest else None
+    last = parse_app_instant(latest[0]) if latest else None
     spacing = timedelta(minutes=values["spacing_minutes"])
     if last is not None and now - last < spacing:
         return Block("failed", "spacing", f"The next agent submission is allowed at {_when_text(zone, last + spacing, now)}")
@@ -338,7 +312,7 @@ def _limit_check(
         (user_id, company, board_token),
     ).fetchone()
     if recent is not None:
-        handed = _parse(recent["handed_over_at"])
+        handed = parse_app_instant(recent["handed_over_at"])
         if handed is not None and now - handed < timedelta(days=values["company_days"]):
             days = max(0, (now - handed).days)
             name = recent["company"] or "this company"
@@ -359,7 +333,7 @@ def limits_block(
 ) -> str | None:
     """The sentence for the first limit that stops a submit or Finish in browser now, or None (9.1).
 
-    ``company`` is company_key(name). Finish in browser (handoff) counts toward the spacing and the company limit
+    ``company`` is employer_key(name). Finish in browser (handoff) counts toward the spacing and the company limit
     but not the daily cap, because the student presses Submit.
     """
     block = _limit_check(conn, user_id, company, board_token, mode, _at(now))
@@ -440,7 +414,7 @@ def duplicate_block(
         return Block("ask", ASK_UNMATCHED_CONFIRMATION,
                      f"An application confirmation from {name} arrived on {_day_text(zone, unmatched)} that the app couldn't match to a role. "
                      "I haven't applied to this role.")
-    created = _parse(application["created_at"]) if application is not None else None
+    created = parse_app_instant(application["created_at"]) if application is not None else None
     if created is not None and moment - created > timedelta(days=1) and ASK_APPLYING_OLD not in acknowledged:
         return Block("ask", ASK_APPLYING_OLD, "Did you already apply to this by hand? I haven't applied yet.")
     return None
@@ -517,7 +491,7 @@ def claim(
     server process either lands first and is seen, or waits); then the insert. A unique-index conflict, which the
     checks should already have caught, is refused with the same sentences. Nothing is created when it is refused.
 
-    ``company`` is company_key(name). ``acknowledged`` holds the codes of the "ask" refusals the student ticked
+    ``company`` is employer_key(name). ``acknowledged`` holds the codes of the "ask" refusals the student ticked
     (ASK_*); they are recorded on the claim. ``rehearsal_run_id`` is the rehearsal a one-click confirm approved.
     """
     if mode not in MODES:
@@ -610,7 +584,7 @@ def _conflict(conn: sqlite3.Connection, user_id: str, opportunity_id: str, ats: 
 
 
 def _claim_row(conn: sqlite3.Connection, token: str, user_id: str, *, lock: bool = False) -> Any:
-    suffix = automation._for_update(conn) if lock else ""
+    suffix = automation.for_update_clause(conn) if lock else ""
     return conn.execute(
         f"SELECT * FROM application_submit_claims WHERE token=? AND user_id=?{suffix}", (token, user_id),
     ).fetchone()
@@ -652,21 +626,18 @@ def hand_over(conn: sqlite3.Connection, token: str, *, user_id: str, now: dateti
         if mode == "unattended" and paused:
             return False
         if mode == "one_click":
-            confirmed = _parse(row["confirmed_at"])
+            confirmed = parse_app_instant(row["confirmed_at"])
             if confirmed is None:
                 return False
             if paused:
-                paused_at = conn.execute(
-                    "SELECT updated_at FROM user_settings WHERE user_id=? AND key=?", (user_id, automation.PAUSED_KEY),
-                ).fetchone()
-                changed = _parse(paused_at[0]) if paused_at else None
+                changed = parse_app_instant(setting_updated_at(conn, user_id, automation.PAUSED_KEY))
                 if changed is None or changed > confirmed:
                     return False
             rehearsal = conn.execute(
                 "SELECT finished_at, started_at FROM apply_runs WHERE id=? AND user_id=?",
-                (_loads(row["detail_json"], {}).get("rehearsal_run_id", ""), user_id),
+                (json_as(row["detail_json"], {}).get("rehearsal_run_id", ""), user_id),
             ).fetchone()
-            rehearsed = _parse(rehearsal["finished_at"] or rehearsal["started_at"]) if rehearsal is not None else None
+            rehearsed = parse_app_instant(rehearsal["finished_at"] or rehearsal["started_at"]) if rehearsal is not None else None
             if rehearsed is None or moment - rehearsed >= CONFIRM_MAX_AGE:
                 return False
         return bool(conn.execute(
@@ -688,7 +659,7 @@ def heartbeat(conn: sqlite3.Connection, token: str, *, now: datetime | None = No
 def _watch_fields(stamp: str, watch: bool) -> tuple[str, str | None]:
     if not watch:
         return "not_watched", None
-    until = _parse(stamp)
+    until = parse_app_instant(stamp)
     return "awaiting_email", _iso(until + WATCH_WINDOW) if until else None
 
 
@@ -712,7 +683,7 @@ def _settle_tx(
     if detail:
         sets.append("detail_json=?")
         current = conn.execute("SELECT detail_json FROM application_submit_claims WHERE token=?", (token,)).fetchone()
-        params.append(_dumps({**_loads(current[0] if current else "", {}), **detail}))
+        params.append(_dumps({**json_as(current[0] if current else "", {}), **detail}))
     if state == "submitted":
         submitted = submitted_at or stamp
         verification, until = _watch_fields(submitted, watch)
@@ -728,11 +699,7 @@ def _settle_tx(
 def _submitted_event(
     conn: sqlite3.Connection, application_id: str, detail: dict[str, Any] | None, stamp: str,
 ) -> None:
-    conn.execute(
-        "INSERT INTO application_events(application_id, event_type, from_stage, to_stage, detail_json, created_at) "
-        "VALUES(?, 'apply_agent_submitted', NULL, NULL, ?, ?)",
-        (application_id, _dumps(detail or {}), stamp),
-    )
+    actions.log_application_event(conn, application_id, "apply_agent_submitted", None, stamp, encoded=_dumps(detail or {}))
 
 
 def _after_missed_settle(conn: sqlite3.Connection, token: str, user_id: str, detail: dict[str, Any] | None, stamp: str) -> None:
@@ -744,12 +711,12 @@ def _after_missed_settle(conn: sqlite3.Connection, token: str, user_id: str, det
         company = _title_of(conn, row["opportunity_id"])[1] or "the company"
         with conn:
             _submitted_event(conn, row["application_id"], detail, stamp)
-            automation._insert_notice(
+            automation.insert_notice(
                 conn, user_id, event_key=f"apply-late-confirmation:{token}", level="warning",
                 title=f"Greenhouse showed its confirmation page for {company}, after this attempt was marked as not sent. Check it.",
                 body="", timestamp=stamp,
             )
-    except Exception:  # noqa: BLE001 - like outreach_gmail._settle_claim: a failed report never hides the result
+    except Exception:  # noqa: BLE001 - like outreach_gmail.settle_send_claim: a failed report never hides the result
         LOGGER.exception("A late confirmation for an apply claim was not recorded")
 
 
@@ -868,10 +835,10 @@ def record_stage(
     with conn:
         conn.execute("UPDATE applications SET updated_at=updated_at WHERE id=? AND user_id=?", (row["application_id"], user_id))
         stage = conn.execute(
-            f"SELECT stage FROM applications WHERE id=? AND user_id=?{automation._for_update(conn)}", (row["application_id"], user_id),
+            f"SELECT stage FROM applications WHERE id=? AND user_id=?{automation.for_update_clause(conn)}", (row["application_id"], user_id),
         ).fetchone()
         if stage is not None and stage["stage"] == "applying":
-            actions._update_application_tx(
+            actions.update_application_tx(
                 conn, row["application_id"], stage="applied", applied_at=row["submitted_at"], user_id=user_id,
                 source=source or _settled_by(row)[0], timestamp=stamp,
             )
@@ -944,7 +911,7 @@ def create_run(
             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)
             """,
             (run_id, user_id, opportunity_id, application_id, claim_token, kind, started_by, ats, adapter_version, company, board_token,
-             page_url, stamp, _iso(_parse(stamp) + timedelta(seconds=deadline_seconds)), stamp),
+             page_url, stamp, _iso(parse_app_instant(stamp) + timedelta(seconds=deadline_seconds)), stamp),
         )
     return run_id
 
@@ -1077,8 +1044,7 @@ def record_result(
 
 
 def gate_reset_at(conn: sqlite3.Connection, user_id: str, ats: str) -> str:
-    row = conn.execute("SELECT value FROM user_settings WHERE user_id=? AND key=?", (user_id, f"{GATE_RESET_KEY}:{ats}")).fetchone()
-    return str(row[0]) if row else ""
+    return get_setting(conn, user_id, f"{GATE_RESET_KEY}:{ats}") or ""
 
 
 def gate(conn: sqlite3.Connection, user_id: str, ats: str, *, adapter_version: str = ADAPTER_VERSION) -> tuple[bool, int, int]:
@@ -1124,10 +1090,10 @@ def mark_review(
             (user_id, ats, reset, BREAKER_WINDOW),
         ).fetchall()
         if sum(1 for item in recent if item["review"] == "wrong") >= BREAKER_LIMIT:
-            automation._put_setting(conn, user_id, f"{GATE_RESET_KEY}:{ats}", stamp, stamp)
+            put_setting(conn, user_id, f"{GATE_RESET_KEY}:{ats}", stamp, stamp)
             tripped = True
             needed = limits(conn, user_id)["rehearsals_before_submit"]
-            automation._insert_notice(
+            automation.insert_notice(
                 conn, user_id, event_key=f"apply-breaker:{ats}:{stamp}", level="warning",
                 title=f"Apply for me: {BREAKER_LIMIT} of your last {BREAKER_WINDOW} reviews were wrong",
                 body=f"It needs {needed} new clean rehearsals that you mark right before it offers to submit again.", timestamp=stamp,
@@ -1270,7 +1236,7 @@ def run_worker_step(conn: sqlite3.Connection, *, apply_root: Path | None = None,
                     continue
                 purge_evidence(conn, now=now, apply_root=apply_root, user_id=user_id)
                 with conn:
-                    automation._put_setting(conn, user_id, PURGE_LAST_RUN_KEY, _iso(_at(now)), _stamp(now))
+                    put_setting(conn, user_id, PURGE_LAST_RUN_KEY, _iso(_at(now)), _stamp(now))
                 report["purged"].append(user_id)
                 _record_runner(conn, user_id, ok=True, component=RETENTION_COMPONENT)
             except Exception as exc:  # noqa: BLE001
@@ -1290,17 +1256,14 @@ def _rollback(conn: sqlite3.Connection) -> None:
 def _record_runner(
     conn: sqlite3.Connection, user_id: str, *, ok: bool, error: Exception | None = None, component: str = RUNNER_COMPONENT,
 ) -> None:
-    from .outreach_inbox import _step_error  # imported here: it pulls in the whole mail reader
-
     try:
-        automation.record_health(conn, user_id, component, ok=ok, error=_step_error(error) if error else "")
+        automation.record_health(conn, user_id, component, ok=ok, error=step_error(error) if error else "")
     except Exception:  # noqa: BLE001 - a health row never stops the pass
         _rollback(conn)
 
 
 def _purged_today(conn: sqlite3.Connection, user_id: str, moment: datetime) -> bool:
-    row = conn.execute("SELECT value FROM user_settings WHERE user_id=? AND key=?", (user_id, PURGE_LAST_RUN_KEY)).fetchone()
-    last = _parse(row[0]) if row else None
+    last = parse_app_instant(get_setting(conn, user_id, PURGE_LAST_RUN_KEY))
     if last is None:
         return False
     zone = user_timezone(conn, user_id)
@@ -1345,7 +1308,7 @@ def purge_evidence(
     for row in conn.execute(
         f"SELECT id, screenshots_json FROM apply_runs WHERE started_at<? AND screenshots_json<>'[]' {scope}", (old, *args),
     ).fetchall():
-        shots = _loads(row["screenshots_json"], [])
+        shots = json_as(row["screenshots_json"], [])
         removed = 0
         for shot in shots:
             stored = str(shot.get("path") or "") if isinstance(shot, dict) else ""
@@ -1368,7 +1331,7 @@ def purge_evidence(
     for row in conn.execute(
         f"SELECT id, progress_json FROM apply_runs WHERE status='finished' AND started_at<? AND progress_json<>'[]' {scope}", (trim, *args),
     ).fetchall():
-        steps = _loads(row["progress_json"], [])
+        steps = json_as(row["progress_json"], [])
         if len(steps) > 1:
             with conn:
                 conn.execute("UPDATE apply_runs SET progress_json=? WHERE id=?", (_dumps(steps[-1:]), row["id"]))
@@ -1387,7 +1350,7 @@ def _remove_orphans(conn: sqlite3.Connection, root: Path, user_id: str | None, n
     working = {str(row[0]) for row in conn.execute("SELECT id FROM apply_runs WHERE status='running'").fetchall()}
     referenced: set[Path] = set()
     for row in conn.execute("SELECT screenshots_json FROM apply_runs WHERE screenshots_json<>'[]'").fetchall():
-        for shot in _loads(row["screenshots_json"], []):
+        for shot in json_as(row["screenshots_json"], []):
             stored = str(shot.get("path") or "") if isinstance(shot, dict) else ""
             if stored:
                 referenced.add(_screenshot_file(root, stored).resolve())

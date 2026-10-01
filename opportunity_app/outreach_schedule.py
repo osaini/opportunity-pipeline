@@ -8,7 +8,7 @@ AutomationWorker's background thread.
 
 The student stays in charge of every email: only a draft they approved and
 scheduled is sent, and only the words they scheduled. Editing the draft or
-changing the recipient cancels the schedule (outreach._cancel_schedules), as
+changing the recipient cancels the schedule (outreach.cancel_schedules), as
 does Send now or Cancel. Anything that stops the send is shown on the card.
 
 One email is queued without the student's click: a first email that bounced,
@@ -48,12 +48,13 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from . import automation
-from .outreach import NOT_INTERESTED, DraftChangedError, UNSENT_STATUSES, _city_state, _log, get_target, heard_back
+from .gmail_client import ClientFactory, GmailAuthError
+from .outreach import (
+    NOT_INTERESTED, DraftChangedError, UNSENT_STATUSES, city_state, get_target, heard_back, log_event, withdraw_auto_approval,
+)
 from .outreach_gmail import (
     SENT_EVENT,
     THANK_YOU_KIND,
-    ClientFactory,
-    GmailAuthError,
     SendConflictError,
     SendNeedsCheckError,
     SendUnconfirmedError,
@@ -64,8 +65,9 @@ from .outreach_gmail import (
     send_gmail_message,
     send_thank_you,
 )
-from .schema import utc_now
-from .user_time import user_timezone
+from .settings_store import setting_updated_at
+from .timestamps import utc_now
+from .user_time import at_wall_clock, to_local, user_timezone
 
 # Where a state spans zones, the zone most of its people live in.
 STATE_ZONES = {
@@ -123,7 +125,7 @@ _TRAILING_STATE = re.compile(r"^(?P<city>.*?)[,\s]+(?P<state>[A-Za-z]{2})(?:\s+\
 def _place(location: str) -> tuple[str, str]:
     """(city, state code) from a location as students type it; the state is "" when none is named."""
     text = re.sub(r"\s+\d{5}(?:-\d{4})?\s*$", "", location.strip())
-    city, state = _city_state(text)
+    city, state = city_state(text)
     if state:
         return city, state
     match = _TRAILING_STATE.match(text)
@@ -148,18 +150,18 @@ def recipient_zone(conn: sqlite3.Connection, target: dict[str, Any], *, user_id:
 def next_morning(now: datetime, zone: Any, seed: str) -> datetime:
     """The next weekday 9:00-9:40 in ``zone`` at least five minutes away, as UTC."""
     minutes = int(hashlib.sha256(seed.encode()).hexdigest(), 16) % SPREAD_MINUTES
-    local = now.astimezone(zone) if zone else now.astimezone()
+    local = to_local(now, zone)
     day = local.date()
     while True:
         slot = datetime.combine(day, MORNING) + timedelta(minutes=minutes)
-        slot = slot.replace(tzinfo=zone) if zone else slot.astimezone()
+        slot = at_wall_clock(slot, zone)
         if day.weekday() < 5 and slot > local + timedelta(minutes=5):
             return slot.astimezone(timezone.utc)
         day += timedelta(days=1)
 
 
-def _label(send_at: datetime, zone: Any, basis: str) -> str:
-    local = send_at.astimezone(zone) if zone else send_at.astimezone()
+def send_time_label(send_at: datetime, zone: Any, basis: str) -> str:
+    local = to_local(send_at, zone)
     return f"{local:%a, %b} {local.day}, {local:%I:%M %p %Z}".replace(" 0", " ").strip() + f" ({basis})"
 
 
@@ -175,7 +177,7 @@ def schedule_send(
     approved = _ready_to_queue(conn, target_id, user_id=user_id, kind=kind, fingerprint=fingerprint)
     zone, basis = recipient_zone(conn, approved.target, user_id=user_id)
     send_at = next_morning(now, zone, f"{target_id}:{kind}")
-    label = _label(send_at, zone, basis)
+    label = send_time_label(send_at, zone, basis)
     what = "follow-up" if kind == "follow_up" else "email"
     _queue(conn, target_id, user_id=user_id, kind=kind, fingerprint=fingerprint, send_at=send_at,
            zone_key=getattr(zone, "key", "system-local"), label=label,
@@ -234,7 +236,7 @@ def _queue(
             """,
             (target_id, user_id, kind, fingerprint, send_at.isoformat(timespec="seconds"), zone_key, label, stamp, stamp),
         )
-        _log(conn, target_id, user_id, "send_scheduled", detail=detail)
+        log_event(conn, target_id, user_id, "send_scheduled", detail=detail)
 
 
 def cancel_send(conn: sqlite3.Connection, target_id: str, *, user_id: str, kind: str, reason: str = "You cancelled it") -> bool:
@@ -253,11 +255,11 @@ def cancel_send(conn: sqlite3.Connection, target_id: str, *, user_id: str, kind:
             (reason, utc_now(), target_id, user_id, kind),
         ).rowcount
         if cancelled:
-            _log(conn, target_id, user_id, "send_cancelled", detail=reason)
+            log_event(conn, target_id, user_id, "send_cancelled", detail=reason)
     return bool(cancelled)
 
 
-def _finish(conn: sqlite3.Connection, row: sqlite3.Row, state: str, error: str = "") -> None:
+def finish_send(conn: sqlite3.Connection, row: sqlite3.Row, state: str, error: str = "") -> None:
     """Settle a row the worker holds. A send that went out is recorded even if it was cancelled meanwhile.
 
     A thank-you after a decline (kind 'thank_you') is settled on its own row
@@ -279,9 +281,9 @@ def _finish(conn: sqlite3.Connection, row: sqlite3.Row, state: str, error: str =
             settle_in(conn, row["target_id"], row["user_id"], state, error)
             return
         if state == "failed":
-            _log(conn, row["target_id"], row["user_id"], "scheduled_send_failed", detail=error[:500])
+            log_event(conn, row["target_id"], row["user_id"], "scheduled_send_failed", detail=error[:500])
         elif state == "cancelled":
-            _log(conn, row["target_id"], row["user_id"], "send_cancelled", detail=error[:500])
+            log_event(conn, row["target_id"], row["user_id"], "send_cancelled", detail=error[:500])
 
 
 Reviewer = Callable[[], tuple[str, Callable[[str], str]]]
@@ -301,12 +303,12 @@ def _gate(
     every watched company's replies, and a reply it finds for another company
     is read (by Jev too) and handled as the InboxWatcher would have.
     """
-    from .outreach_review import FRESH_LOOK_REASONS, fresh_look, review_follow_up, review_runner
+    from .outreach_review import FRESH_LOOK_REASONS, fresh_look, review_follow_up, review_log_detail, review_runner
 
     target_id, user_id = row["target_id"], row["user_id"]
     # Marking a company not interested stops what it has queued; this catches a send that was already being checked.
     if get_target(conn, target_id, user_id=user_id).get("not_interested_at"):
-        _finish(conn, row, "cancelled", f"{NOT_INTERESTED}, so it was not sent")
+        finish_send(conn, row, "cancelled", f"{NOT_INTERESTED}, so it was not sent")
         return "cancelled"
     if row["kind"] == "follow_up":
         stopped = _answered(conn, row, get_target(conn, target_id, user_id=user_id), now)
@@ -318,8 +320,8 @@ def _gate(
         if look["reason"] == FRESH_LOOK_REASONS["throttled"] and hold is not None:
             # Gmail asked this student's reads to wait: the email waits with
             # them, without using up a try. Any other failed check still counts.
-            return _wait_for_gmail(conn, row, hold + GMAIL_HOLD_MARGIN)
-        return _hold_for_retry(conn, row, now, f"Could not check Gmail for replies or bounces first: {look['reason']}")
+            return wait_for_gmail(conn, row, hold + GMAIL_HOLD_MARGIN)
+        return hold_for_retry(conn, row, now, f"Could not check Gmail for replies or bounces first: {look['reason']}")
     if row["kind"] == THANK_YOU_KIND:
         from .outreach_thank_you import gate  # imported here: it imports this module
 
@@ -328,24 +330,20 @@ def _gate(
     if row["kind"] != "follow_up":
         # A first email going out again (after a bounce) stops if anyone may have answered the earlier one.
         if heard_back(target) and _sent_before(conn, target_id, user_id):
-            _finish(conn, row, "cancelled", "They may have answered your earlier email, so it was not sent again. "
+            finish_send(conn, row, "cancelled", "They may have answered your earlier email, so it was not sent again. "
                                             "Check the company's card")
             if row["label"] == RESEND_LABEL:
                 # The app approved it for the new contact on its own; nothing stays approved that the student did not.
                 with conn:
-                    if conn.execute(
-                        "UPDATE outreach_targets SET draft_status='generated', updated_at=? WHERE id=? AND user_id=? AND draft_status='approved'",
-                        (utc_now(), target_id, user_id),
-                    ).rowcount:
-                        _log(conn, target_id, user_id, "approval_withdrawn",
-                             detail="They may have answered the earlier email, so the automatic resend was not sent")
+                    withdraw_auto_approval(conn, target_id, user_id,
+                                           "They may have answered the earlier email, so the automatic resend was not sent")
             return "cancelled"
         return None
     stopped = _answered(conn, row, target, now)
     if stopped:
         return stopped
     if target["contact_bounced"]:
-        _finish(conn, row, "cancelled", f"Email to {target['contact_email']} bounced, so the follow-up was not sent")
+        finish_send(conn, row, "cancelled", f"Email to {target['contact_email']} bounced, so the follow-up was not sent")
         return "cancelled"
     # The stored switch alone: pause is enforced at the hand-over, just after this.
     if automation.mode(conn, user_id, "follow_up_review") != "on":
@@ -355,23 +353,21 @@ def _gate(
         name, run = (reviewer or review_runner)()
         verdict = review_follow_up(
             conn, target_id, user_id=user_id, runner=run, reviewer=name,
-            today=(now.astimezone(zone) if zone else now.astimezone()).date(),
+            today=to_local(now, zone).date(),
         )
     except Exception as exc:  # noqa: BLE001 - any reviewer failure holds the follow-up
-        _finish(conn, row, "failed", f"The follow-up reviewer could not run: {exc}. Nothing was sent"[:500])
+        finish_send(conn, row, "failed", f"The follow-up reviewer could not run: {exc}. Nothing was sent"[:500])
         return "failed"
     with conn:
-        _log(conn, target_id, user_id, "follow_up_reviewed", detail=(
-            f"Passed by {name}" if verdict["send"] else f"Held by {name}: " + "; ".join(verdict["problems"])
-        )[:1_000])
+        log_event(conn, target_id, user_id, "follow_up_reviewed", detail=review_log_detail(name, verdict))
     if verdict["send"]:
         # The review can take minutes: a reply, or an email that may be one, found meanwhile still stops it.
         return _answered(conn, row, get_target(conn, target_id, user_id=user_id), now)
     if verdict["away_until"]:
         back = datetime.combine(verdict["away_until"], time(0, 0))
-        back = back.replace(tzinfo=zone) if zone else back.astimezone()
+        back = at_wall_clock(back, zone)
         send_at = next_morning(back, zone, f"{target_id}:follow_up")
-        label = _label(send_at, zone, basis)
+        label = send_time_label(send_at, zone, basis)
         with conn:
             if conn.execute(
                 "UPDATE outreach_scheduled_sends SET state='scheduled', send_at=?, label=?, error=?, updated_at=? "
@@ -379,9 +375,9 @@ def _gate(
                 (send_at.isoformat(timespec="seconds"), label, f"Held until they are back ({verdict['away_until'].isoformat()})",
                  utc_now(), target_id, row["kind"]),
             ).rowcount:
-                _log(conn, target_id, user_id, "follow_up_held", detail=f"They are away; the follow-up now goes out {label}")
+                log_event(conn, target_id, user_id, "follow_up_held", detail=f"They are away; the follow-up now goes out {label}")
         return "held"
-    _finish(conn, row, "failed", "The reviewer held this follow-up: " + "; ".join(verdict["problems"]))
+    finish_send(conn, row, "failed", "The reviewer held this follow-up: " + "; ".join(verdict["problems"]))
     return "failed"
 
 
@@ -402,14 +398,14 @@ def _answered(conn: sqlite3.Connection, row: sqlite3.Row, target: dict[str, Any]
     None when nothing from them is on record and it may go.
     """
     if target["reply_count"] or target["status"] != "sent":
-        _finish(conn, row, "cancelled", "They replied, or the company moved on, so the follow-up was not sent")
+        finish_send(conn, row, "cancelled", "They replied, or the company moved on, so the follow-up was not sent")
         return "cancelled"
     if not heard_back(target):
         return None
     # An email from them may be a reply: wait for the student to say, then go the next morning after.
     zone, basis = recipient_zone(conn, target, user_id=row["user_id"])
     send_at = next_morning(now, zone, f"{row['target_id']}:follow_up")
-    label = _label(send_at, zone, basis)
+    label = send_time_label(send_at, zone, basis)
     with conn:
         if conn.execute(
             "UPDATE outreach_scheduled_sends SET state='scheduled', send_at=?, label=?, error=?, attempts=0, updated_at=? "
@@ -418,7 +414,7 @@ def _answered(conn: sqlite3.Connection, row: sqlite3.Row, target: dict[str, Any]
              f"Held: {target['company']} may have replied. Say whether it is a reply on the company's card",
              utc_now(), row["target_id"], row["kind"]),
         ).rowcount:
-            _log(conn, row["target_id"], row["user_id"], "follow_up_held",
+            log_event(conn, row["target_id"], row["user_id"], "follow_up_held",
                  detail=f"An email from them may be a reply; the follow-up waits for you, and is looked at again {label}")
     return "held"
 
@@ -457,9 +453,9 @@ def run_due_sends(
         "SELECT * FROM outreach_scheduled_sends WHERE state IN ('sending', 'transmitting') AND updated_at<?", (stuck,),
     ).fetchall():
         if row["state"] == "sending":
-            _hold_for_retry(conn, row, now, "The app stopped before sending this")
+            hold_for_retry(conn, row, now, "The app stopped before sending this")
         else:
-            _finish(conn, row, "failed", "The app stopped while sending this. Check your Gmail Sent folder before sending it again")
+            finish_send(conn, row, "failed", "The app stopped while sending this. Check your Gmail Sent folder before sending it again")
     from .outreach_thank_you import recover_stuck  # imported here: it imports this module
 
     # A thank-you the student's Send it anyway left 'sending' when the app stopped.
@@ -504,7 +500,7 @@ def run_due_sends(
             )
         except Exception as exc:  # noqa: BLE001 - one bad row must not stop the rest
             # Raised before Gmail was asked to send, so nothing went out.
-            _finish(conn, row, "failed", f"Something went wrong before sending: {exc}. Nothing was sent"[:500])
+            finish_send(conn, row, "failed", f"Something went wrong before sending: {exc}. Nothing was sent"[:500])
             outcome["state"] = "failed"
         results.append(outcome)
     return results
@@ -512,11 +508,9 @@ def run_due_sends(
 
 def _held_by_pause(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
     """Whether the student's pause changed after this send was due, so it was held rather than missed."""
-    found = conn.execute(
-        "SELECT updated_at FROM user_settings WHERE user_id=? AND key='automation_paused'", (row["user_id"],),
-    ).fetchone()
+    paused_at = setting_updated_at(conn, row["user_id"], "automation_paused")
     try:
-        return bool(found) and datetime.fromisoformat(found[0]) > datetime.fromisoformat(row["send_at"])
+        return paused_at is not None and datetime.fromisoformat(paused_at) > datetime.fromisoformat(row["send_at"])
     except (TypeError, ValueError):
         return False
 
@@ -539,14 +533,14 @@ def _to_next_morning_in(conn: sqlite3.Connection, row: sqlite3.Row, now: datetim
     target = get_target(conn, row["target_id"], user_id=row["user_id"])
     zone, basis = recipient_zone(conn, target, user_id=row["user_id"])
     send_at = next_morning(now, zone, f"{row['target_id']}:{row['kind']}")
-    label = _label(send_at, zone, basis)
+    label = send_time_label(send_at, zone, basis)
     moved = conn.execute(
         f"UPDATE outreach_scheduled_sends SET state='scheduled', send_at=?, label=?, error=?, updated_at=? "
         f"WHERE target_id=? AND kind=? AND state IN ({', '.join('?' for _ in states)})",
         (send_at.isoformat(timespec="seconds"), label, reason, utc_now(), row["target_id"], row["kind"], *states),
     ).rowcount
     if moved:
-        _log(conn, row["target_id"], row["user_id"], "send_moved", detail=f"{reason}; now goes out {label}")
+        log_event(conn, row["target_id"], row["user_id"], "send_moved", detail=f"{reason}; now goes out {label}")
         if row["kind"] == THANK_YOU_KIND:
             conn.execute(
                 "UPDATE outreach_thank_yous SET send_at=?, label=?, updated_at=? WHERE target_id=? AND user_id=? AND state='scheduled'",
@@ -661,24 +655,24 @@ def _send_one(
             client_factory=client_factory,
         )
     except DraftChangedError:
-        _finish(conn, row, "cancelled", "The draft changed after you scheduled it. Approve it and schedule it again")
+        finish_send(conn, row, "cancelled", "The draft changed after you scheduled it. Approve it and schedule it again")
         return "cancelled"
     except (SendNeedsCheckError, SendConflictError, SendUnconfirmedError, GmailAuthError) as exc:
-        _finish(conn, row, "failed", str(exc))
+        finish_send(conn, row, "failed", str(exc))
         return "failed"
     except ValueError as exc:
         target = get_target(conn, row["target_id"], user_id=row["user_id"])
         # Sent or answered some other way meanwhile: nothing is wrong, there is just nothing to send.
         moved_on = row["kind"] == "initial" and (target["sent_at"] or target["status"] not in UNSENT_STATUSES)
-        _finish(conn, row, "cancelled" if moved_on else "failed", str(exc))
+        finish_send(conn, row, "cancelled" if moved_on else "failed", str(exc))
         return "cancelled" if moved_on else "failed"
     except httpx.HTTPError:
         # Never reached Gmail (a claim settled as nothing sent), so it is safe to try again shortly.
-        return _hold_for_retry(conn, row, now, "Could not reach Gmail")
+        return hold_for_retry(conn, row, now, "Could not reach Gmail")
     except Exception as exc:  # noqa: BLE001 - Gmail may have acted, so the student looks before anything else
-        _finish(conn, row, "failed", f"Sending stopped with an error ({exc}). Check your Gmail Sent folder before sending it again"[:500])
+        finish_send(conn, row, "failed", f"Sending stopped with an error ({exc}). Check your Gmail Sent folder before sending it again"[:500])
         return "failed"
-    _finish(conn, row, "sent")
+    finish_send(conn, row, "sent")
     return "sent"
 
 
@@ -692,21 +686,21 @@ def _send_thank_you(conn: sqlite3.Connection, row: sqlite3.Row, *, client_factor
             automatic=True,
         )
     except (ThankYouChanged, OutreachNotFoundError) as exc:
-        _finish(conn, row, "cancelled", str(exc) or "The company is no longer in your outreach list")
+        finish_send(conn, row, "cancelled", str(exc) or "The company is no longer in your outreach list")
         return "cancelled"
     except (SendNeedsCheckError, SendConflictError, SendUnconfirmedError, GmailAuthError) as exc:
-        _finish(conn, row, "failed", str(exc))
+        finish_send(conn, row, "failed", str(exc))
         return "failed"
     except ValueError as exc:
-        _finish(conn, row, "failed", str(exc))
+        finish_send(conn, row, "failed", str(exc))
         return "failed"
     except httpx.HTTPError:
         # Never reached Gmail (a claim settled as nothing sent), so it is safe to try again shortly.
-        return _hold_for_retry(conn, row, now, "Could not reach Gmail")
+        return hold_for_retry(conn, row, now, "Could not reach Gmail")
     except Exception as exc:  # noqa: BLE001 - Gmail may have acted, so the student looks before anything else
-        _finish(conn, row, "failed", f"Sending stopped with an error ({exc}). Check your Gmail Sent folder before sending it again"[:500])
+        finish_send(conn, row, "failed", f"Sending stopped with an error ({exc}). Check your Gmail Sent folder before sending it again"[:500])
         return "failed"
-    _finish(conn, row, "sent")
+    finish_send(conn, row, "sent")
     return "sent"
 
 
@@ -718,7 +712,7 @@ def _back_in_line(conn: sqlite3.Connection, row: sqlite3.Row) -> None:
         back_in_line(conn, row["target_id"], row["user_id"])
 
 
-def _wait_for_gmail(conn: sqlite3.Connection, row: sqlite3.Row, send_at: datetime) -> str:
+def wait_for_gmail(conn: sqlite3.Connection, row: sqlite3.Row, send_at: datetime) -> str:
     """Put a send back in line for when Gmail's hold on this student's reads ends, without counting a try.
 
     Gmail asked the app to slow down, perhaps after another thread's read (the
@@ -735,11 +729,11 @@ def _wait_for_gmail(conn: sqlite3.Connection, row: sqlite3.Row, send_at: datetim
     return "retrying"
 
 
-def _hold_for_retry(conn: sqlite3.Connection, row: sqlite3.Row, now: datetime, reason: str) -> str:
+def hold_for_retry(conn: sqlite3.Connection, row: sqlite3.Row, now: datetime, reason: str) -> str:
     """Put a send the worker holds back in line for a little later, or give up after MAX_ATTEMPTS."""
     attempts = row["attempts"] + 1
     if attempts >= MAX_ATTEMPTS:
-        _finish(conn, row, "failed", f"{reason} after {attempts} tries. Nothing was sent")
+        finish_send(conn, row, "failed", f"{reason} after {attempts} tries. Nothing was sent")
         return "failed"
     with conn:
         conn.execute(

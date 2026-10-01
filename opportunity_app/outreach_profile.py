@@ -39,10 +39,12 @@ from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
 
-from .outreach import LOCATION_BASES, US_STATES, _log, company_key, get_target, local_today, website_domain
-from .outreach_contacts import USER_AGENT, SafeFetcher, _page_priority, _PageParser, _same_site, crawl_site, site_robots
+from .contact_names import website_domain
+from .outreach import LOCATION_BASES, US_STATES, log_event, company_key, get_target, local_today
+from .outreach_contacts import page_priority, PageParser, crawl_site
+from .web_fetch import USER_AGENT, SafeFetcher, same_site, site_robots
 from .outreach_render import PlaywrightRenderer
-from .schema import utc_now
+from .timestamps import utc_now
 
 SEC_USER_AGENT_ENV = "PIPELINE_SEC_USER_AGENT"
 EDGAR_SEARCH = "https://efts.sec.gov/LATEST/search-index"
@@ -124,7 +126,7 @@ class SecUnavailableError(RuntimeError):
 # Locations stated on the company's own site
 
 
-def _state_code(text: str) -> str:
+def state_code(text: str) -> str:
     value = " ".join(str(text or "").split()).strip(" .")
     if value.upper() in US_STATES:
         return value.upper()
@@ -154,7 +156,7 @@ def format_location(city: str, region: str = "", country: str = "", *, from_pros
     city = _city(city, from_prose=from_prose)
     if not city:
         return ""
-    state = _state_code(region)
+    state = state_code(region)
     country = " ".join(str(country or "").split())
     if state and country.casefold() in {"", "us", "usa", "united states", "united states of america"}:
         return f"{city}, {state}"
@@ -169,7 +171,7 @@ def same_place(first: str, second: str) -> bool:
     """Whether two location strings name the same city (and state, when both give one)."""
     def split(text: str) -> tuple[str, str]:
         head, _, rest = str(text or "").partition(",")
-        return " ".join(head.casefold().split()), _state_code(rest.split(",")[0]) if rest else ""
+        return " ".join(head.casefold().split()), state_code(rest.split(",")[0]) if rest else ""
 
     (city_a, state_a), (city_b, state_b) = split(first), split(second)
     return bool(city_a) and city_a == city_b and (not state_a or not state_b or state_a == state_b)
@@ -320,12 +322,12 @@ def apply_location(
             if cursor.rowcount == 0:
                 continue
             if outcome == "confirmed":
-                _log(conn, target_id, user_id, "location_confirmed",
+                log_event(conn, target_id, user_id, "location_confirmed",
                      detail=f"{BASIS_LABELS[basis].capitalize()} agrees: {location} ({source_url})")
             elif outcome == "recorded":
                 replaced = f"; replaced {current} from {BASIS_LABELS.get(current_basis, 'an unknown source')}" if current and not same else ""
                 how = "the only place the company's site names" if inferred else BASIS_LABELS[basis]
-                _log(conn, target_id, user_id, "location_recorded", detail=f"{location} from {how} ({source_url}){replaced}")
+                log_event(conn, target_id, user_id, "location_recorded", detail=f"{location} from {how} ({source_url}){replaced}")
         return outcome
     # Another writer keeps winning. Dropping this result is safe; overwriting
     # whatever landed on a stale decision is not.
@@ -344,7 +346,7 @@ def record_site_location(conn: sqlite3.Connection, target_id: str, *, user_id: s
     if not found["location"]:
         if found.get("ambiguous"):
             with conn:
-                _log(conn, target_id, user_id, "location_ambiguous",
+                log_event(conn, target_id, user_id, "location_ambiguous",
                      detail="The company's site names several places: " + "; ".join(found["ambiguous"]))
         return {**found, **size, "outcome": "ambiguous" if found.get("ambiguous") else "none"}
     outcome = apply_location(
@@ -383,16 +385,16 @@ def rendered_pages(
             continue
         seen.add(key)
         rendered = renderer.render(url)
-        if rendered is None or not _same_site(rendered[0], domain):
+        if rendered is None or not same_site(rendered[0], domain):
             continue
-        parser = _PageParser()
+        parser = PageParser()
         parser.feed(rendered[1])
         parser.close()
         pages.append({"url": rendered[0], "parser": parser, "raw": rendered[1]})
         for href, text in parser.links:
             link = urljoin(rendered[0], href)
-            rank = _page_priority(link, text, keywords)
-            if rank is not None and link.startswith(("http://", "https://")) and _same_site(link, domain):
+            rank = page_priority(link, text, keywords)
+            if rank is not None and link.startswith(("http://", "https://")) and same_site(link, domain):
                 queue.append((rank, link))
     return pages
 
@@ -575,7 +577,7 @@ def record_form_d(conn: sqlite3.Connection, target_id: str, *, user_id: str, for
             (json.dumps(result, ensure_ascii=False), utc_now(), target_id, user_id),
         )
         if result["status"] in {"found", "mismatch", "ambiguous"} and (target.get("sec_form_d") or {}).get("url") != result.get("url"):
-            _log(conn, target_id, user_id, "sec_form_d", detail=_form_d_summary(result))
+            log_event(conn, target_id, user_id, "sec_form_d", detail=_form_d_summary(result))
     return {"status": result["status"], "outcome": outcome, "location": result.get("location", ""), "url": result.get("url", "")}
 
 

@@ -13,14 +13,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from opportunity_app import actions, apply_preflight, apply_runs, apply_sensitive, automation, preparation
+from opportunity_app import SERVER_INSTANCE, actions, apply_preflight, apply_runs, apply_sensitive, automation, preparation
 from opportunity_app.apply_checks import question_key
 from opportunity_app.apply_policy import SchemaField, Sources, build_plan
-from opportunity_app.apply_runs import company_key
+from pipeline_core.identity import employer_key
 from opportunity_app.apply_sensitive import StoreRefused, add_entry
-from opportunity_app.outreach_gmail import SERVER_INSTANCE
 from opportunity_app.profile import update_profile
-from opportunity_app.schema import connect_product, utc_now
+from opportunity_app.schema import connect_product
+from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 
@@ -88,7 +88,7 @@ class ApplyCase(unittest.TestCase):
             self.opportunity(opportunity_id)
         return apply_runs.claim(
             self.conn, user_id=USER, opportunity_id=opportunity_id, mode=mode, ats="greenhouse", board_token=board,
-            job_ref=job or f"{board}/{opportunity_id}", company=company_key(self.companies[opportunity_id]), now=now, **kwargs,
+            job_ref=job or f"{board}/{opportunity_id}", company=employer_key(self.companies[opportunity_id]), now=now, **kwargs,
         )
 
     def raw_claim(self, *, state="submitted", mode="one_click", handed_over_at=None, after_click=None, company=BLUEFIN, board="bluefin",
@@ -114,7 +114,7 @@ class ApplyCase(unittest.TestCase):
                 """,
                 (token, f"app-{opportunity_id}", USER, opportunity_id, instance, mode, state,
                  1 if handed_over_at is not None and after_click is None else (after_click or 0), board,
-                 job_ref or f"{board}/{opportunity_id}", company_key(company), stage_policy, handed_over_at, heartbeat_at or stamp,
+                 job_ref or f"{board}/{opportunity_id}", employer_key(company), stage_policy, handed_over_at, heartbeat_at or stamp,
                  verification, stage_recorded, submitted_at, note, confirmed_at, json.dumps(detail or {}), stamp, stamp),
             )
         return token
@@ -145,7 +145,7 @@ class ApplyCase(unittest.TestCase):
     def make_run(self, kind="rehearsal", *, company=BLUEFIN, opportunity_id="op-run", started=None, **kwargs):
         return apply_runs.create_run(
             self.conn, user_id=USER, opportunity_id=opportunity_id, kind=kind, started_by="student", ats="greenhouse", board_token="bluefin",
-            page_url="https://boards.example.test/bluefin/1", company=company_key(company), deadline_seconds=300,
+            page_url="https://boards.example.test/bluefin/1", company=employer_key(company), deadline_seconds=300,
             now=started or self.at(), **kwargs,
         )
 

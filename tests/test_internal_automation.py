@@ -27,10 +27,11 @@ from opportunity_app.outreach import (
 )
 from opportunity_app.outreach_automation import AutomationWorker
 from opportunity_app.outreach_delivery import record_bounce
-from opportunity_app.outreach_drafting import draft_versions
+from opportunity_app.outreach_versions import draft_versions
 from opportunity_app.refresh import RefreshManager
 from opportunity_app.resumes import ResumeValidationError, confirm_variant, resume_record
-from opportunity_app.schema import connect_product, ensure_product_schema, utc_now
+from opportunity_app.schema import connect_product, ensure_product_schema
+from opportunity_app.timestamps import utc_now
 from opportunity_app.urgent import urgent_queue
 from opportunity_app.user_time import user_timezone
 

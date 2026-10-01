@@ -37,7 +37,7 @@ Gmail call is made for labelling. Turned off (an empty name) or paused with
 connection asks Gmail which account it signed into, so a connection made with
 the wrong Google account is noticed (state "wrong_account", nothing labelled).
 
-``label_replies`` is a step of outreach_inbox.InboxWatcher and never imports it.
+``label_replies`` is a step of inbox_watcher.InboxWatcher and never imports it.
 """
 
 from __future__ import annotations
@@ -57,25 +57,35 @@ from urllib.parse import quote
 import httpx
 
 from . import automation
-from .mail_trust import FREEMAIL, registrable_domain
-from .outreach import UNSENT_STATUSES
-from .outreach_delivery import _DAEMONS, _is_delivery_notice
-from .outreach_drafting import sender_account
-from .outreach_gmail import (
-    DRAFT_EVENT,
+from .database import rollback_quietly
+from .gmail_client import (
     MODIFY_SCOPE,
     PROVIDER,
-    SENT_EVENT,
     SERVER_ERRORS,
-    THANK_YOU_SENT_EVENT,
     ClientFactory,
     GmailAuthError,
     GmailThrottled,
+    connection_state,
+    granted_scopes,
+    is_throttle,
+)
+from .json_values import json_dict
+from .mail_message import MAILER_DAEMONS, header_map
+from .mail_trust import FREEMAIL, registrable_domain
+from .outreach import UNSENT_STATUSES
+from .outreach_config import sender_account
+from .outreach_delivery import is_delivery_notice
+from .outreach_gmail import (
+    DRAFT_EVENT,
+    SENT_EVENT,
+    THANK_YOU_SENT_EVENT,
     _connector,
     _Gmail,
-    _is_throttle,
     backoff_until,
 )
+from .schema import _has_column
+from .settings_store import get_setting, put_setting
+from .timestamps import parse_app_instant, utc_now
 
 LOGGER = logging.getLogger(__name__)
 
@@ -132,7 +142,7 @@ _IDS_LOCK = threading.Lock()
 
 def label_name(conn: sqlite3.Connection, user_id: str) -> str:
     """The name replies are labelled with; '' when the student turned labelling off."""
-    value = automation._setting(conn, user_id, SETTING)
+    value = get_setting(conn, user_id, SETTING)
     return DEFAULT_LABEL if value is None else value
 
 
@@ -168,7 +178,8 @@ def set_label_name(conn: sqlite3.Connection, user_id: str, value: str | None) ->
         if name.upper() in _SYSTEM_NAMES or name.upper().startswith("CATEGORY_"):
             raise ValueError(f"Gmail keeps the name {name} for itself; choose another label name")
     with conn:
-        automation._put_setting(conn, user_id, SETTING, name, utc_stamp())
+        # The shared monotonic clock (the old local stamp had no tie-break); nothing reads this setting's updated_at, so a strictly later stamp is harmless.
+        put_setting(conn, user_id, SETTING, name, utc_now())
         _search_again(conn, user_id, before, name)
     return name
 
@@ -177,10 +188,6 @@ def _search_again(conn: sqlite3.Connection, user_id: str, before: str, name: str
     """Forget which companies' Sent mail was searched when labelling starts under a name other than the last one. Opens no transaction."""
     if name and name != before:
         conn.execute("DELETE FROM outreach_label_searches WHERE user_id=?", (user_id,))
-
-
-def utc_stamp() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 # --- The watcher's step -----------------------------------------------------------------
@@ -196,19 +203,7 @@ class _Stop(Exception):
 
 def _discard(conn: sqlite3.Connection) -> None:
     """Roll back a transaction left open, so no network call is made inside one and none is left behind."""
-    try:
-        if getattr(conn, "in_transaction", False):
-            conn.rollback()
-    except Exception:  # noqa: BLE001
-        LOGGER.warning("Could not roll back after labelling replies", exc_info=True)
-
-
-def _granted(row: sqlite3.Row) -> list[str]:
-    try:
-        granted = json.loads(row["scopes_json"] or "[]")
-    except (TypeError, ValueError):
-        return []
-    return [str(scope) for scope in granted] if isinstance(granted, list) else []
+    rollback_quietly(conn, LOGGER, "labelling replies")
 
 
 def label_replies(
@@ -240,14 +235,13 @@ def label_replies(
 
 def _run(conn: sqlite3.Connection, user_id: str, client_factory: ClientFactory, now: datetime) -> dict[str, Any]:
     row = _connector(conn, user_id)
-    if row is None or row["status"] == "disconnected":
-        return {"state": "not_connected"}
-    if row["status"] != "connected":
-        return {"state": "needs_reconnect"}
+    state = connection_state(row)
+    if state != "connected":
+        return {"state": state}
     if backoff_until(user_id) is not None:
         return {"state": "throttled"}
     known = str(row["account_email"] or "") if "account_email" in row.keys() else ""
-    granted = _granted(row)
+    granted = granted_scopes(row["scopes_json"])
     _discard(conn)
     with ExitStack() as stack:
         gmail: list[_Gmail] = []
@@ -314,7 +308,7 @@ def _record_sent_threads(conn: sqlite3.Connection, user_id: str, now: datetime) 
         "SELECT target_id, detail FROM outreach_events WHERE user_id=? AND event_type IN (?, ?) ORDER BY created_at, id",
         (user_id, SENT_EVENT, THANK_YOU_SENT_EVENT),
     ).fetchall():
-        thread_id = str(_json_dict(row["detail"]).get("thread_id") or "").strip()
+        thread_id = str(json_dict(row["detail"]).get("thread_id") or "").strip()
         if thread_id:
             found.setdefault(thread_id, str(row["target_id"]))
     if not found:
@@ -345,14 +339,6 @@ def _sent_rows(conn: sqlite3.Connection, user_id: str, name: str, limit: int) ->
         "ORDER BY found_at, thread_id LIMIT ?",
         (user_id, name, limit),
     ).fetchall()]
-
-
-def _json_dict(text: Any) -> dict[str, Any]:
-    try:
-        value = json.loads(text or "{}")
-    except (TypeError, ValueError):
-        return {}
-    return value if isinstance(value, dict) else {}
 
 
 def _addresses(*values: Any) -> list[str]:
@@ -433,7 +419,7 @@ def _outreach_marks(conn: sqlite3.Connection, user_id: str, own: set[str]) -> di
         mark = marks.get(str(row["target_id"]))
         if mark is None:
             continue
-        detail = _json_dict(row["detail"])
+        detail = json_dict(row["detail"])
         mark["found"] += [(address, False) for address in _addresses(detail.get("to"))]
         mark["found"] += [(address, True) for address in _addresses(detail.get("cc"))]
     shared = {host for address in own for host in (_host(address), registrable_domain(address) or "") if host}
@@ -537,6 +523,43 @@ def _search_candidates(
     return wanted
 
 
+def label_backlog(conn: sqlite3.Connection, user_id: str, name: str, account: str) -> dict[str, int] | None:
+    """What stands between the reply label and being complete: the three counts ``pipeline_mailbox whoami`` reports.
+
+    ``waiting``: outreach threads not labelled under ``name`` yet. ``unlabelled``: threads the app could not label (Gmail
+    refused them, or, for a reply, its thread's listing left the message out): settled under the name, with no time and the
+    note 'failed'. One whose message or thread Gmail no longer has ('gone') is not counted: no search can find it, so it
+    cannot make label: unreliable. ``unsearched``: companies that have gone out and whose Sent mail the app has not
+    searched yet, so threads sent from Gmail may lack the label. ``account`` is the mailbox, as the app reads it.
+
+    None when the database predates labels: every column and table read here must exist (a half-applied 0043 has some of
+    the columns, and a database before 0044 has no table of sent threads).
+    """
+    columns = ("label_name", "labeled_at", "label_note")
+    if not (
+        all(_has_column(conn, "outreach_inbox_messages", column) for column in columns)
+        and all(_has_column(conn, "outreach_label_threads", column) for column in columns)
+        and _has_column(conn, "outreach_label_searches", "query")
+    ):
+        return None
+    waiting = conn.execute(
+        "SELECT COUNT(*) FROM outreach_inbox_messages WHERE user_id=? AND kind='reply' AND label_name<>?", (user_id, name),
+    ).fetchone()[0] + conn.execute(
+        "SELECT COUNT(*) FROM outreach_label_threads WHERE user_id=? AND label_name<>?", (user_id, name),
+    ).fetchone()[0]
+    unlabelled = conn.execute(
+        "SELECT COUNT(*) FROM outreach_inbox_messages WHERE user_id=? AND kind='reply' AND label_name=? AND labeled_at IS NULL AND label_note='failed'",
+        (user_id, name),
+    ).fetchone()[0] + conn.execute(
+        "SELECT COUNT(*) FROM outreach_label_threads WHERE user_id=? AND label_name=? AND labeled_at IS NULL AND label_note='failed'",
+        (user_id, name),
+    ).fetchone()[0]
+    return {
+        "waiting": waiting, "unlabelled": unlabelled,
+        "unsearched": len(_search_candidates(conn, user_id, 1_000_000, account)),
+    }
+
+
 def _history_query(mark: dict[str, Any] | None) -> str:
     """The Sent search for one company's history, or '' when it has no address or subject to search by."""
     if not mark:
@@ -554,11 +577,12 @@ def _history_query(mark: dict[str, Any] | None) -> str:
 
 
 def _epoch(text: str) -> int | None:
-    try:
-        moment = datetime.fromisoformat(text.strip().replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return int((moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)).timestamp())
+    moment = parse_app_instant(text.strip())
+    return int(moment.timestamp()) if moment else None
+
+
+# What _Labeller.get_json answers for a message or thread Gmail no longer has.
+MISSING = object()
 
 
 class _Labeller:
@@ -587,18 +611,29 @@ class _Labeller:
 
     def _refuse(self, response: httpx.Response) -> None:
         """Stop the pass when Gmail's answer to a label call was a rate limit, a server error or a refused permission."""
-        if _is_throttle(response) or response.status_code in SERVER_ERRORS:
+        if is_throttle(response) or response.status_code in SERVER_ERRORS:
             raise _Stop("throttled")
         if response.status_code == 403:
             raise _Stop("needs_label_permission")
 
-    def _listed(self) -> str:
-        """The id of the student's own label of this name, or ''. An exact name wins over one that differs in case or spacing."""
-        response = self.gmail.request("GET", "/labels")
+    def get_json(self, path: str, params: Any = None, *, missing_ok: bool = False) -> Any:
+        """One Gmail read, answered as JSON. A refused or rate-limited answer stops the pass (_refuse), as does any other that is not a 200.
+
+        ``missing_ok``: a 404 returns MISSING instead, before _refuse looks at it. (_Labeller.thread does not use
+        this: it answers "failed" for a thread Gmail will not give, where this stops the pass.)
+        """
+        response = self.gmail.request("GET", path, **({} if params is None else {"params": params}))
+        if missing_ok and response.status_code == 404:
+            return MISSING
         self._refuse(response)
         if response.status_code != 200:
             raise _Stop("unreachable")
-        mine = [item for item in response.json().get("labels", []) if isinstance(item, dict) and item.get("type") == "user"]
+        return response.json()
+
+    def _listed(self) -> str:
+        """The id of the student's own label of this name, or ''. An exact name wins over one that differs in case or spacing."""
+        listing = self.get_json("/labels")
+        mine = [item for item in listing.get("labels", []) if isinstance(item, dict) and item.get("type") == "user"]
         for match in (lambda text: text == self.name, lambda text: " ".join(text.split()).casefold() == self.name.casefold()):
             for item in mine:
                 if match(str(item.get("name", ""))) and item.get("id"):
@@ -655,7 +690,7 @@ class _Labeller:
         targets = [
             str(item["id"]) for item in messages
             if "DRAFT" not in (item.get("labelIds") or []) and label_id not in (item.get("labelIds") or [])
-            and not _is_delivery_notice(item)
+            and not is_delivery_notice(item)
         ]
         for start in range(0, len(targets), BATCH_LIMIT):
             if self._add(targets[start:start + BATCH_LIMIT], label_id) != "labelled":
@@ -881,19 +916,14 @@ def _search_history(
 
 def _thread_of(labeller: _Labeller, gmail_id: str) -> str:
     """The thread a captured message is in, read from Gmail; '' when Gmail no longer has the message."""
-    response = labeller.gmail.request("GET", f"/messages/{quote(gmail_id, safe='')}", params={"format": "minimal"})
-    if response.status_code == 404:
-        return ""
-    labeller._refuse(response)
-    if response.status_code != 200:
-        raise _Stop("unreachable")
-    return str(response.json().get("threadId") or "")
+    message = labeller.get_json(f"/messages/{quote(gmail_id, safe='')}", {"format": "minimal"}, missing_ok=True)
+    return "" if message is MISSING else str(message.get("threadId") or "")
 
 
 def _kept(conn: sqlite3.Connection, user_id: str, name: str) -> dict[str, Any] | None:
     """The sweep's stored start for this label, or None when there is none for it (missing, unreadable, another label's)."""
     try:
-        kept = json.loads(automation._setting(conn, user_id, SWEEP_SETTING) or "{}")
+        kept = json.loads(get_setting(conn, user_id, SWEEP_SETTING) or "{}")
     except ValueError:
         return None
     if not isinstance(kept, dict) or kept.get("label") != name or not isinstance(kept.get("after"), (int, float)):
@@ -976,7 +1006,7 @@ def _sweep_labelled(
     # A delivery notice is never labelled, so left in the listing it would be read again every pass and could hold the sweep back.
     query = (
         f"after:{int(kept['after']) - SWEEP_OVERLAP_SECONDS} -in:chats -in:drafts "
-        f"-from:({' OR '.join(sorted(_DAEMONS))}) -label:{search_form(name)}"
+        f"-from:({' OR '.join(sorted(MAILER_DAEMONS))}) -label:{search_form(name)}"
     )
     for _page in range(SWEEP_PAGES):
         params: dict[str, Any] = {"q": query, "maxResults": 100}
@@ -1050,18 +1080,12 @@ def _sweep_sent(
 
 def _outreach_target(labeller: _Labeller, gmail_id: str, addresses: dict[str, str], subjects: dict[str, str]) -> str:
     """The company a sent message is outreach to, going by who it went to and its subject; '' when it is not outreach."""
-    response = labeller.gmail.request("GET", f"/messages/{quote(gmail_id, safe='')}", params={
+    message = labeller.get_json(f"/messages/{quote(gmail_id, safe='')}", {
         "format": "metadata", "metadataHeaders": ["To", "Cc", "Bcc", "Subject"],
-    })
-    if response.status_code == 404:
+    }, missing_ok=True)
+    if message is MISSING:
         return ""
-    labeller._refuse(response)
-    if response.status_code != 200:
-        raise _Stop("unreachable")
-    headers = {
-        str(item.get("name", "")).casefold(): str(item.get("value", ""))
-        for item in (response.json().get("payload") or {}).get("headers") or [] if isinstance(item, dict)
-    }
+    headers = header_map(message, guarded=True)
     for address in _addresses(headers.get("to"), headers.get("cc"), headers.get("bcc")):
         if address in addresses:
             return addresses[address]
@@ -1076,4 +1100,4 @@ def _keep_watermark(
     if recheck is not None:
         value["recheck"] = recheck
     with conn:
-        automation._put_setting(conn, user_id, SWEEP_SETTING, json.dumps(value), now.isoformat(timespec="microseconds"))
+        put_setting(conn, user_id, SWEEP_SETTING, json.dumps(value), now.isoformat(timespec="microseconds"))

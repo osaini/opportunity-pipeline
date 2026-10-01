@@ -15,7 +15,8 @@ from fastapi.testclient import TestClient
 from opportunity_app import STATIC_DIR, agent_providers
 from opportunity_app.api import DocumentCreateRequest, create_app
 from opportunity_app.outreach import create_target
-from opportunity_app.outreach_drafting import generate_draft, resolve_provider
+from opportunity_app.outreach_config import resolve_provider
+from opportunity_app.outreach_drafting import generate_draft
 from opportunity_app.outreach_review import review_choice, review_runner
 from opportunity_app.outreach_settings import OutreachSettings
 from opportunity_app.schema import connect_product

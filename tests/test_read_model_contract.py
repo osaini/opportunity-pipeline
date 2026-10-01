@@ -21,7 +21,8 @@ from tempfile import TemporaryDirectory
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from helpers_platform import migrated_empty_db
-from opportunity_app.schema import connect_product, sort_key
+from opportunity_app.schema import connect_product
+from pipeline_core.identity import sort_key
 from pipeline_core import OpportunityFilters, OpportunityRepository
 
 OWNER = "local-user"

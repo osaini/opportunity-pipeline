@@ -20,11 +20,16 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from pipeline_core.identity import sort_key
+from pipeline_core.read_model import RULESET_VERSION
+
 from . import ROOT
+from .actions import log_application_event
 from .company_tags import regenerate_company_tags
 from .opportunity_metadata import extract_opportunity_metadata
 from .resumes import ResumeValidationError, detect_media_type, extract_pdf, scan_resume_file
-from .schema import sort_key, RULESET_VERSION, utc_now
+from .storage_paths import confined_path
+from .timestamps import utc_now
 
 
 DEFAULT_CAPTURE_STORAGE = ROOT / "data" / "captures"
@@ -42,9 +47,8 @@ class CaptureNotFoundError(LookupError):
 
 
 def _safe_path(root: Path, name: str) -> Path:
-    resolved_root = root.expanduser().resolve()
-    candidate = (resolved_root / name).resolve()
-    if candidate.parent != resolved_root:
+    candidate = confined_path(root, name)
+    if candidate is None:
         raise CaptureValidationError("Invalid capture storage path")
     return candidate
 
@@ -346,13 +350,9 @@ def confirm_capture(
             "SELECT id FROM applications WHERE opportunity_id=? AND user_id=?",
             (opportunity_id, user_id),
         ).fetchone()[0]
-        conn.execute(
-            """
-            INSERT INTO application_events(
-                application_id, event_type, from_stage, to_stage, detail_json, created_at
-            ) VALUES(?, 'capture_confirmed', NULL, 'applying', ?, ?)
-            """,
-            (actual_application, json.dumps({"capture_id": capture_id, "source_type": capture["source_type"]}), timestamp),
+        log_application_event(
+            conn, actual_application, "capture_confirmed",
+            {"capture_id": capture_id, "source_type": capture["source_type"]}, timestamp, to_stage="applying",
         )
         conn.execute(
             """

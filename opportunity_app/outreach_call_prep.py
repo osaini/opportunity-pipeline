@@ -87,7 +87,6 @@ import json
 import logging
 import re
 import sqlite3
-import threading
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -97,19 +96,22 @@ from uuid import uuid4
 
 from . import automation
 from . import outreach_research as research
+from .background import PollingWorker
 from .outreach_call_questions import standing_questions
 from .outreach_interviewer import (
-    TOPICS as INTERVIEWER_TOPICS, _who_key, find_interviewer, interviewer_due, interviewer_of,
+    TOPICS as INTERVIEWER_TOPICS, who_key, find_interviewer, interviewer_due, interviewer_of,
 )
 from .agent_providers import CliAgentProvider, complete_text
 from .operations import JobDeferred, enqueue_job, recover_stale_jobs, run_next_job
-from .outreach import CALL_PREP_STATUSES, OutreachNotFoundError, _log, get_target, local_today
+from .outreach import CALL_PREP_STATUSES, OutreachNotFoundError, log_event, get_target, local_today
 from .outreach_drafting import (
-    DRAFT_FACT_FIELDS, IDENTIFIER_KEYS, INFERENCE_BASIS, RESEARCH_FIELDS, ProviderFactory, _ADDRESS, _entry_name, _field_basis,
-    outreach_proof, resolve_provider,
+    DRAFT_FACT_FIELDS, IDENTIFIER_KEYS, INFERENCE_BASIS, RESEARCH_FIELDS, ProviderFactory, ADDRESS_PATTERN, entry_name, field_basis,
+    outreach_proof,
 )
+from .outreach_config import resolve_provider
 from .preparation import confirmed_facts
-from .schema import connect_product, utc_now
+from .schema import connect_product
+from .timestamps import utc_now
 
 LOGGER = logging.getLogger(__name__)
 JOB_TYPE = "outreach_call_prep"
@@ -293,7 +295,7 @@ def current_interviewer(conn: sqlite3.Connection, target: dict[str, Any], user_i
     other one is printed or sent to a model.
     """
     who = find_interviewer(conn, target, user_id)
-    key = _who_key(who["name"], target.get("interviewer_linkedin") or "")
+    key = who_key(who["name"], target.get("interviewer_linkedin") or "")
     record = interviewer_of(target)
     if record.get("key") == key:
         return target
@@ -380,7 +382,7 @@ def _id_list(value: Any) -> list[str]:
 
 def _numbers_beyond(text: str, basis: str) -> list[str]:
     """Numbers in ``text`` that ``basis`` does not carry. Whether its names and claims stay within is the second read's question."""
-    return sorted(research._numbers(research._tokens(text)) - research._numbers(research._tokens(basis)))
+    return sorted(research.number_tokens(research.word_tokens(text)) - research.number_tokens(research.word_tokens(basis)))
 
 
 def _said_by_id(inputs: dict[str, Any]) -> dict[str, str]:
@@ -524,7 +526,7 @@ def _validate_talking_points(entries: list[Any], inputs: dict[str, Any]) -> tupl
         if not isinstance(entry, dict):
             continue
         text = _text(entry.get("text"), MAX_BULLET_CHARS)
-        basis = _field_basis(str(entry.get("basis") or "").strip())
+        basis = field_basis(str(entry.get("basis") or "").strip())
         if not text:
             continue
         if basis == INFERENCE_BASIS:
@@ -545,7 +547,7 @@ def _validate_talking_points(entries: list[Any], inputs: dict[str, Any]) -> tupl
 def _strings(value: Any):
     """Every piece of text in the inputs a number may come from."""
     if isinstance(value, str):
-        yield _ADDRESS.sub(" ", value)
+        yield ADDRESS_PATTERN.sub(" ", value)
     elif isinstance(value, dict):
         for key, item in value.items():
             if key not in _NOT_A_SOURCE:
@@ -564,8 +566,8 @@ def _unsupported_numbers(text: str, inputs: dict[str, Any]) -> list[str]:
     """
     allowed: set[str] = set()
     for piece in _strings(inputs):
-        allowed |= research._numbers(research._tokens(piece))
-    found = [token for token in research._tokens(_ADDRESS.sub(" ", text)) if token[0].isdigit() and token not in allowed]
+        allowed |= research.number_tokens(research.word_tokens(piece))
+    found = [token for token in research.word_tokens(ADDRESS_PATTERN.sub(" ", text)) if token[0].isdigit() and token not in allowed]
     return list(dict.fromkeys(found))
 
 
@@ -642,7 +644,7 @@ def second_read_lines(sections: dict[str, Any], inputs: dict[str, Any], judge: C
             items.append({"id": f"t{index}", "line": f"lands on: {entry['lands_on']}", "cites": cited(entry["from"])})
     for index, entry in enumerate(sections["reading"]):
         items.append({"id": f"r{index}", "line": entry["text"], "cites": cited(entry["facts"])})
-    verdicts = research._second_read(items, judge, LINE_CHECK_INSTRUCTIONS)
+    verdicts = research.second_read(items, judge, LINE_CHECK_INSTRUCTIONS)
     yes = {key for key, (supported, _why) in verdicts.items() if supported}
     return {
         "questions": [entry for index, entry in enumerate(sections["questions"]) if f"q{index}" in yes],
@@ -660,7 +662,7 @@ def template_call_prep(inputs: dict[str, Any]) -> dict[str, Any]:
     points = []
     for field in ("experience", "projects"):
         for entry in inputs["student"].get(field, []):
-            if not isinstance(entry, dict) or _entry_name(entry) not in inputs["lead_with"]:
+            if not isinstance(entry, dict) or entry_name(entry) not in inputs["lead_with"]:
                 continue
             points += [{"text": _clean(line), "basis": f"profile:{field}", "lands_on": "", "from": []} for line in entry.get("highlights", [])]
     company = inputs["company_research"].get("company", "the company")
@@ -943,7 +945,7 @@ def generate_call_prep(
             return get_target(conn, target_id, user_id=user_id)
         if current and current != text:
             # Kept whole so hand-written notes survive a regeneration.
-            _log(conn, target_id, user_id, "call_prep_replaced", detail=current)
+            log_event(conn, target_id, user_id, "call_prep_replaced", detail=current)
         conn.execute(
             """
             UPDATE outreach_targets
@@ -952,7 +954,7 @@ def generate_call_prep(
             """,
             (text, json.dumps(claims, ensure_ascii=False), generated_by, timestamp, timestamp, target_id, user_id),
         )
-        _log(conn, target_id, user_id, "call_prep_generated", detail=generated_by)
+        log_event(conn, target_id, user_id, "call_prep_generated", detail=generated_by)
     return get_target(conn, target_id, user_id=user_id)
 
 
@@ -1000,7 +1002,7 @@ def queue_call_prep(
                     "UPDATE job_queue SET payload_json=?, next_attempt_at=?, updated_at=? WHERE id=? AND state IN ('queued', 'retry')",
                     (json.dumps(payload), utc_now(), utc_now(), target["call_prep_job_id"]),
                 ).rowcount:
-                    _log(conn, target_id, user_id, "call_prep_queued", detail=reason)
+                    log_event(conn, target_id, user_id, "call_prep_queued", detail=reason)
         return get_target(conn, target_id, user_id=user_id)
     queued = enqueue_job(
         conn, JOB_TYPE, payload, f"call-prep:{target_id}:{uuid4().hex}", max_attempts=MAX_ATTEMPTS,
@@ -1010,7 +1012,7 @@ def queue_call_prep(
             "UPDATE outreach_targets SET call_prep_job_id=?, updated_at=? WHERE id=? AND user_id=?",
             (queued["id"], utc_now(), target_id, user_id),
         )
-        _log(conn, target_id, user_id, "call_prep_queued", detail=reason)
+        log_event(conn, target_id, user_id, "call_prep_queued", detail=reason)
     return get_target(conn, target_id, user_id=user_id)
 
 
@@ -1030,7 +1032,7 @@ def auto_queue_call_prep(conn: sqlite3.Connection, target_id: str, *, user_id: s
     return True
 
 
-class CallPrepWorker:
+class CallPrepWorker(PollingWorker):
     """Runs queued call prep and company research jobs on one background thread inside the web app.
 
     The jobs live in job_queue, so nothing is lost when the process stops. On
@@ -1045,6 +1047,10 @@ class CallPrepWorker:
     ``interviewer`` finds who the call is with and reads their LinkedIn
     (outreach_interviewer.py), when interviewer_due says so.
     """
+
+    thread_name = "call-prep-worker"
+    failure_message = "Call prep worker pass failed"
+    logger = LOGGER
 
     def __init__(
         self,
@@ -1061,10 +1067,7 @@ class CallPrepWorker:
         self._provider = provider
         self._researcher = researcher
         self._interviewer = interviewer
-        self._poll_seconds = poll_seconds
-        self._wake = threading.Event()
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
+        super().__init__(poll_seconds)
 
     def recover_interrupted(self) -> int:
         with closing(connect_product(self.platform_target)) as conn:
@@ -1209,28 +1212,8 @@ class CallPrepWorker:
                     LOGGER.warning("%s job %s: %s (%s)", record.get("job_type", "Call prep"), record["id"], record["state"], record["last_error"])
         return ran
 
-    def wake(self) -> None:
-        self._wake.set()
-
-    def start(self) -> None:
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop.clear()
+    def before_start(self) -> None:
         self.recover_interrupted()
-        self._thread = threading.Thread(target=self._loop, name="call-prep-worker", daemon=True)
-        self._thread.start()
 
-    def stop(self) -> None:
-        self._stop.set()
-        self._wake.set()
-        if self._thread:
-            self._thread.join(timeout=5)
-
-    def _loop(self) -> None:
-        while not self._stop.is_set():
-            try:
-                self.run_pending()
-            except Exception:  # the thread must outlive any one bad pass
-                LOGGER.exception("Call prep worker pass failed")
-            self._wake.wait(self._poll_seconds)
-            self._wake.clear()
+    def _run_pass(self) -> None:
+        self.run_pending()

@@ -19,7 +19,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .connections import ensure_preferences
-from .schema import utc_now
+from .timestamps import utc_now
 from .user_time import UserTimezone, user_timezone
 
 DIGEST_FREQUENCIES = {"immediate", "daily", "weekly", "off"}

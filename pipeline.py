@@ -30,7 +30,10 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable
 
-from pipeline_core.read_model import RANKED_VIEW_PER_COMPANY, company_key
+from pipeline_core.env import iter_env_pairs
+from pipeline_core.identity import identity_tokens, normalized, sort_key
+from pipeline_core.read_model import RANKED_VIEW_PER_COMPANY
+from pipeline_core.regions import is_uninformative_location, match_region, region_label
 
 
 ROOT = Path(__file__).resolve().parent
@@ -165,19 +168,7 @@ def load_env_file(path: Path = ENV_PATH) -> None:
     then looks like a broken source. A real environment variable always wins,
     so `USAJOBS_API_KEY=... python3 pipeline.py fetch` still overrides the file.
     """
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, _, value = stripped.partition("=")
-        key = key.strip()
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
+    for key, value in iter_env_pairs(path):
         if key and key not in os.environ:
             os.environ[key] = value
 
@@ -202,7 +193,7 @@ def load_profile(path: Path | None = None) -> dict[str, Any]:
 
 
 def _source_merge_key(source: dict[str, Any]) -> str:
-    return f'{source.get("kind", "")}:{_source_identity(source)}'.lower()
+    return f'{source.get("kind", "")}:{source_identity(source)}'.lower()
 
 
 def merge_sources(base: dict[str, Any], local: dict[str, Any]) -> dict[str, Any]:
@@ -274,9 +265,11 @@ def load_sources(base_path: Path | None = None, local_path: Path | None = None) 
     return merge_sources(base, load_json(local_path))
 
 
-def connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+def connect(db_path: Path | None = None) -> sqlite3.Connection:
+    """Open (and create) a pipeline database: `db_path`, or the module's DB_PATH read now."""
+    path = DB_PATH if db_path is None else db_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(
@@ -703,10 +696,6 @@ def canonical_url(url: str) -> str:
     return urllib.parse.urlunsplit(
         (parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/"), urllib.parse.urlencode(allowed), "")
     )
-
-
-def normalized(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
 
 
 def fingerprint(company: str, title: str, location: str) -> str:
@@ -2183,7 +2172,7 @@ def purge_expired(
     return tally
 
 
-def _source_identity(source: dict[str, Any]) -> str:
+def source_identity(source: dict[str, Any]) -> str:
     if source["kind"] == "workday":
         return f'{source["tenant"]}:{source["site"]}'
     return (
@@ -2198,6 +2187,16 @@ def _source_identity(source: dict[str, Any]) -> str:
         or source.get("keyword")
         or "default"
     )
+
+
+def source_key(source: dict[str, Any]) -> str:
+    """The key a source's fetch runs and jobs are stored under: ``kind:identity``.
+
+    Raises KeyError for a source with no ``kind``; `system_status.source_health`
+    relies on that to skip a malformed entry. `_source_merge_key` is the same string
+    lowercased, used only to layer sources.local.json over sources.json.
+    """
+    return f'{source["kind"]}:{source_identity(source)}'
 
 
 # ---------------------------------------------------------------------------
@@ -2218,36 +2217,6 @@ def _source_identity(source: dict[str, Any]) -> str:
 # Safe charset for a slug interpolated into an ATS URL: a malformed or hostile
 # company name can never inject anything unexpected into the request.
 DISCOVERY_SLUG_RE = re.compile(r"^[A-Za-z0-9._-]+$")
-
-# Dropped before comparing a queried name against a board's own name, so
-# "Firefly Aerospace Inc." and "Firefly Aerospace" are the same employer.
-_CORPORATE_SUFFIXES = {
-    "inc",
-    "incorporated",
-    "llc",
-    "ltd",
-    "limited",
-    "corp",
-    "corporation",
-    "co",
-    "company",
-    "group",
-    "holdings",
-    "the",
-}
-
-
-def identity_tokens(name: str) -> frozenset[str]:
-    """The words that identify an employer, without corporate suffixes: "Acme Robotics Inc." -> {acme, robotics}.
-
-    Public because the web app's application-email matching compares company
-    names by the same rule the board identity check uses.
-    """
-    return frozenset(normalized(name).split()) - _CORPORATE_SUFFIXES
-
-
-# The old private name, kept so nothing that imported it breaks.
-_identity_tokens = identity_tokens
 
 
 def slug_candidates(name: str) -> list[str]:
@@ -2374,7 +2343,7 @@ def discover_ats(
                 board_name = found["board_name"]
                 if board_name is None:
                     identity = "unverified"
-                elif _identity_tokens(board_name) == _identity_tokens(company):
+                elif identity_tokens(board_name) == identity_tokens(company):
                     identity = "confirmed"
                 else:
                     identity = "review"
@@ -2403,7 +2372,7 @@ def discover_ats(
     return results
 
 
-def _write_discovered_sources(entries: list[dict[str, Any]], path: Path | None = None) -> Path:
+def write_discovered_sources(entries: list[dict[str, Any]], path: Path | None = None) -> Path:
     """Append entries to a sources file, preserving the rest of it.
 
     The default target is the student's own config/sources.local.json, so a
@@ -2499,7 +2468,7 @@ def report_discovery(
     if not writable:
         print("\nNothing to write.")
         return results
-    written = _write_discovered_sources(
+    written = write_discovered_sources(
         [result["entry"] for result in writable], SOURCES_PATH if shared else None
     )
     print(f"\nAppended {len(writable)} source(s) to {display_path(written)}.")
@@ -2577,9 +2546,9 @@ def fetch_all(
 
     queue = []
     for source in enabled:
-        source_key = f'{source["kind"]}:{_source_identity(source)}'
-        if source_key not in done:
-            queue.append((source, source_key))
+        key = source_key(source)
+        if key not in done:
+            queue.append((source, key))
     # One observation timestamp for the whole cycle. See upsert_jobs: reading
     # the clock per source would make undated postings rank by completion
     # order, which under concurrency is arbitrary.
@@ -2621,7 +2590,7 @@ def fetch_all(
                 # limit does not block sources behind it that could run now.
                 index = 0
                 while index < len(queue) and len(in_flight) < max_workers:
-                    source, source_key = queue[index]
+                    source, run_key = queue[index]
                     host = _source_host(source)
                     if host_active.get(host, 0) >= max_per_host:
                         index += 1
@@ -2630,7 +2599,7 @@ def fetch_all(
                     try:
                         run_id = conn.execute(
                             "INSERT INTO fetch_runs(source_key, started_at, outcome) VALUES (?, ?, 'running')",
-                            (source_key, now_iso()),
+                            (run_key, now_iso()),
                         ).lastrowid
                         conn.commit()
                     except sqlite3.Error as exc:
@@ -2640,7 +2609,7 @@ def fetch_all(
                     # `running` row for the source that was in flight.
                     print(f"Fetching {source['company']} ({source['kind']})…", flush=True)
                     future = pool.submit(_fetch_source, source, terms)
-                    in_flight[future] = (source, source_key, run_id, host)
+                    in_flight[future] = (source, run_key, run_id, host)
                     host_active[host] = host_active.get(host, 0) + 1
 
                 if not in_flight:
@@ -2651,7 +2620,7 @@ def fetch_all(
 
                 finished, _ = futures_wait(in_flight, return_when=FIRST_COMPLETED)
                 for future in finished:
-                    source, source_key, run_id, host = in_flight.pop(future)
+                    source, run_key, run_id, host = in_flight.pop(future)
                     host_active[host] -= 1
                     label = f"{source['company']} ({source['kind']})"
                     try:
@@ -2670,7 +2639,7 @@ def fetch_all(
                         # which a single pass after the last source could not do
                         # once earlier sources were marked successful.
                         count = upsert_jobs(
-                            conn, source_key, source.get("label", source["company"]), records, cycle_seen
+                            conn, run_key, source.get("label", source["company"]), records, cycle_seen
                         )
                     except FatalDatabaseError:
                         raise
@@ -2714,8 +2683,7 @@ def import_manual(conn: sqlite3.Connection, path: Path) -> int:
             url = row["url"].strip()
             records.append(
                 {
-                    "external_id": row.get("external_id", "").strip()
-                    or hashlib.sha256(canonical_url(url).encode("utf-8")).hexdigest()[:20],
+                    "external_id": row.get("external_id", "").strip() or url_external_id(url, linkedin_ids=False),
                     "company": row["company"].strip(),
                     "title": row["title"].strip(),
                     "location": row.get("location", "").strip(),
@@ -2731,6 +2699,20 @@ def import_manual(conn: sqlite3.Connection, path: Path) -> int:
 
 
 LINKEDIN_JOB_ID_RE = re.compile(r"/jobs/view/(\d+)")
+
+
+def url_external_id(url: str, *, linkedin_ids: bool) -> str:
+    """The external id an imported posting gets when its source gave none.
+
+    Email and discovered imports keep a LinkedIn job's own id (`linkedin_ids=True`).
+    The manual CSV import does not (`False`): it hashes the URL even for a LinkedIn
+    link, and changing that would re-key existing manual rows and duplicate them.
+    """
+    if linkedin_ids:
+        match = LINKEDIN_JOB_ID_RE.search(url)
+        if match:
+            return match.group(1)
+    return hashlib.sha256(canonical_url(url).encode("utf-8")).hexdigest()[:20]
 LINKEDIN_POSTED_HINT_RE = re.compile(r"posted on (\d{1,2}/\d{1,2}/\d{4})", re.I)
 
 
@@ -2771,12 +2753,7 @@ def import_emails(conn: sqlite3.Connection, path: Path) -> int:
             print(f"  skipping record {index}: missing company/title/url", file=sys.stderr)
             skipped += 1
             continue
-        job_id_match = LINKEDIN_JOB_ID_RE.search(url)
-        external_id = (
-            job_id_match.group(1)
-            if job_id_match
-            else hashlib.sha256(canonical_url(url).encode("utf-8")).hexdigest()[:20]
-        )
+        external_id = url_external_id(url, linkedin_ids=True)
         records.append(
             {
                 "external_id": external_id,
@@ -2986,12 +2963,7 @@ def import_discovered(conn: sqlite3.Connection, path: Path) -> int:
             print(f"  skipping record {index}: url is not http(s): {url!r}", file=sys.stderr)
             skipped += 1
             continue
-        job_id_match = LINKEDIN_JOB_ID_RE.search(url)
-        external_id = (
-            job_id_match.group(1)
-            if job_id_match
-            else hashlib.sha256(canonical_url(url).encode("utf-8")).hexdigest()[:20]
-        )
+        external_id = url_external_id(url, linkedin_ids=True)
         by_channel.setdefault(channel, []).append(
             {
                 "external_id": external_id,
@@ -3140,61 +3112,6 @@ def term_hits(text: str, terms: Iterable[str]) -> list[str]:
         elif needle in lower:
             hits.append(term)
     return hits
-
-
-_PLACEHOLDER_LOCATION_RE = re.compile(r"^\s*\d+\s+locations?\s*$", re.IGNORECASE)
-
-
-def is_uninformative_location(location: str) -> bool:
-    """True when a location field names no place at all.
-
-    Workday boards emit "3 Locations" for multi-site postings. That says nothing
-    about where the role is, so — like a blank field — it must not be read as
-    evidence the role sits outside the target regions.
-    """
-    stripped = (location or "").strip()
-    return not stripped or bool(_PLACEHOLDER_LOCATION_RE.match(stripped))
-
-
-def match_region(location: str, regions: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
-    """Match a posting's location against the configured target regions.
-
-    There is no geocoding here: "radius" is expressed as the curated place list
-    each region carries, so a close radius is simply a shorter list. Bare city
-    names collide across states (Newark, Dublin, Richmond, Concord, Berkeley),
-    so a place only counts when the location also names one of the region's
-    state markers. Region aliases ("bay area") are unambiguous on their own and
-    skip that requirement.
-    """
-    lower = normalized(location)
-    if not lower:
-        return None
-    for region in regions or []:
-        if not isinstance(region, dict):
-            continue
-        for alias in region.get("aliases") or []:
-            if normalized(alias) in lower:
-                return {"region": region, "matched": alias}
-        markers = [normalized(marker) for marker in region.get("state_markers") or []]
-        if not any(re.search(rf"\b{re.escape(marker)}\b", lower) for marker in markers if marker):
-            continue
-        for place in region.get("places") or []:
-            needle = normalized(place)
-            if needle and re.search(rf"\b{re.escape(needle)}\b", lower):
-                return {"region": region, "matched": place}
-    return None
-
-
-def region_label(location: str, profile: dict[str, Any]) -> str:
-    """Bucket a location into a target region, "Remote", or "Other" for display."""
-    hit = match_region(location, profile.get("regions") or [])
-    if hit:
-        return str(hit["region"].get("name", "Target region"))
-    if "remote" in location.lower():
-        return "Remote"
-    if is_uninformative_location(location):
-        return "Unknown"
-    return "Other"
 
 
 # Whole words only: "Leadership Development Intern" must not read as "lead".
@@ -3581,21 +3498,21 @@ def cap_per_company(
     """The first `limit` of `ranked`, keeping each employer's top `per_company`.
 
     Also returns, per employer that reached the cap, how many of its postings
-    were left out, keyed by `company_key`. An employer cut short by `limit`
+    were left out, keyed by `sort_key`. An employer cut short by `limit`
     rather than the cap is not in it: those postings did not rank high enough,
     which the shortlist's length already says.
     """
 
     totals: dict[str, int] = {}
     for job in ranked:
-        key = company_key(job["company"])
+        key = sort_key(job["company"])
         totals[key] = totals.get(key, 0) + 1
     shown: dict[str, int] = {}
     kept: list[sqlite3.Row] = []
     for job in ranked:
         if len(kept) >= limit:
             break
-        key = company_key(job["company"])
+        key = sort_key(job["company"])
         if shown.get(key, 0) >= per_company:
             continue
         shown[key] = shown.get(key, 0) + 1
@@ -3648,7 +3565,7 @@ def report(conn: sqlite3.Connection, sources_config: dict[str, Any], limit: int)
                 "",
             ]
         )
-        key = company_key(job["company"])
+        key = sort_key(job["company"])
         shown[key] = shown.get(key, 0) + 1
         if key in hidden and shown[key] == RANKED_VIEW_PER_COMPANY:
             # Said at the employer's last listed posting, never left silent.

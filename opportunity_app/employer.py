@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from .auth import hash_secret
 from .dossier import DossierNotFoundError, read_share
-from .schema import utc_now
+from .timestamps import utc_now
 
 
 PROTECTED_CRITERIA = re.compile(

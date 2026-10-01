@@ -11,7 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from .preparation import document_record
-from .schema import utc_now
+from .timestamps import utc_now
 
 
 PDF_MEDIA_TYPE = "application/pdf"

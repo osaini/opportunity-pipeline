@@ -14,7 +14,7 @@ from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import actions as actions_module, automation, schema
+from opportunity_app import actions as actions_module, automation, schema, timestamps
 from opportunity_app.operations import ACCOUNT_QUERIES, delete_account, export_account
 from opportunity_app.student_agent import decide_proposal
 from opportunity_app.actions import (
@@ -23,13 +23,14 @@ from opportunity_app.actions import (
     record_intent,
     update_application,
     update_application_task,
-    _add_application_task_tx,
-    _record_intent_tx,
-    _update_application_tx,
+    add_application_task_tx,
+    record_intent_tx,
+    update_application_tx,
 )
 from opportunity_app.automation import OFF_SHADOW_ON, AutomationGateError, Feature, Superseded
 from opportunity_app.outreach_automation import SETTINGS, settings, update_settings
-from opportunity_app.schema import connect_product, ensure_product_schema, utc_now
+from opportunity_app.schema import connect_product, ensure_product_schema
+from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 
@@ -629,9 +630,9 @@ class ActionsTests(AutomationCase):
                          ("Send thanks", "2026-10-01T09:00:00-05:00"))
 
     def test_the_tx_functions_leave_the_commit_to_the_caller(self):
-        _record_intent_tx(self.conn, "job-b", "saved", user_id=USER)
-        _update_application_tx(self.conn, "app-job-b", stage="offer", user_id=USER)
-        _add_application_task_tx(self.conn, "app-job-b", title="Reply to offer", due_at=None, user_id=USER)
+        record_intent_tx(self.conn, "job-b", "saved", user_id=USER)
+        update_application_tx(self.conn, "app-job-b", stage="offer", user_id=USER)
+        add_application_task_tx(self.conn, "app-job-b", title="Reply to offer", due_at=None, user_id=USER)
         self.assertTrue(self.conn.in_transaction)
         self.conn.rollback()
         self.assertEqual(self.stage("app-job-b")[0], "applied")
@@ -709,7 +710,7 @@ class ActionsTests(AutomationCase):
         """F22: a notes-only edit cannot write back a stage read before an automatic change committed."""
         automation.set_mode(self.conn, USER, "test_switch", "on")
         application = self.applying()
-        real = actions_module._next_applied_at
+        real = actions_module.applied_at_for_stage
         seen = {}
 
         def between_read_and_write(*args, **kwargs):
@@ -724,7 +725,7 @@ class ActionsTests(AutomationCase):
                     seen["perform"] = str(exc)
             return real(*args, **kwargs)
 
-        with mock.patch.object(actions_module, "_next_applied_at", between_read_and_write):
+        with mock.patch.object(actions_module, "applied_at_for_stage", between_read_and_write):
             update_application(self.conn, application, notes="Called the recruiter", user_id=USER)
         self.assertTrue(seen["in_transaction"], "the row is read inside the transaction that writes it")
         self.assertEqual(seen["perform"], "database is locked", "the automatic change waits instead of landing in between")
@@ -1188,12 +1189,12 @@ class HealthTests(AutomationCase):
             def now(cls, tz=None):
                 return frozen
 
-        with mock.patch.object(schema, "datetime", CoarseClock), mock.patch.object(automation, "datetime", CoarseClock):
+        with mock.patch.object(timestamps, "datetime", CoarseClock), mock.patch.object(automation, "datetime", CoarseClock):
             automation.set_mode(self.conn, USER, "test_switch", "on")
             rows = [self.act(subject_id=f"s{n}") for n in range(2)]
             automation.undo(self.conn, rows[0]["id"], USER)
             # The breaker's write is the first in a new tick, so its stamp is the clock's own value.
-            schema._LAST_NOW = datetime.min.replace(tzinfo=timezone.utc)
+            timestamps._LAST_NOW = datetime.min.replace(tzinfo=timezone.utc)
             self.assertTrue(automation.undo(self.conn, rows[1]["id"], USER)["feature_paused"])
             self.assertEqual(len(automation.health_summary(self.conn, USER)["breaker_off"]), 1)
             automation.set_mode(self.conn, USER, "test_switch", "on")
@@ -1355,7 +1356,7 @@ class MonotonicClockTests(unittest.TestCase):
             def now(cls, tz=None):
                 return frozen
 
-        with mock.patch.object(schema, "datetime", CoarseClock), mock.patch.object(schema, "_LAST_NOW", real_datetime.min.replace(tzinfo=real_timezone.utc)):
+        with mock.patch.object(timestamps, "datetime", CoarseClock), mock.patch.object(timestamps, "_LAST_NOW", real_datetime.min.replace(tzinfo=real_timezone.utc)):
             stamps = [utc_now() for _ in range(50)]
         self.assertEqual(stamps, sorted(stamps))
         self.assertEqual(len(set(stamps)), 50)

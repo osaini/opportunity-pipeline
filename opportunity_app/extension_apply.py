@@ -13,9 +13,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from .actions import ApplicationNotFoundError, update_application
+from pipeline_core.read_model import RULESET_VERSION
+
+from .actions import ApplicationNotFoundError, log_application_event, update_application
 from .auth import hash_secret
-from .schema import utc_now
+from .timestamps import utc_now
 
 
 PAIRING_TTL_MINUTES = 10
@@ -230,7 +232,7 @@ def revoke_device(conn: sqlite3.Connection, device_id: str, *, user_id: str) -> 
     return bool(cursor.rowcount)
 
 
-def _canonical_url(value: str) -> tuple[str, str, str]:
+def split_canonical_url(value: str) -> tuple[str, str, str]:
     try:
         parsed = urllib.parse.urlsplit(value)
     except ValueError:
@@ -254,7 +256,7 @@ def _canonical_url(value: str) -> tuple[str, str, str]:
 def application_candidates(
     conn: sqlite3.Connection, page_url: str, *, user_id: str
 ) -> dict[str, Any]:
-    canonical, host, path = _canonical_url(page_url)
+    canonical, host, path = split_canonical_url(page_url)
     if not canonical:
         raise ExtensionApplyError("Application page URL must use HTTP or HTTPS")
     rows = conn.execute(
@@ -272,7 +274,7 @@ def application_candidates(
     ).fetchall()
     candidates: list[dict[str, Any]] = []
     for row in rows:
-        source_canonical, source_host, source_path = _canonical_url(str(row["source_url"]))
+        source_canonical, source_host, source_path = split_canonical_url(str(row["source_url"]))
         if source_canonical == canonical:
             match_kind = "exact_url"
         elif source_host == host and source_path == path:
@@ -415,10 +417,10 @@ def apply_context(
         FROM applications a
         JOIN opportunities o ON o.id=a.opportunity_id
         LEFT JOIN fit_scores fs ON fs.opportunity_id=o.id
-             AND fs.user_id=a.user_id AND fs.ruleset_version='legacy-v1'
+             AND fs.user_id=a.user_id AND fs.ruleset_version=?
         WHERE a.id=? AND a.user_id=?
         """,
-        (application_id, user_id),
+        (RULESET_VERSION, application_id, user_id),
     ).fetchone()
     if not row:
         raise ApplicationNotFoundError(application_id)
@@ -444,7 +446,7 @@ def apply_context(
         "match": {
             "score": int(row["score"] or 0),
             "explanation": json.loads(row["explanation_json"] or "[]"),
-            "ruleset_version": "legacy-v1",
+            "ruleset_version": RULESET_VERSION,
         },
         "confirmed_profile": _confirmed_profile(conn, user_id),
         "answers": _safe_answers(conn, user_id),
@@ -479,7 +481,7 @@ def sync_session(
     user_id: str,
 ) -> dict[str, Any]:
     page_url = str(payload.get("page_url", ""))
-    if not _canonical_url(page_url)[0]:
+    if not split_canonical_url(page_url)[0]:
         raise ExtensionApplyError("Apply sessions require an HTTP or HTTPS page URL")
     application_id = str(payload.get("application_id") or "") or None
     if application_id:
@@ -554,7 +556,7 @@ def sync_step(
     if not session:
         raise ExtensionApplyError("Apply session must be synchronized before its steps")
     page_url = str(payload.get("page_url", ""))
-    if not _canonical_url(page_url)[0]:
+    if not split_canonical_url(page_url)[0]:
         raise ExtensionApplyError("Apply steps require an HTTP or HTTPS page URL")
     status_value = str(payload.get("status", "scanned"))
     if status_value not in {"scanned", "reviewed", "filled", "manual", "completed"}:
@@ -638,17 +640,9 @@ def confirm_submitted(
             """,
             (timestamp, session_id, user_id),
         )
-        conn.execute(
-            """
-            INSERT INTO application_events(
-                application_id, event_type, from_stage, to_stage, detail_json, created_at
-            ) VALUES(?, 'apply_submission_confirmed', NULL, 'applied', ?, ?)
-            """,
-            (
-                application["id"],
-                json.dumps({"session_id": session_id, "source": "explicit_user_confirmation"}),
-                timestamp,
-            ),
+        log_application_event(
+            conn, application["id"], "apply_submission_confirmed",
+            {"session_id": session_id, "source": "explicit_user_confirmation"}, timestamp, to_stage="applied",
         )
     return {
         "session_id": session_id,

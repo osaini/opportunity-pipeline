@@ -17,10 +17,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from pipeline import backup_sqlite
-
 from . import DEFAULT_PLATFORM_DB
 from .database import is_postgres_target
+from .legacy import backup_sqlite
 from .schema import connect_product
 
 _CHUNK = 500

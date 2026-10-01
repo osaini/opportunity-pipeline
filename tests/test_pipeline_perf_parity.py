@@ -34,6 +34,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pipeline
+from pipeline_core.identity import normalized
 
 try:
     import realdata_guard
@@ -115,7 +116,7 @@ def _reference_deduplicate(conn):
         if row["id"] in resolved:
             continue
         by_role.setdefault(
-            (pipeline.normalized(row["company"]), pipeline.normalized(row["title"])), []
+            (normalized(row["company"]), normalized(row["title"])), []
         ).append(row)
     for group in by_role.values():
         if len(group) < 2:

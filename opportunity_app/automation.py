@@ -50,7 +50,7 @@ its own, and a pause or a student's edit could land between it and the
 change. perform() starts with pause_guard; approve, reject, and undo start by
 claiming the action (_claim). On SQLite that first write takes the database's
 write lock; on PostgreSQL the handlers' reads also lock the rows they read
-(_for_update), so what was read is still true when the change is written.
+(for_update_clause), so what was read is still true when the change is written.
 """
 
 from __future__ import annotations
@@ -66,7 +66,10 @@ from uuid import uuid4
 
 from . import actions
 from .database import is_unique_violation
-from .schema import PAUSE_NEVER_CHANGED, utc_now
+from .outreach_config import sender_account
+from .schema import PAUSE_NEVER_CHANGED
+from .settings_store import get_setting, put_setting
+from .timestamps import parse_app_instant, utc_now
 from .user_time import user_timezone
 
 OFF_ON = ("off", "on")
@@ -256,8 +259,6 @@ def _thank_you_requirement(conn: Any, user_id: str) -> str:
     """decline_thank_you acts only on a reply both the rules and Jev read as a decline, so Jev must be on; and
     only on one addressed to the student's own sending address (outreach_thank_you's R3), so that must be set.
     Without it Gmail still sends as the connected account, but no reply could ever be confirmed as to them."""
-    from .outreach_drafting import sender_account  # imported here: outreach_drafting imports modules that import this one
-
     if mode(conn, user_id, "jev_inbox_suggestions") != "on":
         return THANK_YOU_NEEDS_JEV
     if not sender_account():
@@ -312,22 +313,6 @@ def _stamp(now: datetime | None) -> str:
     return utc_now() if now is None else _now(now).isoformat(timespec="microseconds")
 
 
-def _setting(conn: sqlite3.Connection, user_id: str, key: str) -> str | None:
-    row = conn.execute("SELECT value FROM user_settings WHERE user_id=? AND key=?", (user_id, key)).fetchone()
-    return None if row is None else str(row[0])
-
-
-def _put_setting(conn: sqlite3.Connection, user_id: str, key: str, value: str, stamp: str) -> None:
-    """Upsert one setting. Opens no transaction: the caller owns it."""
-    conn.execute(
-        """
-        INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, ?, ?, ?)
-        ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-        """,
-        (user_id, key, value, stamp),
-    )
-
-
 def modes(conn: sqlite3.Connection, user_id: str, keys: tuple[str, ...] | list[str] | None = None) -> dict[str, str]:
     """The mode of each feature in one read. A missing row, or a value the feature does not take, is off."""
     wanted = [_feature(key) for key in (keys if keys is not None else FEATURES)]
@@ -346,7 +331,7 @@ def mode(conn: sqlite3.Connection, user_id: str, key: str) -> str:
 
 
 def paused(conn: sqlite3.Connection, user_id: str) -> bool:
-    return _setting(conn, user_id, PAUSED_KEY) == "on"
+    return get_setting(conn, user_id, PAUSED_KEY) == "on"
 
 
 def is_enabled(conn: sqlite3.Connection, user_id: str, key: str) -> bool:
@@ -369,7 +354,7 @@ def on_since(conn: sqlite3.Connection, user_id: str, key: str) -> str | None:
     """When the switch was last turned on, while it is on; None when it is not on."""
     if mode(conn, user_id, key) != "on":
         return None
-    return _setting(conn, user_id, f"{key}.on_since")
+    return get_setting(conn, user_id, f"{key}.on_since")
 
 
 def is_shadow(conn: sqlite3.Connection, user_id: str, key: str) -> bool:
@@ -400,8 +385,8 @@ def _can_turn_on(
         return False, missing
     if not feature.shadow_capable:
         return True, ""
-    since_text = _setting(conn, user_id, f"{key}.shadow_since")
-    since = _parse(since_text)
+    since_text = get_setting(conn, user_id, f"{key}.shadow_since")
+    since = parse_app_instant(since_text)
     if current != "shadow" or since is None:
         return False, f"Run it in shadow first: it needs {SHADOW_HOURS} hours and {SHADOW_MIN_ROWS} reviewed actions there"
     row = conn.execute(
@@ -448,16 +433,16 @@ def _plan_modes(
 def _write_modes(conn: sqlite3.Connection, user_id: str, plans: list[tuple[str, str, str]], stamp: str) -> None:
     """Write planned changes. Opens no transaction: the caller owns it."""
     for key, value, current in plans:
-        _put_setting(conn, user_id, key, value, stamp)
+        put_setting(conn, user_id, key, value, stamp)
         # The shadow clock starts when shadow starts, not on every save.
         if value == "shadow" and current != "shadow":
-            _put_setting(conn, user_id, f"{key}.shadow_since", stamp, stamp)
+            put_setting(conn, user_id, f"{key}.shadow_since", stamp, stamp)
         # Likewise when it was last turned on (auto_triage acts only on roles first seen since).
         if value == "on" and current != "on":
-            _put_setting(conn, user_id, f"{key}.on_since", stamp, stamp)
+            put_setting(conn, user_id, f"{key}.on_since", stamp, stamp)
 
 
-def _set_modes(conn: sqlite3.Connection, user_id: str, changes: dict[str, str], *, now: datetime | None = None) -> None:
+def set_modes(conn: sqlite3.Connection, user_id: str, changes: dict[str, str], *, now: datetime | None = None) -> None:
     """Validate every change, then write them all in one transaction (the legacy outreach switches use this)."""
     apply_settings(conn, user_id, modes=changes, paused=None, now=now)
 
@@ -494,7 +479,7 @@ def apply_settings(
         _write_modes(conn, user_id, plans, stamp)
     return {
         # ``paused`` is the request here, so the stored value is read directly.
-        "paused": _setting(conn, user_id, PAUSED_KEY) == "on",
+        "paused": get_setting(conn, user_id, PAUSED_KEY) == "on",
         "in_flight": in_flight(conn, user_id) if paused is not None else None,
     }
 
@@ -677,7 +662,7 @@ def settings_payload(conn: sqlite3.Connection, user_id: str, *, now: datetime | 
         features.append({
             "key": feature.key, "label": feature.label, "description": feature.description, "group": feature.group,
             "risk": feature.risk, "modes": list(feature.modes), "mode": current[feature.key],
-            "shadow_since": _setting(conn, user_id, f"{feature.key}.shadow_since") if feature.shadow_capable else None,
+            "shadow_since": get_setting(conn, user_id, f"{feature.key}.shadow_since") if feature.shadow_capable else None,
             "can_turn_on": allowed, "can_turn_on_reason": reason,
             # What it still needs to act, whatever its mode: a switch left on can lose a requirement later.
             "requirement": missing,
@@ -692,7 +677,7 @@ class Handler(Protocol):
     """How one action_type reads, makes, and takes back its change. None of these opens a transaction.
 
     ``read`` runs after the caller's transaction has made its first write, and
-    on PostgreSQL locks what it reads (_for_update), so the values it returns
+    on PostgreSQL locks what it reads (for_update_clause), so the values it returns
     still hold when ``apply`` or ``undo`` writes.
 
     A handler may also define ``effective(before, after, timestamp)``: what its
@@ -719,7 +704,7 @@ class Handler(Protocol):
     ) -> dict[str, Any] | None: ...
 
 
-def _for_update(conn: sqlite3.Connection) -> str:
+def for_update_clause(conn: sqlite3.Connection) -> str:
     """The row lock for a read that a later write in the same transaction relies on: PostgreSQL only.
 
     SQLite needs none: every ledger transaction writes first, and that holds
@@ -773,7 +758,7 @@ class ApplicationStage:
     Undo restores both, only while both are still what this action left.
 
     A move to a closed stage also cancels the application's follow-up
-    reminder (actions._update_application_tx). apply records when it did, and
+    reminder (actions.update_application_tx). apply records when it did, and
     undo schedules that reminder again, but only while it is still the one
     this move cancelled (unchanged since) and the follow-up date is still set
     and still ahead. Otherwise undo says the reminder was not restored, so the
@@ -791,7 +776,7 @@ class ApplicationStage:
 
     def read(self, conn: sqlite3.Connection, user_id: str, subject_id: str) -> dict[str, Any]:
         row = conn.execute(
-            f"SELECT stage, applied_at FROM applications WHERE id=? AND user_id=?{_for_update(conn)}", (subject_id, user_id),
+            f"SELECT stage, applied_at FROM applications WHERE id=? AND user_id=?{for_update_clause(conn)}", (subject_id, user_id),
         ).fetchone()
         if row is None:
             raise actions.ApplicationNotFoundError(subject_id)
@@ -808,7 +793,7 @@ class ApplicationStage:
             raise ValueError(f"Unsupported application stage: {stage}")
         if after.get("only_from") is not None and before["stage"] != after["only_from"]:
             return dict(before)
-        return {"stage": stage, "applied_at": actions._next_applied_at(before["applied_at"], stage, after.get("applied_at"), timestamp)}
+        return {"stage": stage, "applied_at": actions.applied_at_for_stage(before["applied_at"], stage, after.get("applied_at"), timestamp)}
 
     @staticmethod
     def _reminder(conn: sqlite3.Connection, user_id: str, subject_id: str) -> Any:
@@ -827,7 +812,7 @@ class ApplicationStage:
             from . import internal_automation  # imported here: it imports this module
 
             archive = internal_automation.automatic_archive(conn, subject_id)
-        actions._update_application_tx(
+        actions.update_application_tx(
             conn, subject_id, stage=after["stage"], applied_at=after.get("applied_at"), user_id=user_id,
             source=source, timestamp=timestamp,
         )
@@ -867,9 +852,9 @@ class ApplicationStage:
     def _reschedule(self, conn: sqlite3.Connection, user_id: str, subject_id: str, cancelled_at: str, timestamp: str) -> str:
         """Schedule again a follow-up reminder a move to a closed stage cancelled: restored, no_date, passed, or changed."""
         row = conn.execute(
-            f"SELECT follow_up_at FROM applications WHERE id=? AND user_id=?{_for_update(conn)}", (subject_id, user_id),
+            f"SELECT follow_up_at FROM applications WHERE id=? AND user_id=?{for_update_clause(conn)}", (subject_id, user_id),
         ).fetchone()
-        due = _parse(row["follow_up_at"]) if row is not None else None
+        due = parse_app_instant(row["follow_up_at"]) if row is not None else None
         if due is None:
             return "no_date"
         if due <= _now(None):
@@ -907,20 +892,14 @@ class ApplicationStage:
             raise Superseded(f"{_capitalized(_changed({'stage': after['stage'], 'applied_at': after['applied_at']}, current))} "
                              "changed since, so it was left as it is")
         if before["stage"] != after["stage"]:
-            conn.execute(
-                """
-                INSERT INTO application_events(application_id, event_type, from_stage, to_stage, detail_json, created_at)
-                VALUES(?, 'stage_changed', ?, ?, ?, ?)
-                """,
-                (subject_id, after["stage"], before["stage"], json.dumps({"source": source}), timestamp),
+            # The undo direction: from what the action made back to what it replaced.
+            actions.log_application_event(
+                conn, subject_id, "stage_changed", {"source": source}, timestamp,
+                from_stage=after["stage"], to_stage=before["stage"],
             )
         else:
-            conn.execute(
-                """
-                INSERT INTO application_events(application_id, event_type, from_stage, to_stage, detail_json, created_at)
-                VALUES(?, 'application_updated', NULL, NULL, ?, ?)
-                """,
-                (subject_id, json.dumps({"source": source, "fields": ["applied_at"]}), timestamp),
+            actions.log_application_event(
+                conn, subject_id, "application_updated", {"source": source, "fields": ["applied_at"]}, timestamp,
             )
 
 
@@ -942,12 +921,12 @@ class OpportunityIntent:
     fields = ("intent",)
 
     def _lock(self, conn: sqlite3.Connection, subject_id: str) -> bool:
-        return conn.execute(f"SELECT 1 FROM opportunities WHERE id=?{_for_update(conn)}", (subject_id,)).fetchone() is not None
+        return conn.execute(f"SELECT 1 FROM opportunities WHERE id=?{for_update_clause(conn)}", (subject_id,)).fetchone() is not None
 
     def read(self, conn: sqlite3.Connection, user_id: str, subject_id: str) -> dict[str, Any]:
         if not self._lock(conn, subject_id):
             raise actions.OpportunityNotFoundError(subject_id)
-        return {"intent": actions._intent_state(conn, subject_id, user_id)}
+        return {"intent": actions.intent_state(conn, subject_id, user_id)}
 
     def effective(self, before: dict[str, Any], after: dict[str, Any], timestamp: str) -> dict[str, Any]:
         if after.get("intent") not in INTENTS:
@@ -965,7 +944,7 @@ class OpportunityIntent:
             (subject_id, user_id, subject_id, user_id),
         ).fetchone() is not None:
             raise NotApplicable("You already acted on this role, so it was left as it is")
-        response = actions._record_intent_tx(
+        response = actions.record_intent_tx(
             conn, subject_id, after["intent"] or "undo", user_id=user_id, source=source, timestamp=timestamp,
         )
         if response["unchanged"]:
@@ -988,7 +967,7 @@ class OpportunityIntent:
         ).fetchone()
         if added is None or latest is None or int(latest["id"]) != int(added):
             raise Superseded("The saved or passed choice changed since, so it was left as it is")
-        actions._record_intent_tx(conn, subject_id, before["intent"] or "undo", user_id=user_id, source=source, timestamp=timestamp)
+        actions.record_intent_tx(conn, subject_id, before["intent"] or "undo", user_id=user_id, source=source, timestamp=timestamp)
 
 
 class ApplicationTask:
@@ -1017,7 +996,7 @@ class ApplicationTask:
     ) -> dict[str, Any]:
         task = after["task"]
         due_at = user_timezone(conn, user_id).normalize_instant(task.get("due_at"), field="due_at")
-        row = actions._add_application_task_tx(
+        row = actions.add_application_task_tx(
             conn, subject_id, title=str(task["title"]), due_at=due_at, user_id=user_id,
             origin=str(task.get("origin") or "automation"), origin_ref=str(task.get("origin_ref") or ""),
             source=source, timestamp=timestamp, link=str(task.get("link") or ""),
@@ -1055,19 +1034,16 @@ class ApplicationTask:
             if row["status"] != "open":
                 raise Superseded("The task was marked done since, so it was left as it is")
             raise Superseded("The task was edited since, so it was left as it is")
-        conn.execute(
-            """
-            INSERT INTO application_events(application_id, event_type, from_stage, to_stage, detail_json, created_at)
-            VALUES(?, 'task_removed', NULL, NULL, ?, ?)
-            """,
-            (subject_id, json.dumps({"task_id": created.get("task_id"), "title": created.get("title"), "source": source}), timestamp),
+        actions.log_application_event(
+            conn, subject_id, "task_removed",
+            {"task_id": created.get("task_id"), "title": created.get("title"), "source": source}, timestamp,
         )
 
 
 class OutreachStatus:
     """outreach.status: a cold-outreach company's status (outreach_auto_close closes one as no_response).
 
-    The change runs through outreach._update_target_tx, so it has every side
+    The change runs through outreach.update_target_tx, so it has every side
     effect a status change made by hand has: a follow-up date that no longer
     applies is cleared, and the change is logged. Undo puts the status back only
     while it is still what this action left, and the follow-up date too, only
@@ -1078,7 +1054,7 @@ class OutreachStatus:
 
     def read(self, conn: sqlite3.Connection, user_id: str, subject_id: str) -> dict[str, Any]:
         row = conn.execute(
-            f"SELECT status FROM outreach_targets WHERE id=? AND user_id=?{_for_update(conn)}", (subject_id, user_id),
+            f"SELECT status FROM outreach_targets WHERE id=? AND user_id=?{for_update_clause(conn)}", (subject_id, user_id),
         ).fetchone()
         if row is None:
             from .outreach import OutreachNotFoundError
@@ -1099,9 +1075,9 @@ class OutreachStatus:
     def apply(
         self, conn: sqlite3.Connection, user_id: str, subject_id: str, after: dict[str, Any], *, source: str, timestamp: str,
     ) -> dict[str, Any]:
-        from .outreach import _update_target_tx
+        from .outreach import update_target_tx
 
-        written = _update_target_tx(
+        written = update_target_tx(
             conn, subject_id, {"status": after["status"]}, user_id=user_id, status_detail="Changed automatically",
         )
         previous = written["previous"]
@@ -1114,10 +1090,10 @@ class OutreachStatus:
         self, conn: sqlite3.Connection, user_id: str, subject_id: str, before: dict[str, Any], after: dict[str, Any],
         *, source: str, timestamp: str,
     ) -> dict[str, Any] | None:
-        from .outreach import _log
+        from .outreach import log_event
 
         row = conn.execute(
-            f"SELECT status, follow_up_at FROM outreach_targets WHERE id=? AND user_id=?{_for_update(conn)}", (subject_id, user_id),
+            f"SELECT status, follow_up_at FROM outreach_targets WHERE id=? AND user_id=?{for_update_clause(conn)}", (subject_id, user_id),
         ).fetchone()
         if row is None:
             raise Superseded("The company is no longer in your outreach list, so there is nothing to undo")
@@ -1130,7 +1106,7 @@ class OutreachStatus:
             f"UPDATE outreach_targets SET status=?, follow_up_at=?, updated_at=? WHERE id=? AND user_id=? AND status=? AND {_same(conn, 'follow_up_at')}",
             (before["status"], follow_up_at, timestamp, subject_id, user_id, after["status"], row["follow_up_at"]),
         )
-        _log(conn, subject_id, user_id, "status", from_status=after["status"], to_status=before["status"], detail="Undone by you")
+        log_event(conn, subject_id, user_id, "status", from_status=after["status"], to_status=before["status"], detail="Undone by you")
         notes = []
         if not restore_date and result.get("follow_up_at_before") != row["follow_up_at"]:
             notes.append("The follow-up date was changed since, so it was left as it is.")
@@ -1167,16 +1143,16 @@ class OutreachFollowUpDraft:
     def _row(conn: sqlite3.Connection, user_id: str, subject_id: str) -> Any:
         return conn.execute(
             "SELECT status, contact_email, contact_cc, follow_up_subject, follow_up_body, follow_up_claims_json, "
-            f"follow_up_generated_by, follow_up_status FROM outreach_targets WHERE id=? AND user_id=?{_for_update(conn)}",
+            f"follow_up_generated_by, follow_up_status FROM outreach_targets WHERE id=? AND user_id=?{for_update_clause(conn)}",
             (subject_id, user_id),
         ).fetchone()
 
     @staticmethod
     def _fingerprint(row: Any) -> str:
-        from .outreach import _draft_fingerprint
+        from .outreach import compute_draft_fingerprint
 
         # The same inputs outreach._record fingerprints the follow-up with.
-        return _draft_fingerprint(
+        return compute_draft_fingerprint(
             "follow_up", row["follow_up_subject"] or "", row["follow_up_body"] or "", row["contact_email"] or "",
             row["follow_up_claims_json"] or "[]", row["follow_up_generated_by"] or "", row["contact_cc"] or "",
         )
@@ -1219,7 +1195,7 @@ class OutreachFollowUpDraft:
         self, conn: sqlite3.Connection, user_id: str, subject_id: str, before: dict[str, Any], after: dict[str, Any],
         *, source: str, timestamp: str,
     ) -> dict[str, Any]:
-        from .outreach import _log
+        from .outreach import log_event
 
         result = after.get("_result") or {}
         row = self._row(conn, user_id, subject_id)
@@ -1239,7 +1215,7 @@ class OutreachFollowUpDraft:
             """,
             (timestamp, subject_id, user_id),
         )
-        _log(conn, subject_id, user_id, "follow_up_discarded",
+        log_event(conn, subject_id, user_id, "follow_up_discarded",
              detail="The automatic follow-up draft was undone. It stays in the follow-up history.")
         return {"undo_note": "The draft stays in the follow-up's history if you want it back."}
 
@@ -1262,7 +1238,7 @@ class ResumePick:
         if conn.execute("SELECT 1 FROM opportunities WHERE id=?", (subject_id,)).fetchone() is None:
             raise actions.OpportunityNotFoundError(subject_id)
         row = conn.execute(
-            f"SELECT resume_file_id, picked_by FROM opportunity_resume_picks WHERE user_id=? AND opportunity_id=?{_for_update(conn)}",
+            f"SELECT resume_file_id, picked_by FROM opportunity_resume_picks WHERE user_id=? AND opportunity_id=?{for_update_clause(conn)}",
             (user_id, subject_id),
         ).fetchone()
         return {"resume_pick": None if row is None else {"resume_file_id": row["resume_file_id"], "picked_by": row["picked_by"]}}
@@ -1330,7 +1306,7 @@ class OutreachThankYou:
 
     def read(self, conn: sqlite3.Connection, user_id: str, subject_id: str) -> dict[str, Any]:
         if conn.execute(
-            f"SELECT 1 FROM outreach_targets WHERE id=? AND user_id=?{_for_update(conn)}", (subject_id, user_id),
+            f"SELECT 1 FROM outreach_targets WHERE id=? AND user_id=?{for_update_clause(conn)}", (subject_id, user_id),
         ).fetchone() is None:
             from .outreach import OutreachNotFoundError
 
@@ -1464,7 +1440,7 @@ def _by_key(conn: sqlite3.Connection, user_id: str, idempotency_key: str) -> Any
     ).fetchone()
 
 
-def _row(conn: sqlite3.Connection, action_id: str, user_id: str) -> Any:
+def action_row(conn: sqlite3.Connection, action_id: str, user_id: str) -> Any:
     row = conn.execute("SELECT * FROM automation_actions WHERE id=? AND user_id=?", (action_id, user_id)).fetchone()
     if row is None:
         raise LookupError(action_id)
@@ -1493,7 +1469,7 @@ def _claim(conn: sqlite3.Connection, action_id: str, user_id: str, status: str, 
         "UPDATE automation_actions SET decided_at=? WHERE id=? AND user_id=? AND status=?",
         (timestamp, action_id, user_id, status),
     ).rowcount
-    row = _row(conn, action_id, user_id)
+    row = action_row(conn, action_id, user_id)
     if claimed != 1:
         raise ValueError(f"{refusal}; this one is {row['status']}")
     return row
@@ -1638,7 +1614,7 @@ def perform_in(
             "INSERT INTO automation_held(action_id, user_id, after_json, created_at) VALUES(?, ?, ?, ?)",
             (action_id, user_id, _dumps(held), timestamp),
         )
-    return _decode(_row(conn, action_id, user_id))
+    return _decode(action_row(conn, action_id, user_id))
 
 
 CORRECTABLE_SUBJECTS = ("application",)
@@ -1677,7 +1653,7 @@ def approve(conn: sqlite3.Connection, action_id: str, user_id: str, *, subject_i
             if action["subject_kind"] not in CORRECTABLE_SUBJECTS:
                 raise ValueError("This proposal is not about an application, so another one cannot be chosen for it")
             _apply_corrected(conn, action, handler, user_id, subject_id, timestamp)
-            return _decode(_row(conn, action_id, user_id))
+            return _decode(action_row(conn, action_id, user_id))
         try:
             current = handler.read(conn, user_id, action["subject_id"])
         except LookupError:
@@ -1705,7 +1681,7 @@ def approve(conn: sqlite3.Connection, action_id: str, user_id: str, *, subject_i
             )
     if superseded is not None:
         raise superseded
-    return _decode(_row(conn, action_id, user_id))
+    return _decode(action_row(conn, action_id, user_id))
 
 
 # Per feature: correct(conn, user_id, action, subject_id, before) for a proposal approved for another
@@ -1736,7 +1712,7 @@ def _corrected(
 
 def correction_refusal(conn: sqlite3.Connection, action_id: str, user_id: str, subject_id: str) -> str | None:
     """Why approving this proposal for ``subject_id`` would be refused, or None. Reads only; approve() checks again."""
-    action = _with_held(conn, _decode(_row(conn, action_id, user_id)))
+    action = _with_held(conn, _decode(action_row(conn, action_id, user_id)))
     if action["status"] != "proposed" or subject_id == action["subject_id"]:
         return None
     if action["subject_kind"] not in CORRECTABLE_SUBJECTS:
@@ -1793,7 +1769,7 @@ def reject(conn: sqlite3.Connection, action_id: str, user_id: str) -> dict[str, 
         )
         release_held(conn, action_id, user_id)
         breaker = _trip_breaker(conn, user_id, row["feature"], action_id, timestamp)
-    return {**_decode(_row(conn, action_id, user_id)), "feature_paused": breaker is not None, "breaker_notice": breaker}
+    return {**_decode(action_row(conn, action_id, user_id)), "feature_paused": breaker is not None, "breaker_notice": breaker}
 
 
 def undo(conn: sqlite3.Connection, action_id: str, user_id: str) -> dict[str, Any]:
@@ -1835,7 +1811,7 @@ def undo(conn: sqlite3.Connection, action_id: str, user_id: str) -> dict[str, An
             breaker = _trip_breaker(conn, user_id, action["feature"], action_id, timestamp)
     if superseded is not None:
         raise superseded
-    return {**_decode(_row(conn, action_id, user_id)), **extra, "feature_paused": breaker is not None, "breaker_notice": breaker}
+    return {**_decode(action_row(conn, action_id, user_id)), **extra, "feature_paused": breaker is not None, "breaker_notice": breaker}
 
 
 def review(conn: sqlite3.Connection, action_id: str, user_id: str, verdict: str) -> dict[str, Any]:
@@ -1843,14 +1819,14 @@ def review(conn: sqlite3.Connection, action_id: str, user_id: str, verdict: str)
     if verdict not in VERDICTS:
         raise ValueError("A shadow action is reviewed as right or wrong")
     with conn:
-        row = _row(conn, action_id, user_id)
+        row = action_row(conn, action_id, user_id)
         if row["status"] != "shadow":
             raise ValueError(f"Only a shadow action can be reviewed; this one is {row['status']}")
         conn.execute(
             "UPDATE automation_actions SET review=?, reviewed_at=? WHERE id=? AND user_id=?",
             (verdict, utc_now(), action_id, user_id),
         )
-    return _decode(_row(conn, action_id, user_id))
+    return _decode(action_row(conn, action_id, user_id))
 
 
 StatusFilter = str | list[str] | tuple[str, ...] | None
@@ -1953,14 +1929,14 @@ def _trip_breaker(conn: sqlite3.Connection, user_id: str, feature: str, action_i
     taken_back = sum(taken.values())
     if taken_back < BREAKER_LIMIT:
         return None
-    _put_setting(conn, user_id, feature, "off", timestamp)
+    put_setting(conn, user_id, feature, "off", timestamp)
     what = (f"{taken_back} of its last {len(taken)} actions" if grouping is None
             else f"changes from {taken_back} of its last {len(taken)} {grouping[1]}s")
     notice = {
         "title": f"Turned off {definition.label}: you undid or rejected {what}",
         "body": "Turn it back on under Automation when you want it again.",
     }
-    _insert_notice(conn, user_id, event_key=f"{BREAKER_NOTICE_PREFIX}{feature}:{action_id}", level="warning",
+    insert_notice(conn, user_id, event_key=f"{BREAKER_NOTICE_PREFIX}{feature}:{action_id}", level="warning",
                    title=notice["title"], body=notice["body"], timestamp=timestamp)
     return notice
 
@@ -1968,7 +1944,7 @@ def _trip_breaker(conn: sqlite3.Connection, user_id: str, feature: str, action_i
 # --- Notices -----------------------------------------------------------------------------
 
 
-def _insert_notice(
+def insert_notice(
     conn: sqlite3.Connection, user_id: str, *, event_key: str, level: str, title: str, body: str, timestamp: str,
 ) -> bool:
     if level not in NOTICE_LEVELS:
@@ -1988,7 +1964,7 @@ def notice(conn: sqlite3.Connection, user_id: str, *, event_key: str, level: str
     ``body`` is shown on the desktop too, so it never holds an email's text, a link, or an address.
     """
     with conn:
-        return _insert_notice(conn, user_id, event_key=event_key, level=level, title=title, body=body, timestamp=utc_now())
+        return insert_notice(conn, user_id, event_key=event_key, level=level, title=title, body=body, timestamp=utc_now())
 
 
 def list_notices(conn: sqlite3.Connection, user_id: str, *, unread_only: bool = False, limit: int = 20) -> list[dict[str, Any]]:
@@ -2048,16 +2024,6 @@ def record_health(
         )
 
 
-def _parse(value: Any) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-
-
 def _token_days() -> int | None:
     """PIPELINE_GMAIL_TOKEN_DAYS: how long a Testing-mode Gmail grant lasts. 0 (production apps) or nonsense means no estimate."""
     try:
@@ -2088,7 +2054,7 @@ def gmail_health(conn: sqlite3.Connection, user_id: str, *, now: datetime | None
     if row is None:
         return {"state": "not_connected", "last_ok_at": None, "last_error": "", "backoff_until": None,
                 "token_granted_at": None, "likely_expires_at": None, "expiring_soon": False, "estimate_passed": False}
-    backoff = _parse(row["backoff_until"])
+    backoff = parse_app_instant(row["backoff_until"])
     if row["status"] == "error":
         state = "needs_reconnect"
     elif row["status"] == "disconnected":
@@ -2097,12 +2063,12 @@ def gmail_health(conn: sqlite3.Connection, user_id: str, *, now: datetime | None
         state = "throttled"
     else:
         state = "connected"
-    granted = _parse(row["token_granted_at"])
+    granted = parse_app_instant(row["token_granted_at"])
     days = _token_days()
     expires = granted + timedelta(days=days) if granted is not None and days is not None else None
     estimate_passed = expires is not None and now >= expires
     if estimate_passed:
-        last_ok = _parse(row["last_ok_at"])
+        last_ok = parse_app_instant(row["last_ok_at"])
         if last_ok is not None and last_ok > expires:
             expires = None  # Gmail kept answering past the date: the estimate was wrong
     return {
@@ -2154,7 +2120,7 @@ def health_summary(conn: sqlite3.Connection, user_id: str, *, now: datetime | No
                     f"Testing-mode connections last about {days} day{'s' if days != 1 else ''}.")
         banner.append({"level": "warning", "key": "gmail_expiring", "text": text})
     if gmail["state"] == "throttled":
-        local = zone.to_local(_parse(gmail["backoff_until"]))
+        local = zone.to_local(parse_app_instant(gmail["backoff_until"]))
         banner.append({"level": "info", "key": "gmail_throttled",
                        "text": f"Gmail asked the app to slow down. Checks resume after {f'{local:%I:%M %p}'.lstrip('0')}."})
     return {

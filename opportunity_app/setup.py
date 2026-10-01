@@ -27,7 +27,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pipeline_core.env import iter_env_pairs
+
 from . import ROOT
+from .agent_providers import CLI_CONFIG, cli_available, cli_binary
 
 MIN_PYTHON = (3, 11)
 GENERATED_SECRETS = {
@@ -153,21 +156,8 @@ class Paths:
 
 
 def read_env(path: Path) -> dict[str, str]:
-    values: dict[str, str] = {}
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return values
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, _, value = stripped.partition("=")
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
-        values[key.strip()] = value
-    return values
+    """The .env as a dict. A repeated key keeps its last line (pipeline.load_env_file keeps the first)."""
+    return dict(iter_env_pairs(path))
 
 
 def set_env_values(path: Path, updates: dict[str, str], *, overwrite: bool = False) -> list[str]:
@@ -207,11 +197,8 @@ def set_env_values(path: Path, updates: dict[str, str], *, overwrite: bool = Fal
 
 
 def detect_agent_cli() -> str:
-    for provider, binary, override in (
-        ("claude-code", "claude", "PIPELINE_CLAUDE_BIN"),
-        ("codex-cli", "codex", "PIPELINE_CODEX_BIN"),
-    ):
-        if shutil.which(os.environ.get(override) or binary):
+    for provider in CLI_CONFIG:
+        if cli_available(cli_binary(provider)):
             return provider
     return ""
 
@@ -288,20 +275,10 @@ def enable_personal_data_hooks(root: Path) -> str:
 
 
 def _ensure_databases(paths: Paths) -> None:
-    import sqlite3
-
-    import pipeline
-
+    from .legacy import create_database
     from .schema import migrate_legacy_database
 
-    paths.legacy_db.parent.mkdir(parents=True, exist_ok=True)
-    original = pipeline.DB_PATH
-    pipeline.DB_PATH = paths.legacy_db
-    try:
-        conn: sqlite3.Connection = pipeline.connect()
-        conn.close()
-    finally:
-        pipeline.DB_PATH = original
+    create_database(paths.legacy_db)
     migrate_legacy_database(paths.legacy_db, paths.platform_db, paths.profile)
 
 
@@ -384,11 +361,11 @@ def _validate_automation_settings(profile: dict[str, Any], errors: list[str], wa
 def _validate_apply_agent_settings(profile: dict[str, Any], errors: list[str], warnings: list[str]) -> None:
     """The per-student Apply for me settings: how the name is written on an application, and the limits."""
     from .apply_runs import DEFAULT_LIMITS, LIMIT_MAXIMUM
-    from .profile import _name_parts_errors
+    from .profile import name_parts_errors
 
     parts = profile.get("name_parts")
     if parts is not None:
-        errors.extend(_name_parts_errors(parts))
+        errors.extend(name_parts_errors(parts))
     settings = profile.get("apply_agent")
     if settings is None:
         return
@@ -440,7 +417,7 @@ def validate_profile(profile: Any) -> dict[str, Any]:
             )
     degree = profile.get("degree")
     if isinstance(degree, str) and degree.strip():
-        from pipeline import degree_levels
+        from .legacy import degree_levels
 
         if not degree_levels(degree):
             warnings.append(
@@ -480,7 +457,7 @@ def status(paths: Paths) -> dict[str, Any]:
 
     sources_report: dict[str, Any] = {"overlay_exists": paths.overlay.exists()}
     try:
-        from pipeline import load_sources
+        from .legacy import load_sources
 
         merged = load_sources(paths.root / "config" / "sources.json", paths.overlay)
         enabled = [source for source in merged["ats_sources"] if source.get("enabled", True)]

@@ -9,8 +9,7 @@ from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import DEFAULT_PLATFORM_DB
-from .apply_runs import APPLY_ROOT
+from . import APPLY_ROOT, DEFAULT_PLATFORM_DB
 from .database import is_postgres_target
 from .ingestion import make_stage_handler
 from .notifications import connector_health, run_notification_digest, send_due_reminders

@@ -16,7 +16,8 @@ from xml.etree import ElementTree
 
 from . import ROOT
 from .profile import is_answered, update_profile
-from .schema import utc_now
+from .storage_paths import confined_path
+from .timestamps import utc_now
 
 
 DEFAULT_STORAGE = ROOT / "data" / "resumes"
@@ -400,9 +401,8 @@ def email_match_or_phone(value: str) -> bool:
 
 
 def _safe_storage_path(storage_root: Path, value: str) -> Path:
-    root = storage_root.expanduser().resolve()
-    candidate = (root / value).resolve()
-    if candidate.parent != root:
+    candidate = confined_path(storage_root, value)
+    if candidate is None:
         raise ResumeValidationError("Invalid resume storage path")
     return candidate
 

@@ -15,7 +15,8 @@ from playwright.sync_api import expect
 
 from apply_fake_ats import JOB_URL
 from conftest import OWNER_TOKEN, record_quarantined, wait_for_results
-from opportunity_app.schema import connect_product, utc_now
+from opportunity_app.schema import connect_product
+from opportunity_app.timestamps import utc_now
 from outreach_fakes import COMPOSE_ACCOUNT
 
 

@@ -25,7 +25,7 @@ from .actions import (
 from .agent_providers import AgentProvider, ToolCall, ToolDefinition, build_provider, configured_provider
 from .preparation import PreparationNotFoundError, create_document
 from .profile import get_profile
-from .schema import utc_now
+from .timestamps import utc_now
 from .user_time import user_timezone
 
 

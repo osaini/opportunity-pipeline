@@ -78,14 +78,18 @@ from typing import Any, Callable
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from .agent_providers import CliAgentProvider, _cli_available, _cli_binary, complete_text
+from .agent_providers import CliAgentProvider, cli_available, cli_binary, complete_text
 from .operations import enqueue_job
-from .outreach import LEGAL_SUFFIXES, OutreachNotFoundError, _log, company_key, get_target, website_domain
-from .outreach_contacts import FetchResult, SafeFetcher, _PageParser, public_web_url_error
+from .contact_names import website_domain
+from .outreach import LEGAL_SUFFIXES, OutreachNotFoundError, log_event, company_key, get_target
+from .outreach_config import COMPANY_RESEARCH_ENV, RESEARCH_ENV, resolve_provider
+from .outreach_contacts import PageParser
 from .outreach_discovery import RUNNERS, UNVERIFIABLE_STATUSES
 from .outreach_email_search import BLOCKED_HOSTS
+from .outreach_identity import is_institution, is_platform_host, names_host
 from .preparation import confirmed_facts
-from .schema import utc_now
+from .timestamps import parse_app_instant, utc_now
+from .web_fetch import FetchResult, SafeFetcher, public_web_url_error
 
 Runner = Callable[[str], str]
 # Sends instructions and content to a model and returns its reply.
@@ -94,11 +98,9 @@ Judge = Callable[[str, str], str]
 JOB_TYPE = "outreach_company_research"
 MAX_ATTEMPTS = 3
 ACTIVE_JOB_STATES = {"queued", "running", "retry"}
-AGENT_ENV = "PIPELINE_OUTREACH_COMPANY_RESEARCH_PROVIDER"
 # Codex's read-only sandbox can still read files on this computer, and research reads pages nobody vetted.
 # Company research therefore never runs on Codex unless the student says, in .env, that they accept that.
 ALLOW_CODEX_ENV = "PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX"
-DISCOVERY_ENV = "PIPELINE_OUTREACH_DISCOVERY_PROVIDER"
 # One company, read closely: longer than a location search, far shorter than a deep search.
 RUNNER_TIMEOUT_SECONDS = 20 * 60
 # Call prep researches again when the brief is older than this.
@@ -272,7 +274,7 @@ class ResearchUnavailable(RuntimeError):
 
 def research_agent() -> str:
     """The CLI that researches companies: its own setting, else the deep search's, else Claude Code."""
-    for env in (AGENT_ENV, DISCOVERY_ENV):
+    for env in (COMPANY_RESEARCH_ENV, RESEARCH_ENV):
         chosen = os.environ.get(env, "").strip()
         if chosen in RUNNERS:
             return chosen
@@ -292,16 +294,16 @@ def available_agent(preferred: str | None = None) -> tuple[str, str]:
     has allowed it (ALLOW_CODEX_ENV) and Claude Code is not installed.
     """
     chosen = preferred or research_agent()
-    claude_here = _cli_available(_cli_binary(CLAUDE_AGENT))
+    claude_here = cli_available(cli_binary(CLAUDE_AGENT))
     if chosen == CODEX_AGENT and claude_here:
         return CLAUDE_AGENT, f"{CODEX_AGENT} can read files on this computer, so {CLAUDE_AGENT} (web search and fetch only) did the research"
     candidates = [chosen, *(other for other in RUNNERS if other != chosen)]
     for agent in candidates:
         if agent == CODEX_AGENT and not _codex_allowed():
             continue
-        if _cli_available(_cli_binary(agent)):
+        if cli_available(cli_binary(agent)):
             return agent, "" if agent == chosen else f"{chosen} is not installed here, so {agent} did the research"
-    if not claude_here and _cli_available(_cli_binary(CODEX_AGENT)):
+    if not claude_here and cli_available(cli_binary(CODEX_AGENT)):
         raise ResearchUnavailable(
             "Only Codex CLI is installed here, and it can read files on this computer while it reads web pages. "
             f"Install Claude Code, or set {ALLOW_CODEX_ENV}=1 in .env to accept that."
@@ -356,11 +358,11 @@ def _normalized(text: str) -> str:
 _TOKEN = re.compile(r"\d+(?:[.,]\d+)*|[^\W\d_]+")
 
 
-def _tokens(text: str) -> list[str]:
+def word_tokens(text: str) -> list[str]:
     return [token.replace(",", "") if token[0].isdigit() else token for token in _TOKEN.findall(_normalized(text))]
 
 
-def _numbers(tokens: list[str]) -> set[str]:
+def number_tokens(tokens: list[str]) -> set[str]:
     return {token for token in tokens if token[0].isdigit()}
 
 
@@ -369,9 +371,9 @@ _COMPETITION_WORDS = frozenset(
     "compete competes competing competed competitor competitors competition competitive rival rivals rivalry vs versus unlike".split()
 )
 _NEGATION_WORDS = frozenset("not no never without none nor neither cannot nobody nothing".split())
-def _negated(text: str) -> bool:
+def says_not(text: str) -> bool:
     """Whether the words say "not" anywhere (the interviewer's notes use it; facts get the second read)."""
-    return any(token in _NEGATION_WORDS for token in _tokens(text))
+    return any(token in _NEGATION_WORDS for token in word_tokens(text))
 
 
 # Words too common to say anything about whether a page backs a fact.
@@ -461,12 +463,12 @@ def _name_runs(text: str) -> list[tuple[list[str], bool]]:
     return runs
 
 
-def _company_names(company: str) -> list[str]:
+def company_names(company: str) -> list[str]:
     """The company's name, and the name without its legal suffix ("Acme Robotics, Inc." is "Acme Robotics")."""
-    words = _tokens(company)
+    words = word_tokens(company)
     while words and words[-1] in LEGAL_SUFFIXES:
         words = words[:-1]
-    names = [" ".join(_tokens(company)), " ".join(words)]
+    names = [" ".join(word_tokens(company)), " ".join(words)]
     return [name for name in dict.fromkeys(names) if name]
 
 
@@ -534,7 +536,7 @@ def _word_near(word: str, near: set[str]) -> bool:
     )
 
 
-class _Page:
+class ResearchPage:
     """One fetched page: its raw HTML for the link to the company's site, its visible words for everything else.
 
     Every word also knows its line (a paragraph or heading) and its sentence,
@@ -544,7 +546,7 @@ class _Page:
     def __init__(self, result: FetchResult) -> None:
         self.url = result.url
         self.raw = result.text
-        parser = _PageParser()
+        parser = PageParser()
         try:
             parser.feed(result.text)
             parser.close()
@@ -561,7 +563,7 @@ class _Page:
             start = len(self.tokens)
             sentences = _sentences(line)
             for sentence in sentences:
-                words = _tokens(sentence)
+                words = word_tokens(sentence)
                 self._sentence_spans.append((len(self.tokens), len(self.tokens) + len(words)))
                 self._sentence_of += [len(self._sentence_spans) - 1] * len(words)
                 self._line_of += [line_number] * len(words)
@@ -590,7 +592,7 @@ class _Page:
         and every piece of the quote is on the page or the quote is refused.
         A short piece may not carry a "not".
         """
-        every = [_tokens(piece) for piece in re.split(r"\.\.\.|…", str(quote or ""))]
+        every = [word_tokens(piece) for piece in re.split(r"\.\.\.|…", str(quote or ""))]
         every = [piece for piece in every if piece]
         pieces = [piece for piece in every if len(piece) >= PIECE_WORDS]
         if sum(len(piece) for piece in pieces) < MIN_QUOTE_WORDS:
@@ -641,7 +643,7 @@ class _Page:
 
     def sentence_has(self, span: tuple[int, int], name: str) -> bool:
         """Whether the sentence the quote is in names ``name``."""
-        words = _tokens(name)
+        words = word_tokens(name)
         return bool(words) and f" {' '.join(words)} " in f" {' '.join(self._sentence_tokens(span))} "
 
     def sentence_says_compete(self, span: tuple[int, int], companies: list[str], competitors: list[str]) -> bool:
@@ -653,12 +655,12 @@ class _Page:
         joined = f" {' '.join(self._sentence_tokens(span))} "
         words = set(joined.split())
         named = all(
-            any(f" {' '.join(_tokens(name))} " in joined for name in names if _tokens(name)) for names in (companies, competitors)
+            any(f" {' '.join(word_tokens(name))} " in joined for name in names if word_tokens(name)) for names in (companies, competitors)
         )
         return named and (bool(words & _COMPETITION_WORDS) or " alternative to " in joined or " instead of " in joined)
 
     def has_phrase(self, text: str) -> bool:
-        words = _tokens(text)
+        words = word_tokens(text)
         return bool(words) and f" {' '.join(words)} " in self.joined
 
     def passage(self, span: tuple[int, int]) -> dict[str, str]:
@@ -697,10 +699,10 @@ class _Page:
         settles it. So may ``person``'s, when the page is that one person's own
         profile ("She led...").
         """
-        words = _tokens(text)
+        words = word_tokens(text)
         window = self.tokens[max(0, span[0] - WINDOW): span[1] + WINDOW]
         near = set(window) | self.top
-        numbers = sorted(_numbers(words) - near)
+        numbers = sorted(number_tokens(words) - near)
         if numbers:
             return f"the quote and the lines around it do not state {', '.join(numbers)}"
         units = sorted(f"{number} {unit}" for number, unit in _unit_pairs(words) - _unit_pairs(window))
@@ -716,12 +718,12 @@ class _Page:
         )
         if months:
             return f"the quote and the lines around it do not state {', '.join(months)}"
-        own = set(_tokens(company))
-        if len(_tokens(person)) >= 2 and self.has_phrase(person):
-            own |= set(_tokens(person))
+        own = set(word_tokens(company))
+        if len(word_tokens(person)) >= 2 and self.has_phrase(person):
+            own |= set(word_tokens(person))
         absent: list[str] = []
         for tokens, opens_sentence in _name_runs(text):
-            first = _tokens(tokens[0])
+            first = word_tokens(tokens[0])
             # "Co-founder Dana Ortiz", "Writes C++": a sentence may open on a
             # plain word, which is grammar, not a name.
             grammar = opens_sentence and bool(first) and all(
@@ -730,10 +732,10 @@ class _Page:
             )
             absent += [
                 token for token in (tokens[1:] if grammar else tokens)
-                if not all(word in local or word in own or word in _MONTHS for word in _tokens(token))
+                if not all(word in local or word in own or word in _MONTHS for word in word_tokens(token))
             ]
             # "First Round Capital" is one name: what follows its first word must stand together.
-            tail = [word for token in tokens[1:] for word in _tokens(token)]
+            tail = [word for token in tokens[1:] for word in word_tokens(token)]
             if grammar and len(tokens) >= 3 and not set(tail) <= own and not _phrase_in(tail, window, self.top_words):
                 absent.append(" ".join(tokens[1:]))
         if absent:
@@ -756,7 +758,7 @@ class _Page:
         """
         if domain and re.search(rf"(?<![\w.-]){re.escape(domain + path)}(?![\w-])", self.raw, re.IGNORECASE):
             return True
-        return any(self.has_phrase(name) for name in _company_names(company))
+        return any(self.has_phrase(name) for name in company_names(company))
 
 
 def _site_scope(website: str, company: str) -> tuple[str, str]:
@@ -765,11 +767,9 @@ def _site_scope(website: str, company: str) -> tuple[str, str]:
     A university lab's page (uni.edu/bovi-lab), a page on a platform
     (sites.google.com/view/acme, github.com/acme), or any path on a host the
     company's name is not in stands for that path only, never every page on the
-    host. The rules are the inbox's (outreach_inbox._website_domain).
+    host. The rules are the inbox's (outreach_identity.site_domain).
     """
     from .mail_trust import FREEMAIL, registrable_domain
-    from .outreach_inbox import _institution, _names_host, _platform
-
     host = website_domain(website)
     if not host or "." not in host or host in FREEMAIL:
         return "", ""
@@ -778,11 +778,11 @@ def _site_scope(website: str, company: str) -> tuple[str, str]:
         path = urlsplit(text if "//" in text else f"https://{text}").path.rstrip("/").lower()
     except ValueError:
         path = ""
-    if _names_host(company, host):
+    if names_host(company, host):
         return host, ""
     if path:
         return host, path
-    if (_platform(host) or _institution(host)) and host == (registrable_domain(host) or host):
+    if (is_platform_host(host) or is_institution(host)) and host == (registrable_domain(host) or host):
         return "", ""
     return host, ""
 
@@ -799,7 +799,7 @@ def _own_site(url: str, scope: tuple[str, str]) -> bool:
 
 def _named_by_host(url: str, name: str) -> bool:
     """Whether the page's own address is the company's ("voltarm.example" for Voltarm): a page that never repeats its name."""
-    key = "".join(_tokens(name))
+    key = "".join(word_tokens(name))
     labels = [label.replace("-", "") for label in (urlsplit(url).hostname or "").lower().removeprefix("www.").split(".")[:-1]]
     return bool(key) and key in labels
 
@@ -827,8 +827,8 @@ class _Reader:
         self.clock = clock
         self._stop_at = clock() + budget_seconds
         self._plain: dict[str, FetchResult] = {}
-        self._pages: dict[str, _Page] = {}
-        self._rendered: dict[str, _Page | None] = {}
+        self._pages: dict[str, ResearchPage] = {}
+        self._rendered: dict[str, ResearchPage | None] = {}
         # Why a page the browser ended on may not be used, by the page that was asked for.
         self.render_refused: dict[str, str] = {}
 
@@ -850,12 +850,12 @@ class _Reader:
             )
         return self._plain[url]
 
-    def page(self, url: str) -> _Page:
+    def page(self, url: str) -> ResearchPage:
         if url not in self._pages:
-            self._pages[url] = _Page(self.fetch(url))
+            self._pages[url] = ResearchPage(self.fetch(url))
         return self._pages[url]
 
-    def rendered(self, url: str) -> _Page | None:
+    def rendered(self, url: str) -> ResearchPage | None:
         """The page after its scripts ran, for sites whose HTML is an empty shell.
 
         A browser follows redirects on its own, so the page it ended on is held to the
@@ -875,7 +875,7 @@ class _Reader:
             if refused:
                 self.render_refused[url] = refused
                 result = None
-            self._rendered[url] = _Page(FetchResult(result[0], 200, result[1])) if result else None
+            self._rendered[url] = ResearchPage(FetchResult(result[0], 200, result[1])) if result else None
         return self._rendered[url]
 
 
@@ -888,7 +888,7 @@ _NO_SPAN = (0, 0)
 
 def _check_one(
     fact: dict[str, Any], reader: _Reader, company: str, scope: tuple[str, str],
-) -> tuple[str, str, _Page | None, bool, tuple[int, int]]:
+) -> tuple[str, str, ResearchPage | None, bool, tuple[int, int]]:
     """The word checks: ('passed' | 'unchecked' | 'unlinked' | 'refused', reason, the page the quote was found on,
     whether it names the company, and where the quote sits on it).
 
@@ -901,7 +901,7 @@ def _check_one(
     refused = _refused_source(url)
     if refused:
         return "refused", refused, None, False, _NO_SPAN
-    if len(_tokens(fact["quote"])) < MIN_QUOTE_WORDS:
+    if len(word_tokens(fact["quote"])) < MIN_QUOTE_WORDS:
         return "refused", "it quotes too little of its page to check", None, False, _NO_SPAN
     if reader.over_budget(url):
         return "refused", f"over the {MAX_PAGES} pages one run checks", None, False, _NO_SPAN
@@ -948,20 +948,20 @@ def _check_one(
     if fact["section"] == COMPETITORS:
         # About another company: its passage names it. Whether the two compete
         # is the agent's call unless the quote's own sentence says so.
-        names = _company_names(fact["competitor"])
+        names = company_names(fact["competitor"])
         window = f" {' '.join(page.tokens[max(0, span[0] - WINDOW): span[1] + WINDOW])} "
-        if not (any(f" {' '.join(_tokens(name))} " in window for name in names) or _named_by_host(page.url, fact["competitor"])):
+        if not (any(f" {' '.join(word_tokens(name))} " in window for name in names) or _named_by_host(page.url, fact["competitor"])):
             return "refused", f"the quote and the lines around it do not name {fact['competitor']}", page, False, span
         # Being named beside each other says nothing about competing (a partner, a customer, an investor),
         # and neither does the company's own site listing them. The quote's sentence must say it.
-        says = page.sentence_says_compete(span, _company_names(company), names)
+        says = page.sentence_says_compete(span, company_names(company), names)
         return "passed", COMPETE_NOTE if says else PICK_NOTE, page, False, span
     if own_site or page.names_company(company, *scope):
         return "passed", "", page, True, span
     return "unlinked", "its source does not name the company", page, False, span
 
 
-def _second_read(
+def second_read(
     items: list[dict[str, Any]], judge: Judge | None, instructions: str = JUDGE_INSTRUCTIONS, rivals: dict[str, bool] | None = None,
 ) -> dict[str, tuple[bool, str]]:
     """The judge's verdict on each item it answered: (supported, why). An item it did not answer is missing.
@@ -1010,7 +1010,7 @@ def check_brief(
     reader = _Reader(fetcher, renderer, budget_seconds=budget_seconds, clock=clock)
     kept: list[dict[str, Any]] = []
     # Facts whose words passed, each waiting for the second read: (fact, note, page, names the company, span, linked only by a person).
-    waiting: list[tuple[dict[str, Any], str, _Page, bool, tuple[int, int], bool]] = []
+    waiting: list[tuple[dict[str, Any], str, ResearchPage, bool, tuple[int, int], bool]] = []
     refused: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
     counts = {key: 0 for key in SECTION_IDS}
@@ -1062,14 +1062,14 @@ def check_brief(
             counts[fact["section"]] += 1
             kept.append({**fact, "checked": False, "note": reason})
             continue
-        if state == "unlinked" and (fact["section"] != TEAM or len(_tokens(fact["person"])) < 2):
+        if state == "unlinked" and (fact["section"] != TEAM or len(word_tokens(fact["person"])) < 2):
             # A page that names neither the company nor a person there is about something else. And a person's
             # own page (a paper, a thesis, an earlier company's page) speaks for the person, never for the company's
             # technology, customers, or funding: only the team section may rest on it.
             refuse(f"{reason}; a fact from a person's own page belongs in {TEAM}, not {fact['section']}"
-                   if fact["section"] != TEAM and len(_tokens(fact["person"])) >= 2 else reason)
+                   if fact["section"] != TEAM and len(word_tokens(fact["person"])) >= 2 else reason)
             continue
-        if state == "unlinked" and f" {' '.join(_tokens(fact['person']))} " not in f" {' '.join(_tokens(fact['text']))} ":
+        if state == "unlinked" and f" {' '.join(word_tokens(fact['person']))} " not in f" {' '.join(word_tokens(fact['text']))} ":
             # The note says whose page it is from, so the student never reads it as the company's own.
             refuse(f"its source is {fact['person']}'s own page, so the fact must name {fact['person']}")
             continue
@@ -1085,7 +1085,7 @@ def check_brief(
             **({"competitor": fact["competitor"]} if fact["section"] == COMPETITORS else {}), **page.passage(span),
         })
     rivals: dict[str, bool] = {}
-    verdicts = _second_read(items, judge, rivals=rivals)
+    verdicts = second_read(items, judge, rivals=rivals)
     confirmed: list[tuple[dict[str, Any], str, bool, bool]] = []
     for index, (fact, note, _page, names_company, _span, only_person) in enumerate(waiting):
         verdict = verdicts.get(f"f{index}")
@@ -1111,12 +1111,12 @@ def check_brief(
     # company, names that same person. An investor or a competitor's staff
     # mentioned elsewhere do not tie anyone to the company's team.
     ties = " ".join(f"{fact['text']} {fact['quote']}" for fact, _note, names, only in confirmed if names and not only and fact["section"] == "team")
-    linked_words = f" {' '.join(_tokens(ties))} "
+    linked_words = f" {' '.join(word_tokens(ties))} "
     for fact, note, _names, only_person in confirmed:
         if not only_person:
             kept.append({**fact, "checked": True, "note": note})
             continue
-        person_words = " ".join(_tokens(fact["person"]))
+        person_words = " ".join(word_tokens(fact["person"]))
         if len(person_words.split()) >= 2 and f" {person_words} " in linked_words:
             kept.append({**fact, "checked": True, "note": ""})
         else:
@@ -1153,21 +1153,13 @@ def company_changed(started: dict[str, Any], company: Any, website: Any) -> bool
     return bool(before) and website_domain(str(website or "")) != before
 
 
-def _when(stamp: Any) -> datetime | None:
-    try:
-        when = datetime.fromisoformat(str(stamp))
-    except (TypeError, ValueError):
-        return None
-    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
-
-
 def _checked_facts(brief: dict[str, Any]) -> list[dict[str, Any]]:
     return [fact for fact in brief.get("facts") or [] if isinstance(fact, dict) and fact.get("checked")]
 
 
 def brief_is_fresh(target: dict[str, Any], now: datetime | None = None) -> bool:
     """Whether the brief is recent and has a checked fact. One that kept none, or only facts not checked, is worth trying again."""
-    written = _when(target.get("tech_brief_at")) if target.get("tech_brief_at") else None
+    written = parse_app_instant(target.get("tech_brief_at")) if target.get("tech_brief_at") else None
     if written is None or not _checked_facts(brief_of(target)):
         return False
     return (now or datetime.now(timezone.utc)) - written < FRESH_FOR
@@ -1183,7 +1175,7 @@ def research_due(target: dict[str, Any], now: datetime | None = None) -> bool:
     now = now or datetime.now(timezone.utc)
     if brief_is_fresh(target, now):
         return False
-    tried = _when(target.get("tech_brief_tried_at")) if target.get("tech_brief_tried_at") else None
+    tried = parse_app_instant(target.get("tech_brief_tried_at")) if target.get("tech_brief_tried_at") else None
     if tried is not None and now - tried < RETRY_AFTER:
         return False
     return (target.get("tech_brief_job") or {}).get("state") not in ACTIVE_JOB_STATES
@@ -1234,7 +1226,7 @@ def research_company(
                 "UPDATE outreach_targets SET tech_brief_error=?, updated_at=? WHERE id=? AND user_id=?",
                 ("The company or its website changed while it was being researched, so that research was not kept.", timestamp, target_id, user_id),
             )
-            _log(conn, target_id, user_id, "tech_brief_failed", detail="The company changed during research")
+            log_event(conn, target_id, user_id, "tech_brief_failed", detail="The company changed during research")
             return get_target(conn, target_id, user_id=user_id)
         earlier = json.loads(row[0] or "{}")
         new_checked, old_checked = len(_checked_facts(brief)), len(_checked_facts(earlier))
@@ -1249,7 +1241,7 @@ def research_company(
                     timestamp, target_id, user_id,
                 ),
             )
-            _log(conn, target_id, user_id, "tech_brief_failed", detail=f"Kept none: {summary}")
+            log_event(conn, target_id, user_id, "tech_brief_failed", detail=f"Kept none: {summary}")
             return get_target(conn, target_id, user_id=user_id)
         if note:
             brief["note"] = note
@@ -1261,7 +1253,7 @@ def research_company(
             """,
             (json.dumps(brief, ensure_ascii=False), timestamp, agent, timestamp, target_id, user_id),
         )
-        _log(conn, target_id, user_id, "tech_brief_written", detail=summary)
+        log_event(conn, target_id, user_id, "tech_brief_written", detail=summary)
     return get_target(conn, target_id, user_id=user_id)
 
 
@@ -1273,18 +1265,17 @@ def record_error(conn: sqlite3.Connection, target_id: str, *, user_id: str, erro
             "UPDATE outreach_targets SET tech_brief_error=?, updated_at=? WHERE id=? AND user_id=?",
             (message, utc_now(), target_id, user_id),
         )
-        _log(conn, target_id, user_id, "tech_brief_failed", detail=message[:500])
+        log_event(conn, target_id, user_id, "tech_brief_failed", detail=message[:500])
 
 
 def text_model(provider_factory: Callable[[str, str], Any], provider: str | None, fallback: str) -> Judge:
-    """The model for the second read: the call prep writer (outreach_drafting.resolve_provider), or,
+    """The model for the second read: the call prep writer (outreach_config.resolve_provider), or,
     when that is the no-AI template, the research agent's own CLI, which research needs anyway.
 
     The second read is a separate call on the page's own passage, not a different model: when the
     writer is the same provider as the research agent, the same model reads it, and the notes say
     "a separate read", never "a model that did not write it"."""
     from .agent_providers import provider_catalog
-    from .outreach_drafting import resolve_provider
 
     provider_id, model = resolve_provider(provider, purpose="call_prep")
     if provider_id == "legacy":
@@ -1348,7 +1339,7 @@ def queue_research(conn: sqlite3.Connection, target_id: str, *, user_id: str, re
     job = target.get("tech_brief_job")
     if job and job["state"] in ACTIVE_JOB_STATES:
         return target
-    tried = _when(target.get("tech_brief_tried_at")) if target.get("tech_brief_tried_at") else None
+    tried = parse_app_instant(target.get("tech_brief_tried_at")) if target.get("tech_brief_tried_at") else None
     if (
         (target.get("call_prep_job") or {}).get("state") == "running"
         and tried is not None and datetime.now(timezone.utc) - tried < CALL_PREP_RESEARCH_WINDOW
@@ -1370,7 +1361,7 @@ def queue_research(conn: sqlite3.Connection, target_id: str, *, user_id: str, re
             (queued["id"], utc_now(), target_id, user_id),
         ).rowcount
         if claimed:
-            _log(conn, target_id, user_id, "tech_brief_queued", detail=reason)
+            log_event(conn, target_id, user_id, "tech_brief_queued", detail=reason)
         else:
             conn.execute("UPDATE job_queue SET state='cancelled', updated_at=? WHERE id=?", (utc_now(), queued["id"]))
     return get_target(conn, target_id, user_id=user_id)

@@ -21,13 +21,14 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, application_inbox, automation, internal_automation, mail_trust, outreach_gmail
+from opportunity_app import STATIC_DIR, application_inbox, automation, inbox_watcher, internal_automation, mail_trust, outreach_gmail
 from opportunity_app.actions import record_intent, update_application
 from opportunity_app.api import create_app
 from opportunity_app.application_inbox import match_application, parse_message
 from opportunity_app.connections import classify_monitored_message, decide_monitored_event, monitored_event
 from opportunity_app.operations import export_account
-from opportunity_app.schema import connect_product, utc_now
+from opportunity_app.schema import connect_product
+from opportunity_app.timestamps import parse_app_instant, utc_now
 from opportunity_app.urgent import urgent_queue
 
 from helpers_platform import build_and_migrate
@@ -435,7 +436,7 @@ class LiveMailTests(MailCase):
         self.pass_once()
         sync = self.sync()
         self.assertEqual(sync["history_id"], "100")
-        self.assertEqual(automation._parse(sync["enabled_at"]), since)
+        self.assertEqual(parse_app_instant(sync["enabled_at"]), since)
         self.assertIn(sync["backfill_state"], ("running", "done"))
 
     def test_a_confirmation_moves_applying_to_applied_with_gmails_received_time(self):
@@ -752,7 +753,7 @@ class CursorTests(MailCase):
         self.assertEqual(result["state"], "ok", result)
         [query] = [search for search in self.gmail.searches if search.startswith("in:inbox after:")]
         after = int(query.rsplit(":", 1)[1])
-        enabled = automation._parse(self.sync()["enabled_at"])
+        enabled = parse_app_instant(self.sync()["enabled_at"])
         self.assertEqual(after, int(enabled.timestamp()), "a day before the last good pass, but never before the switch was turned on")
         self.assertEqual(self.sync()["history_id"], "555", "live reading goes on from the cursor taken before the search")
         self.assertEqual(self.sync()["recovery_state"], "")
@@ -976,7 +977,7 @@ class OutreachPossibleReplyRecordTests(MailCase):
 
 class WatcherTests(MailCase):
     def test_the_watcher_runs_it_as_a_fifth_step_only_when_it_is_not_off(self):
-        from opportunity_app.outreach_inbox import InboxWatcher
+        from opportunity_app.inbox_watcher import InboxWatcher
 
         watcher = InboxWatcher(self.platform_path, client_factory=self.factory, decisions_for=lambda conn, user_id: None)
         with mock.patch.object(application_inbox, "run_pass", return_value={"state": "ok", "detail": {"read": 0}}) as step:
@@ -1420,10 +1421,8 @@ class ReviewFixMailTests(MailCase):
         self.assertIsNotNone(self.sync()["enabled_at"], "turned on again, it starts afresh")
 
     def test_the_watcher_leaves_the_cursor_alone_when_it_cannot_read_the_switch(self):
-        from opportunity_app import outreach_inbox
-
         self.started()
-        watcher = outreach_inbox.InboxWatcher(self.platform_path, client_factory=self.factory, decisions_for=lambda conn, user_id: None)
+        watcher = inbox_watcher.InboxWatcher(self.platform_path, client_factory=self.factory, decisions_for=lambda conn, user_id: None)
         real_mode = automation.mode
 
         def unreadable(conn, user_id, key):
@@ -1431,7 +1430,7 @@ class ReviewFixMailTests(MailCase):
                 raise sqlite3.OperationalError("database is locked")
             return real_mode(conn, user_id, key)
 
-        with mock.patch.object(outreach_inbox.automation, "mode", side_effect=unreadable):
+        with mock.patch.object(inbox_watcher.automation, "mode", side_effect=unreadable):
             watcher.run_once()
         self.assertEqual(self.sync()["history_id"], "100", "not knowing the switch is not the switch being off")
 

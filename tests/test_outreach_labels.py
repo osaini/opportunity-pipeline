@@ -17,10 +17,13 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, automation, outreach, outreach_gmail, outreach_inbox, outreach_labels, schema
+from opportunity_app import STATIC_DIR, automation, inbox_watcher, outreach, outreach_gmail, outreach_inbox, outreach_labels, schema
 from opportunity_app.api import create_app
-from opportunity_app.outreach_inbox import InboxWatcher, decide_possible_reply
-from opportunity_app.schema import connect_product, utc_now
+from opportunity_app.inbox_watcher import InboxWatcher
+from opportunity_app.outreach_inbox import decide_possible_reply
+from opportunity_app.schema import connect_product
+from opportunity_app.settings_store import get_setting, put_setting
+from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 from helpers_gmail import (
@@ -33,7 +36,7 @@ LABEL = "opportunities"
 START = datetime(2026, 9, 29, 15, 0, tzinfo=timezone.utc)
 # What a thread read asks Gmail for: the metadata format, and the headers that tell a delivery failure notice apart.
 THREAD_READ = ("metadata", ["from", "subject", "content-type", "x-failed-recipients"])
-# Every local part _is_delivery_notice skips by sender, as the sweep's -from:(...) lists them.
+# Every local part is_delivery_notice skips by sender, as the sweep's -from:(...) lists them.
 DAEMONS = "mail-daemon OR mailer-daemon OR mailerdaemon OR postmaster"
 INSUFFICIENT = {"error": {"code": 403, "message": "Request had insufficient authentication scopes.",
                           "errors": [{"reason": "insufficientPermissions", "domain": "global"}]}}
@@ -166,7 +169,7 @@ class LabelCase(unittest.TestCase):
         return [call for call in self.gmail.batch_modifies]
 
     def setting(self, key):
-        value = automation._setting(self.conn, USER, key)
+        value = get_setting(self.conn, USER, key)
         self.conn.rollback()
         return value
 
@@ -207,7 +210,7 @@ class LabelCase(unittest.TestCase):
 
     def pause(self):
         with self.conn:
-            automation._put_setting(self.conn, USER, automation.PAUSED_KEY, "on", utc_now())
+            put_setting(self.conn, USER, automation.PAUSED_KEY, "on", utc_now())
 
 
 class LabelNameTests(LabelCase):
@@ -1009,7 +1012,7 @@ class WatcherTests(LabelCase):
             "label_refused": "Gmail would not create a label with that name; choose another in Outreach settings",
         }
         for state, text in expected.items():
-            self.assertEqual(outreach_inbox.STEP_ERRORS[state], text)
+            self.assertEqual(inbox_watcher.STEP_ERRORS[state], text)
             self.assertNotIn("@", text)
         self.seeded(1)
         with self.conn:

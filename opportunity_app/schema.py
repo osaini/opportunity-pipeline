@@ -8,56 +8,35 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import threading
 from contextlib import closing
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from pipeline import region_label
 from pipeline_core import OpportunityFilters, OpportunityRepository
+from pipeline_core.identity import sort_key
+from pipeline_core.read_model import RULESET_VERSION
+from pipeline_core.regions import region_label
 
 from . import DEFAULT_LEGACY_DB, DEFAULT_PLATFORM_DB, DEFAULT_PROFILE, ROOT
 from .company_tags import ensure_company_tags_current, regenerate_company_tags
 from .opportunity_metadata import extract_opportunity_metadata
-from .timestamps import canonical_utc
+from .timestamps import canonical_utc, utc_now
 from .database import PostgresConnection, is_postgres_target
 
 
 MIGRATIONS_DIR = ROOT / "migrations"
-SCHEMA_PATH = MIGRATIONS_DIR / "0001_platform_sqlite.sql"
 LOCAL_USER_ID = "local-user"
-RULESET_VERSION = "legacy-v1"
+# The migration_runs key of the one-time import from the legacy database. Not the
+# ruleset version (`pipeline_core.read_model.RULESET_VERSION`), though the string is the same.
+LEGACY_MIGRATION_KEY = "legacy-v1"
 APPLICATION_STATUSES = {"applying", "applied", "interview", "offer", "rejected", "withdrawn"}
 # The updated_at of an 'automation_paused' row that was made 'off' and never
 # flipped. That timestamp means "when the pause last started or ended", so a
 # row that merely came into being must not look like a resume that happened
 # just now (outreach_schedule would then say a late send was held by a pause).
 PAUSE_NEVER_CHANGED = "1970-01-01T00:00:00+00:00"
-
-
-# The last stamp utc_now handed out in this process, so the next is always later.
-_LAST_NOW = datetime.min.replace(tzinfo=timezone.utc)
-_NOW_LOCK = threading.Lock()
-
-
-def utc_now() -> str:
-    """Now, in UTC to the microsecond, and always later than the last call in this process.
-
-    Rows are ordered by these stamps (the automation ledger, notices, events),
-    and application_events is unique on one. Some clocks tick only every 15 ms
-    or so (Windows before Python 3.13), which would hand two writes in a row
-    the same stamp and leave their order to chance. A tie moves on by a
-    microsecond instead.
-    """
-    global _LAST_NOW
-    with _NOW_LOCK:
-        now = datetime.now(timezone.utc)
-        if now <= _LAST_NOW:
-            now = _LAST_NOW + timedelta(microseconds=1)
-        _LAST_NOW = now
-    return now.isoformat(timespec="microseconds")
 
 
 # Every request opens its own connection, so anything done per connection is
@@ -209,18 +188,6 @@ def _apply_posted_at_utc(conn: sqlite3.Connection, sql: str) -> None:
     _repair_observation_timestamps(conn)
 
 
-def sort_key(value: str | None) -> str:
-    """The stored fold used to order company and title.
-
-    One function, applied once at write time, so every backend orders by the
-    same bytes. `casefold` rather than `lower` because it is the fold the
-    tenant path has always used -- `lower` leaves U+00DF alone and would change
-    which of 'Straße' and 'Strasse' comes first.
-    """
-
-    return str(value or "").casefold()
-
-
 def backfill_sort_keys(conn: sqlite3.Connection) -> int:
     """Derive company_sort_key/title_sort_key. Idempotent by recomputation."""
 
@@ -309,7 +276,7 @@ def _apply_internal_automation(conn: sqlite3.Connection, sql: str) -> None:
     conn.executescript(sql)
 
 
-# What an outreach event records beside its text (outreach._log's ``data``): a
+# What an outreach event records beside its text (outreach.log_event's ``data``): a
 # reply read from Gmail keeps its ids, its sender, and both readings of it.
 _DECLINE_THANK_YOU_COLUMNS = (
     ("outreach_events", "detail_json", "TEXT NOT NULL DEFAULT '{}'"),
@@ -909,9 +876,9 @@ def migrate_legacy_database(
                 INSERT INTO migration_runs(
                     migration_key, source_path, source_count, imported_count,
                     started_at, finished_at
-                ) VALUES('legacy-v1', ?, ?, ?, ?, ?)
+                ) VALUES(?, ?, ?, ?, ?, ?)
                 """,
-                (str(source_path), len(jobs), len(jobs), started_at, finished_at),
+                (LEGACY_MIGRATION_KEY, str(source_path), len(jobs), len(jobs), started_at, finished_at),
             )
 
         source_active_ids = _legacy_active_ids(source)

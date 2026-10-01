@@ -36,7 +36,8 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
-ACCOUNT_ENV = "PIPELINE_LINKEDIN_ACCOUNT"
+from .outreach_config import LINKEDIN_ENV
+
 MCPORTER_ENV = "PIPELINE_MCPORTER"
 SERVER = "linkedin-scraper"
 READ_TOOLS = frozenset({"get_my_profile", "search_people", "get_person_profile"})
@@ -67,7 +68,7 @@ def username_from(value: str) -> str:
 
 
 def configured_account() -> str:
-    return username_from(os.environ.get(ACCOUNT_ENV, ""))
+    return username_from(os.environ.get(LINKEDIN_ENV, ""))
 
 
 # What cmd.exe reads as more than text: a search for a name with one of these in it would run as a command.
@@ -191,7 +192,7 @@ class LinkedInClient:
         """The account's username once it is the configured one, signed in with browser import off."""
         wanted = configured_account()
         if not wanted:
-            raise LinkedInUnavailable(f"LinkedIn is off: no account is set in {ACCOUNT_ENV}")
+            raise LinkedInUnavailable(f"LinkedIn is off: no account is set in {LINKEDIN_ENV}")
         if self._checked == wanted:
             return wanted
         problem = config_problem(self._config())

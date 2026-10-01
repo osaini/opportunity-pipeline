@@ -9,7 +9,9 @@ from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from .schema import utc_now
+from pipeline_core.read_model import RULESET_VERSION
+
+from .timestamps import utc_now
 from .user_time import named_timezone, user_timezone
 
 
@@ -26,7 +28,7 @@ APPLICATION_STAGES = {
 TERMINAL_APPLICATION_STAGES = {"offer", "rejected", "withdrawn", "archived"}
 # Stages whose tasks and follow-ups no longer need doing. Unlike reminder
 # delivery above, an offer stays open here: replying to it is real work.
-CLOSED_APPLICATION_STAGES = {"rejected", "withdrawn", "archived"}
+CLOSED_APPLICATION_STAGES = ("rejected", "withdrawn", "archived")
 
 
 class OpportunityNotFoundError(LookupError):
@@ -70,7 +72,7 @@ def record_intent(
             response["replayed"] = True
             return response
     with conn:
-        response = _record_intent_tx(
+        response = record_intent_tx(
             conn, opportunity_id, action, user_id=user_id, idempotency_key=idempotency_key, source=source,
         )
     if action == "saved" and not response["unchanged"]:
@@ -82,7 +84,7 @@ def record_intent(
     return response
 
 
-def _intent_state(conn: sqlite3.Connection, opportunity_id: str, user_id: str) -> str:
+def intent_state(conn: sqlite3.Connection, opportunity_id: str, user_id: str) -> str:
     """'saved', 'passed', or '' for neither, read from the latest interaction as record_intent reads it."""
     latest = conn.execute(
         """
@@ -94,7 +96,7 @@ def _intent_state(conn: sqlite3.Connection, opportunity_id: str, user_id: str) -
     return latest["action"] if latest and latest["action"] in {"saved", "passed"} else ""
 
 
-def _record_intent_tx(
+def record_intent_tx(
     conn: sqlite3.Connection,
     opportunity_id: str,
     action: str,
@@ -111,7 +113,7 @@ def _record_intent_tx(
     """
     if action not in INTENT_ACTIONS:
         raise ValueError(f"Unsupported intent action: {action}")
-    current_state = _intent_state(conn, opportunity_id, user_id)
+    current_state = intent_state(conn, opportunity_id, user_id)
     desired_state = {"saved": "saved", "passed": "passed", "undo": ""}.get(action)
     state_unchanged = desired_state is not None and current_state == desired_state
     timestamp = timestamp or utc_now()
@@ -187,16 +189,30 @@ def ensure_application_tx(
         (opportunity_id, user_id),
     ).fetchone()
     application_id = str(row["id"])
+    log_application_event(
+        conn, application_id, event_type, detail or {}, timestamp, from_stage=row["stage"], to_stage=row["stage"],
+    )
+    return application_id
+
+
+def log_application_event(
+    conn: sqlite3.Connection, application_id: str, event_type: str, detail: Any, timestamp: str,
+    *, from_stage: str | None = None, to_stage: str | None = None, encoded: str | None = None,
+) -> None:
+    """Append one row to an application's timeline. The caller owns the transaction.
+
+    ``detail`` is stored as ``json.dumps(detail)``, or pass ``encoded`` to store
+    text already encoded another way (apply_runs sorts its keys). ``from_stage``
+    and ``to_stage`` are NULL unless the event names a stage.
+    """
     conn.execute(
         """
         INSERT INTO application_events(
-            application_id, event_type, from_stage, to_stage,
-            detail_json, created_at
+            application_id, event_type, from_stage, to_stage, detail_json, created_at
         ) VALUES(?, ?, ?, ?, ?, ?)
         """,
-        (application_id, event_type, row["stage"], row["stage"], json.dumps(detail or {}), timestamp),
+        (application_id, event_type, from_stage, to_stage, json.dumps(detail) if encoded is None else encoded, timestamp),
     )
-    return application_id
 
 
 def list_applications(conn: sqlite3.Connection, *, user_id: str) -> list[dict[str, Any]]:
@@ -213,11 +229,11 @@ def list_applications(conn: sqlite3.Connection, *, user_id: str) -> list[dict[st
         LEFT JOIN fit_scores fs
           ON fs.opportunity_id = o.id
          AND fs.user_id = a.user_id
-         AND fs.ruleset_version = 'legacy-v1'
+         AND fs.ruleset_version = ?
         WHERE a.user_id=?
         ORDER BY a.updated_at DESC, a.id ASC
         """,
-        (user_id,),
+        (RULESET_VERSION, user_id),
     ).fetchall()
     zone = user_timezone(conn, user_id)
     today = zone.today()
@@ -388,14 +404,7 @@ def add_application_contact(
             """,
             (contact_id, application_id, user_id, name.strip(), role.strip(), email.strip(), phone.strip(), timestamp, timestamp),
         )
-        conn.execute(
-            """
-            INSERT INTO application_events(
-                application_id, event_type, from_stage, to_stage, detail_json, created_at
-            ) VALUES(?, 'contact_added', NULL, NULL, ?, ?)
-            """,
-            (application_id, json.dumps({"contact_id": contact_id, "name": name.strip()}), timestamp),
-        )
+        log_application_event(conn, application_id, "contact_added", {"contact_id": contact_id, "name": name.strip()}, timestamp)
     return dict(conn.execute("SELECT * FROM application_contacts WHERE id=?", (contact_id,)).fetchone())
 
 
@@ -425,13 +434,13 @@ def add_application_task(
     zone = named_timezone(timezone_name) if timezone_name else user_timezone(conn, user_id)
     due_at = zone.normalize_instant(due_at, field="due_at")
     with conn:
-        return _add_application_task_tx(
+        return add_application_task_tx(
             conn, application_id, title=title, due_at=due_at, user_id=user_id, origin=origin, origin_ref=origin_ref,
             source=source,
         )
 
 
-def _add_application_task_tx(
+def add_application_task_tx(
     conn: sqlite3.Connection,
     application_id: str,
     *,
@@ -468,14 +477,7 @@ def _add_application_task_tx(
     detail: dict[str, Any] = {"task_id": task_id, "title": title.strip()}
     if source != "user":
         detail["source"] = source
-    conn.execute(
-        """
-        INSERT INTO application_events(
-            application_id, event_type, from_stage, to_stage, detail_json, created_at
-        ) VALUES(?, 'task_added', NULL, NULL, ?, ?)
-        """,
-        (application_id, json.dumps(detail), timestamp),
-    )
+    log_application_event(conn, application_id, "task_added", detail, timestamp)
     return dict(conn.execute("SELECT * FROM application_tasks WHERE id=?", (task_id,)).fetchone())
 
 
@@ -500,14 +502,7 @@ def update_application_task(
             "UPDATE application_tasks SET status=?, updated_at=? WHERE id=? AND user_id=?",
             (status, timestamp, task_id, user_id),
         )
-        conn.execute(
-            """
-            INSERT INTO application_events(
-                application_id, event_type, from_stage, to_stage, detail_json, created_at
-            ) VALUES(?, 'task_status_changed', NULL, NULL, ?, ?)
-            """,
-            (row["application_id"], json.dumps({"task_id": task_id, "status": status}), timestamp),
-        )
+        log_application_event(conn, row["application_id"], "task_status_changed", {"task_id": task_id, "status": status}, timestamp)
     return dict(conn.execute("SELECT * FROM application_tasks WHERE id=?", (task_id,)).fetchone())
 
 
@@ -544,7 +539,7 @@ def update_application(
     if applied_at is not None:
         _aware_instant(applied_at, field="applied_at")
     with conn:
-        return _update_application_tx(
+        return update_application_tx(
             conn, application_id, stage=stage, notes=notes, follow_up_at=follow_up_at, user_id=user_id,
             source=source, timezone_name=timezone_name, applied_at=applied_at,
         )
@@ -561,7 +556,7 @@ def _aware_instant(value: str, *, field: str) -> str:
     return parsed.astimezone(timezone.utc).isoformat(timespec="microseconds")
 
 
-def _next_applied_at(stored: str | None, stage: str, given: str | None, timestamp: str) -> str | None:
+def applied_at_for_stage(stored: str | None, stage: str, given: str | None, timestamp: str) -> str | None:
     """The applied_at an application ends up with at ``stage``.
 
     Without ``given``: now, when it reaches applied with none stored. With it:
@@ -584,7 +579,7 @@ def _next_applied_at(stored: str | None, stage: str, given: str | None, timestam
     return wanted if datetime.fromisoformat(wanted) < current else stored
 
 
-def _update_application_tx(
+def update_application_tx(
     conn: sqlite3.Connection,
     application_id: str,
     *,
@@ -624,7 +619,7 @@ def _update_application_tx(
     next_notes = str(existing["notes"]) if notes is None else notes
     next_follow_up = existing["follow_up_at"] if follow_up_at is None else _normalize_due_at(follow_up_at, timezone_name)
     timestamp = timestamp or utc_now()
-    next_applied_at = _next_applied_at(existing["applied_at"], next_stage, applied_at, timestamp)
+    next_applied_at = applied_at_for_stage(existing["applied_at"], next_stage, applied_at, timestamp)
     conn.execute(
         """
         UPDATE applications
@@ -642,20 +637,9 @@ def _update_application_tx(
         ),
     )
     if next_stage != existing["stage"]:
-        conn.execute(
-            """
-            INSERT INTO application_events(
-                application_id, event_type, from_stage, to_stage,
-                detail_json, created_at
-            ) VALUES(?, 'stage_changed', ?, ?, ?, ?)
-            """,
-            (
-                application_id,
-                existing["stage"],
-                next_stage,
-                json.dumps({"source": source}),
-                timestamp,
-            ),
+        log_application_event(
+            conn, application_id, "stage_changed", {"source": source}, timestamp,
+            from_stage=existing["stage"], to_stage=next_stage,
         )
     changed_fields = []
     if notes is not None and notes != existing["notes"]:
@@ -667,18 +651,8 @@ def _update_application_tx(
     if next_stage == existing["stage"] and next_applied_at != existing["applied_at"]:
         changed_fields.append("applied_at")
     if changed_fields:
-        conn.execute(
-            """
-            INSERT INTO application_events(
-                application_id, event_type, from_stage, to_stage,
-                detail_json, created_at
-            ) VALUES(?, 'application_updated', NULL, NULL, ?, ?)
-            """,
-            (
-                application_id,
-                json.dumps({"source": source, "fields": changed_fields}),
-                timestamp,
-            ),
+        log_application_event(
+            conn, application_id, "application_updated", {"source": source, "fields": changed_fields}, timestamp,
         )
     if next_stage in TERMINAL_APPLICATION_STAGES or (follow_up_at is not None and not next_follow_up):
         conn.execute(

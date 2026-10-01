@@ -33,7 +33,6 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-import threading
 from contextlib import ExitStack, closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -42,12 +41,18 @@ from typing import Any, Callable
 import httpx
 
 from . import apply_runs, automation, internal_automation, outreach_thank_you
-from .outreach import _log, get_target, greeting_style, greets_contact, heard_back, list_targets, without_greeting
-from .outreach_contacts import SafeFetcher, apply_choice, choose_contact, find_contacts, list_candidates
+from .background import PollingWorker, record_health_quietly, step_error
+from .database import rollback_quietly
+from .outreach import (
+    get_target, greeting_style, greets_contact, heard_back, latest_event_stamp, list_targets, log_event, without_greeting,
+    withdraw_auto_approval,
+)
+from .outreach_contacts import apply_choice, choose_contact, find_contacts, list_candidates
 from .outreach_forms import form_due
 from .outreach_gmail import last_bounce
-from .outreach_inbox import _discard_open_transaction, _record, _step_error
-from .schema import connect_product, utc_now
+from .schema import connect_product
+from .timestamps import utc_now
+from .web_fetch import SafeFetcher
 
 LOGGER = logging.getLogger(__name__)
 
@@ -90,7 +95,7 @@ def update_settings(conn: sqlite3.Connection, changes: dict[str, Any], *, user_i
     unknown = set(changes) - set(SETTINGS)
     if unknown:
         raise ValueError(f"Unknown automation settings: {', '.join(sorted(unknown))}")
-    automation._set_modes(conn, user_id, {key: "on" if value else "off" for key, value in changes.items()})
+    automation.set_modes(conn, user_id, {key: "on" if value else "off" for key, value in changes.items()})
     return settings(conn, user_id=user_id)
 
 
@@ -98,11 +103,8 @@ def update_settings(conn: sqlite3.Connection, changes: dict[str, Any], *, user_i
 
 
 def _latest(conn: sqlite3.Connection, target_id: str, user_id: str, event_type: str) -> datetime | None:
-    row = conn.execute(
-        "SELECT MAX(created_at) FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=?",
-        (target_id, user_id, event_type),
-    ).fetchone()
-    return datetime.fromisoformat(row[0]) if row and row[0] else None
+    stamp = latest_event_stamp(conn, target_id, user_id, event_type)
+    return datetime.fromisoformat(stamp) if stamp else None
 
 
 def recovery_due(conn: sqlite3.Connection, *, user_id: str) -> list[str]:
@@ -171,7 +173,7 @@ def recover_contact(
     else:
         detail = f"Found no other address on the company's site. Add one by hand, or try Find people.{note}"
     with conn:
-        _log(conn, target_id, user_id, RECOVERY_EVENT, detail=detail)
+        log_event(conn, target_id, user_id, RECOVERY_EVENT, detail=detail)
     return {
         "target_id": target_id, "company": target["company"], "to": choice["to"]["email"] if choice else None, "detail": detail,
         "resent": bool(resend and resend["queued"]),
@@ -237,17 +239,13 @@ def resend_after_bounce(
         send_soon(conn, target_id, user_id=user_id, fingerprint=approved["draft_fingerprint"],
                   detail=f"The email to {to} goes out again now, after the bounce")
         with conn:
-            _log(conn, target_id, user_id, RESEND_EVENT, detail=(
+            log_event(conn, target_id, user_id, RESEND_EVENT, detail=(
                 f"Approved again automatically for {to}: only the greeting changed from the email you approved"
             ))
     except Exception as exc:  # noqa: BLE001 - whatever stopped it, the student reviews the draft instead
         LOGGER.warning("The resend after a bounce was not queued: %s", exc)
         with conn:
-            if conn.execute(
-                "UPDATE outreach_targets SET draft_status='generated', updated_at=? WHERE id=? AND user_id=? AND draft_status='approved'",
-                (utc_now(), target_id, user_id),
-            ).rowcount:
-                _log(conn, target_id, user_id, "approval_withdrawn", detail="The automatic resend could not be queued")
+            withdraw_auto_approval(conn, target_id, user_id, "The automatic resend could not be queued")
         return {"queued": False, "detail": f"Not resent automatically: {exc}. Review the draft, then send it again."[:500]}
     return {"queued": True, "detail": f"Sending it again now to {to} (Resend after a bounce is on)."}
 
@@ -295,7 +293,7 @@ def auto_draft(
         return {"target_id": target_id, "drafted": False, "paused": True, "error": str(exc)}
     except (ValueError, RuntimeError) as exc:
         with conn:
-            _log(conn, target_id, user_id, AUTO_DRAFT_FAILED, detail=f"{exc}"[:500])
+            log_event(conn, target_id, user_id, AUTO_DRAFT_FAILED, detail=f"{exc}"[:500])
         return {"target_id": target_id, "drafted": False, "error": str(exc)[:500]}
     return {"target_id": target_id, "company": target["company"], "drafted": True}
 
@@ -330,7 +328,21 @@ def send_form(conn: sqlite3.Connection, target_id: str, *, user_id: str, submitt
 # --- In the background ---------------------------------------------------------------------
 
 
-class AutomationWorker:
+def _step_failed(
+    conn: sqlite3.Connection, errors: dict[str, str], users: list[str], exc: BaseException, log: str | None = None,
+) -> None:
+    """One worker step raised: log it when given a message, undo what it left open, and record it for these students.
+
+    Only the first error of a pass is kept for a student (setdefault), as the pass's health row says.
+    """
+    if log is not None:
+        LOGGER.exception(log)
+    rollback_quietly(conn, LOGGER, "an inbox step failed")
+    for user_id in users:
+        errors.setdefault(user_id, step_error(exc))
+
+
+class AutomationWorker(PollingWorker):
     """Runs each student's switched-on automation on one background thread.
 
     A pass first shows waiting automation notices as desktop pop-ups (for
@@ -353,6 +365,10 @@ class AutomationWorker:
     Nothing that acts runs for a paused student.
     Each pass records how it went in automation_health (automation.worker).
     """
+
+    thread_name = "outreach-automation"
+    failure_message = "Outreach automation pass failed"
+    logger = LOGGER
 
     def __init__(
         self,
@@ -385,10 +401,7 @@ class AutomationWorker:
         self._provider_factory = provider_factory
         self._draft_provider = draft_provider
         self._contact_delay = contact_delay
-        self._interval = interval_seconds
-        self._stop = threading.Event()
-        self._wake = threading.Event()
-        self._thread: threading.Thread | None = None
+        super().__init__(interval_seconds)
 
     def run_once(self) -> dict[str, Any]:
         """One pass. Each step stands alone: one that raises is logged and recorded, and the next still runs.
@@ -409,10 +422,7 @@ class AutomationWorker:
 
                 deliver_desktop_notices(conn)
             except Exception as exc:  # noqa: BLE001 - a pop-up never holds up a send
-                LOGGER.exception("Desktop notices were not shown")
-                _discard_open_transaction(conn)
-                for user_id in desktop_users:
-                    errors.setdefault(user_id, _step_error(exc))
+                _step_failed(conn, errors, desktop_users, exc, "Desktop notices were not shown")
             due_users: list[str] = []
             if self._gmail_client_factory is not None:
                 from .outreach_schedule import run_due_sends  # imported here: it pulls in the Gmail send path
@@ -424,18 +434,13 @@ class AutomationWorker:
                         conn, client_factory=self._gmail_client_factory, decisions_for=self._decisions_for, on_reply=self._on_reply,
                     )
                 except Exception as exc:  # noqa: BLE001 - the other steps still run, and the failure is recorded
-                    LOGGER.exception("Scheduled emails were not sent")
-                    _discard_open_transaction(conn)
-                    for user_id in due_users:
-                        errors.setdefault(user_id, _step_error(exc))
+                    _step_failed(conn, errors, due_users, exc, "Scheduled emails were not sent")
             users = self._users_with(conn, (*SETTINGS, *internal_automation.WORKER_FEATURES, *outreach_thank_you.WORKER_FEATURES))
             for user_id in users:
                 try:
                     self._run_for(conn, user_id, report)
                 except Exception as exc:  # noqa: BLE001 - one student's failure never stops the next student
-                    LOGGER.exception("Outreach automation failed for one student")
-                    _discard_open_transaction(conn)
-                    errors.setdefault(user_id, _step_error(exc))
+                    _step_failed(conn, errors, [user_id], exc, "Outreach automation failed for one student")
                 try:
                     # Changes that stay inside the app: auto-close, follow-up drafts, the daily archive.
                     internal_automation.run_for_user(
@@ -444,14 +449,12 @@ class AutomationWorker:
                         decisions_for=self._decisions_for, on_reply=self._on_reply,
                     )
                 except Exception as exc:  # noqa: BLE001 - recorded like any other step's failure
-                    _discard_open_transaction(conn)
-                    errors.setdefault(user_id, _step_error(exc))
+                    _step_failed(conn, errors, [user_id], exc)
                 try:
                     # A thank-you after a plain decline, written and scheduled; sent above when due.
                     outreach_thank_you.run_for_user(conn, user_id, report, provider_factory=self._provider_factory)
                 except Exception as exc:  # noqa: BLE001 - recorded like any other step's failure
-                    _discard_open_transaction(conn)
-                    errors.setdefault(user_id, _step_error(exc))
+                    _step_failed(conn, errors, [user_id], exc)
             try:
                 # Independent of every switch; it records its own health (apply_agent.runner) per student.
                 upkeep = apply_runs.run_worker_step(conn, apply_root=self._apply_root)
@@ -459,9 +462,9 @@ class AutomationWorker:
                     report["apply"] = upkeep
             except Exception:  # noqa: BLE001 - the other students' passes are done; the next pass tries again
                 LOGGER.exception("Apply for me upkeep failed")
-                _discard_open_transaction(conn)
+                rollback_quietly(conn, LOGGER, "an inbox step failed")
             for user_id in sorted({*desktop_users, *due_users, *users}):
-                _record(conn, user_id, WORKER_COMPONENT, ok=user_id not in errors, error=errors.get(user_id, ""))
+                record_health_quietly(conn, user_id, WORKER_COMPONENT, ok=user_id not in errors, error=errors.get(user_id, ""))
         return report
 
     @staticmethod
@@ -525,27 +528,5 @@ class AutomationWorker:
             if due:
                 report["forms"].append(send_form(conn, due[0], user_id=user_id, submitter_factory=self._form_submitter_factory))
 
-    def wake(self) -> None:
-        self._wake.set()
-
-    def start(self) -> None:
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, name="outreach-automation", daemon=True)
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop.set()
-        self._wake.set()
-        if self._thread:
-            self._thread.join(timeout=5)
-
-    def _loop(self) -> None:
-        while not self._stop.is_set():
-            try:
-                self.run_once()
-            except Exception:  # the thread must outlive any one bad pass
-                LOGGER.exception("Outreach automation pass failed")
-            self._wake.wait(self._interval)
-            self._wake.clear()
+    def _run_pass(self) -> None:
+        self.run_once()

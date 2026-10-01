@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from pipeline_core.identity import employer_key
 from pipeline_core.visibility import capture_visible_sql
 
 from . import apply_policy, apply_runs, apply_sensitive, preparation
@@ -107,7 +108,7 @@ def _asks(conn: sqlite3.Connection, user_id: str, opportunity_id: str, ident: tu
     while True:
         block = apply_runs.duplicate_block(
             conn, user_id, opportunity_id=opportunity_id, ats=apply_policy.ATS_GREENHOUSE, job_ref=f"{token}/{job}",
-            company=apply_runs.company_key(company), acknowledged=acknowledged, now=now,
+            company=employer_key(company), acknowledged=acknowledged, now=now,
         )
         if block is None or block.kind != "ask":
             return block, asks
@@ -156,7 +157,7 @@ def _sensitive_state(entry: apply_policy.PlanField, sources: apply_policy.Source
         # The plan already said the app can neither match nor store this one (a statement too short, or on a field with no tick).
         return ""
     stored = sources.sensitive_lookup(
-        category=entry.sensitive, question_key=question_key(entry.statement), company_key=apply_sensitive.company_key(company), mode="submit",
+        category=entry.sensitive, question_key=question_key(entry.statement), company_key=employer_key(company), mode="submit",
         company_only=entry.company_only,
     )
     return "mismatch" if stored else "missing"
@@ -288,7 +289,7 @@ def _eligibility(
     if result["status"] in ("unavailable", "failed"):
         closed = {"allowed": False, "needs_tick": False, "reason": result["message"]}
         return {"rehearse": dict(closed), "handoff": dict(closed), "submit": dict(closed)}
-    company_words = apply_runs.company_key(result["company"])
+    company_words = employer_key(result["company"])
     token = result["board_token"]
     tick = bool(result["asks"])
     ask_reason = "; ".join(item["message"] for item in result["asks"])

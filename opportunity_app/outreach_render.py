@@ -22,7 +22,7 @@ import ipaddress
 from typing import Any
 from urllib.parse import urlsplit
 
-from .outreach_contacts import MAX_PAGE_BYTES, USER_AGENT, Resolver, _resolve_host, public_web_url_error
+from .web_fetch import MAX_PAGE_BYTES, USER_AGENT, Resolver, close_browser, public_web_url_error, resolve_host
 
 SKIPPED_RESOURCES = {"image", "media", "font", "stylesheet"}
 NAVIGATION_TIMEOUT_MS = 20_000
@@ -47,7 +47,7 @@ def request_allowed(url: str, resolve: Resolver, cache: dict[str, bool]) -> bool
 class PlaywrightRenderer:
     """Headless Chromium behind a request guard. Use as a context manager on one thread."""
 
-    def __init__(self, *, resolve: Resolver = _resolve_host, launch_args: list[str] | None = None) -> None:
+    def __init__(self, *, resolve: Resolver = resolve_host, launch_args: list[str] | None = None) -> None:
         self._resolve = resolve
         self._launch_args = list(launch_args or [])
         self._allowed: dict[str, bool] = {}
@@ -64,16 +64,7 @@ class PlaywrightRenderer:
         return self
 
     def __exit__(self, *_exc: Any) -> None:
-        for closer in (
-            lambda: self._context and self._context.close(),
-            lambda: self._browser and self._browser.close(),
-            lambda: self._playwright and self._playwright.stop(),
-        ):
-            try:
-                closer()
-            except Exception:  # noqa: BLE001 - shutting down; nothing left to protect
-                pass
-        self._playwright = self._browser = self._context = None
+        close_browser(self)
 
     def _start(self) -> bool:
         if self._context is not None:

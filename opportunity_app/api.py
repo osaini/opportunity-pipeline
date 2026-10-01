@@ -32,11 +32,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from pipeline import load_env_file
 from pipeline_core import MAX_PER_COMPANY, OpportunityFilters, OpportunityRepository
 
-from . import DEFAULT_PLATFORM_DB, DEFAULT_PROFILE, STATIC_DIR
+from . import APPLY_ROOT, DEFAULT_PLATFORM_DB, DEFAULT_PROFILE, STATIC_DIR
 from . import application_inbox
+from .legacy import load_env_file
 from . import automation as automation_core
 from . import auto_triage, mail_trust, resume_variants
 from .actions import (
@@ -49,6 +49,7 @@ from .actions import (
     application_detail,
     import_applications,
     list_applications,
+    log_application_event,
     record_intent,
     update_application,
     update_application_task,
@@ -134,6 +135,7 @@ from .connections import (
     update_preferences,
 )
 from .profile import get_profile, is_personalized, update_profile
+from .profile_store import read_stored_profile
 from .dossier import (
     DossierNotFoundError,
     create_share,
@@ -214,7 +216,8 @@ from .resumes import (
     store_resume,
 )
 from .refresh import RefreshBusy, RefreshManager, fresh_steps
-from .schema import LOCAL_USER_ID, connect_product, ensure_product_schema, utc_now
+from .schema import LOCAL_USER_ID, connect_product, ensure_product_schema
+from .timestamps import utc_now
 from .database import is_postgres_target
 from .student_agent import (
     AgentNotFoundError,
@@ -266,13 +269,12 @@ from .outreach import (
     update_target as update_outreach_target,
 )
 from .outreach_contacts import (
-    SafeFetcher,
     add_manual_contact as add_manual_outreach_contact,
     apply_candidate as apply_outreach_candidate,
-    default_fetcher as default_contact_fetcher,
     find_contacts as find_outreach_contacts,
     list_candidates as list_outreach_candidates,
 )
+from .web_fetch import SafeFetcher, default_fetcher as default_contact_fetcher
 from .outreach_call_prep import (
     CallPrepWorker, NotReplied, ReplyRequired, auto_queue_call_prep, queue_call_prep,
 )
@@ -286,30 +288,29 @@ from .system_status import SystemStatus
 from .boards import BoardLookupExpired, BoardTracker
 from .outreach_settings import OutreachSettings
 from .document_pdf import markdown_to_html, pdf_renderer
-from .outreach_drafting import (
-    MAX_COMMENT_CHARS as MAX_DRAFT_COMMENT_CHARS,
+from .outreach_drafting import MAX_COMMENT_CHARS as MAX_DRAFT_COMMENT_CHARS, generate_draft as generate_outreach_draft
+from .outreach_versions import (
     DraftVersionNotFoundError,
     draft_versions as outreach_draft_versions,
-    generate_draft as generate_outreach_draft,
     restore_draft_version as restore_outreach_draft_version,
-    sender_account,
 )
+from .outreach_config import sender_account
 from .outreach_delivery import bounce_from_text, check_deliveries
-from .outreach_inbox import InboxWatcher, PossibleReplyNotFound, PossibleReplySettled, capture_replies, decide_possible_reply
+from .inbox_watcher import InboxWatcher
+from .outreach_inbox import PossibleReplyNotFound, PossibleReplySettled, capture_replies, decide_possible_reply
 from .outreach_forms import default_submitter_factory as default_form_submitter_factory, set_contact_form, submit_contact_form
 from . import apply_policy, apply_preflight, apply_runs, apply_sensitive
-from .apply_runs import APPLY_ROOT, recover_stale as recover_stale_applications
+from .apply_runs import recover_stale as recover_stale_applications
 from .apply_schema_client import SchemaClient, default_schema_client_factory
 from .outreach_automation import AutomationWorker, settings as automation_settings, update_settings as update_automation_settings
 from .outreach_schedule import cancel_send, schedule_send
 from . import outreach_labels, outreach_thank_you
+from .gmail_client import GmailAuthError, default_client_factory as default_gmail_client_factory
 from .outreach_gmail import (
-    GmailAuthError,
     SendConflictError,
     SendNeedsCheckError,
     ThankYouChanged,
     create_gmail_draft,
-    default_client_factory as default_gmail_client_factory,
     gmail_drafts_status,
     send_gmail_message,
 )
@@ -2248,15 +2249,7 @@ def create_app(
         item = repo.get(opportunity_id)
         if not item:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Opportunity not found")
-        row = repo.connection.execute(
-            "SELECT profile_json FROM profiles WHERE user_id=?", (repo.user_id,)
-        ).fetchone()
-        try:
-            profile = json.loads(row[0] or "{}") if row else {}
-        except (TypeError, json.JSONDecodeError):
-            profile = {}
-        if not isinstance(profile, dict):
-            profile = {}
+        profile = read_stored_profile(repo.connection, repo.user_id)
         try:
             return review_opportunity_with_typesafe(
                 resolved_typesafe_client_factory(), item, profile
@@ -2720,7 +2713,7 @@ def create_app(
     ) -> dict[str, Any]:
         # One action, for the application timeline's Undo on an automatic change.
         try:
-            row = automation_core._row(conn, action_id, user_id)
+            row = automation_core.action_row(conn, action_id, user_id)
         except LookupError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such automation action") from exc
         return automation_core._decode(row)
@@ -4299,14 +4292,9 @@ def create_app(
                 (payload.session_id, user_id, payload.application_id, payload.page_url, payload.ats_type, json.dumps(safe_fields), payload.status, timestamp, timestamp),
             )
             if payload.application_id:
-                conn.execute(
-                    """
-                    INSERT INTO application_events(
-                        application_id, event_type, from_stage, to_stage,
-                        detail_json, created_at
-                    ) VALUES(?, 'apply_session_synced', NULL, NULL, ?, ?)
-                    """,
-                    (payload.application_id, json.dumps({"session_id": payload.session_id, "status": payload.status}), timestamp),
+                log_application_event(
+                    conn, payload.application_id, "apply_session_synced",
+                    {"session_id": payload.session_id, "status": payload.status}, timestamp,
                 )
         return {
             "id": payload.session_id,

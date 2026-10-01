@@ -20,7 +20,8 @@ from ui_helpers import assert_accessible, card_for, gmail_listing, open_outreach
 from opportunity_app import automation
 from opportunity_app.actions import add_application_task, update_application
 from opportunity_app.automation import OFF_SHADOW_ON, Feature
-from opportunity_app.schema import connect_product, utc_now
+from opportunity_app.schema import connect_product
+from opportunity_app.timestamps import utc_now
 
 BEARER = {"Authorization": f"Bearer {OWNER_TOKEN}"}
 USER = "local-user"

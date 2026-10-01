@@ -21,7 +21,8 @@ from fastapi.testclient import TestClient
 from opportunity_app import STATIC_DIR, outreach_delivery, outreach_gmail, outreach_inbox
 from opportunity_app.api import create_app
 from opportunity_app.mail_trust import Authentication
-from opportunity_app.schema import connect_product, utc_now
+from opportunity_app.schema import connect_product
+from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 

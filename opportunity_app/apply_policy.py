@@ -39,11 +39,12 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.parse import parse_qs, urlsplit
 
-from pipeline import identity_tokens
+from pipeline_core.identity import employer_key, identity_tokens, normalized_text
 
 from . import apply_sensitive, preparation, resume_variants
 from .apply_checks import ALTERNATE_TEXT_FIELDS, BOARD_HOSTS, Problem, join, question_key
 from .extension_apply import SENSITIVE_FIELD, ExtensionApplyError, confirmed_resume_file
+from .json_values import json_as
 
 __all__ = [
     "ALLOWED_ATS_LABEL_FIELDS", "ATS_GREENHOUSE", "CATEGORY_WORDS", "NET_TOPICS", "NET_WORDS", "NEVER_STORABLE_TOPICS", "Plan", "PlanField", "SchemaField", "Source", "Sources",
@@ -461,10 +462,6 @@ CATEGORY_WORDS = {
 }
 
 
-def _words(text: Any) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", str(text if text is not None else "").lower()).strip()
-
-
 def _most_restrictive(categories: Iterable[str | None]) -> str | None:
     found = {category for category in categories if category}
     return next((category for category in _RESTRICTION if category in found), None)
@@ -476,7 +473,7 @@ def classify_sensitive(question: str, options: Iterable[str] = (), section: str 
     The rules run in the order of spec 7.3. The result can only be stricter than the extension's own
     ``SENSITIVE`` rule: anything that rule flags and nothing here places is ``"uncategorized"``.
     """
-    text = re.sub(r"\beighteen\b", "18", _words(question))
+    text = re.sub(r"\beighteen\b", "18", normalized_text(question))
     # 1. Never storable, for every section. An 18-or-older phrase goes first, or "years of age" would trip \bage\b.
     if _NEVER_STORABLE.search(_AGE_18.sub(" ", text)):
         return "uncategorized"
@@ -488,7 +485,7 @@ def classify_sensitive(question: str, options: Iterable[str] = (), section: str 
     # 3. The question's own words.
     found = {category for category, pattern in _PATTERNS.items() if pattern.search(text)}
     # 4. Options fail closed: a vague question with visa, citizenship or clearance choices is sensitive too.
-    choices = [_words(option) for option in options]
+    choices = [normalized_text(option) for option in options]
     for category, pattern in _OPTION_FLAGS:
         if any(pattern.search(choice) for choice in choices):
             found.add(category)
@@ -607,7 +604,7 @@ NET_WORDS = {
 
 def net_topics(text: Any) -> tuple[str, ...]:
     """The topics the broad net finds in a text, sorted. An 18-or-older wording is the topic ``adult``, not demographic."""
-    words = _BENIGN.sub(" ", re.sub(r"\beighteen\b", "18", _words(text)))
+    words = _BENIGN.sub(" ", re.sub(r"\beighteen\b", "18", normalized_text(text)))
     plain = _AGE_18.sub(" ", words)
     found = {topic for topic, pattern in _NET_PATTERNS.items() if pattern.search(plain if topic == "demographic" else words)}
     if _AGE_18.search(words):
@@ -652,7 +649,7 @@ TICK_MARK = "tick"
 
 
 def _yes_no_like(options: Iterable[str]) -> bool:
-    return len({_words(option) for option in options} & _YES_NO_WORDS) >= 2
+    return len({normalized_text(option) for option in options} & _YES_NO_WORDS) >= 2
 
 
 def _field_net(item: SchemaField, control: str) -> tuple[frozenset[str], tuple[str, ...]]:
@@ -673,7 +670,7 @@ def _field_net(item: SchemaField, control: str) -> tuple[frozenset[str], tuple[s
     # A description is where a form sometimes puts the real question ("Please list any criminal convictions here"). Its own agreement
     # and family words are usually boilerplate, so those count only on a box or a Yes/No question, whose whole point is the statement.
     own |= set(description) if box or yes_no else set(description) - {"agreement", "relative"}
-    options = [_words(option) for option in item.options]
+    options = [normalized_text(option) for option in item.options]
     if control in ("select", "multiselect") and options:
         own |= set(net_topics(" ".join(options))) & _NET_OPTION_TOPICS
         own |= {topic for topic, pattern in _OPTION_EXTRA.items() if any(pattern.search(option) for option in options)}
@@ -682,7 +679,7 @@ def _field_net(item: SchemaField, control: str) -> tuple[frozenset[str], tuple[s
         marks.append(TICK_MARK)
     # A select, radio or multiselect is an agreement when an agreement word is in its options or in its heading or description:
     # "Do you certify that your answers are true?" with the options "Yes I do" / "Yes I do not" says it in the heading alone.
-    choice_words = [_words(item.label), _words(_plain_text(item.description))]
+    choice_words = [normalized_text(item.label), normalized_text(_plain_text(item.description))]
     if (
         ((box or yes_no) and "agreement" in own)
         or (control in ("select", "multiselect") and any(_AGREEMENT_OPTION.search(text) for text in (*options, *choice_words)))
@@ -713,12 +710,8 @@ _REFERS_ELSEWHERE = re.compile(
 
 
 def _yes_no(options: Iterable[str]) -> bool:
-    words = {_words(option) for option in options}
+    words = {normalized_text(option) for option in options}
     return bool(words) and words <= {"yes", "no"}
-
-
-def _plain(html_text: str) -> str:
-    return " ".join(html.unescape(_TAGS.sub(" ", html_text)).split())
 
 
 def statement_control(control: str, options: Iterable[str]) -> bool:
@@ -743,9 +736,9 @@ def _statement_parts(item: SchemaField, control: str, category: str = "", answer
     yes_no = control == "select" and category in apply_sensitive.STATEMENT_CATEGORIES and _yes_no(item.options)
     if not yes_no and (control != "checkbox" or not item.options):
         return item.label, False
-    description = _plain(item.description)
+    description = _plain_text(item.description)
     # A box says what it agrees to in its option, a Yes/No question in its question: that is the text that has to be specific.
-    own = _words(item.label) if yes_no else _words(item.options[0])
+    own = normalized_text(item.label) if yes_no else normalized_text(item.options[0])
     short = len(own.split()) < _SPECIFIC_STATEMENT_WORDS
     refers = bool(_REFERS_ELSEWHERE.search(own))
     # A box that states a fact about the student ("Yes, this is true for me right now") is the answer to its heading, however
@@ -761,7 +754,7 @@ def _statement_parts(item: SchemaField, control: str, category: str = "", answer
     label = item.label
     if option and label:
         # A heading and an option that say the same thing are one statement, not two.
-        title, chosen = f" {_words(label)} ", f" {_words(option)} "
+        title, chosen = f" {normalized_text(label)} ", f" {normalized_text(option)} "
         if title.strip() and title in chosen:
             label = ""
         elif chosen.strip() and chosen in title:
@@ -805,7 +798,7 @@ def classify_item(item: SchemaField, control: str, parent: str | None = None, fo
             statement = item.options[0] if agreeing and item.options else ""
             description = html.unescape(_TAGS.sub(" ", item.description))
             found.extend(classify_sensitive(text) for text in (statement, description) if text.strip())
-            words = _words(f"{item.label} {statement} {description}")
+            words = normalized_text(f"{item.label} {statement} {description}")
             if _AGREE_WORDS.search(words) or (agreeing and _AGREE_BOX_WORDS.search(words)):
                 found.append("acknowledgment")
         if follows and item.parent:
@@ -857,7 +850,7 @@ def claims_never_storable(item: SchemaField, control: str) -> bool:
 
 def eeo_words(text: Any) -> bool:
     """Whether the words themselves ask a voluntary self-identification (EEO) question, whatever else they ask."""
-    words = _words(text)
+    words = normalized_text(text)
     return any(pattern.search(words) for category, pattern in _PATTERNS.items() if category.startswith("eeo_"))
 
 
@@ -951,14 +944,6 @@ def value_mac(key: bytes, value: Any) -> str:
     return hmac.new(key, _canonical_value(value).encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-def _loads(text: Any, default: Any) -> Any:
-    try:
-        value = json.loads(text or "")
-    except (TypeError, ValueError):
-        return default
-    return value if isinstance(value, type(default)) else default
-
-
 def _norm(text: Any) -> str:
     return " ".join(str(text if text is not None else "").split()).casefold()
 
@@ -1036,7 +1021,7 @@ def sources_for(
     """Gather everything a value may come from, reading only. Nothing here changes a row."""
     facts = preparation.confirmed_facts(conn, user_id)
     answers = [
-        {**dict(row), "tags": [str(tag) for tag in _loads(row["tags_json"], [])]}
+        {**dict(row), "tags": [str(tag) for tag in json_as(row["tags_json"], [])]}
         for row in conn.execute(
             "SELECT id, question, answer, company, tags_json, updated_at FROM answer_library WHERE user_id=? ORDER BY updated_at DESC, id", (user_id,),
         ).fetchall()
@@ -1363,14 +1348,14 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
             "The text around this box is too long for the app to check word for word, so it is left for you. Finish in browser leaves it for you"
         )
         return entry
-    if boxlike and category in apply_sensitive.STATEMENT_CATEGORIES and len(_words(entry.statement).split()) < 3:
+    if boxlike and category in apply_sensitive.STATEMENT_CATEGORIES and len(normalized_text(entry.statement).split()) < 3:
         # A statement of one or two words ("Acknowledgment") says nothing the student could be shown as agreed to, and the store
         # refuses to hold one: it is left for the student rather than offered a form that cannot be saved.
         entry.problem_kind = "sensitive_never"
         entry.problem = "The statement for this box is too short for the app to match to one you stored. Finish in browser leaves it for you"
         return entry
     stored = sources.sensitive_lookup(
-        category=category, question_key=key, company_key=apply_sensitive.company_key(ctx.company), mode=ctx.mode, company_only=entry.company_only,
+        category=category, question_key=key, company_key=employer_key(ctx.company), mode=ctx.mode, company_only=entry.company_only,
     )
     if not stored:
         entry.problem_kind = "sensitive_missing"

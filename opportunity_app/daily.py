@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import ROOT
-from .refresh import TEMPFAIL_EXIT, _DailyRunMutex
+from .daily_lock import TEMPFAIL_EXIT, DailyRunMutex
 
 DATA_DIR = ROOT / "data"
 STATE_PATH = DATA_DIR / "daily-run.json"
@@ -238,7 +238,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    mutex = _DailyRunMutex()
+    mutex = DailyRunMutex()
     if not mutex.acquire():
         if not args.scheduled:
             print("Another daily run is already in progress.")

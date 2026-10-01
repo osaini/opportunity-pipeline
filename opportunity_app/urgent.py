@@ -27,17 +27,15 @@ from typing import Any
 
 from pipeline_core.visibility import CAPTURE_SOURCE_KEY, capture_visible_sql  # noqa: F401  (re-exported)
 
+from .actions import CLOSED_APPLICATION_STAGES
 from .early_programs import early_programs
 from .internal_automation import silence_rows
 from .outreach import CLOSED_STATUSES as OUTREACH_CLOSED, REVISIT_STATUSES as OUTREACH_REVISIT
-from .schema import utc_now
+from .timestamps import utc_now
 from .user_time import UserTimezone, user_timezone
 
 logger = logging.getLogger(__name__)
 
-# A task or follow-up on a closed application no longer needs doing. An offer
-# is not closed: "reply to the offer by Friday" is exactly an urgent task.
-CLOSED_APPLICATION_STAGES = ("rejected", "withdrawn", "archived")
 # Once submitted, a role's application deadline no longer applies.
 SUBMITTED_OR_CLOSED_STAGES = ("applied", "interview", "offer", *CLOSED_APPLICATION_STAGES)
 OVERDUE_LOOKBACK_DAYS = 60

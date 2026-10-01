@@ -16,13 +16,14 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, outreach_delivery, outreach_gmail, outreach_inbox
+from opportunity_app import STATIC_DIR, gmail_client, outreach_delivery, outreach_inbox
 from opportunity_app.api import create_app
-from opportunity_app.outreach import _log
+from opportunity_app.outreach import log_event
 from opportunity_app.outreach_automation import update_settings
 from opportunity_app.outreach_review import review_runner
 from opportunity_app.outreach_schedule import MAX_ATTEMPTS, run_due_sends
-from opportunity_app.schema import connect_product, utc_now
+from opportunity_app.schema import connect_product
+from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 from helpers_gmail import ACCOUNT, PDF, SCOPES, FakeGmail, failure_notice, forget_gmail_backoff, rate_limited
@@ -290,7 +291,7 @@ class SendGateTests(unittest.TestCase):
 
         target = self.scheduled_follow_up()
         with mock.patch("opportunity_app.outreach_review.check_deliveries",
-                        side_effect=outreach_gmail.GmailThrottled("Gmail asked the app to slow down")):
+                        side_effect=gmail_client.GmailThrottled("Gmail asked the app to slow down")):
             look = fresh_look(self.conn, target["id"], user_id=USER, client_factory=self.factory)
         self.assertEqual(look, {"ok": False, "reason": "Gmail asked the app to slow down"})
 
@@ -535,7 +536,7 @@ class SendGateTests(unittest.TestCase):
     def test_a_reply_logged_while_the_reviewer_reads_cancels_the_follow_up(self):
         self.review_on()
         target = self.scheduled_follow_up()
-        reviewer = self.passes_while(lambda other: _log(other, target["id"], USER, "reply_logged", detail="Thanks! Let's talk Tuesday."))
+        reviewer = self.passes_while(lambda other: log_event(other, target["id"], USER, "reply_logged", detail="Thanks! Let's talk Tuesday."))
         self.assertEqual([item["state"] for item in self.due(target, reviewer=reviewer)], ["cancelled"])
         self.assertEqual(len(reviewer.prompts), 1)
         self.assertEqual(len(self.gmail.sent), 1, "only the first email ever went")

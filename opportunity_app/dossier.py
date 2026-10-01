@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from .auth import hash_secret
 from .profile import is_answered
-from .schema import utc_now
+from .timestamps import utc_now
 
 
 class DossierNotFoundError(LookupError):

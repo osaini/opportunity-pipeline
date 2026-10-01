@@ -29,76 +29,96 @@ anywhere else. Spam is looked in too; Trash is not. Each message is read once
 Every row says why (reason) and under which rules (RULES). A row set aside by
 older rules is read again under the current ones, whoever wrote it.
 
-``InboxWatcher`` runs both checks on a background thread, so a reply or a
-bounce is caught even when the page is closed. Each of its steps stands alone:
-one that fails is recorded in automation_health and the next still runs. In
-order: sends, deliveries, replies, then outreach_labels (a Gmail label on the
-thread of every confirmed reply), then application mail when the student turned
-it on.
+``inbox_watcher.InboxWatcher`` runs both checks on a background thread, so a
+reply or a bounce is caught even when the page is closed.
 """
 
 from __future__ import annotations
 
-import base64
 import email
-import html
 import json
 import logging
 import re
 import sqlite3
 import threading
-import unicodedata
-from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from email import policy
 from email.message import EmailMessage
-from email.utils import getaddresses, parseaddr, parsedate_to_datetime
-from pathlib import Path
-from typing import Any, Callable, Iterable
-from urllib.parse import quote, urlsplit
+from email.utils import getaddresses, parseaddr
+from typing import Any, Callable
+from urllib.parse import quote
 
 import httpx
 
-from pipeline import identity_tokens, normalized
+from pipeline_core.identity import normalized
 
-from . import automation, outreach_labels
+from . import automation, mail_message
 from .inbox_classifiers import read_reply
-from .mail_trust import FREEMAIL, READ_CATEGORIES, authenticate, host_of, listed, not_an_employer, registrable_domain, sender_lists
+from .mail_message import (
+    FULL_TEXT_LIMIT,
+    MAILER_DAEMONS,
+    URL,
+    answers_something,
+    body_text,
+    full_reply_text,
+    header_map,
+    host_of,
+    is_automatic,
+    is_bulk_or_generated,
+    kept_headers,
+    link_hosts_or_none,
+    mailbox_key,
+    reply_text,
+)
+from .mail_trust import FREEMAIL, READ_CATEGORIES, authenticate, listed, sender_lists
 from .outreach import (
     BOUNCED,
-    _log,
+    log_event,
     get_target,
     reply_reason,
     suggest_reply_status,
     update_target,
-    website_domain,
 )
-from .outreach_contacts import GENERIC_LOCAL_PARTS
-from .outreach_delivery import _headers_say_failure, check_deliveries
-from .outreach_gmail import (
-    PROVIDER,
-    SENT_EVENT,
+from .gmail_client import (
     ClientFactory,
     GmailAuthError,
+    GmailNeedsReadScope,
     GmailThrottled,
+    connection_state,
+)
+from .outreach_delivery import headers_say_failure
+from .outreach_gmail import (
+    SENT_EVENT,
     _connector,
     _Gmail,
-    gmail_notices,
-    persist_gmail_health,
 )
-from .outreach_drafting import sender_account
+from .outreach_config import sender_account
+from .outreach_identity import (
+    company_words,
+    contact_domain,
+    domain_of,
+    is_distinctive,
+    is_institution,
+    is_machine_local,
+    is_own,
+    is_person,
+    name_matches_address,
+    own_domains,
+    site_domain,
+    university_alias,
+    website_strength,
+)
 from .outreach_forms import (
     ACKNOWLEDGEMENT,
     ACKNOWLEDGEMENT_WINDOW_MINUTES,
     ALWAYS_AUTOMATIC,
-    NO_REPLY_SENDER,
     SUBMITTED_EVENT as FORM_SUBMITTED,
     UNCONFIRMED_EVENT as FORM_UNCONFIRMED,
     is_acknowledgement,
 )
-from .schema import connect_product, utc_now
+from .settings_store import get_setting, put_setting
+from .timestamps import parse_app_instant, utc_now
 from .typesafe_decisions import DecisionClient
-from .user_time import user_timezone
 
 LOGGER = logging.getLogger(__name__)
 
@@ -120,48 +140,6 @@ REJUDGE_BUDGET = 25
 THREAD_FALLBACK = 20
 # A search's from:(...) list is kept under this length; a longer one is split.
 QUERY_LENGTH = 1_500
-_DAEMONS = {"mailer-daemon", "mailerdaemon", "mail-daemon", "postmaster"}
-# "Re:", "RE[2]:", "[Acme] Re:", and replies in other languages (AW, SV, Antw, VS, Rif, Odp, Ynt).
-# Forwards are not answers: a forward is fresh content.
-_ANSWER_SUBJECT = re.compile(r"^\s*(\[[^\]]{1,60}\]\s*)*(re|aw|sv|antw|vs|rif|odp|ynt)\s*(\[\d+\]|\(\d+\))?\s*[:：]", re.IGNORECASE)
-# Senders that are a machine rather than a person or a shared inbox.
-_MACHINE_SENDER = re.compile(
-    r"^(no-?reply|do-?not-?reply|donotreply|notifications?|notify|alerts?|mailer|bounces?|news(letters?)?|"
-    r"marketing|updates?|digest|calendar(-notification)?|invitations?|billing|invoices?|receipts?|"
-    r"system|robot|bot|automated|auto|wordpress|forms?)([+._-]|$)|(no-?reply|noreply|donotreply)",
-    re.IGNORECASE,
-)
-_AUTO_SUBJECT = re.compile(
-    r"^\s*(automatic reply|auto(matic)?[- ]?reply|auto:|out of (the )?office|ooo\b|away from|automatische antwort|"
-    r"abwesenheit|r[ée]ponse automatique|absence|respuesta autom[áa]tica|fuera de la oficina|risposta automatica|"
-    r"resposta autom[áa]tica|automatisch antwoord|automatiskt svar|autosvar)",
-    re.IGNORECASE,
-)
-# The first part of a website host that names a section, not the company (careers.acme.com is acme.com).
-_SECTION_LABELS = {"www", "careers", "jobs", "about", "en", "home", "go", "get", "app", "blog", "team", "info", "corp", "company"}
-# Hosts where a website is one tenant of many (a LinkedIn page, a Google Site,
-# a store builder, an applicant system): anyone at the host is not the company.
-# A company's own big domain (microsoft.com) is never here.
-PLATFORM_HOSTS = {
-    "sites.google.com", "linkedin.com", "facebook.com", "instagram.com", "x.com", "twitter.com", "youtube.com",
-    "tiktok.com", "medium.com", "substack.com", "github.io", "gitlab.io", "notion.site", "notion.so", "wixsite.com",
-    "squarespace.com", "wordpress.com", "weebly.com", "godaddysites.com", "myshopify.com", "carrd.co", "linktr.ee",
-    "crunchbase.com", "angel.co", "wellfound.com", "ycombinator.com", "producthunt.com", "webflow.io", "framer.website",
-    "framer.ai", "canva.site", "hs-sites.com", "hubspotpagebuilder.com", "about.me", "bit.ly", "atlassian.net",
-    "teamtailor.com", "personio.de", "personio.com", "rippling.com", "dover.com", "gem.com", "pinpointhq.com",
-    "jazz.co", "applytojob.com", "eightfold.ai", "oraclecloud.com", "csod.com", "zohorecruit.com", "workable.com",
-    "recruitee.com", "breezy.hr", "bamboohr.com", "jobvite.com", "ashbyhq.com", "lever.co", "greenhouse.io",
-    "github.com", "gitlab.com", "bitbucket.org", "huggingface.co", "kaggle.com", "discord.com", "discord.gg",
-    "slack.com", "meetup.com", "eventbrite.com", "devpost.com", "behance.net", "dribbble.com", "angellist.com",
-}
-# Registrable domains that stand for a whole university or government: never "anyone at the domain".
-_INSTITUTION = re.compile(r"(^|\.)(edu|gov|mil)$|(^|\.)(ac|edu|gov|mil|govt|gob|gouv)\.[a-z]{2}$")
-_URL = re.compile(r"""https?://[^\s<>"'`]+""", re.IGNORECASE)
-# Where the quoted email starts in a reply: "On Fri, ... wrote:", "-----Original Message-----",
-# Outlook's "From: ... Sent: ..." header block, or a "> " line.
-_ON_WROTE = re.compile(r"^\s*On .{0,300}wrote:\s*$", re.IGNORECASE | re.DOTALL)
-_ORIGINAL = re.compile(r"^\s*-{2,}\s*(original message|forwarded message)\s*-{2,}\s*$", re.IGNORECASE)
-
 _LAST_CAPTURE: dict[str, datetime] = {}
 _CAPTURE_LOCK = threading.Lock()
 # Where a search that ran out of pages stopped, to go on from there next time; and
@@ -195,334 +173,26 @@ def owned_sql(table: str = "") -> str:
 # --- Reading a message ----------------------------------------------------------
 
 
-def _html_text(markup: str) -> str:
-    markup = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", markup)
-    markup = re.sub(r"(?i)<br\s*/?>|</(p|div|li|tr|h\d)>", "\n", markup)
-    markup = re.sub(r"(?is)<blockquote\b.*", "", markup)
-    return html.unescape(re.sub(r"<[^>]+>", "", markup))
-
-
-def _quote_start(lines: list[str]) -> tuple[int, str] | None:
-    """Where the quoted email starts, and how: "quote" (a "> " line), "wrote" or "wrote2" (an "On ... wrote:"
-    line, or one split over two lines), or "header" (Outlook's From:/Sent: block, or an Original Message line)."""
-    for index, line in enumerate(lines):
-        pair = f"{line} {lines[index + 1]}" if index + 1 < len(lines) else line
-        header_block = line.startswith("From:") and any(
-            following.startswith(("Sent:", "Date:")) for following in lines[index + 1:index + 3]
-        )
-        if line.lstrip().startswith(">"):
-            return index, "quote"
-        if _ORIGINAL.match(line) or header_block:
-            return index, "header"
-        if _ON_WROTE.match(line):
-            return index, "wrote"
-        if line.lstrip().startswith("On ") and _ON_WROTE.match(pair):
-            return index, "wrote2"
-    return None
-
-
-def strip_quoted(text: str) -> str:
-    """The reply above the email it quotes."""
-    lines = text.replace("\r\n", "\n").split("\n")
-    found = _quote_start(lines)
-    if found is not None:
-        lines = lines[:found[0]]
-    return "\n".join(lines).strip()
-
-
-def written_between_quotes(text: str, sent: Iterable[str] = ()) -> str:
-    """What the sender wrote after the email they quote begins: between its quoted lines, or below them.
-
-    strip_quoted keeps only what is above the quote, so an answer typed inline
-    ("> Would you have time for a call?" then "Sure, Thursday?") is lost there.
-    A "> " quote marks its lines. An Outlook-style quote (a From:/Sent: block,
-    or an Original Message line) does not, so below it every line that is not
-    a header field and not the student's own words (``sent``: the emails they
-    sent, which it quotes) counts as written by the sender. With nothing in
-    ``sent``, every line below such a header counts: nothing is ruled out.
-    """
-    lines = text.replace("\r\n", "\n").split("\n")
-    found = _quote_start(lines)
-    if found is None:
-        return ""
-    index, how = found
-    if how == "header":
-        return _written_below_header(lines[index:], sent)
-    rest = lines[index + {"quote": 0, "wrote": 1, "wrote2": 2}[how]:]
-    return "\n".join(line for line in rest if line.strip() and not line.lstrip().startswith(">")).strip()
-
-
-# The fields of an Outlook header block ("From:", "Sent:", "To:", "Subject:"), with or without bold marks.
-_HEADER_FIELD = re.compile(r"^\s*\**\s*(from|sent|date|to|cc|bcc|subject|importance|reply-to)\s*:", re.IGNORECASE)
-_QUOTE_MARKS = re.compile(r"^[\s>]+")
-_FLAT = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"', "\u00a0": " ", "\u200b": None, "\ufeff": None})
-
-
-def _flat(text: str) -> str:
-    """Text as compared with what the student sent: curly quotes straightened, spaces collapsed, case folded."""
-    return " ".join(str(text).translate(_FLAT).split()).casefold()
-
-
-def _header_starts(lines: list[str], index: int) -> bool:
-    line = lines[index]
-    return bool(_ORIGINAL.match(line)) or (
-        _HEADER_FIELD.match(line) is not None and line.lstrip(" *").casefold().startswith("from")
-        and any(_HEADER_FIELD.match(following) and following.lstrip(" *").casefold().startswith(("sent", "date"))
-                for following in [other for other in lines[index + 1:index + 6] if other.strip()][:2])
-    )
-
-
-def _written_below_header(lines: list[str], sent: Iterable[str]) -> str:
-    """The lines below an Outlook quote's header that are neither header fields nor the student's own words.
-
-    Words are the student's when they are a whole line of what they sent, or
-    four or more words that run on in it. A paragraph is tried whole first,
-    since a long line can come back re-wrapped into short pieces; a paragraph
-    that is not theirs as a whole is tried line by line. A header block quoted
-    further down (the thread's older email) is skipped the same way. What is
-    left, the sender wrote.
-    """
-    bodies = [str(body) for body in sent if str(body or "").strip()]
-    whole_lines = {_flat(line) for body in bodies for line in body.replace("\r\n", "\n").split("\n")} - {""}
-    running = " ".join(_flat(body) for body in bodies)
-
-    def theirs(words: str) -> bool:  # the student's own
-        return not words or words in whole_lines or (
-            len(words.split()) >= 4 and re.search(rf"(?<!\w){re.escape(words)}(?!\w)", running) is not None
-        )
-
-    paragraphs: list[list[str]] = [[]]
-    in_header = False
-    for index, line in enumerate(lines):
-        if not line.strip():
-            paragraphs.append([])
-            continue
-        if index == 0 or _header_starts(lines, index):
-            in_header = True
-            paragraphs.append([])
-            continue
-        if in_header and _HEADER_FIELD.match(line):
-            continue
-        in_header = False
-        paragraphs[-1].append(line.strip())
-    written: list[str] = []
-    for paragraph in paragraphs:
-        if theirs(_flat(" ".join(_QUOTE_MARKS.sub("", line) for line in paragraph))):
-            continue
-        written.extend(line for line in paragraph if not theirs(_flat(_QUOTE_MARKS.sub("", line))))
-    return "\n".join(written)
-
-
-def _html_full_text(markup: str) -> str:
-    """HTML as text with each quoted (<blockquote>) line marked "> ", as a plain-text reply marks it."""
-    markup = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", markup)
-    markup = re.sub(r"(?i)<br\s*/?>|</(p|div|li|tr|h\d)>", "\n", markup)
-    markup = re.sub(r"(?i)<blockquote\b[^>]*>", "\n\x00quote-open\x00\n", markup)
-    markup = re.sub(r"(?i)</blockquote\s*>", "\n\x00quote-close\x00\n", markup)
-    text = html.unescape(re.sub(r"<[^>]+>", "", markup))
-    depth, lines = 0, []
-    for line in text.split("\n"):
-        if line == "\x00quote-open\x00":
-            depth += 1
-        elif line == "\x00quote-close\x00":
-            depth = max(0, depth - 1)
-        else:
-            lines.append(f"> {line}" if depth and line.strip() else line)
-    return "\n".join(lines)
-
-
-FULL_TEXT_LIMIT = 20_000
-
-
-def _body_text(message: EmailMessage, *, whole: bool) -> str:
-    body = message.get_body(preferencelist=("plain", "html"))
-    if body is None:
-        return ""
-    try:
-        text = str(body.get_content())
-    except (LookupError, ValueError):
-        return ""
-    if body.get_content_type() == "text/html":
-        return _html_full_text(text) if whole else _html_text(text)
-    return text
-
-
-def reply_text(message: EmailMessage) -> str:
-    return strip_quoted(_body_text(message, whole=False))[:20_000]
-
-
-def full_reply_text(message: EmailMessage) -> str:
-    """The whole message as it arrived, quoted lines marked "> ", so an answer typed inline is kept."""
-    return _body_text(message, whole=True).replace("\r\n", "\n").strip()
-
-
-def _header(message: EmailMessage, name: str, raw: str) -> Any:
-    """One header as the message's policy parses it, or its raw text when the parser fails on it (a stray ":;")."""
-    try:
-        return message.policy.header_fetch_parse(name, raw)
-    except Exception:  # noqa: BLE001 - the header parser raises IndexError and others on odd headers
-        return raw
-
-
-def _addresses(message: EmailMessage, *names: str) -> list[str]:
-    """Every address in these headers, lowercased. Reads the parsed header, which copes with 'Reyes, Dana <…>'.
-
-    Each header is parsed on its own, so one the parser cannot read (a Cc of
-    "a@b.com, :;") falls back to its raw text instead of failing the message.
-    """
-    found: list[str] = []
-    for name in names:
-        for header, raw in message.raw_items():
-            if str(header).casefold() != name.casefold():
-                continue
-            value = _header(message, header, raw)
-            try:
-                parsed = [str(address.addr_spec) for address in getattr(value, "addresses", ())]
-            except Exception:  # noqa: BLE001 - as above
-                parsed = []
-            if not parsed:
-                parsed = [address for _name, address in getaddresses([str(raw)])]
-            found += [address.strip().casefold() for address in parsed if "@" in address]
-    return found
-
-
-def _sender(message: EmailMessage) -> tuple[str, str]:
-    """(display name, address) of the one who wrote it. Copes with 'Lee, Greg <greg@…>', where a comma splits the name."""
-    value = next((_header(message, name, raw) for name, raw in message.raw_items() if str(name).casefold() == "from"), None)
-    try:
-        parsed = list(getattr(value, "addresses", ()))
-    except Exception:  # noqa: BLE001 - the header parser raises IndexError and others on odd headers
-        parsed = []
-    for address in parsed:
-        if "@" in str(address.addr_spec):
-            name = str(address.display_name or "")
-            # The name before a comma the header parser split off ("Lee, Greg"): both halves are the name.
-            if parsed.index(address) > 0 and not name.count("@"):
-                name = " ".join(str(part.display_name or part.addr_spec or "") for part in parsed[:parsed.index(address) + 1]).strip()
-            return name, str(address.addr_spec).strip().casefold()
-    found = _addresses(message, "From")
-    if found:
-        return parseaddr(str(value or ""))[0], found[0]
-    name, address = parseaddr(str(value or ""))
-    return name, address.strip().casefold()
-
-
-def _received(data: dict[str, Any], message: EmailMessage) -> datetime | None:
-    """When Gmail received it; its Date header when Gmail gives no time; None when neither says."""
-    stamp = int(data.get("internalDate") or 0)
-    if stamp > 0:
-        return datetime.fromtimestamp(stamp / 1000, tz=timezone.utc)
-    try:
-        dated = parsedate_to_datetime(str(message.get("Date", "")))
-    except (TypeError, ValueError, IndexError):
-        return None
-    return (dated if dated.tzinfo else dated.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
-
-
-def answers_something(message: EmailMessage) -> bool:
-    """Whether a message is written as a reply, not a fresh email or a forward."""
-    return bool(message.get("In-Reply-To") or message.get("References")) or bool(
-        _ANSWER_SUBJECT.match(str(message.get("Subject", "")))
-    )
-
-
-def is_bulk(message: EmailMessage) -> bool:
-    """Sent to many, or through a mailing or sales tool: list headers, or a bulk precedence."""
-    if message.get("List-Unsubscribe") or message.get("List-Id"):
-        return True
-    if str(message.get("Precedence", "")).strip().casefold() in {"bulk", "junk", "list"}:
-        return True
-    auto = str(message.get("Auto-Submitted", "")).strip().casefold()
-    return bool(auto) and auto not in {"no", "auto-replied"}
-
-
-def is_automatic(message: EmailMessage) -> bool:
-    """An out-of-office or other automatic answer (RFC 3834), by its headers or its subject."""
-    if str(message.get("Auto-Submitted", "")).strip().casefold() == "auto-replied":
-        return True
-    if message.get("X-Autoreply") or message.get("X-Autorespond"):
-        return True
-    if str(message.get("Precedence", "")).strip().casefold() == "auto_reply":
-        return True
-    return bool(_AUTO_SUBJECT.search(str(message.get("Subject", ""))))
-
-
 def _delivery_kind(message: EmailMessage, sender: str) -> str:
     """'delivery' for a delivery or delay notice, from any sender; 'receipt' for a read receipt; else ''."""
     content_type = str(message.get("Content-Type", "")).casefold()
     if "multipart/report" in content_type and "disposition-notification" in content_type:
         return "receipt"
-    if sender.split("@", 1)[0] in _DAEMONS or message.get("X-Failed-Recipients"):
+    if sender.split("@", 1)[0] in MAILER_DAEMONS or message.get("X-Failed-Recipients"):
         return "delivery"
     if "multipart/report" in content_type:
         return "delivery"
     return ""
 
 
-def _machine(local: str) -> bool:
-    return bool(_MACHINE_SENDER.search(local)) or bool(NO_REPLY_SENDER.search(f"{local}@"))
-
-
-# Words that make an address a team's or a function's (recruitment@, hiring-team@, bovi.careers@): a part of the
-# address that starts with a long one, or is exactly a short one (so hrishi@ and stafford@ stay people).
-_ROLE_PREFIX = re.compile(
-    r"recruit|hiring|talent|career|campus|universit|internship|student|people|communit|research|admission|feedback|"
-    r"educat|sponsor|welcome|onboard|partner|investor|founder|contact|inquir|enquir|support|operations|marketing",
-    re.IGNORECASE,
-)
-_ROLE_EXACT = {
-    "jobs", "job", "team", "help", "info", "hello", "hi", "sales", "admin", "ops", "hr", "staff", "group", "lab", "labs",
-    "press", "media", "store", "shop", "event", "events", "office", "intern", "interns", "people", "careers", "billing",
-}
-
-
-def _role_word(token: str) -> bool:
-    return token in _ROLE_EXACT or bool(_ROLE_PREFIX.match(token))
-
-
-def is_person(address: str, company: str = "") -> bool:
-    """Whether an address looks like one person's (dana@, d.reyes@), not a shared inbox (careers@, recruitment@), a
-    company-named one (bovi@ for Bovi), or a machine (noreply@)."""
-    local = str(address or "").split("@", 1)[0].casefold().split("+", 1)[0]
-    if not local or local in GENERIC_LOCAL_PARTS or _machine(local):
-        return False
-    tokens = [token for token in re.split(r"[._\-]+", local) if token]
-    if any(_role_word(token) for token in tokens):
-        return False
-    stem = _letters(_domain(address).split(".")[0]) if "@" in str(address) else ""
-    names = set(_company_words(company).split()) if company else set()
-    return not ((stem and _letters(local) == stem) or (names and set(tokens) <= names))
-
-
-def _letters(text: str) -> str:
-    return re.sub(r"[^a-z]", "", unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().casefold())
-
-
-def name_matches_address(display: str, address: str, company: str = "") -> bool:
-    """Whether the From name and address are one person's: Dana Reyes as dana@, d.reyes@, dreyes@ or reyes.d@.
-
-    Words of the company's name or a role ("Bovi Careers") are not a person's name, and one must remain.
-    """
-    ignore = set(_company_words(company).split()) if company else set()
-    words = [_letters(word) for word in re.split(r"[\s,.'\-]+", display) if _letters(word)]
-    words = [word for word in words if word not in ignore and not _role_word(word)]
-    local = _letters(str(address).split("@", 1)[0].split("+", 1)[0])
-    if not words or not local:
-        return False
-    if local in words or any(len(word) >= 3 and word in local for word in words):
-        return True
-    first, last = words[0], words[-1]
-    return len(words) >= 2 and local in {first[0] + last, first + last[0], last + first[0], "".join(word[0] for word in words)}
-
-
 def _link_hosts(message: EmailMessage) -> set[str]:
-    return {host for host in (host_of(url) for url in _URL.findall(_body_text(message, whole=False))) if host}
+    return {host for host in (host_of(url) for url in URL.findall(body_text(message, whole=False))) if host}
 
 
 def _job_mail(message: EmailMessage, sender: str) -> bool:
     """Whether a job system had a hand in it: its sender, return path or signer is an applicant, assessment or scheduling
     system, or it links to an applicant or assessment system (a LinkedIn or Calendly link in a signature does not count)."""
-    hosts = {_domain(sender), *(_domain(address) for address in _addresses(message, "Return-Path"))}
+    hosts = {domain_of(sender), *(domain_of(address) for address in mail_message.addresses(message, "Return-Path"))}
     for result in str(message.get("Authentication-Results", "")).split(";"):
         signer = re.search(r"header\.(?:d|i)=@?([^\s;]+)", result)
         if signer:
@@ -542,152 +212,10 @@ _SALES_HOSTS = (
 def _sales_tool(message: EmailMessage) -> bool:
     if any(str(name).casefold().startswith("x-hubspot") for name in message.keys()):
         return True
-    hosts = _link_hosts(message) | {_domain(address) for address in _addresses(message, "Return-Path")}
+    hosts = _link_hosts(message) | {domain_of(address) for address in mail_message.addresses(message, "Return-Path")}
     return any(marker in host for host in hosts for marker in _SALES_HOSTS)
 
 
-# --- Who each company is ------------------------------------------------------------
-
-
-def _domain(address: str) -> str:
-    return address.rsplit("@", 1)[-1].casefold().strip().rstrip(".>") if "@" in address else ""
-
-
-def _normal(address: str) -> str:
-    """An address as a mailbox: lowercased, without a +tag, and Gmail's dots and googlemail.com folded away."""
-    text = str(address or "").strip().casefold()
-    if "@" not in text:
-        return text
-    local, domain = text.rsplit("@", 1)
-    local = local.split("+", 1)[0] or local
-    if domain in {"gmail.com", "googlemail.com"}:
-        local, domain = local.replace(".", ""), "gmail.com"
-    return f"{local}@{domain}"
-
-
-def _platform(host: str) -> bool:
-    return any(host == shared or host.endswith(f".{shared}") for shared in PLATFORM_HOSTS) or not_an_employer(host)
-
-
-def _institution(host: str) -> bool:
-    return bool(_INSTITUTION.search(registrable_domain(host) or host))
-
-
-def _own_domains() -> set[str]:
-    """The student's own sending domain and its registrable domain: their school's or employer's mail is never a company's."""
-    domain = _domain(sender_account())
-    return {item for item in (domain, registrable_domain(domain) or "") if item}
-
-
-def _is_own(host: str, own: set[str]) -> bool:
-    return bool(own) and (host in own or (registrable_domain(host) or host) in own or any(host.endswith(f".{item}") for item in own))
-
-
-def _names_host(company: str, host: str) -> bool:
-    """Whether a company's name carries a host's name: Rippling for rippling.com, never Acme for linkedin.com."""
-    stem = re.sub(r"[^a-z0-9]", "", (registrable_domain(host) or host).split(".")[0])
-    words = [re.sub(r"[^a-z0-9]", "", word) for word in str(company or "").casefold().split()]
-    return len(stem) >= 3 and (stem in words or stem == "".join(words))
-
-
-def _website_strength(url: str, host: str, company: str) -> bool:
-    """Whether a website's domain is as good as proof: its root, or a page on a host its name carries (not uwaterloo.ca/bovi-lab)."""
-    text = str(url or "").strip()
-    try:
-        path = urlsplit(text if "//" in text else f"https://{text}").path
-    except ValueError:
-        return False
-    return path in {"", "/"} or _names_host(company, host) or len([part for part in path.split("/") if part]) == 1 and not _INSTITUTION.search(host)
-
-
-def _website_domain(url: str, own: set[str], company: str = "") -> str:
-    """The domain a company's website stands for, or '' when it says nothing (a page on a platform, a university, the student's own).
-
-    A platform's own site (www.rippling.com for Rippling) is its company's
-    domain; a page on it (linkedin.com/company/acme, sites.google.com/view/acme,
-    acme.wixsite.com) is not.
-    """
-    host = website_domain(url)
-    if not host or "." not in host or host in FREEMAIL or _institution(host) or _is_own(host, own):
-        return ""
-    if _platform(host) and not _names_host(company, host):
-        text = str(url or "").strip()
-        try:
-            path = urlsplit(text if "//" in text else f"https://{text}").path
-        except ValueError:
-            path = "/x"
-        if host != (registrable_domain(host) or host) or path not in {"", "/"}:
-            return ""
-    labels = host.split(".")
-    # careers.acme.com is acme.com: one label naming a section of the site is dropped, no more.
-    if len(labels) > 2 and labels[0] in _SECTION_LABELS:
-        rest = ".".join(labels[1:])
-        if registrable_domain(host) is None or registrable_domain(rest) == registrable_domain(host):
-            host = rest
-    return host
-
-
-def _stem(domain: str) -> str:
-    return (registrable_domain(domain) or domain).split(".")[0]
-
-
-_STEM_SUFFIXES = {"", "inc", "hq", "co", "corp", "labs", "lab", "ai", "io", "tech", "group", "global", "us", "usa", "mail", "team", "app", "hq"}
-
-
-def _contact_domain(address: str, site: str, own: set[str], company: str = "") -> tuple[str, bool]:
-    """The domain of a contact's address as a company domain, and whether it is as good as the website's.
-
-    Only when it shares the website's name (bovirobotics.us for
-    bovirobotics.com), or there is no website: a contact at an ISP, a VC, an
-    agency or a platform stands for nobody else there. A contact at a
-    university stands for their own department's host (cs.stateu.edu, never
-    stateu.edu), and only weakly: what comes from there is at most a possible reply.
-    """
-    domain = _domain(address)
-    if not domain or domain in FREEMAIL or (registrable_domain(domain) or domain) in FREEMAIL or _is_own(domain, own):
-        return "", False
-    if site and (domain == site or domain.endswith(f".{site}")):
-        return domain, True
-    if _institution(domain):
-        return (domain, False) if not site else ("", False)
-    if _platform(domain):
-        # A platform's own people (jane@rippling.com for Rippling, with no website on file) are its company's.
-        return (domain, False) if not site and _names_host(company, domain) and domain == (registrable_domain(domain) or domain) \
-            else ("", False)
-    if site:
-        stem, theirs = _stem(site), _stem(domain)
-        # The same name, or the name and a corporate word (bovirobotics.us, bovirobotics-inc.com), never another company's.
-        rest = re.sub(r"[^a-z0-9]", "", theirs[len(stem):]) if theirs.startswith(stem) else None
-        return (domain, True) if len(stem) >= 4 and rest in _STEM_SUFFIXES else ("", False)
-    return domain, False
-
-
-def _alias(address: str) -> str:
-    """At a university, one person's mailboxes on its hosts (jkim@stateu.edu, jkim@cs.stateu.edu) as one; else ''."""
-    domain = _domain(address)
-    if not domain or not _institution(domain):
-        return ""
-    return f"{address.split('@', 1)[0].casefold().split('+', 1)[0]}@{registrable_domain(domain) or domain}"
-
-
-def _company_words(company: str) -> str:
-    """A company's name as it is written in mail, without its legal suffix: 'Bovi Robotics, Inc.' is 'bovi robotics'."""
-    tokens = identity_tokens(company)
-    return " ".join(word for word in normalized(company).split() if word in tokens)
-
-
-def _stamp(value: Any) -> datetime | None:
-    try:
-        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
-    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
-
-
-def _distinctive(company: str) -> bool:
-    """Whether a company's name is specific enough to search mail for: two words, or one of six letters or more."""
-    words = _company_words(company).split()
-    return len(words) >= 2 or any(len(word) >= 6 for word in words)
 
 
 def _watched(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict[str, Any]]:
@@ -714,7 +242,7 @@ def _watched(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict
             continue
         if not isinstance(detail, dict):
             continue
-        at = _stamp(event["created_at"])
+        at = parse_app_instant(event["created_at"])
         # A send made in Gmail is recorded when the app notices it, which can be hours later.
         sent_ms = detail.get("sent_ms")
         if isinstance(sent_ms, (int, float)) and sent_ms > 0:
@@ -728,17 +256,17 @@ def _watched(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict
         "SELECT target_id, created_at FROM outreach_events WHERE user_id=? AND event_type IN (?, ?)",
         (user_id, FORM_SUBMITTED, FORM_UNCONFIRMED),
     ).fetchall():
-        if _stamp(event["created_at"]):
-            forms.setdefault(event["target_id"], []).append(_stamp(event["created_at"]))
+        if parse_app_instant(event["created_at"]):
+            forms.setdefault(event["target_id"], []).append(parse_app_instant(event["created_at"]))
     marked: dict[str, list[datetime]] = {}
     for event in conn.execute(
         "SELECT target_id, created_at FROM outreach_events WHERE user_id=? AND event_type='status' AND to_status IN ('sent', 'followed_up')",
         (user_id,),
     ).fetchall():
-        if _stamp(event["created_at"]):
-            marked.setdefault(event["target_id"], []).append(_stamp(event["created_at"]))
-    account = _normal(sender_account())
-    own = _own_domains()
+        if parse_app_instant(event["created_at"]):
+            marked.setdefault(event["target_id"], []).append(parse_app_instant(event["created_at"]))
+    account = mailbox_key(sender_account())
+    own = own_domains()
     watched = []
     for row in rows:
         own_sends = sends.get(row["id"], [])
@@ -751,7 +279,7 @@ def _watched(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict
         # A draft sent from Gmail went to whoever its To line named, which the student may have changed there.
         written += [address for _at, detail in own_sends for _name, address in getaddresses([str(detail.get("sent_to_header") or "")])]
         addresses = {text.strip().casefold() for text in written if "@" in text}
-        addresses = {address for address in addresses if _normal(address) != account}
+        addresses = {address for address in addresses if mailbox_key(address) != account}
         # The app's own sends say to the second when the email went; a send marked
         # by hand has only a date, so the day before it is the earliest a reply counts.
         starts: list[tuple[datetime, bool]] = [(at, False) for at, _detail in own_sends]
@@ -771,21 +299,21 @@ def _watched(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict
         # Anyone at the company's own domains may answer, whatever address the contact uses:
         # its website's, another its own site shows it mailing from (persona.ai, personainc.ai),
         # and a contact's that shares the website's name (a site on .com, mail on .us).
-        site = _website_domain(row["website"] or "", own, row["company"])
-        domains: dict[str, bool] = {site: _website_strength(row["website"] or "", site, row["company"])} if site else {}
+        site = site_domain(row["website"] or "", own, row["company"])
+        domains: dict[str, bool] = {site: website_strength(row["website"] or "", site, row["company"])} if site else {}
         try:
             mail_domains = [str(other).casefold() for other in json.loads(row["mail_domains_json"] or "[]")]
         except (TypeError, ValueError):
             mail_domains = []
         for other in mail_domains:
-            if other and other not in FREEMAIL and not _institution(other) and not _is_own(other, own):
+            if other and other not in FREEMAIL and not is_institution(other) and not is_own(other, own):
                 domains[other] = True
-        aliases = {_alias(address) for address in addresses} - {""}
+        aliases = {university_alias(address) for address in addresses} - {""}
         company = {address for address in addresses if address in primary or any(
-            _domain(address) == own_domain or _domain(address).endswith(f".{own_domain}") for own_domain in domains)}
-        outsiders = {_normal(address) for address in addresses - company}
+            domain_of(address) == own_domain or domain_of(address).endswith(f".{own_domain}") for own_domain in domains)}
+        outsiders = {mailbox_key(address) for address in addresses - company}
         for field in ("contact_email", "contact_cc"):
-            domain, strong = _contact_domain(str(row[field] or ""), site, own, row["company"])
+            domain, strong = contact_domain(str(row[field] or ""), site, own, row["company"])
             if domain:
                 domains[domain] = domains.get(domain, False) or strong
         via_form = row["id"] in forms
@@ -798,7 +326,7 @@ def _watched(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict
         since, date_only = min(starts, key=lambda start: start[0])
         watched.append({
             "id": row["id"], "company": row["company"], "status": row["status"], "addresses": addresses,
-            "mailboxes": {_normal(address) for address in company} | aliases, "outsiders": outsiders, "aliases": aliases,
+            "mailboxes": {mailbox_key(address) for address in company} | aliases, "outsiders": outsiders, "aliases": aliases,
             "domains": domains, "since": since,
             "since_is_date": date_only, "last": latest, "via_form": via_form,
             "subject": " ".join(str(row["email_subject"] or "").split()),
@@ -825,7 +353,7 @@ def _at_domain(domain: str, target: dict[str, Any]) -> bool | None:
 
 
 def _at_company(sender: str, target: dict[str, Any]) -> bool:
-    return _normal(sender) in target["mailboxes"] or _at_domain(_domain(sender), target) is not None
+    return mailbox_key(sender) in target["mailboxes"] or _at_domain(domain_of(sender), target) is not None
 
 
 def _owner(
@@ -844,8 +372,8 @@ def _owner(
             if thread_id in target["threads"]:
                 return [target], "thread"
     by_latest = sorted(watched, key=lambda target: target["last"], reverse=True)
-    mailbox, domain = _normal(sender), _domain(sender)
-    names = {mailbox, _alias(sender)} - {""}
+    mailbox, domain = mailbox_key(sender), domain_of(sender)
+    names = {mailbox, university_alias(sender)} - {""}
     for how, matches in (
         ("address", [target for target in by_latest if names & target["mailboxes"]]),
         ("domain", [target for target in by_latest if domain and _at_domain(domain, target) is not None]),
@@ -854,9 +382,9 @@ def _owner(
         if matches:
             return matches, how
     # Relayed: an applicant system or LinkedIn writes for someone whose Reply-To is at the company.
-    others = {_normal(address) for address in _addresses(message, "Reply-To", "Sender")} - {mailbox}
+    others = {mailbox_key(address) for address in mail_message.addresses(message, "Reply-To", "Sender")} - {mailbox}
     matches = [target for target in by_latest if others & target["mailboxes"]
-               or any(_at_domain(_domain(other), target) is not None for other in others)]
+               or any(_at_domain(domain_of(other), target) is not None for other in others)]
     return (matches, "reply_to") if matches else ([], "")
 
 
@@ -868,11 +396,11 @@ def _named(watched: list[dict[str, Any]], message: EmailMessage, text: str) -> l
     found = []
     for target in sorted(watched, key=lambda item: item["last"], reverse=True):
         own = target["subject"].casefold()
-        name = _company_words(target["company"])
+        name = company_words(target["company"])
         single = len(name.split()) == 1
         written = str(target["company"]).split(",")[0].strip()
         named = f" {name} " in words and (not single or bool(re.search(rf"\b{re.escape(written)}\b", f"{message.get('Subject', '')} {text}")))
-        if (own and own not in shared and own in subject) or (_distinctive(target["company"]) and named):
+        if (own and own not in shared and own in subject) or (is_distinctive(target["company"]) and named):
             found.append(target)
     return found
 
@@ -887,9 +415,9 @@ def _shared_subjects(watched: list[dict[str, Any]]) -> set[str]:
 
 def _addressed(message: EmailMessage, account: str) -> bool:
     """Whether the student was in its To or Cc line, not only a blind copy."""
-    recipients = {_normal(address) for address in _addresses(message, "To", "Cc")}
+    recipients = {mailbox_key(address) for address in mail_message.addresses(message, "To", "Cc")}
     if account:
-        return _normal(account) in recipients
+        return mailbox_key(account) in recipients
     return bool(recipients) and "undisclosed" not in str(message.get("To", "")).casefold()
 
 
@@ -927,7 +455,7 @@ def _judge(
     target = targets[0]
     local = sender.split("@", 1)[0]
     subject = str(message.get("Subject", ""))
-    if (account and _normal(sender) == _normal(account)) or "SENT" in labels or "DRAFT" in labels:
+    if (account and mailbox_key(sender) == mailbox_key(account)) or "SENT" in labels or "DRAFT" in labels:
         return IGNORED, "own"
     delivery = _delivery_kind(message, sender)
     if delivery:
@@ -937,7 +465,7 @@ def _judge(
     # Someone at the company writing through a relay (an applicant system, LinkedIn): its Reply-To. That lets the
     # message be shown, never counted: counting rests on the sender's own address.
     relayed = any(is_person(other, target["company"]) and _at_company(other, target)
-                  for other in _addresses(message, "Reply-To", "Sender"))
+                  for other in mail_message.addresses(message, "Reply-To", "Sender"))
     own_person = is_person(sender, target["company"])
     person = own_person or relayed
     if how == "thread":
@@ -954,11 +482,11 @@ def _judge(
             if generated:
                 # A person's address, but a system sent it (a help desk, an out-of-office in another language): shown.
                 return POSSIBLE, "auto_generated"
-            if not own_person and _machine(local):
+            if not own_person and is_machine_local(local):
                 return POSSIBLE, "automated_sender"
             return REPLY, "thread"
         automated = is_automatic(message) or (
-            not person and (_machine(local) or listed(_domain(sender), tuple(sender_lists())) or not is_person(sender))
+            not person and (is_machine_local(local) or listed(domain_of(sender), tuple(sender_lists())) or not is_person(sender))
             and _acknowledged(target, sender, subject, text, received_at)
         )
         return (AUTOMATIC, "acknowledgement") if automated else (POSSIBLE, "thread_outsider")
@@ -968,9 +496,9 @@ def _judge(
             return POSSIBLE, "before_marked_sent"
         return IGNORED, "before"
     if how == "name":
-        if is_bulk(message) or not person or not _addressed(message, account) or is_automatic(message):
+        if is_bulk_or_generated(message) or not person or not _addressed(message, account) or is_automatic(message):
             return IGNORED, "no_company"
-    elif is_bulk(message):
+    elif is_bulk_or_generated(message):
         # From the address written to, or a person, through a mailing or sales tool: shown, never set aside.
         if how != "address" and not person and not answers_something(message):
             return IGNORED, "list"
@@ -982,7 +510,7 @@ def _judge(
     verified = authenticate(message).ok
     if "SPAM" in labels and how != "address" and not verified:
         # A person at the company's own domain whose mail Gmail doubted is still shown; the rest in Spam is not.
-        if not (person and how == "domain" and _at_domain(_domain(sender), target)):
+        if not (person and how == "domain" and _at_domain(domain_of(sender), target)):
             return IGNORED, "spam_unverified"
     kind, reason = _judge_match(message, targets=targets, how=how, sender=sender, display=display, account=account,
                                 person=person, verified=verified)
@@ -1019,7 +547,7 @@ def _judge_match(
     local = sender.split("@", 1)[0]
     if _job_mail(message, sender):
         return POSSIBLE, "job_mail"
-    if _machine(local):
+    if is_machine_local(local):
         # An automated sender at the company is shown when it answers something or follows a contact form
         # (an interview invitation from no-reply@ their applicant system is job mail, above); account mail
         # from a big company's no-reply@ (a security code) is set aside.
@@ -1029,7 +557,7 @@ def _judge_match(
         return POSSIBLE, "shared_address"
     if _sales_tool(message):
         return POSSIBLE, "mailing_tool"
-    if not _at_domain(_domain(sender), targets[0]):
+    if not _at_domain(domain_of(sender), targets[0]):
         return POSSIBLE, "weak_domain"
     if not verified:
         return POSSIBLE, "not_verified"
@@ -1103,72 +631,6 @@ def _remember(
 # None when they could not all be read), which outreach_thank_you.thank_you_blockers checks before anything
 # is sent on its own.
 REPLY_META = {"thread_id", "message_id", "subject", "from_name", "full_text", "reply_to", "headers", "link_hosts"}
-# The headers kept with a Gmail reply: who it was to, whether a person or a system sent it, and Gmail's own sender
-# check. Headers only, never more of the body than full_text already keeps.
-KEPT_HEADERS = (
-    "From", "Sender", "To", "Cc", "Subject", "Return-Path", "Auto-Submitted", "X-Auto-Response-Suppress",
-    "List-Unsubscribe", "List-Id", "Precedence", "X-Autoreply", "X-Autorespond", "DKIM-Signature", "Authentication-Results",
-)
-# A message with more of these, or a longer one, is not kept at all, so a check that reads them fails closed.
-KEPT_HEADER_LIMIT = 4_000
-KEPT_HEADER_COUNT = 40
-LINK_HOST_LIMIT = 50
-_LINK = re.compile(r"""https?://[^\s<>"'`]+""", re.IGNORECASE)
-
-
-def kept_headers(message: EmailMessage) -> list[list[str]] | None:
-    """The KEPT_HEADERS of a message, in the order they arrived and as they arrived ([name, raw value] pairs).
-
-    None when there are too many or one is too long to keep whole: a check
-    that reads them then finds none, and fails closed.
-    """
-    wanted = {name.casefold() for name in KEPT_HEADERS}
-    kept: list[list[str]] = []
-    for name, value in message.raw_items():
-        if str(name).casefold() not in wanted:
-            continue
-        text = str(value).encode("utf-8", "surrogateescape").decode("utf-8", "replace")
-        if len(text) > KEPT_HEADER_LIMIT or len(kept) >= KEPT_HEADER_COUNT:
-            return None
-        kept.append([str(name), text])
-    return kept
-
-
-def _hosts(text: str) -> Iterable[str]:
-    from .mail_trust import host_of
-
-    for url in _LINK.finditer(html.unescape(str(text or ""))):
-        host = host_of(url.group(0).rstrip(".,;:!?)]}'\""))
-        if host:
-            yield host
-
-
-def hosts_in(text: str) -> set[str]:
-    """The host of every link in a text. Hosts only."""
-    return set(_hosts(text))
-
-
-def link_hosts(message: EmailMessage) -> list[str] | None:
-    """The host of every link in a message's text parts, plain and HTML (href too), quoted parts included. Hosts only.
-
-    None when a text part cannot be read (a charset Python does not know) or
-    it links more than LINK_HOST_LIMIT hosts: like kept_headers, a check that
-    reads them then fails closed rather than missing a link it never saw.
-    """
-    hosts: list[str] = []
-    for part in message.walk():
-        if part.is_multipart() or part.get_content_maintype() != "text":
-            continue
-        try:
-            content = str(part.get_content())
-        except Exception:  # noqa: BLE001 - a part that cannot be read hides its links, so none are vouched for
-            return None
-        for host in _hosts(content):
-            if host not in hosts:
-                if len(hosts) >= LINK_HOST_LIMIT:
-                    return None
-                hosts.append(host)
-    return hosts
 
 
 def _meta_value(value: Any) -> Any:
@@ -1191,7 +653,7 @@ def reply_meta(message: EmailMessage, *, thread_id: str, message_id: str, subjec
             address.casefold() for _name, address in getaddresses([str(message.get("Reply-To", ""))]) if address
         )[:300],
         "headers": lambda: kept_headers(message),
-        "link_hosts": lambda: link_hosts(message),
+        "link_hosts": lambda: link_hosts_or_none(message),
     }
     for key, read in readers.items():
         try:
@@ -1255,21 +717,21 @@ def _record_reply(
             "SELECT detail FROM outreach_events WHERE target_id=? AND user_id=? AND event_type='reply_logged'", (target["id"], user_id),
         ).fetchall()]
         if not any(_same_words(earlier, text) for earlier in logged):
-            _log(conn, target["id"], user_id, "reply_logged", detail=text, data=data)
+            log_event(conn, target["id"], user_id, "reply_logged", detail=text, data=data)
             # They wrote again: a thank-you after their earlier decline that has not gone stops now.
             from .outreach_thank_you import on_new_reply  # imported here: it imports this module's neighbours
 
             on_new_reply(conn, target["id"], user_id)
         if reason and claim is None:
-            _log(conn, target["id"], user_id, "reply_found",
+            log_event(conn, target["id"], user_id, "reply_found",
                  detail=_found_words(reason, sender, {"addresses": addresses if addresses is not None else target.get("addresses")}))
         if notify:
             # Said outside the page too (and on the desktop when the student turned that on). Never an address or words.
-            day = _stamp(received)
+            day = parse_app_instant(received)
             title = f"{target['company']} replied" + (
                 f" on {day:%b} {day.day} (found late)" if late and day else ""
             )
-            automation._insert_notice(conn, user_id, event_key=f"outreach-reply:{gmail_id}", level="info", title=title,
+            automation.insert_notice(conn, user_id, event_key=f"outreach-reply:{gmail_id}", level="info", title=title,
                                       body="Their reply is logged in Outreach.", timestamp=utc_now())
     current = get_target(conn, target["id"], user_id=user_id)
     if current["status"] in REOPENED_BY_REPLY:
@@ -1310,13 +772,13 @@ def _record_possible(
         ):
             return None
         for owner in targets:
-            _log(conn, owner["id"], user_id, "possible_reply",
+            log_event(conn, owner["id"], user_id, "possible_reply",
                  detail=f"{sender}: “{subject or '(no subject)'}”. Not counted as a reply until you say, "
                         f"because {reply_reason(reason, sender)}.")
         if notify:
             title = f"{target['company']} may have replied" if len(targets) == 1 else "A company you wrote to may have replied"
             body = "Open Outreach to check it." + (" Gmail put it in Spam." if in_spam else "")
-            automation._insert_notice(conn, user_id, event_key=f"outreach-possible-reply:{gmail_id}", level="info",
+            automation.insert_notice(conn, user_id, event_key=f"outreach-possible-reply:{gmail_id}", level="info",
                                       title=title, body=body, timestamp=utc_now())
     return {"target_id": target["id"], "company": target["company"], "from": sender, "reason": reason,
             "companies": [other["company"] for other in targets]}
@@ -1376,7 +838,7 @@ def decide_possible_reply(
         def confirm() -> bool:
             if not settle(REPLY):
                 return False
-            _log(conn, target_id, user_id, "possible_reply_confirmed",
+            log_event(conn, target_id, user_id, "possible_reply_confirmed",
                  detail=f"{sender}: “{row['subject'] or '(no subject)'}”. You said it is their reply.")
             return True
 
@@ -1398,7 +860,7 @@ def decide_possible_reply(
         with conn:
             if not settle(DISMISSED):
                 raise PossibleReplySettled("You already said whether this email is a reply")
-            _log(conn, target_id, user_id, "possible_reply_dismissed",
+            log_event(conn, target_id, user_id, "possible_reply_dismissed",
                  detail=f"{sender}: “{row['subject'] or '(no subject)'}”. You said it is not a reply.")
     return get_target(conn, target_id, user_id=user_id, include_events=True)
 
@@ -1476,7 +938,7 @@ def _name_query(chunk: list[dict[str, Any]], watched: list[dict[str, Any]], now:
     plain = lambda text: " ".join(text.replace('"', " ").split())
     terms = [f'subject:"{plain(target["subject"])}"' for target in chunk
              if len(target["subject"]) >= 8 and target["subject"].casefold() not in shared]
-    terms += [f'"{_company_words(target["company"])}"' for target in chunk if _distinctive(target["company"])]
+    terms += [f'"{company_words(target["company"])}"' for target in chunk if is_distinctive(target["company"])]
     terms = sorted(set(terms))
     return f"{{{' '.join(terms)}}} {_window(chunk, now)}" if terms else ""
 
@@ -1496,12 +958,12 @@ def _sweep_start(conn: sqlite3.Connection, user_id: str, watched: list[dict[str,
     with _MEMORY_LOCK:
         last = _LAST_SWEEP.get(user_id)
     if last is None:
-        row = conn.execute("SELECT value FROM user_settings WHERE user_id=? AND key=?", (user_id, SWEEP_SETTING)).fetchone()
+        stored = get_setting(conn, user_id, SWEEP_SETTING)
         try:
-            mark = json.loads(row[0]) if row else {}
+            mark = json.loads(stored) if stored is not None else {}
         except (TypeError, ValueError):
             mark = {}
-        last = _stamp(mark.get("at")) if isinstance(mark, dict) and mark.get("rules") == RULES else None
+        last = parse_app_instant(mark.get("at")) if isinstance(mark, dict) and mark.get("rules") == RULES else None
     start = last - timedelta(days=1) if last else min(sent)
     return max(start, min(sent) - timedelta(minutes=5), now - REPLY_WINDOW)
 
@@ -1511,17 +973,15 @@ def _swept(conn: sqlite3.Connection, user_id: str, now: datetime) -> None:
     with _MEMORY_LOCK:
         _LAST_SWEEP[user_id] = now
     with conn:
-        conn.execute(
-            "INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, ?, ?, ?) "
-            "ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
-            (user_id, SWEEP_SETTING, json.dumps({"at": now.isoformat(timespec="seconds"), "rules": RULES}), utc_now()),
+        put_setting(
+            conn, user_id, SWEEP_SETTING, json.dumps({"at": now.isoformat(timespec="seconds"), "rules": RULES}), utc_now(),
         )
 
 
 def _activated_at(conn: sqlite3.Connection) -> datetime | None:
     """When these rules started: mail from before then was judged by older ones, so it is never counted without the student."""
     row = conn.execute("SELECT applied_at FROM schema_migrations WHERE name=?", (MIGRATION,)).fetchone()
-    return _stamp(row[0]) if row else None
+    return parse_app_instant(row[0]) if row else None
 
 
 def capture_replies(
@@ -1563,9 +1023,9 @@ def capture_replies(
                 "UPDATE outreach_inbox_messages SET rules=? WHERE user_id=? AND kind=? AND rules < ?", (RULES, user_id, AUTOMATIC, RULES),
             )
         return result
-    row = _connector(conn, user_id)
-    if not row or row["status"] != "connected":
-        return {**result, "state": "not_connected" if not row or row["status"] == "disconnected" else "needs_reconnect"}
+    state = connection_state(_connector(conn, user_id))
+    if state != "connected":
+        return {**result, "state": state}
     account = sender_account().casefold()
     activated = _activated_at(conn)
     budget = [READ_BUDGET]
@@ -1604,15 +1064,15 @@ def capture_replies(
         thread_id = str(data.get("threadId") or thread_hint or "")
         try:
             raw = str(data.get("raw", ""))
-            message = email.message_from_bytes(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)), policy=policy.default)
+            message = email.message_from_bytes(mail_message.decode_base64url(raw), policy=policy.default)
             # No time from Gmail or the Date header: taken as arriving now, never as "before the first email".
-            received_at = _received(data, message) or now
-            display, sender = _sender(message)
+            received_at = mail_message.received_or_none(data, message) or now
+            display, sender = mail_message.sender(message)
             subject = " ".join(str(message.get("Subject", "")).split())[:300]
             text = reply_text(message)
             targets, how = _owner(watched, message, sender, thread_id)
             if not targets and by_name:
-                targets, how = _named(watched, message, _body_text(message, whole=False)), "name"
+                targets, how = _named(watched, message, body_text(message, whole=False)), "name"
             kind, reason = _judge(message, targets=targets, how=how, sender=sender, display=display, account=account,
                                   labels=labels, received_at=received_at, text=text, thread_id=thread_id) if targets else (IGNORED, "no_company")
         except (IndexError, KeyError, LookupError, AttributeError, TypeError, ValueError, UnicodeError):
@@ -1662,7 +1122,7 @@ def capture_replies(
                 if not _remember(conn, user_id, gmail_id, target["id"], kind, sender, received, **facts):
                     return True
                 if kind == AUTOMATIC and not (noted and noted[0] == AUTOMATIC):
-                    _log(conn, target["id"], user_id, "auto_reply", detail=f"{sender}: {' '.join(text.split())[:300]}")
+                    log_event(conn, target["id"], user_id, "auto_reply", detail=f"{sender}: {' '.join(text.split())[:300]}")
                     result["automatic"].append({"target_id": target["id"], "company": target["company"], "from": sender})
             return True
         if not text:
@@ -1701,24 +1161,23 @@ def capture_replies(
         if response.status_code == 404:
             return True  # the thread was deleted: nothing left to find in it
         if response.status_code == 403:
-            raise _NeedsReconnect
+            raise GmailNeedsReadScope
         if response.status_code != 200:
             result["state"] = "unreachable"
             return False
         complete = True
         for message in response.json().get("messages") or []:
             labels = message.get("labelIds") or []
-            headers = {str(item.get("name", "")).lower(): str(item.get("value", ""))
-                       for item in (message.get("payload") or {}).get("headers") or []}
-            if "SENT" in labels or "DRAFT" in labels or _headers_say_failure(message):
+            headers = header_map(message)
+            if "SENT" in labels or "DRAFT" in labels or headers_say_failure(message):
                 continue  # the student's own, or a delivery notice (outreach_delivery reads those)
-            if account and _normal(parseaddr(headers.get("from", ""))[1]) == _normal(account):
+            if account and mailbox_key(parseaddr(headers.get("from", ""))[1]) == mailbox_key(account):
                 continue
             complete = read(gmail, str(message.get("id", "")), thread_id, exempt=True) and complete
         return complete
 
     def look(gmail: _Gmail) -> None:
-        """Every look of one check, in order. Raises _NeedsReconnect when Gmail refuses a read."""
+        """Every look of one check, in order. Raises GmailNeedsReadScope when Gmail refuses a read."""
         # The company an automatic send is about to go to: its threads and its mail, now, before anything else,
         # outside the budget, so the look before the send is complete for it.
         forced = next((target for target in watched if target["id"] == force_target), None)
@@ -1785,7 +1244,7 @@ def capture_replies(
         """A search's results, and whether it read them all. A failed one leaves the check not ok."""
         references, failed, more = _search(gmail, user_id, query, page_size=page_size)
         if failed == 403:
-            raise _NeedsReconnect
+            raise GmailNeedsReadScope
         if failed:
             # A search that failed found nothing yet; say so, so a send waiting on it holds.
             result["state"] = "unreachable"
@@ -1795,7 +1254,7 @@ def capture_replies(
     try:
         with client_factory() as client:
             look(_Gmail(conn, client, user_id))
-    except (_NeedsReconnect, GmailAuthError):
+    except (GmailNeedsReadScope, GmailAuthError):
         outcome = {**result, "state": "needs_reconnect"}
     except GmailThrottled:
         # Gmail asked to slow down: what was not read yet is read on a later check, and a send waiting on it holds.
@@ -1816,258 +1275,3 @@ def capture_replies(
 _THREAD_HEADERS = ("From", "To", "Cc", "Subject", "Content-Type", "X-Failed-Recipients")
 
 
-class _NeedsReconnect(Exception):
-    """Gmail refused a read: the connection predates the read scope."""
-
-
-# --- In the background ----------------------------------------------------------------
-
-# What a check's state means, as automation_health records it. Never an address or a message's words.
-STEP_ERRORS = {
-    "needs_reconnect": "Gmail needs reconnecting",
-    "not_connected": "Gmail is not connected",
-    "unreachable": "Gmail could not be reached",
-    "throttled": "Gmail asked the app to slow down",
-    "needs_label_permission": (
-        "Reconnect Gmail and tick the permission Google lists as reading, composing and sending, "
-        "so the app can label your outreach threads (the emails you send and their replies)"
-    ),
-    "wrong_account": "Gmail is connected as a different account from your outreach address; reconnect with that address",
-    "label_refused": "Gmail would not create a label with that name; choose another in Outreach settings",
-    "message_errors": "Some job emails could not be read and were set aside",
-    "database_busy": "The database was busy, so the job-email check stopped; it tries again next time",
-}
-RECONNECT_ERROR = "Gmail needs reconnecting"
-CONNECTION = "inbox.connection"
-_ADDRESS = re.compile(r"""[^\s@<>"'(),;:]+@[^\s@<>"'(),;:]+""")
-
-
-_QUERY = re.compile(r"(https?://[^\s?#]+)[?#][^\s]*")
-
-
-def _step_error(exc: BaseException) -> str:
-    """An exception as a health error: its type and message, with any address and any URL's query string taken out."""
-    words = _ADDRESS.sub("[address]", _QUERY.sub(lambda found: found.group(1), str(exc)))
-    return f"{type(exc).__name__}: {words[:200]}"
-
-
-def _record(
-    conn: sqlite3.Connection, user_id: str, component: str, *, ok: bool, error: str = "", detail: dict[str, Any] | None = None,
-) -> None:
-    """automation.record_health, which opens its own transaction; a failure to record is logged, never raised."""
-    try:
-        automation.record_health(conn, user_id, component, ok=ok, error=error, detail=detail)
-    except Exception:  # noqa: BLE001 - the pass goes on to the next step and the next student
-        LOGGER.warning("Could not record the health of %s", component, exc_info=True)
-
-
-def _discard_open_transaction(conn: sqlite3.Connection) -> None:
-    """After a step failed: roll back what it left uncommitted, so recording its health does not commit it."""
-    try:
-        if getattr(conn, "in_transaction", False):
-            conn.rollback()
-    except Exception:  # noqa: BLE001
-        LOGGER.warning("Could not roll back after an inbox step failed", exc_info=True)
-
-
-def _save_gmail_health(conn: sqlite3.Connection, user_id: str) -> None:
-    """Write the Gmail connection's health that memory holds (outreach_gmail.persist_gmail_health).
-
-    Called only between the watcher's steps, where nothing of the watcher's is
-    pending: every step commits its own writes, and a step that failed was
-    rolled back (_discard_open_transaction). What can still be open is the
-    read-only transaction psycopg starts on PostgreSQL for a step's first
-    SELECT, which makes every Gmail health write inside the steps wait. Ending
-    it here commits nothing but reads; on SQLite no transaction is open here.
-    """
-    try:
-        if getattr(conn, "in_transaction", False):
-            conn.commit()
-        persist_gmail_health(conn, user_id)
-    except Exception:  # noqa: BLE001 - the pass goes on to the next step and the next student
-        _discard_open_transaction(conn)
-        LOGGER.warning("Could not save the Gmail connection's health", exc_info=True)
-
-
-def _moment(stamp: Any) -> datetime | None:
-    try:
-        moment = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
-    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
-
-
-def _local(conn: sqlite3.Connection, user_id: str, stamp: str) -> str:
-    """A stored UTC time as the student reads it: "Sat, Sep 26 at 3:14 PM"."""
-    moment = _moment(stamp)
-    if moment is None:
-        return str(stamp)
-    local = user_timezone(conn, user_id).to_local(moment)
-    return f"{local:%a, %b} {local.day} at {f'{local:%I:%M %p}'.lstrip('0')}"
-
-
-def _record_connection(conn: sqlite3.Connection, user_id: str, status: str, updated_at: str) -> None:
-    """The inbox.connection health row, from the connector's status.
-
-    Connected is ok. A connection the student disconnected on purpose is not a
-    problem, so it is recorded as ok with the state "disconnected", once, and
-    never as "needs reconnecting". Only a connection in 'error' is an error,
-    and it says since when: the earliest break seen while it stays broken, so a
-    pass every few minutes neither moves "since" nor the error's own time.
-    """
-    try:
-        existing = conn.execute(
-            "SELECT last_error, detail_json FROM automation_health WHERE user_id=? AND component=?", (user_id, CONNECTION),
-        ).fetchone()
-        before = json.loads(existing["detail_json"] or "{}") if existing else {}
-    except Exception:  # noqa: BLE001 - unread, the row is simply written again
-        LOGGER.warning("Could not read the inbox connection's health", exc_info=True)
-        _discard_open_transaction(conn)
-        existing, before = None, {}
-    if not isinstance(before, dict):
-        before = {}
-    if status == "connected":
-        _record(conn, user_id, CONNECTION, ok=True, detail={"state": "connected"})
-        return
-    if status == "disconnected":
-        if before.get("state") != "disconnected":
-            _record(conn, user_id, CONNECTION, ok=True, detail={"state": "disconnected"})
-        return
-    since = str(updated_at or utc_now())
-    earlier, now_seen = _moment(before.get("since")), _moment(since)
-    if before.get("state") == "error" and earlier is not None and (now_seen is None or earlier < now_seen):
-        since = str(before["since"])
-    error = f"{RECONNECT_ERROR} (since {_local(conn, user_id, since)})"
-    if existing is not None and before.get("state") == "error" and before.get("since") == since and existing["last_error"] == error:
-        return  # already recorded: last_error_at stays when it was first seen
-    _record(conn, user_id, CONNECTION, ok=False, error=error, detail={"state": "error", "since": since})
-
-
-class InboxWatcher:
-    """Checks every connected student's Gmail for bounces and replies on a background thread."""
-
-    def __init__(
-        self,
-        platform_target: Path | str,
-        *,
-        client_factory: ClientFactory,
-        decisions_for: Callable[[sqlite3.Connection, str], DecisionClient | None],
-        on_reply: OnReply | None = None,
-        interval_seconds: float = 180.0,
-    ) -> None:
-        self.platform_target = platform_target
-        self._client_factory = client_factory
-        self._decisions_for = decisions_for
-        self._on_reply = on_reply
-        self._interval = interval_seconds
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-
-    def run_once(self) -> None:
-        """One pass over every student's Gmail connection, whatever its state.
-
-        A broken or disconnected connection is only noted (a health row, and a
-        notice when it is broken); nothing is asked of Gmail. A connected one
-        runs each check on its own: a check that fails or raises is recorded and
-        the next one runs. Between the steps, and at the end of each student,
-        the Gmail health that memory holds is saved (_save_gmail_health), so a
-        rate limit or a success seen inside a step reaches the row on
-        PostgreSQL too, where it could not be written mid-step.
-        """
-        with closing(connect_product(self.platform_target)) as conn:
-            rows = [(row[0], row[1], row[2]) for row in conn.execute(
-                "SELECT user_id, status, updated_at FROM connector_accounts WHERE provider=? ORDER BY user_id", (PROVIDER,)
-            ).fetchall()]
-            for user_id, status, updated_at in rows:
-                if status == "connected":
-                    self._check(conn, user_id)
-                else:
-                    _record_connection(conn, user_id, status, updated_at)
-                self._notices(conn, user_id)
-                _save_gmail_health(conn, user_id)
-
-    def _check(self, conn: sqlite3.Connection, user_id: str) -> None:
-        from . import application_inbox  # imported here: it imports this module
-        from .outreach_gmail_sends import capture_gmail_sends  # imported here: it imports the scheduler
-
-        factory = self._client_factory
-        steps: list[tuple[str, Callable[[], dict[str, Any]]]] = [
-            # A draft sent from Gmail first, so its bounce and replies are watched in the same pass.
-            ("inbox.sends", lambda: capture_gmail_sends(conn, user_id=user_id, client_factory=factory)),
-            ("inbox.deliveries", lambda: check_deliveries(conn, user_id=user_id, client_factory=factory)),
-            ("inbox.replies", lambda: capture_replies(
-                conn, user_id=user_id, client_factory=factory,
-                decisions=self._decisions_for(conn, user_id), on_reply=self._on_reply,
-            )),
-            # The label goes on a confirmed reply's thread as soon as the reply is captured (a no-op when off or paused).
-            (outreach_labels.HEALTH_COMPONENT, lambda: outreach_labels.label_replies(
-                conn, user_id=user_id, client_factory=factory,
-            )),
-        ]
-        # Job-system mail after the replies, so a reply outreach owns is never read as one.
-        # Only when the student turned it on (or into shadow); off, its cursor is forgotten.
-        try:
-            switch = automation.mode(conn, user_id, application_inbox.FEATURE)
-        except Exception:  # noqa: BLE001 - the other steps still run
-            _discard_open_transaction(conn)
-            LOGGER.warning("Could not read the application mail switch", exc_info=True)
-            # Not knowing is not "off": the cursor is left alone, and the next pass asks again.
-            switch = None
-        if switch not in (None, "off"):
-            steps.append((application_inbox.HEALTH_COMPONENT, lambda: application_inbox.run_pass(
-                conn, user_id=user_id, client_factory=factory, decisions=self._decisions_for(conn, user_id),
-            )))
-        elif switch == "off":
-            application_inbox.note_off(conn, user_id)
-        for component, step in steps:
-            try:
-                outcome = step() or {}
-                state = str(outcome.get("state", "ok"))
-            except Exception as exc:  # noqa: BLE001 - one step failing never stops the others
-                LOGGER.warning("Inbox step %s failed", component, exc_info=True)
-                _discard_open_transaction(conn)
-                _record(conn, user_id, component, ok=False, error=_step_error(exc))
-            else:
-                detail = outcome.get("detail") if isinstance(outcome.get("detail"), dict) else None
-                if outcome.get("skipped"):
-                    pass  # it ran less than its interval ago; its last outcome stands
-                elif state == "ok":
-                    _record(conn, user_id, component, ok=True, detail=detail)
-                else:
-                    _record(conn, user_id, component, ok=False, error=STEP_ERRORS.get(state, f"Gmail check stopped: {state}"),
-                            detail=detail)
-            _save_gmail_health(conn, user_id)
-        # A 401 during the checks can leave the connection broken (or the student may have disconnected meanwhile).
-        row = _connector(conn, user_id)
-        if row is None:
-            return
-        _record_connection(conn, user_id, row["status"], row["updated_at"])
-
-    def _notices(self, conn: sqlite3.Connection, user_id: str) -> None:
-        try:
-            gmail_notices(conn, user_id)
-        except Exception:  # noqa: BLE001 - the next student is still checked
-            _discard_open_transaction(conn)
-            LOGGER.warning("Could not leave Gmail connection notices", exc_info=True)
-
-    def start(self) -> None:
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, name="inbox-watcher", daemon=True)
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=5)
-
-    def _loop(self) -> None:
-        # The first pass soon after start, to catch what arrived while the app was off.
-        wait = min(20.0, self._interval)
-        while not self._stop.wait(wait):
-            try:
-                self.run_once()
-            except Exception:  # the thread must outlive any one bad pass
-                LOGGER.exception("Inbox watcher pass failed")
-            wait = self._interval
