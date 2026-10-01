@@ -28,7 +28,6 @@ from pipeline import (
     load_env_file,
     load_sources,
     score_job,
-    source_identity,
     source_key,
     write_discovered_sources,
 )
@@ -45,7 +44,6 @@ __all__ = [
     "load_env_file",
     "load_sources",
     "score_job",
-    "source_identity",
     "source_key",
     "write_discovered_sources",
 ]
