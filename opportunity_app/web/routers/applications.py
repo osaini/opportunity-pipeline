@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import csv
-import io
 import json
 import sqlite3
 from typing import Any, Literal
@@ -18,8 +17,11 @@ from ...actions import (
     add_application_task,
     application_analytics,
     application_detail,
+    export_applications_csv,
+    export_applications_json,
     import_applications,
     list_applications,
+    parse_application_import,
     update_application,
     update_application_task,
 )
@@ -48,20 +50,12 @@ def export_applications(
     items = list_applications(conn, user_id=user_id)
     if export_format == "json":
         return Response(
-            content=json.dumps(items, indent=2, sort_keys=True),
+            content=export_applications_json(items),
             media_type="application/json",
             headers={"Content-Disposition": 'attachment; filename="applications.json"'},
         )
-    output = io.StringIO(newline="")
-    fields = [
-        "id", "opportunity_id", "company", "title", "stage", "notes",
-        "applied_at", "follow_up_at", "location", "region", "url", "created_at", "updated_at",
-    ]
-    writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")
-    writer.writeheader()
-    writer.writerows(items)
     return Response(
-        content=output.getvalue(),
+        content=export_applications_csv(items),
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="applications.csv"'},
     )
@@ -90,19 +84,7 @@ async def import_application_file(
             detail="Application imports are limited to 2 MB",
         )
     try:
-        text_data = data.decode("utf-8-sig")
-        if original_name.endswith(".csv"):
-            records = [dict(row) for row in csv.DictReader(io.StringIO(text_data))]
-        else:
-            parsed = json.loads(text_data)
-            if isinstance(parsed, list):
-                records = parsed
-            elif isinstance(parsed, dict):
-                records = parsed.get("items", [])
-            else:
-                raise ValueError("Import must be a JSON list or object with an items list")
-        if not isinstance(records, list) or any(not isinstance(row, dict) for row in records):
-            raise ValueError("Import must contain a list of application objects")
+        records = parse_application_import(data, original_name)
         return import_applications(conn, records, user_id=user_id)
     except (UnicodeDecodeError, json.JSONDecodeError, csv.Error, ValueError) as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
