@@ -154,7 +154,7 @@ from pipeline import identity_tokens, normalized
 from . import automation, internal_automation, mail_trust
 from .connections import classify_monitored_message
 from .database import is_transient_error
-from .extension_apply import _canonical_url
+from .extension_apply import split_canonical_url
 from .inbox_classifiers import classify_email
 from .outreach_config import sender_account
 from .outreach_gmail import ClientFactory, GmailAuthError, GmailThrottled, _connector, _Gmail
@@ -434,7 +434,7 @@ def _job_ids(url: str) -> set[str]:
 
 
 def _url_key(url: str) -> tuple[str, str] | None:
-    canonical, host, path = _canonical_url(url)
+    canonical, host, path = split_canonical_url(url)
     if not canonical or path in ("", "/"):
         return None
     return host, path

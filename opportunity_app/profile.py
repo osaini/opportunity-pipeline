@@ -295,7 +295,7 @@ def _region_errors(value: Any) -> list[str]:
     return errors
 
 
-def _name_parts_errors(value: Any) -> list[str]:
+def name_parts_errors(value: Any) -> list[str]:
     if not isinstance(value, dict):
         return ["name_parts must be an object with first, last and preferred"]
     errors = [f"name_parts.{key} is not one of first, last, preferred" for key in sorted(set(value) - set(_NAME_PARTS))]
@@ -366,7 +366,7 @@ def validate_profile_types(profile: dict[str, Any]) -> None:
         elif field == "compensation_preferences":
             errors.extend(_compensation_errors(value))
         elif field == "name_parts":
-            errors.extend(_name_parts_errors(value))
+            errors.extend(name_parts_errors(value))
         elif field == "contact":
             if not isinstance(value, dict):
                 errors.append("contact must be an object")

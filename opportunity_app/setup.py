@@ -382,11 +382,11 @@ def _validate_automation_settings(profile: dict[str, Any], errors: list[str], wa
 def _validate_apply_agent_settings(profile: dict[str, Any], errors: list[str], warnings: list[str]) -> None:
     """The per-student Apply for me settings: how the name is written on an application, and the limits."""
     from .apply_runs import DEFAULT_LIMITS, LIMIT_MAXIMUM
-    from .profile import _name_parts_errors
+    from .profile import name_parts_errors
 
     parts = profile.get("name_parts")
     if parts is not None:
-        errors.extend(_name_parts_errors(parts))
+        errors.extend(name_parts_errors(parts))
     settings = profile.get("apply_agent")
     if settings is None:
         return
