@@ -288,20 +288,10 @@ def enable_personal_data_hooks(root: Path) -> str:
 
 
 def _ensure_databases(paths: Paths) -> None:
-    import sqlite3
-
-    import pipeline
-
+    from .legacy import create_database
     from .schema import migrate_legacy_database
 
-    paths.legacy_db.parent.mkdir(parents=True, exist_ok=True)
-    original = pipeline.DB_PATH
-    pipeline.DB_PATH = paths.legacy_db
-    try:
-        conn: sqlite3.Connection = pipeline.connect()
-        conn.close()
-    finally:
-        pipeline.DB_PATH = original
+    create_database(paths.legacy_db)
     migrate_legacy_database(paths.legacy_db, paths.platform_db, paths.profile)
 
 
@@ -440,7 +430,7 @@ def validate_profile(profile: Any) -> dict[str, Any]:
             )
     degree = profile.get("degree")
     if isinstance(degree, str) and degree.strip():
-        from pipeline import degree_levels
+        from .legacy import degree_levels
 
         if not degree_levels(degree):
             warnings.append(
@@ -480,7 +470,7 @@ def status(paths: Paths) -> dict[str, Any]:
 
     sources_report: dict[str, Any] = {"overlay_exists": paths.overlay.exists()}
     try:
-        from pipeline import load_sources
+        from .legacy import load_sources
 
         merged = load_sources(paths.root / "config" / "sources.json", paths.overlay)
         enabled = [source for source in merged["ats_sources"] if source.get("enabled", True)]

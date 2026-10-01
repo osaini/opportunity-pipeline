@@ -204,7 +204,7 @@ def load_profile(path: Path | None = None) -> dict[str, Any]:
 
 
 def _source_merge_key(source: dict[str, Any]) -> str:
-    return f'{source.get("kind", "")}:{_source_identity(source)}'.lower()
+    return f'{source.get("kind", "")}:{source_identity(source)}'.lower()
 
 
 def merge_sources(base: dict[str, Any], local: dict[str, Any]) -> dict[str, Any]:
@@ -276,9 +276,11 @@ def load_sources(base_path: Path | None = None, local_path: Path | None = None) 
     return merge_sources(base, load_json(local_path))
 
 
-def connect() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+def connect(db_path: Path | None = None) -> sqlite3.Connection:
+    """Open (and create) a pipeline database: `db_path`, or the module's DB_PATH read now."""
+    path = DB_PATH if db_path is None else db_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(
@@ -2181,7 +2183,7 @@ def purge_expired(
     return tally
 
 
-def _source_identity(source: dict[str, Any]) -> str:
+def source_identity(source: dict[str, Any]) -> str:
     if source["kind"] == "workday":
         return f'{source["tenant"]}:{source["site"]}'
     return (
@@ -2196,6 +2198,16 @@ def _source_identity(source: dict[str, Any]) -> str:
         or source.get("keyword")
         or "default"
     )
+
+
+def source_key(source: dict[str, Any]) -> str:
+    """The key a source's fetch runs and jobs are stored under: ``kind:identity``.
+
+    Raises KeyError for a source with no ``kind``; `system_status.source_health`
+    relies on that to skip a malformed entry. `_source_merge_key` is the same string
+    lowercased, used only to layer sources.local.json over sources.json.
+    """
+    return f'{source["kind"]}:{source_identity(source)}'
 
 
 # ---------------------------------------------------------------------------
@@ -2371,7 +2383,7 @@ def discover_ats(
     return results
 
 
-def _write_discovered_sources(entries: list[dict[str, Any]], path: Path | None = None) -> Path:
+def write_discovered_sources(entries: list[dict[str, Any]], path: Path | None = None) -> Path:
     """Append entries to a sources file, preserving the rest of it.
 
     The default target is the student's own config/sources.local.json, so a
@@ -2467,7 +2479,7 @@ def report_discovery(
     if not writable:
         print("\nNothing to write.")
         return results
-    written = _write_discovered_sources(
+    written = write_discovered_sources(
         [result["entry"] for result in writable], SOURCES_PATH if shared else None
     )
     print(f"\nAppended {len(writable)} source(s) to {display_path(written)}.")
@@ -2545,9 +2557,9 @@ def fetch_all(
 
     queue = []
     for source in enabled:
-        source_key = f'{source["kind"]}:{_source_identity(source)}'
-        if source_key not in done:
-            queue.append((source, source_key))
+        key = source_key(source)
+        if key not in done:
+            queue.append((source, key))
     # One observation timestamp for the whole cycle. See upsert_jobs: reading
     # the clock per source would make undated postings rank by completion
     # order, which under concurrency is arbitrary.
@@ -2589,7 +2601,7 @@ def fetch_all(
                 # limit does not block sources behind it that could run now.
                 index = 0
                 while index < len(queue) and len(in_flight) < max_workers:
-                    source, source_key = queue[index]
+                    source, run_key = queue[index]
                     host = _source_host(source)
                     if host_active.get(host, 0) >= max_per_host:
                         index += 1
@@ -2598,7 +2610,7 @@ def fetch_all(
                     try:
                         run_id = conn.execute(
                             "INSERT INTO fetch_runs(source_key, started_at, outcome) VALUES (?, ?, 'running')",
-                            (source_key, now_iso()),
+                            (run_key, now_iso()),
                         ).lastrowid
                         conn.commit()
                     except sqlite3.Error as exc:
@@ -2608,7 +2620,7 @@ def fetch_all(
                     # `running` row for the source that was in flight.
                     print(f"Fetching {source['company']} ({source['kind']})…", flush=True)
                     future = pool.submit(_fetch_source, source, terms)
-                    in_flight[future] = (source, source_key, run_id, host)
+                    in_flight[future] = (source, run_key, run_id, host)
                     host_active[host] = host_active.get(host, 0) + 1
 
                 if not in_flight:
@@ -2619,7 +2631,7 @@ def fetch_all(
 
                 finished, _ = futures_wait(in_flight, return_when=FIRST_COMPLETED)
                 for future in finished:
-                    source, source_key, run_id, host = in_flight.pop(future)
+                    source, run_key, run_id, host = in_flight.pop(future)
                     host_active[host] -= 1
                     label = f"{source['company']} ({source['kind']})"
                     try:
@@ -2638,7 +2650,7 @@ def fetch_all(
                         # which a single pass after the last source could not do
                         # once earlier sources were marked successful.
                         count = upsert_jobs(
-                            conn, source_key, source.get("label", source["company"]), records, cycle_seen
+                            conn, run_key, source.get("label", source["company"]), records, cycle_seen
                         )
                     except FatalDatabaseError:
                         raise

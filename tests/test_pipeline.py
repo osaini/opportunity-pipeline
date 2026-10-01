@@ -1590,7 +1590,7 @@ class PipelineTests(unittest.TestCase):
         )
         writer = unittest.mock.Mock()
         with unittest.mock.patch.dict(pipeline.DISCOVERY_VENDORS, {"greenhouse": probe}):
-            with unittest.mock.patch.object(pipeline, "_write_discovered_sources", writer):
+            with unittest.mock.patch.object(pipeline, "write_discovered_sources", writer):
                 pipeline.report_discovery(["Acme Robotics"], sources, write=False)
         writer.assert_not_called()
 
@@ -1605,7 +1605,7 @@ class PipelineTests(unittest.TestCase):
         )
         writer = unittest.mock.Mock()
         with unittest.mock.patch.dict(pipeline.DISCOVERY_VENDORS, {"greenhouse": probe}):
-            with unittest.mock.patch.object(pipeline, "_write_discovered_sources", writer):
+            with unittest.mock.patch.object(pipeline, "write_discovered_sources", writer):
                 pipeline.report_discovery(["Archer Aviation"], sources, write=True)
         # A mismatched board name must never be written, even with --write.
         writer.assert_not_called()
@@ -1614,7 +1614,7 @@ class PipelineTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             local = Path(tmp) / "sources.local.json"
             with unittest.mock.patch.object(pipeline, "SOURCES_LOCAL_PATH", local):
-                written = pipeline._write_discovered_sources(
+                written = pipeline.write_discovered_sources(
                     [{"kind": "ashby", "company": "Base Power", "board": "base-power"}]
                 )
             self.assertEqual(written, local)
@@ -1728,7 +1728,7 @@ class PipelineTests(unittest.TestCase):
                 "rejected_sources": {"note": "keep me"},
             }
             path.write_text(json.dumps(original, indent=2) + "\n", encoding="utf-8")
-            pipeline._write_discovered_sources(
+            pipeline.write_discovered_sources(
                 [{"kind": "ashby", "company": "Base Power", "board": "base-power"}], path
             )
             written = json.loads(path.read_text(encoding="utf-8"))

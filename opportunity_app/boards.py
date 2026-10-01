@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
+from . import legacy
+
 Lookup = Callable[[list[str], dict[str, Any], list[str]], list[dict[str, Any]]]
 
 LOOKUP_TTL_SECONDS = 15 * 60
@@ -39,19 +41,15 @@ class BoardTracker:
         lookup: Lookup | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        import pipeline
-
-        self.sources_path = sources_path or pipeline.SOURCES_PATH
-        self.local_path = local_path or pipeline.SOURCES_LOCAL_PATH
-        self._lookup = lookup or pipeline.discover_ats
+        self.sources_path = sources_path or legacy.SOURCES_PATH
+        self.local_path = local_path or legacy.SOURCES_LOCAL_PATH
+        self._lookup = lookup or legacy.discover_ats
         self._clock = clock
         self._lock = threading.Lock()
         self._found: dict[str, tuple[float, dict[str, Any]]] = {}
 
     def _config(self) -> dict[str, Any]:
-        import pipeline
-
-        return pipeline.load_sources(self.sources_path, self.local_path)
+        return legacy.load_sources(self.sources_path, self.local_path)
 
     def look_up(self, company: str) -> dict[str, Any]:
         company = " ".join(company.split())
@@ -84,8 +82,6 @@ class BoardTracker:
         return view
 
     def add(self, lookup_id: str, *, student_confirmed: bool = False) -> dict[str, Any]:
-        import pipeline
-
         with self._lock:
             found = self._found.get(lookup_id)
             if not found or self._clock() - found[0] >= LOOKUP_TTL_SECONDS:
@@ -101,7 +97,7 @@ class BoardTracker:
                 with self._lock:
                     self._found.pop(lookup_id, None)
                 return {"added": False, "already_tracked": True, "entry": entry}
-        pipeline._write_discovered_sources([entry], self.local_path)
+        legacy.write_discovered_sources([entry], self.local_path)
         with self._lock:
             self._found.pop(lookup_id, None)
         return {"added": True, "already_tracked": False, "entry": entry}

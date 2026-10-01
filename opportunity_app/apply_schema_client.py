@@ -18,9 +18,8 @@ import urllib.request
 import zlib
 from typing import Any, Callable, Protocol
 
-from pipeline import USER_AGENT
-
 from .apply_policy import schema_url
+from .legacy import USER_AGENT
 
 TIMEOUT_SECONDS = 20
 # A listing is a few hundred kilobytes at most; anything larger is not one.

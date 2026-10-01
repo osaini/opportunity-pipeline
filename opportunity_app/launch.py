@@ -68,7 +68,7 @@ def health(port: int = DEFAULT_PORT, timeout: float = 2.0) -> bool:
 
 
 def _read_env_token() -> str:
-    from pipeline import load_env_file
+    from .legacy import load_env_file
 
     load_env_file(ENV_PATH)
     return os.environ.get("PIPELINE_WEB_TOKEN", "")

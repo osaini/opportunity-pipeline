@@ -19,8 +19,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
-from pipeline import load_sources
-
+from .legacy import load_sources
 from .schema import utc_now
 
 PIPELINE_CLI = Path(__file__).resolve().parents[1] / "pipeline.py"

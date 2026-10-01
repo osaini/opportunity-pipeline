@@ -8,8 +8,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from pipeline import score_job
-
+from .legacy import score_job
 from .schema import LOCAL_USER_ID, utc_now
 
 

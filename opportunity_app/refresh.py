@@ -28,10 +28,9 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable
 
-from pipeline import load_sources
-
 from . import DEFAULT_LEGACY_DB, DEFAULT_PROFILE, ROOT
 from .auto_triage import triage_after_sync
+from .legacy import load_sources
 from .purge import purge_expired_opportunities
 from .schema import connect_product, migrate_legacy_database, utc_now
 

@@ -40,10 +40,9 @@ from uuid import uuid4
 
 import httpx
 
-from pipeline import SOURCES_LOCAL_PATH
-
 from . import ROOT
 from .agent_providers import CliAgentProvider, _cli_binary
+from .legacy import SOURCES_LOCAL_PATH
 from .outreach import (
     OUTREACH_PRIORITIES,
     _log,
