@@ -144,6 +144,61 @@
     themeLabel: document.getElementById("theme-label"),
   };
 
+  // The nine pages, in navigation order. What differs from page to page lives
+  // here, so a new page is one entry plus its loader (and the server's own route
+  // for its path). nav is the sidebar button; deck marks the pages that list
+  // opportunities (filter bar, stats, paging, display toggle); sections marks
+  // the pages built from sections that the rail filters in place. This table
+  // names no loader: each page registers how it lists its subtabs (tabs, read
+  // each time, since some read live state) and how it loads (load) with
+  // registerViewHandlers, beside its own loader. Programs' subnavTitle is
+  // replaced by the student's own name for the page.
+  const VIEWS = {
+    discover: {
+      nav: els.discoverNav, path: "/", subnavTitle: "Discover", defaultSubtab: "all", deck: true,
+      eyebrow: "Ready for review", title: "Find the roles worth your time.",
+    },
+    urgent: {
+      nav: els.urgentNav, path: "/urgent", subnavTitle: "Urgent", defaultSubtab: "all",
+      eyebrow: "Overdue first, then the next 14 days", title: "What needs doing next.",
+    },
+    saved: {
+      nav: els.savedNav, path: "/saved", subnavTitle: "Saved", defaultSubtab: "all", deck: true,
+      eyebrow: "Saved shortlist", title: "Return to the roles you chose.",
+    },
+    applications: {
+      nav: els.applicationsNav, path: "/applications", subnavTitle: "Applications", defaultSubtab: "all",
+      eyebrow: "Application tracker", title: "Keep every application moving.",
+    },
+    outreach: {
+      nav: els.outreachNav, path: "/outreach", subnavTitle: "Outreach", defaultSubtab: "to-contact",
+      eyebrow: "Startup cold outreach", title: "Reach the startups before they post.",
+    },
+    programs: {
+      nav: els.programsNav, path: "/programs", subnavTitle: "Programs", defaultSubtab: "open",
+      eyebrow: "Soonest deadline first", title: "Programs that fit where you are.",
+    },
+    prepare: {
+      nav: els.prepareNav, path: "/prepare", subnavTitle: "Prepare", defaultSubtab: "all", sections: true,
+      eyebrow: "Evidence-grounded practice", title: "Prepare without inventing a thing.",
+    },
+    agent: {
+      nav: els.agentNav, path: "/agent", subnavTitle: "Agent", defaultSubtab: "all", sections: true,
+      eyebrow: "Auditable career copilot", title: "Ask your pipeline, then decide.",
+    },
+    profile: {
+      nav: els.profileNav, path: "/profile", subnavTitle: "Profile", defaultSubtab: "all", sections: true,
+      eyebrow: "Onboarding and evidence", title: "Build the profile behind every match.",
+    },
+  };
+  Object.entries(VIEWS).forEach(([name, view]) => { state.subtabs[name] = view.defaultSubtab; });
+
+  // A page's own part of the table: load() draws it, tabs() lists its subtabs.
+  // The pages built from sections list one tab, which is the default.
+  function registerViewHandlers(name, { tabs = () => [{ id: "all", label: "All sections" }], load }) {
+    Object.assign(VIEWS[name], { tabs, load });
+  }
+
   // Every background poll belongs to the session that started it. One left
   // running after sign-out gets a 401 each time, and api() answers every 401 by
   // re-running showAuth, which blanks the sign-in error and moves focus to the
@@ -1668,6 +1723,9 @@
     });
   }
 
+  registerViewHandlers("discover", { tabs: deckTabs, load: loadOpportunities });
+  registerViewHandlers("saved", { tabs: deckTabs, load: loadOpportunities });
+
   function populateSelect(select, values) {
     // Facets load on every sign-in; keep only the "All …" placeholder first.
     const current = select.value;
@@ -2667,6 +2725,8 @@
       restoreStageChoices(carried);
     });
   }
+
+  registerViewHandlers("applications", { tabs: () => APPLICATION_TABS, load: loadApplications });
 
   const OUTREACH_STATUS_LABELS = {
     not_started: "Not started",
@@ -6631,6 +6691,8 @@
     });
   }
 
+  registerViewHandlers("outreach", { tabs: () => OUTREACH_TABS, load: loadOutreach });
+
   function profileField(form, labelText, name, value, options = {}) {
     const label = element("label", "profile-field");
     label.appendChild(element("span", "", labelText));
@@ -8757,6 +8819,8 @@
     });
   }
 
+  registerViewHandlers("profile", { load: loadProfile });
+
   function opportunityOptions(select, applications) {
     applications.forEach((application) => {
       select.appendChild(optionElement(application.opportunity_id, `${application.company} — ${application.title}`));
@@ -9237,6 +9301,8 @@
     });
   }
 
+  registerViewHandlers("prepare", { load: loadPreparation });
+
   async function loadAgent() {
     await runViewLoad({ views: ["agent"], placeholder: loadingLine("Loading agent history…") }, async ({ isCurrent }) => {
       const [threadsPayload, activityPayload, providersPayload] = await Promise.all([
@@ -9436,6 +9502,8 @@
     });
   }
 
+  registerViewHandlers("agent", { load: loadAgent });
+
   const URGENT_KIND_LABELS = {
     posting_deadline: "Deadline",
     your_deadline: "Your deadline",
@@ -9622,6 +9690,8 @@
     els.results.setAttribute("aria-busy", "false");
   }
 
+  registerViewHandlers("urgent", { tabs: () => URGENT_TABS, load: loadUrgent });
+
   // Early programs: the student's own researched list, from a private config
   // file. Its name and evidence wording come from that file, so the
   // view carries nothing about any one student. The server buckets each entry
@@ -9704,6 +9774,8 @@
       renderPrograms(payload);
     });
   }
+
+  registerViewHandlers("programs", { tabs: programsTabs, load: loadPrograms });
 
   // Re-render after a status save without the loading placeholder, so focus
   // survives: the rebuilt list gets focus back on the matching control.
@@ -10073,63 +10145,6 @@
     section.append(current, form, clear, status);
     return section;
   }
-
-  // The nine pages, in navigation order. What differs from page to page lives
-  // here, so a new page is one entry plus its loader (and the server's own route
-  // for its path). nav is the sidebar button; deck marks the pages that list
-  // opportunities (filter bar, stats, paging, display toggle); sections marks
-  // the pages built from sections that the rail filters in place. tabs() and
-  // load() are thunks: some pages' tabs read live state (deckTabs, programsTabs),
-  // and the tables and loaders they name are defined further down. Programs'
-  // subnavTitle is replaced by the student's own name for the page.
-  const VIEWS = {
-    discover: {
-      nav: els.discoverNav, path: "/", subnavTitle: "Discover", defaultSubtab: "all", deck: true,
-      eyebrow: "Ready for review", title: "Find the roles worth your time.",
-      tabs: () => deckTabs(), load: () => loadOpportunities(),
-    },
-    urgent: {
-      nav: els.urgentNav, path: "/urgent", subnavTitle: "Urgent", defaultSubtab: "all",
-      eyebrow: "Overdue first, then the next 14 days", title: "What needs doing next.",
-      tabs: () => URGENT_TABS, load: () => loadUrgent(),
-    },
-    saved: {
-      nav: els.savedNav, path: "/saved", subnavTitle: "Saved", defaultSubtab: "all", deck: true,
-      eyebrow: "Saved shortlist", title: "Return to the roles you chose.",
-      tabs: () => deckTabs(), load: () => loadOpportunities(),
-    },
-    applications: {
-      nav: els.applicationsNav, path: "/applications", subnavTitle: "Applications", defaultSubtab: "all",
-      eyebrow: "Application tracker", title: "Keep every application moving.",
-      tabs: () => APPLICATION_TABS, load: () => loadApplications(),
-    },
-    outreach: {
-      nav: els.outreachNav, path: "/outreach", subnavTitle: "Outreach", defaultSubtab: "to-contact",
-      eyebrow: "Startup cold outreach", title: "Reach the startups before they post.",
-      tabs: () => OUTREACH_TABS, load: () => loadOutreach(),
-    },
-    programs: {
-      nav: els.programsNav, path: "/programs", subnavTitle: "Programs", defaultSubtab: "open",
-      eyebrow: "Soonest deadline first", title: "Programs that fit where you are.",
-      tabs: () => programsTabs(), load: () => loadPrograms(),
-    },
-    prepare: {
-      nav: els.prepareNav, path: "/prepare", subnavTitle: "Prepare", defaultSubtab: "all", sections: true,
-      eyebrow: "Evidence-grounded practice", title: "Prepare without inventing a thing.",
-      tabs: () => [{ id: "all", label: "All sections" }], load: () => loadPreparation(),
-    },
-    agent: {
-      nav: els.agentNav, path: "/agent", subnavTitle: "Agent", defaultSubtab: "all", sections: true,
-      eyebrow: "Auditable career copilot", title: "Ask your pipeline, then decide.",
-      tabs: () => [{ id: "all", label: "All sections" }], load: () => loadAgent(),
-    },
-    profile: {
-      nav: els.profileNav, path: "/profile", subnavTitle: "Profile", defaultSubtab: "all", sections: true,
-      eyebrow: "Onboarding and evidence", title: "Build the profile behind every match.",
-      tabs: () => [{ id: "all", label: "All sections" }], load: () => loadProfile(),
-    },
-  };
-  Object.entries(VIEWS).forEach(([name, view]) => { state.subtabs[name] = view.defaultSubtab; });
 
   // Each page lists its subtabs in the rail: { id, label, count, tone, group }.
   function renderSubnav(tabs) {
