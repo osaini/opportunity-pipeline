@@ -6,8 +6,8 @@ Gmail delivered them (mail_message.KEPT_HEADERS, kept on its reply_logged event)
 cannot be read, fails them all. ``thank_you_blockers`` applies them, and ``blocker_note`` and ``blocker_reason`` word the
 result for the card and the log. ``sent_texts`` is what the student sent the company, which a reply quotes.
 
-The functions import the trust, contact and form modules where they use them, so a test that patches
-mail_trust.authenticate (or the others) is read at the call.
+``mail_trust`` is used as a module (mail_trust.listed, mail_trust.sender_lists) and R7's ``authenticate`` is imported where
+it is used, so a test that patches mail_trust.authenticate (or the others) is read at the call.
 """
 
 from __future__ import annotations
@@ -23,9 +23,13 @@ from typing import Any
 
 from pipeline_core.identity import identity_tokens, normalized
 
+from . import mail_trust
+from .contact_names import GENERIC_LOCAL_PARTS, ROLE_INBOX_LOCAL_PARTS, ROLE_INBOX_QUALIFIERS, website_domain
 from .json_values import json_dict
 from .mail_message import hosts_in, is_automatic
 from .outreach_config import sender_account
+from .outreach_contacts import is_shared_inbox, made_of
+from .outreach_forms import ALWAYS_AUTOMATIC
 from .outreach_gmail import SENT_EVENT
 from .timestamps import parse_app_instant
 
@@ -201,10 +205,8 @@ def mailboxes(message: EmailMessage, *names: str) -> set[str] | None:
 
 def _job_system(host: str, categories: tuple[str, ...]) -> bool:
     """A host, or its registrable domain, on one of ``categories`` of mail_trust's shipped list."""
-    from .mail_trust import listed, registrable_domain
-
     text = str(host or "").strip().strip("<>").rsplit("@", 1)[-1].rstrip(".").casefold()
-    return bool(text) and bool(listed(text, categories) or listed(registrable_domain(text) or "", categories))
+    return bool(text) and bool(mail_trust.listed(text, categories) or mail_trust.listed(mail_trust.registrable_domain(text) or "", categories))
 
 
 def _job_system_mail(domain: str, target: dict[str, Any]) -> bool:
@@ -216,16 +218,13 @@ def _job_system_mail(domain: str, target: dict[str, Any]) -> bool:
     careers page on a job system (website acme.bamboohr.com) is not Acme's
     domain, and a company named like one ("Lever Industries") does not own it.
     """
-    from .contact_names import website_domain
-    from .mail_trust import registrable_domain, sender_lists
-
-    categories = tuple(category for category in sender_lists() if category not in _NOT_JOB_SYSTEMS)
+    categories = tuple(category for category in mail_trust.sender_lists() if category not in _NOT_JOB_SYSTEMS)
     if not _job_system(domain, categories):
         return False
     company = str(target.get("company") or "")
     own = identity_tokens(company) | {"".join(normalized(company).split())}
-    found = registrable_domain(str(domain).strip().strip("<>").rsplit("@", 1)[-1]) or ""
-    site = registrable_domain(website_domain(str(target.get("website") or ""))) or ""
+    found = mail_trust.registrable_domain(str(domain).strip().strip("<>").rsplit("@", 1)[-1]) or ""
+    site = mail_trust.registrable_domain(website_domain(str(target.get("website") or ""))) or ""
     return not (found and found == site and found.split(".", 1)[0] in own)
 
 
@@ -237,17 +236,13 @@ def no_reply(local: str) -> bool:
 def _company_inbox(local: str, target: dict[str, Any]) -> bool:
     """A local part that is the company's own name or slug, alone or with role words or a word that joins it
     ("acme", "acme-robotics", "acme.careers", "acmecareers", "careersacme", "teamacme", "joinacme")."""
-    from .mail_trust import registrable_domain
-    from .contact_names import GENERIC_LOCAL_PARTS, ROLE_INBOX_LOCAL_PARTS, ROLE_INBOX_QUALIFIERS, website_domain
-    from .outreach_contacts import made_of
-
     company = str(target.get("company") or "")
     tokens = identity_tokens(company)
     compact = "".join(re.split(r"[^a-z0-9]+", str(local or "").casefold().split("+", 1)[0]))
     if not compact:
         return False
     names = {"".join(word for word in normalized(company).split() if word in tokens), "".join(normalized(company).split())}
-    site = registrable_domain(website_domain(str(target.get("website") or ""))) or ""
+    site = mail_trust.registrable_domain(website_domain(str(target.get("website") or ""))) or ""
     names.add(site.split(".", 1)[0])
     names.discard("")
     # The company's own words. One of two letters ("of") is part of a name, never a sign of one on its own.
@@ -293,8 +288,6 @@ def thank_you_blockers(conn: sqlite3.Connection, target: dict[str, Any], reply: 
     every rule that reads them fails closed.
     """
     from .mail_trust import authenticate
-    from .outreach_contacts import is_shared_inbox
-    from .outreach_forms import ALWAYS_AUTOMATIC
 
     data = reply["data"]
     sender = str(data.get("from") or "").strip().casefold()

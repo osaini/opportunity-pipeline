@@ -43,10 +43,11 @@ import time
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urljoin
 
 from . import ROOT, automation
 from .contact_names import NO_REPLY_SENDER, website_domain
-from .outreach import UNSENT_STATUSES, DraftChangedError, log_event, get_target, update_target
+from .outreach import UNSENT_STATUSES, DraftChangedError, list_targets, log_event, get_target, update_target, validate_web_url
 from .outreach_location import missing_location_message
 from .outreach_config import sender_account
 from .outreach_gmail import SendNeedsCheckError, attachment_path, attachment_problem
@@ -58,6 +59,7 @@ from .send_claims import (
     claimed_send,
     settle_send_claim,
 )
+from .outreach_render import request_allowed
 from .preparation import confirmed_facts
 from .timestamps import utc_now
 from .web_fetch import USER_AGENT, Resolver, close_browser, resolve_host, same_site, site_robots
@@ -278,8 +280,6 @@ def find_contact_form(pages: list[dict[str, Any]], *, fetcher: Any = None, rende
     if not pages or (form is not None and CONTACT_LINK.search(form["page_url"])):
         return form
     fallback = form
-    from urllib.parse import urljoin
-
     home = pages[0]["url"]
     domain = website_domain(home)
     seen = {page["url"].split("#", 1)[0].rstrip("/") for page in pages}
@@ -345,8 +345,6 @@ def record_contact_form(
 
 def set_contact_form(conn: sqlite3.Connection, target_id: str, page_url: str, *, user_id: str) -> dict[str, Any]:
     """The student names the page with the company's contact form themselves."""
-    from .outreach import validate_web_url
-
     page_url = page_url.strip()
     validate_web_url(page_url, "Contact form page")
     target = get_target(conn, target_id, user_id=user_id)
@@ -833,8 +831,6 @@ class FormSubmitter:
         (self._route_hook or self._guard)(route)
 
     def _guard(self, route: Any) -> None:
-        from .outreach_render import request_allowed
-
         if not request_allowed(route.request.url, self._resolve, self._allowed):
             route.abort("blockedbyclient")
             return
@@ -855,8 +851,6 @@ class FormSubmitter:
         clicked = False
         page = None
         try:
-            from .outreach_render import request_allowed
-
             if not request_allowed(page_url, self._resolve, self._allowed) and self._route_hook is None:
                 result["note"] = "The contact form page is not a public web address"
                 return result
@@ -1348,8 +1342,6 @@ def submit_contact_form(
 
 def form_due(conn: sqlite3.Connection, *, user_id: str) -> list[str]:
     """Companies whose approved first message can go through a contact form nobody has tried yet."""
-    from .outreach import list_targets
-
     due = []
     for item in list_targets(conn, user_id=user_id, interested_only=True):
         form = item["contact_form"]

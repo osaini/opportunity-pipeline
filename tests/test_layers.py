@@ -112,7 +112,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
         "actions apply_sessions auth apply_checks apply_claims apply_classify apply_greenhouse apply_policy apply_sensitive apply_schema_client "
         "automation automation_health boards captures connections dossier employer market early_programs extension_apply mail_trust "
         "notifications purge ingestion profile resumes resume_variants preparation document_artifacts inbox_classifiers gmail_connection "
-        "send_claims outreach outreach_callbacks outreach_config outreach_decline_reading outreach_identity outreach_label_name "
+        "send_claims outreach outreach_agents outreach_callbacks outreach_config outreach_decline_reading outreach_identity outreach_label_name "
         "outreach_location outreach_greeting outreach_versions outreach_contacts outreach_linkedin outreach_batch "
         "outreach_thank_you_writing outreach_render"
     ),
@@ -121,7 +121,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
         "background application_inbox application_mail_rules inbox_watcher internal_automation automation_handlers auto_triage apply_runs apply_preflight "
         "outreach_gmail outreach_gmail_sends outreach_delivery outreach_inbox outreach_labels outreach_schedule "
         "outreach_thank_you outreach_reply_senders outreach_automation outreach_recontact outreach_review outreach_call_prep "
-        "outreach_call_questions outreach_forms outreach_discovery outreach_research outreach_drafting "
+        "outreach_call_questions outreach_forms outreach_discovery outreach_research quote_check outreach_drafting "
         "outreach_interviewer outreach_email_search outreach_locate outreach_profile outreach_settings "
         "refresh desktop_notify operations backups student_agent urgent monitored_events"
     ),
@@ -156,8 +156,6 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
     (_P + "actions", _P + "resume_variants", "safe_pick_after_save: resume_variants imports actions at the top"),
     (_P + "launch", _P + "api", "create_app: api imports system_status, which would import launch if that were hoisted too"),
     (_P + "launch", _P + "web.context", "LOOPBACK_HOSTS: web.context imports system_status, which would import launch if that were hoisted too"),
-    (_P + "outreach_discovery", _P + "outreach_locate", "locate_targets: outreach_locate imports discovery at the top"),
-    (_P + "outreach_drafting", _P + "outreach_research", "the research module: outreach_research imports outreach_discovery, which imports drafting at the top"),
     (_P + "profile", _P + "outreach_greeting", "greeting_style_error: outreach_greeting and outreach_location read confirmed facts through preparation, which imports profile"),
 )
 

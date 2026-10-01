@@ -56,6 +56,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 
 from . import outreach_research as research
+from . import quote_check
 from .agent_providers import CliAgentProvider, complete_text
 from .mail_message import mailbox_key
 from .mail_trust import registrable_domain
@@ -136,8 +137,8 @@ def _person_name(name: str, company: str) -> str:
     """A name that reads as a person's: two or more words, not the company's own name or only role words ("Acme Recruiting Team")."""
     clean = " ".join(str(name or "").replace('"', "").split())
     clean = re.sub(r"\s*\((?:via\s+)?google calendar\)\s*$", "", clean, flags=re.IGNORECASE)
-    words = research.word_tokens(clean)
-    if len(words) < 2 or " ".join(words) in research.company_names(company) or CMD_META.search(clean):
+    words = quote_check.word_tokens(clean)
+    if len(words) < 2 or " ".join(words) in quote_check.company_names(company) or CMD_META.search(clean):
         return ""
     ignore = set(company_words(company).split())
     if all(word in ignore or role_word(word) for word in words) or words[-1] in _ROLE_NAME_ENDINGS:
@@ -397,7 +398,7 @@ def _company_named(text: str, company: str) -> bool:
 def _folded(text: str) -> list[str]:
     """A name's words in lower case with the accents dropped (José Núñez is jose nunez)."""
     plain = "".join(char for char in unicodedata.normalize("NFKD", str(text or "")) if not unicodedata.combining(char))
-    return research.word_tokens(plain)
+    return quote_check.word_tokens(plain)
 
 
 def _same_name(wanted: str, found: set[str]) -> bool:
@@ -434,8 +435,8 @@ def _result_blocks(people: list[dict[str, str]]) -> list[str] | None:
     starts: list[int] = []
     cursor = 0
     for person in people:
-        wanted = research.word_tokens(person["name"])
-        found = next((index for index in range(cursor, len(lines)) if wanted and research.word_tokens(lines[index])[:len(wanted)] == wanted), None)
+        wanted = quote_check.word_tokens(person["name"])
+        found = next((index for index in range(cursor, len(lines)) if wanted and quote_check.word_tokens(lines[index])[:len(wanted)] == wanted), None)
         if found is None:
             return None
         starts.append(found)
@@ -443,9 +444,9 @@ def _result_blocks(people: list[dict[str, str]]) -> list[str] | None:
     blocks = []
     for number, start in enumerate(starts):
         end = starts[number + 1] if number + 1 < len(starts) else len(lines)
-        own = research.word_tokens(people[number]["name"])
+        own = quote_check.word_tokens(people[number]["name"])
         for index in range(start + 1, end):
-            if _RESULT_EDGE.match(lines[index]) or research.word_tokens(lines[index])[:len(own)] == own:
+            if _RESULT_EDGE.match(lines[index]) or quote_check.word_tokens(lines[index])[:len(own)] == own:
                 end = index
                 break
             # Another result's name is the line before its degree ("Dana Ortiz", then "3rd").
@@ -466,14 +467,14 @@ def pick_profile(people: list[dict[str, str]], name: str, company: str) -> tuple
     return "", [{"username": person["username"], "name": person["name"]} for person in named][:5]
 
 
-def _profile_page(profile: dict[str, Any]) -> research.ResearchPage:
+def _profile_page(profile: dict[str, Any]) -> quote_check.ResearchPage:
     """The profile as a page with one line for each of its lines.
 
     The word checks hold a note to the lines around its quote, so a profile fed
     in as one long line would let a name or a number anywhere in it back any note.
     """
     lines = [line.strip() for text in profile["sections"].values() for line in str(text).splitlines() if line.strip()]
-    return research.ResearchPage(FetchResult(profile["url"], 200, "".join(f"<p>{html.escape(line)}</p>" for line in lines)))
+    return quote_check.ResearchPage(FetchResult(profile["url"], 200, "".join(f"<p>{html.escape(line)}</p>" for line in lines)))
 
 
 def _header(profile: dict[str, Any]) -> list[str]:
@@ -537,7 +538,7 @@ def check_notes(
         if span is None:
             refused.append({"topic": topic, "reason": "the quoted words are not in the profile"})
             continue
-        if research.says_not(text) != research.says_not(quote):
+        if quote_check.says_not(text) != quote_check.says_not(quote):
             refused.append({"topic": topic, "reason": "the note and its quote disagree on a not"})
             continue
         missing = page.missing(text, span, "", person=name)
@@ -548,7 +549,7 @@ def check_notes(
     if judge is not None and kept:
         items = [{"id": f"n{index}", "fact": note["text"], "about": name, "page": profile["url"], **page.passage(note["_span"])}
                  for index, note in enumerate(kept)]
-        verdicts = research.second_read(items, judge)
+        verdicts = quote_check.second_read(items, judge)
         confirmed = []
         for index, note in enumerate(kept):
             verdict = verdicts.get(f"n{index}")
@@ -567,7 +568,7 @@ def check_notes(
 
 
 def who_key(name: str, linkedin: str) -> str:
-    return f"{' '.join(research.word_tokens(name))}|{username_from(linkedin)}"
+    return f"{' '.join(quote_check.word_tokens(name))}|{username_from(linkedin)}"
 
 
 def interviewer_due(conn: sqlite3.Connection, target: dict[str, Any], user_id: str, now: datetime | None = None) -> bool:

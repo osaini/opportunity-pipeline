@@ -109,15 +109,17 @@ from urllib.parse import quote
 
 import httpx
 
-from . import automation, outreach_callbacks
+from . import automation, outreach_callbacks, outreach_review
 from .background import record_health_quietly, step_error
-from .database import rollback_quietly
+from .database import is_unique_violation, rollback_quietly
 from .inbox_classifiers import MIN_CONFIDENCE
 from .json_values import json_dict
 from .mail_message import FULL_TEXT_LIMIT, written_between_quotes
 from .outreach import OutreachNotFoundError, log_event, get_target
 from .outreach_greeting import contact_first_name, greeting_line, greeting_style, spoken_company
+from .outreach_forms import SUBMITTED_EVENT as FORM_SUBMITTED, UNCONFIRMED_EVENT as FORM_UNCONFIRMED
 from .outreach_replies import suggest_reply_status
+from .preparation import confirmed_facts
 from .gmail_client import GmailAuthError, GmailThrottled
 from .outreach_decline_reading import plain_decline_problem, readings_words
 from .outreach_gmail import (
@@ -289,8 +291,6 @@ def latest_reply(conn: sqlite3.Connection, target_id: str, user_id: str) -> dict
 
 def sent_since(conn: sqlite3.Connection, target_id: str, user_id: str, since: datetime) -> bool:
     """Whether anything went to the company after ``since``: an email, a thank-you, a form, "I sent it", or a send under way."""
-    from .outreach_forms import SUBMITTED_EVENT as FORM_SUBMITTED, UNCONFIRMED_EVENT as FORM_UNCONFIRMED
-
     for row in conn.execute(
         "SELECT event_type, to_status, created_at FROM outreach_events WHERE target_id=? AND user_id=? "
         "AND event_type IN (?, ?, ?, ?, ?, 'status')",
@@ -342,8 +342,6 @@ def _open_reply(item: dict[str, Any], sent: Iterable[str]) -> str:
 
 def _names(conn: sqlite3.Connection, target: dict[str, Any], user_id: str, *more: str) -> list[str]:
     """The names a plain no may use: the student's, the contact's, the company's, and whoever wrote."""
-    from .preparation import confirmed_facts
-
     student = str(confirmed_facts(conn, user_id).get("name") or "")
     company = str(target.get("company") or "")
     return [student, str(target.get("contact_name") or ""), company, spoken_company(company), *more]
@@ -486,8 +484,6 @@ def plan(
     if reply is None:
         _note_ineligible(user_id, target_id, reason)
         return {"target_id": target_id, "planned": False, "reason": reason}
-    from .preparation import confirmed_facts
-
     student_name = " ".join(str(confirmed_facts(conn, user_id).get("name") or "").split())
     if not student_name:
         reason = "the student's name is not confirmed in their profile"
@@ -556,8 +552,6 @@ def plan(
                 basis="decline:rules+jev", confidence=confidence, idempotency_key=status_key, auto=True,
             )
     except Exception as exc:
-        from .database import is_unique_violation
-
         if not is_unique_violation(exc):
             raise
         return {"target_id": target_id, "planned": False, "reason": "another pass scheduled it first"}
@@ -703,8 +697,6 @@ Reply with exactly one JSON object and nothing else:
 
 def review(conn: sqlite3.Connection, target_id: str, *, user_id: str, runner: Callable[[str], str], reviewer: str) -> dict[str, Any]:
     """Whether the thank-you may go, with the reviewer's problems. Every failure to get a clear answer holds it."""
-    from .outreach_review import ask_reviewer
-
     target = get_target(conn, target_id, user_id=user_id)
     thank_you = thank_you_row(conn, target_id, user_id)
     held: dict[str, Any] = {"send": False, "reviewer": reviewer}
@@ -735,7 +727,7 @@ def review(conn: sqlite3.Connection, target_id: str, *, user_id: str, runner: Ca
         payload["follow_up"] = {"subject": target["follow_up_subject"], "body": target["follow_up_body"]}
     prompt = f"{REVIEW_INSTRUCTIONS}\n\nJSON input:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
     # A reviewer that cannot run holds it, whatever it raised.
-    answer, hold = ask_reviewer(runner, prompt, held, catch=(Exception,))
+    answer, hold = outreach_review.ask_reviewer(runner, prompt, held, catch=(Exception,))
     if hold is not None:
         return hold
     send, problems = answer["send"], answer["problems"]
@@ -882,8 +874,6 @@ def gate(
     logged while it ran; and last Gmail's own thread, read just before the
     hand-over (which reads the records once more).
     """
-    from .outreach_review import review_log_detail, review_runner
-
     target_id, user_id = row["target_id"], row["user_id"]
     thank_you = thank_you_row(conn, target_id, user_id)
     if thank_you is None or thank_you["state"] != "scheduled" or thank_you["fingerprint"] != row["fingerprint"]:
@@ -904,13 +894,13 @@ def gate(
         finish_send(conn, row, "cancelled", blocker_note(blockers))
         return "cancelled"
     try:
-        name, run = (reviewer or (lambda: review_runner("thank_you")))()
+        name, run = (reviewer or (lambda: outreach_review.review_runner("thank_you")))()
         verdict = review(conn, target_id, user_id=user_id, runner=run, reviewer=name)
     except Exception as exc:  # noqa: BLE001 - a reviewer that cannot be set up holds it
         finish_send(conn, row, "held", f"The reviewer could not run: {exc}"[:500])
         return "held"
     with conn:
-        log_event(conn, target_id, user_id, REVIEWED_EVENT, detail=review_log_detail(name, verdict))
+        log_event(conn, target_id, user_id, REVIEWED_EVENT, detail=outreach_review.review_log_detail(name, verdict))
     if not verdict["send"]:
         finish_send(conn, row, "held", "The reviewer held it: " + "; ".join(verdict["problems"]))
         return "held"

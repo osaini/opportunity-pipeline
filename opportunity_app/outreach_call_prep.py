@@ -96,6 +96,7 @@ from uuid import uuid4
 
 from . import automation
 from . import outreach_research as research
+from . import quote_check
 from .background import PollingWorker
 from .outreach_call_questions import standing_questions
 from .outreach_interviewer import (
@@ -371,7 +372,7 @@ def checked_facts(target: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _is_pick(fact: dict[str, Any]) -> bool:
     """A competitor only the research agent picked: its page does not say the two companies compete."""
-    return fact.get("section") == research.COMPETITORS and str(fact.get("note", "")).startswith("picked")
+    return fact.get("section") == quote_check.COMPETITORS and str(fact.get("note", "")).startswith("picked")
 
 
 def _id_list(value: Any) -> list[str]:
@@ -382,7 +383,7 @@ def _id_list(value: Any) -> list[str]:
 
 def _numbers_beyond(text: str, basis: str) -> list[str]:
     """Numbers in ``text`` that ``basis`` does not carry. Whether its names and claims stay within is the second read's question."""
-    return sorted(research.number_tokens(research.word_tokens(text)) - research.number_tokens(research.word_tokens(basis)))
+    return sorted(quote_check.number_tokens(quote_check.word_tokens(text)) - quote_check.number_tokens(quote_check.word_tokens(basis)))
 
 
 def _said_by_id(inputs: dict[str, Any]) -> dict[str, str]:
@@ -566,8 +567,8 @@ def _unsupported_numbers(text: str, inputs: dict[str, Any]) -> list[str]:
     """
     allowed: set[str] = set()
     for piece in _strings(inputs):
-        allowed |= research.number_tokens(research.word_tokens(piece))
-    found = [token for token in research.word_tokens(ADDRESS_PATTERN.sub(" ", text)) if token[0].isdigit() and token not in allowed]
+        allowed |= quote_check.number_tokens(quote_check.word_tokens(piece))
+    found = [token for token in quote_check.word_tokens(ADDRESS_PATTERN.sub(" ", text)) if token[0].isdigit() and token not in allowed]
     return list(dict.fromkeys(found))
 
 
@@ -644,7 +645,7 @@ def second_read_lines(sections: dict[str, Any], inputs: dict[str, Any], judge: C
             items.append({"id": f"t{index}", "line": f"lands on: {entry['lands_on']}", "cites": cited(entry["from"])})
     for index, entry in enumerate(sections["reading"]):
         items.append({"id": f"r{index}", "line": entry["text"], "cites": cited(entry["facts"])})
-    verdicts = research.second_read(items, judge, LINE_CHECK_INSTRUCTIONS)
+    verdicts = quote_check.second_read(items, judge, LINE_CHECK_INSTRUCTIONS)
     yes = {key for key, (supported, _why) in verdicts.items() if supported}
     return {
         "questions": [entry for index, entry in enumerate(sections["questions"]) if f"q{index}" in yes],
@@ -779,7 +780,7 @@ def render_call_prep(
     fact_sources = {f"{FACT_ID}{index}": sources[fact["source_url"]] for index, fact in enumerate(checked, start=1)}
     # The numbers of the sources that only the research agent's pick of a competitor stands on.
     pick_sources = {fact_sources[f"{FACT_ID}{index}"] for index, fact in enumerate(checked, start=1) if _is_pick(fact)}
-    headings = {key: FACT_HEADINGS.get(key, heading) for key, heading in research.SECTIONS if any(fact["section"] == key for fact in facts)}
+    headings = {key: FACT_HEADINGS.get(key, heading) for key, heading in quote_check.SECTIONS if any(fact["section"] == key for fact in facts)}
 
     def builds_on(hooks: list[str]) -> str:
         parts = [str(number) for number in sorted({fact_sources[hook] for hook in hooks if hook in fact_sources})]
@@ -845,7 +846,7 @@ def render_call_prep(
             claims.append({"text": f"{label}: {entry['text']}", "basis": INFERENCE_BASIS, "section": "reading"})
     if facts:
         for key, heading in headings.items():
-            if key == research.COMPETITORS and all(_is_pick(fact) for fact in facts if fact["section"] == key):
+            if key == quote_check.COMPETITORS and all(_is_pick(fact) for fact in facts if fact["section"] == key):
                 heading = f"{heading} (the research agent's picks)"
             lines.extend(["", heading])
             for fact in [fact for fact in facts if fact["section"] == key]:

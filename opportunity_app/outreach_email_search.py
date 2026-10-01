@@ -28,9 +28,11 @@ from urllib.parse import urlsplit
 
 from .contact_names import website_domain
 from .outreach import log_event
+from .outreach_agents import Runner
 from .outreach_batch import answers_by_target
 from .outreach_contacts import (
     EMAIL_PATTERN,
+    choose_contact,
     email_on_domain,
     emails_from_page,
     is_generic_address,
@@ -41,7 +43,6 @@ from .outreach_contacts import (
 from .timestamps import utc_now
 from .web_fetch import USER_AGENT, SafeFetcher, fetch_site_robots, public_web_url_error, same_site
 
-Runner = Callable[[str], str]
 
 BATCH_SIZE = 6
 MAX_PEOPLE_PER_COMPANY = 4
@@ -228,8 +229,6 @@ def search_batch(
 
 def needs_a_person(conn: sqlite3.Connection, target_id: str, *, user_id: str) -> bool:
     """Whether a search could still help: no confirmed personal address and no strong guess."""
-    from .outreach_contacts import choose_contact
-
     choice = choose_contact(list_candidates(conn, target_id, user_id=user_id))
     return choice is None or choice["basis"] not in {"confirmed", "strong_guess"}
 

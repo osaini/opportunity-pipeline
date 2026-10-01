@@ -23,7 +23,7 @@ from typing import Any, Callable
 from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
-from . import outreach_callbacks
+from . import automation, outreach_callbacks
 from .database import is_unique_violation
 from .inbox_classifiers import read_reply
 from .contact_names import website_domain
@@ -616,8 +616,6 @@ def _gmail_link(fragment: str) -> str:
 
 def _thank_you_hold(conn: sqlite3.Connection, user_id: str) -> str:
     """Why a waiting thank-you will be held at its time rather than sent, or "": its switch, or Jev, turned off."""
-    from . import automation  # imported here: automation imports this module
-
     feature = automation.FEATURES["decline_thank_you"]
     if automation.mode(conn, user_id, feature.key) != "on":
         return f"{feature.label} is off"

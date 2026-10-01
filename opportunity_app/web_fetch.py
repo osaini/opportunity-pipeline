@@ -21,6 +21,8 @@ import httpx
 
 USER_AGENT = "Mozilla/5.0 (compatible; internship-pipeline-outreach/1.0; one student's research)"
 MAX_PAGE_BYTES = 2 * 1024 * 1024
+# Statuses of pages that refuse automated checks without being gone.
+UNVERIFIABLE_STATUSES = {401, 403, 405, 429, 999}
 
 Resolver = Callable[[str], list[str]]
 

@@ -27,10 +27,8 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sqlite3
 import subprocess
-import tempfile
 from contextlib import ExitStack, closing
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -40,22 +38,25 @@ from uuid import uuid4
 import httpx
 
 from . import ROOT
-from .agent_providers import CODEX_READ_ONLY, CliAgentProvider, cli_binary, failure_detail, run_headless
+from .agent_providers import CliAgentProvider
 from .background import SingleFlightManager
 from .legacy import SOURCES_LOCAL_PATH
 from .outreach import OUTREACH_PRIORITIES, log_event, existing_keys, get_target, import_targets, local_today
 from .outreach_identity import company_key
 from .outreach_location import location_usable
 from .contact_names import website_domain
-from .outreach_config import discovery_provider
 from .outreach_contacts import apply_choice, choose_contact, find_contacts, list_candidates
-from .outreach_drafting import outreach_proof
+from .outreach_agents import Runner, discovery_runner
+from .outreach_drafting import generate_draft, outreach_proof
+from .outreach_email_search import needs_a_person, search_emails
+from .outreach_identity import mentions_company
+from .outreach_locate import locate_targets
 from .outreach_profile import SecUnavailableError, form_d_lookup, record_form_d, render_site_location, sec_fetcher
 from .outreach_render import PlaywrightRenderer, default_renderer
 from .preparation import confirmed_facts
 from .database import connect_product
 from .timestamps import utc_now
-from .web_fetch import FetchResult, SafeFetcher, default_fetcher
+from .web_fetch import UNVERIFIABLE_STATUSES, FetchResult, SafeFetcher, default_fetcher
 
 # Briefs are templates filled from the student's confirmed profile, so every
 # student searches their own regions and fields. A student can replace any
@@ -122,15 +123,10 @@ DEFAULT_SCOPES = tuple(SCOPES)
 # Companies one scope's search may propose, and the most a caller may ask for.
 MAX_PER_SCOPE = 10
 MAX_TARGETS = 25
-RUNNER_TIMEOUT_SECONDS = 45 * 60
 SCHEDULED_MIN_GAP = timedelta(hours=48)
 # Three scopes at up to 45 minutes each, plus contacts and drafts.
 LOCK_STALE_AFTER = timedelta(hours=4)
 REPORT_DIR = ROOT / "data"
-# Pages that refuse automated checks without being gone.
-UNVERIFIABLE_STATUSES = {401, 403, 405, 429, 999}
-
-Runner = Callable[[str], str]
 
 PROMPT = """You are researching companies a university student could cold email about an internship. The student will email them directly because these companies have no internship posting.
 
@@ -168,35 +164,6 @@ Reply with exactly one JSON object and nothing else:
 
 class DiscoveryBusy(RuntimeError):
     """Another deep search is already running."""
-
-
-def claude_runner(prompt: str, *, timeout: float = RUNNER_TIMEOUT_SECONDS) -> str:
-    """Headless Claude Code with web search and fetch only, outside the project."""
-    command = [
-        cli_binary("claude-code"), "-p", "--output-format", "text",
-        "--tools", "WebSearch,WebFetch", "--allowedTools", "WebSearch,WebFetch",
-        "--strict-mcp-config",
-    ]
-    with tempfile.TemporaryDirectory(prefix="outreach-discovery-") as workdir:
-        completed = run_headless(command, prompt, timeout=timeout, cwd=workdir)
-    if completed.returncode != 0:
-        detail = failure_detail(completed)
-        raise RuntimeError(f"Claude Code exited {completed.returncode}: {detail[:400] or 'no output'}")
-    return completed.stdout
-
-
-def codex_runner(prompt: str, *, timeout: float = RUNNER_TIMEOUT_SECONDS) -> str:
-    """Fallback: Codex CLI with web search, read-only sandbox, outside the project."""
-    command = [cli_binary("codex-cli"), *CODEX_READ_ONLY, "-c", "tools.web_search=true", "-"]
-    with tempfile.TemporaryDirectory(prefix="outreach-discovery-") as workdir:
-        completed = run_headless(command, prompt, timeout=timeout, cwd=workdir)
-    if completed.returncode != 0:
-        detail = failure_detail(completed)
-        raise RuntimeError(f"Codex exited {completed.returncode}: {detail[-400:] or 'no output'}")
-    return completed.stdout
-
-
-RUNNERS: dict[str, Runner] = {"claude-code": claude_runner, "codex-cli": codex_runner}
 
 
 def build_prompt(conn: Any, *, user_id: str, scopes: list[str], limit: int, found: list[dict[str, Any]] = ()) -> str:
@@ -295,28 +262,6 @@ def _url_loads(fetcher: SafeFetcher, url: str, cache: dict[str, FetchResult]) ->
     if result.error:
         return "dead"
     return "ok" if result.status < 400 else "unverifiable" if result.status in UNVERIFIABLE_STATUSES else "dead"
-
-
-# A legal suffix at the end of a company name, with the comma that usually
-# introduces it. The comma is part of the suffix, not part of the name:
-# "Acme Robotics, Inc." is the same company as "Acme Robotics", and a site that
-# writes the plain name must still count as mentioning it.
-_LEGAL_SUFFIX_RE = re.compile(
-    r"[,\s]+(?:inc\.?|incorporated|corp\.?|corporation|llc|l\.l\.c\.?|ltd\.?|limited|co\.|company)$"
-)
-
-
-def mentions_company(text: str, company: str, domain: str) -> bool:
-    haystack = " ".join(text.casefold().split())
-    full = " ".join(company.casefold().split())
-    names = {full}
-    # Trailing punctuation is stripped too, so a name that ends up as
-    # "acme robotics," is never what gets searched for.
-    stripped = _LEGAL_SUFFIX_RE.sub("", full).strip(" ,.")
-    if stripped:
-        names.add(stripped)
-    # An empty domain (no website on file) is in every string, so it proves nothing.
-    return any(name and name in haystack for name in names) or bool(domain) and domain.casefold() in haystack
 
 
 def validate_proposals(
@@ -634,9 +579,6 @@ def _run(
         if not location_usable(get_target(conn, item["target_id"], user_id=user_id))
     ]
     if unplaced:
-        # Imported here: outreach_locate researches through this module's runners.
-        from .outreach_locate import locate_targets
-
         # The same runner searches for the companies their own sites and EDGAR
         # did not place, so a new company arrives with a location or a reason.
         try:
@@ -686,9 +628,6 @@ def search_other_sites(
     conn: Any, target_ids: list[str], *, user_id: str, runner: Runner, fetcher: SafeFetcher, verifier: Any,
 ) -> dict[str, Any]:
     """The other-sites email search for the targets still without a person to write to."""
-    # Imported here: outreach_email_search imports outreach_contacts, as this module does.
-    from .outreach_email_search import needs_a_person, search_emails
-
     due = [target_id for target_id in target_ids if needs_a_person(conn, target_id, user_id=user_id)]
     if not due:
         return {"searched": 0, "found": 0, "results": []}
@@ -785,8 +724,6 @@ def _write_draft(
     """Draft to the chosen contact, then record every failure the target met on the way."""
     target_id = outcome["target_id"]
     if outcome["contact"] and provider_factory is not None:
-        from .outreach_drafting import generate_draft
-
         try:
             generate_draft(conn, target_id, user_id=user_id, provider_factory=provider_factory, provider=draft_provider)
             outcome["draft"] = "generated"
@@ -835,7 +772,7 @@ class DiscoveryManager(SingleFlightManager):
 
     def start(self, *, user_id: str, scopes: list[str] | None = None) -> dict[str, Any]:
         def run() -> dict[str, Any]:
-            runner = self._runner or RUNNERS.get(discovery_provider(), claude_runner)
+            runner = self._runner or discovery_runner()
             with ExitStack() as stack:
                 conn = stack.enter_context(closing(connect_product(self.platform_target)))
                 fetcher = stack.enter_context(self._client_factory())

@@ -11,7 +11,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import outreach_linkedin, outreach_research
+from opportunity_app import outreach_linkedin, quote_check
 from opportunity_app.outreach_config import LINKEDIN_ENV
 from opportunity_app.outreach_interviewer import NOTES_INSTRUCTIONS
 from opportunity_app.outreach import create_target, get_target, log_reply, update_target
@@ -276,7 +276,7 @@ class InterviewerTests(unittest.TestCase):
         def model(instructions, content):
             if instructions == NOTES_INSTRUCTIONS:
                 return notes
-            self.assertEqual(instructions, outreach_research.JUDGE_INSTRUCTIONS)
+            self.assertEqual(instructions, quote_check.JUDGE_INSTRUCTIONS)
             items = json.loads(content)["items"]
             shown.extend(items)
             return json.dumps({"verdicts": [{"id": item["id"], "supported": item["fact"] != merged, "why": "Tesla is an earlier job"} for item in items]})

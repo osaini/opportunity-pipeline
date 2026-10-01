@@ -16,6 +16,7 @@ import logging
 import re
 from typing import Any, Callable
 
+from . import agent_providers
 from .outreach_greeting import spoken_company
 from .outreach_identity import company_key
 from .outreach_config import resolve_provider
@@ -117,10 +118,8 @@ def template(inputs: dict[str, Any]) -> str:
 
 
 def _parsed(raw: str, inputs: dict[str, Any]) -> tuple[str, list[str]]:
-    from .agent_providers import CliAgentProvider
-
     try:
-        parsed = CliAgentProvider.extract_json(raw)
+        parsed = agent_providers.CliAgentProvider.extract_json(raw)
     except ValueError:
         return "", ["it was not one JSON object with a body"]
     body = str(parsed.get("body") or "").replace("\r\n", "\n").strip()
@@ -135,8 +134,6 @@ def write(
     The model gets one retry with the reasons it was refused; a model that is
     unavailable, fails twice, or is not set up leaves the template.
     """
-    from .agent_providers import complete_text
-
     try:
         provider_id, model = resolve_provider(provider, purpose="thank_you")
     except ValueError:
@@ -149,7 +146,7 @@ def write(
     try:
         agent = provider_factory(provider_id, model)
         for _attempt in range(2):
-            body, problems = _parsed(complete_text(agent, INSTRUCTIONS, asked), inputs)
+            body, problems = _parsed(agent_providers.complete_text(agent, INSTRUCTIONS, asked), inputs)
             if not problems:
                 return body, f"{provider_id}:{model}"
             asked = f"{content}\n\nYour previous thank-you was refused because " + "; ".join(problems) + ". Write it again following every rule."

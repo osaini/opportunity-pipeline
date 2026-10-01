@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import httpx
 
 from opportunity_app import outreach_research as research
+from opportunity_app import quote_check
 from opportunity_app.outreach import create_target, get_target
 from opportunity_app.web_fetch import SafeFetcher
 from opportunity_app.outreach_config import COMPANY_RESEARCH_ENV, RESEARCH_ENV
@@ -210,7 +211,7 @@ class CheckBriefTests(unittest.TestCase):
         self.second = second if second is not None else SecondRead()
         fetcher, self.requested = fetcher_for(sites)
         with fetcher:
-            return research.check_brief(reply(*facts, gaps=gaps), target, fetcher=fetcher, judge=self.second)
+            return quote_check.check_brief(reply(*facts, gaps=gaps), target, fetcher=fetcher, judge=self.second)
 
     def refused(self, brief):
         return {item["text"]: item["reason"] for item in brief["refused"]}
@@ -226,7 +227,7 @@ class CheckBriefTests(unittest.TestCase):
     def test_without_a_second_read_a_fact_is_kept_not_checked(self):
         fetcher, _ = fetcher_for()
         with fetcher:
-            brief = research.check_brief(reply(SEED), TARGET, fetcher=fetcher)
+            brief = quote_check.check_brief(reply(SEED), TARGET, fetcher=fetcher)
         self.assertEqual([(item["checked"], item["note"]) for item in brief["facts"]],
                          [(False, "its words are on the page, but no second read could check what it says")])
 
@@ -247,13 +248,13 @@ class CheckBriefTests(unittest.TestCase):
         from opportunity_app.web_fetch import FetchResult
 
         history = "<p>" + "Background paragraph about the company history. " * 60 + "</p>"
-        page = research.ResearchPage(FetchResult("https://news.example/release", 200,
+        page = quote_check.ResearchPage(FetchResult("https://news.example/release", 200,
                                           "<p>AUSTIN, Texas, May 12, 2026 /PRNewswire/</p>" + history
                                           + "<p>Chargebot says its hardware can ship directly and is already deployed in the field.</p>"))
         shown = page.passage(page.find_quote("its hardware can ship directly and is already deployed"))["passage"]
         self.assertIn("already deployed in the field", shown, "a long paragraph before the quote never pushes it out")
-        self.assertLessEqual(len(shown), research.PASSAGE_CHARS + research.QUOTE_LINE_CHARS)
-        short = research.ResearchPage(FetchResult("https://news.example/short", 200,
+        self.assertLessEqual(len(shown), quote_check.PASSAGE_CHARS + quote_check.QUOTE_LINE_CHARS)
+        short = quote_check.ResearchPage(FetchResult("https://news.example/short", 200,
                                            "<p>AUSTIN, Texas, May 12, 2026 /PRNewswire/</p><p>Chargebot today named Dana Ortiz CEO.</p>"))
         self.assertIn("May 12, 2026", short.passage(short.find_quote("Chargebot today named Dana Ortiz CEO"))["passage"])
 
@@ -266,7 +267,7 @@ class CheckBriefTests(unittest.TestCase):
         many = [{**SEED, "section": section, "text": text} for section in ("traction", "news", "growth", "edge", "customers") for text in texts]
         brief = self.check(*many)
         self.assertEqual(len(brief["facts"]), 25)
-        self.assertEqual(self.second.calls, 2, f"{research.JUDGE_BATCH} facts a call")
+        self.assertEqual(self.second.calls, 2, f"{quote_check.JUDGE_BATCH} facts a call")
 
     def test_a_lightly_trimmed_quote_still_matches(self):
         trimmed = {**CAMERA, "quote": "Its robot arm finds the charge port with a stereo camera and ... plugs in within 90 seconds"}
@@ -336,7 +337,7 @@ class CheckBriefTests(unittest.TestCase):
         blocked = {**SEED, "source_url": "https://news.example/blocked"}
         fetcher, _ = fetcher_for()
         with fetcher:
-            brief = research.check_brief(reply(blocked, {**blocked, "text": "Raised a $9M seed round led by Northgate Ventures"}),
+            brief = quote_check.check_brief(reply(blocked, {**blocked, "text": "Raised a $9M seed round led by Northgate Ventures"}),
                                          TARGET, fetcher=fetcher, renderer=Browser(), judge=SecondRead())
         self.assertEqual([(item["text"], item["checked"]) for item in brief["facts"]], [(SEED["text"], True)])
         self.assertEqual(brief["refused"][0]["reason"], "the quote and the lines around it do not state 9")
@@ -392,7 +393,7 @@ class CheckBriefTests(unittest.TestCase):
         self.assertEqual(self.refused(self.check(hidden)), {hidden["text"]: "its source does not name the company"})
 
     def test_the_shared_company_check_never_matches_an_empty_domain(self):
-        from opportunity_app.outreach_discovery import mentions_company
+        from opportunity_app.outreach_identity import mentions_company
 
         self.assertFalse(mentions_company(OTHER_COMPANY, "Chargebot", ""))
         self.assertTrue(mentions_company(PRESS, "Chargebot, Inc.", ""))
@@ -523,8 +524,8 @@ class CheckBriefTests(unittest.TestCase):
         # The title ends "... Capital" words and the body says "seed round": read as one run, "round capital"
         # would appear to stand on the page. It must be looked for within each run in page order, whatever
         # the hash seed (this failed about one run in fifteen when the title words were a set).
-        self.assertFalse(research._phrase_in(["round", "capital"], ["seed", "round"], ["capital", "weekly"]))
-        self.assertTrue(research._phrase_in(["round", "capital"], ["first", "round", "capital", "led"], []))
+        self.assertFalse(quote_check.phrase_in(["round", "capital"], ["seed", "round"], ["capital", "weekly"]))
+        self.assertTrue(quote_check.phrase_in(["round", "capital"], ["first", "round", "capital", "led"], []))
         page = ("<html><body><h1>Capital Weekly</h1>"
                 "<p>Chargebot today announced a $4.5M seed round led by Northgate Ventures.</p></body></html>")
         sites = {**SITES, "news.example": {**SITES["news.example"], "/capital-weekly": (200, page)}}
@@ -571,9 +572,9 @@ class CheckBriefTests(unittest.TestCase):
                  for number in range(40)]
         fetcher, _ = fetcher_for()
         with fetcher:
-            brief = research.check_brief(reply(*facts), TARGET, fetcher=fetcher, renderer=browser, judge=SecondRead())
+            brief = quote_check.check_brief(reply(*facts), TARGET, fetcher=fetcher, renderer=browser, judge=SecondRead())
         self.assertEqual(brief["facts"], [])
-        self.assertEqual(browser.calls, research.MAX_RENDERS)
+        self.assertEqual(browser.calls, quote_check.MAX_RENDERS)
 
     def test_a_founders_paper_stays_when_another_fact_ties_them_to_the_company(self):
         brief = self.check(THESIS_FACT, CTO)
@@ -592,15 +593,15 @@ class CheckBriefTests(unittest.TestCase):
             )
         ]
         brief = self.check(*many, {**SEED, "section": "gossip"}, STACK)
-        self.assertEqual(len(brief["facts"]), research.MAX_FACTS_PER_SECTION)
+        self.assertEqual(len(brief["facts"]), quote_check.MAX_FACTS_PER_SECTION)
         reasons = [item["reason"] for item in brief["refused"]]
-        self.assertIn(f"over the {research.MAX_FACTS_PER_SECTION} facts one section holds", reasons)
+        self.assertIn(f"over the {quote_check.MAX_FACTS_PER_SECTION} facts one section holds", reasons)
         self.assertIn("section gossip is not one the research writes", reasons)
         self.assertEqual(brief["proposed"], len(many) + 2, "the repeated fact is dropped, not counted twice")
 
     def test_one_run_checks_a_bounded_number_of_facts(self):
         many = [{**SEED, "section": "news", "text": f"Raised a $4.5M seed round led by Northgate Ventures ({index})"} for index in range(5)]
-        with mock.patch.object(research, "MAX_PROPOSALS", 2), mock.patch.object(research, "MAX_PAGES", 1):
+        with mock.patch.object(quote_check, "MAX_PROPOSALS", 2), mock.patch.object(quote_check, "MAX_PAGES", 1):
             brief = self.check(*many, {**SEED, "source_url": "https://chargebot.example/careers"})
         reasons = [item["reason"] for item in brief["refused"]]
         self.assertEqual(reasons.count("over the 2 facts one run checks"), 4)
@@ -609,7 +610,7 @@ class CheckBriefTests(unittest.TestCase):
     def test_a_reply_without_a_facts_list_is_an_error(self):
         fetcher, _ = fetcher_for()
         with fetcher, self.assertRaises(ValueError):
-            research.check_brief('{"companies": []}', TARGET, fetcher=fetcher)
+            quote_check.check_brief('{"companies": []}', TARGET, fetcher=fetcher)
 
     def test_a_page_built_by_scripts_is_read_in_a_browser(self):
         shell = {"chargebot.example": {"/careers": (200, "<html><body><div id='app'></div><footer>chargebot.example</footer></body></html>")}}
@@ -622,7 +623,7 @@ class CheckBriefTests(unittest.TestCase):
 
         fetcher, _ = fetcher_for(shell)
         with fetcher:
-            brief = research.check_brief(reply(STACK), TARGET, fetcher=fetcher, renderer=Renderer(), judge=SecondRead())
+            brief = quote_check.check_brief(reply(STACK), TARGET, fetcher=fetcher, renderer=Renderer(), judge=SecondRead())
         self.assertEqual(len(brief["facts"]), 1)
 
     def test_a_persons_own_page_backs_only_a_team_fact(self):
@@ -688,22 +689,22 @@ class CheckBriefTests(unittest.TestCase):
         second = SecondRead(not_rivals=[cust["text"], part["text"]])
         brief = self.check(cust, part, real, sites=sites, second=second)
         notes = {item["source_url"]: item["note"] for item in brief["facts"]}
-        self.assertEqual(notes["https://chargebot.example/customers"], research.PICK_NOTE)
-        self.assertEqual(notes["https://news.example/partner2"], research.PICK_NOTE)
-        self.assertEqual(notes["https://news.example/rivals"], research.COMPETE_NOTE)
+        self.assertEqual(notes["https://chargebot.example/customers"], quote_check.PICK_NOTE)
+        self.assertEqual(notes["https://news.example/partner2"], quote_check.PICK_NOTE)
+        self.assertEqual(notes["https://news.example/rivals"], quote_check.COMPETE_NOTE)
         self.assertEqual(second.shown(real["text"])["competitor"], "Voltarm", "the judge is told which company the fact is about")
         # No second read: the fact is kept "not checked", and never as a rival the page says.
         brief = self.check(cust, real, sites=sites, second=SecondRead(fail=True))
-        self.assertTrue(all(not item["checked"] and item["note"] != research.COMPETE_NOTE for item in brief["facts"]))
+        self.assertTrue(all(not item["checked"] and item["note"] != quote_check.COMPETE_NOTE for item in brief["facts"]))
         # A judge that says the passage shows a customer or partner refuses the fact outright.
         brief = self.check(cust, sites=sites, second=SecondRead(refuse=[cust["text"]]))
         self.assertEqual(brief["facts"], [])
         self.assertIn("does not state this", self.refused(brief)[cust["text"]])
 
     def test_the_second_read_is_asked_whether_the_two_compete_and_only_of_a_competitor_fact(self):
-        self.assertIn('"rivals"', research.JUDGE_INSTRUCTIONS)
+        self.assertIn('"rivals"', quote_check.JUDGE_INSTRUCTIONS)
         for relation in ("customer", "partner", "supplier", "investor", "acquirer"):
-            self.assertIn(relation, research.JUDGE_INSTRUCTIONS)
+            self.assertIn(relation, quote_check.JUDGE_INSTRUCTIONS)
         second = SecondRead()
         self.check(SEED, second=second)
         self.assertNotIn("competitor", second.shown(SEED["text"]), "only a competitor fact carries the question")
@@ -719,7 +720,7 @@ class CheckBriefTests(unittest.TestCase):
         self.assertEqual(self.refused(brief)[SEED["text"]], "a second read of the page says it does not state this: no reason given")
         digits = {}
         self.assertEqual(
-            research.second_read([{"id": "f0"}], lambda i, c: json.dumps({"verdicts": [{"id": "f0", "supported": False, "why": "quote says 4.5M, fact says 45M"}]}), rivals=digits),
+            quote_check.second_read([{"id": "f0"}], lambda i, c: json.dumps({"verdicts": [{"id": "f0", "supported": False, "why": "quote says 4.5M, fact says 45M"}]}), rivals=digits),
             {"f0": (False, "quote says 4.5M, fact says 45M")}, "a reason may carry numbers: it is not a gap",
         )
 
@@ -745,13 +746,13 @@ class CheckBriefTests(unittest.TestCase):
             ("", "Acme", ("", "")),
         ):
             with self.subTest(website):
-                self.assertEqual(research._site_scope(website, company), expected)
+                self.assertEqual(quote_check.site_scope(website, company), expected)
         scope = ("uni.example", "/bovi-lab")
-        self.assertTrue(research._own_site("https://uni.example/bovi-lab/people", scope))
-        self.assertTrue(research._own_site("https://uni.example/bovi-lab", scope))
-        self.assertFalse(research._own_site("https://uni.example/other-lab", scope), "another page on the host is not the lab's")
-        self.assertFalse(research._own_site("https://uni.example/bovi-lab-two", scope))
-        self.assertTrue(research._own_site("https://news.chargebot.example/x", ("chargebot.example", "")))
+        self.assertTrue(quote_check.is_own_site("https://uni.example/bovi-lab/people", scope))
+        self.assertTrue(quote_check.is_own_site("https://uni.example/bovi-lab", scope))
+        self.assertFalse(quote_check.is_own_site("https://uni.example/other-lab", scope), "another page on the host is not the lab's")
+        self.assertFalse(quote_check.is_own_site("https://uni.example/bovi-lab-two", scope))
+        self.assertTrue(quote_check.is_own_site("https://news.chargebot.example/x", ("chargebot.example", "")))
 
     def test_another_page_on_a_shared_host_is_not_the_companys_own_site(self):
         sites = {"uni.example": {"/bovi-lab/pubs": (403, "Forbidden"), "/other-lab/pubs": (403, "Forbidden")}}
@@ -778,7 +779,7 @@ class CheckBriefTests(unittest.TestCase):
         def brief(ends_on):
             fetcher, _ = fetcher_for(walled)
             with fetcher:
-                return research.check_brief(reply(STACK), TARGET, fetcher=fetcher, renderer=Renderer(ends_on), judge=SecondRead())
+                return quote_check.check_brief(reply(STACK), TARGET, fetcher=fetcher, renderer=Renderer(ends_on), judge=SecondRead())
 
         self.assertEqual(len(brief("https://chargebot.example/careers")["facts"]), 1)
         refused = brief("https://www.linkedin.com/company/chargebot/jobs")
@@ -797,7 +798,7 @@ class CheckBriefTests(unittest.TestCase):
         walled = {"chargebot.example": {"/careers": (403, "Forbidden")}}
         fetcher, _ = fetcher_for(walled)
         with fetcher:
-            brief = research.check_brief(reply(STACK), TARGET, fetcher=fetcher, renderer=Renderer(), judge=SecondRead())
+            brief = quote_check.check_brief(reply(STACK), TARGET, fetcher=fetcher, renderer=Renderer(), judge=SecondRead())
         self.assertEqual(brief["facts"], [], "a nameless page on another host is not the company's just because the link was")
         self.assertEqual(brief["refused"][0]["reason"], "its source does not name the company")
 
@@ -819,7 +820,7 @@ class CheckBriefTests(unittest.TestCase):
                  "https://chargebot.example/team", "https://chargebot.example/edge"]
         facts = [{**SEED, "source_url": url, "text": f"Raised a $4.5M seed round ({number})"} for number, url in enumerate(pages)]
         with fetcher:
-            brief = research.check_brief(reply(*facts), TARGET, fetcher=fetcher, judge=SecondRead(), budget_seconds=25, clock=clock)
+            brief = quote_check.check_brief(reply(*facts), TARGET, fetcher=fetcher, judge=SecondRead(), budget_seconds=25, clock=clock)
         reasons = [item["reason"] for item in brief["refused"]]
         self.assertGreaterEqual(reasons.count("over the time one run spends reading pages"), 2, reasons)
         self.assertLess(now[0], 60, "no page was requested after the budget was spent")
@@ -832,8 +833,8 @@ class CheckBriefTests(unittest.TestCase):
         ]
         brief = self.check(SEED, gaps=gaps)
         self.assertEqual(brief["gaps"], ["which suppliers they use for key parts", "how they test grippers before shipping"])
-        self.assertTrue(research.safe_gap("how the arm stays calibrated"))
-        self.assertFalse(research.safe_gap("email me at a@b.co"))
+        self.assertTrue(quote_check.safe_gap("how the arm stays calibrated"))
+        self.assertFalse(quote_check.safe_gap("email me at a@b.co"))
 
     def test_a_gap_may_not_spell_a_secret_out_in_groups_digits_or_a_long_sentence(self):
         for text in (
@@ -843,10 +844,10 @@ class CheckBriefTests(unittest.TestCase):
             " ".join(["word"] * 3 + ["thing"] * 12),
         ):
             with self.subTest(text):
-                self.assertFalse(research.safe_gap(text))
+                self.assertFalse(quote_check.safe_gap(text))
         for text in ("which suppliers they use for key parts", "how the arm stays calibrated", "whether they hire interns in the summer"):
             with self.subTest(text):
-                self.assertTrue(research.safe_gap(text))
+                self.assertTrue(quote_check.safe_gap(text))
         brief = self.check(SEED, gaps=["abcd efgh ijkl mnop", "how they test grippers before shipping"])
         self.assertEqual(brief["gaps"], ["how they test grippers before shipping"])
 
@@ -861,10 +862,10 @@ class CheckBriefTests(unittest.TestCase):
 
         fetcher.fetch = spy
         with fetcher:
-            research.check_brief(reply(SEED), TARGET, fetcher=fetcher, judge=SecondRead(), budget_seconds=5)
-            research.check_brief(reply(SEED), TARGET, fetcher=fetcher, judge=SecondRead(), budget_seconds=900)
+            quote_check.check_brief(reply(SEED), TARGET, fetcher=fetcher, judge=SecondRead(), budget_seconds=5)
+            quote_check.check_brief(reply(SEED), TARGET, fetcher=fetcher, judge=SecondRead(), budget_seconds=900)
         self.assertAlmostEqual(deadlines[0], 5, delta=0.5, msg="the run has five seconds left, not the usual thirty")
-        self.assertEqual(deadlines[1], research.FETCH_SECONDS)
+        self.assertEqual(deadlines[1], quote_check.FETCH_SECONDS)
 
     def test_the_company_renamed_during_the_run_is_not_given_the_old_ones_research(self):
         # See ResearchStorageTests: this is the pure check of the comparison it uses.
