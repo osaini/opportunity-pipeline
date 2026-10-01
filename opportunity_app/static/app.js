@@ -57,6 +57,12 @@
     profileStatus: null,
     // The last answer from /api/v1/automation: { settings, health }.
     automation: null,
+    // Set later, by the page that owns each (named here so the whole shape is in one place).
+    deepSearchOpen: undefined,
+    detailItem: undefined,
+    launchTicketFailed: undefined,
+    pdfAvailable: undefined,
+    systemStatus: undefined,
   };
 
   const els = {
@@ -137,6 +143,23 @@
     themeToggle: document.getElementById("theme-toggle"),
     themeLabel: document.getElementById("theme-label"),
   };
+
+  // Every background poll belongs to the session that started it. One left
+  // running after sign-out gets a 401 each time, and api() answers every 401 by
+  // re-running showAuth, which blanks the sign-in error and moves focus to the
+  // email field. So each poller registers one function that stops it, next to
+  // its own timer, and ending the session runs them all. Signing in again
+  // restarts what is still running, because the Outreach render watches every
+  // active job.
+  const sessionPollers = [];
+
+  function registerSessionPoller(stop) {
+    sessionPollers.push(stop);
+  }
+
+  function stopSessionPollers() {
+    sessionPollers.forEach((stop) => stop());
+  }
 
   // FastAPI reports a failed request body as a list of {loc, msg, type}
   // objects. Turn any detail shape into a sentence a person can read; never
@@ -310,6 +333,7 @@
     urgentBadge.retryTimer = null;
     setUrgentBadge(null);
   }
+  registerSessionPoller(clearUrgentBadge);
 
   // What the app does on its own, app-wide: the banner above the page (a pause,
   // or Gmail needing attention) and the Profile badge (automatic actions waiting
@@ -565,6 +589,7 @@
     els.automationBanner.hidden = true;
     setProfileBadge(null);
   }
+  registerSessionPoller(clearAutomationStatus);
 
   function csrfHeaders(method = "POST") {
     const csrf = document.cookie.split("; ").find((entry) => entry.startsWith("pipeline_csrf="))?.split("=")[1];
@@ -746,8 +771,6 @@
     state.sessionEpoch += 1;
     state.selectedId = null;
     state.loadSequence += 1;
-    clearUrgentBadge();
-    clearAutomationStatus();
     els.programsNavLabel.textContent = "Programs";
     els.results.replaceChildren();
     els.resultCount.textContent = "Loading opportunities…";
@@ -758,30 +781,12 @@
     state.company = "";
     renderCompanyFilter();
     els.personalizePrompt.hidden = true;
-    window.clearTimeout(state.refreshTimer);
     stopSessionPollers();
     state.refresh = null;
     els.refreshOpen.hidden = true;
     if (els.refreshDialog.open) els.refreshDialog.close();
     clearError();
     announce("");
-  }
-
-  // Every background poll belongs to the session that started it. One left
-  // running after sign-out gets a 401 each time, and api() answers every 401
-  // by re-running showAuth, which blanks the sign-in error and moves focus to
-  // the email field. The bindings are declared further down; this only runs
-  // once the whole script has loaded. Signing in again restarts what is
-  // still running, because the Outreach render watches every active job.
-  function stopSessionPollers() {
-    callPrepWatches.forEach((timer) => window.clearTimeout(timer));
-    callPrepWatches.clear();
-    bounceTimers.forEach((timer) => window.clearTimeout(timer));
-    bounceTimers = [];
-    window.clearTimeout(deepSearchTimer);
-    deepSearchTimer = null;
-    window.clearTimeout(recontactTimer);
-    recontactTimer = null;
   }
 
   // The gate and the detail panel are modal: while either is open nothing
@@ -831,6 +836,7 @@
   // Manual refresh and purge. Polling continues while a run is in progress even
   // with the dialog closed, so the deck reloads the moment the run finishes.
   const REFRESH_POLL_MS = 1000;
+  registerSessionPoller(() => window.clearTimeout(state.refreshTimer));
 
   function refreshFraction(step) {
     if (step.state === "done") return 1;
@@ -3141,6 +3147,10 @@
   // send. The server spaces its own looks, so asking often costs nothing.
   const BOUNCE_LOOKS_MS = [15000, 45000, 120000, 300000];
   let bounceTimers = [];
+  registerSessionPoller(() => {
+    bounceTimers.forEach((timer) => window.clearTimeout(timer));
+    bounceTimers = [];
+  });
 
   async function checkForBounces() {
     if (!state.userId) return;
@@ -4064,6 +4074,10 @@
   }
 
   let deepSearchTimer = null;
+  registerSessionPoller(() => {
+    window.clearTimeout(deepSearchTimer);
+    deepSearchTimer = null;
+  });
 
   function scheduleDeepSearchPoll() {
     if (deepSearchTimer) return;
@@ -4169,6 +4183,10 @@
   }
 
   let recontactTimer = null;
+  registerSessionPoller(() => {
+    window.clearTimeout(recontactTimer);
+    recontactTimer = null;
+  });
 
   function scheduleRecontactPoll() {
     if (recontactTimer) return;
@@ -4924,6 +4942,10 @@
   const CALL_PREP_ACTIVE = ["queued", "running", "retry"];
   const CALL_PREP_WRITING = "Writing call prep in the background. When the company has no recent research, it researches them on the web first, which takes a few minutes. It keeps going if you leave this page, and picks back up if your laptop sleeps or the app restarts.";
   const callPrepWatches = new Map();
+  registerSessionPoller(() => {
+    callPrepWatches.forEach((timer) => window.clearTimeout(timer));
+    callPrepWatches.clear();
+  });
 
   function watchCallPrep(id, delay = 5000) {
     if (callPrepWatches.has(id) && delay) return;
