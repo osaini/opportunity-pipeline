@@ -1779,6 +1779,22 @@ def export_csv(items: list[dict[str, Any]]) -> str:
     return output.getvalue()
 
 
+# What the tracker computes from a target to show it. The JSON export drops them: they are not part of the record, and a
+# re-import would have nothing to do with them.
+EXPORT_DERIVED_FIELDS = (
+    "draft_checks", "follow_up_checks", "follow_up_due", "revisit_due", "suggestion",
+    "draft_history_count", "follow_up_history_count", "possible_reply_count", "possible_replies", "gmail_reply",
+)
+
+
+def export_json(items: list[dict[str, Any]]) -> str:
+    """The JSON export of `items`, without the derived fields. Removes them from the items themselves."""
+    for item in items:
+        for derived in EXPORT_DERIVED_FIELDS:
+            item.pop(derived, None)
+    return json.dumps({"format": "outreach-targets-v1", "items": items}, indent=2, sort_keys=True)
+
+
 def parse_import(data: bytes, filename: str) -> list[dict[str, Any]]:
     text_data = data.decode("utf-8-sig")
     if filename.lower().endswith(".csv"):

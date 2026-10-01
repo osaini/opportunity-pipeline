@@ -21,6 +21,7 @@ from ...outreach import (
     create_target as create_outreach_target,
     delete_target as delete_outreach_target,
     export_csv as export_outreach_csv,
+    export_json as export_outreach_json,
     filtered_target_ids as filtered_outreach_target_ids,
     get_target as get_outreach_target,
     import_targets as import_outreach_targets,
@@ -114,14 +115,8 @@ def export_outreach(
 ) -> Response:
     items = list_outreach_targets(conn, user_id=user_id)
     if export_format == "json":
-        for item in items:
-            for derived in (
-                "draft_checks", "follow_up_checks", "follow_up_due", "revisit_due", "suggestion",
-                "draft_history_count", "follow_up_history_count", "possible_reply_count", "possible_replies", "gmail_reply",
-            ):
-                item.pop(derived, None)
         return Response(
-            content=json.dumps({"format": "outreach-targets-v1", "items": items}, indent=2, sort_keys=True),
+            content=export_outreach_json(items),
             media_type="application/json",
             headers={"Content-Disposition": 'attachment; filename="outreach.json"'},
         )
