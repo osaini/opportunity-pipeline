@@ -110,7 +110,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
         "actions auth apply_checks apply_claims apply_classify apply_greenhouse apply_policy apply_sensitive apply_schema_client automation automation_health boards captures connections "
         "dossier employer market early_programs extension_apply mail_trust notifications purge ingestion profile resumes "
         "resume_variants preparation document_artifacts inbox_classifiers "
-        "outreach outreach_callbacks outreach_config outreach_identity outreach_versions outreach_contacts outreach_linkedin outreach_batch "
+        "outreach outreach_callbacks outreach_config outreach_identity outreach_label_name outreach_versions outreach_contacts outreach_linkedin outreach_batch "
         "outreach_render"
     ),
     # L4 workflows. refresh is the manual refresh/purge workflow run in a background thread; api (L5) is its only importer.
@@ -140,7 +140,6 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
     (_P + "launch", _P + "api", "create_app and LOOPBACK_HOSTS: api imports system_status, which would import launch if that were hoisted too"),
     (_P + "outreach_discovery", _P + "outreach_locate", "locate_targets: outreach_locate imports discovery at the top"),
     (_P + "outreach_drafting", _P + "outreach_research", "the research module: outreach_research imports outreach_discovery, which imports drafting at the top"),
-    (_P + "outreach_gmail", _P + "outreach_labels", "label_name: outreach_labels imports outreach_gmail at the top"),
     (_P + "profile", _P + "outreach", "greeting_style_error: outreach imports preparation, which imports profile"),
 )
 

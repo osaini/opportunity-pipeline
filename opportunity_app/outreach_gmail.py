@@ -76,6 +76,7 @@ from .outreach import (
 )
 from .database import is_unique_violation
 from .outreach_config import ATTACHMENT_ENV, gmail_web_url, sender_account
+from .outreach_label_name import label_name
 from .timestamps import parse_app_instant, utc_now
 from .user_time import user_timezone
 
@@ -132,8 +133,6 @@ def gmail_drafts_status(conn: sqlite3.Connection, *, user_id: str, now: datetime
     path = attachment_path()
     granted = granted_scopes(row["scopes_json"]) if row else []
     health = automation_health.gmail_health(conn, user_id, now=now)
-    from .outreach_labels import label_name  # imported here: it imports this module
-
     connected = bool(configured and row and row["status"] == "connected")
     account = sender_account()
     connected_as = str(row["account_email"] or "") if connected and "account_email" in row.keys() else ""

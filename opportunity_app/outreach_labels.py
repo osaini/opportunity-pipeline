@@ -86,12 +86,10 @@ from .outreach_gmail import (
 from .schema import _has_column
 from .settings_store import get_setting, put_setting
 from .timestamps import parse_app_instant, utc_now
+from .outreach_label_name import DEFAULT_LABEL, LABEL_SETTING, label_name
 
 LOGGER = logging.getLogger(__name__)
 
-DEFAULT_LABEL = "opportunities"
-# user_settings: no row means DEFAULT_LABEL, and '' means labelling is off.
-SETTING = "outreach_gmail_label"
 # user_settings, JSON {"label": name, "after": epoch seconds[, "recheck": thread id]}: the label the sweep is for, how
 # far back it has read, and, when a listing was too long for one pass, how far through the labelled threads it has
 # re-read since ('' = not yet started; the key is absent when no re-read is owed).
@@ -140,12 +138,6 @@ _IDS_LOCK = threading.Lock()
 # --- The label's name -------------------------------------------------------------------
 
 
-def label_name(conn: sqlite3.Connection, user_id: str) -> str:
-    """The name replies are labelled with; '' when the student turned labelling off."""
-    value = get_setting(conn, user_id, SETTING)
-    return DEFAULT_LABEL if value is None else value
-
-
 def search_form(name: str) -> str:
     """How Gmail's search writes a label name: lowercase, with spaces and slashes as dashes."""
     return re.sub(r"[ /]+", "-", name.lower())
@@ -161,7 +153,7 @@ def set_label_name(conn: sqlite3.Connection, user_id: str, value: str | None) ->
     before = label_name(conn, user_id)
     if value is None:
         with conn:
-            conn.execute("DELETE FROM user_settings WHERE user_id=? AND key=?", (user_id, SETTING))
+            conn.execute("DELETE FROM user_settings WHERE user_id=? AND key=?", (user_id, LABEL_SETTING))
             _search_again(conn, user_id, before, DEFAULT_LABEL)
         return DEFAULT_LABEL
     name = " ".join(value.split())
@@ -179,7 +171,7 @@ def set_label_name(conn: sqlite3.Connection, user_id: str, value: str | None) ->
             raise ValueError(f"Gmail keeps the name {name} for itself; choose another label name")
     with conn:
         # The shared monotonic clock (the old local stamp had no tie-break); nothing reads this setting's updated_at, so a strictly later stamp is harmless.
-        put_setting(conn, user_id, SETTING, name, utc_now())
+        put_setting(conn, user_id, LABEL_SETTING, name, utc_now())
         _search_again(conn, user_id, before, name)
     return name
 
