@@ -634,16 +634,15 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
     def test_pipeline_connect_takes_a_path_and_defaults_to_the_module_path_read_at_call_time(self):
         import sqlite3
 
-        import pipeline
-        from pipeline_core import paths
+        from pipeline_core import paths, store
 
         with tempfile.TemporaryDirectory() as tmp:
             explicit = Path(tmp) / "nested" / "explicit.db"
-            pipeline.connect(explicit).close()
+            store.connect(explicit).close()
             self.assertTrue(explicit.is_file())
             default = Path(tmp) / "default.db"
             with mock.patch.object(paths, "DB_PATH", default):
-                pipeline.connect().close()
+                store.connect().close()
             self.assertTrue(default.is_file())
             with closing(sqlite3.connect(explicit)) as conn:
                 tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}

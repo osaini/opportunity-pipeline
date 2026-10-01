@@ -7,7 +7,7 @@ missing database and opens an existing one, and nothing fails.
 
 `install()` wraps `sqlite3.connect` for the whole test process so that opening any file inside a real data directory
 raises RealDataAccessError before the file is opened or created. Every module in the project opens SQLite through
-`sqlite3.connect`, so this sits below `pipeline.connect`, `schema.connect_product`, the read model and every helper.
+`sqlite3.connect`, so this sits below `pipeline_core.store.connect`, `schema.connect_product`, the read model and every helper.
 
 It lives in test code: nothing under opportunity_app/, pipeline.py or pipeline_core/ knows about it, and outside a test process
 (nothing imports this file) production behaviour is untouched. It is installed from tests/conftest.py (pytest: the unit suite

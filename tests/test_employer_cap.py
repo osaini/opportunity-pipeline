@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fastapi.testclient import TestClient
 
 import pipeline
-from pipeline_core import paths
+from pipeline_core import paths, store
 from helpers_platform import LEGACY_SCHEMA, build_profile, migrate_cached
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
@@ -107,7 +107,7 @@ class EmployerCapShortlistTests(unittest.TestCase):
             patcher = mock.patch.object(paths, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
-        self.conn = pipeline.connect()
+        self.conn = store.connect()
         self.addCleanup(self.conn.close)
 
     def add(self, company: str, scores: list[int], start: int = 0):
@@ -124,7 +124,7 @@ class EmployerCapShortlistTests(unittest.TestCase):
             }
             for index in range(start, start + len(scores))
         ]
-        pipeline.upsert_jobs(self.conn, f"greenhouse:{company}", company, records)
+        store.upsert_jobs(self.conn, f"greenhouse:{company}", company, records)
         for index, score in enumerate(scores, start=start):
             self.conn.execute(
                 "UPDATE jobs SET score=? WHERE external_id=?", (score, f"{company}-{index}")

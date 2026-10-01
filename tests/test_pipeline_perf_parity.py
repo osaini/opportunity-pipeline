@@ -34,7 +34,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pipeline
-from pipeline_core import clock, sources as core_sources, text as core_text, http, paths, scoring
+from pipeline_core import clock, sources as core_sources, text as core_text, http, paths, scoring, store
 from pipeline_core.identity import normalized
 
 try:
@@ -107,7 +107,7 @@ def _reference_deduplicate(conn):
     for group in groups.values():
         if len(group) < 2:
             continue
-        canonical = pipeline._canonical_of(group)["id"]
+        canonical = store._canonical_of(group)["id"]
         for row in group:
             if row["id"] != canonical:
                 resolved[row["id"]] = canonical
@@ -124,12 +124,12 @@ def _reference_deduplicate(conn):
             continue
         remaining = group
         while len(remaining) > 1:
-            canonical_row = pipeline._canonical_of(remaining)
+            canonical_row = store._canonical_of(remaining)
             cluster = [
                 row
                 for row in remaining
                 if row["id"] != canonical_row["id"]
-                and pipeline.locations_compatible(row["location"], canonical_row["location"])
+                and store.locations_compatible(row["location"], canonical_row["location"])
             ]
             for row in cluster:
                 resolved[row["id"]] = canonical_row["id"]
@@ -147,7 +147,7 @@ def _reference_deduplicate(conn):
         for other in candidates[index + 1 :]:
             if other["id"] in clustered or other["source_key"] == row["source_key"]:
                 continue
-            if not pipeline.locations_compatible(row["location"], other["location"]):
+            if not store.locations_compatible(row["location"], other["location"]):
                 continue
             similarity = core_text.fingerprint_similarity(
                 row["content_fingerprint"], other["content_fingerprint"]
@@ -157,7 +157,7 @@ def _reference_deduplicate(conn):
                 clustered.add(other["id"])
         if len(cluster) > 1:
             clustered.add(row["id"])
-            canonical = pipeline._canonical_of(cluster)["id"]
+            canonical = store._canonical_of(cluster)["id"]
             for member in cluster:
                 if member["id"] != canonical:
                     resolved[member["id"]] = canonical
@@ -185,7 +185,7 @@ def _reference_upsert_jobs(conn, source_key, source_name, records, seen=None):
             (source_key, external_id),
         ).fetchone()
         if existing:
-            description = pipeline._richer_description(existing["description"], description)
+            description = store._richer_description(existing["description"], description)
             location = location or existing["location"]
         role_type = core_text.classify_role(record["title"], description)
         fp = core_text.fingerprint(record["company"], record["title"], location)
@@ -216,7 +216,7 @@ def _reference_upsert_jobs(conn, source_key, source_name, records, seen=None):
                 role_type, url, description, record.get("posted_at"), seen, seen, fp, content_fp,
             ),
         )
-    pipeline._retire_absent(conn, source_key, records, set(ids), seen)
+    store._retire_absent(conn, source_key, records, set(ids), seen)
     _reference_deduplicate(conn)
     return len(records)
 
@@ -347,7 +347,7 @@ class TempDbCase(unittest.TestCase):
         temp = TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         with unittest.mock.patch.object(paths, "DB_PATH", Path(temp.name) / name):
-            conn = pipeline.connect()
+            conn = store.connect()
         self.addCleanup(conn.close)
         return conn
 
@@ -390,7 +390,7 @@ class DeduplicateParityTests(TempDbCase):
             populate(new, rows, seed)
             self.assertEqual(links(old), links(new))
             _reference_deduplicate(old)
-            pipeline.deduplicate(new)
+            store.deduplicate(new)
             self.assertEqual(links(old), links(new), f"seed {seed}")
             planted_links += sum(1 for target in links(new).values() if target)
         self.assertGreater(planted_links, 60, "the generated rows must actually contain duplicates")
@@ -413,18 +413,18 @@ class DeduplicateParityTests(TempDbCase):
         populate(old, rows, 0)
         populate(new, rows, 0)
         _reference_deduplicate(old)
-        pipeline.deduplicate(new)
+        store.deduplicate(new)
         self.assertEqual(links(old), links(new))
         self.assertGreaterEqual(sum(1 for target in links(new).values() if target), 10)
 
     def test_a_second_pass_writes_nothing(self):
         conn = self.open_db()
         populate(conn, generate_rows(2), 2)
-        pipeline.deduplicate(conn)
+        store.deduplicate(conn)
         conn.commit()
         before = conn.total_changes
         snapshot = links(conn)
-        pipeline.deduplicate(conn)
+        store.deduplicate(conn)
         self.assertEqual(conn.total_changes, before, "an unchanged table must not be rewritten")
         self.assertEqual(links(conn), snapshot)
 
@@ -432,7 +432,7 @@ class DeduplicateParityTests(TempDbCase):
         conn = self.open_db()
         populate(conn, generate_rows(4, count=20), 4)
         conn.execute("UPDATE jobs SET active=0, duplicate_of='job0001' WHERE id='job0000'")
-        pipeline.deduplicate(conn)
+        store.deduplicate(conn)
         self.assertIsNone(conn.execute("SELECT duplicate_of FROM jobs WHERE id='job0000'").fetchone()[0])
 
 
@@ -537,7 +537,7 @@ class DeferredDedupeTests(TempDbCase):
     def test_fetch_all_deduplicates_inside_each_source(self):
         batches = per_source_postings(1)
         conn = self.open_db()
-        with unittest.mock.patch.object(pipeline, "deduplicate", wraps=pipeline.deduplicate) as spy:
+        with unittest.mock.patch.object(store, "deduplicate", wraps=store.deduplicate) as spy:
             self.run_fetch(conn, batches)
         # One pass per source, inside that source's upsert, so a failing pass
         # rolls that source back.
@@ -548,12 +548,12 @@ class DeferredDedupeTests(TempDbCase):
         deferred, eager = self.open_db("deferred.db"), self.open_db("eager.db")
         reference = self.open_db("reference.db")
         for key, records in batches.items():
-            pipeline.upsert_jobs(deferred, key, key, records, "2026-09-01T00:00:00+00:00", dedupe=False)
-            pipeline.upsert_jobs(eager, key, key, records, "2026-09-01T00:00:00+00:00")
+            store.upsert_jobs(deferred, key, key, records, "2026-09-01T00:00:00+00:00", dedupe=False)
+            store.upsert_jobs(eager, key, key, records, "2026-09-01T00:00:00+00:00")
             _reference_upsert_jobs(reference, key, key, records, "2026-09-01T00:00:00+00:00")
         self.assertFalse(any(links(deferred).values()))
         self.assertTrue(any(links(eager).values()))
-        pipeline.deduplicate(deferred)
+        store.deduplicate(deferred)
         self.assertEqual(links(deferred), links(eager))
         self.assertEqual(links(reference), links(eager))
         self.assertEqual(state_digest(reference), state_digest(eager))
@@ -610,7 +610,7 @@ class DeferredDedupeTests(TempDbCase):
             if key not in (fetch_fail, upsert_fail):
                 _reference_upsert_jobs(old, key, key, records, "2026-09-01T00:00:00+00:00")
                 old.commit()
-        real = pipeline.upsert_jobs
+        real = store.upsert_jobs
 
         def failing_upsert(conn, source_key, *args, **kwargs):
             written = real(conn, source_key, *args, **kwargs)
@@ -634,7 +634,7 @@ class DeferredDedupeTests(TempDbCase):
         keys = list(batches)
         broken = keys[3]
         old, new = self.open_db("old.db"), self.open_db("new.db")
-        real_dedupe = pipeline.deduplicate
+        real_dedupe = store.deduplicate
 
         # The reference: a source whose link pass fails stores nothing.
         for key, records in batches.items():
@@ -642,7 +642,7 @@ class DeferredDedupeTests(TempDbCase):
                 _reference_upsert_jobs(old, key, key, records, "2026-09-01T00:00:00+00:00")
                 old.commit()
 
-        real_upsert = pipeline.upsert_jobs
+        real_upsert = store.upsert_jobs
         current = {}
 
         def tracking_upsert(conn, source_key, *args, **kwargs):
@@ -655,7 +655,7 @@ class DeferredDedupeTests(TempDbCase):
             return real_dedupe(conn)
 
         with unittest.mock.patch.object(pipeline, "upsert_jobs", tracking_upsert), \
-                unittest.mock.patch.object(pipeline, "deduplicate", flaky_dedupe):
+                unittest.mock.patch.object(store, "deduplicate", flaky_dedupe):
             result, stderr = self.run_fetch_ex(new, batches)  # must not raise
         self.assertIn("database is locked", stderr)
         outcomes = dict(new.execute("SELECT source_key, outcome FROM fetch_runs").fetchall())
@@ -672,8 +672,8 @@ class DeferredDedupeTests(TempDbCase):
         keys = list(batches)
         broken = keys[1]
         conn = self.open_db("resumed.db")
-        real_upsert = pipeline.upsert_jobs
-        real_dedupe = pipeline.deduplicate
+        real_upsert = store.upsert_jobs
+        real_dedupe = store.deduplicate
         current = {}
 
         def tracking_upsert(c, source_key, *args, **kwargs):
@@ -686,7 +686,7 @@ class DeferredDedupeTests(TempDbCase):
             return real_dedupe(c)
 
         with unittest.mock.patch.object(pipeline, "upsert_jobs", tracking_upsert), \
-                unittest.mock.patch.object(pipeline, "deduplicate", flaky_dedupe):
+                unittest.mock.patch.object(store, "deduplicate", flaky_dedupe):
             self.run_fetch_ex(conn, batches)
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM jobs WHERE source_key=?", (broken,)).fetchone()[0], 0)
         # Only the failed source is fetched again, and its rows and links land.
@@ -712,7 +712,7 @@ class DeferredDedupeTests(TempDbCase):
             path.write_text(json.dumps(spread), encoding="utf-8")
             new, old = self.open_db("new.db"), self.open_db("old.db")
             with unittest.mock.patch("sys.stdout", io.StringIO()), unittest.mock.patch("sys.stderr", io.StringIO()):
-                with unittest.mock.patch.object(pipeline, "deduplicate", wraps=pipeline.deduplicate) as spy:
+                with unittest.mock.patch.object(pipeline, "deduplicate", wraps=store.deduplicate) as spy:
                     pipeline.import_discovered(new, path)
                 self.assertEqual(spy.call_count, 1)
 
@@ -733,11 +733,11 @@ class FingerprintReuseTests(TempDbCase):
     def test_unchanged_description_keeps_the_stored_fingerprint_without_hashing(self):
         conn = self.open_db()
         text = body(random.Random(1), 120)
-        pipeline.upsert_jobs(conn, "greenhouse:acme", "Acme", [self.record(text)])
+        store.upsert_jobs(conn, "greenhouse:acme", "Acme", [self.record(text)])
         stored = conn.execute("SELECT content_fingerprint FROM jobs").fetchone()[0]
         self.assertEqual(stored, _reference_fingerprint_text(text))
-        with unittest.mock.patch.object(pipeline, "fingerprint_text") as spy:
-            pipeline.upsert_jobs(conn, "greenhouse:acme", "Acme", [self.record(text)])
+        with unittest.mock.patch.object(store, "fingerprint_text") as spy:
+            store.upsert_jobs(conn, "greenhouse:acme", "Acme", [self.record(text)])
         spy.assert_not_called()
         self.assertEqual(conn.execute("SELECT content_fingerprint FROM jobs").fetchone()[0], stored)
 
@@ -745,17 +745,17 @@ class FingerprintReuseTests(TempDbCase):
         conn = self.open_db()
         rng = random.Random(2)
         first, second = body(rng, 120), body(rng, 130)
-        pipeline.upsert_jobs(conn, "greenhouse:acme", "Acme", [self.record(first)])
-        pipeline.upsert_jobs(conn, "greenhouse:acme", "Acme", [self.record(second)])
+        store.upsert_jobs(conn, "greenhouse:acme", "Acme", [self.record(first)])
+        store.upsert_jobs(conn, "greenhouse:acme", "Acme", [self.record(second)])
         stored = conn.execute("SELECT description, content_fingerprint FROM jobs").fetchone()
         self.assertEqual(stored["content_fingerprint"], _reference_fingerprint_text(stored["description"]))
 
     def test_a_blank_stored_fingerprint_is_recomputed(self):
         conn = self.open_db()
         text = body(random.Random(3), 120)
-        pipeline.upsert_jobs(conn, "greenhouse:acme", "Acme", [self.record(text)])
+        store.upsert_jobs(conn, "greenhouse:acme", "Acme", [self.record(text)])
         conn.execute("UPDATE jobs SET content_fingerprint=''")
-        pipeline.upsert_jobs(conn, "greenhouse:acme", "Acme", [self.record(text)])
+        store.upsert_jobs(conn, "greenhouse:acme", "Acme", [self.record(text)])
         self.assertEqual(
             conn.execute("SELECT content_fingerprint FROM jobs").fetchone()[0],
             _reference_fingerprint_text(text),
@@ -765,8 +765,8 @@ class FingerprintReuseTests(TempDbCase):
         # A thin incoming description keeps the stored (richer) one, so the stored fingerprint stays right.
         conn = self.open_db()
         text = body(random.Random(4), 150)
-        pipeline.upsert_jobs(conn, "greenhouse:acme", "Acme", [self.record(text)])
-        pipeline.upsert_jobs(conn, "greenhouse:acme", "Acme", [self.record("short")])
+        store.upsert_jobs(conn, "greenhouse:acme", "Acme", [self.record(text)])
+        store.upsert_jobs(conn, "greenhouse:acme", "Acme", [self.record("short")])
         stored = conn.execute("SELECT description, content_fingerprint FROM jobs").fetchone()
         self.assertEqual(stored["description"], text)
         self.assertEqual(stored["content_fingerprint"], _reference_fingerprint_text(text))

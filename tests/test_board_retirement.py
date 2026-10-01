@@ -17,7 +17,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pipeline
-from pipeline_core import paths, sources
+from pipeline_core import paths, sources, store
 
 SOURCE = {"kind": "greenhouse", "company": "Acme", "token": "acme"}
 KEY = "greenhouse:acme"
@@ -53,7 +53,7 @@ class BoardRetirementTests(unittest.TestCase):
         patcher = unittest.mock.patch.object(paths, "DB_PATH", Path(tmp.name) / "pipeline.db")
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.conn = pipeline.connect()
+        self.conn = store.connect()
         self.addCleanup(self.conn.close)
 
     def fetch(self, body, seen: datetime = NOW) -> sources.Listing:
@@ -61,7 +61,7 @@ class BoardRetirementTests(unittest.TestCase):
         with unittest.mock.patch.object(sources, "request_json", return_value=body):
             records = sources.greenhouse_jobs(SOURCE, ["intern"])
         with contextlib.redirect_stdout(io.StringIO()):
-            pipeline.upsert_jobs(self.conn, KEY, "Acme", records, iso(seen))
+            store.upsert_jobs(self.conn, KEY, "Acme", records, iso(seen))
         self.conn.execute(
             "INSERT INTO fetch_runs(source_key, started_at, finished_at, outcome, fetched_count, listed_count) "
             "VALUES (?, ?, ?, 'success', ?, ?)",
@@ -134,7 +134,7 @@ class BoardRetirementTests(unittest.TestCase):
         # CSV, email and agent imports vouch for their whole batch.
         self.fetch({"jobs": [posting(1)]})
         with contextlib.redirect_stdout(io.StringIO()):
-            pipeline.upsert_jobs(self.conn, KEY, "Acme", [], iso(NOW))
+            store.upsert_jobs(self.conn, KEY, "Acme", [], iso(NOW))
         self.assertEqual(self.active(), set())
 
     def test_fetch_all_records_how_many_postings_the_board_listed(self):

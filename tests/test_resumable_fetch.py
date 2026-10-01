@@ -18,7 +18,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pipeline
-from pipeline_core import http, paths, sources
+from pipeline_core import http, paths, sources, store
 
 SOURCES = {
     "discovery_title_terms": ["intern"],
@@ -85,7 +85,7 @@ class ResumeFetchTests(unittest.TestCase):
         patcher = unittest.mock.patch.object(paths, "DB_PATH", Path(temp.name) / "pipeline.db")
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.conn = pipeline.connect()
+        self.conn = store.connect()
         self.addCleanup(self.conn.close)
 
     def fetch(self, behaviour, resume_since=None):

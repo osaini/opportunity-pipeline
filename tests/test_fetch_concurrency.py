@@ -25,7 +25,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pipeline
-from pipeline_core import sources as core_sources, http, paths
+from pipeline_core import sources as core_sources, http, paths, store
 
 try:
     import realdata_guard
@@ -96,7 +96,7 @@ class FetchConcurrencyTests(unittest.TestCase):
         patcher = unittest.mock.patch.object(paths, "DB_PATH", Path(temp.name) / "pipeline.db")
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.conn = pipeline.connect()
+        self.conn = store.connect()
         self.addCleanup(self.conn.close)
         # Real sleeps would make these tests slow and flaky; the limiter's
         # behaviour is covered separately.
@@ -220,7 +220,7 @@ class FetchConcurrencyTests(unittest.TestCase):
     # --- isolation ----------------------------------------------------------
 
     def test_a_database_failure_in_one_source_does_not_abandon_the_others(self):
-        real_upsert = pipeline.upsert_jobs
+        real_upsert = store.upsert_jobs
 
         def flaky_upsert(conn, source_key, source_name, records, seen=None, **kwargs):
             if source_key == "greenhouse:g3":
@@ -263,7 +263,7 @@ class FetchConcurrencyTests(unittest.TestCase):
     def test_a_partial_batch_is_rolled_back_rather_than_committed(self):
         """A source that writes some rows and then fails must leave none."""
 
-        real_upsert = pipeline.upsert_jobs
+        real_upsert = store.upsert_jobs
 
         def half_written(conn, source_key, source_name, records, seen=None, **kwargs):
             real_upsert(conn, source_key, source_name, records, seen, **kwargs)
@@ -306,7 +306,7 @@ class FetchConcurrencyTests(unittest.TestCase):
         # same string whether it is read once or eight times. A clock that
         # advances on every read makes "read once per cycle" observable.
         counter = iter(range(1, 10_000))
-        real_upsert = pipeline.upsert_jobs
+        real_upsert = store.upsert_jobs
         stamps: list[str] = []
 
         def recording_upsert(conn, source_key, source_name, records, seen=None, **kwargs):
