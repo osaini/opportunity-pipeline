@@ -296,3 +296,23 @@ sidepanelTests.finding_candidates_again_drops_the_scan_of_the_application_chosen
   assert.deepEqual(panel.confirmRequests().map((item) => item.path), [], `confirm-submitted must not be sent (it named ${sessionA})`);
   assert.equal(panel.$("review-form").hidden, true, "app-a's scan is not left on screen under a new list of candidates");
 };
+
+sidepanelTests.a_page_change_while_a_fill_syncs_still_records_the_fill_and_keeps_the_status = async () => {
+  // Submitting usually navigates away within milliseconds, so the page can change while the fill is still being saved.
+  const panel = await loadSidepanel({ applications });
+  await panel.findApplications();
+  await panel.chooseApplication("app-a");
+  await panel.scan();
+  panel.holdNextDigest();
+  panel.$("review-form").dispatch("submit", { preventDefault() {} });
+  await settle();
+  await panel.navigate("https://jobs.example.com/apply/1/thanks");
+  panel.releaseDigest();
+  await settle();
+  await settle();
+
+  const filled = panel.requests.filter((item) => item.method === "PUT" && item.path.includes("/steps/") && item.body?.status === "filled");
+  assert.equal(filled.length, 1, "the fill that finished after the page changed is still recorded");
+  assert.equal(filled[0].body.page_url, "https://jobs.example.com/apply/1", "against the page it was filled on");
+  assert.match(panel.$("status").textContent, /The page changed/, "the status still names what Mark as submitted confirms");
+};

@@ -325,26 +325,30 @@
       manual: fields.filter((item) => item.requires_review || !fieldValue(item)).length,
       required_unresolved: fields.filter((item) => item.required && !outcomes.get(item.key)?.filled).length
     };
-    // The student may choose another application while this sync is in flight; it finishes for the one it started on.
+    // The student may choose another application, or the page may change (Submit usually navigates), while this sync is in
+    // flight; it finishes for the application and page it started on.
     const applicationId = selectedApplicationId;
     const session = sessionId;
-    const sessionPayload = { application_id: applicationId, page_url: activePageUrl, ats_type: scanResult.ats_type, fields: safe, status: stepStatus === "filled" ? "reviewed" : "draft" };
-    const stepKey = await stableId("step", `${activePageUrl}|${scanResult.ats_type}`);
+    const pageUrl = activePageUrl;
+    const atsType = scanResult.ats_type;
+    const sequence = pageSequence;
+    const sessionPayload = { application_id: applicationId, page_url: pageUrl, ats_type: atsType, fields: safe, status: stepStatus === "filled" ? "reviewed" : "draft" };
+    const stepKey = await stableId("step", `${pageUrl}|${atsType}`);
     try {
       await api(`/api/v1/extension/sessions/${encodeURIComponent(session)}`, { method: "PUT", body: JSON.stringify(sessionPayload) });
       await api(`/api/v1/extension/sessions/${encodeURIComponent(session)}/steps/${encodeURIComponent(stepKey)}`, {
-        method: "PUT", body: JSON.stringify({ page_url: activePageUrl, ats_type: scanResult.ats_type, fields: safe, summary, status: stepStatus })
+        method: "PUT", body: JSON.stringify({ page_url: pageUrl, ats_type: atsType, fields: safe, summary, status: stepStatus })
       });
       await flushPendingMetadata();
     } catch (error) {
       const auth = await storedAuth();
       if (error.retryable || error instanceof TypeError) {
-        const pending = [...auth.pendingMetadata, { session_id: session, step_key: stepKey, session: sessionPayload, step: { page_url: activePageUrl, ats_type: scanResult.ats_type, fields: safe, summary, status: stepStatus } }].slice(-20);
+        const pending = [...auth.pendingMetadata, { session_id: session, step_key: stepKey, session: sessionPayload, step: { page_url: pageUrl, ats_type: atsType, fields: safe, summary, status: stepStatus } }].slice(-20);
         await chrome.storage.local.set({ pendingMetadata: pending });
       }
       throw error;
     } finally {
-      if (selectedApplicationId === applicationId) {
+      if (selectedApplicationId === applicationId && sequence === pageSequence) {
         $("progress").hidden = false;
         $("progress-copy").textContent = `${summary.filled} filled · ${summary.failed} failed · ${summary.manual} manual · ${summary.required_unresolved} required unresolved`;
       }
@@ -409,8 +413,12 @@
     event.preventDefault();
     const checked = new Set([...fieldsHost.querySelectorAll("input:checked")].map((item) => item.dataset.key));
     const reviewed = scanResult.fields.map((field) => ({ ...field, approved: checked.has(field.key) }));
+    const applicationId = selectedApplicationId;
+    const sequence = pageSequence;
     const result = await send({ type: "FILL_REVIEWED_FIELDS", fields: reviewed });
     await syncStep(reviewed, result, "filled");
+    // A page change meanwhile already said what Mark as submitted confirms; leave that line in place.
+    if (selectedApplicationId !== applicationId || sequence !== pageSequence) return;
     const count = result.results.filter((item) => item.filled).length;
     status.textContent = `${count} reviewed fields filled. Verify the page; advance and submit manually.`;
   }
