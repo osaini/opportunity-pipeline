@@ -512,6 +512,98 @@ class DeferredDedupeTests(TempDbCase):
             pipeline.fetch_all(conn, config, max_workers=1, max_per_host=1)
         self.assertEqual(links(conn), before)
 
+    def run_fetch_ex(self, conn, batches, *, fetch_fails=(), resume_since=None):
+        """Like run_fetch, but returns (result, stderr) and can fail chosen sources' fetches."""
+        config = {
+            "discovery_title_terms": ["intern"],
+            "ats_sources": [
+                {"kind": "greenhouse", "company": key.split(":")[1], "token": key.split(":")[1]}
+                for key in batches
+            ],
+        }
+
+        def fetcher(source, _terms):
+            key = f"greenhouse:{source['token']}"
+            if key in fetch_fails:
+                raise RuntimeError("HTTP Error 404")
+            return list(batches[key])
+
+        stderr = io.StringIO()
+        with unittest.mock.patch.dict(pipeline._SOURCE_FETCHERS, {"greenhouse": fetcher}),                 unittest.mock.patch.object(pipeline, "_HOST_LIMITER", pipeline._HostRateLimiter(0.0)),                 unittest.mock.patch("sys.stdout", io.StringIO()),                 unittest.mock.patch("sys.stderr", stderr):
+            result = pipeline.fetch_all(
+                conn, config, resume_since=resume_since, max_workers=1, max_per_host=1
+            )
+        return result, stderr.getvalue()
+
+    def test_failing_sources_mid_run_leave_what_a_per_source_dedupe_would(self):
+        """One source's fetch fails, another's upsert fails after writing rows (rolled back)."""
+        batches = per_source_postings(4)
+        keys = list(batches)
+        fetch_fail, upsert_fail = keys[2], keys[5]
+        old, new = self.open_db("old.db"), self.open_db("new.db")
+        for key, records in batches.items():  # the old behaviour: a failed source stores nothing
+            if key not in (fetch_fail, upsert_fail):
+                pipeline.upsert_jobs(old, key, key, records, "2026-09-01T00:00:00+00:00")
+                old.commit()
+        real = pipeline.upsert_jobs
+
+        def failing_upsert(conn, source_key, *args, **kwargs):
+            written = real(conn, source_key, *args, **kwargs)
+            if source_key == upsert_fail:
+                raise RuntimeError("boom after writing")
+            return written
+
+        with unittest.mock.patch.object(pipeline, "upsert_jobs", failing_upsert):
+            _result, stderr = self.run_fetch_ex(new, batches, fetch_fails=(fetch_fail,))
+        self.assertIn("boom after writing", stderr)
+        outcomes = dict(new.execute("SELECT source_key, outcome FROM fetch_runs").fetchall())
+        self.assertEqual(outcomes[fetch_fail], "error")
+        self.assertEqual(outcomes[upsert_fail], "error")
+        self.assertEqual(
+            [row[:-1] for row in state_digest(old)], [row[:-1] for row in state_digest(new)]
+        )
+        self.assertEqual(links(old), links(new))
+
+    def test_a_failure_in_the_final_link_pass_is_tolerated_and_the_next_pass_repairs_it(self):
+        batches = per_source_postings(2)
+        eager, conn = self.open_db("eager.db"), self.open_db("deferred.db")
+        for key, records in batches.items():
+            pipeline.upsert_jobs(eager, key, key, records, "2026-09-01T00:00:00+00:00")
+            eager.commit()
+        with unittest.mock.patch.object(
+            pipeline, "deduplicate", side_effect=sqlite3.OperationalError("database is locked")
+        ):
+            result, stderr = self.run_fetch_ex(conn, batches)  # must not raise
+        self.assertEqual(result, 0)
+        self.assertIn("database is locked", stderr)
+        outcomes = {row[0] for row in conn.execute("SELECT outcome FROM fetch_runs")}
+        self.assertEqual(outcomes, {"success"})
+        self.assertEqual(
+            conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0],
+            eager.execute("SELECT COUNT(*) FROM jobs").fetchone()[0],
+        )
+        self.assertFalse(any(links(conn).values()))
+        pipeline.deduplicate(conn)  # what import_manual does next in `run`
+        conn.commit()
+        self.assertEqual(links(eager), links(conn))
+
+    def test_a_resumed_fetch_links_rows_an_interrupted_run_left_unlinked(self):
+        batches = per_source_postings(3)
+        eager, conn = self.open_db("eager.db"), self.open_db("resumed.db")
+        for key, records in batches.items():
+            pipeline.upsert_jobs(eager, key, key, records, "2026-09-01T00:00:00+00:00")
+            eager.commit()
+        # The earlier run landed every source, then died before the link pass.
+        with unittest.mock.patch.object(
+            pipeline, "deduplicate", side_effect=sqlite3.OperationalError("interrupted")
+        ):
+            self.run_fetch_ex(conn, batches)
+        self.assertFalse(any(links(conn).values()))
+        # The retry has nothing left to fetch, yet must still finish the links.
+        self.run_fetch_ex(conn, batches, resume_since="2000-01-01T00:00:00+00:00")
+        self.assertEqual(links(eager), links(conn))
+        self.assertTrue(any(links(conn).values()))
+
     def test_import_discovered_matches_per_channel_dedupe_and_runs_it_once(self):
         payload = json.loads((FIXTURES / "discovered_jobs_sample.json").read_text(encoding="utf-8"))
         records = payload["postings"] if isinstance(payload, dict) and "postings" in payload else payload

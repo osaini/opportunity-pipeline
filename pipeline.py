@@ -2696,14 +2696,24 @@ def fetch_all(
                     record_outcome(run_id, "success", count=count, listed=getattr(records, "listed", None))
                     print(f"  Done {label}: {count} candidate postings saved", flush=True)
 
-        # Only when some source landed rows: a run where every source failed
-        # leaves the table as it found it, as it always did.
-        if upserted_any:
+        # Only when some source landed rows, or a resumed run skipped sources an
+        # earlier (possibly interrupted) run landed without linking: a run where
+        # every source failed and nothing was resumed leaves the table as it
+        # found it, as it always did.
+        if upserted_any or done:
             try:
                 deduplicate(conn)
                 conn.commit()
             except sqlite3.Error as exc:
-                raise FatalDatabaseError(f"cannot link duplicate postings: {exc}") from exc
+                # Tolerated, as it was when this pass ran inside each source's
+                # upsert: report it and finish. The rows are already committed,
+                # and the next deduplicate (import_manual in `run`) repairs the
+                # links, since the pass is a pure function of the table.
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+                print(f"  ERROR linking duplicate postings: {exc}", file=sys.stderr, flush=True)
     finally:
         # A fatal database error must not wait on eleven other sources first.
         # Queued work is dropped immediately; anything already inside a socket
