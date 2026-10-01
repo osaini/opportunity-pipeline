@@ -9,6 +9,7 @@ import vm from "node:vm";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadContentScript } from "./dom_stub.mjs";
+import { sidepanelTests } from "./sidepanel_tests.mjs";
 
 const require = createRequire(import.meta.url);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -1326,10 +1327,13 @@ tests.a_follow_up_of_a_never_storable_question_offers_no_save_and_an_independent
   assert.equal(fieldById(independent, "question_2").never_storable, false, "an independent question after one is still offered for saving");
 };
 
+// The side panel tests are async: they click real buttons and wait for the requests they send.
+Object.assign(tests, sidepanelTests);
+
 let failed = 0;
 for (const [name, fn] of Object.entries(tests)) {
   try {
-    fn();
+    await fn();
     console.log(`ok - ${name}`);
   } catch (error) {
     failed += 1;

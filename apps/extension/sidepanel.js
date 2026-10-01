@@ -153,10 +153,34 @@
       : "Choose the application that belongs to this page.";
   }
 
+  // Everything tied to a scan: the scanned fields, the session that scan created, what the panel shows
+  // of it, and the "I submitted it" confirmation. A scan belongs to one application, so choosing another
+  // (or refreshing this one) starts over; Mark as submitted then needs a new scan and a new confirmation.
+  function clearScan() {
+    scanResult = null;
+    sessionId = "";
+    fieldsHost.replaceChildren();
+    reviewForm.hidden = true;
+    documentsHost.hidden = true;
+    $("progress").hidden = true;
+    $("progress-copy").textContent = "";
+    $("download-fallback").hidden = true;
+    if (attachmentUrl) URL.revokeObjectURL(attachmentUrl);
+    attachmentUrl = "";
+    $("submitted-confirm").checked = false;
+    $("mark-submitted").disabled = true;
+  }
+
   async function selectContext(applicationId) {
     selectedApplicationId = applicationId;
+    applyContext = null;
+    clearScan();
+    contextHost.hidden = true;
     const response = await api(`/api/v1/extension/apply-context?application_id=${encodeURIComponent(applicationId)}`);
-    applyContext = await response.json();
+    const loaded = await response.json();
+    // The student chose another application while this one was loading; its answer is not theirs to see.
+    if (selectedApplicationId !== applicationId) return;
+    applyContext = loaded;
     const app = applyContext.application;
     const match = applyContext.match;
     $("match-card").replaceChildren(
@@ -165,8 +189,6 @@
       node("small", (match.explanation || []).map((part) => typeof part === "string" ? part : JSON.stringify(part)).join(" · ") || "No score explanation available.")
     );
     contextHost.hidden = false;
-    reviewForm.hidden = true;
-    documentsHost.hidden = true;
     status.textContent = "Context loaded from confirmed local facts. Review it, then scan this step.";
   }
 
@@ -374,7 +396,7 @@
   $("pair").addEventListener("click", () => pairDevice().catch((error) => { status.textContent = error.message; }));
   $("disconnect").addEventListener("click", async () => {
     await chrome.storage.local.remove(["deviceToken", "deviceId", "pendingMetadata"]);
-    selectedApplicationId = ""; applyContext = null; scanResult = null;
+    selectedApplicationId = ""; applyContext = null; clearScan();
     renderAuth(await storedAuth()); status.textContent = "Device credential removed from this browser.";
   });
   $("find-context").addEventListener("click", () => findContext().catch((error) => { status.textContent = error.message; }));
