@@ -127,7 +127,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
     # dependencies, middleware and asset handling, the request models, and one router module per feature.
     5: (
         _app("api launch worker daily system_status migrate ops_cli outreach_cli pipeline_mailbox setup")
-        | _mods("opportunity_app.web", ". app context dependencies middleware assets payloads")
+        | _mods("opportunity_app.web", ". app context dependencies errors middleware assets payloads")
         | _mods(
             "opportunity_app.web.models",
             ". account admin agent applications apply_agent automation captures connections dossier employer extension market "

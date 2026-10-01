@@ -24,6 +24,7 @@ from ...outreach_contacts import (
 from ...outreach_call_prep import auto_queue_call_prep
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection
+from ..errors import outreach_not_found
 from ..models.outreach import OutreachManualContactRequest, OutreachReplyRequest
 
 
@@ -39,7 +40,7 @@ def confirm_research_for_outreach(
     try:
         return confirm_outreach_research(conn, target_id, user_id=user_id)
     except OutreachNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        raise outreach_not_found() from exc
 
 
 @router.get("/api/v1/outreach/{target_id}/contacts")
@@ -51,7 +52,7 @@ def outreach_contacts(
     try:
         return {"candidates": list_outreach_candidates(conn, target_id, user_id=user_id)}
     except OutreachNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        raise outreach_not_found() from exc
 
 
 @router.post("/api/v1/outreach/{target_id}/contacts", status_code=status.HTTP_201_CREATED)
@@ -64,7 +65,7 @@ def add_outreach_contact(
     try:
         return add_manual_outreach_contact(conn, target_id, user_id=user_id, **payload.model_dump())
     except OutreachNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        raise outreach_not_found() from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
@@ -87,7 +88,7 @@ def find_contacts_for_outreach(
                 renderer=stack.enter_context(renderer) if renderer is not None else None,
             )
     except OutreachNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        raise outreach_not_found() from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
@@ -127,6 +128,6 @@ def log_outreach_reply_route(
             logged["target"] = get_outreach_target(conn, target_id, user_id=user_id, include_events=True)
         return logged
     except OutreachNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        raise outreach_not_found() from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc

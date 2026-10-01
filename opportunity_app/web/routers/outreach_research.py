@@ -15,6 +15,7 @@ from ...outreach_discovery import DiscoveryBusy
 from ...outreach_recontact import RecontactBusy, RecontactManager
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection
+from ..errors import outreach_not_found
 from ..models.outreach import OutreachDiscoveryRequest, RecontactApplyRequest
 from ..payloads import outreach_discovery_payload, outreach_recontact_payload
 
@@ -114,7 +115,7 @@ def call_prep_for_outreach(
     try:
         target = queue_call_prep(conn, target_id, user_id=user_id, replace=True, reason="You asked for new call prep")
     except OutreachNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        raise outreach_not_found() from exc
     except ReplyRequired as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except (NotReplied, ValueError) as exc:
@@ -146,7 +147,7 @@ def research_outreach_company(
     try:
         target = queue_company_research(conn, target_id, user_id=user_id, reason="You asked for research")
     except OutreachNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        raise outreach_not_found() from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
     ctx.services.call_prep_worker.wake()

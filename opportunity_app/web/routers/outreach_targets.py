@@ -36,6 +36,7 @@ from ...outreach_automation import settings as automation_settings
 from ...outreach_gmail import gmail_drafts_status
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection
+from ..errors import outreach_not_found
 from ..models.outreach import OutreachTargetRequest
 from ..payloads import outreach_discovery_payload, outreach_recontact_payload
 
@@ -154,7 +155,7 @@ def outreach_detail(
     try:
         return get_outreach_target(conn, target_id, user_id=user_id, include_events=True)
     except OutreachNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        raise outreach_not_found() from exc
 
 
 @detail_router.patch("/api/v1/outreach/{target_id}")
@@ -176,7 +177,7 @@ def update_outreach(
             updated = get_outreach_target(conn, target_id, user_id=user_id)
         return updated
     except OutreachNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        raise outreach_not_found() from exc
     # LocationConflictError subclasses ValueError, so this ordering is what
     # makes it a 409 rather than being swallowed as an invalid request.
     except LocationConflictError as exc:
@@ -196,5 +197,5 @@ def remove_outreach(
     except OutreachSetAsideError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if not deleted:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found")
+        raise outreach_not_found()
     return Response(status_code=status.HTTP_204_NO_CONTENT)

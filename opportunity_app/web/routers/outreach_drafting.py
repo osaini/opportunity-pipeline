@@ -16,6 +16,7 @@ from ...outreach_versions import (
 )
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection
+from ..errors import outreach_not_found
 from ..models.outreach import OutreachApprovalRequest, OutreachDraftRequest
 
 
@@ -38,7 +39,7 @@ def draft_outreach(
             comments=payload.comments,
         )
     except OutreachNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        raise outreach_not_found() from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -56,7 +57,7 @@ def outreach_draft_history(
     try:
         return {"items": outreach_draft_versions(conn, target_id, user_id=user_id, kind=kind)}
     except OutreachNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        raise outreach_not_found() from exc
 
 
 @history_router.post("/api/v1/outreach/{target_id}/drafts/{version_id}/restore")
@@ -69,7 +70,7 @@ def restore_outreach_draft(
     try:
         return restore_outreach_draft_version(conn, target_id, version_id, user_id=user_id)
     except OutreachNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        raise outreach_not_found() from exc
     except DraftVersionNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That earlier draft was not found") from exc
 
@@ -87,7 +88,7 @@ def approve_outreach(
             acknowledge_warnings=payload.acknowledge_warnings,
         )
     except OutreachNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        raise outreach_not_found() from exc
     except DraftChangedError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:

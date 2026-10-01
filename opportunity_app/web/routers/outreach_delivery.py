@@ -30,6 +30,7 @@ from ...outreach_gmail import (
 )
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection
+from ..errors import outreach_not_found, send_needs_check
 from ..models.outreach import (
     OutreachBounceRequest,
     OutreachContactFormRequest,
@@ -60,7 +61,7 @@ def gmail_draft_for_outreach(
             client_factory=ctx.services.gmail_client_factory,
         )
     except OutreachNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        raise outreach_not_found() from exc
     except (GmailAuthError, SendConflictError) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:
@@ -89,12 +90,10 @@ def gmail_send_for_outreach(
         cancel_send(conn, target_id, user_id=user_id, kind=payload.kind, reason="You sent it now instead")
         return sent
     except OutreachNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        raise outreach_not_found() from exc
     except SendNeedsCheckError as exc:
         # 428: the same request succeeds once it carries the named check.
-        raise HTTPException(
-            status_code=status.HTTP_428_PRECONDITION_REQUIRED, detail={"msg": str(exc), "check": exc.check},
-        ) from exc
+        raise send_needs_check(exc) from exc
     except (GmailAuthError, DraftChangedError, SendConflictError) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:
@@ -121,11 +120,9 @@ def form_submit_for_outreach(
             fingerprint=payload.fingerprint, retry_unconfirmed=payload.retry_unconfirmed, in_browser=payload.in_browser,
         )
     except OutreachNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        raise outreach_not_found() from exc
     except SendNeedsCheckError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_428_PRECONDITION_REQUIRED, detail={"msg": str(exc), "check": exc.check},
-        ) from exc
+        raise send_needs_check(exc) from exc
     except (DraftChangedError, SendConflictError) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:
@@ -143,7 +140,7 @@ def set_outreach_contact_form(
     try:
         return set_contact_form(conn, target_id, payload.page_url, user_id=user_id)
     except OutreachNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        raise outreach_not_found() from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
@@ -159,7 +156,7 @@ def mark_outreach_bounced(
     try:
         return bounce_from_text(conn, target_id, payload.text, user_id=user_id)
     except OutreachNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        raise outreach_not_found() from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
@@ -230,7 +227,7 @@ def dismiss_outreach_reply_suggestion(
     try:
         return dismiss_reply_suggestion(conn, target_id, user_id=user_id)
     except OutreachNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        raise outreach_not_found() from exc
 
 
 @router.post("/api/v1/outreach/{target_id}/schedule")
@@ -245,7 +242,7 @@ def schedule_outreach_send(
     try:
         scheduled = schedule_send(conn, target_id, user_id=user_id, kind=payload.kind, fingerprint=payload.fingerprint)
     except OutreachNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        raise outreach_not_found() from exc
     except (DraftChangedError, SendConflictError) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:
@@ -266,7 +263,7 @@ def cancel_outreach_send(
         # False: nothing was left to stop, for example it had already gone out.
         return {**get_outreach_target(conn, target_id, user_id=user_id), "cancelled": cancelled}
     except OutreachNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        raise outreach_not_found() from exc
 
 
 @router.delete("/api/v1/outreach/{target_id}/thank-you")
@@ -280,7 +277,7 @@ def cancel_outreach_thank_you(
         cancelled = outreach_thank_you.cancel(conn, target_id, user_id=user_id)
         return {**get_outreach_target(conn, target_id, user_id=user_id), "cancelled": cancelled}
     except OutreachNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        raise outreach_not_found() from exc
 
 
 @router.post("/api/v1/outreach/{target_id}/thank-you/edit")
@@ -294,7 +291,7 @@ def edit_outreach_thank_you(
     try:
         draft = outreach_thank_you.edit_in_gmail(conn, target_id, user_id=user_id, client_factory=ctx.services.gmail_client_factory)
     except OutreachNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        raise outreach_not_found() from exc
     except (ThankYouChanged, SendConflictError, GmailAuthError) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except (RuntimeError, httpx.HTTPError) as exc:
@@ -318,11 +315,9 @@ def send_outreach_thank_you(
             sent_folder_check=payload.sent_folder_check, client_factory=ctx.services.gmail_client_factory,
         )
     except OutreachNotFoundError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Outreach target not found") from exc
+        raise outreach_not_found() from exc
     except SendNeedsCheckError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_428_PRECONDITION_REQUIRED, detail={"msg": str(exc), "check": exc.check},
-        ) from exc
+        raise send_needs_check(exc) from exc
     except (ThankYouChanged, SendConflictError, GmailAuthError) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:
