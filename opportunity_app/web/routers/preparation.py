@@ -8,7 +8,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from fastapi.responses import FileResponse
 
-from ...document_artifacts import delete_document_artifact, ensure_document_artifact
+from ...document_artifacts import delete_document, delete_document_artifact, ensure_document_artifact
 from ...preparation import (
     MAX_MOCK_AUDIO_BYTES,
     PreparationNotFoundError,
@@ -141,15 +141,9 @@ def delete_preparation_document(
     ctx: AppContext = Depends(get_ctx),
 ) -> Response:
     try:
-        document_record(conn, document_id, user_id=user_id)
+        delete_document(conn, document_id, ctx.config.resume_storage, user_id=user_id)
     except PreparationNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found") from exc
-    delete_document_artifact(conn, document_id, ctx.config.resume_storage, user_id=user_id)
-    with conn:
-        conn.execute(
-            "DELETE FROM generated_documents WHERE id=? AND user_id=?",
-            (document_id, user_id),
-        )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

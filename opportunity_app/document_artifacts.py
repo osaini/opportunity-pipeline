@@ -184,3 +184,14 @@ def delete_document_artifact(
         )
     if path.parent == root:
         path.unlink(missing_ok=True)
+
+
+def delete_document(conn: sqlite3.Connection, document_id: str, storage_root: Path, *, user_id: str) -> None:
+    """Delete a generated document and its stored artifact. Raises PreparationNotFoundError when it is not the caller's."""
+    document_record(conn, document_id, user_id=user_id)
+    delete_document_artifact(conn, document_id, storage_root, user_id=user_id)
+    with conn:
+        conn.execute(
+            "DELETE FROM generated_documents WHERE id=? AND user_id=?",
+            (document_id, user_id),
+        )
