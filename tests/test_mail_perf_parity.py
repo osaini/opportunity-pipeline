@@ -360,5 +360,48 @@ class RefreshSuggestionsParityTests(unittest.TestCase):
                 self.assertEqual([row for row in employer_domain_rows(conn) if row[2] == "knownlabs.com"], before)
 
 
+MIGRATION_0048 = Path(__file__).resolve().parent.parent / "migrations" / "0048_mail_hot_path_indexes.sql"
+
+
+class MailIndexMigrationTests(unittest.TestCase):
+    """0048 adds two indexes that queries use, and changes no row or result."""
+
+    def plan(self, conn, sql, params):
+        return " | ".join(row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + sql, params).fetchall())
+
+    def test_the_indexes_exist_and_the_hot_queries_use_them(self):
+        conn, _ids = database(self, 30, 1, datetime.now(timezone.utc))
+        self.assertIn("0048_mail_hot_path_indexes.sql", {row[0] for row in conn.execute("SELECT name FROM schema_migrations")})
+        indexes = {row[0]: row[1] for row in conn.execute("SELECT name, sql FROM sqlite_master WHERE type='index'")}
+        self.assertIn("(user_id, event_type, created_at)", " ".join(indexes["idx_outreach_events_user_type"].split()))
+        self.assertIn("(company_sort_key)", indexes["idx_opportunities_company_sort_key"])
+        reply_events = self.plan(
+            conn, "SELECT target_id, detail, created_at FROM outreach_events WHERE user_id=? AND event_type=?", (USER, "gmail_sent"))
+        self.assertIn("idx_outreach_events_user_type (user_id=? AND event_type=?)", reply_events)
+        draft_events = self.plan(
+            conn,
+            "SELECT e.target_id, e.detail, e.created_at FROM outreach_events e JOIN outreach_targets t ON t.id=e.target_id AND t.user_id=e.user_id "
+            "WHERE e.user_id=? AND e.event_type=? AND e.created_at>=? ORDER BY e.created_at", (USER, "gmail_draft_created", "2026-01-01"))
+        self.assertIn("idx_outreach_events_user_type (user_id=? AND event_type=? AND created_at>?)", draft_events)
+        self.assertIn("idx_opportunities_company_sort_key (company_sort_key=?)",
+                      self.plan(conn, "SELECT id FROM opportunities WHERE company_sort_key = ?", ("acme",)))
+
+    def test_running_it_again_changes_nothing(self):
+        conn, _ids = database(self, 30, 2, datetime.now(timezone.utc))
+        counts = [conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in ("outreach_events", "outreach_targets", "opportunities")]
+        before = conn.execute("SELECT name, sql FROM sqlite_master ORDER BY name").fetchall()
+        conn.executescript(MIGRATION_0048.read_text(encoding="utf-8"))
+        self.assertEqual(conn.execute("SELECT name, sql FROM sqlite_master ORDER BY name").fetchall(), before)
+        self.assertEqual(counts, [conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in ("outreach_events", "outreach_targets", "opportunities")])
+
+    def test_the_pending_drafts_are_the_same_with_and_without_the_indexes(self):
+        now = datetime.now(timezone.utc)
+        conn, _ids = database(self, 50, 3, now)
+        with_indexes = sends._pending(conn, USER, now)
+        conn.execute("DROP INDEX idx_outreach_events_user_type")
+        conn.execute("DROP INDEX idx_opportunities_company_sort_key")
+        self.assertEqual(sends._pending(conn, USER, now), with_indexes)
+
+
 if __name__ == "__main__":
     unittest.main()
