@@ -97,7 +97,7 @@ LAYER_NAMES = {
 LAYER_MEMBERS: dict[int, frozenset[str]] = {
     # L0 stdlib leaves. `opportunity_app` and `pipeline_core` are the package __init__ modules (constants and re-exports).
     0: (
-        _app(". timestamps user_time database json_values mail_message opportunity_metadata storage_paths contact_names daily_lock")
+        _app(". timestamps user_time database json_values mail_message opportunity_metadata storage_paths contact_names daily_lock monitored_classifier")
         | _core(". env identity visibility regions read_model")
         | frozenset({"pipeline"})
     ),
@@ -121,7 +121,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
         "outreach_thank_you outreach_automation outreach_recontact outreach_review outreach_call_prep "
         "outreach_call_questions outreach_forms outreach_discovery outreach_research outreach_drafting "
         "outreach_interviewer outreach_email_search outreach_locate outreach_profile outreach_settings "
-        "refresh desktop_notify operations student_agent urgent"
+        "refresh desktop_notify operations student_agent urgent monitored_events"
     ),
     # L5 entry points.
     5: _app("api launch worker daily system_status migrate ops_cli outreach_cli pipeline_mailbox setup"),
@@ -136,7 +136,6 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
     (_P + "automation", _P + "auto_triage", "requirement: the ledger's setup check for the triage handler, which imports the ledger"),
     (_P + "automation", _P + "internal_automation", "automatic_archive: the ledger calls its own archive handler when a stage moves"),
     (_P + "automation", _P + "outreach_drafting", "save_draft_tx: the ledger's follow-up handler saves the generated draft through the drafting module"),
-    (_P + "connections", _P + "application_inbox", "decide_event: deciding a monitored mail event is delegated to the inbox workflow"),
     (_P + "outreach", _P + "outreach_thank_you", "on_not_interested and on_new_reply: outreach records notify the thank-you workflow after a decline or reply"),
     (_P + "outreach_contacts", _P + "outreach_forms", "record_contact_form: contact search records the contact form the form workflow found"),
     (_P + "outreach_contacts", _P + "outreach_profile", "rendered_pages and record_site_location: contact search re-reads pages in a browser and records the site location"),

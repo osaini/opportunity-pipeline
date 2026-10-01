@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR, automation, outreach_inbox
 from opportunity_app.api import create_app
-from opportunity_app.connections import classify_monitored_message
+from opportunity_app.monitored_classifier import classify_monitored_message
 from opportunity_app.inbox_classifiers import (
     MIN_CONFIDENCE,
     PAUSED_REASON,

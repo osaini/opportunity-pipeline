@@ -109,6 +109,8 @@ LEAVES: dict[str, tuple[set[str], set[str]]] = {
     "opportunity_app/json_values.py": (set(), set()),
     "opportunity_app/profile_store.py": (dotted("json_values"), set()),
     "opportunity_app/user_time.py": (set(), set()),
+    # Keyword rules over an application email: pure text, split out of connections so the inbox workflow can use them.
+    "opportunity_app/monitored_classifier.py": (set(), set()),
     # Workstream I: identity and the legacy boundary
     "pipeline_core/identity.py": (set(), set()),
     "pipeline_core/regions.py": ({"pipeline_core.identity"}, set()),

@@ -124,7 +124,6 @@ from .connections import (
     apply_channel_opt_out,
     confirm_phone,
     connect_provider,
-    decide_monitored_event,
     disconnect_provider,
     ensure_preferences,
     ingest_message,
@@ -134,6 +133,7 @@ from .connections import (
     request_phone_verification,
     update_preferences,
 )
+from .monitored_events import decide_monitored_event
 from .profile import get_profile, is_personalized, update_profile
 from .profile_store import read_stored_profile
 from .dossier import (
