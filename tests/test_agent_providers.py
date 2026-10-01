@@ -1,6 +1,11 @@
 import json
+import os
+import subprocess
+import sys
+import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 from opportunity_app.agent_providers import (
     AnthropicProvider,
@@ -148,7 +153,8 @@ class CliAgentProviderTests(unittest.TestCase):
             max_output_tokens=50,
         )
         self.assertEqual(reply.text, "done")
-        self.assertIn("lookup -> {\"result\": \"ok\"}", calls[0][2])
+        # The prompt travels over stdin: the runner receives [*command, stdin].
+        self.assertIn("lookup -> {\"result\": \"ok\"}", calls[0][-1])
 
     def test_cli_failure_raises_runtime_error(self):
         provider, _ = self._provider("", returncode=1)
@@ -171,6 +177,66 @@ class CliAgentProviderTests(unittest.TestCase):
         reply = provider.create(instructions="t", messages=[{"role": "user", "content": "hi"}], tools=[], max_output_tokens=10)
         self.assertEqual(reply.text, "ok")
         self.assertEqual(calls[0][:3], ["codex", "exec", "--skip-git-repo-check"])
+
+
+# A stand-in for the CLI: reports the stdin it received, its working directory
+# and its argv size inside a JSON answer, writing UTF-8 bytes like the real CLIs.
+_FAKE_CLI = r"""
+import json, os, sys
+data = sys.stdin.buffer.read().decode("utf-8")
+answer = "stdin=%d cwd=%s argc=%d dash=— snow=☃ emoji=\U0001F600" % (len(data), os.getcwd(), len(sys.argv))
+sys.stdout.buffer.write(json.dumps({"answer": answer}, ensure_ascii=False).encode("utf-8"))
+"""
+
+SCRAPED = {"description": "SCRAPED “quote” & whoami | calc"}
+
+
+class CliAgentProviderSubprocessTests(unittest.TestCase):
+    """The chat path must be as sandboxed as complete_text: no scraped text on
+    argv, no project cwd, no default tools, UTF-8 decoding."""
+
+    def _run_chat(self, provider_id):
+        captured = []
+        real_run = subprocess.run
+
+        def fake_run(command, **kwargs):
+            captured.append((list(command), kwargs))
+            # Run the stand-in CLI with the exact kwargs the provider chose.
+            return real_run([sys.executable, "-c", _FAKE_CLI], **kwargs)
+
+        from opportunity_app.agent_providers import ProviderReply, ToolCall
+
+        provider = CliAgentProvider(provider_id, "subscription")
+        provider.binary = provider_id
+        prior = ProviderReply(text="", tool_calls=[ToolCall(id="c1", name="lookup", arguments={})], state=[{"role": "user", "content": "hi"}])
+        with mock.patch("opportunity_app.agent_providers.subprocess.run", fake_run):
+            reply = provider.continue_with(
+                prior, [(prior.tool_calls[0], SCRAPED)], instructions="Be careful.", tools=[], max_output_tokens=50,
+            )
+        return reply, captured
+
+    def test_claude_chat_sends_prompt_on_stdin_without_tools_in_a_temp_cwd(self):
+        _, captured = self._run_chat("claude-code")
+        command, kwargs = captured[0]
+        self.assertEqual(command, ["claude-code", "-p", "--output-format", "text", "--tools", "", "--strict-mcp-config"])
+        self.assertIn("SCRAPED", kwargs["input"])
+        self.assertIn("Be careful.", kwargs["input"])
+        self.assertEqual(kwargs["cwd"], tempfile.gettempdir())
+        self.assertEqual(kwargs["encoding"], "utf-8")
+        self.assertEqual(kwargs["errors"], "replace")
+
+    def test_codex_chat_sends_prompt_on_stdin_with_a_read_only_sandbox(self):
+        _, captured = self._run_chat("codex-cli")
+        command, kwargs = captured[0]
+        self.assertEqual(command, ["codex-cli", "exec", "--skip-git-repo-check", "--sandbox", "read-only", "-"])
+        self.assertIn("SCRAPED", kwargs["input"])
+        self.assertEqual(kwargs["cwd"], tempfile.gettempdir())
+        self.assertEqual(kwargs["encoding"], "utf-8")
+
+    def test_chat_reply_with_non_ascii_text_is_decoded_as_utf8(self):
+        reply, _ = self._run_chat("claude-code")
+        self.assertIn("dash=— snow=☃ emoji=\U0001F600", reply.text)
+        self.assertIn("argc=1", reply.text)  # nothing but the interpreter's own argv
 
 
 if __name__ == "__main__":
