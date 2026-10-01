@@ -140,7 +140,8 @@ from .outreach_gmail import (
     thank_you_row,
 )
 from .outreach_schedule import _label, next_morning, recipient_zone
-from .timestamps import utc_now
+from .timestamps import parse_app_instant, utc_now
+from .user_time import at_wall_clock, to_local
 
 LOGGER = logging.getLogger(__name__)
 
@@ -199,21 +200,13 @@ _NOTED: set[tuple[str, str, str]] = set()
 _NOTED_LOCK = threading.Lock()
 
 
-def _parse(value: Any) -> datetime | None:
-    return automation._parse(value)
-
-
-def _local(moment: datetime, zone: Any) -> datetime:
-    return moment.astimezone(zone) if zone else moment.astimezone()
-
-
 def in_window(moment: datetime, zone: Any) -> bool:
     """Whether a thank-you may go at ``moment``: a weekday, 9:00 to before 17:00, in the recipient's zone.
 
     Checked when it is planned (plan_send_at) and again as it goes (outreach_schedule), since a retry, a
     wait on Gmail, a pause, a sleeping computer or a slow check can carry it past five.
     """
-    local = _local(moment, zone)
+    local = to_local(moment, zone)
     return local.weekday() < 5 and WORKDAY_START <= local.time() < WORKDAY_END
 
 
@@ -236,14 +229,14 @@ def plan_send_at(reply_received_at: datetime, zone: Any, key: str, now: datetime
     """
     received = reply_received_at.astimezone(timezone.utc)
     now = now.astimezone(timezone.utc)
-    local = _local(received, zone)
+    local = to_local(received, zone)
     if local.weekday() < 5 and local.time() < WORKDAY_END:
         delay = stable_delay(key)
         nine = datetime.combine(local.date(), WORKDAY_START)
-        nine = (nine.replace(tzinfo=zone) if zone else nine.astimezone()).astimezone(timezone.utc)
+        nine = at_wall_clock(nine, zone).astimezone(timezone.utc)
         candidate = max(received + delay, nine + delay)
         send_at = max(candidate, now + DETECTION_MARGIN)
-        there = _local(send_at, zone)
+        there = to_local(send_at, zone)
         if there.date() == local.date() and there.time() < WORKDAY_END:
             return send_at
     return next_morning(max(received, now), zone, seed or key)
@@ -251,7 +244,7 @@ def plan_send_at(reply_received_at: datetime, zone: Any, key: str, now: datetime
 
 def _when_words(send_at: datetime, zone: Any, basis: str) -> str:
     """"Tue 11:32 AM (their time)", as the activity feed says it."""
-    local = _local(send_at, zone)
+    local = to_local(send_at, zone)
     whose = "their time" if basis.startswith("their time") else "your time"
     return f"{local:%a} {f'{local:%I:%M %p}'.lstrip('0')} ({whose})"
 
@@ -528,7 +521,7 @@ def replies(conn: sqlite3.Connection, target_id: str, user_id: str) -> list[dict
         (target_id, user_id),
     ).fetchall():
         data = _data(row["detail_json"])
-        at = _parse(data.get("received_at")) or _parse(row["created_at"])
+        at = parse_app_instant(data.get("received_at")) or parse_app_instant(row["created_at"])
         if at is None:
             continue
         items.append({"id": row["id"], "text": row["detail"] or "", "data": data, "created_at": row["created_at"], "at": at})
@@ -549,7 +542,7 @@ def sent_since(conn: sqlite3.Connection, target_id: str, user_id: str, since: da
         "AND event_type IN (?, ?, ?, ?, ?, 'status')",
         (target_id, user_id, SENT_EVENT, THANK_YOU_SENT_EVENT, THANK_YOU_DRAFT_EVENT, FORM_SUBMITTED, FORM_UNCONFIRMED),
     ).fetchall():
-        at = _parse(row["created_at"])
+        at = parse_app_instant(row["created_at"])
         if at is None or at <= since:
             continue
         if row["event_type"] == "status" and row["to_status"] not in ("sent", "followed_up"):
@@ -561,7 +554,7 @@ def sent_since(conn: sqlite3.Connection, target_id: str, user_id: str, since: da
         "AND state IN ('sending', 'sent', 'unconfirmed', 'clicking')",
         (target_id, user_id, THANK_YOU_KIND),
     ).fetchall():
-        at = _parse(row["claimed_at"])
+        at = parse_app_instant(row["claimed_at"])
         if at is not None and at > since:
             return True
     return False
@@ -1125,7 +1118,7 @@ def thank_you_blockers(conn: sqlite3.Connection, target: dict[str, Any], reply: 
     if not matched or not ((data.get("thread_id") and str(data["thread_id"]) in threads) or (sender and sender in written_to)):
         failed.append("R1")
     # R2: found within a day of arriving.
-    detected, arrived = _parse(reply.get("created_at")), _parse(data.get("received_at"))
+    detected, arrived = parse_app_instant(reply.get("created_at")), parse_app_instant(data.get("received_at"))
     if detected is None or arrived is None or detected - arrived > DETECTION_LIMIT:
         failed.append("R2")
     unreadable = [*failed, "headers"]
@@ -1243,9 +1236,9 @@ def eligibility(conn: sqlite3.Connection, target: dict[str, Any], user_id: str) 
         return None, f"a suggestion of {str(suggestion['status']).replace('_', ' ')} is waiting for you"
     if target.get("possible_reply_count"):
         return None, "an email from them that may be a reply is waiting for you to check"
-    since = _parse(data.get("received_at")) or reply["at"]
+    since = parse_app_instant(data.get("received_at")) or reply["at"]
     # Only a decline that arrived while the switch was on: turning it on never thanks an old one.
-    switched_on = _parse(automation.on_since(conn, user_id, FEATURE))
+    switched_on = parse_app_instant(automation.on_since(conn, user_id, FEATURE))
     if switched_on is None or since < switched_on:
         return None, "their reply came before Send a thank-you when someone declines was turned on"
     if sent_since(conn, target["id"], user_id, since):
@@ -1335,7 +1328,7 @@ def plan(
     # Timed after the model call, which can take a while, so "at least ten minutes from now" still holds.
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     zone, basis = recipient_zone(conn, target, user_id=user_id)
-    received = _parse(data.get("received_at")) or reply["at"]
+    received = parse_app_instant(data.get("received_at")) or reply["at"]
     send_at = plan_send_at(received, zone, f"{target_id}:{data['gmail_id']}", now, seed=f"{target_id}:{THANK_YOU_KIND}")
     label = _label(send_at, zone, basis)
     subject = _subject(str(data.get("subject") or ""), target.get("email_subject") or "")
@@ -1645,11 +1638,11 @@ def problem_now(
     decline = next((item for item in found if item["data"].get("gmail_id") == thank_you["reply_gmail_id"]), None)
     if decline is None:
         return "cancelled", "The reply it answers is no longer on record"
-    planned = _parse(thank_you.get("created_at"))
+    planned = parse_app_instant(thank_you.get("created_at"))
     for item in found:
         if item is decline:
             continue
-        logged = _parse(item["created_at"])
+        logged = parse_app_instant(item["created_at"])
         if (item["at"], item["created_at"]) > (decline["at"], decline["created_at"]) or (
             planned is not None and logged is not None and logged > planned
         ):

@@ -27,6 +27,7 @@ from typing import Any, Callable
 
 from . import DEFAULT_LEGACY_DB, ROOT
 from .daily import STATE_PATH as DAILY_STATE_PATH, read_state as read_daily_state
+from .timestamps import parse_app_instant
 
 SOURCES_CONFIG = ROOT / "config" / "sources.json"
 
@@ -110,16 +111,6 @@ def _windows_tasks(names: dict[str, str]) -> dict[str, dict[str, Any]]:
     return found
 
 
-def _parse(stamp: str | None) -> datetime | None:
-    if not stamp:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-
-
 def source_health(
     legacy_path: Path, sources_path: Path = SOURCES_CONFIG, *, now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -178,7 +169,7 @@ def source_health(
             health = "never"
         elif latest["outcome"] == "error":
             health = "failing"
-        elif (last := _parse(succeeded_at)) is not None and now - last > STALE_AFTER:
+        elif (last := parse_app_instant(succeeded_at)) is not None and now - last > STALE_AFTER:
             health = "stale"
         else:
             health = "ok"
@@ -209,8 +200,8 @@ def daily_run(state_path: Path = DAILY_STATE_PATH, *, now: datetime | None = Non
     if not state:
         return {"ran": False, "run_date": None, "started_at": None, "finished_at": None, "exit_code": None,
                 "in_progress": False, "overdue": True}
-    finished = _parse(state["finishedAt"])
-    started = _parse(state["startedAt"])
+    finished = parse_app_instant(state["finishedAt"])
+    started = parse_app_instant(state["startedAt"])
     latest = finished or started
     return {
         "ran": True,

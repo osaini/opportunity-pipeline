@@ -49,7 +49,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 
 from . import automation
-from .timestamps import utc_now
+from .timestamps import parse_app_instant, utc_now
 from .user_time import user_timezone
 
 LOGGER = logging.getLogger(__name__)
@@ -371,7 +371,7 @@ def archive_due(conn: sqlite3.Connection, user_id: str, *, now: datetime | None 
 
 def _archive_ran_recently(conn: sqlite3.Connection, user_id: str, now: datetime) -> bool:
     row = conn.execute("SELECT value FROM user_settings WHERE user_id=? AND key=?", (user_id, ARCHIVE_LAST_RUN_KEY)).fetchone()
-    last = automation._parse(row[0]) if row else None
+    last = parse_app_instant(row[0]) if row else None
     return last is not None and now - last < ARCHIVE_EVERY
 
 
@@ -397,14 +397,14 @@ def _new_silence(conn: sqlite3.Connection, user_id: str, item: dict[str, Any]) -
     ).fetchone()
     if latest is None:
         return True
-    anchor = automation._parse(item.get("anchor_at"))
+    anchor = parse_app_instant(item.get("anchor_at"))
     if latest["status"] == "undone":
-        undone_at = automation._parse(latest["decided_at"])
+        undone_at = parse_app_instant(latest["decided_at"])
         return anchor is not None and undone_at is not None and anchor > undone_at
     counted_from = _silent_since_of(_decoded(latest["evidence_json"]))
     if counted_from:
         return str(item.get("since") or "") > counted_from
-    made_at = automation._parse(latest["created_at"])
+    made_at = parse_app_instant(latest["created_at"])
     return anchor is not None and made_at is not None and anchor > made_at
 
 
@@ -608,7 +608,7 @@ def _latest_event(conn: sqlite3.Connection, target_id: str, user_id: str, event_
         "SELECT MAX(created_at) FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=?",
         (target_id, user_id, event_type),
     ).fetchone()
-    return automation._parse(row[0]) if row and row[0] else None
+    return parse_app_instant(row[0]) if row and row[0] else None
 
 
 def follow_up_draft_due(conn: sqlite3.Connection, user_id: str, *, now: datetime | None = None) -> list[dict[str, Any]]:

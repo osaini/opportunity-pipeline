@@ -61,6 +61,7 @@ from .mail_trust import FREEMAIL, registrable_domain
 from .outreach import UNSENT_STATUSES
 from .outreach_delivery import _DAEMONS, _is_delivery_notice
 from .outreach_drafting import sender_account
+from .timestamps import parse_app_instant, utc_now
 from .outreach_gmail import (
     DRAFT_EVENT,
     MODIFY_SCOPE,
@@ -168,7 +169,7 @@ def set_label_name(conn: sqlite3.Connection, user_id: str, value: str | None) ->
         if name.upper() in _SYSTEM_NAMES or name.upper().startswith("CATEGORY_"):
             raise ValueError(f"Gmail keeps the name {name} for itself; choose another label name")
     with conn:
-        automation._put_setting(conn, user_id, SETTING, name, utc_stamp())
+        automation._put_setting(conn, user_id, SETTING, name, utc_now())
         _search_again(conn, user_id, before, name)
     return name
 
@@ -177,10 +178,6 @@ def _search_again(conn: sqlite3.Connection, user_id: str, before: str, name: str
     """Forget which companies' Sent mail was searched when labelling starts under a name other than the last one. Opens no transaction."""
     if name and name != before:
         conn.execute("DELETE FROM outreach_label_searches WHERE user_id=?", (user_id,))
-
-
-def utc_stamp() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 # --- The watcher's step -----------------------------------------------------------------
@@ -554,11 +551,8 @@ def _history_query(mark: dict[str, Any] | None) -> str:
 
 
 def _epoch(text: str) -> int | None:
-    try:
-        moment = datetime.fromisoformat(text.strip().replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return int((moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)).timestamp())
+    moment = parse_app_instant(text.strip())
+    return int(moment.timestamp()) if moment else None
 
 
 class _Labeller:

@@ -65,7 +65,7 @@ from .outreach_gmail import (
     send_thank_you,
 )
 from .timestamps import utc_now
-from .user_time import user_timezone
+from .user_time import at_wall_clock, to_local, user_timezone
 
 # Where a state spans zones, the zone most of its people live in.
 STATE_ZONES = {
@@ -148,18 +148,18 @@ def recipient_zone(conn: sqlite3.Connection, target: dict[str, Any], *, user_id:
 def next_morning(now: datetime, zone: Any, seed: str) -> datetime:
     """The next weekday 9:00-9:40 in ``zone`` at least five minutes away, as UTC."""
     minutes = int(hashlib.sha256(seed.encode()).hexdigest(), 16) % SPREAD_MINUTES
-    local = now.astimezone(zone) if zone else now.astimezone()
+    local = to_local(now, zone)
     day = local.date()
     while True:
         slot = datetime.combine(day, MORNING) + timedelta(minutes=minutes)
-        slot = slot.replace(tzinfo=zone) if zone else slot.astimezone()
+        slot = at_wall_clock(slot, zone)
         if day.weekday() < 5 and slot > local + timedelta(minutes=5):
             return slot.astimezone(timezone.utc)
         day += timedelta(days=1)
 
 
 def _label(send_at: datetime, zone: Any, basis: str) -> str:
-    local = send_at.astimezone(zone) if zone else send_at.astimezone()
+    local = to_local(send_at, zone)
     return f"{local:%a, %b} {local.day}, {local:%I:%M %p %Z}".replace(" 0", " ").strip() + f" ({basis})"
 
 
@@ -355,7 +355,7 @@ def _gate(
         name, run = (reviewer or review_runner)()
         verdict = review_follow_up(
             conn, target_id, user_id=user_id, runner=run, reviewer=name,
-            today=(now.astimezone(zone) if zone else now.astimezone()).date(),
+            today=to_local(now, zone).date(),
         )
     except Exception as exc:  # noqa: BLE001 - any reviewer failure holds the follow-up
         _finish(conn, row, "failed", f"The follow-up reviewer could not run: {exc}. Nothing was sent"[:500])
@@ -369,7 +369,7 @@ def _gate(
         return _answered(conn, row, get_target(conn, target_id, user_id=user_id), now)
     if verdict["away_until"]:
         back = datetime.combine(verdict["away_until"], time(0, 0))
-        back = back.replace(tzinfo=zone) if zone else back.astimezone()
+        back = at_wall_clock(back, zone)
         send_at = next_morning(back, zone, f"{target_id}:follow_up")
         label = _label(send_at, zone, basis)
         with conn:

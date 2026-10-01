@@ -67,7 +67,7 @@ from uuid import uuid4
 from . import actions
 from .database import is_unique_violation
 from .schema import PAUSE_NEVER_CHANGED
-from .timestamps import utc_now
+from .timestamps import parse_app_instant, utc_now
 from .user_time import user_timezone
 
 OFF_ON = ("off", "on")
@@ -402,7 +402,7 @@ def _can_turn_on(
     if not feature.shadow_capable:
         return True, ""
     since_text = _setting(conn, user_id, f"{key}.shadow_since")
-    since = _parse(since_text)
+    since = parse_app_instant(since_text)
     if current != "shadow" or since is None:
         return False, f"Run it in shadow first: it needs {SHADOW_HOURS} hours and {SHADOW_MIN_ROWS} reviewed actions there"
     row = conn.execute(
@@ -870,7 +870,7 @@ class ApplicationStage:
         row = conn.execute(
             f"SELECT follow_up_at FROM applications WHERE id=? AND user_id=?{_for_update(conn)}", (subject_id, user_id),
         ).fetchone()
-        due = _parse(row["follow_up_at"]) if row is not None else None
+        due = parse_app_instant(row["follow_up_at"]) if row is not None else None
         if due is None:
             return "no_date"
         if due <= _now(None):
@@ -2049,16 +2049,6 @@ def record_health(
         )
 
 
-def _parse(value: Any) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-
-
 def _token_days() -> int | None:
     """PIPELINE_GMAIL_TOKEN_DAYS: how long a Testing-mode Gmail grant lasts. 0 (production apps) or nonsense means no estimate."""
     try:
@@ -2089,7 +2079,7 @@ def gmail_health(conn: sqlite3.Connection, user_id: str, *, now: datetime | None
     if row is None:
         return {"state": "not_connected", "last_ok_at": None, "last_error": "", "backoff_until": None,
                 "token_granted_at": None, "likely_expires_at": None, "expiring_soon": False, "estimate_passed": False}
-    backoff = _parse(row["backoff_until"])
+    backoff = parse_app_instant(row["backoff_until"])
     if row["status"] == "error":
         state = "needs_reconnect"
     elif row["status"] == "disconnected":
@@ -2098,12 +2088,12 @@ def gmail_health(conn: sqlite3.Connection, user_id: str, *, now: datetime | None
         state = "throttled"
     else:
         state = "connected"
-    granted = _parse(row["token_granted_at"])
+    granted = parse_app_instant(row["token_granted_at"])
     days = _token_days()
     expires = granted + timedelta(days=days) if granted is not None and days is not None else None
     estimate_passed = expires is not None and now >= expires
     if estimate_passed:
-        last_ok = _parse(row["last_ok_at"])
+        last_ok = parse_app_instant(row["last_ok_at"])
         if last_ok is not None and last_ok > expires:
             expires = None  # Gmail kept answering past the date: the estimate was wrong
     return {
@@ -2155,7 +2145,7 @@ def health_summary(conn: sqlite3.Connection, user_id: str, *, now: datetime | No
                     f"Testing-mode connections last about {days} day{'s' if days != 1 else ''}.")
         banner.append({"level": "warning", "key": "gmail_expiring", "text": text})
     if gmail["state"] == "throttled":
-        local = zone.to_local(_parse(gmail["backoff_until"]))
+        local = zone.to_local(parse_app_instant(gmail["backoff_until"]))
         banner.append({"level": "info", "key": "gmail_throttled",
                        "text": f"Gmail asked the app to slow down. Checks resume after {f'{local:%I:%M %p}'.lstrip('0')}."})
     return {

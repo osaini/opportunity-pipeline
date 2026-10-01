@@ -158,7 +158,7 @@ from .extension_apply import _canonical_url
 from .inbox_classifiers import classify_email
 from .outreach_drafting import sender_account
 from .outreach_gmail import ClientFactory, GmailAuthError, GmailThrottled, _connector, _Gmail
-from .timestamps import utc_now
+from .timestamps import parse_app_instant, utc_now
 from .typesafe_decisions import DecisionClient
 from .user_time import user_timezone
 
@@ -820,7 +820,7 @@ def _manual_after(conn: sqlite3.Connection, application_id: str, received: datet
         source = "user"
     if source.startswith("automation:"):
         return False
-    changed = automation._parse(row["created_at"])
+    changed = parse_app_instant(row["created_at"])
     return changed is not None and changed > received
 
 
@@ -851,7 +851,7 @@ def news_to_archive(conn: sqlite3.Connection, user_id: str, archive: dict[str, A
     received on that day or before it is not. An archive that did not record
     its day falls back to when it was made.
     """
-    archived_at = automation._parse(archive.get("archived_at"))
+    archived_at = parse_app_instant(archive.get("archived_at"))
     if archived_at is not None and received > archived_at:
         return True
     since = str(archive.get("silent_since") or "")
@@ -1079,7 +1079,7 @@ def _job_link(mail: Mail) -> str:
 
 
 def _enabled_at(sync: dict[str, Any]) -> datetime | None:
-    return automation._parse(sync.get("enabled_at"))
+    return parse_app_instant(sync.get("enabled_at"))
 
 
 def _evidence(mail: Mail, classification: Classification, match: Match, auth: mail_trust.Authentication, *,
@@ -1544,7 +1544,7 @@ def _start(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, now: datetime)
     setting = conn.execute(
         "SELECT updated_at FROM user_settings WHERE user_id=? AND key=?", (user_id, FEATURE),
     ).fetchone()
-    turned_on = automation._parse(setting["updated_at"]) if setting else None
+    turned_on = parse_app_instant(setting["updated_at"]) if setting else None
     enabled = min(turned_on, now) if turned_on is not None else now
     query = backfill_query(conn, user_id, enabled, until)
     enabled_text = enabled.isoformat(timespec="seconds")
@@ -1595,8 +1595,8 @@ def _collect_history(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, sync
 def _begin_recovery(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, sync: dict[str, Any], now: datetime, *, expect: Any = _ANY) -> None:
     """Gmail forgot the cursor: take a fresh one first, then search from the last good pass (a day before, never before enabled_at)."""
     fresh = _profile_history(gmail)
-    last_ok = automation._parse(sync.get("last_ok_at")) or automation._parse(sync.get("enabled_at")) or now
-    enabled = automation._parse(sync.get("enabled_at"))
+    last_ok = parse_app_instant(sync.get("last_ok_at")) or parse_app_instant(sync.get("enabled_at")) or now
+    enabled = parse_app_instant(sync.get("enabled_at"))
     after = last_ok - RECOVERY_OVERLAP
     if enabled is not None and after < enabled:
         after = enabled
@@ -1711,7 +1711,7 @@ def run_pass(
         return {**result, "skipped": True}
     try:
         sync = _ensure_sync(conn, user_id)
-        last = automation._parse(sync.get("last_pass_at"))
+        last = parse_app_instant(sync.get("last_pass_at"))
         if not force and last is not None and now - last < PASS_EVERY:
             return {**result, "skipped": True}
         row = _connector(conn, user_id)

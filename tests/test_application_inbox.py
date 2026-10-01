@@ -28,7 +28,7 @@ from opportunity_app.application_inbox import match_application, parse_message
 from opportunity_app.connections import classify_monitored_message, decide_monitored_event, monitored_event
 from opportunity_app.operations import export_account
 from opportunity_app.schema import connect_product
-from opportunity_app.timestamps import utc_now
+from opportunity_app.timestamps import parse_app_instant, utc_now
 from opportunity_app.urgent import urgent_queue
 
 from helpers_platform import build_and_migrate
@@ -436,7 +436,7 @@ class LiveMailTests(MailCase):
         self.pass_once()
         sync = self.sync()
         self.assertEqual(sync["history_id"], "100")
-        self.assertEqual(automation._parse(sync["enabled_at"]), since)
+        self.assertEqual(parse_app_instant(sync["enabled_at"]), since)
         self.assertIn(sync["backfill_state"], ("running", "done"))
 
     def test_a_confirmation_moves_applying_to_applied_with_gmails_received_time(self):
@@ -753,7 +753,7 @@ class CursorTests(MailCase):
         self.assertEqual(result["state"], "ok", result)
         [query] = [search for search in self.gmail.searches if search.startswith("in:inbox after:")]
         after = int(query.rsplit(":", 1)[1])
-        enabled = automation._parse(self.sync()["enabled_at"])
+        enabled = parse_app_instant(self.sync()["enabled_at"])
         self.assertEqual(after, int(enabled.timestamp()), "a day before the last good pass, but never before the switch was turned on")
         self.assertEqual(self.sync()["history_id"], "555", "live reading goes on from the cursor taken before the search")
         self.assertEqual(self.sync()["recovery_state"], "")
