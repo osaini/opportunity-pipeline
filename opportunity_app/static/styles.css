@@ -254,7 +254,8 @@ a { color: inherit; }
 /* The rail beside the content holds each page's subtabs, so wide screens no
    longer leave an empty gutter between the sidebar and the page. */
 .main-content { display: grid; grid-template-columns: 208px minmax(0, 1fr); align-items: start; min-width: 0; }
-.page-body { width: min(1440px, 100%); min-width: 0; margin-inline: auto; padding: var(--space-8) 48px 80px; }
+/* A small foot: the page ends near the bottom of the screen (phones keep room for the tab bar below). */
+.page-body { width: min(1440px, 100%); min-width: 0; margin-inline: auto; padding: var(--space-8) 48px var(--space-6); }
 .subnav {
   position: sticky; top: 0; height: 100vh; overflow-y: auto; padding: var(--space-8) var(--space-3) var(--space-6);
   border-right: 1px solid var(--line); background: var(--rail); display: flex; flex-direction: column; gap: 4px;
@@ -268,6 +269,16 @@ a { color: inherit; }
   background: transparent; color: var(--ink-soft); cursor: pointer; font-size: 13px; font-weight: 600; text-align: left;
 }
 .subnav-item:hover { background: var(--hover); color: var(--ink); }
+/* The side rail fits the screen instead of scrolling: rows give up height
+   (down to 24px, the smallest comfortable target) and headings their spacing,
+   only as far as the screen needs. A rail with few rows keeps its size. */
+@media (min-width: 1181px) {
+  .subnav { padding-top: clamp(18px, 5vh - 6px, 44px); padding-bottom: clamp(10px, 2.4vh, 24px); }
+  .subnav-title { margin-bottom: clamp(6px, 1.2vh, 12px); }
+  .subnav-list { flex: 1 1 auto; min-height: 0; gap: 1px; }
+  .subnav-group { flex: none; margin-top: clamp(8px, 1.8vh, 16px); margin-bottom: clamp(3px, .6vh, 6px); }
+  .subnav-item { flex: 0 1 var(--control-sm); min-height: 24px; }
+}
 .subnav-item.is-active { background: var(--surface-strong); color: var(--accent-strong); box-shadow: 0 1px 6px rgba(25, 36, 29, .07); }
 .subnav-count { min-width: 22px; white-space: nowrap; padding: 1px 7px; border-radius: var(--radius-pill); background: var(--hover); color: var(--ink-muted); font-size: 10px; font-weight: 750; text-align: center; font-variant-numeric: tabular-nums; }
 .subnav-item.is-active .subnav-count { background: var(--accent-soft); color: var(--accent-strong); }
@@ -524,8 +535,8 @@ input.settings-switch:disabled { opacity: .6; cursor: progress; }
 .capture-confirm-form .primary-button { justify-self: start; }
 
 .opportunity-grid.is-profile { grid-template-columns: minmax(0, 1fr); }
-.profile-card { padding: var(--space-6); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
-.profile-card h3 { margin: 0; font-family: Georgia, "Times New Roman", serif; font-size: 28px; font-weight: 500; letter-spacing: -.025em; }
+.profile-card { --card-pad: var(--space-6); padding: var(--card-pad); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); container-type: inline-size; }
+.profile-card h3 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -.01em; }
 .profile-card-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; }
 .profile-help { max-width: 700px; margin: 9px 0 0; color: var(--ink-soft); font-size: 12px; line-height: 1.6; }
 .completeness-meter { width: 124px; flex: 0 0 auto; display: grid; grid-template-columns: auto 1fr; gap: 2px 7px; align-items: baseline; }
@@ -533,13 +544,75 @@ input.settings-switch:disabled { opacity: .6; cursor: progress; }
 .completeness-meter span { color: var(--ink-muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
 .completeness-meter progress { grid-column: 1 / -1; width: 100%; height: 7px; accent-color: var(--accent); }
 .missing-note { margin: var(--space-5) 0 0; padding: var(--space-3) var(--field-pad-x); border-radius: var(--radius-sm); background: var(--warn-soft); color: var(--warn-ink); font-size: 11px; line-height: 1.5; }
-.profile-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 24px; }
+.profile-form { display: block; }
 .profile-field { display: grid; gap: 6px; color: var(--ink-soft); font-size: 10px; font-weight: 750; text-transform: uppercase; letter-spacing: .07em; }
 .profile-field input, .profile-field select, .profile-field textarea { width: 100%; min-height: var(--control-md); padding: var(--space-3) var(--field-pad-x); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); color: var(--ink); font-size: 12px; font-weight: 400; text-transform: none; letter-spacing: 0; }
 .profile-field textarea { min-height: 92px; resize: vertical; line-height: 1.5; }
 .profile-field input:focus, .profile-field select:focus, .profile-field textarea:focus { outline: 3px solid var(--focus); border-color: var(--accent); }
 .profile-form .primary-button { justify-self: start; margin-top: 4px; }
 .profile-export { justify-self: start; align-self: end; margin-top: 4px; }
+
+/* Profile, laid out like Outreach settings: each card a title and a line of
+   intro, then titled parts set off by a rule, on one spacing scale. */
+.opportunity-grid.is-profile { gap: var(--space-5); }
+.profile-card > h3 + .profile-help, .profile-card-heading h3 + .profile-help { margin-top: 4px; }
+.profile-block { margin-top: var(--space-5); padding-top: var(--space-5); border-top: 1px solid var(--line); }
+.profile-block > h4, .profile-group > h4 { margin: 0; font-size: 14px; letter-spacing: -.005em; }
+.profile-block > * + * { margin-top: var(--space-3); }
+.profile-block > h4 + .profile-help { margin-top: 2px; }
+.profile-card .form-status:empty { min-height: 0; margin: 0; }
+.profile-card .empty-inline { margin-top: var(--space-3); }
+.profile-actions-row { margin-top: var(--space-4); }
+/* A card's closing row of buttons, set off like a block. */
+.profile-foot { margin-top: var(--space-5); padding-top: var(--space-5); border-top: 1px solid var(--line); }
+.profile-card .notification-toggles { gap: var(--space-2) var(--space-5); }
+.profile-card .notification-toggles .confirmation-row { align-items: center; margin-top: 0; color: var(--ink); font-size: 13px; }
+.profile-card .profile-field { align-content: start; color: var(--ink); font-size: 12px; font-weight: 650; letter-spacing: 0; text-transform: none; }
+.profile-card .notification-form { align-items: end; gap: var(--space-3) var(--space-4); }
+.profile-card .notification-form > button, .profile-card .notification-form > .channel-toggle { min-height: var(--control-md); }
+/* One line tall like its neighbours; it still grows by dragging. */
+.dossier-section .notification-form .profile-field textarea { height: var(--control-md); min-height: var(--control-md); }
+/* The upload box's status line takes room only once it says something. */
+.profile-card .upload-form { row-gap: 0; }
+.profile-card .upload-form .form-status:not(:empty) { margin-top: var(--space-2); }
+/* The career profile: groups of fields, a red asterisk on each one a complete profile needs. */
+.profile-required-key { margin: var(--space-5) 0 0; color: var(--ink-soft); font-size: 12px; }
+.required-mark { margin-left: 3px; color: var(--danger); font-weight: 800; }
+.profile-group { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-4); align-items: start; margin-top: var(--space-5); padding-top: var(--space-5); border-top: 1px solid var(--line); }
+.profile-group > h4, .profile-group > .profile-help, .profile-group > .profile-fieldset { grid-column: 1 / -1; }
+.profile-group > .profile-help { margin: calc(2px - var(--space-4)) 0 0; }
+.profile-card .profile-field textarea { min-height: 88px; }
+/* Save stays in reach at the bottom of the screen while the form scrolls. */
+.profile-actions { position: sticky; bottom: 0; z-index: 3; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--space-3); margin: var(--space-6) calc(-1 * var(--card-pad)) calc(-1 * var(--card-pad)); padding: var(--space-4) var(--card-pad); border-top: 1px solid var(--line); border-radius: 0 0 var(--radius) var(--radius); background: var(--surface); }
+.profile-actions .form-status { flex: 1 1 200px; margin: 0; min-height: 0; }
+.profile-actions .form-status:empty { flex: 0 0 0; }
+.profile-actions .profile-export, .profile-form .profile-actions .primary-button { margin: 0; }
+@container (max-width: 760px) {
+  .profile-group, .profile-group > .profile-fieldset { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container (max-width: 480px) {
+  .profile-group, .profile-group > .profile-fieldset { grid-template-columns: minmax(0, 1fr); }
+}
+/* Automation rows: what it does on the left, its switch or choice at the end, as on Outreach settings. */
+.automation-section .automation-feature, .profile-card .automation-desktop-setting { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--space-6); row-gap: 0; align-items: start; margin: 0; padding: var(--space-4) 0; border-top: 1px solid var(--line); font-size: 12px; }
+.automation-feature > .automation-feature-head, .profile-card .automation-desktop-setting > label { grid-column: 1; }
+.automation-feature > .automation-feature-head label, .profile-card .automation-desktop-setting > label { font-size: 13px; font-weight: 700; }
+.automation-feature > select, .automation-feature > .settings-switch, .profile-card .automation-desktop-setting > .settings-switch { grid-column: 2; grid-row: 1 / span 4; justify-self: end; }
+.automation-section .automation-feature > select { width: 240px; }
+.automation-feature > p, .profile-card .automation-desktop-setting > p { grid-column: 1; max-width: 70ch; }
+.automation-feature > p:not(:empty), .profile-card .automation-desktop-setting > p:not(:empty) { margin-top: 6px; }
+/* Apply for me settings: its small headings, the kinds list, and the forms on the same scale. */
+.profile-card :is(.apply-settings, .apply-sensitive-settings) h5 { margin: var(--space-5) 0 0; font-size: 13px; }
+.profile-card :is(.apply-settings, .apply-sensitive-settings) h5 + .profile-help { margin-top: 4px; }
+.profile-card :is(.apply-settings, .apply-sensitive-settings) .reason-list { margin: var(--space-2) 0 0; }
+.profile-card .apply-kinds { gap: 2px; margin-top: var(--space-3); }
+.profile-card .apply-kinds legend { margin-bottom: var(--space-1); padding: 0; color: var(--ink-soft); font-size: 12px; font-weight: 650; }
+.profile-card .apply-kinds .confirmation-row { margin-top: 0; padding: 6px 0; color: var(--ink); font-size: 13px; }
+.profile-card .apply-answer-form { gap: var(--space-3); margin-top: var(--space-3); }
+@container (max-width: 560px) {
+  .automation-section .automation-feature:has(> select) { grid-template-columns: minmax(0, 1fr); }
+  .automation-section .automation-feature > select { grid-column: 1; grid-row: auto; width: 100%; margin-top: var(--space-2); }
+}
 .form-status { min-height: 18px; margin: var(--space-4) 0 0; align-self: center; color: var(--ink-soft); font-size: 11px; }
 .resume-section { margin-top: 2px; }
 .upload-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; margin-top: 20px; padding: var(--space-4); border: 1px dashed var(--line-strong); border-radius: var(--radius-md); background: var(--surface-sunken); }
@@ -856,7 +929,9 @@ input.settings-switch:disabled { opacity: .6; cursor: progress; }
   .opportunity-grid { grid-template-columns: minmax(0, 1fr); }
   .card-button { min-height: auto; }
   .auth-card { padding: var(--space-7); }
-  .profile-card { padding: var(--space-5); }
+  .profile-card { --card-pad: var(--space-5); }
+  /* Too narrow for both buttons on one line, so the bar stays at the form's end instead of covering the screen. */
+  .profile-actions { position: static; }
   .profile-card-heading { display: grid; }
   .profile-form, .profile-fieldset { grid-template-columns: 1fr; }
   .upload-form { grid-template-columns: 1fr; }
@@ -1310,9 +1385,7 @@ input.settings-switch:disabled { opacity: .6; cursor: progress; }
 .automation-block > .secondary-button { margin-top: var(--space-3); }
 /* An empty status line stays in place for screen readers but takes no room. */
 .automation-section .form-status:empty, .automation-desktop-setting .form-status:empty { min-height: 0; margin: 0; }
-.settings-field.automation-feature { width: min(100%, 620px); margin-top: var(--space-4); }
 .automation-feature-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; }
-.automation-feature .settings-checkbox, .automation-desktop-setting .settings-checkbox { min-height: 24px; }
 .automation-reason { color: var(--warn-ink); }
 .automation-desktop-setting { margin-top: var(--space-5); }
 .automation-desktop-setting .form-status { margin: 0; }
