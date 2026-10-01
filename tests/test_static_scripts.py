@@ -8,9 +8,19 @@ fast suite, instead of as a ReferenceError the first time a button is pressed in
 """
 
 import re
+import sys
 import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from helpers_source import STATIC_DIR, static_scripts
+
+try:
+    import realdata_guard
+except ImportError:  # imported as tests.test_static_scripts, with tests/ not on sys.path
+    from tests import realdata_guard
+realdata_guard.install()
 
 APP_SCRIPT = re.compile(r"^app(-[a-z-]+)?\.js$")
 DEFERRED_SCRIPT = re.compile(r'<script src="/assets/([^"?]+\.js)[^"]*"[^>]*\bdefer\b')
