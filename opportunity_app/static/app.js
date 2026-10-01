@@ -6356,7 +6356,9 @@
     return [add, transfer];
   }
 
-  function outreachListToolbar(tags = []) {
+  // ``leaving``: cards acted on here that stay put (so nothing moves from under
+  // the pointer) but no longer belong to this tab or search. Refresh files them.
+  function outreachListToolbar(tags = [], leaving = 0) {
     const toolbar = element("div", "outreach-toolbar");
     const search = element("div", "search-field outreach-search");
     const label = element("label", "search-label");
@@ -6415,7 +6417,27 @@
       els.results.querySelector(".outreach-filter select")?.focus();
     });
     sortLabel.appendChild(sort);
-    toolbar.append(search, sortLabel);
+
+    const refresh = element("button", "secondary-button outreach-refresh");
+    refresh.type = "button";
+    refresh.appendChild(element("span", "", "Refresh"));
+    if (leaving) {
+      const count = element("span", "outreach-refresh-count", String(leaving));
+      count.setAttribute("aria-hidden", "true");
+      refresh.appendChild(count);
+      refresh.setAttribute("aria-label", `Refresh: ${plural(leaving, "company moves", "companies move")} out of this list`);
+    }
+    refresh.title = leaving
+      ? `${plural(leaving, "company", "companies")} you acted on will move to where ${leaving === 1 ? "it" : "they"} now belong${leaving === 1 ? "s" : ""}`
+      : "Load the latest from the server";
+    refresh.addEventListener("click", async () => {
+      refresh.disabled = true;
+      state.outreachKeep.clear();
+      await loadOutreach();
+      announce(leaving ? `${plural(leaving, "company", "companies")} moved out of this list.` : "Outreach is up to date.");
+      els.results.querySelector(".outreach-refresh")?.focus();
+    });
+    toolbar.append(search, sortLabel, refresh);
     return toolbar;
   }
 
@@ -6548,7 +6570,8 @@
         const items = payload.items
           .filter((item) => (tab.test(item) && matches(item)) || kept(item))
           .sort(compare);
-        els.results.appendChild(outreachListToolbar(payload.tags || []));
+        const leaving = items.filter((item) => kept(item) && !(tab.test(item) && matches(item))).length;
+        els.results.appendChild(outreachListToolbar(payload.tags || [], leaving));
         if (running) {
           const banner = element("div", "outreach-banner");
           banner.appendChild(element("p", "", "The deep search is running. New companies land in From deep search when it finishes."));
