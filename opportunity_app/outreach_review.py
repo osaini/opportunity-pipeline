@@ -32,6 +32,7 @@ from typing import Any
 
 import httpx
 
+from . import agent_providers
 from .outreach_agents import Runner
 from .outreach_config import REVIEW_ENV, resolve_provider
 from .agent_providers import CLAUDE_NO_TOOLS, CODEX_READ_ONLY, cli_binary, failure_detail, run_headless
@@ -115,9 +116,7 @@ def review_choice(purpose: str = "follow_up") -> tuple[str, str]:
     different family than the writer of that ``purpose`` (a follow-up, or the
     thank-you after a decline), else the best one there is.
     """
-    from .agent_providers import provider_catalog
-
-    catalog = {item["id"]: item for item in provider_catalog()}
+    catalog = {item["id"]: item for item in agent_providers.provider_catalog()}
     chosen = os.environ.get(REVIEW_ENV, "").strip()
     if chosen:
         if chosen not in catalog:
@@ -144,11 +143,9 @@ def review_runner(purpose: str = "follow_up") -> tuple[str, Runner]:
     provider, note = review_choice(purpose)
     name = f"{provider} ({note})" if note else provider
     if provider not in {"codex-cli", "claude-code"}:
-        from .agent_providers import build_provider, complete_text, provider_catalog
-
-        model = next(item["model"] for item in provider_catalog() if item["id"] == provider)
-        agent = build_provider(provider, model)
-        return name, lambda prompt: complete_text(agent, "Reply with exactly one JSON object and nothing else.", prompt)
+        model = next(item["model"] for item in agent_providers.provider_catalog() if item["id"] == provider)
+        agent = agent_providers.build_provider(provider, model)
+        return name, lambda prompt: agent_providers.complete_text(agent, "Reply with exactly one JSON object and nothing else.", prompt)
 
     def run(prompt: str) -> str:
         with tempfile.TemporaryDirectory(prefix="outreach-review-") as workdir:

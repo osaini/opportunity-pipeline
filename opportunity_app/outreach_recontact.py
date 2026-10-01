@@ -31,6 +31,7 @@ from .outreach_agents import discovery_runner
 from .outreach_agents import Runner
 from .outreach_contacts import apply_choice, choose_contact, find_contacts, is_generic_address, list_candidates
 from .outreach_discovery import search_other_sites
+from .outreach_drafting import generate_draft
 from .schema import connect_product
 from .web_fetch import SafeFetcher, default_fetcher
 
@@ -192,8 +193,6 @@ def _decide(
                 apply_choice(conn, target_id, choice, user_id=user_id)
                 result["applied"] = True
                 if redraft and provider_factory is not None:
-                    from .outreach_drafting import generate_draft
-
                     try:
                         generate_draft(conn, target_id, user_id=user_id, provider_factory=provider_factory, provider=draft_provider)
                         result["draft"] = "generated"

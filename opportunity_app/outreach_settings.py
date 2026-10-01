@@ -48,6 +48,7 @@ from .outreach_config import (
 )
 from .outreach_linkedin import username_from
 from .outreach_gmail import attachment_path, attachment_problem
+from .outreach_review import review_choice
 from .resumes import DEFAULT_STORAGE, ResumeNotFoundError, list_resumes, resume_file_path
 
 # Writers that fall back to the first-email setting when left empty.
@@ -88,7 +89,6 @@ class OutreachSettings:
         ] + [LEGACY_OPTION]
         research = [option for option in drafts if option["id"] in RESEARCH_AGENTS]
         attached = attachment_path()
-        from .outreach_review import review_choice
 
         def automatic(purpose: str) -> dict[str, str]:
             try:

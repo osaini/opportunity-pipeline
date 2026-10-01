@@ -74,6 +74,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from uuid import uuid4
 
+from . import agent_providers
 from .agent_providers import cli_available, cli_binary, complete_text
 from .operations import enqueue_job
 from .contact_names import website_domain
@@ -364,11 +365,9 @@ def text_model(provider_factory: Callable[[str, str], Any], provider: str | None
     The second read is a separate call on the page's own passage, not a different model: when the
     writer is the same provider as the research agent, the same model reads it, and the notes say
     "a separate read", never "a model that did not write it"."""
-    from .agent_providers import provider_catalog
-
     provider_id, model = resolve_provider(provider, purpose="call_prep")
     if provider_id == "legacy":
-        record = next((item for item in provider_catalog() if item["id"] == fallback), None)
+        record = next((item for item in agent_providers.provider_catalog() if item["id"] == fallback), None)
         provider_id, model = fallback, str((record or {}).get("model") or "")
     agent = provider_factory(provider_id, model)
     return lambda instructions, content: complete_text(agent, instructions, content, max_output_tokens=3_000)

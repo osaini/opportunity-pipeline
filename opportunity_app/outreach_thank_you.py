@@ -110,11 +110,14 @@ import httpx
 from pipeline_core.identity import identity_tokens, normalized
 
 from . import automation
+from .agent_providers import CliAgentProvider, complete_text
 from .background import record_health_quietly, step_error
-from .database import rollback_quietly
+from .database import is_unique_violation, rollback_quietly
 from .inbox_classifiers import JEV_NOT_ASKED, MIN_CONFIDENCE
 from .json_values import json_dict
+from .contact_names import GENERIC_LOCAL_PARTS, ROLE_INBOX_LOCAL_PARTS, ROLE_INBOX_QUALIFIERS, website_domain
 from .mail_message import FULL_TEXT_LIMIT, hosts_in, is_automatic, written_between_quotes
+from .mail_trust import listed, registrable_domain, sender_lists
 from .outreach_config import resolve_provider, sender_account
 from .outreach import (
     REPLY_PATTERNS,
@@ -145,7 +148,11 @@ from .outreach_gmail import (
     thank_you_fingerprint,
     thank_you_row,
 )
+from .outreach_contacts import is_shared_inbox, made_of
+from .outreach_forms import ALWAYS_AUTOMATIC, SUBMITTED_EVENT as FORM_SUBMITTED, UNCONFIRMED_EVENT as FORM_UNCONFIRMED
+from .outreach_review import ask_reviewer, review_log_detail, review_runner
 from .outreach_schedule import send_time_label, next_morning, recipient_zone
+from .preparation import confirmed_facts
 from .timestamps import parse_app_instant, utc_now
 from .user_time import at_wall_clock, to_local
 
@@ -346,8 +353,6 @@ def template(inputs: dict[str, Any]) -> str:
 
 
 def _parsed(raw: str, inputs: dict[str, Any]) -> tuple[str, list[str]]:
-    from .agent_providers import CliAgentProvider
-
     try:
         parsed = CliAgentProvider.extract_json(raw)
     except ValueError:
@@ -364,8 +369,6 @@ def write(
     The model gets one retry with the reasons it was refused; a model that is
     unavailable, fails twice, or is not set up leaves the template.
     """
-    from .agent_providers import complete_text
-
     try:
         provider_id, model = resolve_provider(provider, purpose="thank_you")
     except ValueError:
@@ -530,8 +533,6 @@ def latest_reply(conn: sqlite3.Connection, target_id: str, user_id: str) -> dict
 
 def sent_since(conn: sqlite3.Connection, target_id: str, user_id: str, since: datetime) -> bool:
     """Whether anything went to the company after ``since``: an email, a thank-you, a form, "I sent it", or a send under way."""
-    from .outreach_forms import SUBMITTED_EVENT as FORM_SUBMITTED, UNCONFIRMED_EVENT as FORM_UNCONFIRMED
-
     for row in conn.execute(
         "SELECT event_type, to_status, created_at FROM outreach_events WHERE target_id=? AND user_id=? "
         "AND event_type IN (?, ?, ?, ?, ?, 'status')",
@@ -817,8 +818,6 @@ def _sent_texts(conn: sqlite3.Connection, target: dict[str, Any], user_id: str) 
 
 def _names(conn: sqlite3.Connection, target: dict[str, Any], user_id: str, *more: str) -> list[str]:
     """The names a plain no may use: the student's, the contact's, the company's, and whoever wrote."""
-    from .preparation import confirmed_facts
-
     student = str(confirmed_facts(conn, user_id).get("name") or "")
     company = str(target.get("company") or "")
     return [student, str(target.get("contact_name") or ""), company, spoken_company(company), *more]
@@ -994,8 +993,6 @@ def mailboxes(message: EmailMessage, *names: str) -> set[str] | None:
 
 def _job_system(host: str, categories: tuple[str, ...]) -> bool:
     """A host, or its registrable domain, on one of ``categories`` of mail_trust's shipped list."""
-    from .mail_trust import listed, registrable_domain
-
     text = str(host or "").strip().strip("<>").rsplit("@", 1)[-1].rstrip(".").casefold()
     return bool(text) and bool(listed(text, categories) or listed(registrable_domain(text) or "", categories))
 
@@ -1009,9 +1006,6 @@ def _job_system_mail(domain: str, target: dict[str, Any]) -> bool:
     careers page on a job system (website acme.bamboohr.com) is not Acme's
     domain, and a company named like one ("Lever Industries") does not own it.
     """
-    from .contact_names import website_domain
-    from .mail_trust import registrable_domain, sender_lists
-
     categories = tuple(category for category in sender_lists() if category not in _NOT_JOB_SYSTEMS)
     if not _job_system(domain, categories):
         return False
@@ -1030,10 +1024,6 @@ def _no_reply(local: str) -> bool:
 def _company_inbox(local: str, target: dict[str, Any]) -> bool:
     """A local part that is the company's own name or slug, alone or with role words or a word that joins it
     ("acme", "acme-robotics", "acme.careers", "acmecareers", "careersacme", "teamacme", "joinacme")."""
-    from .mail_trust import registrable_domain
-    from .contact_names import GENERIC_LOCAL_PARTS, ROLE_INBOX_LOCAL_PARTS, ROLE_INBOX_QUALIFIERS, website_domain
-    from .outreach_contacts import made_of
-
     company = str(target.get("company") or "")
     tokens = identity_tokens(company)
     compact = "".join(re.split(r"[^a-z0-9]+", str(local or "").casefold().split("+", 1)[0]))
@@ -1086,8 +1076,6 @@ def thank_you_blockers(conn: sqlite3.Connection, target: dict[str, Any], reply: 
     every rule that reads them fails closed.
     """
     from .mail_trust import authenticate
-    from .outreach_contacts import is_shared_inbox
-    from .outreach_forms import ALWAYS_AUTOMATIC
 
     data = reply["data"]
     sender = str(data.get("from") or "").strip().casefold()
@@ -1291,8 +1279,6 @@ def plan(
     if reply is None:
         _note_ineligible(user_id, target_id, reason)
         return {"target_id": target_id, "planned": False, "reason": reason}
-    from .preparation import confirmed_facts
-
     student_name = " ".join(str(confirmed_facts(conn, user_id).get("name") or "").split())
     if not student_name:
         reason = "the student's name is not confirmed in their profile"
@@ -1361,8 +1347,6 @@ def plan(
                 basis="decline:rules+jev", confidence=confidence, idempotency_key=status_key, auto=True,
             )
     except Exception as exc:
-        from .database import is_unique_violation
-
         if not is_unique_violation(exc):
             raise
         return {"target_id": target_id, "planned": False, "reason": "another pass scheduled it first"}
@@ -1504,8 +1488,6 @@ def _followed_up(conn: sqlite3.Connection, target_id: str, user_id: str) -> bool
 
 def review(conn: sqlite3.Connection, target_id: str, *, user_id: str, runner: Callable[[str], str], reviewer: str) -> dict[str, Any]:
     """Whether the thank-you may go, with the reviewer's problems. Every failure to get a clear answer holds it."""
-    from .outreach_review import ask_reviewer
-
     target = get_target(conn, target_id, user_id=user_id)
     thank_you = thank_you_row(conn, target_id, user_id)
     held: dict[str, Any] = {"send": False, "reviewer": reviewer}
@@ -1683,7 +1665,6 @@ def gate(
     logged while it ran; and last Gmail's own thread, read just before the
     hand-over (which reads the records once more).
     """
-    from .outreach_review import review_log_detail, review_runner
     from .outreach_schedule import GMAIL_HOLD_MARGIN, finish_send, hold_for_retry, wait_for_gmail
 
     target_id, user_id = row["target_id"], row["user_id"]

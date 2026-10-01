@@ -25,11 +25,13 @@ from typing import Any, Callable
 from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
+from . import automation
 from .database import is_unique_violation
 from .inbox_classifiers import read_reply
 from .contact_names import website_domain
 from .legacy import PROFILE_PATH
 from .outreach_config import gmail_web_url, sender_account
+from .preparation import confirmed_facts
 from .schema import LOCAL_USER_ID
 from .timestamps import utc_now
 from .typesafe_decisions import DecisionClient
@@ -420,8 +422,6 @@ def mentions_home(body: str, terms: list[str]) -> bool:
 
 
 def user_home(conn: sqlite3.Connection, user_id: str, regions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    from .preparation import confirmed_facts
-
     return student_home(confirmed_facts(conn, user_id), user_regions(conn, user_id) if regions is None else regions)
 
 
@@ -463,8 +463,6 @@ def user_regions(conn: sqlite3.Connection | None, user_id: str = LOCAL_USER_ID) 
     """
     if conn is None or user_id == LOCAL_USER_ID:
         return _profile_regions()
-    from .preparation import confirmed_facts
-
     regions = confirmed_facts(conn, user_id).get("regions") or []
     return [region for region in regions if isinstance(region, dict)] if isinstance(regions, list) else []
 
@@ -898,8 +896,6 @@ def _gmail_link(fragment: str) -> str:
 
 def _thank_you_hold(conn: sqlite3.Connection, user_id: str) -> str:
     """Why a waiting thank-you will be held at its time rather than sent, or "": its switch, or Jev, turned off."""
-    from . import automation  # imported here: automation imports this module
-
     feature = automation.FEATURES["decline_thank_you"]
     if automation.mode(conn, user_id, feature.key) != "on":
         return f"{feature.label} is off"
@@ -1082,8 +1078,6 @@ def greeting_style(conn: sqlite3.Connection | None, user_id: str = LOCAL_USER_ID
     if conn is None or user_id == LOCAL_USER_ID:
         source = _owner_profile()
     else:
-        from .preparation import confirmed_facts
-
         source = confirmed_facts(conn, user_id)
     word = source.get("greeting_word")
     unnamed = source.get("unnamed_greeting")

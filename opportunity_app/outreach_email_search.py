@@ -32,6 +32,7 @@ from .outreach_agents import Runner
 from .outreach_batch import answers_by_target
 from .outreach_contacts import (
     EMAIL_PATTERN,
+    choose_contact,
     email_on_domain,
     emails_from_page,
     is_generic_address,
@@ -228,8 +229,6 @@ def search_batch(
 
 def needs_a_person(conn: sqlite3.Connection, target_id: str, *, user_id: str) -> bool:
     """Whether a search could still help: no confirmed personal address and no strong guess."""
-    from .outreach_contacts import choose_contact
-
     choice = choose_contact(list_candidates(conn, target_id, user_id=user_id))
     return choice is None or choice["basis"] not in {"confirmed", "strong_guess"}
 
