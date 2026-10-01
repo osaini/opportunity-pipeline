@@ -3080,8 +3080,11 @@
 
   async function checkForBounces() {
     if (!state.userId) return;
+    const userId = state.userId;
     try {
       const result = await api("/api/v1/outreach/inbox-check", { method: "POST" });
+      // Signed out while Gmail was being read: the news belongs to the session that asked.
+      if (state.userId !== userId) return;
       const news = [];
       if (result.bounced?.length) {
         const names = result.bounced.map((entry) => `${entry.company} (${entry.addresses.join(", ")})`).join("; ");
@@ -4019,8 +4022,10 @@
     deepSearchTimer = window.setTimeout(async () => {
       deepSearchTimer = null;
       if (!state.userId || state.view !== "outreach") return;
+      const userId = state.userId;
       try {
         const discovery = await api("/api/v1/outreach/discovery");
+        if (state.userId !== userId) return;
         if (discovery.active?.state === "running") {
           scheduleDeepSearchPoll();
           return;
@@ -4033,7 +4038,7 @@
         if (result?.imported && state.subtabs.outreach === "deep-search") state.subtabs.outreach = "from-search";
         if (!state.loading) await loadOutreach();
       } catch (error) {
-        if (state.userId) showError(error.message);
+        if (state.userId === userId) showError(error.message);
       }
     }, 5000);
   }
@@ -4122,8 +4127,10 @@
     recontactTimer = window.setTimeout(async () => {
       recontactTimer = null;
       if (!state.userId || state.view !== "outreach") return;
+      const userId = state.userId;
       try {
         const recontact = await api("/api/v1/outreach/recontact");
+        if (state.userId !== userId) return;
         const active = recontact.active;
         if (active?.state === "running") {
           scheduleRecontactPoll();
@@ -4134,7 +4141,7 @@
         else announce(`Contact search finished: ${plural(active?.result?.upgraded || 0, "person", "people")} found.`);
         if (!state.loading) await loadOutreach();
       } catch (error) {
-        if (state.userId) showError(error.message);
+        if (state.userId === userId) showError(error.message);
       }
     }, 4000);
   }

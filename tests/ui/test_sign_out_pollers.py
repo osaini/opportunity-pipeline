@@ -176,3 +176,45 @@ def test_the_bounce_looks_stop_when_the_student_signs_out(page, base_url):
     assert looks_after_sign_out == [], f"bounce looks kept running after sign-out: {looks_after_sign_out}"
     assert_gate_undisturbed(page)
     page.unroute_all(behavior="ignoreErrors")
+
+
+def test_an_inbox_check_still_running_at_sign_out_says_nothing_and_loads_nothing(page, base_url):
+    """The request was sent while signed in and answers after sign-out. Its news is the
+    old session's, and acting on it reloads the list, which gets a 401 and re-runs showAuth."""
+    page.clock.install()
+    page.goto("/")
+    sign_in_as_owner(page)
+    wait_for_results(page)
+    seed_target(page, base_url, contact_email="jane@bovi.example", contact_name="Jane Doe")
+    gmail = {"configured": True, "connected": True, "needs_reconnect": False, "account": COMPOSE_ACCOUNT,
+             "attachment": "resume.pdf", "attachment_problem": "", "bounce_check": True}
+
+    signed_out = []
+    held = []
+    lists_after_sign_out = []
+
+    def listing(route):
+        response = route.fetch()
+        route.fulfill(response=response, json={**response.json(), "gmail_drafts": gmail})
+
+    page.route(lambda url: is_list_url(url), listing)
+    page.route("**/api/v1/outreach/inbox-check", lambda route: held.append(route))
+    page.on("request", lambda request: signed_out and is_list_url(request.url) and lists_after_sign_out.append(request.url))
+
+    page.click("#outreach-nav")
+    wait_for_results(page)
+    for _ in range(50):
+        if held:
+            break
+        page.wait_for_timeout(50)
+    assert held, "no inbox check was sent on loading Outreach, so this test proves nothing"
+
+    sign_out_and_fail_a_sign_in(page)
+    signed_out.append(True)
+    held[0].fulfill(json={"replies": [{"company": "Bovi", "from": "jane@bovi.example"}]})
+    page.wait_for_timeout(300)
+
+    assert lists_after_sign_out == [], f"the old session's inbox check reloaded the list behind the gate: {lists_after_sign_out}"
+    expect(page.locator("#action-status")).to_have_text("")
+    assert_gate_undisturbed(page)
+    page.unroute_all(behavior="ignoreErrors")
