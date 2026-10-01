@@ -177,7 +177,7 @@ a { color: inherit; }
 /* A strip that scrolls sideways says so at the edge that still has content.
    The two `local` panels scroll with the row and cover the fixed shade behind
    them; reaching an end slides its panel over that end's shade. */
-.scroll-shade, .outreach-tabs {
+.outreach-tabs {
   background-repeat: no-repeat;
   background-size: 24px 100%, 24px 100%, 12px 100%, 12px 100%;
   background-position: left center, right center, left center, right center;
@@ -244,7 +244,6 @@ a { color: inherit; }
 }
 .nav-item small { margin-left: auto; text-transform: uppercase; font-size: 10px; letter-spacing: .1em; color: var(--ink-muted); }
 .nav-item.is-active { background: var(--surface-strong); color: var(--accent-strong); box-shadow: 0 2px 10px rgba(25, 36, 29, .06); }
-.nav-item.is-disabled { opacity: .68; cursor: default; }
 .sidebar-foot { margin-top: auto; display: grid; gap: 12px; }
 .privacy-note { color: var(--ink-muted); font-size: 11px; }
 .privacy-note span { color: var(--accent); margin-right: 5px; }
@@ -450,7 +449,6 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 .settings-field { display: grid; gap: 4px; width: min(100%, 420px); font-size: 12px; }
 .settings-field label { font-weight: 700; }
 .settings-field p { margin: 0; }
-.settings-field .settings-checkbox { display: flex; gap: 6px; align-items: center; }
 /* Settings dropdowns wear the same field style as the profile form's. */
 .settings-field select { width: 100%; min-height: var(--control-md); padding: var(--space-3) var(--field-pad-x); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); color: var(--ink); font-size: 12px; font-weight: 400; }
 .settings-field select:focus { outline: 3px solid var(--focus); border-color: var(--accent); }
@@ -493,9 +491,6 @@ input.settings-switch:disabled { opacity: .6; cursor: progress; }
   .settings-section .settings-field:not(.settings-toggle) { grid-template-columns: minmax(0, 1fr); }
   .settings-section .settings-field:not(.settings-toggle) > select, .settings-section .settings-field:not(.settings-toggle) > input { grid-column: 1; grid-row: auto; margin-top: var(--space-2); }
 }
-@media (prefers-reduced-motion: reduce) {
-  input.settings-switch, input.settings-switch::before { transition: none; }
-}
 .board-tracker h4 { margin: 0; font-size: 13px; }
 .board-tracker p { margin: 0; }
 .board-tracker-form { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -523,7 +518,6 @@ input.settings-switch:disabled { opacity: .6; cursor: progress; }
 .refresh-dialog .form-status { min-height: 1.4em; margin: 18px 0 12px; font-size: 12px; }
 .refresh-dialog .form-status.is-error { color: var(--danger); }
 @keyframes refresh-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .refresh-steps li.is-running::before { animation: none; } }
 .capture-source-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 9px; align-items: center; margin-top: 22px; }
 .capture-source-form input { min-width: 0; min-height: var(--control-md); padding: 0 var(--field-pad-x); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-sunken); color: var(--ink); font-size: 11px; }
 .capture-source-form .primary-button { margin: 0; }
