@@ -832,9 +832,7 @@
     els.pageStatus.textContent = "";
     [els.statActive, els.statTotal, els.statTracked, els.statScore].forEach((stat) => { stat.textContent = "—"; });
     [els.role, els.region, els.source, els.term].forEach((select) => { select.options.length = 1; });
-    discoverTagPicker.reset();
-    state.company = "";
-    renderCompanyFilter();
+    resetDeckFilters();
     els.personalizePrompt.hidden = true;
     stopSessionPollers();
     state.refresh = null;
@@ -1553,6 +1551,13 @@
   function renderCompanyFilter() {
     els.companyFilter.hidden = !state.company;
     els.companyFilterName.textContent = state.company;
+  }
+
+  // Back to no tag and no single-company filter, as at sign-in.
+  function resetDeckFilters() {
+    discoverTagPicker.reset();
+    state.company = "";
+    renderCompanyFilter();
   }
 
   function showCompany(company) {
