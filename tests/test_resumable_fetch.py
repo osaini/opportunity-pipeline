@@ -26,6 +26,13 @@ SOURCES = {
     ],
 }
 
+try:
+    import realdata_guard
+except ImportError:  # imported as tests.<module>, with tests/ not on sys.path
+    from tests import realdata_guard
+# Guards this module's own run against opening data/*.db (AGENTS.md hard rule 1); see tests/realdata_guard.py.
+realdata_guard.install()
+
 
 class TransientErrorTests(unittest.TestCase):
     def test_connection_failures_timeouts_and_server_errors_are_transient(self):

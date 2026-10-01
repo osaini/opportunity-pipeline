@@ -295,7 +295,14 @@ def migrate_cached(legacy_path: Path, platform_path: Path, profile_path: Path) -
     key = ("legacy", _legacy_fingerprint(legacy_path), hashlib.sha256(profile_bytes).hexdigest())
 
     def build(template: _Template) -> None:
-        shutil.copyfile(legacy_path, template.legacy)
+        # The backup API reads through the legacy database's WAL, as the fingerprint above did; copying the file alone would
+        # leave out committed changes that are not yet checkpointed.
+        source, snapshot = sqlite3.connect(legacy_path), sqlite3.connect(template.legacy)
+        try:
+            source.backup(snapshot)
+        finally:
+            snapshot.close()
+            source.close()
         template.profile.write_bytes(profile_bytes)
         with fast_throwaway_databases():
             migrate_legacy_database(template.legacy, template.platform, template.profile)

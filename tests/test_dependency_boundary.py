@@ -19,6 +19,13 @@ FIRST_PARTY = {"pipeline", "pipeline_core"}
 STDLIB_ONLY_PRODUCT_MODULES = {"opportunity_app.opportunity_metadata"}
 OPTIONAL_THIRD_PARTY = {"playwright"}
 
+try:
+    import realdata_guard
+except ImportError:  # imported as tests.<module>, with tests/ not on sys.path
+    from tests import realdata_guard
+# Guards this module's own run against opening data/*.db (AGENTS.md hard rule 1); see tests/realdata_guard.py.
+realdata_guard.install()
+
 
 def _imports(path: Path) -> list[tuple[str, bool]]:
     """(module, guarded_by_ImportError) for every absolute import in a file."""

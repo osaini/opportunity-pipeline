@@ -58,6 +58,12 @@ class OpeningRealDataFailsLoudlyTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.refuse(lambda: sqlite3.connect(DATA / name))
 
+    def test_dated_backups_and_any_other_name_in_the_data_directory_are_refused(self):
+        # The real directory holds platform.db.pre-0047-backup, platform.db.bak-pre-callprep-regen-2026-09-29 and similar.
+        for name in ("platform.db.pre-0047-backup", "platform.db.pre-0029-backup-wal", "platform.db.bak-pre-x", "notes.txt"):
+            with self.subTest(name=name):
+                self.refuse(lambda: sqlite3.connect(DATA / name))
+
     def test_a_relative_path_and_dot_dot_segments_are_resolved_before_the_check(self):
         with mock.patch("os.getcwd", return_value=str(ROOT)), mock.patch.object(Path, "cwd", return_value=ROOT):
             self.refuse(lambda: sqlite3.connect("data/platform.db"))
@@ -67,6 +73,22 @@ class OpeningRealDataFailsLoudlyTests(unittest.TestCase):
         uri = DATA.joinpath("platform.db").as_uri()
         self.refuse(lambda: sqlite3.connect(f"{uri}?mode=ro", uri=True))
         self.refuse(lambda: sqlite3.connect(uri, uri=True))
+
+    def test_an_ordinary_path_is_refused_even_when_uri_is_true(self):
+        # With uri=True sqlite still opens a name that does not start with "file:" as an ordinary filename.
+        for name in ("platform.db", "pipeline.db", "platform.db.pre-0047-backup"):
+            with self.subTest(name=name):
+                self.refuse(lambda: sqlite3.connect(str(DATA / name), uri=True))
+                self.refuse(lambda: sqlite3.connect(DATA / name, uri=True))
+        with mock.patch("os.getcwd", return_value=str(ROOT)), mock.patch.object(Path, "cwd", return_value=ROOT):
+            self.refuse(lambda: sqlite3.connect("data/platform.db", uri=True))
+
+    def test_memory_mode_is_the_exact_query_parameter_not_a_substring(self):
+        uri = DATA.joinpath("platform.db").as_uri()
+        self.refuse(lambda: sqlite3.connect(f"{uri}?mode=ro&unused=mode=memory", uri=True))
+        self.refuse(lambda: sqlite3.connect(f"{uri}?mode=ro&note=memory", uri=True))
+        self.assertFalse(realdata_guard.is_real_data_path(f"{uri}?mode=memory", uri=True))
+        self.assertFalse(realdata_guard.is_real_data_path(f"{uri}?cache=shared&mode=memory", uri=True))
 
     def test_the_defaults_the_code_uses_are_refused(self):
         self.assertEqual(DEFAULT_PLATFORM_DB.resolve(), (DATA / "platform.db").resolve())
@@ -126,11 +148,31 @@ class NormalOpensStillWorkTests(unittest.TestCase):
             finally:
                 conn.close()
 
-    def test_a_non_database_file_in_data_is_not_a_database_open(self):
-        self.assertFalse(realdata_guard.is_real_data_path(DATA / "manual_jobs.csv"))
-        self.assertFalse(realdata_guard.is_real_data_path(DATA / "web.log"))
+    def test_paths_outside_the_data_directory_and_memory_targets_are_not_refused(self):
+        self.assertFalse(realdata_guard.is_real_data_path(ROOT / "tests" / "fixtures" / "anything.db"))
+        self.assertFalse(realdata_guard.is_real_data_path(ROOT / "data-not-really" / "platform.db"))
         self.assertFalse(realdata_guard.is_real_data_path(":memory:"))
         self.assertFalse(realdata_guard.is_real_data_path("file::memory:?cache=shared", uri=True))
+
+
+class EveryTestModuleIsGuardedTests(unittest.TestCase):
+    """`python -m unittest tests.test_x` runs one module alone, so each module must install the guard through an import of its own."""
+
+    # Modules that import one of these install the guard as a side effect (each of these imports helpers_platform or the guard).
+    INSTALLERS = ("realdata_guard", "helpers_platform", "helpers_apply", "helpers_gmail")
+
+    def test_every_test_module_imports_something_that_installs_the_guard(self):
+        modules = sorted((ROOT / "tests").glob("test_*.py"))
+        self.assertGreater(len(modules), 50)
+        unguarded = [path.name for path in modules
+                     if not any(name in path.read_text(encoding="utf-8") for name in self.INSTALLERS)]
+        self.assertEqual(unguarded, [], "import realdata_guard and call install() in these modules")
+
+    def test_the_installing_helpers_really_import_it(self):
+        tests = ROOT / "tests"
+        self.assertIn("realdata_guard.install()", (tests / "helpers_platform.py").read_text(encoding="utf-8"))
+        for name in ("helpers_apply", "helpers_gmail"):
+            self.assertIn("from helpers_platform import", (tests / f"{name}.py").read_text(encoding="utf-8"), name)
 
 
 if __name__ == "__main__":

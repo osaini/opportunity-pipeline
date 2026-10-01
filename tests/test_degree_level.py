@@ -15,6 +15,13 @@ import unittest
 import pipeline
 from opportunity_app.setup import validate_profile
 
+try:
+    import realdata_guard
+except ImportError:  # imported as tests.<module>, with tests/ not on sys.path
+    from tests import realdata_guard
+# Guards this module's own run against opening data/*.db (AGENTS.md hard rule 1); see tests/realdata_guard.py.
+realdata_guard.install()
+
 
 def _profile(**overrides):
     profile = {

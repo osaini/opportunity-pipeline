@@ -39,6 +39,13 @@ OPENAPI = FIXTURES / "openapi.json"
 UPDATE = os.environ.get("UPDATE_SNAPSHOTS") == "1"
 DIFF_LINES = 80
 
+try:
+    import realdata_guard
+except ImportError:  # imported as tests.<module>, with tests/ not on sys.path
+    from tests import realdata_guard
+# Guards this module's own run against opening data/*.db (AGENTS.md hard rule 1); see tests/realdata_guard.py.
+realdata_guard.install()
+
 
 def _model_name(model):
     if model is None:

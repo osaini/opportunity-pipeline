@@ -19,6 +19,13 @@ from opportunity_app.resumes import (
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
+try:
+    import realdata_guard
+except ImportError:  # imported as tests.<module>, with tests/ not on sys.path
+    from tests import realdata_guard
+# Guards this module's own run against opening data/*.db (AGENTS.md hard rule 1); see tests/realdata_guard.py.
+realdata_guard.install()
+
 
 def sample_text() -> str:
     return (FIXTURES / "resume_sample.txt").read_text(encoding="utf-8")

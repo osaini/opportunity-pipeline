@@ -123,23 +123,32 @@ def _skip_block(text, i):
     raise ValueError("unbalanced braces")
 
 
-def apply_modules(exclude_store=False):
-    """{relative posix path: text} for every Apply-for-me module under opportunity_app/.
+def is_apply_module(relative, exclude_store=False):
+    """Whether the posix path `relative` (from opportunity_app/) is an Apply-for-me module, at any depth.
 
-    That is every file `apply*.py` plus every file inside an `apply*/` package (so a later apply/ package is covered without
-    editing the test). The browser extension's server half, extension_apply.py, is not part of it on purpose: its label-pattern
-    regexes are the very thing the agent's policy must not copy. `exclude_store` also leaves out the sensitive-answer store's own
-    module, whether it stays apply_sensitive.py, becomes an apply_sensitive/ package, or moves to apply/sensitive.py.
+    That is a file named `apply*.py` or any file inside a directory named `apply*`, wherever it sits: opportunity_app/apply_x.py,
+    opportunity_app/apply/x.py, opportunity_app/routers/apply_x.py or opportunity_app/routers/apply/x.py. `exclude_store` leaves
+    out the sensitive-answer store's own module: apply_sensitive.py, an apply_sensitive/ package, or apply*/sensitive.py.
     """
-    modules = {}
-    for relative, text in python_modules("*.py").items():
-        if not relative.split("/", 1)[0].startswith("apply"):
-            continue
-        stem = relative[:-3] if relative.endswith(".py") else relative
-        if exclude_store and (stem == "apply_sensitive" or stem.startswith("apply_sensitive/")
-                              or stem == "apply/sensitive" or stem.startswith("apply/sensitive/")):
-            continue
-        modules[relative] = text
+    parts = relative.split("/")
+    if not any(part.startswith("apply") for part in parts):
+        return False
+    if exclude_store:
+        stems = [part[:-3] if part.endswith(".py") else part for part in parts]
+        if "apply_sensitive" in stems:
+            return False
+        if any(before.startswith("apply") and after == "sensitive" for before, after in zip(stems, stems[1:])):
+            return False
+    return True
+
+
+def apply_modules(exclude_store=False):
+    """{relative posix path: text} for every Apply-for-me module under opportunity_app/ (see is_apply_module).
+
+    The browser extension's server half, extension_apply.py, is not part of it on purpose: its label-pattern regexes are the very
+    thing the agent's policy must not copy.
+    """
+    modules = {relative: text for relative, text in python_modules("*.py").items() if is_apply_module(relative, exclude_store)}
     if not modules:
         raise AssertionError("no apply modules found under opportunity_app/")
     return modules

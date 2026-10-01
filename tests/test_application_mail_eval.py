@@ -50,6 +50,13 @@ AUTO_LABELS = ("rejected", "interview")
 # When the set's emails arrived, so a stated date reads the same whatever day the test runs.
 RECEIVED = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
 
+try:
+    import realdata_guard
+except ImportError:  # imported as tests.<module>, with tests/ not on sys.path
+    from tests import realdata_guard
+# Guards this module's own run against opening data/*.db (AGENTS.md hard rule 1); see tests/realdata_guard.py.
+realdata_guard.install()
+
 
 def examples(key="emails"):
     data = json.loads(FIXTURE.read_text(encoding="utf-8"))

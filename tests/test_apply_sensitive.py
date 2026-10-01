@@ -1098,27 +1098,50 @@ class StoreReaderScanTests(unittest.TestCase):
         self.assertEqual([path.relative_to(REPO).as_posix() for path in named if not self.allowed(path)], [],
                          "a file that reads the store must be added here on purpose")
 
+    def package_modules(self):
+        return [path for path in (REPO / "opportunity_app").rglob("*.py")]
+
+    def in_module(self, path, name):
+        """Whether `path` is the module `name` (repo-relative, no .py) or sits inside a package of that name."""
+        module = path.relative_to(REPO).as_posix()[:-3]
+        return module == name or module.startswith(name + "/")
+
     def test_employer_and_reporting_code_never_read_the_store_or_import_it(self):
-        reporting = [path for path in (REPO / "opportunity_app").rglob("*.py")
-                     if re.search(r"employer|report|metric|analytic|fairness|subgroup|export_pipeline|dossier|digest", path.name)]
-        self.assertIn("employer.py", {path.name for path in reporting})
+        # Matched against the repo-relative path, so a reporting module moved into a subpackage (opportunity_app/metrics/x.py,
+        # opportunity_app/reports/x.py) is still found, whatever its own file name.
+        pattern = r"employer|report|metric|analytic|fairness|subgroup|export_pipeline|dossier|digest"
+        reporting = [path for path in self.package_modules() if re.search(pattern, path.relative_to(REPO).as_posix())]
+        self.assertIn("opportunity_app/employer.py", {path.relative_to(REPO).as_posix() for path in reporting})
         for path in reporting:
             text = path.read_text(encoding="utf-8")
-            with self.subTest(file=path.name):
+            with self.subTest(file=path.relative_to(REPO).as_posix()):
                 self.assertNotRegex(text, r"apply_sensitive|apply_policy|sensitive_answers|stored_sensitive_answer")
         for path in [REPO / "pipeline.py"] + list((REPO / "pipeline_core").rglob("*.py")):
-            self.assertNotIn("apply_sensitive", path.read_text(encoding="utf-8"), path.name)
+            self.assertNotIn("apply_sensitive", path.read_text(encoding="utf-8"), path.relative_to(REPO).as_posix())
+
+    # The modules that may import the store, keyed like ALLOWED on the path from the repo root: the plan, the check, and the
+    # settings routes (still in api.py). A file or package at another path that imports it fails, however it is named.
+    IMPORTERS = ("opportunity_app/apply_policy", "opportunity_app/apply_preflight", "opportunity_app/api")
 
     def test_only_the_plan_the_check_and_the_settings_routes_import_the_store(self):
-        importers = {path.name for path in (REPO / "opportunity_app").rglob("*.py")
-                     if re.search(r"\bapply_sensitive\b", path.read_text(encoding="utf-8")) and path.name != "apply_sensitive.py"}
-        self.assertEqual(importers, {"apply_policy.py", "apply_preflight.py", "api.py"})
+        importers = {path.relative_to(REPO).as_posix() for path in self.package_modules()
+                     if re.search(r"\bapply_sensitive\b", path.read_text(encoding="utf-8"))
+                     and not self.in_module(path, "opportunity_app/apply_sensitive")}
+        self.assertTrue(importers, "the scan found the files it should")
+        self.assertEqual([item for item in sorted(importers)
+                          if not any(self.in_module(REPO / (item), name) for name in self.IMPORTERS)], [],
+                         "a module that imports the store must be added to IMPORTERS on purpose")
+        for name in self.IMPORTERS:
+            self.assertTrue(any(item == name + ".py" or item.startswith(name + "/") for item in importers), f"{name} no longer imports the store")
 
     def test_the_extension_and_the_saved_answer_library_code_never_touch_it(self):
-        for name in ("extension_apply.py", "preparation.py", "profile.py", "resume_variants.py"):
-            text = (REPO / "opportunity_app" / name).read_text(encoding="utf-8")
-            with self.subTest(file=name):
-                self.assertNotRegex(text, r"apply_sensitive|sensitive_answers|stored_sensitive_answer")
+        # Every module of these names, whether it stays one file or becomes a package (preparation/...).
+        for name in ("extension_apply", "preparation", "profile", "resume_variants"):
+            found = [path for path in self.package_modules() if self.in_module(path, f"opportunity_app/{name}")]
+            self.assertTrue(found, f"no module found for opportunity_app/{name}")
+            for path in found:
+                with self.subTest(file=path.relative_to(REPO).as_posix()):
+                    self.assertNotRegex(path.read_text(encoding="utf-8"), r"apply_sensitive|sensitive_answers|stored_sensitive_answer")
 
 
 if __name__ == "__main__":

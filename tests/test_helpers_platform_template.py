@@ -16,6 +16,7 @@ import unittest
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -131,17 +132,45 @@ class TemplateCopyTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0], 0)
 
     def test_the_escape_hatch_migrates_for_real(self):
+        # Wrapping the real migration shows it ran: a cached copy never calls it, so a broken hatch would leave `calls` empty.
         previous = os.environ.get("PIPELINE_TEST_FRESH_DB")
         os.environ["PIPELINE_TEST_FRESH_DB"] = "1"
         try:
-            legacy, platform = self.make("hatch", helpers.build_and_migrate)
+            with mock.patch.object(helpers, "migrate_legacy_database", wraps=helpers.migrate_legacy_database) as migrate:
+                legacy, platform = self.make("hatch", helpers.build_and_migrate)
         finally:
             if previous is None:
                 os.environ.pop("PIPELINE_TEST_FRESH_DB")
             else:
                 os.environ["PIPELINE_TEST_FRESH_DB"] = previous
+        migrate.assert_called_once()
+        self.assertEqual(migrate.call_args.args[:2], (legacy, platform))
         with closing(sqlite3.connect(platform)) as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0], 2)
+
+    def test_a_cached_copy_does_not_run_the_migration_again(self):
+        self.make("warm", helpers.build_and_migrate)  # builds the template when this is the first call in the process
+        with mock.patch.object(helpers, "migrate_legacy_database") as migrate:
+            self.make("cold", helpers.build_and_migrate)
+        migrate.assert_not_called()
+
+    def test_committed_changes_still_in_the_legacy_wal_reach_the_migration(self):
+        root = self.root / "wal"
+        root.mkdir()
+        legacy, platform = root / "pipeline.db", root / "platform.db"
+        helpers._write_legacy_database(legacy)
+        writer = sqlite3.connect(legacy)
+        self.addCleanup(writer.close)
+        # Held open, with auto-checkpointing off: the committed change stays in pipeline.db-wal, not in pipeline.db itself.
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("UPDATE jobs SET title='Only in the legacy WAL' WHERE id='job-a'")
+        writer.commit()
+        self.assertTrue(legacy.with_name("pipeline.db-wal").stat().st_size, "the change must be uncheckpointed for this test to mean anything")
+        helpers.migrate_cached(legacy, platform, helpers.build_profile(root))
+        with closing(sqlite3.connect(platform)) as conn:
+            titles = [row[0] for row in conn.execute("SELECT title FROM opportunities")]
+        self.assertIn("Only in the legacy WAL", titles)
 
     def test_production_connections_keep_the_default_durability(self):
         """Only builds inside fast_throwaway_databases() skip the fsync."""

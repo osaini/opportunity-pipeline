@@ -5,15 +5,15 @@ patching `pipeline.DB_PATH` (about 30 sites) or by passing a temp path to create
 one of those globals, or a new test that forgets the patch, would quietly open the real file: sqlite creates and migrates a
 missing database and opens an existing one, and nothing fails.
 
-`install()` wraps `sqlite3.connect` for the whole test process so that opening any database file inside a real data directory
+`install()` wraps `sqlite3.connect` for the whole test process so that opening any file inside a real data directory
 raises RealDataAccessError before the file is opened or created. Every module in the project opens SQLite through
 `sqlite3.connect`, so this sits below `pipeline.connect`, `schema.connect_product`, the read model and every helper.
 
 It lives in test code: nothing under opportunity_app/, pipeline.py or pipeline_core/ knows about it, and outside a test process
 (nothing imports this file) production behaviour is untouched. It is installed from tests/conftest.py (pytest: the unit suite
-and tests/ui), from tests/helpers_platform.py (imported by nearly every unittest module, so `python -m unittest tests.test_x`
-is covered too) and from tests/test_real_data_guard.py (so `unittest discover` is covered even for a module that imports
-neither). Installing twice is harmless.
+and tests/ui) and by every tests/test_*.py module, directly or through helpers_platform, helpers_apply or helpers_gmail, so a
+single-module run (`python -m unittest tests.test_pipeline`) is covered too. tests/test_real_data_guard.py fails when a module
+is added without one of those imports. Installing twice is harmless.
 
 The exception derives from BaseException on purpose: code under test that wraps a database open in `except Exception` or
 `except sqlite3.Error` to degrade gracefully must not be able to hide an open of the real file.
@@ -31,8 +31,6 @@ import urllib.parse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-# A database file, or the journal files sqlite keeps beside one.
-_DATABASE_FILE = re.compile(r"\.(?:db|sqlite3?)(?:-wal|-shm|-journal)?$", re.IGNORECASE)
 
 
 class RealDataAccessError(BaseException):
@@ -68,37 +66,47 @@ def real_data_dirs(root=ROOT):
     return tuple(dict.fromkeys(resolved))
 
 
-def _target_path(database, uri):
-    """The filesystem path a sqlite3.connect(database) call would open, or None for an in-memory or unparseable target."""
+def _target_paths(database, uri):
+    """The filesystem paths a sqlite3.connect(database, uri=uri) call could open; empty for an in-memory or unparseable target.
+
+    More than one when the call is ambiguous: a "file:" name is a URI with uri=True and a literal file name otherwise, and the
+    guard refuses either reading. A plain path is checked whatever `uri` says, since sqlite opens it as an ordinary filename.
+    """
     try:
         text = os.fsdecode(os.fspath(database))
     except TypeError:
-        return None
+        return []
     if not text or text == ":memory:":
-        return None
-    if uri or text.startswith("file:"):
-        if not text.startswith("file:"):
-            return None
+        return []
+    paths = [Path(text).expanduser()]
+    if text.startswith("file:"):
         parsed = urllib.parse.urlparse(text)
         raw = urllib.parse.unquote(parsed.path or parsed.netloc)
         if re.match(r"^/[A-Za-z]:", raw):  # file:///C:/x/y.db
             raw = raw[1:]
-        if raw in ("", ":memory:") or "mode=memory" in parsed.query:
-            return None
-        text = raw
-    return Path(text).expanduser()
+        in_memory = "memory" in urllib.parse.parse_qs(parsed.query).get("mode", [])  # the exact parameter, not a substring
+        if uri and (raw in ("", ":memory:") or in_memory):
+            return []
+        if raw not in ("", ":memory:") and not in_memory:
+            paths.append(Path(raw).expanduser())
+    return paths
 
 
 def is_real_data_path(database, *, uri=False, dirs=None):
-    """Whether opening `database` would open a database file inside a real data directory."""
-    path = _target_path(database, uri)
-    if path is None or not _DATABASE_FILE.search(path.name):
-        return False
-    try:
-        resolved = (path if path.is_absolute() else Path.cwd() / path).resolve()
-    except OSError:
-        return False
-    return any(resolved.is_relative_to(directory) for directory in (dirs if dirs is not None else real_data_dirs()))
+    """Whether opening `database` would open anything inside a real data directory.
+
+    Any file, whatever its name: the real directory holds the databases, their -wal/-shm/-journal files and dated backups
+    (platform.db.pre-0047-backup and the like), and no test has a reason to open a database anywhere under it.
+    """
+    directories = tuple(dirs if dirs is not None else real_data_dirs())
+    for path in _target_paths(database, uri):
+        try:
+            resolved = (path if path.is_absolute() else Path.cwd() / path).resolve()
+        except OSError:
+            continue
+        if any(resolved.is_relative_to(directory) for directory in directories):
+            return True
+    return False
 
 
 _GUARD_NAME = "guarded_connect"

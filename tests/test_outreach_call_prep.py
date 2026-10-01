@@ -30,7 +30,7 @@ from opportunity_app.schema import connect_product, ensure_product_schema
 from opportunity_app.worker import WEB_APP_JOB_TYPES
 
 from helpers_platform import build_and_migrate
-from helpers_source import js_function, static_script_text
+from helpers_source import js_function, python_modules, static_script_text
 from helpers_outreach import BLOCKED_FACT, BRIEF, PORT_FACT, STACK_FACT, store_brief
 from helpers_outreach import DRAFTING_AUTH as AUTH, USER, confirm_facts
 from helpers_outreach import DraftingScriptedProvider as DraftProvider
@@ -1200,9 +1200,13 @@ class CallPrepApiTests(unittest.TestCase):
         self.assertNotIn("it never names the company", script)
         # A separate read of a passage is not a different model, so no copy says it is.
         self.assertNotIn("a second model confirm", script)
-        for name in ("outreach_research.py", "outreach_interviewer.py", "outreach_call_prep.py"):
-            text = (Path(outreach_call_prep.__file__).parent / name).read_text(encoding="utf-8").casefold()
-            self.assertNotIn("second model", text, name)
+        # The call-prep modules, whether each stays one file or becomes a package. Other outreach modules legitimately say
+        # "second model": the follow-up and thank-you reviews really are read by a different model.
+        names = ("outreach_research", "outreach_interviewer", "outreach_call_prep")
+        modules = {path: text for path, text in python_modules("*.py").items() if path.split("/")[0].removesuffix(".py") in names}
+        self.assertEqual({path.split("/")[0].removesuffix(".py") for path in modules}, set(names))
+        for name, text in modules.items():
+            self.assertNotIn("second model", text.casefold(), name)
         readme = (Path(outreach_call_prep.__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
         self.assertNotIn("second model confirms", readme)
         self.assertNotIn("a second model which did not write", readme)

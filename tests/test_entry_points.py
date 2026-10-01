@@ -89,6 +89,31 @@ def references():
     return modules, uvicorn, scripts
 
 
+NL = chr(10)
+
+
+def main_guard_calls_main(source):
+    """Whether the module-level `if __name__ == "__main__":` block calls `main(...)`.
+
+    `--help` and an import both succeed when this block is deleted or stops calling main, while `python -m <module>` silently does
+    nothing, so the guard itself is checked structurally.
+    """
+    for node in ast.parse(source).body:
+        if not (isinstance(node, ast.If) and isinstance(node.test, ast.Compare) and isinstance(node.test.left, ast.Name)
+                and node.test.left.id == "__name__"):
+            continue
+        for call in (item for statement in node.body for item in ast.walk(statement) if isinstance(item, ast.Call)):
+            target = call.func
+            if (isinstance(target, ast.Name) and target.id == "main") or (isinstance(target, ast.Attribute) and target.attr == "main"):
+                return True
+    return False
+
+
+def module_source(module):
+    spec = importlib.util.find_spec(module)
+    return Path(spec.origin).read_text(encoding="utf-8")
+
+
 def run_help(arguments):
     return subprocess.run(
         [sys.executable, *arguments, "--help"], cwd=ROOT, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL,
@@ -150,6 +175,20 @@ class EntryPointsRunTests(unittest.TestCase):
             with self.subTest(module=module):
                 self.assertTrue(callable(getattr(importlib.import_module(module), "main", None)), f"{module} has no main()")
 
+    def test_every_python_m_module_starts_main_from_its_main_guard(self):
+        for module in HELP_MODULES + IMPORT_ONLY_MODULES:
+            with self.subTest(module=module):
+                self.assertTrue(main_guard_calls_main(module_source(module)),
+                                f"`python -m {module}` would import and exit without running main()")
+
+    def test_the_main_guard_check_notices_a_missing_or_empty_guard(self):
+        head = "def main():" + NL + "    pass" + NL + NL
+        guard = 'if __name__ == "__main__":' + NL
+        self.assertTrue(main_guard_calls_main(head + guard + "    raise SystemExit(main())" + NL))
+        self.assertFalse(main_guard_calls_main(head))
+        self.assertFalse(main_guard_calls_main(head + guard + "    pass" + NL))
+        self.assertFalse(main_guard_calls_main(head + guard + "    other()" + NL))
+
     def test_the_api_module_exposes_app_create_app_and_a_parser(self):
         api = importlib.import_module("opportunity_app.api")
         self.assertTrue(callable(api.create_app))
@@ -164,7 +203,7 @@ class EntryPointsRunTests(unittest.TestCase):
                 source = (ROOT / name).read_text(encoding="utf-8")
                 tree = ast.parse(source, filename=name)
                 self.assertIn("main", {node.name for node in tree.body if isinstance(node, ast.FunctionDef)})
-                self.assertRegex(source, r'if __name__ == "__main__":')
+                self.assertTrue(main_guard_calls_main(source), f"{name} has no __main__ guard that calls main()")
 
     def test_the_sandbox_server_still_finds_the_test_helpers_it_imports(self):
         # scripts/serve_for_testing.py imports helpers out of tests/ and tests/ui/ by bare module name; moving one silently breaks
