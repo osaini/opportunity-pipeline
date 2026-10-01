@@ -25,7 +25,7 @@ from typing import Any
 from pipeline_core.identity import employer_key
 from pipeline_core.visibility import capture_visible_sql
 
-from . import apply_policy, apply_runs, apply_sensitive, preparation
+from . import apply_classify, apply_policy, apply_runs, apply_sensitive, preparation
 from .actions import OpportunityNotFoundError
 from .apply_schema_client import SchemaClient, SchemaUnavailable
 from .apply_checks import question_key
@@ -139,7 +139,7 @@ def _action(entry: apply_policy.PlanField, facts: dict[str, Any]) -> dict[str, A
         if form:
             return form
     if kind in ("sensitive_never", "sensitive_not_allowed", "sensitive_missing", "sensitive_mismatch"):
-        return {"type": "manual", "category": entry.sensitive or "", "words": apply_policy.CATEGORY_WORDS.get(entry.sensitive or "", ""),
+        return {"type": "manual", "category": entry.sensitive or "", "words": apply_classify.CATEGORY_WORDS.get(entry.sensitive or "", ""),
                 # A category the student may switch on in Apply for me settings, so the view can say so.
                 "allowable": kind == "sensitive_not_allowed" and (entry.sensitive or "") in apply_sensitive.STORABLE}
     return {"type": "none"}
@@ -183,12 +183,12 @@ def _sensitive_form(entry: apply_policy.PlanField, kind: str) -> dict[str, Any] 
             return None
     elif entry.control not in ("select", "multiselect", "text", "textarea", "checkbox"):
         return None
-    if statement and not apply_policy.statement_control(entry.control, entry.options):
+    if statement and not apply_classify.statement_control(entry.control, entry.options):
         # A statement is stored only as ticked, so a box or a Yes/No question can carry it and a text or list field cannot.
         return None
     return {
         "type": "sensitive", "control": entry.control, "options": options, "category": category,
-        "words": apply_policy.CATEGORY_WORDS.get(category, ""), "statement": entry.statement if statement or entry.control == "checkbox" else "", "links": list(entry.links),
+        "words": apply_classify.CATEGORY_WORDS.get(category, ""), "statement": entry.statement if statement or entry.control == "checkbox" else "", "links": list(entry.links),
         "decline_only": category in apply_sensitive.EEO_CATEGORIES,
         # A question that depends on its company, a mismatch (this form's own wording or address) and a statement that
         # points to a document or leans on text elsewhere are saved for this company only; the tick for any company is then

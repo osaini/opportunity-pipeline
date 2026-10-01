@@ -16,12 +16,10 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import actions, apply_checks, apply_policy, apply_preflight, apply_runs, preparation
+from opportunity_app import actions, apply_checks, apply_classify, apply_policy, apply_preflight, apply_runs, preparation
 from opportunity_app.apply_checks import question_key
-from opportunity_app.apply_policy import (
-    SchemaField, Sources, build_plan, classify_sensitive, context_dependent, identify, needs_label_key, parse_schema,
-    plan_hash, resume_for, without_enumeration,
-)
+from opportunity_app.apply_classify import classify_sensitive, context_dependent, needs_label_key, without_enumeration
+from opportunity_app.apply_policy import SchemaField, Sources, build_plan, identify, parse_schema, plan_hash, resume_for
 from opportunity_app.extension_apply import SENSITIVE_FIELD
 from opportunity_app.profile import update_profile
 from opportunity_app.timestamps import utc_now
@@ -86,7 +84,7 @@ class ClassifierTests(unittest.TestCase):
         for row in rows:
             with self.subTest(question=row["question"], section=row.get("section", "")):
                 item = vector_field(row)
-                got = apply_policy.classify_item(item, apply_policy.control_of(item), None, follows=bool(row.get("parent")))
+                got = apply_classify.classify_item(item, apply_policy.control_of(item), None, follows=bool(row.get("parent")))
                 self.assertEqual(got, row["expected"])
                 if not (row.get("control") or row.get("description") or row.get("parent")):
                     self.assertEqual(classify_sensitive(row["question"], row.get("options", ()), row.get("section", ""), row.get("field_name", "")), row["expected"])
@@ -98,7 +96,7 @@ class ClassifierTests(unittest.TestCase):
             if flagged:
                 self.assertIsNotNone(classify_sensitive(row["question"], (), row.get("section", ""), row.get("field_name", "")), row["question"])
                 item = vector_field(row)
-                self.assertIsNotNone(apply_policy.classify_item(item, apply_policy.control_of(item)), row["question"])
+                self.assertIsNotNone(apply_classify.classify_item(item, apply_policy.control_of(item)), row["question"])
 
     def test_the_extension_rule_is_a_floor_for_anything_the_rows_do_not_place(self):
         for text in ("Do you have authorization?", "Are you a Green Card holder or on a TN visa?", "Please confirm your clearance level"):
@@ -714,7 +712,7 @@ class TruthTablePlanRows(unittest.TestCase):
             SchemaField(name="question_4", label="Acknowledgement", required=True, type=MULTI, options=("I agree",),
                         description="<p>I certify that I will relocate to Austin at my own expense.</p>"),
         ]
-        keys = {apply_policy.question_key(apply_policy.statement_of(box, "checkbox")) for box in boxes}
+        keys = {apply_policy.question_key(apply_classify.statement_of(box, "checkbox")) for box in boxes}
         self.assertEqual(len(keys), 3)
         asked = []
 
@@ -727,7 +725,7 @@ class TruthTablePlanRows(unittest.TestCase):
         self.assertEqual(len(set(asked)), 3)
         # An option that says what it agrees to is still not the statement by itself: the heading is part of what is agreed to.
         specific = SchemaField(name="q", label="Anything", required=True, type=MULTI, options=(PRIVACY,))
-        self.assertEqual(apply_policy.statement_of(specific, "checkbox"), f"Anything {PRIVACY}")
+        self.assertEqual(apply_classify.statement_of(specific, "checkbox"), f"Anything {PRIVACY}")
 
     def test_a_privacy_box_is_an_acknowledgment_whatever_its_heading_says(self):
         statement = "I have read and agree to the Candidate Privacy Statement"

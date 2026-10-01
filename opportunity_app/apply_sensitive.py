@@ -45,6 +45,16 @@ from pipeline_core.identity import employer_key, normalized_text
 from pipeline_core.visibility import capture_visible_sql
 
 from .apply_checks import question_key
+from .apply_classify import (
+    NEVER_STORABLE_TOPICS,
+    RESTRICTION,
+    STATEMENT_CATEGORIES,
+    TICKABLE,
+    classify_sensitive,
+    context_dependent,
+    eeo_words,
+    net_topics,
+)
 from .settings_store import get_setting, put_setting
 from .timestamps import utc_now
 
@@ -75,9 +85,6 @@ STORABLE = (
     "acknowledgment", "consent",
 )
 EEO_CATEGORIES = tuple(category for category in STORABLE if category.startswith("eeo_"))
-STATEMENT_CATEGORIES = ("acknowledgment", "consent")
-# A single box that states the answer ("I confirm that I am at least 18 years of age") is stored as ticked too.
-TICKABLE = ("work_authorization", "sponsorship", "age_18")
 # What the app writes in place of a consent statement the listing does not carry. It is never a statement to store.
 PLACEHOLDER_NOTE = "(the statement is on the form)"
 # What the student switches on, in words. One switch covers the five EEO fields, which are stored as declines only.
@@ -214,7 +221,7 @@ def cites_document(statement: str, links: Iterable[str] = (), *, names: bool = T
     ``names`` is on for a legal acknowledgment or a data consent, whose whole point is the text it agrees to, and off for a box
     that states a fact about the student ("I am authorized to work in the United States"), which names a place, not a document.
     It reads a capitalized name after "the", "our" or "its" as a document, and fails closed on any agreement the broad net
-    finds (apply_policy.NET_TOPICS): such a statement names no document only when the app can prove it, which is a plain
+    finds (apply_classify.NET_TOPICS): such a statement names no document only when the app can prove it, which is a plain
     certification that the student's answers are true. The word lists above catch the common documents; the rule is that a
     list of nouns can never be complete, so anything that agrees to something and is not provably plain is kept for one company.
     """
@@ -224,8 +231,6 @@ def cites_document(statement: str, links: Iterable[str] = (), *, names: bool = T
         return False
     if _NAMED_DOCUMENT.search(html.unescape(str(statement or ""))):
         return True
-    from .apply_policy import net_topics
-
     return "agreement" in net_topics(statement) and not _names_no_document(statement)
 
 
@@ -286,9 +291,7 @@ def add_entry(
     if not key:
         raise StoreRefused("Give the question exactly as the form shows it")
     # The wording decides too: an answer to "Are you a U.S. citizen or authorized to work in the U.S.?" is never stored
-    # under a more permissive name. The classifier is the plan's own, imported here because the plan imports this module.
-    from .apply_policy import NEVER_STORABLE_TOPICS, classify_sensitive, eeo_words, net_topics
-
+    # under a more permissive name. The classifier is the plan's own (apply_classify).
     read_as = classify_sensitive(text)
     if read_as in _NEVER:
         raise StoreRefused(f"This question reads as one the app never answers. {_NEVER[read_as]}")
@@ -383,14 +386,10 @@ def add_entry(
 
 def _stricter(read_as: str, category: str) -> bool:
     """Whether a wording's reading is a more restrictive kind than the one it is filed under (the plan's own order)."""
-    from .apply_policy import _RESTRICTION
-
-    return _RESTRICTION.index(read_as) < _RESTRICTION.index(category)
+    return RESTRICTION.index(read_as) < RESTRICTION.index(category)
 
 
 def _depends_on_company(key: str) -> bool:
-    from .apply_policy import context_dependent
-
     return context_dependent(key)
 
 
@@ -477,8 +476,6 @@ def _any_company_choice(category: str, answer_kind: str, question_text: str, ans
         return True
     if category not in TICKABLE or answer_kind != "option":
         return False
-    from .apply_policy import net_topics
-
     return "agreement" not in net_topics(f"{question_text} {answer}")
 
 

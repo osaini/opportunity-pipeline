@@ -299,7 +299,7 @@ from .outreach_delivery import bounce_from_text, check_deliveries
 from .inbox_watcher import InboxWatcher
 from .outreach_inbox import PossibleReplyNotFound, PossibleReplySettled, capture_replies, decide_possible_reply
 from .outreach_forms import default_submitter_factory as default_form_submitter_factory, set_contact_form, submit_contact_form
-from . import apply_policy, apply_preflight, apply_runs, apply_sensitive
+from . import apply_classify, apply_policy, apply_preflight, apply_runs, apply_sensitive
 from .apply_runs import recover_stale as recover_stale_applications
 from .apply_schema_client import SchemaClient, default_schema_client_factory
 from .outreach_automation import AutomationWorker, settings as automation_settings, update_settings as update_automation_settings
@@ -4209,7 +4209,7 @@ def create_app(
         conn, device = context
         # The precise rule, and the broad net's never-storable topics (criminal history, personal details, pay, security): a wording
         # the precise rule misses is still never offered for saving here (spec 7.3 "As built").
-        if answer_is_sensitive(payload.question) or apply_policy.never_storable(payload.question):
+        if answer_is_sensitive(payload.question) or apply_classify.never_storable(payload.question):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="Sensitive or consequential answers cannot enter the reusable library",

@@ -107,7 +107,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
     2: _app("agent_providers web_fetch gmail_client typesafe_decisions outreach_smtp document_pdf"),
     # L3 domain.
     3: _app(
-        "actions auth apply_checks apply_policy apply_sensitive apply_schema_client automation boards captures connections "
+        "actions auth apply_checks apply_classify apply_policy apply_sensitive apply_schema_client automation boards captures connections "
         "dossier employer market early_programs extension_apply mail_trust notifications purge ingestion profile resumes "
         "resume_variants preparation document_artifacts inbox_classifiers "
         "outreach outreach_config outreach_identity outreach_versions outreach_contacts outreach_linkedin outreach_batch "
@@ -142,7 +142,6 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
     (_P + "outreach_settings", _P + "setup", "set_env_values: the settings page writes .env through the setup CLI's helper"),
     # --- Same layer, but hoisting the import would close a top-level cycle. One entry per cycle edge that must stay lazy.
     (_P + "actions", _P + "resume_variants", "safe_pick_after_save: resume_variants imports actions at the top"),
-    (_P + "apply_sensitive", _P + "apply_policy", "net_topics, classify_sensitive, eeo_words and more: apply_policy imports apply_sensitive at the top"),
     (_P + "automation", _P + "outreach", "ten handler bodies use outreach records: outreach imports the ledger at the top"),
     (_P + "automation", _P + "resume_variants", "setup_requirement: resume_variants imports the ledger at the top"),
     (_P + "launch", _P + "api", "create_app and LOOPBACK_HOSTS: api imports system_status, which would import launch if that were hoisted too"),
