@@ -22,46 +22,18 @@ from opportunity_app.apply_policy import SchemaField
 from opportunity_app.apply_sensitive import StoreRefused, add_entry
 
 from apply_fake_ats import fixture_json
-import test_apply_policy as policy_tests
-import test_apply_runs as runs_tests
-from test_apply_policy import BASE, COMPANY, F, FACTS, KEY, LETTER_NONE, MULTI, OTHER, RESUME_OK, SINGLE, USER
+import helpers_apply as apply_helpers
+from helpers_apply import ACCURATE, BASE, COMPANY, F, FACTS, KEY, LETTER_NONE, MULTI, OTHER, RESUME_OK, SINGLE, USER, StoreCase
+# unittest and pytest run the module fixtures they find in the test module's namespace.
+from helpers_apply import setUpModule, tearDownModule  # noqa: F401
 
 REPO = Path(__file__).resolve().parent.parent
 AUTH = "Are you legally authorized to work in the United States?"
 SPONSOR = "Will you now or in the future require sponsorship for employment visa status?"
 PRIVACY = "I have read the Example Robotics privacy notice"
-ACCURATE = "I certify that the information I have provided is accurate"
 GENDER = "Gender"
 NOTICE_URL = "https://example-robotics.test/legal/privacy"
 DECLINE = "Decline To Self Identify"
-
-
-def setUpModule():
-    runs_tests.setUpModule()
-
-
-def tearDownModule():
-    runs_tests.tearDownModule()
-
-
-class StoreCase(runs_tests.ApplyCase):
-    """A throwaway database in which the student has switched the kinds of answer on that a test needs."""
-
-    def allow(self, *categories):
-        apply_sensitive.set_allowed_categories(self.conn, USER, categories)
-
-    def add(self, **kwargs):
-        kwargs.setdefault("consent", True)
-        return add_entry(self.conn, USER, **kwargs)
-
-    def rows(self):
-        return [dict(row) for row in self.conn.execute("SELECT * FROM apply_sensitive_answers ORDER BY created_at, id").fetchall()]
-
-    def refused(self, needle, **kwargs):
-        with self.assertRaises(StoreRefused) as caught:
-            self.add(**kwargs)
-        self.assertIn(needle, str(caught.exception))
-        return caught.exception
 
 
 class AllowedCategoryTests(StoreCase):
@@ -423,11 +395,11 @@ class PlanFromTheStoreTests(StoreCase):
         return src
 
     def plan(self, fields, mode="submit", company=COMPANY):
-        return policy_tests.plan(fields, self.sources(), mode, company=company)
+        return apply_helpers.plan(fields, self.sources(), mode, company=company)
 
     def assert_needs(self, fields, kind, key, company=COMPANY):
         submit, handoff = self.plan(fields, "submit", company), self.plan(fields, "handoff", company)
-        self.assertEqual(policy_tests.kinds(submit)[key], kind)
+        self.assertEqual(apply_helpers.kinds(submit)[key], kind)
         self.assertFalse(submit.ready)
         self.assertEqual((handoff.get(key).disposition, handoff.get(key).source.kind, handoff.get(key).value), ("left_for_you", "none", None))
         return submit
@@ -463,9 +435,9 @@ class PlanFromTheStoreTests(StoreCase):
         field = F("q", AUTH, SINGLE, options=("Yes", "No"))
         self.allow("work_authorization")
         src = self.sources()
-        src.answers = [policy_tests.answer(AUTH, "Yes")]
-        result = policy_tests.plan(BASE + [field], src, "submit")
-        self.assertEqual(policy_tests.kinds(result)["q"], "sensitive_missing")
+        src.answers = [apply_helpers.answer(AUTH, "Yes")]
+        result = apply_helpers.plan(BASE + [field], src, "submit")
+        self.assertEqual(apply_helpers.kinds(result)["q"], "sensitive_missing")
         self.assertIsNone(result.get("q").value)
 
     def test_the_stored_answer_must_be_one_of_this_forms_options_by_label(self):
@@ -1000,8 +972,8 @@ class LeftoverReviewTests(StoreCase):
         for label in ("What kind of visa do you have?", "What sort of visa do you hold?", "Your visa", "Visa (if applicable)"):
             with self.subTest(label=label):
                 # An answer the student saved as reusable at another company is not typed here.
-                rows = [policy_tests.answer(label, "F-1", company=OTHER, tags=["reusable"])]
-                got = policy_tests.plan(BASE + [F("q", label)], policy_tests.sources(answers=rows), "submit", company="Third Co").get("q")
+                rows = [apply_helpers.answer(label, "F-1", company=OTHER, tags=["reusable"])]
+                got = apply_helpers.plan(BASE + [F("q", label)], apply_helpers.sources(answers=rows), "submit", company="Third Co").get("q")
                 self.assertEqual((got.sensitive, got.source.kind, got.value), ("sponsorship", "none", None))
                 self.assertEqual(apply_preflight._action(got, {})["type"], "manual", "never the ordinary answer form with Use for any company")
 
