@@ -764,16 +764,26 @@ def fingerprint_text(text: str | None) -> str:
     # body. Treat those as unfingerprintable instead.
     if len(tokens) < 3:
         return ""
-    weights = [0] * 64
-    for index in range(len(tokens) - 2):
-        shingle = " ".join(tokens[index : index + 3])
-        digest = int(hashlib.sha256(shingle.encode("utf-8")).hexdigest()[:16], 16)
-        for bit in range(64):
-            weights[bit] += 1 if (digest >> bit) & 1 else -1
+    # SimHash: bit i is set when more shingles have bit i set than clear. With
+    # `shingles` hashes, that is `2 * (shingles with the bit set) > shingles`; a
+    # tie leaves the bit unset. Counting one column of the 64-character binary
+    # strings at a time does the same tally as a per-bit Python loop per
+    # shingle, at about a third of the cost. format(..., "064b") is big-endian,
+    # so column `column` is bit 63 - column.
+    shingles = len(tokens) - 2
+    columns = zip(
+        *(
+            format(
+                int(hashlib.sha256(" ".join(tokens[index : index + 3]).encode("utf-8")).hexdigest()[:16], 16),
+                "064b",
+            )
+            for index in range(shingles)
+        )
+    )
     value = 0
-    for bit in range(64):
-        if weights[bit] > 0:
-            value |= 1 << bit
+    for column, bits in enumerate(columns):
+        if 2 * bits.count("1") > shingles:
+            value |= 1 << (63 - column)
     return f"{value:016x}"
 
 
@@ -1328,7 +1338,15 @@ def upsert_jobs(
     source_name: str,
     records: list[dict[str, Any]],
     seen: str | None = None,
+    *,
+    dedupe: bool = True,
 ) -> int:
+    # `dedupe=False` leaves the duplicate_of pass to the caller: import_discovered
+    # upserts every channel and deduplicates once before its single commit. The
+    # pass is a pure function of the table, so the final links are the same.
+    # fetch_all keeps the per-source pass, so a failing pass rolls that source
+    # back and records an error instead of committing it as a success.
+    #
     # `seen` becomes first_seen_at/last_seen_at, both of which are ranking keys:
     # `discovered` sorts on first_seen_at and `score` falls back to
     # last_seen_at. Reading the clock here would make a posting with no
@@ -1348,7 +1366,7 @@ def upsert_jobs(
         # clause, so role_type and fingerprint below describe the values that
         # actually land in the row.
         existing = conn.execute(
-            "SELECT description, location FROM jobs WHERE source_key=? AND external_id=?",
+            "SELECT description, location, content_fingerprint FROM jobs WHERE source_key=? AND external_id=?",
             (source_key, external_id),
         ).fetchone()
         if existing:
@@ -1356,7 +1374,14 @@ def upsert_jobs(
             location = location or existing["location"]
         role_type = classify_role(record["title"], description)
         fp = fingerprint(record["company"], record["title"], location)
-        content_fp = fingerprint_text(description)
+        # The SimHash depends only on the description, so a row whose merged
+        # description is the stored one keeps its stored fingerprint. Blank
+        # means "never computed" (or too short to fingerprint), so it is
+        # recomputed.
+        if existing and description == existing["description"] and existing["content_fingerprint"]:
+            content_fp = existing["content_fingerprint"]
+        else:
+            content_fp = fingerprint_text(description)
         conn.execute(
             """
             INSERT INTO jobs (
@@ -1397,7 +1422,8 @@ def upsert_jobs(
             ),
         )
     _retire_absent(conn, source_key, records, set(ids), seen)
-    deduplicate(conn)
+    if dedupe:
+        deduplicate(conn)
     return len(records)
 
 
@@ -1543,7 +1569,6 @@ def locations_compatible(left: str, right: str) -> bool:
 
 
 def deduplicate(conn: sqlite3.Connection) -> None:
-    conn.execute("UPDATE jobs SET duplicate_of=NULL")
     rows = conn.execute(
         """
         SELECT id, fingerprint, content_fingerprint, status, source_key, description,
@@ -1622,22 +1647,41 @@ def deduplicate(conn: sqlite3.Connection) -> None:
     candidates = [
         row for row in rows if row["id"] not in resolved and row["content_fingerprint"]
     ]
+
+    # The pair loop is quadratic in the fingerprintable rows, so what it does per
+    # pair is kept to integer work: each row's fingerprint and city set are
+    # computed once up front, and the similarity test (an XOR and a popcount)
+    # runs before the location test (a set intersection). Both are pure and
+    # joined by AND, so the order they run in cannot change which rows match.
+    # The threshold becomes the largest differing-bit count it admits, found by
+    # evaluating the same `(64 - distance) / 64 >= threshold` expression that
+    # fingerprint_similarity uses.
+    max_distance = max(
+        (distance for distance in range(65) if (64 - distance) / 64 >= CROSSLIST_THRESHOLD),
+        default=-1,
+    )
+    fingerprints = [int(row["content_fingerprint"], 16) for row in candidates]
+    cities = [location_cities(row["location"]) for row in candidates]
     clustered: set[str] = set()
     for index, row in enumerate(candidates):
         if row["id"] in clustered:
             continue
         cluster = [row]
-        for other in candidates[index + 1 :]:
-            if other["id"] in clustered or other["source_key"] == row["source_key"]:
+        row_fingerprint = fingerprints[index]
+        row_cities = cities[index]
+        row_source = row["source_key"]
+        for other_index in range(index + 1, len(candidates)):
+            other = candidates[other_index]
+            if other["id"] in clustered or other["source_key"] == row_source:
                 continue
-            if not locations_compatible(row["location"], other["location"]):
+            if (row_fingerprint ^ fingerprints[other_index]).bit_count() > max_distance:
                 continue
-            similarity = fingerprint_similarity(
-                row["content_fingerprint"], other["content_fingerprint"]
-            )
-            if similarity >= CROSSLIST_THRESHOLD:
-                cluster.append(other)
-                clustered.add(other["id"])
+            other_cities = cities[other_index]
+            # locations_compatible: a blank side matches anything.
+            if row_cities and other_cities and not (row_cities & other_cities):
+                continue
+            cluster.append(other)
+            clustered.add(other["id"])
         if len(cluster) > 1:
             clustered.add(row["id"])
             canonical = _canonical_of(cluster)["id"]
@@ -1645,8 +1689,23 @@ def deduplicate(conn: sqlite3.Connection) -> None:
                 if member["id"] != canonical:
                     resolved[member["id"]] = canonical
 
-    for duplicate, canonical in resolved.items():
-        conn.execute("UPDATE jobs SET duplicate_of=? WHERE id=?", (canonical, duplicate))
+    # Write only the rows whose link changed. `resolved` is the complete answer:
+    # a row that is not in it has no duplicate_of, so a row linked in the table
+    # but absent from `resolved` (including an inactive one) is cleared.
+    current = {
+        row["id"]: row["duplicate_of"]
+        for row in conn.execute("SELECT id, duplicate_of FROM jobs WHERE duplicate_of IS NOT NULL")
+    }
+    changes = [
+        (resolved.get(job_id), job_id)
+        for job_id, linked in current.items()
+        if resolved.get(job_id) != linked
+    ]
+    changes.extend(
+        (canonical, duplicate) for duplicate, canonical in resolved.items() if duplicate not in current
+    )
+    if changes:
+        conn.executemany("UPDATE jobs SET duplicate_of=? WHERE id=?", changes)
 
 
 # ---------------------------------------------------------------------------
@@ -2516,11 +2575,11 @@ def fetch_all(
     if done:
         print(f"Resuming: {len(done)} source(s) already fetched in this run", flush=True)
 
-    queue = [
-        (source, f'{source["kind"]}:{_source_identity(source)}')
-        for source in enabled
-        if f'{source["kind"]}:{_source_identity(source)}' not in done
-    ]
+    queue = []
+    for source in enabled:
+        source_key = f'{source["kind"]}:{_source_identity(source)}'
+        if source_key not in done:
+            queue.append((source, source_key))
     # One observation timestamp for the whole cycle. See upsert_jobs: reading
     # the clock per source would make undated postings rank by completion
     # order, which under concurrency is arbitrary.
@@ -2605,6 +2664,11 @@ def fetch_all(
                         print(f"  Done {label}: failed", flush=True)
                         continue
                     try:
+                        # The duplicate_of pass stays inside each source's upsert:
+                        # a failure in it rolls that source back (inserts,
+                        # retirements and links together) and records an error,
+                        # which a single pass after the last source could not do
+                        # once earlier sources were marked successful.
                         count = upsert_jobs(
                             conn, source_key, source.get("label", source["company"]), records, cycle_seen
                         )
@@ -2626,7 +2690,6 @@ def fetch_all(
                         continue
                     record_outcome(run_id, "success", count=count, listed=getattr(records, "listed", None))
                     print(f"  Done {label}: {count} candidate postings saved", flush=True)
-
     finally:
         # A fatal database error must not wait on eleven other sources first.
         # Queued work is dropped immediately; anything already inside a socket
@@ -2945,10 +3008,16 @@ def import_discovered(conn: sqlite3.Connection, path: Path) -> int:
     # through upsert_jobs, with an empty batch, or its previous rows stay active
     # forever -- a channel going quiet is exactly when retirement matters.
     total = 0
-    for channel in sorted(searched_channels | set(by_channel)):
+    channels = sorted(searched_channels | set(by_channel))
+    for channel in channels:
         records = by_channel.get(channel, [])
-        total += upsert_jobs(conn, f"agent:{channel}", AGENT_CHANNELS[channel], records)
+        total += upsert_jobs(
+            conn, f"agent:{channel}", AGENT_CHANNELS[channel], records, dedupe=False
+        )
         print(f"  {channel}: {len(records)} postings")
+    if channels:
+        # One duplicate_of pass for the whole import instead of one per channel.
+        deduplicate(conn)
     conn.commit()
     print(
         f"Imported {total} agent-discovered postings from {display_path(path)} "
@@ -3464,6 +3533,7 @@ def repost_flags(conn: sqlite3.Connection, window_days: int = REPOST_WINDOW_DAYS
 def score_all(conn: sqlite3.Connection, profile: dict[str, Any]) -> int:
     jobs = conn.execute("SELECT * FROM jobs").fetchall()
     reposts = repost_flags(conn)
+    changed: list[tuple[str, int, str, str]] = []
     for job in jobs:
         role_type = classify_role(job["title"], job["description"])
         score_input = dict(job)
@@ -3478,9 +3548,15 @@ def score_all(conn: sqlite3.Connection, profile: dict[str, Any]) -> int:
                 f"FLAG: this role has been listed under {listings} different URLs "
                 f"since {since}—may be an evergreen or re-listed req"
             )
-        conn.execute(
-            "UPDATE jobs SET role_type=?, score=?, score_explanation=? WHERE id=?",
-            (role_type, score, json.dumps(reasons), job["id"]),
+        explanation = json.dumps(reasons)
+        # Rewriting a row with the values it already holds changes nothing, so
+        # only rows whose result moved are written; most of a daily run's
+        # table is unchanged.
+        if (job["role_type"], job["score"], job["score_explanation"]) != (role_type, score, explanation):
+            changed.append((role_type, score, explanation, job["id"]))
+    if changed:
+        conn.executemany(
+            "UPDATE jobs SET role_type=?, score=?, score_explanation=? WHERE id=?", changed
         )
     conn.commit()
     print(f"Scored {len(jobs)} postings")

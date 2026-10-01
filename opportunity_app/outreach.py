@@ -20,6 +20,7 @@ import os
 import re
 import sqlite3
 import unicodedata
+from functools import lru_cache
 from datetime import date, datetime, timedelta
 from typing import Any, Callable
 from urllib.parse import quote, urlsplit
@@ -145,6 +146,7 @@ US_STATES = {
     "UT": "utah", "VT": "vermont", "VA": "virginia", "WA": "washington", "WV": "west virginia",
     "WI": "wisconsin", "WY": "wyoming", "DC": "district of columbia",
 }
+_STATE_NAME_PATTERNS = {code: re.compile(rf"\b{name}\b") for code, name in US_STATES.items()}
 EXPORT_FIELDS = [
     "id", "company", "channel", "priority", "status", "contact_name", "contact_role",
     "contact_email", "contact_cc", "contact_linkedin", "contact_route", "contact_confidence",
@@ -297,9 +299,14 @@ def _region_states(region: dict[str, Any]) -> set[str]:
     return codes
 
 
+@lru_cache(maxsize=1024)
+def _word_pattern(needle: str) -> re.Pattern[str]:
+    return re.compile(rf"\b{re.escape(needle)}\b")
+
+
 def _mentions(lowered: str, term: Any) -> bool:
     needle = " ".join(str(term or "").casefold().split())
-    return bool(needle) and re.search(rf"\b{re.escape(needle)}\b", lowered) is not None
+    return bool(needle) and _word_pattern(needle).search(lowered) is not None
 
 
 def location_region(text: str, regions: list[dict[str, Any]] | None = None) -> str:
@@ -321,7 +328,8 @@ def location_region(text: str, regions: list[dict[str, Any]] | None = None) -> s
     if not lowered:
         return ""
     states = {code for code in re.findall(r",\s*([A-Z]{2})\b", raw) if code in US_STATES}
-    states |= {code for code, name in US_STATES.items() if re.search(rf"\b{name}\b", lowered)}
+    # One pattern per state, not one alternation: "west virginia" must still match both "virginia" and "west virginia".
+    states |= {code for code, pattern in _STATE_NAME_PATTERNS.items() if pattern.search(lowered)}
     for region in _profile_regions() if regions is None else regions:
         name = str(region.get("name") or "")
         if not name:
@@ -1210,6 +1218,45 @@ CONTACT_RANK_SQL = (
 )
 
 
+TARGET_ORDER_SQL = (
+    f"{CONTACT_RANK_SQL}, priority, CASE WHEN follow_up_at IS NULL THEN 1 ELSE 0 END, follow_up_at, company COLLATE NOCASE"
+)
+
+
+def _target_filter(
+    user_id: str, status: str, channel: str, query: str, interested_only: bool, statuses: tuple[str, ...] = ()
+) -> tuple[list[str], list[Any]]:
+    where = ["user_id=?"]
+    params: list[Any] = [user_id]
+    if interested_only:
+        where.append("not_interested_at IS NULL")
+    if status:
+        where.append("status=?")
+        params.append(status)
+    if statuses:
+        where.append(f"status IN ({', '.join('?' for _ in statuses)})")
+        params.extend(statuses)
+    if channel:
+        where.append("channel=?")
+        params.append(channel)
+    if query.strip():
+        term = f"%{query.strip()}%"
+        where.append("(company LIKE ? OR contact_name LIKE ? OR location LIKE ? OR summary LIKE ? OR fit_rationale LIKE ? OR notes LIKE ?)")
+        params.extend([term] * 6)
+    return where, params
+
+
+def filtered_target_ids(conn: sqlite3.Connection, *, user_id: str, status: str = "", channel: str = "", query: str = "") -> list[str]:
+    """Ids list_targets(status=, channel=, query=) would return, in its order, without building any record.
+
+    The filter and the ORDER BY come from the same SQL list_targets runs (LIKE's case rules and wildcards included), so a
+    caller that already holds every record can pick the filtered ones out of it instead of building them a second time.
+    """
+    where, params = _target_filter(user_id, status, channel, query, False)
+    sql = f"SELECT id FROM outreach_targets WHERE {' AND '.join(where)} ORDER BY {TARGET_ORDER_SQL}"
+    return [row[0] for row in conn.execute(sql, params).fetchall()]
+
+
 def list_targets(
     conn: sqlite3.Connection,
     *,
@@ -1219,31 +1266,17 @@ def list_targets(
     query: str = "",
     today: date | None = None,
     interested_only: bool = False,
+    statuses: tuple[str, ...] = (),
 ) -> list[dict[str, Any]]:
-    """Every target, or with ``interested_only`` the ones not marked not interested (what automation may act on)."""
+    """Every target, or with ``interested_only`` the ones not marked not interested (what automation may act on).
+
+    ``statuses`` keeps only targets in one of those stored statuses (the same column ``status`` matches), so a
+    caller that would drop the rest anyway does not build their records.
+    """
     today = today or local_today(conn, user_id)
     conn.row_factory = sqlite3.Row
-    where = ["user_id=?"]
-    params: list[Any] = [user_id]
-    if interested_only:
-        where.append("not_interested_at IS NULL")
-    if status:
-        where.append("status=?")
-        params.append(status)
-    if channel:
-        where.append("channel=?")
-        params.append(channel)
-    if query.strip():
-        term = f"%{query.strip()}%"
-        where.append("(company LIKE ? OR contact_name LIKE ? OR location LIKE ? OR summary LIKE ? OR fit_rationale LIKE ? OR notes LIKE ?)")
-        params.extend([term] * 6)
-    rows = conn.execute(
-        f"""
-        {SELECT_TARGETS} WHERE {' AND '.join(where)}
-        ORDER BY {CONTACT_RANK_SQL}, priority, CASE WHEN follow_up_at IS NULL THEN 1 ELSE 0 END, follow_up_at, company COLLATE NOCASE
-        """,
-        params,
-    ).fetchall()
+    where, params = _target_filter(user_id, status, channel, query, interested_only, statuses)
+    rows = conn.execute(f"{SELECT_TARGETS} WHERE {' AND '.join(where)} ORDER BY {TARGET_ORDER_SQL}", params).fetchall()
     regions = user_regions(conn, user_id)
     home = user_home(conn, user_id, regions)
     schedules = _schedules(conn, user_id)
@@ -1331,9 +1364,27 @@ def create_target(
     origin: str = "manual",
     discovery_run_id: str | None = None,
 ) -> dict[str, Any]:
+    today = today or local_today(conn, user_id)
+    target_id = _create_target(conn, payload, user_id=user_id, today=today, origin=origin, discovery_run_id=discovery_run_id)
+    return get_target(conn, target_id, user_id=user_id, today=today)
+
+
+def _create_target(
+    conn: sqlite3.Connection,
+    payload: dict[str, Any],
+    *,
+    user_id: str,
+    today: date,
+    origin: str,
+    discovery_run_id: str | None,
+    research_confidence: str | None = None,
+) -> str:
+    """create_target without reading the new target back: the id of the row it committed.
+
+    ``research_confidence`` is written with the row, for a caller that would otherwise change it afterwards.
+    """
     if origin not in OUTREACH_ORIGINS:
         raise ValueError(f"origin must be one of: {', '.join(OUTREACH_ORIGINS)}")
-    today = today or local_today(conn, user_id)
     values = _normalize(payload, partial=False)
     values.setdefault("status", "not_started")
     _apply_status_side_effects(values, None, today)
@@ -1341,6 +1392,8 @@ def create_target(
     values["origin"] = origin
     if origin == "discovery":
         values["research_confidence"] = "unverified"
+    elif research_confidence is not None:
+        values["research_confidence"] = research_confidence
     # Only a target the student created here may claim they typed its location.
     # An import file's word is not evidence of anything, so it records no basis
     # at all; what the file claimed is kept as an event below.
@@ -1355,7 +1408,8 @@ def create_target(
         with conn:
             # "Acme Robotics, Inc." is the same company as a tracked "Acme Robotics".
             tracked = conn.execute("SELECT company FROM outreach_targets WHERE user_id=?", (user_id,)).fetchall()
-            same = next((row[0] for row in tracked if company_key(row[0]) == company_key(values["company"])), None)
+            wanted = company_key(values["company"])
+            same = next((row[0] for row in tracked if company_key(row[0]) == wanted), None)
             if same is not None:
                 raise ValueError(f"{same} is already in your outreach list")
             conn.execute(
@@ -1376,7 +1430,7 @@ def create_target(
         if _is_unique_violation(exc):
             raise ValueError(f"{values['company']} is already in your outreach list") from exc
         raise
-    return get_target(conn, target_id, user_id=user_id, today=today)
+    return target_id
 
 
 class _ConfirmRaced(Exception):
@@ -1696,21 +1750,20 @@ def import_targets(
             continue
         try:
             internal_confidence = record.pop("_research_confidence", None)
-            target = create_target(conn, record, user_id=user_id, origin=origin, discovery_run_id=discovery_run_id)
-            if internal_confidence == "unverified" and target["research_confidence"] != "unverified":
-                with conn:
-                    conn.execute(
-                        "UPDATE outreach_targets SET research_confidence='unverified' WHERE id=? AND user_id=?",
-                        (target["id"], user_id),
-                    )
-                target = get_target(conn, target["id"], user_id=user_id)
+            # The day is read per row, as create_target did, so an import that runs past local midnight dates the later rows to the new day.
+            today = local_today(conn, user_id)
+            # One INSERT and no read-back: only the new id is used, and "unverified" is written with the row.
+            target_id = _create_target(
+                conn, record, user_id=user_id, today=today, origin=origin, discovery_run_id=discovery_run_id,
+                research_confidence="unverified" if internal_confidence == "unverified" else None,
+            )
         except ValueError as exc:
             errors.append({"row": index, "company": company, "error": str(exc)})
             continue
         names.add(company_key(company))
         if domain:
             domains.add(domain)
-        created_ids.append(target["id"])
+        created_ids.append(target_id)
         imported += 1
     return {"imported": imported, "skipped": skipped, "errors": errors, "created_ids": created_ids}
 

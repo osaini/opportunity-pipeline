@@ -221,10 +221,10 @@ class FetchConcurrencyTests(unittest.TestCase):
     def test_a_database_failure_in_one_source_does_not_abandon_the_others(self):
         real_upsert = pipeline.upsert_jobs
 
-        def flaky_upsert(conn, source_key, source_name, records, seen=None):
+        def flaky_upsert(conn, source_key, source_name, records, seen=None, **kwargs):
             if source_key == "greenhouse:g3":
                 raise sqlite3.OperationalError("simulated write failure")
-            return real_upsert(conn, source_key, source_name, records, seen)
+            return real_upsert(conn, source_key, source_name, records, seen, **kwargs)
 
         with unittest.mock.patch.object(pipeline, "upsert_jobs", flaky_upsert):
             self.run_fetch(GREENHOUSE_8, lambda s, t: [], max_workers=4, max_per_host=4)
@@ -264,8 +264,8 @@ class FetchConcurrencyTests(unittest.TestCase):
 
         real_upsert = pipeline.upsert_jobs
 
-        def half_written(conn, source_key, source_name, records, seen=None):
-            real_upsert(conn, source_key, source_name, records, seen)
+        def half_written(conn, source_key, source_name, records, seen=None, **kwargs):
+            real_upsert(conn, source_key, source_name, records, seen, **kwargs)
             raise sqlite3.OperationalError("failed after writing")
 
         posting = [{
@@ -308,9 +308,9 @@ class FetchConcurrencyTests(unittest.TestCase):
         real_upsert = pipeline.upsert_jobs
         stamps: list[str] = []
 
-        def recording_upsert(conn, source_key, source_name, records, seen=None):
+        def recording_upsert(conn, source_key, source_name, records, seen=None, **kwargs):
             stamps.append(seen)
-            return real_upsert(conn, source_key, source_name, records, seen)
+            return real_upsert(conn, source_key, source_name, records, seen, **kwargs)
 
         with unittest.mock.patch.object(
             pipeline, "now_iso", lambda: f"2026-09-20T00:00:{next(counter):02d}+00:00"

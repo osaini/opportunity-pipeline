@@ -108,7 +108,7 @@ def _latest(conn: sqlite3.Connection, target_id: str, user_id: str, event_type: 
 def recovery_due(conn: sqlite3.Connection, *, user_id: str) -> list[str]:
     """Companies whose contact bounced and that have not been searched again since."""
     due = []
-    for item in list_targets(conn, user_id=user_id, interested_only=True):
+    for item in list_targets(conn, user_id=user_id, interested_only=True, statuses=("not_started", "drafted")):
         if not item["contact_bounced"] or item["sent_at"] or item["status"] not in {"not_started", "drafted"} or heard_back(item):
             continue
         bounced = last_bounce(conn, item["id"], user_id)
@@ -259,7 +259,7 @@ def draft_due(conn: sqlite3.Connection, *, user_id: str, now: datetime | None = 
     """Companies ready for a first draft: a contact (an address that has not bounced, or a contact form), a location, no draft, nothing sent."""
     now = now or datetime.now(timezone.utc)
     due = []
-    for item in list_targets(conn, user_id=user_id, interested_only=True):
+    for item in list_targets(conn, user_id=user_id, interested_only=True, statuses=("not_started", "drafted")):
         if item["email_body"] or item["sent_at"] or item["status"] not in {"not_started", "drafted"}:
             continue
         reachable = item["contact_email"] or item["contact_form"]

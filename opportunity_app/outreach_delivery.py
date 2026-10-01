@@ -41,6 +41,7 @@ from .outreach_gmail import (
     GmailThrottled,
     _connector,
     _Gmail,
+    event_tie_order,
     last_bounce,
 )
 from .schema import utc_now
@@ -299,10 +300,10 @@ def _watched(conn: sqlite3.Connection, user_id: str, now: datetime, every_send_o
     """
     cutoff = (now - WATCH_FOR).isoformat(timespec="microseconds")
     rows = conn.execute(
-        """
+        f"""
         SELECT e.target_id, e.detail, e.created_at FROM outreach_events e
         JOIN outreach_targets t ON t.id=e.target_id AND t.user_id=e.user_id
-        WHERE e.user_id=? AND e.event_type=? AND (e.created_at>=? OR e.target_id=?) ORDER BY e.created_at
+        WHERE e.user_id=? AND e.event_type=? AND (e.created_at>=? OR e.target_id=?) ORDER BY e.created_at{event_tie_order(conn)}
         """,
         (user_id, SENT_EVENT, cutoff, every_send_of or ""),
     ).fetchall()

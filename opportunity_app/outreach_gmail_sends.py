@@ -28,7 +28,7 @@ from uuid import uuid4
 
 import httpx
 
-from .outreach import DRAFT_KINDS, UNSENT_STATUSES, _log, get_target, update_target
+from .outreach import DRAFT_KINDS, UNSENT_STATUSES, OutreachNotFoundError, _log, get_target, update_target
 from .outreach_gmail import (
     DRAFT_EVENT,
     SENT_EVENT,
@@ -40,7 +40,8 @@ from .outreach_gmail import (
     _already_sent,
     _connector,
     _Gmail,
-    last_bounce,
+    event_tie_order,
+    last_bounces,
 )
 from .schema import utc_now
 from .user_time import user_timezone
@@ -51,6 +52,7 @@ WATCH_DRAFTS_FOR = timedelta(days=30)
 _HEADERS = ("To", "Cc", "Subject")
 _LAST_LOOK: dict[tuple[str, str], datetime] = {}
 _LOOK_LOCK = threading.Lock()
+_IN_CHUNKS = 500
 
 
 class _Unreadable(Exception):
@@ -71,16 +73,21 @@ def _interval(age: timedelta) -> timedelta:
 
 
 def _pending(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict[str, Any]]:
-    """The newest Gmail draft of each unsent email, oldest first."""
+    """The newest Gmail draft of each unsent email, oldest first.
+
+    Each item is light (target_id, made, detail): the target itself is read
+    only for the drafts that are due for a look, by _with_targets.
+    """
     cutoff = (now - WATCH_DRAFTS_FOR).isoformat(timespec="microseconds")
     rows = conn.execute(
-        """
+        f"""
         SELECT e.target_id, e.detail, e.created_at FROM outreach_events e
         JOIN outreach_targets t ON t.id=e.target_id AND t.user_id=e.user_id
-        WHERE e.user_id=? AND e.event_type=? AND e.created_at>=? ORDER BY e.created_at
+        WHERE e.user_id=? AND e.event_type=? AND e.created_at>=? ORDER BY e.created_at{event_tie_order(conn)}
         """,
         (user_id, DRAFT_EVENT, cutoff),
     ).fetchall()
+    bounces = last_bounces(conn, user_id)
     newest: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
         try:
@@ -90,21 +97,55 @@ def _pending(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict
         if not isinstance(detail, dict) or detail.get("kind") not in DRAFT_KINDS or not detail.get("draft_id"):
             continue
         made = datetime.fromisoformat(row["created_at"])
-        bounce = last_bounce(conn, row["target_id"], user_id)
+        bounce = bounces.get(row["target_id"])
         if bounce is not None and bounce > made:
             continue
         newest[(row["target_id"], detail["kind"])] = {"target_id": row["target_id"], "made": made, "detail": detail}
+    unsent = {
+        key: item for key, item in newest.items()
+        if not _already_sent(conn, key[0], user_id, key[1], bounce=bounces.get(key[0]))
+    }
+    states = _target_states(conn, user_id, {target_id for target_id, _kind in unsent})
     pending = []
-    for (target_id, kind), item in newest.items():
-        if _already_sent(conn, target_id, user_id, kind):
-            continue
-        target = get_target(conn, target_id, user_id=user_id)
-        waiting = (
-            not target["sent_at"] and target["status"] in UNSENT_STATUSES if kind == "initial" else target["status"] == "sent"
-        )
+    for (target_id, kind), item in unsent.items():
+        state = states.get(target_id)
+        if state is None:
+            continue  # deleted since the drafts were read
+        status, sent_at = state
+        waiting = not sent_at and status in UNSENT_STATUSES if kind == "initial" else status == "sent"
         if waiting:
-            pending.append({**item, "target": target})
+            pending.append(item)
     return sorted(pending, key=lambda item: item["made"])
+
+
+def _target_states(conn: sqlite3.Connection, user_id: str, target_ids: set[str]) -> dict[str, tuple[str, Any]]:
+    """(status, sent_at) of each of these targets: all that deciding whether a draft is waiting needs of a target."""
+    states: dict[str, tuple[str, Any]] = {}
+    ids = sorted(target_ids)
+    for begin in range(0, len(ids), _IN_CHUNKS):
+        chunk = ids[begin:begin + _IN_CHUNKS]
+        for row in conn.execute(
+            f"SELECT id, status, sent_at FROM outreach_targets WHERE user_id=? AND id IN ({', '.join('?' for _ in chunk)})",
+            (user_id, *chunk),
+        ).fetchall():
+            states[str(row["id"])] = (row["status"], row["sent_at"])
+    return states
+
+
+def _with_targets(conn: sqlite3.Connection, user_id: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The items, each with its target read in full (what _find_sent and _record_sent need).
+
+    A target deleted since _pending is dropped, and its draft is forgotten so the next check looks at it again.
+    """
+    full = []
+    for item in items:
+        try:
+            target = get_target(conn, item["target_id"], user_id=user_id)
+        except OutreachNotFoundError:
+            _forget(user_id, [item])
+            continue
+        full.append({**item, "target": target})
+    return full
 
 
 def _take_due(user_id: str, pending: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
@@ -162,13 +203,18 @@ def _same_subject(one: str, other: str) -> bool:
     return bool(one.strip()) and plain(one) == plain(other)
 
 
-def _find_sent(gmail: _Gmail, item: dict[str, Any]) -> dict[str, Any] | None:
-    """The message the student sent from this draft, if Gmail has sent it."""
+def _find_sent(gmail: _Gmail, item: dict[str, Any], seen: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """The message the student sent from this draft, if Gmail has sent it.
+
+    ``seen`` receives the draft's own message as read here ("own"), so _scheduled need not read it again.
+    """
     detail, target = item["detail"], item["target"]
     subject_field = DRAFT_KINDS[detail["kind"]][0]
     subject, contact = target[subject_field], target["contact_email"].casefold()
     made_ms = int(item["made"].timestamp() * 1000)
     own = _metadata(gmail, str(detail.get("message_id", ""))) if detail.get("message_id") else None
+    if seen is not None:
+        seen["own"] = own
     if own and "SENT" in (own.get("labelIds") or []) and "DRAFT" not in (own.get("labelIds") or []):
         return own
     since = (item["made"] - timedelta(days=1)).strftime("%Y/%m/%d")
@@ -185,10 +231,16 @@ def _find_sent(gmail: _Gmail, item: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def _scheduled(gmail: _Gmail, item: dict[str, Any]) -> bool:
-    """Whether the draft is waiting in Gmail's Scheduled folder. False when Gmail cannot say."""
+def _scheduled(gmail: _Gmail, item: dict[str, Any], seen: dict[str, Any] | None = None) -> bool:
+    """Whether the draft is waiting in Gmail's Scheduled folder. False when Gmail cannot say.
+
+    ``seen`` is what _find_sent read of the draft's own message a moment ago; it is read again only when absent.
+    """
     detail = item["detail"]
-    own = _metadata(gmail, str(detail.get("message_id", ""))) if detail.get("message_id") else None
+    if seen is not None and "own" in seen:
+        own = seen["own"]
+    else:
+        own = _metadata(gmail, str(detail.get("message_id", ""))) if detail.get("message_id") else None
     return bool(own) and "SCHEDULED" in (own.get("labelIds") or [])
 
 
@@ -263,6 +315,11 @@ def capture_gmail_sends(
     if not row or row["status"] != "connected":
         return {**result, "state": "not_connected" if not row or row["status"] == "disconnected" else "needs_reconnect"}
     try:
+        due = _with_targets(conn, user_id, due)
+    except BaseException:
+        _forget(user_id, due)  # a look that fails is forgotten
+        raise
+    try:
         with client_factory() as client:
             gmail = _Gmail(conn, client, user_id)
             for item in due:
@@ -270,12 +327,13 @@ def capture_gmail_sends(
                 try:
                     if _get(gmail, f"/drafts/{quote(str(detail['draft_id']), safe='')}", format="minimal") is not None:
                         continue  # still a draft: not sent or scheduled yet
-                    message = _find_sent(gmail, item)
+                    seen: dict[str, Any] = {}
+                    message = _find_sent(gmail, item, seen)
                     if message is not None:
                         result["sent"].append(_record_sent(conn, item, message, user_id=user_id))
                         continue
                     target_id = item["target"]["id"]
-                    if _scheduled(gmail, item) and not _scheduled_noted(conn, target_id, user_id, str(detail["draft_id"])):
+                    if _scheduled(gmail, item, seen) and not _scheduled_noted(conn, target_id, user_id, str(detail["draft_id"])):
                         with conn:
                             _log(conn, target_id, user_id, SCHEDULED_EVENT, detail=json.dumps(
                                 {"draft_id": str(detail["draft_id"]), "kind": detail["kind"]}, sort_keys=True,

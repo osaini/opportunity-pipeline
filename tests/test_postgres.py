@@ -942,6 +942,31 @@ class PostgresAutomationContractTests(unittest.TestCase):
         self.conn.commit()
         self.assertEqual((kept, markers), (1, 1))
 
+    def test_migration_0048_adds_three_indexes_and_a_rerun_changes_nothing(self):
+        marker = "0048_mail_hot_path_indexes.sql"
+        wanted = {
+            "idx_outreach_events_user_type": ("outreach_events", "(user_id, event_type, created_at)"),
+            "idx_outreach_events_target_type": ("outreach_events", "(target_id, user_id, event_type, created_at DESC)"),
+            "idx_opportunities_company_sort_key": ("opportunities", "(company_sort_key)"),
+        }
+        for name, (table, columns) in wanted.items():
+            definition = self.index_definition(name) or ""
+            self.assertRegex(definition, rf"ON \S*{table} USING", name)
+            self.assertIn(columns, definition, name)
+        self.assertIsNotNone(self.conn.execute("SELECT 1 FROM schema_migrations WHERE name=?", (marker,)).fetchone())
+        rows = self.conn.execute("SELECT COUNT(*) AS n FROM outreach_events").fetchone()["n"]
+        self.conn.commit()
+        # Applying it again (the marker gone) keeps all the indexes and every row.
+        with self.conn:
+            self.conn.execute("DELETE FROM schema_migrations WHERE name=?", (marker,))
+        ensure_product_schema(self.conn)
+        for name, (_table, columns) in wanted.items():
+            self.assertIn(columns, self.index_definition(name) or "", name)
+        kept = self.conn.execute("SELECT COUNT(*) AS n FROM outreach_events").fetchone()["n"]
+        markers = self.conn.execute("SELECT COUNT(*) AS n FROM schema_migrations WHERE name=?", (marker,)).fetchone()["n"]
+        self.conn.commit()
+        self.assertEqual((kept, markers), (rows, 1))
+
     def test_a_read_only_connection_stays_read_only_after_a_commit(self):
         """connect_product(read_only=True): SET TRANSACTION covers only the first transaction, so the connection is read-only too."""
         conn = connect_product(POSTGRES_TEST_URL, read_only=True)

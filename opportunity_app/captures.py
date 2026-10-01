@@ -20,8 +20,6 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from PIL import Image, UnidentifiedImageError
-
 from . import ROOT
 from .company_tags import regenerate_company_tags
 from .opportunity_metadata import extract_opportunity_metadata
@@ -157,6 +155,8 @@ def ocr_image(data: bytes) -> str:
 
 
 def _scan_image(data: bytes) -> str:
+    from PIL import Image, UnidentifiedImageError  # imported here: only a screenshot upload needs it
+
     if b"EICAR-STANDARD-ANTIVIRUS-TEST-FILE" in data.upper():
         raise CaptureValidationError("The upload failed the malware scan")
     try:

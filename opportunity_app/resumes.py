@@ -13,7 +13,6 @@ from typing import Any
 from uuid import uuid4
 from xml.etree import ElementTree
 
-from pypdf import PdfReader
 
 from . import ROOT
 from .profile import is_answered, update_profile
@@ -94,6 +93,8 @@ def _normalize_text(text: str) -> str:
 
 
 def extract_pdf(data: bytes) -> str:
+    from pypdf import PdfReader  # imported here: about 100 ms that most processes never need
+
     try:
         reader = PdfReader(io.BytesIO(data))
     except Exception as exc:  # pypdf uses several parser-specific exception types
@@ -163,6 +164,8 @@ def extract_pdf_links(data: bytes) -> list[str]:
     Resume headers usually show anchor text ("LinkedIn") whose URL lives only in
     the annotation, so the extracted text never contains it.
     """
+    from pypdf import PdfReader
+
     try:
         reader = PdfReader(io.BytesIO(data))
         if reader.is_encrypted:
