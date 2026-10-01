@@ -1,6 +1,6 @@
 """The web app's public surface, pinned: the ordered route table and the OpenAPI document.
 
-api.py holds every route in one create_app. A refactor that splits it into routers, moves the page routes, or re-registers the
+The routes live in web/routers/*.py, registered by web/app.py's create_app. A refactor that moves routes between routers, moves the page routes, or re-registers the
 /assets mount in a different place changes what the app answers without failing any single-route test: route order decides which
 of two overlapping paths wins, and the /assets mount sits between /api/v1/stats and the page routes on purpose. These two
 snapshots are the contract such a change must keep byte-identical:

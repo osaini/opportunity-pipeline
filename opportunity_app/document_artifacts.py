@@ -184,3 +184,37 @@ def delete_document_artifact(
         )
     if path.parent == root:
         path.unlink(missing_ok=True)
+
+
+def delete_document(conn: sqlite3.Connection, document_id: str, storage_root: Path, *, user_id: str) -> None:
+    """Delete a generated document and its stored artifact. Raises PreparationNotFoundError when it is not the caller's."""
+    document_record(conn, document_id, user_id=user_id)
+    delete_document_artifact(conn, document_id, storage_root, user_id=user_id)
+    with conn:
+        conn.execute(
+            "DELETE FROM generated_documents WHERE id=? AND user_id=?",
+            (document_id, user_id),
+        )
+
+
+def backfill_approved_artifacts(conn: sqlite3.Connection, storage_root: Path, *, user_id: str) -> list[str]:
+    """File the artifact of every approved document that has none yet.
+
+    Returns the messages of the documents whose artifact could not be filed (a RuntimeError or ValueError from
+    ensure_document_artifact), in the order they were tried and not de-duplicated.
+    """
+    warnings: list[str] = []
+    approved = conn.execute(
+        """
+            SELECT d.id FROM generated_documents d
+            LEFT JOIN generated_document_artifacts a ON a.document_id=d.id
+            WHERE d.user_id=? AND d.status='approved' AND a.id IS NULL
+            """,
+        (user_id,),
+    ).fetchall()
+    for row in approved:
+        try:
+            ensure_document_artifact(conn, str(row["id"]), storage_root, user_id=user_id)
+        except (RuntimeError, ValueError) as exc:
+            warnings.append(str(exc))
+    return warnings

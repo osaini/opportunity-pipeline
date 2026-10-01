@@ -436,3 +436,66 @@ def restore_database_backup(source: Path, destination: Path | str, key: bytes) -
     with closing(connect_product(str(destination), read_only=True)) as conn:
         count = int(conn.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0])
     return {"target": "postgresql", "restored": True, "opportunity_count": count}
+
+
+def service_overview(
+    conn: sqlite3.Connection, overview: dict[str, Any], metrics: dict[str, Any], traces: Any,
+) -> dict[str, Any]:
+    """Add this process's request metrics, queue state, alerts, SLO status and recent traces to the administrator `overview`.
+
+    `metrics` and `traces` are the running app's counters and its recent request traces (web/context.py's AppRuntime).
+    Returns `overview`, changed in place.
+    """
+    requests = int(metrics["requests"])
+    read_latencies = sorted(metrics["read_latency_ms"])
+    write_latencies = sorted(metrics["write_latency_ms"])
+
+    def p95(values: list[float]) -> float | None:
+        if not values:
+            return None
+        index = max(0, (len(values) * 95 + 99) // 100 - 1)
+        return round(float(values[index]), 3)
+
+    read_p95 = p95(read_latencies)
+    write_p95 = p95(write_latencies)
+    error_rate = round(int(metrics["errors"]) / requests, 4) if requests else 0.0
+    overview["service"] = {
+        "requests": requests,
+        "errors": int(metrics["errors"]),
+        "error_rate": error_rate,
+        "rate_limited": int(metrics["rate_limited"]),
+        "average_latency_ms": round(float(metrics["latency_ms_total"]) / requests, 3) if requests else 0,
+        "read_p95_ms": read_p95,
+        "write_p95_ms": write_p95,
+    }
+    queue = queue_status(conn)
+    overview["queue"] = queue
+    alerts = []
+    if error_rate > 0.02:
+        alerts.append({"key": "api_error_rate", "severity": "critical", "value": error_rate, "threshold": 0.02})
+    if read_p95 is not None and read_p95 > 750:
+        alerts.append({"key": "read_p95_ms", "severity": "warning", "value": read_p95, "threshold": 750})
+    if write_p95 is not None and write_p95 > 1_500:
+        alerts.append({"key": "write_p95_ms", "severity": "warning", "value": write_p95, "threshold": 1_500})
+    if queue["states"]["dead"]:
+        alerts.append({"key": "dead_letter_jobs", "severity": "critical", "value": queue["states"]["dead"], "threshold": 0})
+    if queue["backpressure"]:
+        alerts.append({"key": "queue_backpressure", "severity": "critical", "value": True, "threshold": False})
+    overview["slo"] = {
+        "availability_target": 0.995,
+        "read_p95_target_ms": 750,
+        "write_p95_target_ms": 1_500,
+        "queue_age_target_seconds": 600,
+        "status": "alerting" if alerts else "within_observed_thresholds",
+        "scope": "current process window; external durable telemetry required for monthly SLOs",
+    }
+    overview["alerts"] = alerts
+    overview["recent_traces"] = list(traces)[-50:]
+    overview["product_analytics"] = {
+        "application_events": int(conn.execute("SELECT COUNT(*) FROM application_events").fetchone()[0]),
+        "apply_sessions": int(conn.execute("SELECT COUNT(*) FROM application_form_sessions").fetchone()[0]),
+        "agent_turns": int(conn.execute("SELECT COUNT(*) FROM agent_turns").fetchone()[0]),
+        "active_dossier_shares": int(conn.execute("SELECT COUNT(*) FROM dossier_consent_grants WHERE status='active'").fetchone()[0]),
+        "contains_user_identifiers": False,
+    }
+    return overview

@@ -215,7 +215,8 @@ def serve(port: int = DEFAULT_PORT) -> int:
     logging.getLogger("opportunity_app").addFilter(lambda record: not SECRET_LINE.search(record.getMessage()))
     PID_PATH.write_text(str(os.getpid()), encoding="utf-8")
     try:
-        from .api import LOOPBACK_HOSTS, create_app
+        from .api import create_app
+        from .web.context import LOOPBACK_HOSTS
 
         app = create_app(allowed_hosts=list(LOOPBACK_HOSTS))
         print(f"Serving http://{HOST}:{port} (PID {os.getpid()})")

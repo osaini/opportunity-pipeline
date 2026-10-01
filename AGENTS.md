@@ -22,7 +22,7 @@ loopback-only.
 | --- | --- | --- |
 | Legacy pipeline + CLI | `pipeline.py` | No third-party dependencies. See rule 4 for the two allowed non-stdlib imports. |
 | Shared read model | `pipeline_core/read_model.py` | Framework-neutral read model shared by CLI parity tests and the web app; standard library only. |
-| Web API | `opportunity_app/` | FastAPI. `api.py` is ~2,300 lines and holds every route. |
+| Web API | `opportunity_app/` | FastAPI. `opportunity_app/web/` holds the app: `app.py` (create_app), `context.py`, `dependencies.py`, `middleware.py` and `routers/<feature>.py`. `api.py` is the thin entry module (`create_app`, lazy `app`, CLI `main`). |
 | Frontend | `opportunity_app/static/` | Vanilla JS. No framework, no build step. `app.js` is ~110KB. |
 | Browser extension | `apps/extension/` | Tested by `node tests/extension/run_tests.mjs`. |
 | Schema | `migrations/*.sql` | SQLite by default; PostgreSQL supported. |

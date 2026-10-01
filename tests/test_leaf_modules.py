@@ -679,9 +679,10 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
 
     def test_the_job_types_the_api_accepts_are_the_job_types_the_worker_handles(self):
         from helpers_platform import build_and_migrate
-        from opportunity_app import api, worker
+        from opportunity_app import worker
+        from opportunity_app.web.models.admin import JobCreateRequest
 
-        accepted = set(get_args(api.JobCreateRequest.model_fields["job_type"].annotation))
+        accepted = set(get_args(JobCreateRequest.model_fields["job_type"].annotation))
         seen: dict[str, object] = {}
 
         def capture(conn, handlers, **kwargs):

@@ -510,7 +510,8 @@ class LocationConflictError(ValueError):
     Raised so the route can answer 409 rather than the 422 every other
     ``ValueError`` from this module means. It subclasses ``ValueError`` so
     existing callers still catch it, which makes the handler order in
-    ``api.py`` load-bearing.
+    the routers under ``web/routers`` (outreach_targets.py and the other
+    routes that call this module) load-bearing.
     """
 
 
@@ -1777,6 +1778,22 @@ def export_csv(items: list[dict[str, Any]]) -> str:
         row = {**item, "source_urls": "\n".join(item.get("source_urls", []))}
         writer.writerow({key: _encode_csv_cell(value) for key, value in row.items()})
     return output.getvalue()
+
+
+# What the tracker computes from a target to show it. The JSON export drops them: they are not part of the record, and a
+# re-import would have nothing to do with them.
+EXPORT_DERIVED_FIELDS = (
+    "draft_checks", "follow_up_checks", "follow_up_due", "revisit_due", "suggestion",
+    "draft_history_count", "follow_up_history_count", "possible_reply_count", "possible_replies", "gmail_reply",
+)
+
+
+def export_json(items: list[dict[str, Any]]) -> str:
+    """The JSON export of `items`, without the derived fields. Removes them from the items themselves."""
+    for item in items:
+        for derived in EXPORT_DERIVED_FIELDS:
+            item.pop(derived, None)
+    return json.dumps({"format": "outreach-targets-v1", "items": items}, indent=2, sort_keys=True)
 
 
 def parse_import(data: bytes, filename: str) -> list[dict[str, Any]]:

@@ -1120,8 +1120,8 @@ class StoreReaderScanTests(unittest.TestCase):
             self.assertNotIn("apply_sensitive", path.read_text(encoding="utf-8"), path.relative_to(REPO).as_posix())
 
     # The modules that may import the store, keyed like ALLOWED on the path from the repo root: the plan, the check, and the
-    # settings routes (still in api.py). A file or package at another path that imports it fails, however it is named.
-    IMPORTERS = ("opportunity_app/apply_policy", "opportunity_app/apply_preflight", "opportunity_app/api")
+    # settings routes (web/routers/apply_agent.py). A file or package at another path that imports it fails, however it is named.
+    IMPORTERS = ("opportunity_app/apply_policy", "opportunity_app/apply_preflight", "opportunity_app/web/routers/apply_agent")
 
     def test_only_the_plan_the_check_and_the_settings_routes_import_the_store(self):
         importers = {path.relative_to(REPO).as_posix() for path in self.package_modules()
