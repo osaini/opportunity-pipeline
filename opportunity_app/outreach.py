@@ -510,7 +510,8 @@ class LocationConflictError(ValueError):
     Raised so the route can answer 409 rather than the 422 every other
     ``ValueError`` from this module means. It subclasses ``ValueError`` so
     existing callers still catch it, which makes the handler order in
-    ``api.py`` load-bearing.
+    the routers under ``web/routers`` (outreach_targets.py and the other
+    routes that call this module) load-bearing.
     """
 
 

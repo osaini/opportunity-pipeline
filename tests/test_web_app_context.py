@@ -13,6 +13,8 @@ per process, a dependency module). These tests pin three things that split could
 """
 
 import ast
+import dataclasses
+import inspect
 import json
 import sqlite3
 import subprocess
@@ -30,6 +32,7 @@ from starlette.routing import Mount
 
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
+from opportunity_app.web.context import AppOptions
 
 from helpers_platform import build_and_migrate
 
@@ -133,6 +136,18 @@ class TwoAppsInOneProcessTests(unittest.TestCase):
                 return overview["metrics"]["requests"] if "metrics" in overview else overview["service"]["requests"]
 
             self.assertGreater(requests_seen(alpha, "alpha-owner-token-admin"), requests_seen(beta, "beta-owner-token-admin"))
+
+
+class CreateAppSignatureTests(unittest.TestCase):
+    """create_app spells its keywords out so help(), IDEs and type checkers see them; AppOptions is what it builds."""
+
+    def test_keywords_match_the_app_options_fields_and_defaults(self):
+        parameters = inspect.signature(create_app).parameters
+        fields = {field.name: field for field in dataclasses.fields(AppOptions)}
+        self.assertEqual(list(parameters), list(fields))
+        for name, parameter in parameters.items():
+            self.assertIs(parameter.kind, inspect.Parameter.KEYWORD_ONLY, name)
+            self.assertEqual(parameter.default, fields[name].default, name)
 
 
 class SharedRouteTableTests(unittest.TestCase):
