@@ -1,14 +1,15 @@
 // Zero-dependency test runner for the Apply Mode extension.
 // Usage: node tests/extension/run_tests.mjs
 // Exercises content.js scan/fill behavior against hand-rolled DOM stubs and
-// per-ATS fixtures, plus the UTF-8-safe base64 helper.
+// per-ATS fixtures.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import vm from "node:vm";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadContentScript } from "./dom_stub.mjs";
+import { EXTENSION_DIR, injectedFiles } from "./engine_files.mjs";
 import { sidepanelTests } from "./sidepanel_tests.mjs";
 
 const require = createRequire(import.meta.url);
@@ -37,15 +38,6 @@ function byLabel(scan, label) {
 }
 
 const tests = {};
-tests.base64_utf8_safe = () => {
-  const base64 = require(path.join(ROOT, "apps", "extension", "lib", "base64.js"));
-  const url = "https://jobs.example.com/apply/東京-role?q=café";
-  const encoded = base64.utf8SafeBtoa(url); // plain btoa would throw here
-  const decoded = Buffer.from(encoded, "base64").toString("utf8");
-  assert.equal(decoded, url);
-  assert.equal(base64.utf8SafeBtoa("plain ascii"), btoa("plain ascii"));
-};
-
 tests.greenhouse_scan_maps_and_flags_sensitive_fields = () => {
   const page = loadFixture("greenhouse.json");
   const ext = loadContentScript(page);
@@ -1053,15 +1045,29 @@ tests.a_possibly_sensitive_question_never_travels_when_reusable = () => {
 };
 
 tests.injection_lists_and_the_answer_save_follow_the_split = () => {
-  const files = '["adapters.js", "field-engine.js", "apply-engine.js", "content.js"]';
-  const sidepanel = readFileSync(path.join(ROOT, "apps", "extension", "sidepanel.js"), "utf8");
-  assert.ok(sidepanel.includes(files), "the side panel injects all four files, in order");
+  // The panel's executeScript call is the one list; the DOM stub and the MV3 browser test read it from there.
+  const injected = injectedFiles();
+  const pageScripts = readdirSync(EXTENSION_DIR).filter((name) => name.endsWith(".js") && name !== "sidepanel.js" && name !== "service-worker.js");
+  assert.deepEqual([...injected].sort(), [...pageScripts].sort(), "the panel injects every page script in the extension folder, and nothing else");
+  assert.equal(injected[0], "adapters.js", "adapters.js first");
+  assert.equal(injected.at(-1), "content.js", "content.js last");
+  assert.ok(injected.indexOf("field-engine.js") < injected.indexOf("apply-engine.js"), "field-engine.js before apply-engine.js");
+  assert.ok(injected.indexOf("apply-engine.js") < injected.indexOf("content.js"), "apply-engine.js before content.js");
+  const sidepanel = readFileSync(path.join(EXTENSION_DIR, "sidepanel.js"), "utf8");
   assert.match(sidepanel, /question: field\.answer_key,/, "the side panel saves the engine's answer key");
   assert.doesNotMatch(sidepanel, /question: field\.label,/);
-  const browserTest = readFileSync(path.join(ROOT, "tests", "extension", "browser", "run_browser_tests.mjs"), "utf8");
-  assert.ok(browserTest.includes(files), "the MV3 browser test injects the same four files");
+  for (const file of ["dom_stub.mjs", path.join("browser", "run_browser_tests.mjs")]) {
+    const source = readFileSync(path.join(ROOT, "tests", "extension", file), "utf8");
+    assert.match(source, /injectedFiles\(\)/, `${file} takes the injection list from the panel`);
+    assert.doesNotMatch(source, /"apply-engine\.js"/, `${file} keeps no copy of the list`);
+  }
+  // CI and `npm run check` syntax-check every static and extension script by directory, so a new file is covered.
+  const checker = readFileSync(path.join(ROOT, "scripts", "check-js-syntax.mjs"), "utf8");
+  assert.match(checker, /"apps\/extension"/);
+  assert.match(checker, /"opportunity_app\/static"/);
   const ci = readFileSync(path.join(ROOT, ".github", "workflows", "ci.yml"), "utf8");
-  assert.match(ci, /node --check apps\/extension\/apply-engine\.js/);
+  assert.match(ci, /node scripts\/check-js-syntax\.mjs/);
+  assert.match(JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8")).scripts.check, /scripts\/check-js-syntax\.mjs/);
 };
 
 

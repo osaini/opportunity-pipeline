@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import { chromium } from "playwright";
+import { injectedFiles } from "../engine_files.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const EXTENSION = path.join(ROOT, "apps", "extension");
@@ -104,15 +105,15 @@ try {
   await panel.getByText("Paired. Open an application page", { exact: false }).waitFor();
 
   await ats.bringToFront();
-  const scan = await panel.evaluate(async () => {
+  const scan = await panel.evaluate(async ({ files }) => {
     const [target] = await chrome.tabs.query({ active: true, currentWindow: true });
-    await chrome.scripting.executeScript({ target: { tabId: target.id }, files: ["adapters.js", "field-engine.js", "apply-engine.js", "content.js"] });
+    await chrome.scripting.executeScript({ target: { tabId: target.id }, files });
     return chrome.tabs.sendMessage(target.id, {
       type: "SCAN_FIELDS",
       profile: { name: "Confirmed Student", "contact.email": "confirmed@example.com" },
       answers: [],
     });
-  });
+  }, { files: injectedFiles() });
   const company = scan.fields.find((field) => field.label.startsWith("Company Name"));
   const consent = scan.fields.find((field) => field.label.startsWith("Consent"));
   const email = scan.fields.find((field) => field.label.startsWith("Email"));
