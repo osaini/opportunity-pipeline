@@ -50,10 +50,9 @@ from uuid import uuid4
 
 from pipeline import identity_tokens, normalized
 
-from . import ROOT, actions, automation
+from . import APPLY_ROOT, SERVER_INSTANCE, actions, automation
 from .background import step_error
 from .database import is_unique_violation
-from .outreach_gmail import SERVER_INSTANCE
 from .schema import utc_now
 from .user_time import UserTimezone, user_timezone
 
@@ -68,9 +67,8 @@ CLAIM_STATES = ("claimed", "clicking", "submitted", "unconfirmed", "needs_you", 
 RUN_KINDS = ("lookup", "rehearsal", "submit", "handoff")
 # What a screenshot of a filled form is kept for, in days (PIPELINE_APPLY_EVIDENCE_DAYS).
 DEFAULT_EVIDENCE_DAYS = 90
-# Where screenshots live: data/private/apply/<user folder>/<opportunity id>/<run id>-<step>.png. The folder is
-# per student, so deleting an account removes one folder. Not in output/: everything under data/ is ignored.
-APPLY_ROOT = ROOT / "data" / "private" / "apply"
+# Screenshots live under APPLY_ROOT (opportunity_app/__init__.py): <user folder>/<opportunity id>/<run id>-<step>.png.
+# The folder is per student, so deleting an account removes one folder. Not in output/: everything under data/ is ignored.
 # A claim, or a run, that another server process holds is held while its heartbeat is this fresh.
 HELD_HEARTBEAT = timedelta(minutes=2)
 # The one confirm clock: how old the rehearsal a one-click submit confirmed may be at hand-over.

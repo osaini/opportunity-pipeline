@@ -35,7 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pipeline import load_env_file
 from pipeline_core import MAX_PER_COMPANY, OpportunityFilters, OpportunityRepository
 
-from . import DEFAULT_PLATFORM_DB, DEFAULT_PROFILE, STATIC_DIR
+from . import APPLY_ROOT, DEFAULT_PLATFORM_DB, DEFAULT_PROFILE, STATIC_DIR
 from . import application_inbox
 from . import automation as automation_core
 from . import auto_triage, mail_trust, resume_variants
@@ -298,7 +298,7 @@ from .inbox_watcher import InboxWatcher
 from .outreach_inbox import PossibleReplyNotFound, PossibleReplySettled, capture_replies, decide_possible_reply
 from .outreach_forms import default_submitter_factory as default_form_submitter_factory, set_contact_form, submit_contact_form
 from . import apply_policy, apply_preflight, apply_runs, apply_sensitive
-from .apply_runs import APPLY_ROOT, recover_stale as recover_stale_applications
+from .apply_runs import recover_stale as recover_stale_applications
 from .apply_schema_client import SchemaClient, default_schema_client_factory
 from .outreach_automation import AutomationWorker, settings as automation_settings, update_settings as update_automation_settings
 from .outreach_schedule import cancel_send, schedule_send

@@ -20,7 +20,7 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, automation, outreach_delivery, outreach_gmail
+from opportunity_app import SERVER_INSTANCE, STATIC_DIR, automation, outreach_delivery, outreach_gmail
 from opportunity_app.api import create_app
 from opportunity_app.schema import connect_product, utc_now
 
@@ -494,7 +494,7 @@ class GmailDraftTests(unittest.TestCase):
         self.connect()
         target = self.approved_target()
         # Its request has ended (a failed write left the row as it was), so nothing holds it.
-        self.put_claim(target, "sending", instance=outreach_gmail.SERVER_INSTANCE, age_minutes=0)
+        self.put_claim(target, "sending", instance=SERVER_INSTANCE, age_minutes=0)
         response = self.send(target)
         self.assertEqual(response.status_code, 428)
         self.assertEqual(self.gmail.sent, [])

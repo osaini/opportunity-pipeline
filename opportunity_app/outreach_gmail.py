@@ -47,7 +47,7 @@ from uuid import uuid4
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
 
-from . import ROOT, automation
+from . import ROOT, SERVER_INSTANCE, automation
 from .connections import OAUTH_PROVIDERS
 from .outreach import (
     DRAFT_KINDS,
@@ -657,8 +657,7 @@ def _draft_still_there(gmail: _Gmail, draft_id: str) -> bool:
 # The server runs as one process, so a claim from another instance was left by
 # a process that has since died or been replaced. Its request may still have
 # been finishing its one Gmail call, hence the grace period before it counts as
-# stale.
-SERVER_INSTANCE = uuid4().hex
+# stale. SERVER_INSTANCE is one id per process (opportunity_app/__init__.py), shared with Apply for me's claims.
 FOREIGN_CLAIM_GRACE = timedelta(minutes=5)
 IN_PROGRESS = "This email is already being sent or written to Gmail. Wait a moment, then reload"
 _SEND_UNCERTAIN = (

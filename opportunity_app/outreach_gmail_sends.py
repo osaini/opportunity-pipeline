@@ -28,12 +28,12 @@ from uuid import uuid4
 
 import httpx
 
+from . import SERVER_INSTANCE
 from .outreach import DRAFT_KINDS, UNSENT_STATUSES, OutreachNotFoundError, _log, get_target, update_target
 from .outreach_gmail import (
     DRAFT_EVENT,
     SENT_EVENT,
     SENT_STATUS,
-    SERVER_INSTANCE,
     ClientFactory,
     GmailAuthError,
     GmailThrottled,
