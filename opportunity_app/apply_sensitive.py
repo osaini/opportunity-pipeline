@@ -59,8 +59,8 @@ from .settings_store import get_setting, put_setting
 from .timestamps import utc_now
 
 __all__ = [
-    "CATEGORY_GROUPS", "CONSENT_TEXT", "DECLINE_EXAMPLES", "EEO_CATEGORIES", "LABELS", "STATEMENT_CATEGORIES", "STORABLE", "StoreRefused", "add_entry", "allowed_categories",
-    "PLACEHOLDER_NOTE", "TICKABLE", "cites_document", "delete_entry", "is_decline", "links_in", "list_entries", "lookup", "set_allowed_categories",
+    "CATEGORY_GROUPS", "CONSENT_TEXT", "DECLINE_EXAMPLES", "EEO_CATEGORIES", "LABELS", "STORABLE", "StoreRefused", "add_entry", "allowed_categories",
+    "PLACEHOLDER_NOTE", "cites_document", "delete_entry", "is_decline", "links_in", "list_entries", "lookup", "set_allowed_categories",
 ]
 
 SETTING_KEY = "apply_sensitive_categories"

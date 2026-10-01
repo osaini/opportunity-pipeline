@@ -103,7 +103,7 @@ class ApplicationStage(HandlerBase):
         # Read before the move: once it is made, the archive is no longer the latest stage change.
         archive = None
         if after["stage"] not in actions.TERMINAL_APPLICATION_STAGES:
-            from . import internal_automation  # imported here: it imports this module
+            from . import internal_automation
 
             archive = internal_automation.automatic_archive(conn, subject_id)
         actions.update_application_tx(

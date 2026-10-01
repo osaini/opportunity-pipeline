@@ -171,7 +171,7 @@ def _sensitive_form(entry: apply_policy.PlanField, kind: str) -> dict[str, Any] 
     it points to a document. The category, the wording and the options come from the form, never from the browser.
     """
     category = entry.sensitive or ""
-    statement = category in apply_sensitive.STATEMENT_CATEGORIES
+    statement = category in apply_classify.STATEMENT_CATEGORIES
     # A data-processing consent's statement is on the page only, not in Greenhouse's listing, so there is nothing yet to
     # store it under: it is left for the student, or added word for word in Apply agent settings.
     if entry.section == "data_compliance" or entry.text_cut:

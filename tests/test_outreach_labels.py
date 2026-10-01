@@ -17,7 +17,7 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, automation, inbox_watcher, outreach, outreach_gmail, outreach_inbox, outreach_labels, schema
+from opportunity_app import STATIC_DIR, automation, inbox_watcher, outreach, outreach_gmail, outreach_inbox, outreach_label_name, outreach_labels, schema
 from opportunity_app.api import create_app
 from opportunity_app.inbox_watcher import InboxWatcher
 from opportunity_app.outreach_inbox import decide_possible_reply
@@ -215,17 +215,17 @@ class LabelCase(unittest.TestCase):
 
 class LabelNameTests(LabelCase):
     def test_the_default_is_opportunities_and_search_form_is_what_gmail_searches(self):
-        self.assertEqual((outreach_labels.DEFAULT_LABEL, outreach_labels.label_name(self.conn, USER)), (LABEL, LABEL))
+        self.assertEqual((outreach_label_name.DEFAULT_LABEL, outreach_label_name.label_name(self.conn, USER)), (LABEL, LABEL))
         self.assertEqual(outreach_labels.search_form("Job Search/2026  Fall"), "job-search-2026-fall")
         self.assertEqual(outreach_labels.search_form(""), "")
 
     def test_a_name_is_saved_cleaned_up_and_empty_means_off(self):
         self.assertEqual(outreach_labels.set_label_name(self.conn, USER, "  Job   Search / 2026 "), "Job Search / 2026")
-        self.assertEqual(outreach_labels.label_name(self.conn, USER), "Job Search / 2026")
+        self.assertEqual(outreach_label_name.label_name(self.conn, USER), "Job Search / 2026")
         self.assertEqual(outreach_labels.set_label_name(self.conn, USER, ""), "")
-        self.assertEqual(outreach_labels.label_name(self.conn, USER), "", "an empty name is kept: labelling is off")
+        self.assertEqual(outreach_label_name.label_name(self.conn, USER), "", "an empty name is kept: labelling is off")
         self.assertEqual(outreach_labels.set_label_name(self.conn, USER, None), LABEL)
-        self.assertEqual(outreach_labels.label_name(self.conn, USER), LABEL)
+        self.assertEqual(outreach_label_name.label_name(self.conn, USER), LABEL)
 
     def test_a_name_gmail_would_refuse_is_refused_in_a_sentence(self):
         for bad in ("x" * 101, "bad\x00name", "/leading", "trailing/", "a//b", "inbox", "Spam", "ALL MAIL", "drafts",
@@ -234,7 +234,7 @@ class LabelNameTests(LabelCase):
                 with self.assertRaises(ValueError) as caught:
                     outreach_labels.set_label_name(self.conn, USER, bad)
                 self.assertTrue(str(caught.exception).startswith("A Gmail label name") or "Gmail keeps the name" in str(caught.exception))
-        self.assertEqual(outreach_labels.label_name(self.conn, USER), LABEL, "nothing was saved")
+        self.assertEqual(outreach_label_name.label_name(self.conn, USER), LABEL, "nothing was saved")
         self.assertEqual(outreach_labels.set_label_name(self.conn, USER, "x" * 100), "x" * 100)
 
     def test_a_name_with_search_syntax_is_refused_naming_the_allowed_characters(self):
@@ -245,11 +245,11 @@ class LabelNameTests(LabelCase):
                     outreach_labels.set_label_name(self.conn, USER, bad)
                 self.assertEqual(str(caught.exception),
                                  "A Gmail label name can use only letters, digits, spaces, hyphens, underscores and slashes")
-        self.assertEqual(outreach_labels.label_name(self.conn, USER), LABEL, "nothing was saved")
+        self.assertEqual(outreach_label_name.label_name(self.conn, USER), LABEL, "nothing was saved")
         for good in ("Job Search/Replies", "outreach_replies", "Отклики", "2026-fall", "求人/返信"):
             with self.subTest(good):
                 self.assertEqual(outreach_labels.set_label_name(self.conn, USER, good), good)
-                self.assertEqual(outreach_labels.label_name(self.conn, USER), good)
+                self.assertEqual(outreach_label_name.label_name(self.conn, USER), good)
 
 
 class LabelPassTests(LabelCase):

@@ -13,8 +13,9 @@ here, by name, instead of by an import that happens to run first:
   outreach_callbacks (a reply arrived, not interested, ...)         outreach_thank_you
 
 Every process that runs any of that calls register_all() once as it starts: create_app for the web app (and so for
-the launcher, uvicorn and the sandbox), and the entry points that open the same database from outside it (the worker
-and the outreach CLI). Nothing registers at import time. A registry that was never filled fails loudly where it is read
+the launcher, uvicorn and the sandbox), and the entry points that open the same database from outside it (the worker,
+the outreach CLI and the migrate CLI, which the daily platform-sync runs). Nothing registers at import time. A registry
+that was never filled fails loudly where it is read
 (an unknown action type, a requirement that errors, a callback that says it was not registered) rather than acting as if
 there were nothing to do. Calling it again is harmless, so a test that wants the app's registries calls it too.
 

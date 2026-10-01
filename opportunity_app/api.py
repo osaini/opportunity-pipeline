@@ -305,7 +305,7 @@ from .apply_runs import recover_stale as recover_stale_applications
 from .apply_schema_client import SchemaClient, default_schema_client_factory
 from .outreach_automation import AutomationWorker, settings as automation_settings, update_settings as update_automation_settings
 from .outreach_schedule import cancel_send, schedule_send
-from . import bootstrap, outreach_labels, outreach_thank_you
+from . import bootstrap, outreach_label_name, outreach_labels, outreach_thank_you
 from .gmail_client import GmailAuthError, default_client_factory as default_gmail_client_factory
 from .outreach_gmail import (
     SendConflictError,
@@ -2093,9 +2093,9 @@ def create_app(
                 for key, label, categories in apply_sensitive.CATEGORY_GROUPS
             ],
             "categories": [
-                {"category": category, "label": apply_sensitive.LABELS[category], "statement": category in apply_sensitive.STATEMENT_CATEGORIES,
+                {"category": category, "label": apply_sensitive.LABELS[category], "statement": category in apply_classify.STATEMENT_CATEGORIES,
                  "decline_only": category in apply_sensitive.EEO_CATEGORIES,
-                 "tickable": category in apply_sensitive.TICKABLE}
+                 "tickable": category in apply_classify.TICKABLE}
                 for category in apply_sensitive.STORABLE
             ],
             "entries": apply_sensitive.list_entries(conn, user_id),
@@ -2884,11 +2884,11 @@ def create_app(
         return {"available": True, **view}
 
     def gmail_label_view(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
-        value = outreach_labels.label_name(conn, user_id)
+        value = outreach_label_name.label_name(conn, user_id)
         gmail = gmail_drafts_status(conn, user_id=user_id)
         return {
             "value": value,
-            "default": outreach_labels.DEFAULT_LABEL,
+            "default": outreach_label_name.DEFAULT_LABEL,
             "search": outreach_labels.search_form(value),
             "mailbox": {"connected": gmail["connected"], "connected_as": gmail["connected_as"], "expected": gmail["account"]},
             "permission": gmail["label_check"],
