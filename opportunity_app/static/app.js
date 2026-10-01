@@ -1170,6 +1170,37 @@
     els.error.hidden = true;
   }
 
+  // What every page loader opens and closes with. It takes the next load
+  // sequence (a load still in flight from before goes stale), clears the error,
+  // marks the results busy and draws the loader's own placeholder, then runs
+  // body({ carried, isCurrent }). A failure shows as the load error unless a
+  // newer load has taken over. `before` runs ahead of the placeholder, for what
+  // the placeholder wipes. `tracksLoading` keeps state.loading set, which the
+  // background polls consult. `finalize` runs last, whether or not it failed.
+  // isCurrent() holds while this load is the newest and the page it draws is
+  // still the one on screen.
+  async function runViewLoad({ views, before, placeholder, tracksLoading = false, finalize }, body) {
+    const sequence = ++state.loadSequence;
+    const carried = before?.();
+    if (tracksLoading) state.loading = true;
+    clearError();
+    els.results.setAttribute("aria-busy", "true");
+    placeholder();
+    const isCurrent = () => sequence === state.loadSequence && views.includes(state.view);
+    try {
+      await body({ carried, isCurrent });
+    } catch (error) {
+      showLoadError(error, sequence);
+    } finally {
+      if (tracksLoading) state.loading = false;
+      finalize?.();
+    }
+  }
+
+  function loadingLine(text) {
+    return () => els.results.replaceChildren(element("p", "detail-loading", text));
+  }
+
   function showLoadError(error, sequence) {
     // A late failure from a view the user already left must not clobber the new one.
     if (sequence !== state.loadSequence) return;
@@ -1613,20 +1644,11 @@
   }
 
   async function loadOpportunities() {
-    const sequence = ++state.loadSequence;
-    state.loading = true;
-    clearError();
-    els.results.setAttribute("aria-busy", "true");
-    skeletons();
-    try {
+    await runViewLoad({ views: ["discover", "saved"], placeholder: skeletons, tracksLoading: true }, async ({ isCurrent }) => {
       const payload = await api(`/api/v1/opportunities?${listParams().toString()}`);
-      if (sequence !== state.loadSequence || !["discover", "saved"].includes(state.view)) return;
+      if (!isCurrent()) return;
       renderResults(payload);
-    } catch (error) {
-      showLoadError(error, sequence);
-    } finally {
-      state.loading = false;
-    }
+    });
   }
 
   function populateSelect(select, values) {
@@ -2476,18 +2498,13 @@
   }
 
   async function loadApplications() {
-    const sequence = ++state.loadSequence;
-    const carried = unsavedStageChoices();
-    state.loading = true;
-    clearError();
-    els.results.setAttribute("aria-busy", "true");
-    skeletons();
-    try {
+    // The stage choices are read before the skeletons wipe the board.
+    await runViewLoad({ views: ["applications"], before: unsavedStageChoices, placeholder: skeletons, tracksLoading: true }, async ({ carried, isCurrent }) => {
       const [payload, analytics] = await Promise.all([
         api("/api/v1/applications"),
         api("/api/v1/applications/analytics"),
       ]);
-      if (sequence !== state.loadSequence || state.view !== "applications") return;
+      if (!isCurrent()) return;
       state.total = payload.total;
       const tab = APPLICATION_TABS.find((entry) => entry.id === state.subtabs.applications) || APPLICATION_TABS[0];
       const shown = payload.items.filter(tab.test);
@@ -2626,11 +2643,7 @@
       els.results.setAttribute("aria-busy", "false");
       focusRequestedApplication();
       restoreStageChoices(carried);
-    } catch (error) {
-      showLoadError(error, sequence);
-    } finally {
-      state.loading = false;
-    }
+    });
   }
 
   const OUTREACH_STATUS_LABELS = {
@@ -2946,8 +2959,7 @@
           // A changed or already-sent draft means the card is stale; reloading
           // clears errors, so the reason is shown after it.
           if (error.status === 409 || error.status === 422) {
-            state.outreachOpen = item.id;
-            await loadOutreach();
+            await reloadOutreachAt(item.id);
           }
           showError(error.message);
         }
@@ -3030,8 +3042,7 @@
           reset();
           button.disabled = false;
           if ([409, 422, 428].includes(error.status)) {
-            state.outreachOpen = item.id;
-            await loadOutreach();
+            await reloadOutreachAt(item.id);
           }
           showError(error.message);
         }
@@ -3241,8 +3252,7 @@
       button.disabled = true;
       try {
         const result = await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/schedule?kind=${kind}`, { method: "DELETE" });
-        state.outreachOpen = item.id;
-        await loadOutreach();
+        await reloadOutreachAt(item.id);
         if (text !== "Cancel") announce("Dismissed.");
         else announce(result.cancelled
           ? `Cancelled the scheduled send to ${item.contact_email}.`
@@ -3553,9 +3563,7 @@
       } catch (error) {
         if (error.status === 409) {
           state.outreachFlash = { id: item.id, kind, message: error.message };
-          state.outreachOpen = item.id;
-          await loadOutreach();
-          refocusOutreach(item.id, `[data-draft-kind="${kind}"] [data-draft-approve]`);
+          await reloadOutreachAt(item.id, `[data-draft-kind="${kind}"] [data-draft-approve]`);
           return;
         }
         message.textContent = error.message;
@@ -4702,6 +4710,14 @@
     target?.focus();
   }
 
+  // After an action on one company: keep its card open, reload the list from
+  // the server, and put focus back on the first of focusSelectors still there.
+  async function reloadOutreachAt(id, ...focusSelectors) {
+    state.outreachOpen = id;
+    await loadOutreach();
+    if (focusSelectors.length) refocusOutreach(id, ...focusSelectors);
+  }
+
   // Reloading rebuilds the pane from the server, so anything typed and not yet
   // saved would go with it. Confirming research, moving the status, applying a
   // contact and the deep-search poll have nothing to do with those words, so the
@@ -4919,8 +4935,7 @@
     callPrepWatches.delete(id);
     if (state.view !== "outreach") return;
     // Unsaved words in the pane come across the reload.
-    state.outreachOpen = id;
-    await loadOutreach();
+    await reloadOutreachAt(id);
   }
 
   document.addEventListener("visibilitychange", () => {
@@ -5329,8 +5344,7 @@
       button.disabled = true;
       try {
         const message = await run();
-        state.outreachOpen = item.id;
-        await loadOutreach();
+        await reloadOutreachAt(item.id);
         if (message) announce(message);
       } catch (error) {
         button.disabled = false;
@@ -5402,16 +5416,14 @@
         sentCheck.attach(payload);
         try {
           await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/thank-you/send`, { method: "POST", body: JSON.stringify(payload) });
-          state.outreachOpen = item.id;
-          await loadOutreach();
+          await reloadOutreachAt(item.id);
           announce(`Sent the thank-you to ${thankYou.to_email}.`);
         } catch (error) {
           sentCheck.note(error);
           reset();
           button.disabled = false;
           if (error.status === 409 || error.status === 422) {
-            state.outreachOpen = item.id;
-            await loadOutreach();
+            await reloadOutreachAt(item.id);
           }
           showError(error.message);
         }
@@ -5497,18 +5509,14 @@
             method: "POST",
             body: JSON.stringify({ decision }),
           });
-          state.outreachOpen = item.id;
-          await loadOutreach();
-          refocusOutreach(item.id, ".outreach-possible-reply-actions button", ".outreach-next select");
+          await reloadOutreachAt(item.id, ".outreach-possible-reply-actions button", ".outreach-next select");
           announce(decision === "reply"
             ? `Logged ${mail.from}'s email as ${item.company}'s reply.`
             : `Set aside ${mail.from}'s email; it is not a reply.`);
         } catch (error) {
           // Settled already (another tab) or gone: the card is stale, so it is shown again as it is now.
           if (error.status === 409 || error.status === 404) {
-            state.outreachOpen = item.id;
-            await loadOutreach();
-            refocusOutreach(item.id, ".outreach-possible-reply-actions button", ".outreach-next select");
+            await reloadOutreachAt(item.id, ".outreach-possible-reply-actions button", ".outreach-next select");
           } else {
             actions.querySelectorAll("button").forEach((control) => { control.disabled = false; });
             button.focus();
@@ -5971,8 +5979,7 @@
           dismiss.disabled = true;
           try {
             await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/reply-suggestion`, { method: "DELETE" });
-            state.outreachOpen = item.id;
-            await loadOutreach();
+            await reloadOutreachAt(item.id);
             announce(`Dropped the suggestion; ${item.company} stays ${OUTREACH_STATUS_LABELS[item.status] || item.status}.`);
           } catch (error) {
             showError(error.message);
@@ -6483,14 +6490,21 @@
   }
 
   async function loadOutreach() {
-    const sequence = ++state.loadSequence;
-    state.loading = true;
-    clearError();
-    els.results.setAttribute("aria-busy", "true");
-    if (!els.results.querySelector(".outreach-card, .outreach-toolbar, .outreach-deep-search, .outreach-recontact, .outreach-settings, .outreach-add")) skeletons();
-    try {
+    await runViewLoad({
+      views: ["outreach"],
+      placeholder: () => {
+        if (!els.results.querySelector(".outreach-card, .outreach-toolbar, .outreach-deep-search, .outreach-recontact, .outreach-settings, .outreach-add")) skeletons();
+      },
+      tracksLoading: true,
+      finalize: () => {
+        // One reload carries them; a later one starts from what the server holds.
+        // Both flags end here, so a load that returned early cannot strand either.
+        state.outreachPendingEdits = null;
+        state.outreachDiscardEdits = false;
+      },
+    }, async ({ isCurrent }) => {
       const payload = await api("/api/v1/outreach");
-      if (sequence !== state.loadSequence || state.view !== "outreach") return;
+      if (!isCurrent()) return;
       const tab = OUTREACH_TABS.find((entry) => entry.id === state.subtabs.outreach) || OUTREACH_TABS[0];
       const running = payload.discovery.active?.state === "running";
       // A search or tag narrows every tab, so each count reads "6 of 20" and
@@ -6518,7 +6532,7 @@
       } else if (tab.id === "settings") {
         const panel = await outreachSettingsPanel();
         // The settings load after the list; a view switched meanwhile keeps its own page.
-        if (sequence !== state.loadSequence || state.view !== "outreach") return;
+        if (!isCurrent()) return;
         els.results.appendChild(panel);
         els.resultCount.textContent = "Outreach settings";
       } else if (tab.id === "find-people") {
@@ -6577,15 +6591,7 @@
       if (payload.gmail_drafts?.bounce_check) checkForBounces();
       els.results.setAttribute("aria-busy", "false");
       focusRequestedOutreach();
-    } catch (error) {
-      showLoadError(error, sequence);
-    } finally {
-      state.loading = false;
-      // One reload carries them; a later one starts from what the server holds.
-      // Both flags end here, so a load that returned early cannot strand either.
-      state.outreachPendingEdits = null;
-      state.outreachDiscardEdits = false;
-    }
+    });
   }
 
   function profileField(form, labelText, name, value, options = {}) {
@@ -8684,12 +8690,8 @@
   }
 
   async function loadProfile() {
-    const sequence = ++state.loadSequence;
-    clearError();
-    els.results.setAttribute("aria-busy", "true");
-    els.results.replaceChildren(element("p", "detail-loading", "Loading your private profile…"));
-    const automationRead = startAutomationRead();
-    try {
+    await runViewLoad({ views: ["profile"], placeholder: loadingLine("Loading your private profile…") }, async ({ isCurrent }) => {
+      const automationRead = startAutomationRead();
       const [profile, resumes, connections, preferences, events, applications, dossier, extensionDevices, automation, ...automationLists] = await Promise.all([
         api("/api/v1/profile"),
         api("/api/v1/resumes"),
@@ -8703,7 +8705,7 @@
         api("/api/v1/automation").catch((error) => ({ error })),
         ...automationListRequests().map((request) => request.catch((error) => ({ error }))),
       ]);
-      if (sequence !== state.loadSequence || state.view !== "profile") return;
+      if (!isCurrent()) return;
       let overview = automation;
       if (automation?.settings && !applyAutomationRead(automationRead, automation)) {
         // A pause or switch saved while this page loaded is newer than this
@@ -8716,9 +8718,7 @@
       }
       const automationActions = Object.fromEntries(AUTOMATION_LIST_KEYS.map((key, index) => [key, automationLists[index]]));
       renderProfile(profile, resumes, connections, preferences, events, applications, dossier, extensionDevices, overview, automationActions);
-    } catch (error) {
-      showLoadError(error, sequence);
-    }
+    });
   }
 
   function opportunityOptions(select, applications) {
@@ -9007,11 +9007,7 @@
   }
 
   async function loadPreparation() {
-    const sequence = ++state.loadSequence;
-    clearError();
-    els.results.setAttribute("aria-busy", "true");
-    els.results.replaceChildren(element("p", "detail-loading", "Loading preparation workspace…"));
-    try {
+    await runViewLoad({ views: ["prepare"], placeholder: loadingLine("Loading preparation workspace…") }, async ({ isCurrent }) => {
       const [documents, answers, applications, providersPayload, interviews] = await Promise.all([
         api("/api/v1/preparation/documents"),
         api("/api/v1/preparation/answers"),
@@ -9019,7 +9015,7 @@
         api("/api/v1/agent/providers"),
         api("/api/v1/preparation/interviews"),
       ]);
-      if (sequence !== state.loadSequence || state.view !== "prepare") return;
+      if (!isCurrent()) return;
       els.results.replaceChildren();
       els.resultCount.textContent = "Preparation workspace";
       els.pageStatus.textContent = "Drafts never send or submit themselves";
@@ -9202,23 +9198,17 @@
       );
       sectionSubnav();
       els.results.setAttribute("aria-busy", "false");
-    } catch (error) {
-      showLoadError(error, sequence);
-    }
+    });
   }
 
   async function loadAgent() {
-    const sequence = ++state.loadSequence;
-    clearError();
-    els.results.setAttribute("aria-busy", "true");
-    els.results.replaceChildren(element("p", "detail-loading", "Loading agent history…"));
-    try {
+    await runViewLoad({ views: ["agent"], placeholder: loadingLine("Loading agent history…") }, async ({ isCurrent }) => {
       const [threadsPayload, activityPayload, providersPayload] = await Promise.all([
         api("/api/v1/agent/threads"),
         api("/api/v1/agent/activity"),
         api("/api/v1/agent/providers"),
       ]);
-      if (sequence !== state.loadSequence || state.view !== "agent") return;
+      if (!isCurrent()) return;
       const threads = threadsPayload.items || [];
       const providers = (providersPayload.items || []).filter((provider) => provider.configured);
       if (!state.agentThreadId || !threads.some((thread) => thread.id === state.agentThreadId)) {
@@ -9407,9 +9397,7 @@
       els.results.append(tagSection(shell, "chat", "Conversation"), tagSection(activity, "activity", "Tool and approval audit"));
       sectionSubnav();
       els.results.setAttribute("aria-busy", "false");
-    } catch (error) {
-      showLoadError(error, sequence);
-    }
+    });
   }
 
   const URGENT_KIND_LABELS = {
@@ -9435,19 +9423,13 @@
   ];
 
   async function loadUrgent() {
-    const sequence = ++state.loadSequence;
-    clearError();
-    els.results.setAttribute("aria-busy", "true");
-    els.results.replaceChildren(element("p", "detail-loading", "Loading what is due…"));
-    try {
+    await runViewLoad({ views: ["urgent"], placeholder: loadingLine("Loading what is due…") }, async ({ isCurrent }) => {
       const payload = await api(`/api/v1/urgent?days=${SOON_DAYS}`);
-      if (sequence !== state.loadSequence || state.view !== "urgent") return;
+      if (!isCurrent()) return;
       renderUrgent(payload);
       urgentBadge.generation += 1;
       applyFreshUrgentCount(payload.counts.attention);
-    } catch (error) {
-      showLoadError(error, sequence);
-    }
+    });
   }
 
   function urgentWhen(item) {
@@ -9670,18 +9652,12 @@
   }
 
   async function loadPrograms() {
-    const sequence = ++state.loadSequence;
-    clearError();
-    els.results.setAttribute("aria-busy", "true");
-    els.results.replaceChildren(element("p", "detail-loading", "Loading programs…"));
-    try {
+    await runViewLoad({ views: ["programs"], placeholder: loadingLine("Loading programs…") }, async ({ isCurrent }) => {
       const payload = await api("/api/v1/early-programs");
-      if (sequence !== state.loadSequence || state.view !== "programs") return;
+      if (!isCurrent()) return;
       applyProgramsMeta(payload);
       renderPrograms(payload);
-    } catch (error) {
-      showLoadError(error, sequence);
-    }
+    });
   }
 
   // Re-render after a status save without the loading placeholder, so focus
