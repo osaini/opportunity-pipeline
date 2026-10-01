@@ -41,7 +41,7 @@ from typing import Any, Iterable, Sequence
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from pipeline import identity_tokens
+from pipeline_core.identity import employer_key, normalized_text
 from pipeline_core.visibility import capture_visible_sql
 
 from .apply_checks import question_key
@@ -49,7 +49,7 @@ from .schema import utc_now
 
 __all__ = [
     "CATEGORY_GROUPS", "CONSENT_TEXT", "DECLINE_EXAMPLES", "EEO_CATEGORIES", "LABELS", "STATEMENT_CATEGORIES", "STORABLE", "StoreRefused", "add_entry", "allowed_categories",
-    "PLACEHOLDER_NOTE", "TICKABLE", "cites_document", "company_key", "delete_entry", "is_decline", "links_in", "list_entries", "lookup", "set_allowed_categories",
+    "PLACEHOLDER_NOTE", "TICKABLE", "cites_document", "delete_entry", "is_decline", "links_in", "list_entries", "lookup", "set_allowed_categories",
 ]
 
 SETTING_KEY = "apply_sensitive_categories"
@@ -119,15 +119,6 @@ class StoreRefused(ValueError):
     """The entry cannot be stored; the message says why, in words for the student."""
 
 
-def company_key(name: str) -> str:
-    """The words that identify an employer, sorted and joined: "Acme Robotics Inc." and "ACME robotics" match. '' means none."""
-    return " ".join(sorted(identity_tokens(name)))
-
-
-def _words(text: Any) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", str(text if text is not None else "").lower()).strip()
-
-
 def _now(now: datetime | None) -> str:
     return utc_now() if now is None else now.isoformat(timespec="microseconds")
 
@@ -153,7 +144,7 @@ _DECLINE_LABELS = frozenset(
 
 def is_decline(text: Any) -> bool:
     """Whether an answer is a decline to answer an EEO question, by its whole label. Case and punctuation do not matter."""
-    return _words(text) in _DECLINE_LABELS
+    return normalized_text(text) in _DECLINE_LABELS
 
 
 # --- Links a statement cites -------------------------------------------------------------------------------
@@ -209,7 +200,7 @@ _ACCURACY_CLAIM = re.compile(r"\b(?:true|accurate|correct|complete|truthful)\b")
 
 def _names_no_document(statement: str) -> bool:
     """Whether a statement is provably a certification that the student's own answers are true, and nothing else."""
-    words = _words(statement).split()
+    words = normalized_text(statement).split()
     return bool(words) and bool(_ACCURACY_CLAIM.search(" ".join(words))) and all(word in _ACCURACY_WORDS for word in words)
 
 
@@ -226,7 +217,7 @@ def cites_document(statement: str, links: Iterable[str] = (), *, names: bool = T
     certification that the student's answers are true. The word lists above catch the common documents; the rule is that a
     list of nouns can never be complete, so anything that agrees to something and is not provably plain is kept for one company.
     """
-    if bool(tuple(links)) or bool(_DOCUMENT_WORDS.search(_words(statement))) or bool(links_in(statement)):
+    if bool(tuple(links)) or bool(_DOCUMENT_WORDS.search(normalized_text(statement))) or bool(links_in(statement)):
         return True
     if not names:
         return False
@@ -320,7 +311,7 @@ def add_entry(
         kind, stored = "checkbox", _CHECKED
         if str(answer).strip().casefold() not in ("", _CHECKED, "true", "yes", "1"):
             raise StoreRefused("A statement is stored only as ticked")
-        if len(_words(text).split()) < 3:
+        if len(normalized_text(text).split()) < 3:
             raise StoreRefused("Give the whole statement the box shows, word for word")
         cited = _clean_links(list(links) + list(links_in(text)))
     else:
@@ -355,7 +346,7 @@ def add_entry(
         # D5 C (i): this table never holds a demographic value. Checked here, so no route and no future caller can bypass it.
         if kind != "option" or not is_decline(stored):
             raise StoreRefused("The app stores only a decline answer (such as \"Decline To Self Identify\") for these questions, never a real answer")
-    mine = company_key(company) if str(company or "").strip() else ""
+    mine = employer_key(company) if str(company or "").strip() else ""
     if str(company or "").strip() and not mine:
         raise StoreRefused("This role has no company name the app can match on")
     if not mine and company_only:
@@ -442,7 +433,7 @@ def _role_counts(conn: sqlite3.Connection, user_id: str) -> dict[str, int]:
     for row in conn.execute(
         f"SELECT o.company, COUNT(*) AS roles FROM opportunities o WHERE {capture_visible_sql('o')} GROUP BY o.company", (user_id,),
     ).fetchall():
-        key = company_key(str(row["company"] or ""))
+        key = employer_key(str(row["company"] or ""))
         if key:
             counts[key] = counts.get(key, 0) + int(row["roles"])
     return counts

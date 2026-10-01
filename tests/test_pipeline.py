@@ -13,6 +13,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pipeline
+from pipeline_core.regions import match_region, region_label
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -110,7 +111,7 @@ class PipelineTests(unittest.TestCase):
         )["regions"]
 
         def matched(location):
-            hit = pipeline.match_region(location, regions)
+            hit = match_region(location, regions)
             return hit["region"]["name"] if hit else None
 
         self.assertEqual(matched("Austin, TX"), "Austin")
@@ -171,11 +172,11 @@ class PipelineTests(unittest.TestCase):
                 {"name": "Austin", "state_markers": ["tx"], "places": ["austin"]},
             ]
         }
-        self.assertEqual(pipeline.region_label("Austin, TX", profile), "Austin")
-        self.assertEqual(pipeline.region_label("Remote - US", profile), "Remote")
-        self.assertEqual(pipeline.region_label("Seattle, WA", profile), "Other")
-        self.assertEqual(pipeline.region_label("3 Locations", profile), "Unknown")
-        self.assertEqual(pipeline.region_label("", profile), "Unknown")
+        self.assertEqual(region_label("Austin, TX", profile), "Austin")
+        self.assertEqual(region_label("Remote - US", profile), "Remote")
+        self.assertEqual(region_label("Seattle, WA", profile), "Other")
+        self.assertEqual(region_label("3 Locations", profile), "Unknown")
+        self.assertEqual(region_label("", profile), "Unknown")
 
     def test_placeholder_location_is_not_penalised(self):
         profile = {

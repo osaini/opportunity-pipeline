@@ -25,6 +25,7 @@ from opportunity_app.api import create_app
 from opportunity_app.automation import Feature
 from opportunity_app.schema import MIGRATIONS_DIR, connect_product, ensure_product_schema, migrate_legacy_database, utc_now
 from pipeline_core import OpportunityFilters, OpportunityRepository
+from pipeline_core.identity import employer_key
 from helpers_platform import JOBS, LEGACY_SCHEMA, build_profile
 
 AUTOMATION_USER = "local-user"
@@ -1282,7 +1283,7 @@ class PostgresApplyContractTests(unittest.TestCase):
     def claim(self, opportunity_id, mode="handoff", *, job="bluefin/1001", conn=None, now=None, company="Bluefin Robotics", board="bluefin", **kwargs):
         return apply_runs.claim(
             conn or self.conn, user_id=AUTOMATION_USER, opportunity_id=opportunity_id, mode=mode, ats="greenhouse", board_token=board,
-            job_ref=job, company=apply_runs.company_key(company), now=now or self.at(1), **kwargs,
+            job_ref=job, company=employer_key(company), now=now or self.at(1), **kwargs,
         )
 
     def state(self, token):

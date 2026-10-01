@@ -20,11 +20,13 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from pipeline_core.identity import sort_key
+
 from . import ROOT
 from .company_tags import regenerate_company_tags
 from .opportunity_metadata import extract_opportunity_metadata
 from .resumes import ResumeValidationError, detect_media_type, extract_pdf, scan_resume_file
-from .schema import sort_key, RULESET_VERSION, utc_now
+from .schema import RULESET_VERSION, utc_now
 
 
 DEFAULT_CAPTURE_STORAGE = ROOT / "data" / "captures"

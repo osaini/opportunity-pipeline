@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterable
 
+from .identity import sort_key
 from .visibility import capture_visible_sql
 
 
@@ -44,17 +45,6 @@ RANKED_VIEW_PER_COMPANY = 5
 MAX_PER_COMPANY = 50
 
 
-def company_key(value: str) -> str:
-    """The fold `company_sort_key` is stored with.
-
-    Must stay identical to `opportunity_app.schema.sort_key`, which writes the
-    column; it is repeated here because pipeline_core may not import the web
-    package (tests/test_dependency_boundary.py).
-    """
-
-    return str(value or "").casefold()
-
-
 @dataclass(frozen=True)
 class OpportunityFilters:
     """Validated filters supported by the first API/read-model slice."""
@@ -73,7 +63,7 @@ class OpportunityFilters:
     posted_since: str = ""
     deadline_before: str = ""
     tag: str = ""
-    # One employer, matched on the stored fold (see `company_key`).
+    # One employer, matched on the stored fold (see `identity.sort_key`).
     company: str = ""
     # Show at most this many postings per employer; 0 shows every posting.
     # Ignored while `company` is set, since that asks for one employer's all.
@@ -294,7 +284,7 @@ def _where(
         params.extend([term, term, term, term])
     if filters.company:
         clauses.append(f"{alias}.company_sort_key = ?")
-        params.append(company_key(filters.company))
+        params.append(sort_key(filters.company))
     for column, value in (
         (f"{alias}.role_type", filters.role_type),
         (f"{alias}.region", filters.region),

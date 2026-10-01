@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from cryptography.fernet import Fernet
 
-import pipeline
+from pipeline_core.regions import region_label
 from helpers_platform import LEGACY_SCHEMA, migrate_cached, sample_docx
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
@@ -411,7 +411,7 @@ class PlatformTests(unittest.TestCase):
             self.assertEqual(exported.status_code, 200)
             self.assertIn("profile.json", exported.headers["content-disposition"])
             self.assertEqual(exported.json()["name"], "Test Student")
-            self.assertEqual(pipeline.region_label("Austin, TX", exported.json()), "Austin")
+            self.assertEqual(region_label("Austin, TX", exported.json()), "Austin")
             self.assertEqual(fact["source"], "user")
 
             rejected = client.put(

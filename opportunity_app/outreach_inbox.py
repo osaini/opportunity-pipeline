@@ -59,7 +59,7 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
-from pipeline import identity_tokens, normalized
+from pipeline_core.identity import identity_tokens, normalized
 
 from . import automation, outreach_labels
 from .inbox_classifiers import read_reply

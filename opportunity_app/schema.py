@@ -15,8 +15,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from pipeline import region_label
 from pipeline_core import OpportunityFilters, OpportunityRepository
+from pipeline_core.identity import sort_key
+from pipeline_core.regions import region_label
 
 from . import DEFAULT_LEGACY_DB, DEFAULT_PLATFORM_DB, DEFAULT_PROFILE, ROOT
 from .company_tags import ensure_company_tags_current, regenerate_company_tags
@@ -207,18 +208,6 @@ def _apply_posted_at_utc(conn: sqlite3.Connection, sql: str) -> None:
     conn.executescript(sql)
     backfill_posted_at_utc(conn)
     _repair_observation_timestamps(conn)
-
-
-def sort_key(value: str | None) -> str:
-    """The stored fold used to order company and title.
-
-    One function, applied once at write time, so every backend orders by the
-    same bytes. `casefold` rather than `lower` because it is the fold the
-    tenant path has always used -- `lower` leaves U+00DF alone and would change
-    which of 'Straße' and 'Strasse' comes first.
-    """
-
-    return str(value or "").casefold()
 
 
 def backfill_sort_keys(conn: sqlite3.Connection) -> int:

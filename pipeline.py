@@ -30,7 +30,9 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable
 
-from pipeline_core.read_model import RANKED_VIEW_PER_COMPANY, company_key
+from pipeline_core.identity import identity_tokens, normalized, sort_key
+from pipeline_core.read_model import RANKED_VIEW_PER_COMPANY
+from pipeline_core.regions import is_uninformative_location, match_region, region_label
 
 
 ROOT = Path(__file__).resolve().parent
@@ -703,10 +705,6 @@ def canonical_url(url: str) -> str:
     return urllib.parse.urlunsplit(
         (parsed.scheme.lower(), parsed.netloc.lower(), parsed.path.rstrip("/"), urllib.parse.urlencode(allowed), "")
     )
-
-
-def normalized(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
 
 
 def fingerprint(company: str, title: str, location: str) -> str:
@@ -2219,36 +2217,6 @@ def _source_identity(source: dict[str, Any]) -> str:
 # company name can never inject anything unexpected into the request.
 DISCOVERY_SLUG_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
-# Dropped before comparing a queried name against a board's own name, so
-# "Firefly Aerospace Inc." and "Firefly Aerospace" are the same employer.
-_CORPORATE_SUFFIXES = {
-    "inc",
-    "incorporated",
-    "llc",
-    "ltd",
-    "limited",
-    "corp",
-    "corporation",
-    "co",
-    "company",
-    "group",
-    "holdings",
-    "the",
-}
-
-
-def identity_tokens(name: str) -> frozenset[str]:
-    """The words that identify an employer, without corporate suffixes: "Acme Robotics Inc." -> {acme, robotics}.
-
-    Public because the web app's application-email matching compares company
-    names by the same rule the board identity check uses.
-    """
-    return frozenset(normalized(name).split()) - _CORPORATE_SUFFIXES
-
-
-# The old private name, kept so nothing that imported it breaks.
-_identity_tokens = identity_tokens
-
 
 def slug_candidates(name: str) -> list[str]:
     """Board slugs worth trying for a company name, most likely first."""
@@ -2374,7 +2342,7 @@ def discover_ats(
                 board_name = found["board_name"]
                 if board_name is None:
                     identity = "unverified"
-                elif _identity_tokens(board_name) == _identity_tokens(company):
+                elif identity_tokens(board_name) == identity_tokens(company):
                     identity = "confirmed"
                 else:
                     identity = "review"
@@ -3142,61 +3110,6 @@ def term_hits(text: str, terms: Iterable[str]) -> list[str]:
     return hits
 
 
-_PLACEHOLDER_LOCATION_RE = re.compile(r"^\s*\d+\s+locations?\s*$", re.IGNORECASE)
-
-
-def is_uninformative_location(location: str) -> bool:
-    """True when a location field names no place at all.
-
-    Workday boards emit "3 Locations" for multi-site postings. That says nothing
-    about where the role is, so — like a blank field — it must not be read as
-    evidence the role sits outside the target regions.
-    """
-    stripped = (location or "").strip()
-    return not stripped or bool(_PLACEHOLDER_LOCATION_RE.match(stripped))
-
-
-def match_region(location: str, regions: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
-    """Match a posting's location against the configured target regions.
-
-    There is no geocoding here: "radius" is expressed as the curated place list
-    each region carries, so a close radius is simply a shorter list. Bare city
-    names collide across states (Newark, Dublin, Richmond, Concord, Berkeley),
-    so a place only counts when the location also names one of the region's
-    state markers. Region aliases ("bay area") are unambiguous on their own and
-    skip that requirement.
-    """
-    lower = normalized(location)
-    if not lower:
-        return None
-    for region in regions or []:
-        if not isinstance(region, dict):
-            continue
-        for alias in region.get("aliases") or []:
-            if normalized(alias) in lower:
-                return {"region": region, "matched": alias}
-        markers = [normalized(marker) for marker in region.get("state_markers") or []]
-        if not any(re.search(rf"\b{re.escape(marker)}\b", lower) for marker in markers if marker):
-            continue
-        for place in region.get("places") or []:
-            needle = normalized(place)
-            if needle and re.search(rf"\b{re.escape(needle)}\b", lower):
-                return {"region": region, "matched": place}
-    return None
-
-
-def region_label(location: str, profile: dict[str, Any]) -> str:
-    """Bucket a location into a target region, "Remote", or "Other" for display."""
-    hit = match_region(location, profile.get("regions") or [])
-    if hit:
-        return str(hit["region"].get("name", "Target region"))
-    if "remote" in location.lower():
-        return "Remote"
-    if is_uninformative_location(location):
-        return "Unknown"
-    return "Other"
-
-
 # Whole words only: "Leadership Development Intern" must not read as "lead".
 # The period in "Sr." defeats a trailing \b, so it is matched separately.
 _SENIORITY_RE = re.compile(
@@ -3581,21 +3494,21 @@ def cap_per_company(
     """The first `limit` of `ranked`, keeping each employer's top `per_company`.
 
     Also returns, per employer that reached the cap, how many of its postings
-    were left out, keyed by `company_key`. An employer cut short by `limit`
+    were left out, keyed by `sort_key`. An employer cut short by `limit`
     rather than the cap is not in it: those postings did not rank high enough,
     which the shortlist's length already says.
     """
 
     totals: dict[str, int] = {}
     for job in ranked:
-        key = company_key(job["company"])
+        key = sort_key(job["company"])
         totals[key] = totals.get(key, 0) + 1
     shown: dict[str, int] = {}
     kept: list[sqlite3.Row] = []
     for job in ranked:
         if len(kept) >= limit:
             break
-        key = company_key(job["company"])
+        key = sort_key(job["company"])
         if shown.get(key, 0) >= per_company:
             continue
         shown[key] = shown.get(key, 0) + 1
@@ -3648,7 +3561,7 @@ def report(conn: sqlite3.Connection, sources_config: dict[str, Any], limit: int)
                 "",
             ]
         )
-        key = company_key(job["company"])
+        key = sort_key(job["company"])
         shown[key] = shown.get(key, 0) + 1
         if key in hidden and shown[key] == RANKED_VIEW_PER_COMPANY:
             # Said at the employer's last listed posting, never left silent.
