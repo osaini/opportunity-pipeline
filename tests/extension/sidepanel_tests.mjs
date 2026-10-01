@@ -125,3 +125,74 @@ sidepanelTests.a_late_attach_for_the_application_left_behind_leaves_no_download_
   assert.equal(panel.$("download-fallback").hidden, true, "app-a's late answer did not bring back its download link");
   assert.doesNotMatch(panel.$("status").textContent, /resume-app-a|manual download/i, "the status is not app-a's attach error");
 };
+
+sidepanelTests.moving_to_another_page_after_a_scan_cannot_mark_the_old_application_submitted = async () => {
+  // Scan A, open another application's page, find candidates, pick nothing, tick the box: the
+  // session on screen is still A's scan of A's page, and must not be what gets confirmed.
+  const panel = await loadSidepanel({ applications });
+  await panel.findApplications();
+  await panel.chooseApplication("app-a");
+  await panel.scan();
+  const sessionA = sessionPath(panel, "app-a");
+
+  await panel.navigate("https://jobs.example.com/apply/2");
+  await panel.findApplications();
+  await panel.forceMarkSubmitted();
+
+  assert.deepEqual(panel.confirmRequests().map((item) => item.path), [], `confirm-submitted must not be sent (it named ${sessionA})`);
+  assert.match(panel.$("status").textContent, /scan/i, "the panel tells the student to scan first");
+};
+
+sidepanelTests.moving_to_another_page_clears_the_chosen_application_and_everything_tied_to_its_scan = async () => {
+  const panel = await loadSidepanel({ applications });
+  await panel.findApplications();
+  await panel.chooseApplication("app-a");
+  await panel.scan();
+  panel.$("submitted-confirm").checked = true;
+  panel.$("submitted-confirm").dispatch("change");
+  assert.equal(panel.$("mark-submitted").disabled, false, "set-up: the button was armed for app-a");
+
+  await panel.navigate("https://jobs.example.com/apply/2");
+
+  assert.equal(panel.$("fields").children.length, 0, "app-a's proposed fields are gone");
+  assert.equal(panel.$("review-form").hidden, true);
+  assert.equal(panel.$("context").hidden, true, "the chosen application's card is gone: the student chooses again");
+  assert.equal(panel.$("candidates").children.length, 0, "the old page's candidates are gone");
+  assert.equal(panel.$("submitted-confirm").checked, false, "the confirmation checkbox is reset");
+  assert.equal(panel.$("mark-submitted").disabled, true, "Mark as submitted needs a new scan and a new confirmation");
+  assert.match(panel.$("status").textContent, /choose/i, "the panel tells the student to choose the application again");
+
+  // Scanning with nothing chosen is refused rather than reusing app-a.
+  const before = panel.requests.length;
+  await panel.scan();
+  assert.equal(panel.requests.length, before, "no scan session was synced without a chosen application");
+};
+
+sidepanelTests.after_moving_to_another_page_choosing_and_scanning_confirms_the_new_session = async () => {
+  const panel = await loadSidepanel({ applications });
+  await panel.findApplications();
+  await panel.chooseApplication("app-a");
+  await panel.scan();
+  await panel.navigate("https://jobs.example.com/apply/2");
+  await panel.findApplications();
+  await panel.chooseApplication("app-b");
+  await panel.scan();
+  await panel.tickAndMarkSubmitted();
+  const confirms = panel.confirmRequests();
+  assert.equal(confirms.length, 1);
+  assert.equal(confirms[0].path, `${sessionPath(panel, "app-b")}/confirm-submitted`);
+};
+
+sidepanelTests.finding_candidates_again_drops_the_scan_of_the_application_chosen_before = async () => {
+  const panel = await loadSidepanel({ applications });
+  await panel.findApplications();
+  await panel.chooseApplication("app-a");
+  await panel.scan();
+  const sessionA = sessionPath(panel, "app-a");
+
+  await panel.findApplications();
+  await panel.forceMarkSubmitted();
+
+  assert.deepEqual(panel.confirmRequests().map((item) => item.path), [], `confirm-submitted must not be sent (it named ${sessionA})`);
+  assert.equal(panel.$("review-form").hidden, true, "app-a's scan is not left on screen under a new list of candidates");
+};

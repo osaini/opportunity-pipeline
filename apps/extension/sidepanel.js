@@ -130,7 +130,18 @@
     return ({ exact_url: "Exact URL", canonical_url: "Canonical URL", same_host: "Same ATS host", recent_apply: "Recently opened" })[kind] || kind;
   }
 
+  // The chosen application, its loaded context and its scan go together. Anything that changes what the
+  // student is looking at (another page, a new search for candidates) drops all three, so a scan of one
+  // application is never left standing for the next page's choice.
+  function clearSelection() {
+    selectedApplicationId = "";
+    applyContext = null;
+    clearScan();
+    contextHost.hidden = true;
+  }
+
   async function findContext() {
+    clearSelection();
     const tab = await activeTab();
     status.textContent = "Matching this page to your pipeline…";
     const response = await api(`/api/v1/extension/application-candidates?page_url=${encodeURIComponent(tab.url)}`);
@@ -438,11 +449,10 @@
   chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     if (tabId !== activeTabId || !changeInfo.url) return;
     activePageUrl = changeInfo.url;
-    scanResult = null;
-    fieldsHost.replaceChildren();
-    reviewForm.hidden = true;
-    documentsHost.hidden = true;
-    status.textContent = "Application page changed. Scan the new step before filling anything.";
+    // The old scan, its submission session and the confirmation belong to the old page's application.
+    clearSelection();
+    candidatesHost.replaceChildren();
+    status.textContent = "Application page changed. Find this page's application, choose it, then scan before filling anything.";
   });
 
   storedAuth().then((auth) => { renderAuth(auth); if (auth.deviceToken) flushPendingMetadata(); });

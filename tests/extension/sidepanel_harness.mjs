@@ -131,6 +131,9 @@ export async function loadSidepanel({ applications, slowContext = [], withDocume
   const store = { serverOrigin: "http://127.0.0.1:8765", deviceToken: "device-token", deviceId: "device-1", pendingMetadata: [], unsupportedCounts: {} };
   const requests = [];
   const held = new Map();
+  // The tab the panel is looking at; navigate() moves it and tells the panel, as Chrome would.
+  const tab = { id: 7, url: "https://jobs.example.com/apply/1" };
+  const tabUpdateListeners = [];
   const json = (payload) => ({ ok: true, status: 200, json: async () => payload, arrayBuffer: async () => new ArrayBuffer(0) });
   const fetchStub = async (url, options = {}) => {
     const parsed = new URL(url);
@@ -168,7 +171,7 @@ export async function loadSidepanel({ applications, slowContext = [], withDocume
     },
     permissions: { request: async () => true },
     tabs: {
-      query: async () => [{ id: 7, url: "https://jobs.example.com/apply/1" }],
+      query: async () => [{ ...tab }],
       sendMessage: async (_tabId, message) => {
         if (message.type === "SCAN_FIELDS") {
           const fields = [{ key: "email", label: "Email", type: "email", provenance: "confirmed_profile.contact.email", confidence: 1, proposed_value: "student@example.com" }];
@@ -184,7 +187,7 @@ export async function loadSidepanel({ applications, slowContext = [], withDocume
         }
         return { results: [] };
       },
-      onUpdated: { addListener() {} },
+      onUpdated: { addListener: (listener) => { tabUpdateListeners.push(listener); } },
     },
     scripting: { executeScript: async () => {} },
   };
@@ -241,6 +244,12 @@ export async function loadSidepanel({ applications, slowContext = [], withDocume
     startChoosing: (id) => candidateButton(id).click(),
     async scan() {
       $("scan").click();
+      await settle();
+    },
+    // The student opens another page in the tab the panel is attached to.
+    async navigate(url) {
+      tab.url = url;
+      for (const listener of tabUpdateListeners) listener(tab.id, { url });
       await settle();
     },
     confirmRequests: () => requests.filter((item) => item.path.endsWith("/confirm-submitted")),
