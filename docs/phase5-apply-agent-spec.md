@@ -1195,7 +1195,7 @@ afterwards. They are kept separate, as PLAN.md:1213-1215 requires.
    settle after a seen confirmation page matches no row (the student released it meanwhile), the
    agent still writes the `apply_agent_submitted` event and a notice: "Greenhouse showed its
    confirmation page for {company}, after this attempt was marked as not sent. Check it." It never
-   raises, like `outreach_gmail.settle_send_claim` (outreach_gmail.py:738).
+   raises, like `outreach_gmail.settle_send_claim`.
 6. **Uncertain attempts are never retried automatically.** That is `unconfirmed`, and
    `needs_you` or `failed` with `after_click=1`. Only the confirmation email (6.16, then
    `submitted` with verification `email_confirmed` and `resolved_by='email'`) or the student can
