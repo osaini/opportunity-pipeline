@@ -1314,12 +1314,9 @@ CONNECTION = "inbox.connection"
 _ADDRESS = re.compile(r"""[^\s@<>"'(),;:]+@[^\s@<>"'(),;:]+""")
 
 
-_QUERY = re.compile(r"(https?://[^\s?#]+)[?#][^\s]*")
-
-
 def _step_error(exc: BaseException) -> str:
     """An exception as a health error: its type and message, with any address and any URL's query string taken out."""
-    words = _ADDRESS.sub("[address]", _QUERY.sub(lambda found: found.group(1), str(exc)))
+    words = _ADDRESS.sub("[address]", mail_message.strip_queries(str(exc)))
     return f"{type(exc).__name__}: {words[:200]}"
 
 
