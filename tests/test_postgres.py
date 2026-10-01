@@ -942,10 +942,11 @@ class PostgresAutomationContractTests(unittest.TestCase):
         self.conn.commit()
         self.assertEqual((kept, markers), (1, 1))
 
-    def test_migration_0048_adds_two_indexes_and_a_rerun_changes_nothing(self):
+    def test_migration_0048_adds_three_indexes_and_a_rerun_changes_nothing(self):
         marker = "0048_mail_hot_path_indexes.sql"
         wanted = {
             "idx_outreach_events_user_type": ("outreach_events", "(user_id, event_type, created_at)"),
+            "idx_outreach_events_target_type": ("outreach_events", "(target_id, user_id, event_type, created_at)"),
             "idx_opportunities_company_sort_key": ("opportunities", "(company_sort_key)"),
         }
         for name, (table, columns) in wanted.items():
@@ -955,7 +956,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
         self.assertIsNotNone(self.conn.execute("SELECT 1 FROM schema_migrations WHERE name=?", (marker,)).fetchone())
         rows = self.conn.execute("SELECT COUNT(*) AS n FROM outreach_events").fetchone()["n"]
         self.conn.commit()
-        # Applying it again (the marker gone) keeps both indexes and every row.
+        # Applying it again (the marker gone) keeps all the indexes and every row.
         with self.conn:
             self.conn.execute("DELETE FROM schema_migrations WHERE name=?", (marker,))
         ensure_product_schema(self.conn)

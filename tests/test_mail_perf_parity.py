@@ -111,6 +111,17 @@ class PendingDraftsParityTests(unittest.TestCase):
         self.assertNotIn(pending[0]["target_id"], [item["target_id"] for item in sends._pending(conn, USER, now)])
         self.assertNotIn(pending[1]["target_id"], [item["target_id"] for item in sends._pending(conn, USER, now)])
 
+    def test_a_failed_full_target_read_forgets_the_drafts_it_stamped(self):
+        now = datetime.now(timezone.utc)
+        conn, _ids = database(self, 20, 5, now)
+        sends._LAST_LOOK.clear()
+        self.addCleanup(sends._LAST_LOOK.clear)
+        self.assertTrue(sends._pending(conn, USER, now))
+        with mock.patch.object(sends, "_connector", return_value={"status": "connected"}),                 mock.patch.object(sends, "_with_targets", side_effect=ValueError("bad date")):
+            with self.assertRaises(ValueError):
+                sends.capture_gmail_sends(conn, user_id=USER, client_factory=lambda: None, now=now)
+        self.assertEqual(sends._LAST_LOOK, {}, "a look that fails is forgotten")
+
     def test_pending_reads_no_full_target(self):
         now = datetime.now(timezone.utc)
         conn, _ids = database(self, 40, 4, now)
@@ -471,7 +482,7 @@ MIGRATION_0048 = Path(__file__).resolve().parent.parent / "migrations" / "0048_m
 
 
 class MailIndexMigrationTests(unittest.TestCase):
-    """0048 adds two indexes that queries use, and changes no row or result."""
+    """0048 adds three indexes that queries use, and changes no row or result."""
 
     def plan(self, conn, sql, params):
         return " | ".join(row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + sql, params).fetchall())
@@ -493,6 +504,27 @@ class MailIndexMigrationTests(unittest.TestCase):
         self.assertIn("idx_opportunities_company_sort_key (company_sort_key=?)",
                       self.plan(conn, "SELECT id FROM opportunities WHERE company_sort_key = ?", ("acme",)))
 
+    def test_per_company_event_queries_lead_with_the_company(self):
+        """Without ANALYZE SQLite picks the index with the most equality columns: these must not read a whole kind of event."""
+        conn, _ids = database(self, 30, 1, datetime.now(timezone.utc))
+        indexes = {row[0]: row[1] for row in conn.execute("SELECT name, sql FROM sqlite_master WHERE type='index'")}
+        self.assertIn("(target_id, user_id, event_type, created_at)", " ".join(indexes["idx_outreach_events_target_type"].split()))
+        queries = {
+            "one kind (_already_sent, _followed_up)":
+                ("SELECT detail, created_at FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=?", ("t", USER, "gmail_sent")),
+            "ordered (_draft_events)":
+                ("SELECT id, detail, created_at FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=? ORDER BY created_at DESC",
+                 ("t", USER, "gmail_draft_created")),
+            "several kinds (sent_since)":
+                ("SELECT created_at FROM outreach_events WHERE target_id=? AND user_id=? AND event_type IN (?, ?)",
+                 ("t", USER, "gmail_sent", "sent")),
+        }
+        for name, (sql, params) in queries.items():
+            with self.subTest(name):
+                plan = self.plan(conn, sql, params)
+                self.assertIn("idx_outreach_events_target_type (target_id=? AND user_id=? AND event_type=?", plan)
+                self.assertNotIn("idx_outreach_events_user_type", plan)
+
     def test_running_it_again_changes_nothing(self):
         conn, _ids = database(self, 30, 2, datetime.now(timezone.utc))
         counts = [conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in ("outreach_events", "outreach_targets", "opportunities")]
@@ -506,6 +538,7 @@ class MailIndexMigrationTests(unittest.TestCase):
         conn, _ids = database(self, 50, 3, now)
         with_indexes = sends._pending(conn, USER, now)
         conn.execute("DROP INDEX idx_outreach_events_user_type")
+        conn.execute("DROP INDEX idx_outreach_events_target_type")
         conn.execute("DROP INDEX idx_opportunities_company_sort_key")
         self.assertEqual(sends._pending(conn, USER, now), with_indexes)
 

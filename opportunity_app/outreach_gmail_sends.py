@@ -313,7 +313,11 @@ def capture_gmail_sends(
     row = _connector(conn, user_id)
     if not row or row["status"] != "connected":
         return {**result, "state": "not_connected" if not row or row["status"] == "disconnected" else "needs_reconnect"}
-    due = _with_targets(conn, user_id, due)
+    try:
+        due = _with_targets(conn, user_id, due)
+    except BaseException:
+        _forget(user_id, due)  # a look that fails is forgotten
+        raise
     try:
         with client_factory() as client:
             gmail = _Gmail(conn, client, user_id)
