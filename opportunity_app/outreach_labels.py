@@ -57,6 +57,9 @@ from urllib.parse import quote
 import httpx
 
 from . import automation
+from .database import rollback_quietly
+from .json_values import json_dict
+from .settings_store import get_setting, put_setting
 from .mail_trust import FREEMAIL, registrable_domain
 from .outreach import UNSENT_STATUSES
 from .outreach_delivery import _DAEMONS, _is_delivery_notice
@@ -76,6 +79,7 @@ from .outreach_gmail import (
     _is_throttle,
     backoff_until,
 )
+from .timestamps import parse_app_instant, utc_now
 
 LOGGER = logging.getLogger(__name__)
 
@@ -132,7 +136,7 @@ _IDS_LOCK = threading.Lock()
 
 def label_name(conn: sqlite3.Connection, user_id: str) -> str:
     """The name replies are labelled with; '' when the student turned labelling off."""
-    value = automation._setting(conn, user_id, SETTING)
+    value = get_setting(conn, user_id, SETTING)
     return DEFAULT_LABEL if value is None else value
 
 
@@ -168,7 +172,8 @@ def set_label_name(conn: sqlite3.Connection, user_id: str, value: str | None) ->
         if name.upper() in _SYSTEM_NAMES or name.upper().startswith("CATEGORY_"):
             raise ValueError(f"Gmail keeps the name {name} for itself; choose another label name")
     with conn:
-        automation._put_setting(conn, user_id, SETTING, name, utc_stamp())
+        # The shared monotonic clock (the old local stamp had no tie-break); nothing reads this setting's updated_at, so a strictly later stamp is harmless.
+        put_setting(conn, user_id, SETTING, name, utc_now())
         _search_again(conn, user_id, before, name)
     return name
 
@@ -177,10 +182,6 @@ def _search_again(conn: sqlite3.Connection, user_id: str, before: str, name: str
     """Forget which companies' Sent mail was searched when labelling starts under a name other than the last one. Opens no transaction."""
     if name and name != before:
         conn.execute("DELETE FROM outreach_label_searches WHERE user_id=?", (user_id,))
-
-
-def utc_stamp() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 # --- The watcher's step -----------------------------------------------------------------
@@ -196,11 +197,7 @@ class _Stop(Exception):
 
 def _discard(conn: sqlite3.Connection) -> None:
     """Roll back a transaction left open, so no network call is made inside one and none is left behind."""
-    try:
-        if getattr(conn, "in_transaction", False):
-            conn.rollback()
-    except Exception:  # noqa: BLE001
-        LOGGER.warning("Could not roll back after labelling replies", exc_info=True)
+    rollback_quietly(conn, LOGGER, "labelling replies")
 
 
 def _granted(row: sqlite3.Row) -> list[str]:
@@ -314,7 +311,7 @@ def _record_sent_threads(conn: sqlite3.Connection, user_id: str, now: datetime) 
         "SELECT target_id, detail FROM outreach_events WHERE user_id=? AND event_type IN (?, ?) ORDER BY created_at, id",
         (user_id, SENT_EVENT, THANK_YOU_SENT_EVENT),
     ).fetchall():
-        thread_id = str(_json_dict(row["detail"]).get("thread_id") or "").strip()
+        thread_id = str(json_dict(row["detail"]).get("thread_id") or "").strip()
         if thread_id:
             found.setdefault(thread_id, str(row["target_id"]))
     if not found:
@@ -345,14 +342,6 @@ def _sent_rows(conn: sqlite3.Connection, user_id: str, name: str, limit: int) ->
         "ORDER BY found_at, thread_id LIMIT ?",
         (user_id, name, limit),
     ).fetchall()]
-
-
-def _json_dict(text: Any) -> dict[str, Any]:
-    try:
-        value = json.loads(text or "{}")
-    except (TypeError, ValueError):
-        return {}
-    return value if isinstance(value, dict) else {}
 
 
 def _addresses(*values: Any) -> list[str]:
@@ -433,7 +422,7 @@ def _outreach_marks(conn: sqlite3.Connection, user_id: str, own: set[str]) -> di
         mark = marks.get(str(row["target_id"]))
         if mark is None:
             continue
-        detail = _json_dict(row["detail"])
+        detail = json_dict(row["detail"])
         mark["found"] += [(address, False) for address in _addresses(detail.get("to"))]
         mark["found"] += [(address, True) for address in _addresses(detail.get("cc"))]
     shared = {host for address in own for host in (_host(address), registrable_domain(address) or "") if host}
@@ -554,11 +543,8 @@ def _history_query(mark: dict[str, Any] | None) -> str:
 
 
 def _epoch(text: str) -> int | None:
-    try:
-        moment = datetime.fromisoformat(text.strip().replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return int((moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)).timestamp())
+    moment = parse_app_instant(text.strip())
+    return int(moment.timestamp()) if moment else None
 
 
 class _Labeller:
@@ -893,7 +879,7 @@ def _thread_of(labeller: _Labeller, gmail_id: str) -> str:
 def _kept(conn: sqlite3.Connection, user_id: str, name: str) -> dict[str, Any] | None:
     """The sweep's stored start for this label, or None when there is none for it (missing, unreadable, another label's)."""
     try:
-        kept = json.loads(automation._setting(conn, user_id, SWEEP_SETTING) or "{}")
+        kept = json.loads(get_setting(conn, user_id, SWEEP_SETTING) or "{}")
     except ValueError:
         return None
     if not isinstance(kept, dict) or kept.get("label") != name or not isinstance(kept.get("after"), (int, float)):
@@ -1076,4 +1062,4 @@ def _keep_watermark(
     if recheck is not None:
         value["recheck"] = recheck
     with conn:
-        automation._put_setting(conn, user_id, SWEEP_SETTING, json.dumps(value), now.isoformat(timespec="microseconds"))
+        put_setting(conn, user_id, SWEEP_SETTING, json.dumps(value), now.isoformat(timespec="microseconds"))

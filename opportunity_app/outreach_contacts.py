@@ -34,7 +34,7 @@ import httpcore
 import httpx
 
 from .outreach import _EMAIL, MANUAL_CONTACT_ROUTE, _log, get_target, update_target, website_domain
-from .schema import utc_now
+from .timestamps import utc_now
 
 USER_AGENT = "Mozilla/5.0 (compatible; internship-pipeline-outreach/1.0; one student's research)"
 MAX_PAGES = 12

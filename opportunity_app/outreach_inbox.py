@@ -62,6 +62,7 @@ import httpx
 from pipeline import identity_tokens, normalized
 
 from . import automation, outreach_labels
+from .database import rollback_quietly
 from .inbox_classifiers import read_reply
 from .mail_trust import FREEMAIL, READ_CATEGORIES, authenticate, host_of, listed, not_an_employer, registrable_domain, sender_lists
 from .outreach import (
@@ -96,7 +97,9 @@ from .outreach_forms import (
     UNCONFIRMED_EVENT as FORM_UNCONFIRMED,
     is_acknowledgement,
 )
-from .schema import connect_product, utc_now
+from .schema import connect_product
+from .settings_store import get_setting, put_setting
+from .timestamps import parse_app_instant, utc_now
 from .typesafe_decisions import DecisionClient
 from .user_time import user_timezone
 
@@ -676,14 +679,6 @@ def _company_words(company: str) -> str:
     return " ".join(word for word in normalized(company).split() if word in tokens)
 
 
-def _stamp(value: Any) -> datetime | None:
-    try:
-        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
-    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
-
-
 def _distinctive(company: str) -> bool:
     """Whether a company's name is specific enough to search mail for: two words, or one of six letters or more."""
     words = _company_words(company).split()
@@ -714,7 +709,7 @@ def _watched(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict
             continue
         if not isinstance(detail, dict):
             continue
-        at = _stamp(event["created_at"])
+        at = parse_app_instant(event["created_at"])
         # A send made in Gmail is recorded when the app notices it, which can be hours later.
         sent_ms = detail.get("sent_ms")
         if isinstance(sent_ms, (int, float)) and sent_ms > 0:
@@ -728,15 +723,15 @@ def _watched(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict
         "SELECT target_id, created_at FROM outreach_events WHERE user_id=? AND event_type IN (?, ?)",
         (user_id, FORM_SUBMITTED, FORM_UNCONFIRMED),
     ).fetchall():
-        if _stamp(event["created_at"]):
-            forms.setdefault(event["target_id"], []).append(_stamp(event["created_at"]))
+        if parse_app_instant(event["created_at"]):
+            forms.setdefault(event["target_id"], []).append(parse_app_instant(event["created_at"]))
     marked: dict[str, list[datetime]] = {}
     for event in conn.execute(
         "SELECT target_id, created_at FROM outreach_events WHERE user_id=? AND event_type='status' AND to_status IN ('sent', 'followed_up')",
         (user_id,),
     ).fetchall():
-        if _stamp(event["created_at"]):
-            marked.setdefault(event["target_id"], []).append(_stamp(event["created_at"]))
+        if parse_app_instant(event["created_at"]):
+            marked.setdefault(event["target_id"], []).append(parse_app_instant(event["created_at"]))
     account = _normal(sender_account())
     own = _own_domains()
     watched = []
@@ -1265,7 +1260,7 @@ def _record_reply(
                  detail=_found_words(reason, sender, {"addresses": addresses if addresses is not None else target.get("addresses")}))
         if notify:
             # Said outside the page too (and on the desktop when the student turned that on). Never an address or words.
-            day = _stamp(received)
+            day = parse_app_instant(received)
             title = f"{target['company']} replied" + (
                 f" on {day:%b} {day.day} (found late)" if late and day else ""
             )
@@ -1496,12 +1491,12 @@ def _sweep_start(conn: sqlite3.Connection, user_id: str, watched: list[dict[str,
     with _MEMORY_LOCK:
         last = _LAST_SWEEP.get(user_id)
     if last is None:
-        row = conn.execute("SELECT value FROM user_settings WHERE user_id=? AND key=?", (user_id, SWEEP_SETTING)).fetchone()
+        stored = get_setting(conn, user_id, SWEEP_SETTING)
         try:
-            mark = json.loads(row[0]) if row else {}
+            mark = json.loads(stored) if stored is not None else {}
         except (TypeError, ValueError):
             mark = {}
-        last = _stamp(mark.get("at")) if isinstance(mark, dict) and mark.get("rules") == RULES else None
+        last = parse_app_instant(mark.get("at")) if isinstance(mark, dict) and mark.get("rules") == RULES else None
     start = last - timedelta(days=1) if last else min(sent)
     return max(start, min(sent) - timedelta(minutes=5), now - REPLY_WINDOW)
 
@@ -1511,17 +1506,15 @@ def _swept(conn: sqlite3.Connection, user_id: str, now: datetime) -> None:
     with _MEMORY_LOCK:
         _LAST_SWEEP[user_id] = now
     with conn:
-        conn.execute(
-            "INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, ?, ?, ?) "
-            "ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
-            (user_id, SWEEP_SETTING, json.dumps({"at": now.isoformat(timespec="seconds"), "rules": RULES}), utc_now()),
+        put_setting(
+            conn, user_id, SWEEP_SETTING, json.dumps({"at": now.isoformat(timespec="seconds"), "rules": RULES}), utc_now(),
         )
 
 
 def _activated_at(conn: sqlite3.Connection) -> datetime | None:
     """When these rules started: mail from before then was judged by older ones, so it is never counted without the student."""
     row = conn.execute("SELECT applied_at FROM schema_migrations WHERE name=?", (MIGRATION,)).fetchone()
-    return _stamp(row[0]) if row else None
+    return parse_app_instant(row[0]) if row else None
 
 
 def capture_replies(
@@ -1863,11 +1856,7 @@ def _record(
 
 def _discard_open_transaction(conn: sqlite3.Connection) -> None:
     """After a step failed: roll back what it left uncommitted, so recording its health does not commit it."""
-    try:
-        if getattr(conn, "in_transaction", False):
-            conn.rollback()
-    except Exception:  # noqa: BLE001
-        LOGGER.warning("Could not roll back after an inbox step failed", exc_info=True)
+    rollback_quietly(conn, LOGGER, "an inbox step failed")
 
 
 def _save_gmail_health(conn: sqlite3.Connection, user_id: str) -> None:
@@ -1889,17 +1878,9 @@ def _save_gmail_health(conn: sqlite3.Connection, user_id: str) -> None:
         LOGGER.warning("Could not save the Gmail connection's health", exc_info=True)
 
 
-def _moment(stamp: Any) -> datetime | None:
-    try:
-        moment = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
-    except (TypeError, ValueError):
-        return None
-    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
-
-
 def _local(conn: sqlite3.Connection, user_id: str, stamp: str) -> str:
     """A stored UTC time as the student reads it: "Sat, Sep 26 at 3:14 PM"."""
-    moment = _moment(stamp)
+    moment = parse_app_instant(stamp)
     if moment is None:
         return str(stamp)
     local = user_timezone(conn, user_id).to_local(moment)
@@ -1934,7 +1915,7 @@ def _record_connection(conn: sqlite3.Connection, user_id: str, status: str, upda
             _record(conn, user_id, CONNECTION, ok=True, detail={"state": "disconnected"})
         return
     since = str(updated_at or utc_now())
-    earlier, now_seen = _moment(before.get("since")), _moment(since)
+    earlier, now_seen = parse_app_instant(before.get("since")), parse_app_instant(since)
     if before.get("state") == "error" and earlier is not None and (now_seen is None or earlier < now_seen):
         since = str(before["since"])
     error = f"{RECONNECT_ERROR} (since {_local(conn, user_id, since)})"

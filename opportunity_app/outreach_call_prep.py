@@ -109,7 +109,8 @@ from .outreach_drafting import (
     outreach_proof, resolve_provider,
 )
 from .preparation import confirmed_facts
-from .schema import connect_product, utc_now
+from .schema import connect_product
+from .timestamps import utc_now
 
 LOGGER = logging.getLogger(__name__)
 JOB_TYPE = "outreach_call_prep"

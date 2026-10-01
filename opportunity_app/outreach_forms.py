@@ -67,7 +67,7 @@ from .outreach_gmail import (
     attachment_problem,
 )
 from .preparation import confirmed_facts
-from .schema import utc_now
+from .timestamps import utc_now
 
 FORM_STATES = ("found", "submitted", "unconfirmed", "needs_you", "failed")
 SUBMITTED_EVENT = "form_submitted"

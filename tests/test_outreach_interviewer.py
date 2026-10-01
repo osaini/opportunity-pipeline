@@ -16,7 +16,8 @@ from opportunity_app.outreach_interviewer import NOTES_INSTRUCTIONS
 from opportunity_app.outreach import create_target, get_target, log_reply, update_target
 from opportunity_app.outreach_interviewer import _meeting, confirm_profile, find_interviewer, interviewer_due, pick_profile, read_interviewer
 from opportunity_app.outreach_linkedin import LinkedInClient, LinkedInUnavailable, config_problem, username_from
-from opportunity_app.schema import connect_product, ensure_product_schema, utc_now
+from opportunity_app.schema import connect_product, ensure_product_schema
+from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 

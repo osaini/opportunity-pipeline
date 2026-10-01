@@ -65,7 +65,7 @@ from .outreach_inbox import (
     _website_domain, _website_strength, is_person,
 )
 from .outreach_linkedin import CMD_META, LinkedInClient, LinkedInUnavailable, username_from
-from .schema import utc_now
+from .timestamps import parse_app_instant, utc_now
 
 # Kinds of inbox message a person at the company wrote (outreach_inbox).
 PERSON_KINDS = ("reply", "possible")
@@ -569,7 +569,7 @@ def interviewer_due(conn: sqlite3.Connection, target: dict[str, Any], user_id: s
         return True
     if record.get("notes"):
         return False
-    tried = research._when(target.get("interviewer_tried_at")) if target.get("interviewer_tried_at") else None
+    tried = parse_app_instant(target.get("interviewer_tried_at")) if target.get("interviewer_tried_at") else None
     return tried is None or (now or datetime.now(timezone.utc)) - tried >= RETRY_AFTER
 
 

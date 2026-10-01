@@ -49,6 +49,7 @@ from .actions import (
     application_detail,
     import_applications,
     list_applications,
+    log_application_event,
     record_intent,
     update_application,
     update_application_task,
@@ -214,7 +215,8 @@ from .resumes import (
     store_resume,
 )
 from .refresh import RefreshBusy, RefreshManager, fresh_steps
-from .schema import LOCAL_USER_ID, connect_product, ensure_product_schema, utc_now
+from .schema import LOCAL_USER_ID, connect_product, ensure_product_schema
+from .timestamps import utc_now
 from .database import is_postgres_target
 from .student_agent import (
     AgentNotFoundError,
@@ -4299,14 +4301,9 @@ def create_app(
                 (payload.session_id, user_id, payload.application_id, payload.page_url, payload.ats_type, json.dumps(safe_fields), payload.status, timestamp, timestamp),
             )
             if payload.application_id:
-                conn.execute(
-                    """
-                    INSERT INTO application_events(
-                        application_id, event_type, from_stage, to_stage,
-                        detail_json, created_at
-                    ) VALUES(?, 'apply_session_synced', NULL, NULL, ?, ?)
-                    """,
-                    (payload.application_id, json.dumps({"session_id": payload.session_id, "status": payload.status}), timestamp),
+                log_application_event(
+                    conn, payload.application_id, "apply_session_synced",
+                    {"session_id": payload.session_id, "status": payload.status}, timestamp,
                 )
         return {
             "id": payload.session_id,

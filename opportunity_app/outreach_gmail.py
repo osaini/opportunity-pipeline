@@ -60,7 +60,7 @@ from .outreach import (
     update_target,
 )
 from .outreach_drafting import sender_account
-from .schema import utc_now
+from .timestamps import parse_app_instant, utc_now
 from .user_time import user_timezone
 
 LOGGER = logging.getLogger(__name__)
@@ -260,16 +260,6 @@ def _in_transaction(conn: sqlite3.Connection) -> bool:
     return bool(getattr(conn, "in_transaction", False))
 
 
-def _stamp_time(value: Any) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-
-
 def backoff_until(user_id: str, *, now: datetime | None = None) -> datetime | None:
     """Until when this student's Gmail reads are held back, or None when they are not."""
     now = now or _now()
@@ -363,7 +353,7 @@ def _saved(user_id: str, version: int, values: tuple[Any, ...]) -> None:
     with _BACKOFF_LOCK:
         health = _HEALTH.setdefault(user_id, _Health())
         health.saved = max(health.saved, version)
-        written = _stamp_time(values[1]) if values else None
+        written = parse_app_instant(values[1]) if values else None
         if written is not None and (health.ok_written is None or written > health.ok_written):
             health.ok_written = written
 
@@ -454,7 +444,7 @@ class _Gmail:
         stored = row["backoff_until"] if "backoff_until" in columns else None
         # Whether the row still carries a hold or an error that a success must clear.
         self.row_flagged = bool(stored) or bool(row["last_error"] if "last_error" in columns else "")
-        until = _stamp_time(stored)
+        until = parse_app_instant(stored)
         if until is not None and until > _now():
             with _BACKOFF_LOCK:
                 # After a restart memory is empty; a hold this process already knows about stands.

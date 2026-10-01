@@ -33,7 +33,8 @@ from pipeline import load_sources
 from . import DEFAULT_LEGACY_DB, DEFAULT_PROFILE, ROOT
 from .auto_triage import triage_after_sync
 from .purge import purge_expired_opportunities
-from .schema import connect_product, migrate_legacy_database, utc_now
+from .schema import connect_product, migrate_legacy_database
+from .timestamps import utc_now
 
 PIPELINE_CLI = ROOT / "pipeline.py"
 DAILY_LOCK_PATH = ROOT / "data" / "daily-run.lock"

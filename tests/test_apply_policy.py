@@ -24,7 +24,7 @@ from opportunity_app.apply_policy import (
 )
 from opportunity_app.extension_apply import SENSITIVE_FIELD
 from opportunity_app.profile import update_profile
-from opportunity_app.schema import utc_now
+from opportunity_app.timestamps import utc_now
 
 from helpers_source import apply_modules
 from helpers_apply import (

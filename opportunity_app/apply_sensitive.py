@@ -45,7 +45,8 @@ from pipeline import identity_tokens
 from pipeline_core.visibility import capture_visible_sql
 
 from .apply_checks import question_key
-from .schema import utc_now
+from .settings_store import get_setting, put_setting
+from .timestamps import utc_now
 
 __all__ = [
     "CATEGORY_GROUPS", "CONSENT_TEXT", "DECLINE_EXAMPLES", "EEO_CATEGORIES", "LABELS", "STATEMENT_CATEGORIES", "STORABLE", "StoreRefused", "add_entry", "allowed_categories",
@@ -241,8 +242,8 @@ def cites_document(statement: str, links: Iterable[str] = (), *, names: bool = T
 
 def allowed_categories(conn: sqlite3.Connection, user_id: str) -> frozenset[str]:
     """The categories the student switched on (D5). Empty by default, and never more than the storable ones."""
-    row = conn.execute("SELECT value FROM user_settings WHERE user_id=? AND key=?", (user_id, SETTING_KEY)).fetchone()
-    parts = str(row[0]).split(",") if row and row[0] else []
+    stored = get_setting(conn, user_id, SETTING_KEY)
+    parts = stored.split(",") if stored else []
     return frozenset(part.strip() for part in parts if part.strip() in STORABLE)
 
 
@@ -254,11 +255,7 @@ def set_allowed_categories(conn: sqlite3.Connection, user_id: str, categories: I
             raise StoreRefused(_NEVER.get(category, f"Unknown kind of answer: {category}"))
     ordered = [category for category in STORABLE if category in wanted]
     with conn:
-        conn.execute(
-            "INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, ?, ?, ?) "
-            "ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
-            (user_id, SETTING_KEY, ",".join(ordered), _now(now)),
-        )
+        put_setting(conn, user_id, SETTING_KEY, ",".join(ordered), _now(now))
     return ordered
 
 

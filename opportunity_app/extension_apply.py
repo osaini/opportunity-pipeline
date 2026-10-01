@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from .actions import ApplicationNotFoundError, update_application
+from .actions import ApplicationNotFoundError, log_application_event, update_application
 from .auth import hash_secret
-from .schema import utc_now
+from .timestamps import utc_now
 
 
 PAIRING_TTL_MINUTES = 10
@@ -638,17 +638,9 @@ def confirm_submitted(
             """,
             (timestamp, session_id, user_id),
         )
-        conn.execute(
-            """
-            INSERT INTO application_events(
-                application_id, event_type, from_stage, to_stage, detail_json, created_at
-            ) VALUES(?, 'apply_submission_confirmed', NULL, 'applied', ?, ?)
-            """,
-            (
-                application["id"],
-                json.dumps({"session_id": session_id, "source": "explicit_user_confirmation"}),
-                timestamp,
-            ),
+        log_application_event(
+            conn, application["id"], "apply_submission_confirmed",
+            {"session_id": session_id, "source": "explicit_user_confirmation"}, timestamp, to_stage="applied",
         )
     return {
         "session_id": session_id,

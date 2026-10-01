@@ -66,7 +66,9 @@ from uuid import uuid4
 
 from . import actions
 from .database import is_unique_violation
-from .schema import PAUSE_NEVER_CHANGED, utc_now
+from .schema import PAUSE_NEVER_CHANGED
+from .settings_store import get_setting, put_setting
+from .timestamps import parse_app_instant, utc_now
 from .user_time import user_timezone
 
 OFF_ON = ("off", "on")
@@ -312,22 +314,6 @@ def _stamp(now: datetime | None) -> str:
     return utc_now() if now is None else _now(now).isoformat(timespec="microseconds")
 
 
-def _setting(conn: sqlite3.Connection, user_id: str, key: str) -> str | None:
-    row = conn.execute("SELECT value FROM user_settings WHERE user_id=? AND key=?", (user_id, key)).fetchone()
-    return None if row is None else str(row[0])
-
-
-def _put_setting(conn: sqlite3.Connection, user_id: str, key: str, value: str, stamp: str) -> None:
-    """Upsert one setting. Opens no transaction: the caller owns it."""
-    conn.execute(
-        """
-        INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, ?, ?, ?)
-        ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-        """,
-        (user_id, key, value, stamp),
-    )
-
-
 def modes(conn: sqlite3.Connection, user_id: str, keys: tuple[str, ...] | list[str] | None = None) -> dict[str, str]:
     """The mode of each feature in one read. A missing row, or a value the feature does not take, is off."""
     wanted = [_feature(key) for key in (keys if keys is not None else FEATURES)]
@@ -346,7 +332,7 @@ def mode(conn: sqlite3.Connection, user_id: str, key: str) -> str:
 
 
 def paused(conn: sqlite3.Connection, user_id: str) -> bool:
-    return _setting(conn, user_id, PAUSED_KEY) == "on"
+    return get_setting(conn, user_id, PAUSED_KEY) == "on"
 
 
 def is_enabled(conn: sqlite3.Connection, user_id: str, key: str) -> bool:
@@ -369,7 +355,7 @@ def on_since(conn: sqlite3.Connection, user_id: str, key: str) -> str | None:
     """When the switch was last turned on, while it is on; None when it is not on."""
     if mode(conn, user_id, key) != "on":
         return None
-    return _setting(conn, user_id, f"{key}.on_since")
+    return get_setting(conn, user_id, f"{key}.on_since")
 
 
 def is_shadow(conn: sqlite3.Connection, user_id: str, key: str) -> bool:
@@ -400,8 +386,8 @@ def _can_turn_on(
         return False, missing
     if not feature.shadow_capable:
         return True, ""
-    since_text = _setting(conn, user_id, f"{key}.shadow_since")
-    since = _parse(since_text)
+    since_text = get_setting(conn, user_id, f"{key}.shadow_since")
+    since = parse_app_instant(since_text)
     if current != "shadow" or since is None:
         return False, f"Run it in shadow first: it needs {SHADOW_HOURS} hours and {SHADOW_MIN_ROWS} reviewed actions there"
     row = conn.execute(
@@ -448,13 +434,13 @@ def _plan_modes(
 def _write_modes(conn: sqlite3.Connection, user_id: str, plans: list[tuple[str, str, str]], stamp: str) -> None:
     """Write planned changes. Opens no transaction: the caller owns it."""
     for key, value, current in plans:
-        _put_setting(conn, user_id, key, value, stamp)
+        put_setting(conn, user_id, key, value, stamp)
         # The shadow clock starts when shadow starts, not on every save.
         if value == "shadow" and current != "shadow":
-            _put_setting(conn, user_id, f"{key}.shadow_since", stamp, stamp)
+            put_setting(conn, user_id, f"{key}.shadow_since", stamp, stamp)
         # Likewise when it was last turned on (auto_triage acts only on roles first seen since).
         if value == "on" and current != "on":
-            _put_setting(conn, user_id, f"{key}.on_since", stamp, stamp)
+            put_setting(conn, user_id, f"{key}.on_since", stamp, stamp)
 
 
 def _set_modes(conn: sqlite3.Connection, user_id: str, changes: dict[str, str], *, now: datetime | None = None) -> None:
@@ -494,7 +480,7 @@ def apply_settings(
         _write_modes(conn, user_id, plans, stamp)
     return {
         # ``paused`` is the request here, so the stored value is read directly.
-        "paused": _setting(conn, user_id, PAUSED_KEY) == "on",
+        "paused": get_setting(conn, user_id, PAUSED_KEY) == "on",
         "in_flight": in_flight(conn, user_id) if paused is not None else None,
     }
 
@@ -677,7 +663,7 @@ def settings_payload(conn: sqlite3.Connection, user_id: str, *, now: datetime | 
         features.append({
             "key": feature.key, "label": feature.label, "description": feature.description, "group": feature.group,
             "risk": feature.risk, "modes": list(feature.modes), "mode": current[feature.key],
-            "shadow_since": _setting(conn, user_id, f"{feature.key}.shadow_since") if feature.shadow_capable else None,
+            "shadow_since": get_setting(conn, user_id, f"{feature.key}.shadow_since") if feature.shadow_capable else None,
             "can_turn_on": allowed, "can_turn_on_reason": reason,
             # What it still needs to act, whatever its mode: a switch left on can lose a requirement later.
             "requirement": missing,
@@ -869,7 +855,7 @@ class ApplicationStage:
         row = conn.execute(
             f"SELECT follow_up_at FROM applications WHERE id=? AND user_id=?{_for_update(conn)}", (subject_id, user_id),
         ).fetchone()
-        due = _parse(row["follow_up_at"]) if row is not None else None
+        due = parse_app_instant(row["follow_up_at"]) if row is not None else None
         if due is None:
             return "no_date"
         if due <= _now(None):
@@ -907,20 +893,14 @@ class ApplicationStage:
             raise Superseded(f"{_capitalized(_changed({'stage': after['stage'], 'applied_at': after['applied_at']}, current))} "
                              "changed since, so it was left as it is")
         if before["stage"] != after["stage"]:
-            conn.execute(
-                """
-                INSERT INTO application_events(application_id, event_type, from_stage, to_stage, detail_json, created_at)
-                VALUES(?, 'stage_changed', ?, ?, ?, ?)
-                """,
-                (subject_id, after["stage"], before["stage"], json.dumps({"source": source}), timestamp),
+            # The undo direction: from what the action made back to what it replaced.
+            actions.log_application_event(
+                conn, subject_id, "stage_changed", {"source": source}, timestamp,
+                from_stage=after["stage"], to_stage=before["stage"],
             )
         else:
-            conn.execute(
-                """
-                INSERT INTO application_events(application_id, event_type, from_stage, to_stage, detail_json, created_at)
-                VALUES(?, 'application_updated', NULL, NULL, ?, ?)
-                """,
-                (subject_id, json.dumps({"source": source, "fields": ["applied_at"]}), timestamp),
+            actions.log_application_event(
+                conn, subject_id, "application_updated", {"source": source, "fields": ["applied_at"]}, timestamp,
             )
 
 
@@ -1055,12 +1035,9 @@ class ApplicationTask:
             if row["status"] != "open":
                 raise Superseded("The task was marked done since, so it was left as it is")
             raise Superseded("The task was edited since, so it was left as it is")
-        conn.execute(
-            """
-            INSERT INTO application_events(application_id, event_type, from_stage, to_stage, detail_json, created_at)
-            VALUES(?, 'task_removed', NULL, NULL, ?, ?)
-            """,
-            (subject_id, json.dumps({"task_id": created.get("task_id"), "title": created.get("title"), "source": source}), timestamp),
+        actions.log_application_event(
+            conn, subject_id, "task_removed",
+            {"task_id": created.get("task_id"), "title": created.get("title"), "source": source}, timestamp,
         )
 
 
@@ -1953,7 +1930,7 @@ def _trip_breaker(conn: sqlite3.Connection, user_id: str, feature: str, action_i
     taken_back = sum(taken.values())
     if taken_back < BREAKER_LIMIT:
         return None
-    _put_setting(conn, user_id, feature, "off", timestamp)
+    put_setting(conn, user_id, feature, "off", timestamp)
     what = (f"{taken_back} of its last {len(taken)} actions" if grouping is None
             else f"changes from {taken_back} of its last {len(taken)} {grouping[1]}s")
     notice = {
@@ -2048,16 +2025,6 @@ def record_health(
         )
 
 
-def _parse(value: Any) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-
-
 def _token_days() -> int | None:
     """PIPELINE_GMAIL_TOKEN_DAYS: how long a Testing-mode Gmail grant lasts. 0 (production apps) or nonsense means no estimate."""
     try:
@@ -2088,7 +2055,7 @@ def gmail_health(conn: sqlite3.Connection, user_id: str, *, now: datetime | None
     if row is None:
         return {"state": "not_connected", "last_ok_at": None, "last_error": "", "backoff_until": None,
                 "token_granted_at": None, "likely_expires_at": None, "expiring_soon": False, "estimate_passed": False}
-    backoff = _parse(row["backoff_until"])
+    backoff = parse_app_instant(row["backoff_until"])
     if row["status"] == "error":
         state = "needs_reconnect"
     elif row["status"] == "disconnected":
@@ -2097,12 +2064,12 @@ def gmail_health(conn: sqlite3.Connection, user_id: str, *, now: datetime | None
         state = "throttled"
     else:
         state = "connected"
-    granted = _parse(row["token_granted_at"])
+    granted = parse_app_instant(row["token_granted_at"])
     days = _token_days()
     expires = granted + timedelta(days=days) if granted is not None and days is not None else None
     estimate_passed = expires is not None and now >= expires
     if estimate_passed:
-        last_ok = _parse(row["last_ok_at"])
+        last_ok = parse_app_instant(row["last_ok_at"])
         if last_ok is not None and last_ok > expires:
             expires = None  # Gmail kept answering past the date: the estimate was wrong
     return {
@@ -2154,7 +2121,7 @@ def health_summary(conn: sqlite3.Connection, user_id: str, *, now: datetime | No
                     f"Testing-mode connections last about {days} day{'s' if days != 1 else ''}.")
         banner.append({"level": "warning", "key": "gmail_expiring", "text": text})
     if gmail["state"] == "throttled":
-        local = zone.to_local(_parse(gmail["backoff_until"]))
+        local = zone.to_local(parse_app_instant(gmail["backoff_until"]))
         banner.append({"level": "info", "key": "gmail_throttled",
                        "text": f"Gmail asked the app to slow down. Checks resume after {f'{local:%I:%M %p}'.lstrip('0')}."})
     return {

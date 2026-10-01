@@ -23,7 +23,8 @@ from opportunity_app import STATIC_DIR, apply_runs, automation, outreach_schedul
 from opportunity_app.actions import record_intent, update_application
 from opportunity_app.api import create_app
 from opportunity_app.automation import Feature
-from opportunity_app.schema import MIGRATIONS_DIR, connect_product, ensure_product_schema, migrate_legacy_database, utc_now
+from opportunity_app.schema import MIGRATIONS_DIR, connect_product, ensure_product_schema, migrate_legacy_database
+from opportunity_app.timestamps import utc_now
 from pipeline_core import OpportunityFilters, OpportunityRepository
 from helpers_platform import JOBS, LEGACY_SCHEMA, build_profile
 

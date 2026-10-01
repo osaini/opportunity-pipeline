@@ -43,7 +43,7 @@ from .outreach_gmail import (
     event_tie_order,
     last_bounces,
 )
-from .schema import utc_now
+from .timestamps import utc_now
 from .user_time import user_timezone
 
 SCHEDULED_EVENT = "gmail_scheduled"

@@ -49,7 +49,11 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
 
 from . import automation
-from .schema import utc_now
+from .database import rollback_quietly
+from .json_values import json_dict
+from .profile_store import read_stored_profile
+from .settings_store import get_setting, put_setting
+from .timestamps import parse_app_instant, utc_now
 from .user_time import user_timezone
 
 LOGGER = logging.getLogger(__name__)
@@ -69,16 +73,6 @@ AUTO_CLOSE_BASIS = "lifecycle:no_reply_14d"
 # --- Per-student settings -------------------------------------------------------------------
 
 
-def _profile(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
-    """The stored profile, read without creating one (profile.get_profile would)."""
-    row = conn.execute("SELECT profile_json FROM profiles WHERE user_id=?", (user_id,)).fetchone()
-    try:
-        profile = json.loads(row[0] or "{}") if row else {}
-    except (TypeError, ValueError):
-        return {}
-    return profile if isinstance(profile, dict) else {}
-
-
 def _days(profile: dict[str, Any], key: str, default: int) -> int:
     value = profile.get(key)
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_DAYS:
@@ -88,12 +82,12 @@ def _days(profile: dict[str, Any], key: str, default: int) -> int:
 
 def follow_up_days(conn: sqlite3.Connection, user_id: str) -> int:
     """Days after applying with no reply before Urgent says so: the profile's application_follow_up_days, else 21."""
-    return _days(_profile(conn, user_id), "application_follow_up_days", DEFAULT_FOLLOW_UP_DAYS)
+    return _days(read_stored_profile(conn, user_id), "application_follow_up_days", DEFAULT_FOLLOW_UP_DAYS)
 
 
 def archive_days(conn: sqlite3.Connection, user_id: str) -> int:
     """Days after applying before a silent application is archived: archive_after_days, else 60."""
-    return _days(_profile(conn, user_id), "archive_after_days", DEFAULT_ARCHIVE_DAYS)
+    return _days(read_stored_profile(conn, user_id), "archive_after_days", DEFAULT_ARCHIVE_DAYS)
 
 
 # --- Application silence (Urgent rows) ----------------------------------------------------
@@ -247,14 +241,6 @@ def silence_rows(conn: sqlite3.Connection, user_id: str, *, now: datetime | None
 # --- Archive silent applications (Could) ---------------------------------------------------
 
 
-def _decoded(text: Any) -> dict[str, Any]:
-    try:
-        value = json.loads(text or "{}")
-    except (TypeError, ValueError):
-        return {}
-    return value if isinstance(value, dict) else {}
-
-
 def _silent_since_of(evidence: dict[str, Any]) -> str:
     """The calendar day (ISO) an archive counted the silence from: the company's last email, else the applied day."""
     return str(evidence.get("last_email_on") or evidence.get("applied_on") or "")
@@ -301,11 +287,11 @@ def automatic_archive(conn: sqlite3.Connection, application_id: str) -> dict[str
     stage = conn.execute("SELECT stage FROM applications WHERE id=?", (application_id,)).fetchone()
     if stage is None or stage["stage"] != "archived":
         return None
-    result = _decoded(action["after_json"]).get("_result")
+    result = json_dict(action["after_json"]).get("_result")
     return {
         "action_id": str(action["id"]), "archived_at": action["applied_at"],
-        "from_stage": _decoded(action["before_json"]).get("stage") or "applied",
-        "silent_since": _silent_since_of(_decoded(action["evidence_json"])),
+        "from_stage": json_dict(action["before_json"]).get("stage") or "applied",
+        "silent_since": _silent_since_of(json_dict(action["evidence_json"])),
         "reminder_cancelled_at": str(result.get("reminder_cancelled_at") or "") if isinstance(result, dict) else "",
     }
 
@@ -370,8 +356,7 @@ def archive_due(conn: sqlite3.Connection, user_id: str, *, now: datetime | None 
 
 
 def _archive_ran_recently(conn: sqlite3.Connection, user_id: str, now: datetime) -> bool:
-    row = conn.execute("SELECT value FROM user_settings WHERE user_id=? AND key=?", (user_id, ARCHIVE_LAST_RUN_KEY)).fetchone()
-    last = automation._parse(row[0]) if row else None
+    last = parse_app_instant(get_setting(conn, user_id, ARCHIVE_LAST_RUN_KEY))
     return last is not None and now - last < ARCHIVE_EVERY
 
 
@@ -397,14 +382,14 @@ def _new_silence(conn: sqlite3.Connection, user_id: str, item: dict[str, Any]) -
     ).fetchone()
     if latest is None:
         return True
-    anchor = automation._parse(item.get("anchor_at"))
+    anchor = parse_app_instant(item.get("anchor_at"))
     if latest["status"] == "undone":
-        undone_at = automation._parse(latest["decided_at"])
+        undone_at = parse_app_instant(latest["decided_at"])
         return anchor is not None and undone_at is not None and anchor > undone_at
-    counted_from = _silent_since_of(_decoded(latest["evidence_json"]))
+    counted_from = _silent_since_of(json_dict(latest["evidence_json"]))
     if counted_from:
         return str(item.get("since") or "") > counted_from
-    made_at = automation._parse(latest["created_at"])
+    made_at = parse_app_instant(latest["created_at"])
     return anchor is not None and made_at is not None and anchor > made_at
 
 
@@ -449,7 +434,7 @@ def archive_silent_applications(conn: sqlite3.Connection, user_id: str, *, now: 
         if made is not None and row is not None and made["action_id"] == row["id"]:
             archived.append({"application_id": item["id"], "action_id": row["id"]})
     with conn:
-        automation._put_setting(conn, user_id, ARCHIVE_LAST_RUN_KEY, now.isoformat(timespec="seconds"), utc_now())
+        put_setting(conn, user_id, ARCHIVE_LAST_RUN_KEY, now.isoformat(timespec="seconds"), utc_now())
     return archived
 
 
@@ -608,7 +593,7 @@ def _latest_event(conn: sqlite3.Connection, target_id: str, user_id: str, event_
         "SELECT MAX(created_at) FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=?",
         (target_id, user_id, event_type),
     ).fetchone()
-    return automation._parse(row[0]) if row and row[0] else None
+    return parse_app_instant(row[0]) if row and row[0] else None
 
 
 def follow_up_draft_due(conn: sqlite3.Connection, user_id: str, *, now: datetime | None = None) -> list[dict[str, Any]]:
@@ -710,7 +695,7 @@ def run_for_user(
             ))
         except Exception as exc:  # noqa: BLE001 - the next step still runs
             LOGGER.exception("Closing unanswered companies failed")
-            _rollback(conn)
+            rollback_quietly(conn, LOGGER, "an automatic step failed")
             first_error = first_error or exc
     if provider_factory is not None and not report.get("follow_up_drafts") and automation.is_enabled(conn, user_id, "auto_follow_up_drafts"):
         try:
@@ -721,22 +706,14 @@ def run_for_user(
                 )
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Writing a follow-up draft failed")
-            _rollback(conn)
+            rollback_quietly(conn, LOGGER, "an automatic step failed")
             first_error = first_error or exc
     if automation.is_enabled(conn, user_id, "archive_silent_applications"):
         try:
             report.setdefault("archived", []).extend(archive_silent_applications(conn, user_id, now=now))
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("Archiving silent applications failed")
-            _rollback(conn)
+            rollback_quietly(conn, LOGGER, "an automatic step failed")
             first_error = first_error or exc
     if first_error is not None:
         raise first_error
-
-
-def _rollback(conn: sqlite3.Connection) -> None:
-    try:
-        if getattr(conn, "in_transaction", False):
-            conn.rollback()
-    except Exception:  # noqa: BLE001
-        LOGGER.warning("Could not roll back after an automatic step failed", exc_info=True)

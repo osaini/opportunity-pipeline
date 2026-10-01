@@ -43,7 +43,8 @@ from opportunity_app.outreach_thank_you import (
     validate,
     write,
 )
-from opportunity_app.schema import connect_product, utc_now
+from opportunity_app.schema import connect_product
+from opportunity_app.timestamps import utc_now
 from opportunity_app.typesafe_decisions import TypeSafeResponseError
 
 from helpers_platform import build_and_migrate

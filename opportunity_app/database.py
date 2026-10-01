@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 from collections.abc import Iterator, Mapping
@@ -19,6 +20,22 @@ def is_unique_violation(exc: BaseException) -> bool:
     if getattr(exc, "sqlstate", None) == "23505" or getattr(exc, "pgcode", None) == "23505":
         return True
     return type(exc).__name__ == "UniqueViolation"
+
+
+def rollback_quietly(conn: Any, logger: logging.Logger, what: str) -> None:
+    """Roll back a transaction left open after a step failed; if even that fails, log it and go on.
+
+    ``what`` completes the warning, "Could not roll back after <what>", and
+    ``logger`` is the caller's own, so its warnings stay under its module's name.
+    Only a transaction that is open is rolled back, so a connection with none is
+    left alone. This never raises, which is the point: it runs in an ``except``
+    block, or between steps that must each get their turn.
+    """
+    try:
+        if getattr(conn, "in_transaction", False):
+            conn.rollback()
+    except Exception:  # noqa: BLE001 - the caller is already handling a failure
+        logger.warning("Could not roll back after %s", what, exc_info=True)
 
 
 # PostgreSQL error classes that mean "try again": a lost connection (08), a serialization failure or

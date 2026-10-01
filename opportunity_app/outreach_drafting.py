@@ -28,7 +28,7 @@ from .outreach import (
     user_regions,
 )
 from .preparation import confirmed_facts
-from .schema import utc_now
+from .timestamps import utc_now
 
 ProviderFactory = Callable[[str, str], AgentProvider]
 

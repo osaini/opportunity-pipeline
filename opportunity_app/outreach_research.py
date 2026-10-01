@@ -85,7 +85,7 @@ from .outreach_contacts import FetchResult, SafeFetcher, _PageParser, public_web
 from .outreach_discovery import RUNNERS, UNVERIFIABLE_STATUSES
 from .outreach_email_search import BLOCKED_HOSTS
 from .preparation import confirmed_facts
-from .schema import utc_now
+from .timestamps import parse_app_instant, utc_now
 
 Runner = Callable[[str], str]
 # Sends instructions and content to a model and returns its reply.
@@ -1153,21 +1153,13 @@ def company_changed(started: dict[str, Any], company: Any, website: Any) -> bool
     return bool(before) and website_domain(str(website or "")) != before
 
 
-def _when(stamp: Any) -> datetime | None:
-    try:
-        when = datetime.fromisoformat(str(stamp))
-    except (TypeError, ValueError):
-        return None
-    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
-
-
 def _checked_facts(brief: dict[str, Any]) -> list[dict[str, Any]]:
     return [fact for fact in brief.get("facts") or [] if isinstance(fact, dict) and fact.get("checked")]
 
 
 def brief_is_fresh(target: dict[str, Any], now: datetime | None = None) -> bool:
     """Whether the brief is recent and has a checked fact. One that kept none, or only facts not checked, is worth trying again."""
-    written = _when(target.get("tech_brief_at")) if target.get("tech_brief_at") else None
+    written = parse_app_instant(target.get("tech_brief_at")) if target.get("tech_brief_at") else None
     if written is None or not _checked_facts(brief_of(target)):
         return False
     return (now or datetime.now(timezone.utc)) - written < FRESH_FOR
@@ -1183,7 +1175,7 @@ def research_due(target: dict[str, Any], now: datetime | None = None) -> bool:
     now = now or datetime.now(timezone.utc)
     if brief_is_fresh(target, now):
         return False
-    tried = _when(target.get("tech_brief_tried_at")) if target.get("tech_brief_tried_at") else None
+    tried = parse_app_instant(target.get("tech_brief_tried_at")) if target.get("tech_brief_tried_at") else None
     if tried is not None and now - tried < RETRY_AFTER:
         return False
     return (target.get("tech_brief_job") or {}).get("state") not in ACTIVE_JOB_STATES
@@ -1348,7 +1340,7 @@ def queue_research(conn: sqlite3.Connection, target_id: str, *, user_id: str, re
     job = target.get("tech_brief_job")
     if job and job["state"] in ACTIVE_JOB_STATES:
         return target
-    tried = _when(target.get("tech_brief_tried_at")) if target.get("tech_brief_tried_at") else None
+    tried = parse_app_instant(target.get("tech_brief_tried_at")) if target.get("tech_brief_tried_at") else None
     if (
         (target.get("call_prep_job") or {}).get("state") == "running"
         and tried is not None and datetime.now(timezone.utc) - tried < CALL_PREP_RESEARCH_WINDOW

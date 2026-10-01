@@ -26,10 +26,11 @@ import re
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from pipeline_core.visibility import capture_visible_sql
+
+from .timestamps import utc_now
 
 MAX_AUTO_TAGS = 3
 # A name match, a title match, or two different keywords across the
@@ -146,10 +147,6 @@ _COMPILED = tuple(
     (rule, _compile(rule.keywords), _compile((*rule.keywords, *rule.name_only)))
     for rule in RULES
 )
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 def normalize_tag(value: str) -> str:

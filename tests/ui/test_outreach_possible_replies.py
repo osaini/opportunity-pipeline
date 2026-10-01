@@ -30,7 +30,8 @@ from conftest import OWNER_TOKEN
 from ui_helpers import assert_accessible, card_for, describe, open_details, open_outreach, row_for, seed_target
 from opportunity_app.outreach import get_target
 from opportunity_app.outreach_inbox import _record_possible, _record_reply
-from opportunity_app.schema import connect_product, utc_now
+from opportunity_app.schema import connect_product
+from opportunity_app.timestamps import utc_now
 
 BEARER = {"Authorization": f"Bearer {OWNER_TOKEN}"}
 USER = "local-user"

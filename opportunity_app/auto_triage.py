@@ -37,6 +37,7 @@ from pipeline_core.visibility import capture_visible_sql
 
 from . import automation
 from .database import is_postgres_target
+from .profile_store import read_stored_profile
 from .schema import LOCAL_USER_ID, RULESET_VERSION, connect_product
 
 LOGGER = logging.getLogger(__name__)
@@ -47,15 +48,6 @@ REVIEW_DAYS = 7
 _POINTS = re.compile(r"^\s*([+-]?)(\d+)\b")
 
 
-def _profile(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
-    row = conn.execute("SELECT profile_json FROM profiles WHERE user_id=?", (user_id,)).fetchone()
-    try:
-        profile = json.loads(row[0] or "{}") if row else {}
-    except (TypeError, ValueError):
-        return {}
-    return profile if isinstance(profile, dict) else {}
-
-
 def _threshold(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 100:
         return None
@@ -64,7 +56,7 @@ def _threshold(value: Any) -> float | None:
 
 def thresholds(conn: sqlite3.Connection, user_id: str) -> dict[str, float | None]:
     """The student's thresholds from their profile's "automation" object; None where missing or not a score."""
-    settings = _profile(conn, user_id).get("automation")
+    settings = read_stored_profile(conn, user_id).get("automation")
     settings = settings if isinstance(settings, dict) else {}
     return {feature: _threshold(settings.get(key)) for feature, key in THRESHOLDS.items()}
 
