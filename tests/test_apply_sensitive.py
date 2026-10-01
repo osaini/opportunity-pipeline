@@ -1105,7 +1105,10 @@ class LeftoverReviewTests(StoreCase):
 class StoreReaderScanTests(unittest.TestCase):
     """12.7: only the policy, the runs, operations (export and deletion), the schema (its migration step) and the store's own module name the table."""
 
-    ALLOWED = {"apply_sensitive.py", "operations.py", "schema.py"}
+    # Allowed modules, as paths from the repo root without ".py". Each may be a single file or, after a split, a package of
+    # the same name (opportunity_app/schema/...), but only at this location: a same-named file elsewhere (scripts/schema.py,
+    # pipeline_core/operations.py) is not allowed, which the old basename check wrongly let through.
+    ALLOWED = ("opportunity_app/apply_sensitive", "opportunity_app/operations", "opportunity_app/schema")
 
     def sources(self):
         for folder in ("opportunity_app", "pipeline_core"):
@@ -1113,10 +1116,15 @@ class StoreReaderScanTests(unittest.TestCase):
         yield REPO / "pipeline.py"
         yield from (REPO / "scripts").rglob("*.py")
 
+    def allowed(self, path):
+        module = path.relative_to(REPO).as_posix()[:-3]
+        return any(module == name or module.startswith(name + "/") for name in self.ALLOWED)
+
     def test_no_other_source_file_names_the_table(self):
-        named = {path.name for path in self.sources() if "apply_sensitive_answers" in path.read_text(encoding="utf-8")}
+        named = [path for path in self.sources() if "apply_sensitive_answers" in path.read_text(encoding="utf-8")]
         self.assertTrue(named, "the scan found the files it should")
-        self.assertEqual(named - self.ALLOWED, set(), "a file that reads the store must be added here on purpose")
+        self.assertEqual([path.relative_to(REPO).as_posix() for path in named if not self.allowed(path)], [],
+                         "a file that reads the store must be added here on purpose")
 
     def test_employer_and_reporting_code_never_read_the_store_or_import_it(self):
         reporting = [path for path in (REPO / "opportunity_app").rglob("*.py")

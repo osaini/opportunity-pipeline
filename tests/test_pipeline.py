@@ -1456,23 +1456,27 @@ class PipelineTests(unittest.TestCase):
         arrow in a print() crashed `update` with a UnicodeEncodeError before it
         could confirm the status change.
         """
-        source = (Path(__file__).resolve().parents[1] / "pipeline.py").read_text(
-            encoding="utf-8"
-        )
+        root = Path(__file__).resolve().parents[1]
+        # pipeline.py and every pipeline_core module, so a split of pipeline.py into new modules stays covered.
+        files = [root / "pipeline.py", *sorted((root / "pipeline_core").rglob("*.py"))]
+        self.assertGreater(len(files), 1)
         # The smart-quote tables in normalize_for_match are data, never printed:
         # they exist precisely to fold these characters out of fetched pages.
         allowed = set("‘’ʼ′“”″´")
         offenders = {}
-        for number, line in enumerate(source.splitlines(), 1):
-            if "print(" not in line:
-                continue
-            for char in line:
-                if char in allowed:
+        for path in files:
+            source = path.read_text(encoding="utf-8")
+            name = path.relative_to(root).as_posix()
+            for number, line in enumerate(source.splitlines(), 1):
+                if "print(" not in line:
                     continue
-                try:
-                    char.encode("cp1252")
-                except UnicodeEncodeError:
-                    offenders.setdefault(f"U+{ord(char):04X}", []).append(number)
+                for char in line:
+                    if char in allowed:
+                        continue
+                    try:
+                        char.encode("cp1252")
+                    except UnicodeEncodeError:
+                        offenders.setdefault(f"U+{ord(char):04X}", []).append(f"{name}:{number}")
         self.assertEqual(offenders, {}, f"unencodable characters in print(): {offenders}")
 
     # --- ATS board discovery ------------------------------------------------

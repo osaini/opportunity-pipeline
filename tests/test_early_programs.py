@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import unittest
 from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
@@ -19,6 +22,7 @@ from opportunity_app.schema import LOCAL_USER_ID, connect_product
 from opportunity_app.setup import Paths, programs_report
 from opportunity_app.urgent import urgent_queue
 from tests.helpers_platform import build_and_migrate
+from helpers_source import static_pages
 
 
 def program(program_id: str, **fields) -> dict:
@@ -294,10 +298,10 @@ class EarlyProgramApiTests(unittest.TestCase):
 
     def test_the_shipped_page_names_no_particular_class_year(self):
         # The tab's name and wording come from each student's file, never the code.
-        for name in ("index.html", "app.js"):
-            text = (STATIC_DIR / name).read_text(encoding="utf-8").casefold()
+        # Every shipped page and script, so moving code out of app.js cannot turn this into a no-op.
+        for name, text in static_pages().items():
             for phrase in ("first-year", "freshm", "sophomore"):
-                self.assertNotIn(phrase, text, f"{name} hardcodes {phrase!r}")
+                self.assertNotIn(phrase, text.casefold(), f"{name} hardcodes {phrase!r}")
 
     def test_without_a_file_the_tab_is_unconfigured(self):
         self.path.unlink()

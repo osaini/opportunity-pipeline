@@ -5,6 +5,7 @@ import io
 import hashlib
 import hmac
 import sqlite3
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -12,6 +13,8 @@ from unittest import mock
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -29,6 +32,7 @@ from opportunity_app.schema import LOCAL_USER_ID, connect_product, migrate_legac
 from opportunity_app.database import _postgres_schema, _postgres_sql
 from opportunity_app.operations import encrypted_backup, enqueue_job, queue_status, restore_backup, retry_dead_job, run_next_job
 from pipeline_core import OpportunityFilters, OpportunityRepository
+from helpers_source import read_all
 
 
 LEGACY_SCHEMA = """
@@ -1065,11 +1069,14 @@ class PlatformTests(unittest.TestCase):
         engine_script = (extension / "apply-engine.js").read_text(encoding="utf-8")
         self.assertIn('"submit"', engine_script)
         self.assertIn("SENSITIVE", engine_script)
-        for name in ("content.js", "apply-engine.js", "adapters.js", "field-engine.js"):
-            source = (extension / name).read_text(encoding="utf-8")
+        # Every script in the extension is scanned (the side panel, the service worker and lib/ too), not a fixed list of four,
+        # so a split or a new file cannot add a click or a submit unseen. Nothing is excluded: none of them needs one.
+        scripts = read_all(extension, "*.js")
+        self.assertTrue({"content.js", "apply-engine.js", "adapters.js", "field-engine.js"} <= set(scripts))
+        for name, source in scripts.items():
             for forbidden in (".click(", "requestSubmit", ".submit(", "new MouseEvent", "new PointerEvent"):
                 self.assertNotIn(forbidden, source, f"{name} must not contain {forbidden}")
-            if name == "field-engine.js":
+            if name.rsplit("/", 1)[-1] == "field-engine.js":
                 # The one place events are dispatched: input and change, on a field the plan named.
                 calls = re.findall(r"dispatchEvent\([^)]*\)?", source)
                 self.assertTrue(calls)
