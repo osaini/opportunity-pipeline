@@ -177,7 +177,7 @@ This is the part worth internalising, because it explains where bugs hide.
 | `tests/` (unittest) | Routes, DB, auth, business logic | Anything in the browser scripts (`app*.js`) or `styles.css`. Authenticates with a bearer token, so it never exercises the CSRF path, which only applies to cookie-authenticated browser requests. |
 | `tests/ui/` (Playwright) | Real rendering, real event handlers, real cookies, console and network | Server internals; anything behind a feature flag or credential it does not have |
 | `scripts/run_api_fuzz.py` | Every operation in the schema, with generated input | Anything requiring a valid multi-step sequence; connector routes and the outreach draft/find-contacts routes are excluded |
-| `node --check` in CI (`scripts/check-js.mjs`) | That every browser and extension script parses | Whether any of it runs |
+| `node --check` in CI (`scripts/check-js-syntax.mjs`) | That every browser and extension script parses | Whether any of it runs |
 
 A P0 bug lived in the gap between rows one and two from the day the platform
 landed (`d592e85`, 2026-08-10) until the browser suite was added: `app.js` dropped
