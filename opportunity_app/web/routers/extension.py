@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from fastapi.responses import FileResponse
 
 from ...actions import ApplicationNotFoundError
-from ...document_artifacts import ensure_document_artifact
+from ...document_artifacts import backfill_approved_artifacts
 from ...extension_apply import (
     ExtensionApplyError,
     ExtensionAuthError,
@@ -105,20 +105,7 @@ def extension_apply_context(
     ctx: AppContext = Depends(get_ctx),
 ) -> dict[str, Any]:
     conn, device = context
-    warnings: list[str] = []
-    approved = conn.execute(
-        """
-            SELECT d.id FROM generated_documents d
-            LEFT JOIN generated_document_artifacts a ON a.document_id=d.id
-            WHERE d.user_id=? AND d.status='approved' AND a.id IS NULL
-            """,
-        (device["user_id"],),
-    ).fetchall()
-    for row in approved:
-        try:
-            ensure_document_artifact(conn, str(row["id"]), ctx.config.resume_storage, user_id=device["user_id"])
-        except (RuntimeError, ValueError) as exc:
-            warnings.append(str(exc))
+    warnings = backfill_approved_artifacts(conn, ctx.config.resume_storage, user_id=device["user_id"])
     try:
         result = apply_context(conn, application_id, user_id=device["user_id"])
     except ApplicationNotFoundError as exc:
