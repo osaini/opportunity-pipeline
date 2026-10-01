@@ -58,7 +58,7 @@ from .agent_providers import build_provider
 from .daily_lock import TEMPFAIL_EXIT
 from .database import is_postgres_target
 from .outreach import queue_follow_up_reminders
-from .outreach_config import discovery_provider
+from .outreach_config import RESEARCH_ENV, discovery_provider
 from .outreach_discovery import DEFAULT_SCOPES, MAX_PER_SCOPE, RUNNERS, SCOPES, DiscoveryBusy, run_discovery
 from .outreach_locate import BATCH_SIZE, locate_targets
 from .outreach_profile import SEC_USER_AGENT_ENV, enrich_targets, sec_fetcher
@@ -111,7 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     recontact.add_argument("--no-render", action="store_true", help="Never render JavaScript-built sites in a browser")
     recontact.add_argument(
         "--provider", choices=sorted(RUNNERS),
-        default=os.environ.get("PIPELINE_OUTREACH_DISCOVERY_PROVIDER", "claude-code"),
+        default=os.environ.get(RESEARCH_ENV, "claude-code"),
         help="CLI that performs the web research",
     )
     research = commands.add_parser("research", help="Research companies from the web")

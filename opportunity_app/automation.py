@@ -1066,7 +1066,7 @@ class ApplicationTask:
 class OutreachStatus:
     """outreach.status: a cold-outreach company's status (outreach_auto_close closes one as no_response).
 
-    The change runs through outreach._update_target_tx, so it has every side
+    The change runs through outreach.update_target_tx, so it has every side
     effect a status change made by hand has: a follow-up date that no longer
     applies is cleared, and the change is logged. Undo puts the status back only
     while it is still what this action left, and the follow-up date too, only

@@ -60,7 +60,7 @@ from .outreach import (
     update_target,
 )
 from .database import is_unique_violation
-from .outreach_config import gmail_web_url, sender_account
+from .outreach_config import ATTACHMENT_ENV, gmail_web_url, sender_account
 from .schema import utc_now
 from .user_time import user_timezone
 
@@ -111,7 +111,7 @@ def default_client_factory() -> httpx.Client:
 
 def attachment_path() -> Path | None:
     """PIPELINE_OUTREACH_ATTACHMENT, resolved against the project root when relative."""
-    value = os.environ.get("PIPELINE_OUTREACH_ATTACHMENT", "").strip().strip('"')
+    value = os.environ.get(ATTACHMENT_ENV, "").strip().strip('"')
     if not value:
         return None
     path = Path(value).expanduser()

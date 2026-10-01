@@ -75,6 +75,8 @@ class WorkstreamBLeafImportTests(unittest.TestCase):
 
     # leaf -> (allowed top-level imports besides the standard library, allowed function-level imports)
     LEAVES = {
+        # Not a pure leaf: two lazy imports, kept out of the top so importing it loads neither module. schema supplies
+        # utc_now (drop it from this list once the clock moves to timestamps); automation supplies record_health.
         "background": (set(), {f"{PACKAGE}.schema", f"{PACKAGE}.automation"}),
         "web_fetch": ({"httpx", "httpcore"}, set()),
         "outreach_config": ({f"{PACKAGE}.agent_providers"}, set()),
