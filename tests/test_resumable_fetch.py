@@ -9,13 +9,15 @@ sources that already arrived.
 from __future__ import annotations
 
 import io
+import time
 import unittest
 import unittest.mock
 import urllib.error
+import urllib.request
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import pipeline
+from pipeline_core import fetch as core_fetch, http, paths, sources, store
 
 SOURCES = {
     "discovery_title_terms": ["intern"],
@@ -48,7 +50,7 @@ class TransientErrorTests(unittest.TestCase):
             # so passing it directly breaks a parallel run. The assertion below
             # still uses the real exception.
             with self.subTest(error=repr(error)):
-                self.assertTrue(pipeline._is_transient(error))
+                self.assertTrue(http._is_transient(error))
 
     def test_missing_boards_and_bad_payloads_are_not_transient(self):
         for error in (
@@ -57,32 +59,32 @@ class TransientErrorTests(unittest.TestCase):
             None,
         ):
             with self.subTest(error=repr(error)):
-                self.assertFalse(pipeline._is_transient(error))
+                self.assertFalse(http._is_transient(error))
 
     def test_http_json_raises_the_transient_type_when_offline(self):
         with unittest.mock.patch.object(
-            pipeline.urllib.request, "urlopen", side_effect=urllib.error.URLError("offline")
-        ), unittest.mock.patch.object(pipeline.time, "sleep"):
-            with self.assertRaises(pipeline.TransientFetchError):
-                pipeline.request_json("https://boards-api.greenhouse.io/v1/boards/x/jobs")
+            urllib.request, "urlopen", side_effect=urllib.error.URLError("offline")
+        ), unittest.mock.patch.object(time, "sleep"):
+            with self.assertRaises(http.TransientFetchError):
+                http.request_json("https://boards-api.greenhouse.io/v1/boards/x/jobs")
 
     def test_http_json_raises_a_plain_error_for_a_404(self):
         not_found = urllib.error.HTTPError("https://x", 404, "Not Found", {}, io.BytesIO())
         # request_json retries a 404 with a real randomised backoff (up to ~4.5 s); the sleep is not what is under test.
-        with unittest.mock.patch.object(pipeline.urllib.request, "urlopen", side_effect=not_found),                 unittest.mock.patch.object(pipeline.time, "sleep"):
+        with unittest.mock.patch.object(urllib.request, "urlopen", side_effect=not_found),                 unittest.mock.patch.object(time, "sleep"):
             with self.assertRaises(RuntimeError) as caught:
-                pipeline.request_json("https://x")
-        self.assertNotIsInstance(caught.exception, pipeline.TransientFetchError)
+                http.request_json("https://x")
+        self.assertNotIsInstance(caught.exception, http.TransientFetchError)
 
 
 class ResumeFetchTests(unittest.TestCase):
     def setUp(self):
         temp = TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        patcher = unittest.mock.patch.object(pipeline, "DB_PATH", Path(temp.name) / "pipeline.db")
+        patcher = unittest.mock.patch.object(paths, "DB_PATH", Path(temp.name) / "pipeline.db")
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.conn = pipeline.connect()
+        self.conn = store.connect()
         self.addCleanup(self.conn.close)
 
     def fetch(self, behaviour, resume_since=None):
@@ -96,14 +98,14 @@ class ResumeFetchTests(unittest.TestCase):
                 raise outcome
             return outcome
 
-        with unittest.mock.patch.object(pipeline, "greenhouse_jobs", side_effect=fake), \
+        with unittest.mock.patch.object(sources, "greenhouse_jobs", side_effect=fake), \
                 unittest.mock.patch("sys.stdout", io.StringIO()), unittest.mock.patch("sys.stderr", io.StringIO()):
-            failures = pipeline.fetch_all(self.conn, SOURCES, resume_since)
+            failures = core_fetch.fetch_all(self.conn, SOURCES, resume_since)
         return failures, fetched
 
     def test_counts_only_transient_failures(self):
         failures, fetched = self.fetch({
-            "Beta": pipeline.TransientFetchError("offline"),
+            "Beta": http.TransientFetchError("offline"),
             "Gamma": RuntimeError("HTTP Error 404"),
         })
         # A set, not a list: sources are fetched concurrently, so completion
@@ -113,7 +115,7 @@ class ResumeFetchTests(unittest.TestCase):
 
     def test_resume_skips_sources_that_already_succeeded_in_this_run(self):
         started = "2000-01-01T00:00:00Z"
-        failures, _ = self.fetch({"Beta": pipeline.TransientFetchError("offline")}, started)
+        failures, _ = self.fetch({"Beta": http.TransientFetchError("offline")}, started)
         self.assertEqual(failures, 1)
 
         failures, fetched = self.fetch({}, started)

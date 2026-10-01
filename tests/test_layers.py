@@ -99,7 +99,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
     # L0 stdlib leaves. `opportunity_app` and `pipeline_core` are the package __init__ modules (constants and re-exports).
     0: (
         _app(". timestamps user_time database json_values mail_message opportunity_metadata storage_paths contact_names daily_lock hooks monitored_classifier")
-        | _core(". env identity visibility regions read_model")
+        | _core(". env identity visibility regions read_model paths clock text http config sources scoring artifacts store liveness retention importers discovery fetch reports cli")
         | frozenset({"pipeline"})
     ),
     # L1 storage. company_tags is here because schema.py imports it; legacy is the one adapter onto pipeline.py; legacy_sync

@@ -156,7 +156,7 @@ class Paths:
 
 
 def read_env(path: Path) -> dict[str, str]:
-    """The .env as a dict. A repeated key keeps its last line (pipeline.load_env_file keeps the first)."""
+    """The .env as a dict. A repeated key keeps its last line (pipeline_core.config.load_env_file keeps the first)."""
     return dict(iter_env_pairs(path))
 
 

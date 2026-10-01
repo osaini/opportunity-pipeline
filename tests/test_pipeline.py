@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import pipeline
+from pipeline_core import artifacts, clock, config as core_config, sources as core_sources, discovery, importers, liveness, paths, reports, retention, scoring, store, text
 from pipeline_core.regions import match_region, region_label
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -55,25 +55,25 @@ def load_fixture(name):
 
 class PipelineTests(unittest.TestCase):
     def test_strip_html(self):
-        self.assertEqual(pipeline.strip_html("<p>Build &amp; test</p>"), "Build & test")
+        self.assertEqual(text.strip_html("<p>Build &amp; test</p>"), "Build & test")
 
     def test_role_classification(self):
-        self.assertEqual(pipeline.classify_role("Mechanical Engineering Intern", ""), "internship")
-        self.assertEqual(pipeline.classify_role("Spring Co-op", ""), "co-op")
-        self.assertEqual(pipeline.classify_role("Undergraduate Research Assistant", ""), "research")
+        self.assertEqual(text.classify_role("Mechanical Engineering Intern", ""), "internship")
+        self.assertEqual(text.classify_role("Spring Co-op", ""), "co-op")
+        self.assertEqual(text.classify_role("Undergraduate Research Assistant", ""), "research")
         self.assertEqual(
-            pipeline.classify_role("New Graduate Mechanical Engineer", "Our interns do great work."),
+            text.classify_role("New Graduate Mechanical Engineer", "Our interns do great work."),
             "early_career",
         )
 
     def test_canonical_url_removes_tracking(self):
-        value = pipeline.canonical_url(
+        value = text.canonical_url(
             "https://example.com/jobs/1/?utm_source=test&gh_src=abc&keep=yes"
         )
         self.assertEqual(value, "https://example.com/jobs/1?keep=yes")
 
     def test_canonical_url_removes_linkedin_tracking(self):
-        value = pipeline.canonical_url(
+        value = text.canonical_url(
             "https://www.linkedin.com/comm/jobs/view/4012345678/"
             "?trackingId=abc123&refId=xyz&trk=eml-jobs&keep=yes"
         )
@@ -98,7 +98,7 @@ class PipelineTests(unittest.TestCase):
             "location": "Austin, TX",
             "posted_at": None,
         }
-        score, reasons = pipeline.score_job(job, profile)
+        score, reasons = scoring.score_job(job, profile)
         self.assertGreaterEqual(score, 80)
         self.assertTrue(any("skills" in reason for reason in reasons))
         self.assertTrue(any("location" in reason for reason in reasons))
@@ -154,10 +154,10 @@ class PipelineTests(unittest.TestCase):
             "posted_at": None,
         }
         profile["degree_keywords"] = ["mechanical engineering"]
-        in_region, in_reasons = pipeline.score_job({**base, "location": "Austin, TX"}, profile)
-        remote, _ = pipeline.score_job({**base, "location": "Remote - US"}, profile)
-        outside, out_reasons = pipeline.score_job({**base, "location": "Seattle, WA"}, profile)
-        unknown, _ = pipeline.score_job({**base, "location": ""}, profile)
+        in_region, in_reasons = scoring.score_job({**base, "location": "Austin, TX"}, profile)
+        remote, _ = scoring.score_job({**base, "location": "Remote - US"}, profile)
+        outside, out_reasons = scoring.score_job({**base, "location": "Seattle, WA"}, profile)
+        unknown, _ = scoring.score_job({**base, "location": ""}, profile)
 
         self.assertGreater(in_region, remote)
         self.assertGreater(remote, unknown)
@@ -192,8 +192,8 @@ class PipelineTests(unittest.TestCase):
         }
         base = {"title": "Engineer", "description": "", "role_type": "internship", "posted_at": None}
         # "2 Locations" is a Workday multi-site placeholder, not a real elsewhere.
-        placeholder, reasons = pipeline.score_job({**base, "location": "2 Locations"}, profile)
-        blank, _ = pipeline.score_job({**base, "location": ""}, profile)
+        placeholder, reasons = scoring.score_job({**base, "location": "2 Locations"}, profile)
+        blank, _ = scoring.score_job({**base, "location": ""}, profile)
         self.assertEqual(placeholder, blank)
         self.assertFalse(any("outside target regions" in reason for reason in reasons))
 
@@ -214,13 +214,13 @@ class PipelineTests(unittest.TestCase):
             "location": "",
             "posted_at": None,
         }
-        score, reasons = pipeline.score_job(senior, profile)
+        score, reasons = scoring.score_job(senior, profile)
         self.assertEqual(score, 0)
         self.assertTrue(any("seniority" in reason for reason in reasons))
 
     def test_short_skill_terms_do_not_match_inside_words(self):
-        self.assertEqual(pipeline.term_hits("Mechanical design", ["C"]), [])
-        self.assertEqual(pipeline.term_hits("C and CAD experience", ["C", "CAD"]), ["C", "CAD"])
+        self.assertEqual(scoring.term_hits("Mechanical design", ["C"]), [])
+        self.assertEqual(scoring.term_hits("C and CAD experience", ["C", "CAD"]), ["C", "CAD"])
 
     def _dedup_conn(self, rows):
         conn = sqlite3.connect(":memory:")
@@ -259,7 +259,7 @@ class PipelineTests(unittest.TestCase):
                 ("manual", "same", "applied", "manual:csv", "short", "Acme", "Intern", "Austin, TX"),
             ]
         )
-        pipeline.deduplicate(conn)
+        store.deduplicate(conn)
         ats = conn.execute("SELECT duplicate_of FROM jobs WHERE id='ats'").fetchone()[0]
         manual = conn.execute("SELECT duplicate_of FROM jobs WHERE id='manual'").fetchone()[0]
         self.assertEqual(ats, "manual")
@@ -317,7 +317,7 @@ class PipelineTests(unittest.TestCase):
                 ),
             ]
         )
-        pipeline.deduplicate(conn)
+        store.deduplicate(conn)
         result = dict(conn.execute("SELECT id, duplicate_of FROM jobs").fetchall())
         # The ATS row wins canonical (real source, longer description).
         self.assertIsNone(result["ats"])
@@ -327,20 +327,20 @@ class PipelineTests(unittest.TestCase):
         self.assertIsNone(result["other-city-ats"])
 
     def test_locations_compatible_treats_blank_as_unknown_not_conflicting(self):
-        self.assertTrue(pipeline.locations_compatible("Austin, TX", ""))
+        self.assertTrue(store.locations_compatible("Austin, TX", ""))
         self.assertTrue(
-            pipeline.locations_compatible(
+            store.locations_compatible(
                 "Austin, Texas, United States; South San Francisco, California, United States",
                 "Austin, TX",
             )
         )
-        self.assertFalse(pipeline.locations_compatible("Austin, TX", "Boston, MA"))
-        self.assertEqual(pipeline.location_cities("Austin, TX; Boston, MA"), {"austin", "boston"})
+        self.assertFalse(store.locations_compatible("Austin, TX", "Boston, MA"))
+        self.assertEqual(store.location_cities("Austin, TX; Boston, MA"), {"austin", "boston"})
 
     def test_display_reasons_excludes_base_and_caps_length(self):
         reasons = ["35 base", "r1", "r2", "r3", "r4", "r5", "r6"]
-        self.assertEqual(pipeline.display_reasons(reasons), ["r1", "r2", "r3", "r4", "r5"])
-        self.assertEqual(pipeline.display_reasons(reasons, limit=2), ["r1", "r2"])
+        self.assertEqual(reports.display_reasons(reasons), ["r1", "r2", "r3", "r4", "r5"])
+        self.assertEqual(reports.display_reasons(reasons, limit=2), ["r1", "r2"])
 
     def _sample_dashboard_jobs(self, title="Mechanical Engineering Intern"):
         return [
@@ -364,7 +364,7 @@ class PipelineTests(unittest.TestCase):
 
     def test_build_dashboard_html_embeds_valid_json(self):
         jobs = self._sample_dashboard_jobs()
-        doc = pipeline.build_dashboard_html(jobs, "2026-07-24T00:00:00+00:00")
+        doc = reports.build_dashboard_html(jobs, "2026-07-24T00:00:00+00:00")
         match = re.search(
             r'<script id="job-data" type="application/json">(.*?)</script>', doc, re.S
         )
@@ -375,7 +375,7 @@ class PipelineTests(unittest.TestCase):
     def test_build_dashboard_html_escapes_script_injection(self):
         malicious_title = "Intern</script><script>alert(1)</script>"
         jobs = self._sample_dashboard_jobs(title=malicious_title)
-        doc = pipeline.build_dashboard_html(jobs, "2026-07-24T00:00:00+00:00")
+        doc = reports.build_dashboard_html(jobs, "2026-07-24T00:00:00+00:00")
         self.assertNotIn("</script><script>", doc)
         match = re.search(
             r'<script id="job-data" type="application/json">(.*?)</script>', doc, re.S
@@ -386,9 +386,9 @@ class PipelineTests(unittest.TestCase):
 
     def test_ashby_jobs_filters_and_normalizes(self):
         with unittest.mock.patch.object(
-            pipeline, "request_json", return_value=load_fixture("ashby_board.json")
+            core_sources, "request_json", return_value=load_fixture("ashby_board.json")
         ):
-            jobs = pipeline.ashby_jobs({"company": "Acme", "board": "acme"}, ["intern"])
+            jobs = core_sources.ashby_jobs({"company": "Acme", "board": "acme"}, ["intern"])
         self.assertEqual(len(jobs), 1)
         self.assertEqual(jobs[0]["external_id"], "abc123")
         self.assertEqual(jobs[0]["title"], "Mechanical Engineering Intern")
@@ -397,8 +397,8 @@ class PipelineTests(unittest.TestCase):
     def test_smartrecruiters_jobs_paginates_and_fetches_detail(self):
         listing = load_fixture("smartrecruiters_postings.json")
         detail = load_fixture("smartrecruiters_posting_detail.json")
-        with unittest.mock.patch.object(pipeline, "request_json", side_effect=[listing, detail]):
-            jobs = pipeline.smartrecruiters_jobs(
+        with unittest.mock.patch.object(core_sources, "request_json", side_effect=[listing, detail]):
+            jobs = core_sources.smartrecruiters_jobs(
                 {"company": "Acme", "company_id": "Acme"}, ["intern"]
             )
         self.assertEqual(len(jobs), 1)
@@ -408,8 +408,8 @@ class PipelineTests(unittest.TestCase):
 
     def test_workday_jobs_searches_per_term_and_stops_when_total_reached(self):
         page = load_fixture("workday_jobs_page1.json")
-        with unittest.mock.patch.object(pipeline, "request_json_post", side_effect=[page, page]) as mock_post:
-            jobs = pipeline.workday_jobs(
+        with unittest.mock.patch.object(core_sources, "request_json_post", side_effect=[page, page]) as mock_post:
+            jobs = core_sources.workday_jobs(
                 {"company": "NVIDIA", "tenant": "nvidia", "datacenter": "wd5", "site": "NVIDIAExternalCareerSite"},
                 ["intern", "co-op"],
             )
@@ -437,7 +437,7 @@ class PipelineTests(unittest.TestCase):
             "Undergraduate Research Assistant",
             "Externship Program",
         ):
-            self.assertTrue(pipeline.is_discovery_candidate(title, terms), title)
+            self.assertTrue(core_sources.is_discovery_candidate(title, terms), title)
         # "intern" inside "Internal" is the failure that matters: the VA posts
         # hundreds of internal-medicine roles to USAJOBS, and substring matching
         # pulled every one of them in as an internship.
@@ -448,7 +448,7 @@ class PipelineTests(unittest.TestCase):
             "Internal Medicine Internist",
             "Internally Posted Analyst",
         ):
-            self.assertFalse(pipeline.is_discovery_candidate(title, terms), title)
+            self.assertFalse(core_sources.is_discovery_candidate(title, terms), title)
 
     def test_adzuna_jobs_requires_both_credentials(self):
         # Adzuna issues app_id and app_key as a pair and rejects a request
@@ -456,14 +456,14 @@ class PipelineTests(unittest.TestCase):
         for env in ({}, {"ADZUNA_APP_ID": "id"}, {"ADZUNA_APP_KEY": "key"}):
             with unittest.mock.patch.dict("os.environ", env, clear=True):
                 with self.assertRaises(ValueError):
-                    pipeline.adzuna_jobs({"company": "Adzuna"}, ["intern"])
+                    core_sources.adzuna_jobs({"company": "Adzuna"}, ["intern"])
 
     def test_adzuna_jobs_normalizes_results(self):
         env = {"ADZUNA_APP_ID": "id", "ADZUNA_APP_KEY": "key"}
         page = load_fixture("adzuna_search.json")
         with unittest.mock.patch.dict("os.environ", env, clear=True):
-            with unittest.mock.patch.object(pipeline, "request_json", return_value=page):
-                jobs = pipeline.adzuna_jobs(
+            with unittest.mock.patch.object(core_sources, "request_json", return_value=page):
+                jobs = core_sources.adzuna_jobs(
                     {"company": "Adzuna", "what": "engineering intern"}, ["intern", "co-op"]
                 )
         # The facilities manager fails the title filter; the other two survive.
@@ -502,9 +502,9 @@ class PipelineTests(unittest.TestCase):
         }
         with unittest.mock.patch.dict("os.environ", env, clear=True):
             with unittest.mock.patch.object(
-                pipeline, "request_json", return_value=page
+                core_sources, "request_json", return_value=page
             ) as mock_get:
-                jobs = pipeline.adzuna_jobs(source, ["intern", "co-op"])
+                jobs = core_sources.adzuna_jobs(source, ["intern", "co-op"])
         # A page shorter than results_per_page is the last page, so each query
         # costs exactly one request rather than walking to the page cap.
         self.assertEqual(mock_get.call_count, 2)
@@ -528,14 +528,14 @@ class PipelineTests(unittest.TestCase):
     def test_usajobs_jobs_requires_api_key(self):
         with unittest.mock.patch.dict("os.environ", {}, clear=True):
             with self.assertRaises(ValueError):
-                pipeline.usajobs_jobs({"company": "USAJOBS"}, ["intern"])
+                core_sources.usajobs_jobs({"company": "USAJOBS"}, ["intern"])
 
     def test_usajobs_jobs_requires_contact_email(self):
         # USAJOBS rejects a request whose User-Agent is not the registered
         # address, so a key on its own is not enough to make a live call.
         with unittest.mock.patch.dict("os.environ", {"USAJOBS_API_KEY": "k"}, clear=True):
             with self.assertRaises(ValueError):
-                pipeline.usajobs_jobs({"company": "USAJOBS"}, ["intern"])
+                core_sources.usajobs_jobs({"company": "USAJOBS"}, ["intern"])
 
     def test_usajobs_jobs_normalizes_results(self):
         env = {"USAJOBS_API_KEY": "test-key", "USAJOBS_CONTACT_EMAIL": "me@example.com"}
@@ -543,9 +543,9 @@ class PipelineTests(unittest.TestCase):
         page2 = load_fixture("usajobs_search_page2.json")
         with unittest.mock.patch.dict("os.environ", env, clear=True):
             with unittest.mock.patch.object(
-                pipeline, "_http_json", side_effect=[page1, page2]
+                core_sources, "_http_json", side_effect=[page1, page2]
             ):
-                jobs = pipeline.usajobs_jobs({"company": "USAJOBS"}, ["intern", "student trainee"])
+                jobs = core_sources.usajobs_jobs({"company": "USAJOBS"}, ["intern", "student trainee"])
         # The budget analyst on page 1 fails the title filter; both engineering
         # rows survive, so paging is what makes the page-2 row reachable at all.
         self.assertEqual([job["external_id"] for job in jobs], ["111", "333"])
@@ -563,12 +563,12 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("Run CAD models and test fixtures. Document results.", first["description"])
 
     def test_usajobs_description_tolerates_field_shapes(self):
-        self.assertEqual(pipeline._usajobs_text("plain"), "plain")
-        self.assertEqual(pipeline._usajobs_text(["a", "b"]), "a b")
-        self.assertEqual(pipeline._usajobs_text({"Content": "boxed"}), "boxed")
-        self.assertEqual(pipeline._usajobs_text([{"Content": "a"}, "b"]), "a b")
-        self.assertEqual(pipeline._usajobs_text(None), "")
-        self.assertEqual(pipeline._usajobs_text(17), "")
+        self.assertEqual(core_sources._usajobs_text("plain"), "plain")
+        self.assertEqual(core_sources._usajobs_text(["a", "b"]), "a b")
+        self.assertEqual(core_sources._usajobs_text({"Content": "boxed"}), "boxed")
+        self.assertEqual(core_sources._usajobs_text([{"Content": "a"}, "b"]), "a b")
+        self.assertEqual(core_sources._usajobs_text(None), "")
+        self.assertEqual(core_sources._usajobs_text(17), "")
 
     def test_usajobs_jobs_runs_each_query_with_its_own_filters(self):
         # The API ANDs its filters, and HiringPath combined with Keyword returns
@@ -590,8 +590,8 @@ class PipelineTests(unittest.TestCase):
             load_fixture("usajobs_search_page2.json"),
         ]
         with unittest.mock.patch.dict("os.environ", env, clear=True):
-            with unittest.mock.patch.object(pipeline, "_http_json", side_effect=pages) as mock_get:
-                jobs = pipeline.usajobs_jobs(source, ["intern", "student trainee"])
+            with unittest.mock.patch.object(core_sources, "_http_json", side_effect=pages) as mock_get:
+                jobs = core_sources.usajobs_jobs(source, ["intern", "student trainee"])
         queries = [
             dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(call.args[0]).query))
             for call in mock_get.call_args_list
@@ -627,8 +627,8 @@ class PipelineTests(unittest.TestCase):
             load_fixture("usajobs_search_page2.json"),
         ]
         with unittest.mock.patch.dict("os.environ", env, clear=True):
-            with unittest.mock.patch.object(pipeline, "_http_json", side_effect=pages) as mock_get:
-                jobs = pipeline.usajobs_jobs(source, ["intern", "student trainee"])
+            with unittest.mock.patch.object(core_sources, "_http_json", side_effect=pages) as mock_get:
+                jobs = core_sources.usajobs_jobs(source, ["intern", "student trainee"])
         # Two keywords x two pages each.
         self.assertEqual(mock_get.call_count, 4)
         queries = [
@@ -645,7 +645,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(queries[0]["JobCategoryCode"], "0899;0830")
         self.assertEqual(queries[0]["DatePosted"], "30")
         self.assertEqual(queries[0]["Fields"], "Full")
-        self.assertEqual(queries[0]["ResultsPerPage"], str(pipeline.USAJOBS_RESULTS_PER_PAGE))
+        self.assertEqual(queries[0]["ResultsPerPage"], str(core_sources.USAJOBS_RESULTS_PER_PAGE))
         # The same announcement matched both keywords but is stored once.
         self.assertEqual([job["external_id"] for job in jobs], ["111", "333"])
 
@@ -654,8 +654,8 @@ class PipelineTests(unittest.TestCase):
         env = {"USAJOBS_API_KEY": "test-key", "USAJOBS_CONTACT_EMAIL": "me@example.com"}
         empty = {"SearchResult": {"SearchResultItems": [], "UserArea": {"NumberOfPages": "9"}}}
         with unittest.mock.patch.dict("os.environ", env, clear=True):
-            with unittest.mock.patch.object(pipeline, "_http_json", return_value=empty) as mock_get:
-                jobs = pipeline.usajobs_jobs({"company": "USAJOBS"}, ["intern"])
+            with unittest.mock.patch.object(core_sources, "_http_json", return_value=empty) as mock_get:
+                jobs = core_sources.usajobs_jobs({"company": "USAJOBS"}, ["intern"])
         self.assertEqual(mock_get.call_count, 1)
         self.assertEqual(jobs, [])
 
@@ -665,7 +665,7 @@ class PipelineTests(unittest.TestCase):
                 {"LocationName": f"City {index}, Texas"} for index in range(10)
             ]
         }
-        location = pipeline._usajobs_location(descriptor)
+        location = core_sources._usajobs_location(descriptor)
         self.assertTrue(location.endswith("(+4 more)"))
         self.assertIn("City 0, Texas", location)
         self.assertNotIn("City 6, Texas", location)
@@ -684,7 +684,7 @@ class PipelineTests(unittest.TestCase):
             with unittest.mock.patch.dict(
                 "os.environ", {"USAJOBS_API_KEY": "from-shell"}, clear=True
             ):
-                pipeline.load_env_file(env_path)
+                core_config.load_env_file(env_path)
                 # A real environment variable stays authoritative.
                 self.assertEqual(os.environ["USAJOBS_API_KEY"], "from-shell")
                 self.assertEqual(os.environ["USAJOBS_CONTACT_EMAIL"], "quoted@example.com")
@@ -692,14 +692,14 @@ class PipelineTests(unittest.TestCase):
 
     def test_load_env_file_missing_file_is_not_an_error(self):
         with TemporaryDirectory() as tmp:
-            pipeline.load_env_file(Path(tmp) / "absent.env")
+            core_config.load_env_file(Path(tmp) / "absent.env")
 
     def test_import_emails_upserts_and_extracts_job_id(self):
         with TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "pipeline.db"
-            with unittest.mock.patch.object(pipeline, "DB_PATH", db_path):
-                conn = pipeline.connect()
-                count = pipeline.import_emails(conn, FIXTURES / "linkedin_emails_sample.json")
+            with unittest.mock.patch.object(paths, "DB_PATH", db_path):
+                conn = store.connect()
+                count = importers.import_emails(conn, FIXTURES / "linkedin_emails_sample.json")
                 self.assertEqual(count, 1)
                 row = conn.execute(
                     "SELECT source_key, external_id, posted_at, company, title FROM jobs"
@@ -713,9 +713,9 @@ class PipelineTests(unittest.TestCase):
     def test_import_discovered_normalizes_and_partitions_by_channel(self):
         with TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "pipeline.db"
-            with unittest.mock.patch.object(pipeline, "DB_PATH", db_path):
-                conn = pipeline.connect()
-                count = pipeline.import_discovered(
+            with unittest.mock.patch.object(paths, "DB_PATH", db_path):
+                conn = store.connect()
+                count = importers.import_discovered(
                     conn, FIXTURES / "discovered_jobs_sample.json"
                 )
                 # 7 records in, 4 skipped: unknown channel, badge-only title,
@@ -760,7 +760,7 @@ class PipelineTests(unittest.TestCase):
         score this posting.
         """
         blob = load_fixture("linkedin_job_detail.json")["sections"]["job_posting"]
-        parsed = pipeline.parse_linkedin_job_posting(blob)
+        parsed = importers.parse_linkedin_job_posting(blob)
 
         self.assertEqual(parsed["company"], "Neuralink")
         self.assertEqual(parsed["title"], "Mechanical Engineering Intern, Brain Interfaces")
@@ -785,12 +785,12 @@ class PipelineTests(unittest.TestCase):
         self.assertLess(len(description), len(blob) / 2)
 
     def test_parse_linkedin_job_posting_abstains_on_unrecognised_shape(self):
-        parsed = pipeline.parse_linkedin_job_posting("Some Company\n\nSome Title\n\nOn a Tuesday")
+        parsed = importers.parse_linkedin_job_posting("Some Company\n\nSome Title\n\nOn a Tuesday")
         # "On a Tuesday" is not a place, so location stays blank rather than
         # inheriting the out-of-region penalty on a bad guess.
         self.assertEqual(parsed["location"], "")
         self.assertEqual(parsed["description"], "")
-        self.assertEqual(pipeline.parse_linkedin_job_posting("")["company"], "")
+        self.assertEqual(importers.parse_linkedin_job_posting("")["company"], "")
 
     def test_import_discovered_derives_fields_from_raw_posting(self):
         with TemporaryDirectory() as tmp:
@@ -816,10 +816,10 @@ class PipelineTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            with unittest.mock.patch.object(pipeline, "DB_PATH", db_path):
-                conn = pipeline.connect()
-                with unittest.mock.patch.object(pipeline, "ROOT", Path(tmp)):
-                    count = pipeline.import_discovered(conn, payload)
+            with unittest.mock.patch.object(paths, "DB_PATH", db_path):
+                conn = store.connect()
+                with unittest.mock.patch.object(paths, "ROOT", Path(tmp)):
+                    count = importers.import_discovered(conn, payload)
                 self.assertEqual(count, 2)
                 rows = {
                     row["external_id"]: row
@@ -850,9 +850,9 @@ class PipelineTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "pipeline.db"
             payload = Path(tmp) / "second.json"
-            with unittest.mock.patch.object(pipeline, "DB_PATH", db_path):
-                conn = pipeline.connect()
-                pipeline.import_discovered(conn, FIXTURES / "discovered_jobs_sample.json")
+            with unittest.mock.patch.object(paths, "DB_PATH", db_path):
+                conn = store.connect()
+                importers.import_discovered(conn, FIXTURES / "discovered_jobs_sample.json")
                 payload.write_text(
                     json.dumps(
                         [
@@ -866,8 +866,8 @@ class PipelineTests(unittest.TestCase):
                     ),
                     encoding="utf-8",
                 )
-                with unittest.mock.patch.object(pipeline, "ROOT", Path(tmp)):
-                    pipeline.import_discovered(conn, payload)
+                with unittest.mock.patch.object(paths, "ROOT", Path(tmp)):
+                    importers.import_discovered(conn, payload)
 
                 active = dict(
                     conn.execute("SELECT company, active FROM jobs").fetchall()
@@ -884,10 +884,10 @@ class PipelineTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "pipeline.db"
             payload = Path(tmp) / "enrichment.json"
-            with unittest.mock.patch.object(pipeline, "DB_PATH", db_path):
-                conn = pipeline.connect()
-                existing = "x" * (pipeline.THIN_DESCRIPTION_CHARS + 50)
-                pipeline.upsert_jobs(
+            with unittest.mock.patch.object(paths, "DB_PATH", db_path):
+                conn = store.connect()
+                existing = "x" * (store.THIN_DESCRIPTION_CHARS + 50)
+                store.upsert_jobs(
                     conn,
                     "agent:linkedin",
                     "LinkedIn",
@@ -930,8 +930,8 @@ class PipelineTests(unittest.TestCase):
                     ),
                     encoding="utf-8",
                 )
-                with unittest.mock.patch.object(pipeline, "ROOT", Path(tmp)):
-                    updated = pipeline.enrich_descriptions(conn, payload)
+                with unittest.mock.patch.object(paths, "ROOT", Path(tmp)):
+                    updated = importers.enrich_descriptions(conn, payload)
                 self.assertEqual(updated, 1)
 
                 rows = {
@@ -948,8 +948,8 @@ class PipelineTests(unittest.TestCase):
                 # ...and richer existing text survives.
                 self.assertEqual(rows["Rich Co"]["description"], existing)
 
-                with unittest.mock.patch.object(pipeline, "ROOT", Path(tmp)):
-                    forced = pipeline.enrich_descriptions(conn, payload, force=True)
+                with unittest.mock.patch.object(paths, "ROOT", Path(tmp)):
+                    forced = importers.enrich_descriptions(conn, payload, force=True)
                 self.assertEqual(forced, 2)
                 self.assertEqual(
                     conn.execute(
@@ -974,25 +974,25 @@ class PipelineTests(unittest.TestCase):
 
     def test_repeat_import_keeps_enriched_description(self):
         """A later thin sweep must not undo `enrich` on a posting it rediscovers."""
-        enriched = "y" * (pipeline.THIN_DESCRIPTION_CHARS + 50)
+        enriched = "y" * (store.THIN_DESCRIPTION_CHARS + 50)
         with TemporaryDirectory() as tmp:
-            with unittest.mock.patch.object(pipeline, "DB_PATH", Path(tmp) / "pipeline.db"):
-                conn = pipeline.connect()
-                pipeline.upsert_jobs(conn, "agent:linkedin", "LinkedIn", [self._record()])
+            with unittest.mock.patch.object(paths, "DB_PATH", Path(tmp) / "pipeline.db"):
+                conn = store.connect()
+                store.upsert_jobs(conn, "agent:linkedin", "LinkedIn", [self._record()])
                 conn.execute(
                     "UPDATE jobs SET description=?, location=?", (enriched, "Austin, TX")
                 )
 
                 # The same posting comes back from a search sweep with no detail.
-                pipeline.upsert_jobs(conn, "agent:linkedin", "LinkedIn", [self._record()])
+                store.upsert_jobs(conn, "agent:linkedin", "LinkedIn", [self._record()])
 
                 row = conn.execute("SELECT description, location FROM jobs").fetchone()
                 self.assertEqual(row["description"], enriched)
                 self.assertEqual(row["location"], "Austin, TX")
 
                 # A substantive description from the source still wins.
-                fresh = "z" * (pipeline.THIN_DESCRIPTION_CHARS + 10)
-                pipeline.upsert_jobs(
+                fresh = "z" * (store.THIN_DESCRIPTION_CHARS + 10)
+                store.upsert_jobs(
                     conn, "agent:linkedin", "LinkedIn", [self._record(description=fresh)]
                 )
                 self.assertEqual(
@@ -1007,15 +1007,15 @@ class PipelineTests(unittest.TestCase):
         in every other city visible.
         """
         with TemporaryDirectory() as tmp:
-            with unittest.mock.patch.object(pipeline, "DB_PATH", Path(tmp) / "pipeline.db"):
-                conn = pipeline.connect()
+            with unittest.mock.patch.object(paths, "DB_PATH", Path(tmp) / "pipeline.db"):
+                conn = store.connect()
                 # The two Austin rows are formatted differently on purpose, so
                 # pass 1 cannot group them by fingerprint and the clustering in
                 # pass 2 is what has to resolve them.
                 for index, location in enumerate(
                     ["Boston, MA", "Austin, TX", "Austin, Texas, United States"], start=1
                 ):
-                    pipeline.upsert_jobs(
+                    store.upsert_jobs(
                         conn,
                         f"agent:linkedin{index}",
                         "LinkedIn",
@@ -1031,7 +1031,7 @@ class PipelineTests(unittest.TestCase):
                 conn.execute(
                     "UPDATE jobs SET status='applied' WHERE location='Boston, MA'"
                 )
-                pipeline.deduplicate(conn)
+                store.deduplicate(conn)
 
                 austin = conn.execute(
                     "SELECT id, duplicate_of FROM jobs WHERE location LIKE 'Austin%'"
@@ -1053,9 +1053,9 @@ class PipelineTests(unittest.TestCase):
         """A channel going quiet is exactly when retirement matters."""
         with TemporaryDirectory() as tmp:
             payload = Path(tmp) / "discovered.json"
-            with unittest.mock.patch.object(pipeline, "DB_PATH", Path(tmp) / "pipeline.db"):
-                conn = pipeline.connect()
-                pipeline.import_discovered(conn, FIXTURES / "discovered_jobs_sample.json")
+            with unittest.mock.patch.object(paths, "DB_PATH", Path(tmp) / "pipeline.db"):
+                conn = store.connect()
+                importers.import_discovered(conn, FIXTURES / "discovered_jobs_sample.json")
                 self.assertEqual(
                     conn.execute(
                         "SELECT COUNT(*) FROM jobs WHERE source_key='agent:exa' AND active=1"
@@ -1067,7 +1067,7 @@ class PipelineTests(unittest.TestCase):
                     json.dumps({"searched_channels": ["exa"], "postings": []}),
                     encoding="utf-8",
                 )
-                pipeline.import_discovered(conn, payload)
+                importers.import_discovered(conn, payload)
 
                 self.assertEqual(
                     conn.execute(
@@ -1088,15 +1088,15 @@ class PipelineTests(unittest.TestCase):
         """A blank location matches anything, so backfilling one can unhide a row."""
         with TemporaryDirectory() as tmp:
             payload = Path(tmp) / "enrichment.json"
-            with unittest.mock.patch.object(pipeline, "DB_PATH", Path(tmp) / "pipeline.db"):
-                conn = pipeline.connect()
-                pipeline.upsert_jobs(
+            with unittest.mock.patch.object(paths, "DB_PATH", Path(tmp) / "pipeline.db"):
+                conn = store.connect()
+                store.upsert_jobs(
                     conn,
                     "agent:exa",
                     "Exa",
                     [self._record(location="Austin, TX", description="a" * 300)],
                 )
-                pipeline.upsert_jobs(
+                store.upsert_jobs(
                     conn,
                     "agent:linkedin",
                     "LinkedIn",
@@ -1120,7 +1120,7 @@ class PipelineTests(unittest.TestCase):
                     ),
                     encoding="utf-8",
                 )
-                pipeline.enrich_descriptions(conn, payload)
+                importers.enrich_descriptions(conn, payload)
 
                 row = conn.execute(
                     "SELECT location, duplicate_of, fingerprint FROM jobs WHERE id=?",
@@ -1131,19 +1131,19 @@ class PipelineTests(unittest.TestCase):
                 self.assertIsNone(row["duplicate_of"])
                 self.assertEqual(
                     row["fingerprint"],
-                    pipeline.fingerprint("Acme", "Mechanical Engineering Intern", "Boston, MA"),
+                    text.fingerprint("Acme", "Mechanical Engineering Intern", "Boston, MA"),
                 )
                 conn.close()
 
     def test_display_path_falls_back_for_files_outside_the_project(self):
         with TemporaryDirectory() as tmp:
             outside = Path(tmp).resolve() / "discovered.json"
-            self.assertEqual(pipeline.display_path(outside), str(outside))
+            self.assertEqual(paths.display_path(outside), str(outside))
         # Built with Path rather than a literal "data/x.json": the relative
         # branch renders with the platform separator, so a hardcoded forward
         # slash asserts a POSIX detail the function never promised.
         self.assertEqual(
-            pipeline.display_path(pipeline.ROOT / "data" / "x.json"),
+            paths.display_path(paths.ROOT / "data" / "x.json"),
             str(Path("data") / "x.json"),
         )
 
@@ -1164,24 +1164,24 @@ class PipelineTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            with unittest.mock.patch.object(pipeline, "DB_PATH", Path(tmp) / "pipeline.db"):
-                conn = pipeline.connect()
-                self.assertEqual(pipeline.import_discovered(conn, payload), 1)
+            with unittest.mock.patch.object(paths, "DB_PATH", Path(tmp) / "pipeline.db"):
+                conn = store.connect()
+                self.assertEqual(importers.import_discovered(conn, payload), 1)
                 conn.close()
 
     # --- repost flagging ----------------------------------------------------
 
     def test_role_key_ignores_cohort_markers(self):
         self.assertEqual(
-            pipeline.role_key("Mechanical Engineering Intern (Summer 2027)"),
-            pipeline.role_key("Mechanical Engineering Intern [Fall 2026]"),
+            scoring.role_key("Mechanical Engineering Intern (Summer 2027)"),
+            scoring.role_key("Mechanical Engineering Intern [Fall 2026]"),
         )
         self.assertEqual(
-            pipeline.role_key("Design Intern 2027"), pipeline.role_key("Design Intern")
+            scoring.role_key("Design Intern 2027"), scoring.role_key("Design Intern")
         )
         # Genuinely different roles stay different.
         self.assertNotEqual(
-            pipeline.role_key("Mechanical Intern"), pipeline.role_key("Software Intern")
+            scoring.role_key("Mechanical Intern"), scoring.role_key("Software Intern")
         )
 
     def _repost_conn(self, rows):
@@ -1196,9 +1196,9 @@ class PipelineTests(unittest.TestCase):
         return conn
 
     def test_repost_flags_a_role_relisted_at_a_new_url(self):
-        recent = pipeline.now_iso()
+        recent = clock.now_iso()
         older = (
-            pipeline.datetime.now(pipeline.timezone.utc) - pipeline.timedelta(days=30)
+            datetime.now(timezone.utc) - timedelta(days=30)
         ).isoformat()
         conn = self._repost_conn(
             [
@@ -1206,7 +1206,7 @@ class PipelineTests(unittest.TestCase):
                 ("new", "Acme", "Mechanical Intern (Summer 2027)", "https://x/2", recent, 1),
             ]
         )
-        flags = pipeline.repost_flags(conn)
+        flags = scoring.repost_flags(conn)
         self.assertIn("new", flags)
         self.assertNotIn("old", flags)
         self.assertEqual(flags["new"][0], 2)
@@ -1214,44 +1214,44 @@ class PipelineTests(unittest.TestCase):
     def test_repost_ignores_two_terms_advertised_at_once(self):
         # Both live: a company advertising the same internship for two terms is
         # normal, and flagging it would be noise.
-        recent = pipeline.now_iso()
+        recent = clock.now_iso()
         conn = self._repost_conn(
             [
                 ("a", "Acme", "Mechanical Intern (Summer 2027)", "https://x/1", recent, 1),
                 ("b", "Acme", "Mechanical Intern (Fall 2027)", "https://x/2", recent, 1),
             ]
         )
-        self.assertEqual(pipeline.repost_flags(conn), {})
+        self.assertEqual(scoring.repost_flags(conn), {})
 
     def test_repost_ignores_the_same_posting_going_inactive_and_back(self):
         older = (
-            pipeline.datetime.now(pipeline.timezone.utc) - pipeline.timedelta(days=10)
+            datetime.now(timezone.utc) - timedelta(days=10)
         ).isoformat()
         # Same URL retired and relisted is one posting, not a repost.
         conn = self._repost_conn(
             [
                 ("old", "Acme", "Mechanical Intern", "https://x/1", older, 0),
-                ("new", "Acme", "Mechanical Intern", "https://x/1", pipeline.now_iso(), 1),
+                ("new", "Acme", "Mechanical Intern", "https://x/1", clock.now_iso(), 1),
             ]
         )
-        self.assertEqual(pipeline.repost_flags(conn), {})
+        self.assertEqual(scoring.repost_flags(conn), {})
 
     def test_repost_respects_the_window(self):
         ancient = (
-            pipeline.datetime.now(pipeline.timezone.utc) - pipeline.timedelta(days=200)
+            datetime.now(timezone.utc) - timedelta(days=200)
         ).isoformat()
         conn = self._repost_conn(
             [
                 ("old", "Acme", "Mechanical Intern", "https://x/1", ancient, 0),
-                ("new", "Acme", "Mechanical Intern", "https://x/2", pipeline.now_iso(), 1),
+                ("new", "Acme", "Mechanical Intern", "https://x/2", clock.now_iso(), 1),
             ]
         )
-        self.assertEqual(pipeline.repost_flags(conn), {})
+        self.assertEqual(scoring.repost_flags(conn), {})
 
     def test_repost_flag_is_reported_without_changing_the_score(self):
         with TemporaryDirectory() as tmp:
-            with unittest.mock.patch.object(pipeline, "DB_PATH", Path(tmp) / "pipeline.db"):
-                conn = pipeline.connect()
+            with unittest.mock.patch.object(paths, "DB_PATH", Path(tmp) / "pipeline.db"):
+                conn = store.connect()
                 record = {
                     "external_id": "1",
                     "company": "Acme",
@@ -1260,25 +1260,25 @@ class PipelineTests(unittest.TestCase):
                     "url": "https://x/1",
                     "description": "SolidWorks and CAD work.",
                 }
-                pipeline.upsert_jobs(conn, "greenhouse:acme", "Acme", [record])
+                store.upsert_jobs(conn, "greenhouse:acme", "Acme", [record])
                 profile = json.loads(
                     (
                         Path(__file__).resolve().parent / "fixtures" / "profile_student.json"
                     ).read_text(encoding="utf-8")
                 )
-                pipeline.score_all(conn, profile)
+                scoring.score_all(conn, profile)
                 baseline = conn.execute("SELECT score FROM jobs").fetchone()["score"]
 
                 # Retire it, then relist the same role at a new URL.
                 conn.execute(
                     "UPDATE jobs SET active=0, first_seen_at=?",
-                    ((pipeline.datetime.now(pipeline.timezone.utc)
-                      - pipeline.timedelta(days=20)).isoformat(),),
+                    ((datetime.now(timezone.utc)
+                      - timedelta(days=20)).isoformat(),),
                 )
-                pipeline.upsert_jobs(
+                store.upsert_jobs(
                     conn, "greenhouse:acme", "Acme", [{**record, "external_id": "2", "url": "https://x/2"}]
                 )
-                pipeline.score_all(conn, profile)
+                scoring.score_all(conn, profile)
                 row = conn.execute(
                     "SELECT score, score_explanation FROM jobs WHERE external_id='2'"
                 ).fetchone()
@@ -1323,25 +1323,25 @@ class PipelineTests(unittest.TestCase):
         return conn.execute("SELECT * FROM jobs").fetchone()
 
     def test_term_matches_job_requires_whole_words(self):
-        words = pipeline._job_keywords("We use Cadence for routing and layout.", "Engineer")
+        words = artifacts._job_keywords("We use Cadence for routing and layout.", "Engineer")
         # "CAD" must not match inside "cadence" -- substring matching would bold
         # much of the skills list on almost any posting.
-        self.assertFalse(pipeline.term_matches_job("CAD", words))
-        self.assertTrue(pipeline.term_matches_job("Cadence", words))
+        self.assertFalse(artifacts.term_matches_job("CAD", words))
+        self.assertTrue(artifacts.term_matches_job("Cadence", words))
         # Multi-word terms need every word present.
-        self.assertFalse(pipeline.term_matches_job("Fusion 360", words))
+        self.assertFalse(artifacts.term_matches_job("Fusion 360", words))
         self.assertTrue(
-            pipeline.term_matches_job("routing layout", words),
+            artifacts.term_matches_job("routing layout", words),
             "word order should not matter, only presence",
         )
-        self.assertFalse(pipeline.term_matches_job("", words))
+        self.assertFalse(artifacts.term_matches_job("", words))
 
     def test_resume_emphasises_only_matching_skills(self):
         job = self._job_row(
             "Mechanical Intern",
             "You will model parts in SolidWorks and iterate quickly on prototypes.",
         )
-        markup = pipeline.build_resume_html(self.RESUME, job)
+        markup = artifacts.build_resume_html(self.RESUME, job)
         self.assertIn('<span class="match">SolidWorks</span>', markup)
         # Present on the resume, absent from the posting: listed, never bolded.
         self.assertIn("Fusion 360", markup)
@@ -1351,18 +1351,18 @@ class PipelineTests(unittest.TestCase):
 
     def test_resume_orders_matching_skills_first(self):
         job = self._job_row("Intern", "Model parts in SolidWorks daily.")
-        markup = pipeline.build_resume_html(self.RESUME, job)
+        markup = artifacts.build_resume_html(self.RESUME, job)
         skills = re.search(r"<h2>Skills</h2>(.*?)</section>", markup, re.S).group(1)
         self.assertLess(skills.index("SolidWorks"), skills.index("Fusion 360"))
 
     def test_resume_without_a_job_emphasises_nothing(self):
-        markup = pipeline.build_resume_html(self.RESUME, None)
+        markup = artifacts.build_resume_html(self.RESUME, None)
         self.assertNotIn('class="match"', markup)
         self.assertIn("SolidWorks", markup)
 
     def test_resume_omits_empty_sections_rather_than_padding(self):
         sparse = {"name": "Test Student", "contact": {}, "education": [], "skills": {}}
-        markup = pipeline.build_resume_html(sparse, None)
+        markup = artifacts.build_resume_html(sparse, None)
         for heading in ("Experience", "Projects", "Skills", "Awards", "Summary"):
             self.assertNotIn(f"<h2>{heading}</h2>", markup)
 
@@ -1372,7 +1372,7 @@ class PipelineTests(unittest.TestCase):
             "contact": {"email": "a@b.c"},
             "skills": {"CAD": ["<img onerror=alert(1)>"]},
         }
-        markup = pipeline.build_resume_html(hostile, None)
+        markup = artifacts.build_resume_html(hostile, None)
         self.assertNotIn("<script>", markup)
         self.assertNotIn("<img onerror", markup)
         self.assertIn("&lt;script&gt;", markup)
@@ -1381,7 +1381,7 @@ class PipelineTests(unittest.TestCase):
         # A posting is untrusted input: it reaches the resume through the
         # tailoring path and must never be able to inject markup.
         job = self._job_row("Intern", "<script>alert(1)</script> SolidWorks", company="<b>Evil</b>")
-        markup = pipeline.build_resume_html(self.RESUME, job)
+        markup = artifacts.build_resume_html(self.RESUME, job)
         self.assertNotIn("<script>", markup)
 
     def test_cover_letter_marks_everything_it_cannot_know(self):
@@ -1389,7 +1389,7 @@ class PipelineTests(unittest.TestCase):
             "Mechanical Intern",
             "Experience with SolidWorks required. Currently pursuing a B.S. in engineering.",
         )
-        markup = pipeline.build_cover_letter_html(self.RESUME, job)
+        markup = artifacts.build_cover_letter_html(self.RESUME, job)
         self.assertIn("Acme Robotics", markup)
         self.assertIn("Mechanical Intern", markup)
         # Anything the tool cannot know is a visible TODO, never invented prose.
@@ -1402,7 +1402,7 @@ class PipelineTests(unittest.TestCase):
         job = self._job_row(
             "<script>alert(1)</script> Intern", "SolidWorks work.", company="<b>Evil</b> Corp"
         )
-        markup = pipeline.build_cover_letter_html(self.RESUME, job)
+        markup = artifacts.build_cover_letter_html(self.RESUME, job)
         self.assertNotIn("<script>", markup)
         self.assertNotIn("<b>Evil</b>", markup)
         self.assertIn("&lt;b&gt;Evil&lt;/b&gt; Corp", markup)
@@ -1411,17 +1411,17 @@ class PipelineTests(unittest.TestCase):
         job = self._job_row("Intern", "SolidWorks work.")
         job = dict(job)
         job["location"] = "Austin, Texas, United States; South San Francisco, California"
-        markup = pipeline.build_cover_letter_html(self.RESUME, job)
+        markup = artifacts.build_cover_letter_html(self.RESUME, job)
         self.assertIn("Austin, Texas, United States", markup)
         self.assertNotIn("South San Francisco", markup)
 
     def test_cover_letter_says_so_when_nothing_matches(self):
         job = self._job_row("Marketing Intern", "Run email campaigns and social ads.")
-        markup = pipeline.build_cover_letter_html(self.RESUME, job)
+        markup = artifacts.build_cover_letter_html(self.RESUME, job)
         self.assertIn("No skill in your resume.json matched", markup)
 
     def test_job_requirement_lines_picks_requirement_shaped_sentences(self):
-        lines = pipeline.job_requirement_lines(
+        lines = artifacts.job_requirement_lines(
             "About us: we build robots. Experience with SolidWorks and GD&T is required. "
             "Currently pursuing a degree in mechanical engineering. We offer free lunch."
         )
@@ -1431,7 +1431,7 @@ class PipelineTests(unittest.TestCase):
     def test_load_resume_points_at_the_example_when_absent(self):
         with TemporaryDirectory() as tmp:
             with self.assertRaises(SystemExit) as caught:
-                pipeline.load_resume(Path(tmp) / "resume.json")
+                artifacts.load_resume(Path(tmp) / "resume.json")
             self.assertIn("resume.example.json", str(caught.exception))
 
     def test_resume_example_renders(self):
@@ -1441,7 +1441,7 @@ class PipelineTests(unittest.TestCase):
                 encoding="utf-8"
             )
         )
-        markup = pipeline.build_resume_html(example, None)
+        markup = artifacts.build_resume_html(example, None)
         self.assertIn("<h2>Education</h2>", markup)
         self.assertIn("<h2>Skills</h2>", markup)
         # Placeholder entries are blank, so those sections drop out rather than
@@ -1453,7 +1453,7 @@ class PipelineTests(unittest.TestCase):
         # ImportError, which is exactly the state on a machine that never
         # installed the optional dependency.
         with unittest.mock.patch.dict(sys.modules, {"playwright.sync_api": None}):
-            self.assertFalse(pipeline.html_to_pdf(Path("x.html"), Path("x.pdf")))
+            self.assertFalse(artifacts.html_to_pdf(Path("x.html"), Path("x.pdf")))
 
     # --- console encoding ---------------------------------------------------
 
@@ -1490,7 +1490,7 @@ class PipelineTests(unittest.TestCase):
     # --- ATS board discovery ------------------------------------------------
 
     def test_slug_candidates_are_ordered_and_url_safe(self):
-        candidates = pipeline.slug_candidates("Firefly Aerospace")
+        candidates = discovery.slug_candidates("Firefly Aerospace")
         self.assertEqual(candidates[0], "fireflyaerospace")
         self.assertIn("firefly-aerospace", candidates)
         # Ashby boards are case-sensitive, so the CamelCase form is tried too.
@@ -1498,14 +1498,14 @@ class PipelineTests(unittest.TestCase):
         # The bare first word is a last resort, not a first guess.
         self.assertEqual(candidates[-1], "firefly")
         for candidate in candidates:
-            self.assertRegex(candidate, pipeline.DISCOVERY_SLUG_RE.pattern)
+            self.assertRegex(candidate, discovery.DISCOVERY_SLUG_RE.pattern)
 
     def test_slug_candidates_strip_unsafe_characters(self):
-        self.assertEqual(pipeline.slug_candidates(""), [])
-        self.assertEqual(pipeline.slug_candidates("!!!"), [])
+        self.assertEqual(discovery.slug_candidates(""), [])
+        self.assertEqual(discovery.slug_candidates("!!!"), [])
         # Nothing that could alter the shape of the request URL survives.
-        for candidate in pipeline.slug_candidates("Acme/../Robotics?x=1"):
-            self.assertRegex(candidate, pipeline.DISCOVERY_SLUG_RE.pattern)
+        for candidate in discovery.slug_candidates("Acme/../Robotics?x=1"):
+            self.assertRegex(candidate, discovery.DISCOVERY_SLUG_RE.pattern)
 
     def test_discover_ats_flags_a_board_belonging_to_another_company(self):
         """The impostor case config/sources.json warns about, in miniature.
@@ -1521,8 +1521,8 @@ class PipelineTests(unittest.TestCase):
                 "field": "token",
             }
         )
-        with unittest.mock.patch.dict(pipeline.DISCOVERY_VENDORS, {"greenhouse": probe}):
-            results = pipeline.discover_ats(
+        with unittest.mock.patch.dict(discovery.DISCOVERY_VENDORS, {"greenhouse": probe}):
+            results = discovery.discover_ats(
                 ["Archer Aviation"], sources, ["intern"], vendors=["greenhouse"]
             )
         self.assertEqual(results[0]["status"], "resolved")
@@ -1537,8 +1537,8 @@ class PipelineTests(unittest.TestCase):
                 "field": "token",
             }
         )
-        with unittest.mock.patch.dict(pipeline.DISCOVERY_VENDORS, {"greenhouse": probe}):
-            results = pipeline.discover_ats(
+        with unittest.mock.patch.dict(discovery.DISCOVERY_VENDORS, {"greenhouse": probe}):
+            results = discovery.discover_ats(
                 ["Firefly Aerospace"], sources, ["intern"], vendors=["greenhouse"]
             )
         # A corporate suffix is not a different company.
@@ -1552,8 +1552,8 @@ class PipelineTests(unittest.TestCase):
         probe = unittest.mock.Mock(
             return_value={"board_name": None, "titles": ["Design Intern"], "field": "board"}
         )
-        with unittest.mock.patch.dict(pipeline.DISCOVERY_VENDORS, {"ashby": probe}):
-            results = pipeline.discover_ats(["Base Power"], sources, ["intern"], vendors=["ashby"])
+        with unittest.mock.patch.dict(discovery.DISCOVERY_VENDORS, {"ashby": probe}):
+            results = discovery.discover_ats(["Base Power"], sources, ["intern"], vendors=["ashby"])
         # These APIs expose no company name, so identity cannot be settled here.
         self.assertEqual(results[0]["identity"], "unverified")
 
@@ -1563,8 +1563,8 @@ class PipelineTests(unittest.TestCase):
             "discovery_title_terms": ["intern"],
         }
         probe = unittest.mock.Mock()
-        with unittest.mock.patch.dict(pipeline.DISCOVERY_VENDORS, {"greenhouse": probe}):
-            results = pipeline.discover_ats(["SpaceX"], sources, ["intern"], vendors=["greenhouse"])
+        with unittest.mock.patch.dict(discovery.DISCOVERY_VENDORS, {"greenhouse": probe}):
+            results = discovery.discover_ats(["SpaceX"], sources, ["intern"], vendors=["greenhouse"])
         self.assertEqual(results[0]["status"], "already-configured")
         probe.assert_not_called()
 
@@ -1573,8 +1573,8 @@ class PipelineTests(unittest.TestCase):
         empty = unittest.mock.Mock(
             return_value={"board_name": "Ghost Co", "titles": [], "field": "token"}
         )
-        with unittest.mock.patch.dict(pipeline.DISCOVERY_VENDORS, {"greenhouse": empty}):
-            results = pipeline.discover_ats(
+        with unittest.mock.patch.dict(discovery.DISCOVERY_VENDORS, {"greenhouse": empty}):
+            results = discovery.discover_ats(
                 ["Ghost Co"], {"ats_sources": []}, ["intern"], vendors=["greenhouse"]
             )
         self.assertEqual(results[0]["status"], "unresolved")
@@ -1589,9 +1589,9 @@ class PipelineTests(unittest.TestCase):
             }
         )
         writer = unittest.mock.Mock()
-        with unittest.mock.patch.dict(pipeline.DISCOVERY_VENDORS, {"greenhouse": probe}):
-            with unittest.mock.patch.object(pipeline, "write_discovered_sources", writer):
-                pipeline.report_discovery(["Acme Robotics"], sources, write=False)
+        with unittest.mock.patch.dict(discovery.DISCOVERY_VENDORS, {"greenhouse": probe}):
+            with unittest.mock.patch.object(discovery, "write_discovered_sources", writer):
+                discovery.report_discovery(["Acme Robotics"], sources, write=False)
         writer.assert_not_called()
 
     def test_report_discovery_write_excludes_unconfirmed_identities(self):
@@ -1604,17 +1604,17 @@ class PipelineTests(unittest.TestCase):
             }
         )
         writer = unittest.mock.Mock()
-        with unittest.mock.patch.dict(pipeline.DISCOVERY_VENDORS, {"greenhouse": probe}):
-            with unittest.mock.patch.object(pipeline, "write_discovered_sources", writer):
-                pipeline.report_discovery(["Archer Aviation"], sources, write=True)
+        with unittest.mock.patch.dict(discovery.DISCOVERY_VENDORS, {"greenhouse": probe}):
+            with unittest.mock.patch.object(discovery, "write_discovered_sources", writer):
+                discovery.report_discovery(["Archer Aviation"], sources, write=True)
         # A mismatched board name must never be written, even with --write.
         writer.assert_not_called()
 
     def test_write_discovered_sources_defaults_to_the_local_overlay(self):
         with TemporaryDirectory() as tmp:
             local = Path(tmp) / "sources.local.json"
-            with unittest.mock.patch.object(pipeline, "SOURCES_LOCAL_PATH", local):
-                written = pipeline.write_discovered_sources(
+            with unittest.mock.patch.object(paths, "SOURCES_LOCAL_PATH", local):
+                written = discovery.write_discovered_sources(
                     [{"kind": "ashby", "company": "Base Power", "board": "base-power"}]
                 )
             self.assertEqual(written, local)
@@ -1646,8 +1646,8 @@ class PipelineTests(unittest.TestCase):
             "agent_discovery": {"linkedin": {"keywords": ["chemical engineering intern"]}},
             "manual_check_sources": [{"name": "NSF REU Directory"}, {"name": "My school portal"}],
         }
-        merged = pipeline.merge_sources(base, local)
-        by_key = {pipeline._source_merge_key(source): source for source in merged["ats_sources"]}
+        merged = core_config.merge_sources(base, local)
+        by_key = {core_config._source_merge_key(source): source for source in merged["ats_sources"]}
         self.assertEqual(merged["stale_after_days"], 3)
         self.assertEqual(len(merged["ats_sources"]), 4)
         self.assertEqual(by_key["greenhouse:spacex"]["note"], "retuned")
@@ -1670,7 +1670,7 @@ class PipelineTests(unittest.TestCase):
             "include_base_catalog": False,
             "ats_sources": [{"kind": "lever", "company": "Zipline", "site": "flyzipline"}],
         }
-        merged = pipeline.merge_sources(base, local)
+        merged = core_config.merge_sources(base, local)
         self.assertEqual([source["company"] for source in merged["ats_sources"]], ["Zipline"])
 
     def test_load_sources_without_an_overlay_is_the_catalog(self):
@@ -1678,7 +1678,7 @@ class PipelineTests(unittest.TestCase):
             base = Path(tmp) / "sources.json"
             base.write_text(json.dumps({"ats_sources": []}), encoding="utf-8")
             self.assertEqual(
-                pipeline.load_sources(base, Path(tmp) / "sources.local.json"), {"ats_sources": []}
+                core_config.load_sources(base, Path(tmp) / "sources.local.json"), {"ats_sources": []}
             )
 
     def test_doctor_does_not_ask_for_locations_when_regions_are_set(self):
@@ -1688,17 +1688,17 @@ class PipelineTests(unittest.TestCase):
         profile["preferred_locations"] = []
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            pipeline.doctor(profile, {"ats_sources": []})
+            reports.doctor(profile, {"ats_sources": []})
         self.assertNotIn("preferred_locations", output.getvalue())
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            pipeline.doctor({**profile, "regions": []}, {"ats_sources": []})
+            reports.doctor({**profile, "regions": []}, {"ats_sources": []})
         self.assertIn("preferred_locations", output.getvalue())
 
     def test_missing_profile_points_at_setup(self):
         with TemporaryDirectory() as tmp:
             with self.assertRaises(SystemExit) as raised:
-                pipeline.load_profile(Path(tmp) / "profile.json")
+                core_config.load_profile(Path(tmp) / "profile.json")
         self.assertIn("opportunity_app.setup init", str(raised.exception))
 
     def test_tracked_templates_are_valid_scoring_inputs(self):
@@ -1711,11 +1711,11 @@ class PipelineTests(unittest.TestCase):
             "location": "Anywhere, USA",
             "posted_at": None,
         }
-        score, reasons = pipeline.score_job(job, profile)
+        score, reasons = scoring.score_job(job, profile)
         self.assertTrue(0 <= score <= 100)
         overlay = json.loads((config / "sources.local.example.json").read_text(encoding="utf-8"))
         base = json.loads((config / "sources.json").read_text(encoding="utf-8"))
-        merged = pipeline.merge_sources(base, overlay)
+        merged = core_config.merge_sources(base, overlay)
         self.assertGreaterEqual(len(merged["ats_sources"]), len(base["ats_sources"]))
 
     def test_write_discovered_sources_preserves_the_rest_of_the_file(self):
@@ -1728,7 +1728,7 @@ class PipelineTests(unittest.TestCase):
                 "rejected_sources": {"note": "keep me"},
             }
             path.write_text(json.dumps(original, indent=2) + "\n", encoding="utf-8")
-            pipeline.write_discovered_sources(
+            discovery.write_discovered_sources(
                 [{"kind": "ashby", "company": "Base Power", "board": "base-power"}], path
             )
             written = json.loads(path.read_text(encoding="utf-8"))
@@ -1741,19 +1741,19 @@ class PipelineTests(unittest.TestCase):
     # --- description fingerprinting -----------------------------------------
 
     def test_fingerprint_text_skips_unusable_bodies(self):
-        self.assertEqual(pipeline.fingerprint_text(""), "")
-        self.assertEqual(pipeline.fingerprint_text("Too short to be useful."), "")
+        self.assertEqual(text.fingerprint_text(""), "")
+        self.assertEqual(text.fingerprint_text("Too short to be useful."), "")
         # Long enough by character count but a single token once normalized: an
         # unspaced body would otherwise hash to all zeros and then match every
         # other degenerate body at 1.0.
-        self.assertEqual(pipeline.fingerprint_text("一" * 400), "")
+        self.assertEqual(text.fingerprint_text("一" * 400), "")
 
     def test_fingerprint_text_is_stable_and_shaped(self):
-        value = pipeline.fingerprint_text(SAMPLE_JD)
+        value = text.fingerprint_text(SAMPLE_JD)
         self.assertRegex(value, r"^[0-9a-f]{16}$")
-        self.assertEqual(value, pipeline.fingerprint_text(SAMPLE_JD))
+        self.assertEqual(value, text.fingerprint_text(SAMPLE_JD))
         # HTML wrapping and entity noise must not change the fingerprint.
-        self.assertEqual(value, pipeline.fingerprint_text(f"<div><p>{SAMPLE_JD}</p></div>"))
+        self.assertEqual(value, text.fingerprint_text(f"<div><p>{SAMPLE_JD}</p></div>"))
 
     def test_fingerprint_similarity_separates_reposts_from_unrelated_roles(self):
         # An aggregator re-post: same requirements text, boilerplate tail added.
@@ -1768,25 +1768,25 @@ class PipelineTests(unittest.TestCase):
             "content calendar, and run monthly retrospectives on campaign performance."
         )
         self.assertGreaterEqual(
-            pipeline.fingerprint_similarity(
-                pipeline.fingerprint_text(SAMPLE_JD), pipeline.fingerprint_text(repost)
+            text.fingerprint_similarity(
+                text.fingerprint_text(SAMPLE_JD), text.fingerprint_text(repost)
             ),
-            pipeline.CROSSLIST_THRESHOLD,
+            text.CROSSLIST_THRESHOLD,
         )
         self.assertLess(
-            pipeline.fingerprint_similarity(
-                pipeline.fingerprint_text(SAMPLE_JD), pipeline.fingerprint_text(unrelated)
+            text.fingerprint_similarity(
+                text.fingerprint_text(SAMPLE_JD), text.fingerprint_text(unrelated)
             ),
-            pipeline.CROSSLIST_THRESHOLD,
+            text.CROSSLIST_THRESHOLD,
         )
-        self.assertEqual(pipeline.fingerprint_similarity("", "abc"), 0.0)
+        self.assertEqual(text.fingerprint_similarity("", "abc"), 0.0)
 
     def test_dedupe_links_aggregator_repost_by_description(self):
         body = SAMPLE_JD
         with TemporaryDirectory() as tmp:
-            with unittest.mock.patch.object(pipeline, "DB_PATH", Path(tmp) / "pipeline.db"):
-                conn = pipeline.connect()
-                pipeline.upsert_jobs(
+            with unittest.mock.patch.object(paths, "DB_PATH", Path(tmp) / "pipeline.db"):
+                conn = store.connect()
+                store.upsert_jobs(
                     conn,
                     "greenhouse:acme",
                     "Acme Robotics",
@@ -1804,7 +1804,7 @@ class PipelineTests(unittest.TestCase):
                 # Same posting via an aggregator: company restyled, title
                 # rewritten, location reformatted. Passes 1 and 2 both key on
                 # the company name, so only the body can reconcile these.
-                pipeline.upsert_jobs(
+                store.upsert_jobs(
                     conn,
                     "adzuna:austin-bay-mechanical",
                     "Adzuna",
@@ -1838,11 +1838,11 @@ class PipelineTests(unittest.TestCase):
     def test_dedupe_keeps_same_source_near_identical_reqs_separate(self):
         body = SAMPLE_JD
         with TemporaryDirectory() as tmp:
-            with unittest.mock.patch.object(pipeline, "DB_PATH", Path(tmp) / "pipeline.db"):
-                conn = pipeline.connect()
+            with unittest.mock.patch.object(paths, "DB_PATH", Path(tmp) / "pipeline.db"):
+                conn = store.connect()
                 # One employer posting two reqs off the same JD template is two
                 # real opportunities, not a duplicate.
-                pipeline.upsert_jobs(
+                store.upsert_jobs(
                     conn,
                     "greenhouse:acme",
                     "Acme Robotics",
@@ -1880,8 +1880,8 @@ class PipelineTests(unittest.TestCase):
         in the row -- not from the incoming payload.
         """
         with TemporaryDirectory() as tmp:
-            with unittest.mock.patch.object(pipeline, "DB_PATH", Path(tmp) / "pipeline.db"):
-                conn = pipeline.connect()
+            with unittest.mock.patch.object(paths, "DB_PATH", Path(tmp) / "pipeline.db"):
+                conn = store.connect()
                 record = {
                     "external_id": "1",
                     "company": "Acme Robotics",
@@ -1890,12 +1890,12 @@ class PipelineTests(unittest.TestCase):
                     "url": "https://boards.example/1",
                     "description": SAMPLE_JD,
                 }
-                pipeline.upsert_jobs(conn, "greenhouse:acme", "Acme", [record])
+                store.upsert_jobs(conn, "greenhouse:acme", "Acme", [record])
                 rich = conn.execute("SELECT content_fingerprint FROM jobs").fetchone()[0]
                 self.assertNotEqual(rich, "")
 
                 # The source now returns a stub for the same posting.
-                pipeline.upsert_jobs(
+                store.upsert_jobs(
                     conn, "greenhouse:acme", "Acme", [{**record, "description": "See website."}]
                 )
                 after = conn.execute(
@@ -1903,11 +1903,11 @@ class PipelineTests(unittest.TestCase):
                 ).fetchone()
                 self.assertEqual(after["content_fingerprint"], rich)
                 self.assertEqual(
-                    after["content_fingerprint"], pipeline.fingerprint_text(after["description"])
+                    after["content_fingerprint"], text.fingerprint_text(after["description"])
                 )
 
                 # And a genuinely richer refresh does move it.
-                pipeline.upsert_jobs(
+                store.upsert_jobs(
                     conn,
                     "greenhouse:acme",
                     "Acme",
@@ -1936,9 +1936,9 @@ class PipelineTests(unittest.TestCase):
             "This role is based on site and may require occasional weekend work. "
         )
         with TemporaryDirectory() as tmp:
-            with unittest.mock.patch.object(pipeline, "DB_PATH", Path(tmp) / "pipeline.db"):
-                conn = pipeline.connect()
-                pipeline.upsert_jobs(
+            with unittest.mock.patch.object(paths, "DB_PATH", Path(tmp) / "pipeline.db"):
+                conn = store.connect()
+                store.upsert_jobs(
                     conn,
                     "greenhouse:acme",
                     "Acme",
@@ -1953,7 +1953,7 @@ class PipelineTests(unittest.TestCase):
                         }
                     ],
                 )
-                pipeline.upsert_jobs(
+                store.upsert_jobs(
                     conn,
                     "ashby:beta",
                     "Beta Power",
@@ -1971,12 +1971,12 @@ class PipelineTests(unittest.TestCase):
                 rows = conn.execute(
                     "SELECT company, content_fingerprint, duplicate_of FROM jobs"
                 ).fetchall()
-                similarity = pipeline.fingerprint_similarity(
+                similarity = text.fingerprint_similarity(
                     rows[0]["content_fingerprint"], rows[1]["content_fingerprint"]
                 )
                 # Genuinely similar text -- this is the hard case, not a strawman.
                 self.assertGreater(similarity, 0.6)
-                self.assertLess(similarity, pipeline.CROSSLIST_THRESHOLD)
+                self.assertLess(similarity, text.CROSSLIST_THRESHOLD)
                 self.assertEqual([row["duplicate_of"] for row in rows], [None, None])
                 conn.close()
 
@@ -2006,13 +2006,13 @@ class PipelineTests(unittest.TestCase):
             legacy.commit()
             legacy.close()
 
-            with unittest.mock.patch.object(pipeline, "DB_PATH", db_path):
-                conn = pipeline.connect()
+            with unittest.mock.patch.object(paths, "DB_PATH", db_path):
+                conn = store.connect()
                 columns = {row["name"] for row in conn.execute("PRAGMA table_info(jobs)")}
                 self.assertIn("content_fingerprint", columns)
                 # Idempotent: opening again must not fail on a duplicate column.
                 conn.close()
-                conn = pipeline.connect()
+                conn = store.connect()
                 conn.close()
 
     # --- posting liveness ---------------------------------------------------
@@ -2021,7 +2021,7 @@ class PipelineTests(unittest.TestCase):
         # The banner uses U+2019 and an accented "expirée". A pattern spelled
         # with an ASCII apostrophe only matches because the body is normalized
         # first, which is the bug this guard exists for.
-        verdict = pipeline.classify_liveness(
+        verdict = liveness.classify_liveness(
             status=200,
             requested_url="https://example.com/jobs/1",
             final_url="https://example.com/jobs/1",
@@ -2031,7 +2031,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(verdict["code"], "expired_body")
 
     def test_liveness_filled_pattern_ignores_application_forms(self):
-        live = pipeline.classify_liveness(
+        live = liveness.classify_liveness(
             status=200,
             body_text=(
                 "This position is open. Once the application form has been filled out "
@@ -2042,7 +2042,7 @@ class PipelineTests(unittest.TestCase):
 
         # Same guard without the trailing "out" -- the preceding word is what
         # rules it out here.
-        still_live = pipeline.classify_liveness(
+        still_live = liveness.classify_liveness(
             status=200,
             body_text=(
                 "About this role. Once the application form has been filled we respond. "
@@ -2051,7 +2051,7 @@ class PipelineTests(unittest.TestCase):
         )
         self.assertNotEqual(still_live["result"], "expired")
 
-        dead = pipeline.classify_liveness(
+        dead = liveness.classify_liveness(
             status=200,
             body_text="The job you are trying to apply for has been filled. " + "x" * 400,
         )
@@ -2061,7 +2061,7 @@ class PipelineTests(unittest.TestCase):
         # A Cloudflare interstitial is short and has no apply control, so
         # without the ordering guard it would fall through to
         # insufficient_content and permanently retire a live posting.
-        verdict = pipeline.classify_liveness(
+        verdict = liveness.classify_liveness(
             status=200,
             body_text="Just a moment... Ray ID: 8f2b1c",
         )
@@ -2071,7 +2071,7 @@ class PipelineTests(unittest.TestCase):
     def test_liveness_treats_server_errors_as_uncertain(self):
         for status in (403, 500, 502, 503):
             with self.subTest(status=status):
-                verdict = pipeline.classify_liveness(status=status, body_text="502 Bad Gateway")
+                verdict = liveness.classify_liveness(status=status, body_text="502 Bad Gateway")
                 self.assertEqual(verdict["result"], "uncertain")
 
     def test_liveness_never_retires_a_posting_on_a_throttle(self):
@@ -2086,7 +2086,7 @@ class PipelineTests(unittest.TestCase):
 
         for body in ("Too Many Requests", "Rate limit exceeded. Please retry later.", ""):
             with self.subTest(body=body):
-                verdict = pipeline.classify_liveness(
+                verdict = liveness.classify_liveness(
                     status=429,
                     requested_url="https://example.com/jobs/1",
                     final_url="https://example.com/jobs/1",
@@ -2098,14 +2098,14 @@ class PipelineTests(unittest.TestCase):
     def test_liveness_gone_statuses_expire(self):
         for status in (404, 410):
             with self.subTest(status=status):
-                verdict = pipeline.classify_liveness(status=status, body_text="Not found")
+                verdict = liveness.classify_liveness(status=status, body_text="Not found")
                 self.assertEqual(verdict["result"], "expired")
                 self.assertEqual(verdict["code"], "http_gone")
 
     def test_liveness_ignores_apply_controls_after_redirect_off_posting(self):
         # A dead permalink that redirects to a listing page still renders Apply
         # buttons -- for other jobs. The lost job id is what gives it away.
-        verdict = pipeline.classify_liveness(
+        verdict = liveness.classify_liveness(
             status=200,
             requested_url="https://careers.example.com/job/1234567",
             final_url="https://careers.example.com/search",
@@ -2116,7 +2116,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(verdict["code"], "redirected_off_posting")
 
     def test_liveness_apply_control_marks_active(self):
-        verdict = pipeline.classify_liveness(
+        verdict = liveness.classify_liveness(
             status=200,
             requested_url="https://example.com/jobs/1234567",
             final_url="https://example.com/jobs/1234567",
@@ -2126,12 +2126,12 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(verdict["result"], "active")
 
     def test_liveness_thin_page_without_apply_control_expires(self):
-        verdict = pipeline.classify_liveness(status=200, body_text="Home About Careers")
+        verdict = liveness.classify_liveness(status=200, body_text="Home About Careers")
         self.assertEqual(verdict["result"], "expired")
         self.assertEqual(verdict["code"], "insufficient_content")
 
     def test_apply_controls_reads_buttons_anchors_and_unclosed_tags(self):
-        controls = pipeline.apply_controls(
+        controls = text.apply_controls(
             '<a href="/x">Apply now</a>'
             '<input type="submit" value="Submit application">'
             '<button aria-label="Easy Apply"></button>'
@@ -2145,9 +2145,9 @@ class PipelineTests(unittest.TestCase):
 
     def test_check_liveness_retires_dead_rows_but_protects_applied_ones(self):
         with TemporaryDirectory() as tmp:
-            with unittest.mock.patch.object(pipeline, "DB_PATH", Path(tmp) / "pipeline.db"):
-                conn = pipeline.connect()
-                pipeline.upsert_jobs(
+            with unittest.mock.patch.object(paths, "DB_PATH", Path(tmp) / "pipeline.db"):
+                conn = store.connect()
+                store.upsert_jobs(
                     conn,
                     "agent:exa",
                     "Agent: Exa semantic search",
@@ -2175,8 +2175,8 @@ class PipelineTests(unittest.TestCase):
                 def fake_request_text(url, retries=2):
                     return 404, url, "Not found"
 
-                with unittest.mock.patch.object(pipeline, "request_text", fake_request_text):
-                    tally = pipeline.check_liveness(conn)
+                with unittest.mock.patch.object(liveness, "request_text", fake_request_text):
+                    tally = liveness.check_liveness(conn)
 
                 self.assertEqual(tally["expired"], 2)
                 self.assertEqual(tally["retired"], 1)
@@ -2201,9 +2201,9 @@ class PipelineTests(unittest.TestCase):
             }
 
         with TemporaryDirectory() as tmp:
-            with unittest.mock.patch.object(pipeline, "DB_PATH", Path(tmp) / "pipeline.db"):
-                conn = pipeline.connect()
-                pipeline.upsert_jobs(
+            with unittest.mock.patch.object(paths, "DB_PATH", Path(tmp) / "pipeline.db"):
+                conn = store.connect()
+                store.upsert_jobs(
                     conn,
                     "agent:exa",
                     "Agent: Exa semantic search",
@@ -2226,11 +2226,11 @@ class PipelineTests(unittest.TestCase):
                     "UPDATE jobs SET status='shortlisted' WHERE external_id='shortlisted-retired'"
                 )
 
-                preview = pipeline.purge_expired(conn, today="2026-09-14", dry_run=True)
+                preview = retention.purge_expired(conn, today="2026-09-14", dry_run=True)
                 self.assertEqual(preview["deleted"], 0)
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 7)
 
-                tally = pipeline.purge_expired(conn, today="2026-09-14")
+                tally = retention.purge_expired(conn, today="2026-09-14")
                 remaining = {
                     row["external_id"] for row in conn.execute("SELECT external_id FROM jobs")
                 }
@@ -2253,22 +2253,22 @@ class PipelineTests(unittest.TestCase):
         }
         with TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "pipeline.db"
-            with unittest.mock.patch.object(pipeline, "DB_PATH", db_path):
-                conn = pipeline.connect()
-                pipeline.upsert_jobs(conn, "agent:exa", "Agent: Exa semantic search", [record])
+            with unittest.mock.patch.object(paths, "DB_PATH", db_path):
+                conn = store.connect()
+                store.upsert_jobs(conn, "agent:exa", "Agent: Exa semantic search", [record])
                 conn.execute("UPDATE jobs SET active=0")
                 conn.commit()
                 backups = Path(tmp) / "backups"
 
-                pipeline.purge_expired(conn, today="2026-09-14", dry_run=True)
+                retention.purge_expired(conn, today="2026-09-14", dry_run=True)
                 self.assertFalse(backups.exists(), "a dry run must not write a backup")
 
-                with unittest.mock.patch.object(pipeline, "backup_sqlite", side_effect=OSError("disk full")):
+                with unittest.mock.patch.object(retention, "backup_sqlite", side_effect=OSError("disk full")):
                     with self.assertRaises(OSError):
-                        pipeline.purge_expired(conn, today="2026-09-14")
+                        retention.purge_expired(conn, today="2026-09-14")
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 1)
 
-                tally = pipeline.purge_expired(conn, today="2026-09-14")
+                tally = retention.purge_expired(conn, today="2026-09-14")
                 self.assertEqual(tally["deleted"], 1)
                 snapshots = list(backups.glob("pipeline-*.db"))
                 self.assertEqual(len(snapshots), 1)
@@ -2293,14 +2293,14 @@ class PipelineTests(unittest.TestCase):
                 manual = Path(tmp) / "backups" / "pipeline-20260914-pre-purge.db"
                 manual.parent.mkdir()
                 manual.write_bytes(b"hand-made backup")
-                created = [pipeline.backup_sqlite(conn, "pipeline", keep=3) for _ in range(5)]
+                created = [retention.backup_sqlite(conn, "pipeline", keep=3) for _ in range(5)]
             finally:
                 conn.close()
             remaining = sorted((Path(tmp) / "backups").glob("pipeline-*.db"))
             self.assertEqual(remaining, sorted([manual, *created[-3:]]), "manual backups are never pruned")
             memory = sqlite3.connect(":memory:")
             try:
-                self.assertIsNone(pipeline.backup_sqlite(memory, "memory"))
+                self.assertIsNone(retention.backup_sqlite(memory, "memory"))
             finally:
                 memory.close()
 
@@ -2319,8 +2319,8 @@ class PipelineTests(unittest.TestCase):
             try:
                 conn.execute("CREATE TABLE t(x)")
                 conn.commit()
-                with unittest.mock.patch.object(pipeline, "datetime", Clock):
-                    created = [pipeline.backup_sqlite(conn, "pipeline", keep=keep) for _ in clock_times]
+                with unittest.mock.patch.object(retention, "datetime", Clock):
+                    created = [retention.backup_sqlite(conn, "pipeline", keep=keep) for _ in clock_times]
                 kept = sorted((tmp / "backups").glob("pipeline-*.db"))
                 return created, kept, [path.exists() for path in created]
             finally:
@@ -2357,15 +2357,15 @@ class PipelineTests(unittest.TestCase):
             "description": SAMPLE_JD,
         }
         with TemporaryDirectory() as tmp:
-            with unittest.mock.patch.object(pipeline, "DB_PATH", Path(tmp) / "pipeline.db"):
-                conn = pipeline.connect()
-                pipeline.upsert_jobs(
+            with unittest.mock.patch.object(paths, "DB_PATH", Path(tmp) / "pipeline.db"):
+                conn = store.connect()
+                store.upsert_jobs(
                     conn,
                     "agent:exa",
                     "Agent: Exa semantic search",
                     [{**record, "external_id": "a", "url": "https://agent.example/1"}],
                 )
-                pipeline.upsert_jobs(
+                store.upsert_jobs(
                     conn,
                     "greenhouse:acme",
                     "Acme Robotics",
@@ -2384,8 +2384,8 @@ class PipelineTests(unittest.TestCase):
                     # Only the canonical's page is gone.
                     return (404, url, "Not found") if url == canonical["url"] else (200, url, "x" * 500)
 
-                with unittest.mock.patch.object(pipeline, "request_text", fake_request_text):
-                    pipeline.check_liveness(conn, check_all=True)
+                with unittest.mock.patch.object(liveness, "request_text", fake_request_text):
+                    liveness.check_liveness(conn, check_all=True)
 
                 survivors = conn.execute(
                     "SELECT id FROM jobs WHERE active=1 AND duplicate_of IS NULL"
@@ -2397,7 +2397,7 @@ class PipelineTests(unittest.TestCase):
                 conn.close()
 
     def _one_agent_row(self, conn, source_key="agent:exa", status=None):
-        pipeline.upsert_jobs(
+        store.upsert_jobs(
             conn,
             source_key,
             "Agent",
@@ -2427,16 +2427,16 @@ class PipelineTests(unittest.TestCase):
             with self.subTest(source_key=source_key):
                 with TemporaryDirectory() as tmp:
                     with unittest.mock.patch.object(
-                        pipeline, "DB_PATH", Path(tmp) / "pipeline.db"
+                        paths, "DB_PATH", Path(tmp) / "pipeline.db"
                     ):
-                        conn = pipeline.connect()
+                        conn = store.connect()
                         self._one_agent_row(conn, source_key)
 
                         def thin(url, retries=2):
                             return 200, url, "<div id='root'></div>"
 
-                        with unittest.mock.patch.object(pipeline, "request_text", thin):
-                            tally = pipeline.check_liveness(conn)
+                        with unittest.mock.patch.object(liveness, "request_text", thin):
+                            tally = liveness.check_liveness(conn)
                         self.assertEqual(tally["retired"], 0)
                         self.assertEqual(tally["uncertain"], 1)
                         self.assertEqual(
@@ -2448,13 +2448,13 @@ class PipelineTests(unittest.TestCase):
         # The downgrade is scoped to the weak heuristic only. A 404 is still a
         # 404 no matter how the posting was imported.
         with TemporaryDirectory() as tmp:
-            with unittest.mock.patch.object(pipeline, "DB_PATH", Path(tmp) / "pipeline.db"):
-                conn = pipeline.connect()
+            with unittest.mock.patch.object(paths, "DB_PATH", Path(tmp) / "pipeline.db"):
+                conn = store.connect()
                 self._one_agent_row(conn, "agent:jina")
                 with unittest.mock.patch.object(
-                    pipeline, "request_text", lambda url, retries=2: (404, url, "Gone")
+                    liveness, "request_text", lambda url, retries=2: (404, url, "Gone")
                 ):
-                    tally = pipeline.check_liveness(conn)
+                    tally = liveness.check_liveness(conn)
                 self.assertEqual(tally["retired"], 1)
                 conn.close()
 
@@ -2465,18 +2465,18 @@ class PipelineTests(unittest.TestCase):
         rows that can never resolve would monopolise every future run.
         """
         with TemporaryDirectory() as tmp:
-            with unittest.mock.patch.object(pipeline, "DB_PATH", Path(tmp) / "pipeline.db"):
-                conn = pipeline.connect()
+            with unittest.mock.patch.object(paths, "DB_PATH", Path(tmp) / "pipeline.db"):
+                conn = store.connect()
                 self._one_agent_row(conn)
                 conn.execute("UPDATE jobs SET last_seen_at='2020-01-01T00:00:00+00:00'")
                 conn.commit()
 
                 with unittest.mock.patch.object(
-                    pipeline,
+                    liveness,
                     "request_text",
                     lambda url, retries=2: (200, url, "Just a moment... Ray ID: 1"),
                 ):
-                    tally = pipeline.check_liveness(conn)
+                    tally = liveness.check_liveness(conn)
 
                 self.assertEqual(tally["uncertain"], 1)
                 self.assertGreater(
@@ -2487,13 +2487,13 @@ class PipelineTests(unittest.TestCase):
 
     def test_liveness_shortlisted_postings_are_reported_but_kept(self):
         with TemporaryDirectory() as tmp:
-            with unittest.mock.patch.object(pipeline, "DB_PATH", Path(tmp) / "pipeline.db"):
-                conn = pipeline.connect()
+            with unittest.mock.patch.object(paths, "DB_PATH", Path(tmp) / "pipeline.db"):
+                conn = store.connect()
                 self._one_agent_row(conn, status="shortlisted")
                 with unittest.mock.patch.object(
-                    pipeline, "request_text", lambda url, retries=2: (404, url, "Gone")
+                    liveness, "request_text", lambda url, retries=2: (404, url, "Gone")
                 ):
-                    tally = pipeline.check_liveness(conn)
+                    tally = liveness.check_liveness(conn)
                 self.assertEqual(tally["expired"], 1)
                 # You picked this one deliberately; it must not vanish silently.
                 self.assertEqual(tally["retired"], 0)
@@ -2503,9 +2503,9 @@ class PipelineTests(unittest.TestCase):
     def test_liveness_commits_each_row_so_a_later_crash_keeps_earlier_work(self):
         with TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "pipeline.db"
-            with unittest.mock.patch.object(pipeline, "DB_PATH", db_path):
-                conn = pipeline.connect()
-                pipeline.upsert_jobs(
+            with unittest.mock.patch.object(paths, "DB_PATH", db_path):
+                conn = store.connect()
+                store.upsert_jobs(
                     conn,
                     "agent:exa",
                     "Agent",
@@ -2529,14 +2529,14 @@ class PipelineTests(unittest.TestCase):
                         raise KeyboardInterrupt("interrupted mid-run")
                     return 404, url, "Gone"
 
-                with unittest.mock.patch.object(pipeline, "request_text", flaky):
+                with unittest.mock.patch.object(liveness, "request_text", flaky):
                     with self.assertRaises(KeyboardInterrupt):
-                        pipeline.check_liveness(conn)
+                        liveness.check_liveness(conn)
                 conn.close()
 
                 # Reopening proves the first row's retirement was durable, not
                 # rolled back with the interrupted transaction.
-                reopened = pipeline.connect()
+                reopened = store.connect()
                 retired = reopened.execute(
                     "SELECT COUNT(*) c FROM jobs WHERE active=0"
                 ).fetchone()["c"]
@@ -2545,9 +2545,9 @@ class PipelineTests(unittest.TestCase):
 
     def test_check_liveness_skips_ats_rows_by_default(self):
         with TemporaryDirectory() as tmp:
-            with unittest.mock.patch.object(pipeline, "DB_PATH", Path(tmp) / "pipeline.db"):
-                conn = pipeline.connect()
-                pipeline.upsert_jobs(
+            with unittest.mock.patch.object(paths, "DB_PATH", Path(tmp) / "pipeline.db"):
+                conn = store.connect()
+                store.upsert_jobs(
                     conn,
                     "greenhouse:spacex",
                     "SpaceX",
@@ -2568,21 +2568,21 @@ class PipelineTests(unittest.TestCase):
                     calls.append(url)
                     return 404, url, "Not found"
 
-                with unittest.mock.patch.object(pipeline, "request_text", fake_request_text):
-                    pipeline.check_liveness(conn)
+                with unittest.mock.patch.object(liveness, "request_text", fake_request_text):
+                    liveness.check_liveness(conn)
                 # The Greenhouse batch already retires its own rows.
                 self.assertEqual(calls, [])
 
-                with unittest.mock.patch.object(pipeline, "request_text", fake_request_text):
-                    pipeline.check_liveness(conn, check_all=True)
+                with unittest.mock.patch.object(liveness, "request_text", fake_request_text):
+                    liveness.check_liveness(conn, check_all=True)
                 self.assertEqual(len(calls), 1)
                 conn.close()
 
     def test_check_liveness_dry_run_changes_nothing(self):
         with TemporaryDirectory() as tmp:
-            with unittest.mock.patch.object(pipeline, "DB_PATH", Path(tmp) / "pipeline.db"):
-                conn = pipeline.connect()
-                pipeline.upsert_jobs(
+            with unittest.mock.patch.object(paths, "DB_PATH", Path(tmp) / "pipeline.db"):
+                conn = store.connect()
+                store.upsert_jobs(
                     conn,
                     "agent:exa",
                     "Agent: Exa semantic search",
@@ -2601,8 +2601,8 @@ class PipelineTests(unittest.TestCase):
                 def fake_request_text(url, retries=2):
                     return 404, url, "Not found"
 
-                with unittest.mock.patch.object(pipeline, "request_text", fake_request_text):
-                    tally = pipeline.check_liveness(conn, dry_run=True)
+                with unittest.mock.patch.object(liveness, "request_text", fake_request_text):
+                    tally = liveness.check_liveness(conn, dry_run=True)
 
                 self.assertEqual(tally["expired"], 1)
                 self.assertEqual(tally["retired"], 0)
@@ -2613,9 +2613,9 @@ class PipelineTests(unittest.TestCase):
 
     def test_check_liveness_request_failure_never_retires(self):
         with TemporaryDirectory() as tmp:
-            with unittest.mock.patch.object(pipeline, "DB_PATH", Path(tmp) / "pipeline.db"):
-                conn = pipeline.connect()
-                pipeline.upsert_jobs(
+            with unittest.mock.patch.object(paths, "DB_PATH", Path(tmp) / "pipeline.db"):
+                conn = store.connect()
+                store.upsert_jobs(
                     conn,
                     "agent:exa",
                     "Agent: Exa semantic search",
@@ -2634,8 +2634,8 @@ class PipelineTests(unittest.TestCase):
                 def fake_request_text(url, retries=2):
                     raise RuntimeError("network down")
 
-                with unittest.mock.patch.object(pipeline, "request_text", fake_request_text):
-                    tally = pipeline.check_liveness(conn)
+                with unittest.mock.patch.object(liveness, "request_text", fake_request_text):
+                    tally = liveness.check_liveness(conn)
 
                 self.assertEqual(tally["error"], 1)
                 self.assertEqual(tally["retired"], 0)

@@ -303,10 +303,10 @@ BOARDS_LOCAL: Path | None = None
 
 
 def _board_lookup(companies, config, terms):
-    import pipeline
+    from pipeline_core import discovery
 
-    with mock.patch.dict(pipeline.DISCOVERY_VENDORS, BOARD_PROBES):
-        return pipeline.discover_ats(companies, config, terms)
+    with mock.patch.dict(discovery.DISCOVERY_VENDORS, BOARD_PROBES):
+        return discovery.discover_ats(companies, config, terms)
 
 
 def board_tracker(root: Path) -> BoardTracker:

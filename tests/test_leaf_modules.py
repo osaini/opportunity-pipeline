@@ -555,14 +555,28 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=ROOT, check=True)
         self.assertEqual(done.stdout.strip(), "False")
 
-    def test_only_the_legacy_adapter_imports_pipeline(self):
+    def test_only_the_legacy_adapter_imports_the_legacy_pipeline(self):
+        # pipeline.py is split into these pipeline_core modules; the web app reaches them through opportunity_app/legacy.py.
+        # (identity, regions, env, visibility and read_model are shared leaves, not part of the legacy door.)
+        split = {
+            "paths", "clock", "config", "text", "http", "sources", "store", "liveness", "retention", "discovery", "fetch",
+            "importers", "scoring", "reports", "artifacts", "cli",
+        }
         offenders = []
         for path in sorted((ROOT / "opportunity_app").rglob("*.py")):
             if path.name == "legacy.py":
                 continue
-            if "pipeline" in all_imports(path):
-                offenders.append(path.name)
-        self.assertEqual(offenders, [], "web modules must import pipeline names through opportunity_app.legacy")
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
+                names = []
+                if isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and not node.level:
+                    names = [node.module or ""] + [f"{node.module}.{alias.name}" for alias in node.names]
+                for name in names:
+                    parts = name.split(".")
+                    if parts[0] == "pipeline" or (parts[0] == "pipeline_core" and len(parts) > 1 and parts[1] in split):
+                        offenders.append(f"{path.name}: {name}")
+        self.assertEqual(offenders, [], "web modules must import the legacy pipeline through opportunity_app.legacy")
 
     def test_the_regions_moved_to_pipeline_core_still_bucket_locations(self):
         from pipeline_core.regions import match_region, region_label
@@ -577,8 +591,8 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
     def test_env_lines_share_one_rule_and_differ_only_in_how_the_caller_treats_repeats(self):
         import os
 
-        import pipeline
         from opportunity_app import setup
+        from pipeline_core import config
         from pipeline_core.env import iter_env_pairs
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -592,12 +606,12 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
             )
             # setup.read_env keeps the last line of a repeated key and an empty key ...
             self.assertEqual(setup.read_env(path), {"A": "again", "B": "two", "": "orphan", "C": "'mixed\"", "D": ""})
-            # ... pipeline.load_env_file keeps the first and drops an empty key, and never overrides a real variable.
+            # ... config.load_env_file keeps the first and drops an empty key, and never overrides a real variable.
             names = ("A", "B", "C", "D")
             saved = {name: os.environ.pop(name, None) for name in names}
             try:
                 os.environ["B"] = "from the shell"
-                pipeline.load_env_file(path)
+                config.load_env_file(path)
                 self.assertEqual([os.environ.get(name) for name in names], ["one", "from the shell", "'mixed\"", ""])
                 self.assertNotIn("", os.environ)
             finally:
@@ -610,56 +624,57 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
     def test_imported_posting_ids_keep_linkedin_ids_except_for_the_manual_csv(self):
         import hashlib
 
-        import pipeline
+        from pipeline_core import importers
+        from pipeline_core.text import canonical_url
 
         url = "https://www.linkedin.com/jobs/view/3912345678/?trackingId=abc"
-        hashed = hashlib.sha256(pipeline.canonical_url(url).encode("utf-8")).hexdigest()[:20]
-        self.assertEqual(pipeline.url_external_id(url, linkedin_ids=True), "3912345678")
-        self.assertEqual(pipeline.url_external_id(url, linkedin_ids=False), hashed)
+        hashed = hashlib.sha256(canonical_url(url).encode("utf-8")).hexdigest()[:20]
+        self.assertEqual(importers.url_external_id(url, linkedin_ids=True), "3912345678")
+        self.assertEqual(importers.url_external_id(url, linkedin_ids=False), hashed)
         other = "https://boards.example.test/jobs/1"
         self.assertEqual(
-            pipeline.url_external_id(other, linkedin_ids=True), pipeline.url_external_id(other, linkedin_ids=False),
+            importers.url_external_id(other, linkedin_ids=True), importers.url_external_id(other, linkedin_ids=False),
         )
 
     def test_source_key_keeps_its_keyerror_that_system_status_relies_on(self):
-        import pipeline
+        from pipeline_core import config
 
-        self.assertEqual(pipeline.source_key({"kind": "greenhouse", "token": "acme"}), "greenhouse:acme")
-        self.assertEqual(pipeline.source_key({"kind": "workday", "tenant": "t", "site": "s"}), "workday:t:s")
+        self.assertEqual(config.source_key({"kind": "greenhouse", "token": "acme"}), "greenhouse:acme")
+        self.assertEqual(config.source_key({"kind": "workday", "tenant": "t", "site": "s"}), "workday:t:s")
         with self.assertRaises(KeyError):
-            pipeline.source_key({"token": "acme"})
+            config.source_key({"token": "acme"})
         # The merge key is the same string lowercased; its .get("kind", "") never helps, since source_identity needs kind too.
-        self.assertEqual(pipeline._source_merge_key({"kind": "Greenhouse", "token": "ACME"}), "greenhouse:acme")
+        self.assertEqual(config._source_merge_key({"kind": "Greenhouse", "token": "ACME"}), "greenhouse:acme")
         with self.assertRaises(KeyError):
-            pipeline._source_merge_key({"token": "acme"})
+            config._source_merge_key({"token": "acme"})
 
     def test_pipeline_connect_takes_a_path_and_defaults_to_the_module_path_read_at_call_time(self):
         import sqlite3
 
-        import pipeline
+        from pipeline_core import paths, store
 
         with tempfile.TemporaryDirectory() as tmp:
             explicit = Path(tmp) / "nested" / "explicit.db"
-            pipeline.connect(explicit).close()
+            store.connect(explicit).close()
             self.assertTrue(explicit.is_file())
             default = Path(tmp) / "default.db"
-            with mock.patch.object(pipeline, "DB_PATH", default):
-                pipeline.connect().close()
+            with mock.patch.object(paths, "DB_PATH", default):
+                store.connect().close()
             self.assertTrue(default.is_file())
             with closing(sqlite3.connect(explicit)) as conn:
                 tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertIn("jobs", tables)
 
     def test_legacy_create_database_does_not_move_the_global_db_path(self):
-        import pipeline
         from opportunity_app import legacy
+        from pipeline_core import paths
 
-        before = pipeline.DB_PATH
+        before = paths.DB_PATH
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "data" / "pipeline.db"
             legacy.create_database(target)
             self.assertTrue(target.is_file())
-        self.assertEqual(pipeline.DB_PATH, before)
+        self.assertEqual(paths.DB_PATH, before)
 
     def test_one_ruleset_version_constant_backs_every_fit_score_read_and_write(self):
         from opportunity_app import legacy_sync, schema
