@@ -54,7 +54,7 @@ from .outreach import (
     update_target,
     website_domain,
 )
-from .outreach_drafting import sender_account
+from .outreach_config import sender_account
 from .outreach_gmail import (
     IN_PROGRESS,
     SendConflictError,

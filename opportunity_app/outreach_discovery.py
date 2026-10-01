@@ -55,6 +55,7 @@ from .outreach import (
     location_usable,
     website_domain,
 )
+from .outreach_config import discovery_provider
 from .outreach_contacts import apply_choice, choose_contact, find_contacts, list_candidates
 from .outreach_drafting import outreach_proof
 from .outreach_profile import SecUnavailableError, form_d_lookup, record_form_d, render_site_location, sec_fetcher
@@ -841,7 +842,7 @@ class DiscoveryManager(SingleFlightManager):
 
     def start(self, *, user_id: str, scopes: list[str] | None = None) -> dict[str, Any]:
         def run() -> dict[str, Any]:
-            runner = self._runner or RUNNERS.get((os.environ.get("PIPELINE_OUTREACH_DISCOVERY_PROVIDER") or "claude-code"), claude_runner)
+            runner = self._runner or RUNNERS.get(discovery_provider(), claude_runner)
             with ExitStack() as stack:
                 conn = stack.enter_context(closing(connect_product(self.platform_target)))
                 fetcher = stack.enter_context(self._client_factory())

@@ -26,7 +26,7 @@ from fastapi.testclient import TestClient
 from opportunity_app import STATIC_DIR, automation, outreach, outreach_delivery, outreach_inbox, outreach_thank_you
 from opportunity_app.api import create_app
 from opportunity_app.outreach import greeting_line
-from opportunity_app.outreach_drafting import resolve_provider
+from opportunity_app.outreach_config import resolve_provider
 from opportunity_app.outreach_gmail import THANK_YOU_KIND, send_thank_you, thank_you_row
 from opportunity_app.outreach_schedule import run_due_sends
 from opportunity_app.outreach_settings import OutreachSettings

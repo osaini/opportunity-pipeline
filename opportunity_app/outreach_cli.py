@@ -58,6 +58,7 @@ from .agent_providers import build_provider
 from .daily_lock import TEMPFAIL_EXIT
 from .database import is_postgres_target
 from .outreach import queue_follow_up_reminders
+from .outreach_config import discovery_provider
 from .outreach_discovery import DEFAULT_SCOPES, MAX_PER_SCOPE, RUNNERS, SCOPES, DiscoveryBusy, run_discovery
 from .outreach_locate import BATCH_SIZE, locate_targets
 from .outreach_profile import SEC_USER_AGENT_ENV, enrich_targets, sec_fetcher
@@ -83,7 +84,7 @@ def build_parser() -> argparse.ArgumentParser:
     discover.add_argument("--trigger", choices=("manual", "scheduled"), default="manual")
     discover.add_argument(
         "--provider", choices=sorted(RUNNERS),
-        default=(os.environ.get("PIPELINE_OUTREACH_DISCOVERY_PROVIDER") or "claude-code"),
+        default=discovery_provider(),
         help="CLI that performs the web research",
     )
     enrich = commands.add_parser("enrich", help="Fill in company locations and SEC Form D filings")
@@ -98,7 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
     locate.add_argument("--batch", type=int, default=BATCH_SIZE, help="Companies per search run")
     locate.add_argument(
         "--provider", choices=sorted(RUNNERS),
-        default=(os.environ.get("PIPELINE_OUTREACH_DISCOVERY_PROVIDER") or "claude-code"),
+        default=discovery_provider(),
         help="CLI that performs the web research",
     )
     recontact = commands.add_parser("recontact", help="Look again for a person to write to at shared-inbox targets")

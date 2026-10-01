@@ -81,12 +81,13 @@ from uuid import uuid4
 from .agent_providers import CliAgentProvider, cli_available, cli_binary, complete_text
 from .operations import enqueue_job
 from .outreach import LEGAL_SUFFIXES, OutreachNotFoundError, _log, company_key, get_target, website_domain
+from .outreach_config import COMPANY_RESEARCH_ENV, RESEARCH_ENV, resolve_provider
 from .outreach_contacts import _PageParser
-from .web_fetch import FetchResult, SafeFetcher, public_web_url_error
 from .outreach_discovery import RUNNERS, UNVERIFIABLE_STATUSES
 from .outreach_email_search import BLOCKED_HOSTS
 from .preparation import confirmed_facts
 from .schema import utc_now
+from .web_fetch import FetchResult, SafeFetcher, public_web_url_error
 
 Runner = Callable[[str], str]
 # Sends instructions and content to a model and returns its reply.
@@ -95,11 +96,9 @@ Judge = Callable[[str, str], str]
 JOB_TYPE = "outreach_company_research"
 MAX_ATTEMPTS = 3
 ACTIVE_JOB_STATES = {"queued", "running", "retry"}
-AGENT_ENV = "PIPELINE_OUTREACH_COMPANY_RESEARCH_PROVIDER"
 # Codex's read-only sandbox can still read files on this computer, and research reads pages nobody vetted.
 # Company research therefore never runs on Codex unless the student says, in .env, that they accept that.
 ALLOW_CODEX_ENV = "PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX"
-DISCOVERY_ENV = "PIPELINE_OUTREACH_DISCOVERY_PROVIDER"
 # One company, read closely: longer than a location search, far shorter than a deep search.
 RUNNER_TIMEOUT_SECONDS = 20 * 60
 # Call prep researches again when the brief is older than this.
@@ -273,7 +272,7 @@ class ResearchUnavailable(RuntimeError):
 
 def research_agent() -> str:
     """The CLI that researches companies: its own setting, else the deep search's, else Claude Code."""
-    for env in (AGENT_ENV, DISCOVERY_ENV):
+    for env in (COMPANY_RESEARCH_ENV, RESEARCH_ENV):
         chosen = os.environ.get(env, "").strip()
         if chosen in RUNNERS:
             return chosen
@@ -1285,7 +1284,6 @@ def text_model(provider_factory: Callable[[str, str], Any], provider: str | None
     writer is the same provider as the research agent, the same model reads it, and the notes say
     "a separate read", never "a model that did not write it"."""
     from .agent_providers import provider_catalog
-    from .outreach_drafting import resolve_provider
 
     provider_id, model = resolve_provider(provider, purpose="call_prep")
     if provider_id == "legacy":

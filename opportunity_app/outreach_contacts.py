@@ -29,7 +29,7 @@ import httpx
 
 from .outreach import _EMAIL, MANUAL_CONTACT_ROUTE, _log, get_target, update_target, website_domain
 from .schema import utc_now
-from .web_fetch import USER_AGENT, SafeFetcher, same_site, site_robots
+from .web_fetch import USER_AGENT, SafeFetcher, public_web_url_error, same_site, site_robots
 
 MAX_PAGES = 12
 # Pages rendered in a browser when the plain crawl found no one: a team page

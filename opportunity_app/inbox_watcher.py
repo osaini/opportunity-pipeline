@@ -14,6 +14,7 @@ import logging
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 
 from . import application_inbox, automation, outreach_labels

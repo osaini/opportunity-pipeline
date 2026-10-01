@@ -16,7 +16,6 @@ import csv
 import hashlib
 import io
 import json
-import os
 import re
 import sqlite3
 import unicodedata
@@ -30,6 +29,7 @@ from pipeline import PROFILE_PATH
 
 from .database import is_unique_violation as _is_unique_violation
 from .inbox_classifiers import read_reply
+from .outreach_config import gmail_web_url, sender_account
 from .schema import LOCAL_USER_ID, utc_now
 from .typesafe_decisions import DecisionClient
 from .user_time import user_timezone
@@ -754,8 +754,6 @@ def _possible_replies(conn: sqlite3.Connection, user_id: str, target_id: str | N
     One that more than one company could have sent is listed for each of them
     (candidates_json), so it holds all of them until the student says.
     """
-    from .outreach_drafting import sender_account  # imported here: drafting imports this module
-
     account = sender_account()
     found: dict[str, list[dict[str, Any]]] = {}
     rows = conn.execute(
@@ -789,7 +787,7 @@ def _possible_replies(conn: sqlite3.Connection, user_id: str, target_id: str | N
             "in_spam": bool(row["in_spam"]), "received_at": row["received_at"],
             "holds_follow_up": any(owner in waiting for owner in owners),
             "companies": [{"id": owner, "company": names.get(owner, "")} for owner in owners if owner in names],
-            "gmail_url": f"https://mail.google.com/mail/?authuser={quote(account) if account else '0'}#{folder}/{quote(str(row['gmail_id']))}",
+            "gmail_url": gmail_web_url(f"{folder}/{quote(str(row['gmail_id']))}", account),
         }
         for owner in owners:
             found.setdefault(owner, []).append(entry)
@@ -890,8 +888,7 @@ def _schedules(conn: sqlite3.Connection, user_id: str, target_id: str | None = N
 
 def _gmail_link(fragment: str) -> str:
     """A link into the student's Gmail (the outreach account), to a thread or a draft."""
-    account = os.environ.get("PIPELINE_OUTREACH_ACCOUNT", "").strip()
-    return f"https://mail.google.com/mail/?authuser={quote(account) if account else '0'}#{fragment}"
+    return gmail_web_url(fragment)
 
 
 def _thank_you_hold(conn: sqlite3.Connection, user_id: str) -> str:

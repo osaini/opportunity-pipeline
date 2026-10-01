@@ -59,6 +59,7 @@ from . import outreach_research as research
 from .agent_providers import CliAgentProvider, complete_text
 from .mail_trust import registrable_domain
 from .outreach import LEGAL_SUFFIXES, _log, get_target
+from .outreach_config import resolve_provider
 from .outreach_contacts import is_shared_inbox
 from .web_fetch import FetchResult
 from .outreach_inbox import (
@@ -665,8 +666,6 @@ def web_interviewer(
 
 def model_writer(provider_factory: Callable[[str, str], Any], provider: str | None) -> Callable[[str, str], str] | None:
     """The call prep writer (outreach_drafting.resolve_provider), or None when it is the no-AI template."""
-    from .outreach_drafting import resolve_provider
-
     provider_id, model = resolve_provider(provider, purpose="call_prep")
     if provider_id == "legacy":
         return None

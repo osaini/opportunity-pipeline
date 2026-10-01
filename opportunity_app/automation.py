@@ -66,6 +66,7 @@ from uuid import uuid4
 
 from . import actions
 from .database import is_unique_violation
+from .outreach_config import sender_account
 from .schema import PAUSE_NEVER_CHANGED, utc_now
 from .user_time import user_timezone
 
@@ -256,8 +257,6 @@ def _thank_you_requirement(conn: Any, user_id: str) -> str:
     """decline_thank_you acts only on a reply both the rules and Jev read as a decline, so Jev must be on; and
     only on one addressed to the student's own sending address (outreach_thank_you's R3), so that must be set.
     Without it Gmail still sends as the connected account, but no reply could ever be confirmed as to them."""
-    from .outreach_drafting import sender_account  # imported here: outreach_drafting imports modules that import this one
-
     if mode(conn, user_id, "jev_inbox_suggestions") != "on":
         return THANK_YOU_NEEDS_JEV
     if not sender_account():

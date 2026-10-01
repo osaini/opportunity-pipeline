@@ -156,7 +156,7 @@ from .connections import classify_monitored_message
 from .database import is_transient_error
 from .extension_apply import _canonical_url
 from .inbox_classifiers import classify_email
-from .outreach_drafting import sender_account
+from .outreach_config import sender_account
 from .outreach_gmail import ClientFactory, GmailAuthError, GmailThrottled, _connector, _Gmail
 from .schema import utc_now
 from .typesafe_decisions import DecisionClient

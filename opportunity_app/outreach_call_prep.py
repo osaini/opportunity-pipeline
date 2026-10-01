@@ -106,8 +106,9 @@ from .operations import JobDeferred, enqueue_job, recover_stale_jobs, run_next_j
 from .outreach import CALL_PREP_STATUSES, OutreachNotFoundError, _log, get_target, local_today
 from .outreach_drafting import (
     DRAFT_FACT_FIELDS, IDENTIFIER_KEYS, INFERENCE_BASIS, RESEARCH_FIELDS, ProviderFactory, _ADDRESS, _entry_name, _field_basis,
-    outreach_proof, resolve_provider,
+    outreach_proof,
 )
+from .outreach_config import resolve_provider
 from .preparation import confirmed_facts
 from .schema import connect_product, utc_now
 

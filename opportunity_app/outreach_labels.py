@@ -60,7 +60,7 @@ from . import automation
 from .mail_trust import FREEMAIL, registrable_domain
 from .outreach import UNSENT_STATUSES
 from .outreach_delivery import _DAEMONS, _is_delivery_notice
-from .outreach_drafting import sender_account
+from .outreach_config import sender_account
 from .outreach_gmail import (
     DRAFT_EVENT,
     MODIFY_SCOPE,

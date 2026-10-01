@@ -16,17 +16,17 @@ profile or the research for every fact.
 from __future__ import annotations
 
 import json
-import os
 import re
 import sqlite3
 from typing import Any, Callable
 from uuid import uuid4
 
-from .agent_providers import AgentProvider, CliAgentProvider, complete_text, default_provider, provider_catalog
+from .agent_providers import AgentProvider, CliAgentProvider, complete_text
 from .outreach import (
     AWAITING_REPLY, DEFAULT_GREETING, DRAFT_KINDS, _cancel_schedules, _log, draft_checks, get_target, greeting_line, greeting_style, home_terms, location_usable, mentions_home, near_home, student_home,
     user_regions,
 )
+from .outreach_config import resolve_provider, sender_account
 from .preparation import confirmed_facts
 from .schema import utc_now
 
@@ -154,36 +154,6 @@ class DraftRejected(ValueError):
 
 class DraftVersionNotFoundError(LookupError):
     pass
-
-
-def sender_account() -> str:
-    return os.environ.get("PIPELINE_OUTREACH_ACCOUNT", "").strip()
-
-
-# What each writer reads before falling back to the first-email drafts setting.
-PURPOSE_ENV = {
-    "follow_up": "PIPELINE_OUTREACH_FOLLOW_UP_PROVIDER",
-    "call_prep": "PIPELINE_OUTREACH_CALL_PREP_PROVIDER",
-    # The thank-you after a decline (outreach_thank_you); empty means the first-email writer.
-    "thank_you": "PIPELINE_OUTREACH_THANK_YOU_PROVIDER",
-}
-
-
-def resolve_provider(requested: str | None = None, purpose: str = "initial") -> tuple[str, str]:
-    """Pick the provider and model for one kind of writing.
-
-    Explicit, then the setting for this purpose (follow-ups, call prep, and the
-    thank-you after a decline have their own), then PIPELINE_OUTREACH_PROVIDER, then the first provider that
-    is set up on this computer.
-    """
-    own = os.environ.get(PURPOSE_ENV[purpose], "") if purpose in PURPOSE_ENV else ""
-    provider = (requested or own or os.environ.get("PIPELINE_OUTREACH_PROVIDER", "") or default_provider()).strip()
-    if provider == "legacy":
-        return "legacy", ""
-    record = next((item for item in provider_catalog() if item["id"] == provider), None)
-    if record is None:
-        raise ValueError("Draft provider must be openai, anthropic, claude-code, codex-cli, or legacy")
-    return provider, str(record["model"])
 
 
 def _entry_name(entry: Any) -> str:

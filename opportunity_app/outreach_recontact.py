@@ -20,7 +20,6 @@ approved is written again for the new recipient, so it greets them by name.
 
 from __future__ import annotations
 
-import os
 import sqlite3
 from contextlib import ExitStack, closing
 from pathlib import Path
@@ -258,9 +257,10 @@ class RecontactManager(SingleFlightManager):
         runner = self._runner
         if runner is None and self._email_search:
             # Imported here: outreach_discovery owns the research runners.
+            from .outreach_config import discovery_provider
             from .outreach_discovery import RUNNERS, claude_runner
 
-            runner = RUNNERS.get(os.environ.get("PIPELINE_OUTREACH_DISCOVERY_PROVIDER") or "claude-code", claude_runner)
+            runner = RUNNERS.get(discovery_provider(), claude_runner)
         with ExitStack() as stack:
             fetcher = stack.enter_context(self._client_factory())
             renderer = self._renderer_factory()

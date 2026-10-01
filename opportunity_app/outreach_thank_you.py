@@ -110,6 +110,7 @@ import httpx
 from . import automation
 from .background import record_health_quietly, step_error
 from .inbox_classifiers import JEV_NOT_ASKED, MIN_CONFIDENCE
+from .outreach_config import resolve_provider, sender_account
 from .outreach import (
     REPLY_PATTERNS,
     OutreachNotFoundError,
@@ -369,7 +370,6 @@ def write(
     unavailable, fails twice, or is not set up leaves the template.
     """
     from .agent_providers import complete_text
-    from .outreach_drafting import resolve_provider
 
     try:
         provider_id, model = resolve_provider(provider, purpose="thank_you")
@@ -1106,7 +1106,6 @@ def thank_you_blockers(conn: sqlite3.Connection, target: dict[str, Any], reply: 
     """
     from .mail_trust import authenticate
     from .outreach_contacts import is_shared_inbox
-    from .outreach_drafting import sender_account
     from .outreach_forms import ALWAYS_AUTOMATIC
     from .outreach_inbox import hosts_in, is_automatic
 

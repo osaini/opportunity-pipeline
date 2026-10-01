@@ -59,7 +59,7 @@ from .outreach import (
     missing_location_message,
     update_target,
 )
-from .outreach_drafting import sender_account
+from .outreach_config import gmail_web_url, sender_account
 from .schema import utc_now
 from .user_time import user_timezone
 
@@ -552,8 +552,7 @@ def _mime(account: str, to: str, subject: str, body: str, attachment: Path | Non
 
 
 def draft_url(account: str, message_id: str) -> str:
-    authuser = quote(account) if account else "0"
-    return f"https://mail.google.com/mail/?authuser={authuser}#drafts?compose={quote(message_id)}"
+    return gmail_web_url(f"drafts?compose={quote(message_id)}", account)
 
 
 def _previous_draft(
@@ -1173,8 +1172,7 @@ def thank_you_mime(account: str, row: dict[str, Any]) -> str:
 
 
 def thread_url(account: str, thread_id: str) -> str:
-    authuser = quote(account) if account else "0"
-    return f"https://mail.google.com/mail/?authuser={authuser}#all/{quote(thread_id)}"
+    return gmail_web_url(f"all/{quote(thread_id)}", account)
 
 
 def send_thank_you(

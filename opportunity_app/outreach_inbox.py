@@ -78,7 +78,7 @@ from .outreach_gmail import (
     _connector,
     _Gmail,
 )
-from .outreach_drafting import sender_account
+from .outreach_config import sender_account
 from .outreach_forms import (
     ACKNOWLEDGEMENT,
     ACKNOWLEDGEMENT_WINDOW_MINUTES,

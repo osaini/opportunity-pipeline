@@ -17,7 +17,8 @@ import httpx
 from opportunity_app import outreach_research as research
 from opportunity_app.outreach import create_target, get_target
 from opportunity_app.web_fetch import SafeFetcher
-from opportunity_app.outreach_settings import COMPANY_RESEARCH_ENV, OutreachSettings
+from opportunity_app.outreach_config import COMPANY_RESEARCH_ENV, RESEARCH_ENV
+from opportunity_app.outreach_settings import OutreachSettings
 from opportunity_app.schema import connect_product, ensure_product_schema
 
 from helpers_platform import build_and_migrate
@@ -1035,11 +1036,11 @@ class ResearchStorageTests(unittest.TestCase):
 
 class AgentChoiceTests(unittest.TestCase):
     def test_its_own_setting_then_the_deep_searchs_then_claude_code(self):
-        with mock.patch.dict("os.environ", {research.AGENT_ENV: "codex-cli", research.DISCOVERY_ENV: "claude-code"}):
+        with mock.patch.dict("os.environ", {COMPANY_RESEARCH_ENV: "codex-cli", RESEARCH_ENV: "claude-code"}):
             self.assertEqual(research.research_agent(), "codex-cli")
-        with mock.patch.dict("os.environ", {research.AGENT_ENV: "", research.DISCOVERY_ENV: "codex-cli"}):
+        with mock.patch.dict("os.environ", {COMPANY_RESEARCH_ENV: "", RESEARCH_ENV: "codex-cli"}):
             self.assertEqual(research.research_agent(), "codex-cli")
-        with mock.patch.dict("os.environ", {research.AGENT_ENV: "", research.DISCOVERY_ENV: ""}):
+        with mock.patch.dict("os.environ", {COMPANY_RESEARCH_ENV: "", RESEARCH_ENV: ""}):
             self.assertEqual(research.research_agent(), "claude-code")
 
     def test_a_missing_cli_falls_back_to_the_other_and_says_so(self):

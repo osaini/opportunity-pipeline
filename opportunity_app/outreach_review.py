@@ -32,6 +32,7 @@ from typing import Any, Callable
 
 import httpx
 
+from .outreach_config import REVIEW_ENV, resolve_provider
 from .agent_providers import CLAUDE_NO_TOOLS, CODEX_READ_ONLY, cli_binary, failure_detail, run_headless
 from .outreach import get_target
 from .outreach_delivery import check_deliveries
@@ -100,7 +101,6 @@ def fresh_look(
     return {"ok": not failed, "reason": FRESH_LOOK_REASONS.get(failed, failed)}
 
 
-REVIEW_ENV = "PIPELINE_OUTREACH_REVIEW_PROVIDER"
 # Which company's models a provider runs: a reviewer from the drafter's own
 # family shares its blind spots, so the automatic choice avoids it.
 FAMILY = {"claude-code": "anthropic", "anthropic": "anthropic", "codex-cli": "openai", "openai": "openai"}
@@ -116,7 +116,6 @@ def review_choice(purpose: str = "follow_up") -> tuple[str, str]:
     thank-you after a decline), else the best one there is.
     """
     from .agent_providers import provider_catalog
-    from .outreach_drafting import resolve_provider
 
     catalog = {item["id"]: item for item in provider_catalog()}
     chosen = os.environ.get(REVIEW_ENV, "").strip()

@@ -291,8 +291,8 @@ from .outreach_drafting import (
     draft_versions as outreach_draft_versions,
     generate_draft as generate_outreach_draft,
     restore_draft_version as restore_outreach_draft_version,
-    sender_account,
 )
+from .outreach_config import sender_account
 from .outreach_delivery import bounce_from_text, check_deliveries
 from .inbox_watcher import InboxWatcher
 from .outreach_inbox import PossibleReplyNotFound, PossibleReplySettled, capture_replies, decide_possible_reply
