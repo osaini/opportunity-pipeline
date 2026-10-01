@@ -16,8 +16,9 @@ import httpx
 
 from opportunity_app import outreach_research as research
 from opportunity_app.outreach import create_target, get_target
-from opportunity_app.outreach_contacts import SafeFetcher
-from opportunity_app.outreach_settings import COMPANY_RESEARCH_ENV, OutreachSettings
+from opportunity_app.web_fetch import SafeFetcher
+from opportunity_app.outreach_config import COMPANY_RESEARCH_ENV, RESEARCH_ENV
+from opportunity_app.outreach_settings import OutreachSettings
 from opportunity_app.schema import connect_product, ensure_product_schema
 
 from helpers_platform import build_and_migrate
@@ -242,16 +243,16 @@ class CheckBriefTests(unittest.TestCase):
         self.assertIn("Chargebot raises seed round", shown["top"], "the page's title comes too")
 
     def test_the_passage_always_holds_the_quotes_own_paragraph_and_a_nearby_dateline(self):
-        from opportunity_app.outreach_contacts import FetchResult
+        from opportunity_app.web_fetch import FetchResult
 
         history = "<p>" + "Background paragraph about the company history. " * 60 + "</p>"
-        page = research._Page(FetchResult("https://news.example/release", 200,
+        page = research.ResearchPage(FetchResult("https://news.example/release", 200,
                                           "<p>AUSTIN, Texas, May 12, 2026 /PRNewswire/</p>" + history
                                           + "<p>Chargebot says its hardware can ship directly and is already deployed in the field.</p>"))
         shown = page.passage(page.find_quote("its hardware can ship directly and is already deployed"))["passage"]
         self.assertIn("already deployed in the field", shown, "a long paragraph before the quote never pushes it out")
         self.assertLessEqual(len(shown), research.PASSAGE_CHARS + research.QUOTE_LINE_CHARS)
-        short = research._Page(FetchResult("https://news.example/short", 200,
+        short = research.ResearchPage(FetchResult("https://news.example/short", 200,
                                            "<p>AUSTIN, Texas, May 12, 2026 /PRNewswire/</p><p>Chargebot today named Dana Ortiz CEO.</p>"))
         self.assertIn("May 12, 2026", short.passage(short.find_quote("Chargebot today named Dana Ortiz CEO"))["passage"])
 
@@ -390,10 +391,10 @@ class CheckBriefTests(unittest.TestCase):
         self.assertEqual(self.refused(self.check(hidden)), {hidden["text"]: "its source does not name the company"})
 
     def test_the_shared_company_check_never_matches_an_empty_domain(self):
-        from opportunity_app.outreach_discovery import _mentions_company
+        from opportunity_app.outreach_discovery import mentions_company
 
-        self.assertFalse(_mentions_company(OTHER_COMPANY, "Chargebot", ""))
-        self.assertTrue(_mentions_company(PRESS, "Chargebot, Inc.", ""))
+        self.assertFalse(mentions_company(OTHER_COMPANY, "Chargebot", ""))
+        self.assertTrue(mentions_company(PRESS, "Chargebot, Inc.", ""))
 
     def test_a_competitor_fact_is_about_the_competitor_and_says_who_linked_them(self):
         rival = {**fact("competitors", "Voltarm builds charging robots with lidar", "https://news.example/voltarm",
@@ -717,7 +718,7 @@ class CheckBriefTests(unittest.TestCase):
         self.assertEqual(self.refused(brief)[SEED["text"]], "a second read of the page says it does not state this: no reason given")
         digits = {}
         self.assertEqual(
-            research._second_read([{"id": "f0"}], lambda i, c: json.dumps({"verdicts": [{"id": "f0", "supported": False, "why": "quote says 4.5M, fact says 45M"}]}), rivals=digits),
+            research.second_read([{"id": "f0"}], lambda i, c: json.dumps({"verdicts": [{"id": "f0", "supported": False, "why": "quote says 4.5M, fact says 45M"}]}), rivals=digits),
             {"f0": (False, "quote says 4.5M, fact says 45M")}, "a reason may carry numbers: it is not a gap",
         )
 
@@ -1035,35 +1036,35 @@ class ResearchStorageTests(unittest.TestCase):
 
 class AgentChoiceTests(unittest.TestCase):
     def test_its_own_setting_then_the_deep_searchs_then_claude_code(self):
-        with mock.patch.dict("os.environ", {research.AGENT_ENV: "codex-cli", research.DISCOVERY_ENV: "claude-code"}):
+        with mock.patch.dict("os.environ", {COMPANY_RESEARCH_ENV: "codex-cli", RESEARCH_ENV: "claude-code"}):
             self.assertEqual(research.research_agent(), "codex-cli")
-        with mock.patch.dict("os.environ", {research.AGENT_ENV: "", research.DISCOVERY_ENV: "codex-cli"}):
+        with mock.patch.dict("os.environ", {COMPANY_RESEARCH_ENV: "", RESEARCH_ENV: "codex-cli"}):
             self.assertEqual(research.research_agent(), "codex-cli")
-        with mock.patch.dict("os.environ", {research.AGENT_ENV: "", research.DISCOVERY_ENV: ""}):
+        with mock.patch.dict("os.environ", {COMPANY_RESEARCH_ENV: "", RESEARCH_ENV: ""}):
             self.assertEqual(research.research_agent(), "claude-code")
 
     def test_a_missing_cli_falls_back_to_the_other_and_says_so(self):
         with mock.patch.dict("os.environ", {research.ALLOW_CODEX_ENV: "1"}), \
-                mock.patch.object(research, "_cli_available", side_effect=lambda binary: "codex" in binary):
+                mock.patch.object(research, "cli_available", side_effect=lambda binary: "codex" in binary):
             self.assertEqual(research.available_agent("claude-code"), ("codex-cli", "claude-code is not installed here, so codex-cli did the research"))
-        with mock.patch.object(research, "_cli_available", return_value=False):
+        with mock.patch.object(research, "cli_available", return_value=False):
             with self.assertRaises(research.ResearchUnavailable):
                 research.available_agent("claude-code")
 
     def test_codex_is_swapped_for_claude_code_when_both_are_installed(self):
         """Codex's read-only sandbox can still read local files, and research reads untrusted pages."""
-        with mock.patch.object(research, "_cli_available", return_value=True):
+        with mock.patch.object(research, "cli_available", return_value=True):
             agent, note = research.available_agent("codex-cli")
             self.assertEqual(agent, "claude-code")
             self.assertIn("can read files on this computer", note)
             self.assertEqual(research.available_agent("claude-code"), ("claude-code", ""))
         with mock.patch.dict("os.environ", {research.ALLOW_CODEX_ENV: "1"}), \
-                mock.patch.object(research, "_cli_available", side_effect=lambda binary: "codex" in binary):
+                mock.patch.object(research, "cli_available", side_effect=lambda binary: "codex" in binary):
             self.assertEqual(research.available_agent("codex-cli"), ("codex-cli", ""), "with nothing else installed it is used only when the student allowed it")
 
     def test_codex_does_not_research_untrusted_pages_unless_the_student_allowed_it(self):
         """Codex's read-only sandbox can read local files; the pages it reads are not trusted."""
-        only_codex = mock.patch.object(research, "_cli_available", side_effect=lambda binary: "codex" in binary)
+        only_codex = mock.patch.object(research, "cli_available", side_effect=lambda binary: "codex" in binary)
         for value in (None, "", "0", "no"):
             for preferred in ("codex-cli", "claude-code"):
                 env = {} if value is None else {research.ALLOW_CODEX_ENV: value}
@@ -1080,7 +1081,7 @@ class AgentChoiceTests(unittest.TestCase):
         with mock.patch.dict("os.environ", {research.ALLOW_CODEX_ENV: "yes"}), only_codex:
             self.assertEqual(research.web_researcher(lambda: None).problem(), "")
         # With Claude Code installed nothing changes, allowed or not.
-        with mock.patch.dict("os.environ", {research.ALLOW_CODEX_ENV: ""}), mock.patch.object(research, "_cli_available", side_effect=lambda binary: "claude" in binary):
+        with mock.patch.dict("os.environ", {research.ALLOW_CODEX_ENV: ""}), mock.patch.object(research, "cli_available", side_effect=lambda binary: "claude" in binary):
             self.assertEqual(research.available_agent("codex-cli")[0], "claude-code")
             self.assertEqual(research.available_agent("claude-code"), ("claude-code", ""))
 

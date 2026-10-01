@@ -50,10 +50,10 @@ from uuid import uuid4
 
 from pipeline_core.identity import normalized
 
-from . import ROOT, actions, automation
+from . import SERVER_INSTANCE, actions, automation
+from .background import step_error
 from .database import is_unique_violation
 from .json_values import json_as
-from .outreach_gmail import SERVER_INSTANCE
 from .profile_store import read_stored_profile
 from .settings_store import get_setting, put_setting, setting_updated_at
 from .timestamps import parse_app_instant, utc_now
@@ -70,9 +70,8 @@ CLAIM_STATES = ("claimed", "clicking", "submitted", "unconfirmed", "needs_you", 
 RUN_KINDS = ("lookup", "rehearsal", "submit", "handoff")
 # What a screenshot of a filled form is kept for, in days (PIPELINE_APPLY_EVIDENCE_DAYS).
 DEFAULT_EVIDENCE_DAYS = 90
-# Where screenshots live: data/private/apply/<user folder>/<opportunity id>/<run id>-<step>.png. The folder is
-# per student, so deleting an account removes one folder. Not in output/: everything under data/ is ignored.
-APPLY_ROOT = ROOT / "data" / "private" / "apply"
+# Screenshots live under APPLY_ROOT (opportunity_app/__init__.py): <user folder>/<opportunity id>/<run id>-<step>.png.
+# The folder is per student, so deleting an account removes one folder. Not in output/: everything under data/ is ignored.
 # A claim, or a run, that another server process holds is held while its heartbeat is this fresh.
 HELD_HEARTBEAT = timedelta(minutes=2)
 # The one confirm clock: how old the rehearsal a one-click submit confirmed may be at hand-over.
@@ -585,7 +584,7 @@ def _conflict(conn: sqlite3.Connection, user_id: str, opportunity_id: str, ats: 
 
 
 def _claim_row(conn: sqlite3.Connection, token: str, user_id: str, *, lock: bool = False) -> Any:
-    suffix = automation._for_update(conn) if lock else ""
+    suffix = automation.for_update_clause(conn) if lock else ""
     return conn.execute(
         f"SELECT * FROM application_submit_claims WHERE token=? AND user_id=?{suffix}", (token, user_id),
     ).fetchone()
@@ -712,12 +711,12 @@ def _after_missed_settle(conn: sqlite3.Connection, token: str, user_id: str, det
         company = _title_of(conn, row["opportunity_id"])[1] or "the company"
         with conn:
             _submitted_event(conn, row["application_id"], detail, stamp)
-            automation._insert_notice(
+            automation.insert_notice(
                 conn, user_id, event_key=f"apply-late-confirmation:{token}", level="warning",
                 title=f"Greenhouse showed its confirmation page for {company}, after this attempt was marked as not sent. Check it.",
                 body="", timestamp=stamp,
             )
-    except Exception:  # noqa: BLE001 - like outreach_gmail._settle_claim: a failed report never hides the result
+    except Exception:  # noqa: BLE001 - like outreach_gmail.settle_send_claim: a failed report never hides the result
         LOGGER.exception("A late confirmation for an apply claim was not recorded")
 
 
@@ -836,10 +835,10 @@ def record_stage(
     with conn:
         conn.execute("UPDATE applications SET updated_at=updated_at WHERE id=? AND user_id=?", (row["application_id"], user_id))
         stage = conn.execute(
-            f"SELECT stage FROM applications WHERE id=? AND user_id=?{automation._for_update(conn)}", (row["application_id"], user_id),
+            f"SELECT stage FROM applications WHERE id=? AND user_id=?{automation.for_update_clause(conn)}", (row["application_id"], user_id),
         ).fetchone()
         if stage is not None and stage["stage"] == "applying":
-            actions._update_application_tx(
+            actions.update_application_tx(
                 conn, row["application_id"], stage="applied", applied_at=row["submitted_at"], user_id=user_id,
                 source=source or _settled_by(row)[0], timestamp=stamp,
             )
@@ -1094,7 +1093,7 @@ def mark_review(
             put_setting(conn, user_id, f"{GATE_RESET_KEY}:{ats}", stamp, stamp)
             tripped = True
             needed = limits(conn, user_id)["rehearsals_before_submit"]
-            automation._insert_notice(
+            automation.insert_notice(
                 conn, user_id, event_key=f"apply-breaker:{ats}:{stamp}", level="warning",
                 title=f"Apply for me: {BREAKER_LIMIT} of your last {BREAKER_WINDOW} reviews were wrong",
                 body=f"It needs {needed} new clean rehearsals that you mark right before it offers to submit again.", timestamp=stamp,
@@ -1257,10 +1256,8 @@ def _rollback(conn: sqlite3.Connection) -> None:
 def _record_runner(
     conn: sqlite3.Connection, user_id: str, *, ok: bool, error: Exception | None = None, component: str = RUNNER_COMPONENT,
 ) -> None:
-    from .outreach_inbox import _step_error  # imported here: it pulls in the whole mail reader
-
     try:
-        automation.record_health(conn, user_id, component, ok=ok, error=_step_error(error) if error else "")
+        automation.record_health(conn, user_id, component, ok=ok, error=step_error(error) if error else "")
     except Exception:  # noqa: BLE001 - a health row never stops the pass
         _rollback(conn)
 

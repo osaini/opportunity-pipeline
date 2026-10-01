@@ -72,7 +72,7 @@ def record_intent(
             response["replayed"] = True
             return response
     with conn:
-        response = _record_intent_tx(
+        response = record_intent_tx(
             conn, opportunity_id, action, user_id=user_id, idempotency_key=idempotency_key, source=source,
         )
     if action == "saved" and not response["unchanged"]:
@@ -84,7 +84,7 @@ def record_intent(
     return response
 
 
-def _intent_state(conn: sqlite3.Connection, opportunity_id: str, user_id: str) -> str:
+def intent_state(conn: sqlite3.Connection, opportunity_id: str, user_id: str) -> str:
     """'saved', 'passed', or '' for neither, read from the latest interaction as record_intent reads it."""
     latest = conn.execute(
         """
@@ -96,7 +96,7 @@ def _intent_state(conn: sqlite3.Connection, opportunity_id: str, user_id: str) -
     return latest["action"] if latest and latest["action"] in {"saved", "passed"} else ""
 
 
-def _record_intent_tx(
+def record_intent_tx(
     conn: sqlite3.Connection,
     opportunity_id: str,
     action: str,
@@ -113,7 +113,7 @@ def _record_intent_tx(
     """
     if action not in INTENT_ACTIONS:
         raise ValueError(f"Unsupported intent action: {action}")
-    current_state = _intent_state(conn, opportunity_id, user_id)
+    current_state = intent_state(conn, opportunity_id, user_id)
     desired_state = {"saved": "saved", "passed": "passed", "undo": ""}.get(action)
     state_unchanged = desired_state is not None and current_state == desired_state
     timestamp = timestamp or utc_now()
@@ -434,13 +434,13 @@ def add_application_task(
     zone = named_timezone(timezone_name) if timezone_name else user_timezone(conn, user_id)
     due_at = zone.normalize_instant(due_at, field="due_at")
     with conn:
-        return _add_application_task_tx(
+        return add_application_task_tx(
             conn, application_id, title=title, due_at=due_at, user_id=user_id, origin=origin, origin_ref=origin_ref,
             source=source,
         )
 
 
-def _add_application_task_tx(
+def add_application_task_tx(
     conn: sqlite3.Connection,
     application_id: str,
     *,
@@ -539,7 +539,7 @@ def update_application(
     if applied_at is not None:
         _aware_instant(applied_at, field="applied_at")
     with conn:
-        return _update_application_tx(
+        return update_application_tx(
             conn, application_id, stage=stage, notes=notes, follow_up_at=follow_up_at, user_id=user_id,
             source=source, timezone_name=timezone_name, applied_at=applied_at,
         )
@@ -556,7 +556,7 @@ def _aware_instant(value: str, *, field: str) -> str:
     return parsed.astimezone(timezone.utc).isoformat(timespec="microseconds")
 
 
-def _next_applied_at(stored: str | None, stage: str, given: str | None, timestamp: str) -> str | None:
+def applied_at_for_stage(stored: str | None, stage: str, given: str | None, timestamp: str) -> str | None:
     """The applied_at an application ends up with at ``stage``.
 
     Without ``given``: now, when it reaches applied with none stored. With it:
@@ -579,7 +579,7 @@ def _next_applied_at(stored: str | None, stage: str, given: str | None, timestam
     return wanted if datetime.fromisoformat(wanted) < current else stored
 
 
-def _update_application_tx(
+def update_application_tx(
     conn: sqlite3.Connection,
     application_id: str,
     *,
@@ -619,7 +619,7 @@ def _update_application_tx(
     next_notes = str(existing["notes"]) if notes is None else notes
     next_follow_up = existing["follow_up_at"] if follow_up_at is None else _normalize_due_at(follow_up_at, timezone_name)
     timestamp = timestamp or utc_now()
-    next_applied_at = _next_applied_at(existing["applied_at"], next_stage, applied_at, timestamp)
+    next_applied_at = applied_at_for_stage(existing["applied_at"], next_stage, applied_at, timestamp)
     conn.execute(
         """
         UPDATE applications

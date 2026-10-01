@@ -2,7 +2,7 @@
 
 "Update applications from job emails" (the ``application_mail`` switch) is
 off for every student until they turn it on, and runs in shadow first. It is
-the fifth step of the inbox watcher (outreach_inbox.InboxWatcher), with the
+the fifth step of the inbox watcher (inbox_watcher.InboxWatcher), with the
 same Gmail connection and transport, at most one pass every ten minutes.
 
 Reading. Live mail comes from users.history.list (2 quota units a call,
@@ -153,8 +153,9 @@ from . import automation, internal_automation, mail_trust
 from .actions import log_application_event
 from .connections import classify_monitored_message
 from .database import is_transient_error
-from .extension_apply import _canonical_url
+from .extension_apply import split_canonical_url
 from .inbox_classifiers import classify_email
+from .gmail_client import ClientFactory, GmailAuthError, GmailThrottled, connection_state
 from .mail_message import (
     URL,
     clean_url,
@@ -165,8 +166,7 @@ from .mail_message import (
     received_or_epoch,
     strip_queries,
 )
-from .outreach_drafting import sender_account
-from .gmail_client import ClientFactory, GmailAuthError, GmailThrottled, connection_state
+from .outreach_config import sender_account
 from .outreach_gmail import _connector, _Gmail
 from .settings_store import setting_updated_at
 from .timestamps import parse_app_instant, utc_now
@@ -426,7 +426,7 @@ def _job_ids(url: str) -> set[str]:
 
 
 def _url_key(url: str) -> tuple[str, str] | None:
-    canonical, host, path = _canonical_url(url)
+    canonical, host, path = split_canonical_url(url)
     if not canonical or path in ("", "/"):
         return None
     return host, path
@@ -1876,7 +1876,7 @@ def _settle_event(conn: sqlite3.Connection, user_id: str, gmail_id: str, event_i
 def after_superseded(conn: sqlite3.Connection, user_id: str, action_id: str) -> None:
     """After an approval found the application changed since: settle the email card if nothing else waits."""
     try:
-        action = automation._decode(automation._row(conn, action_id, user_id))
+        action = automation._decode(automation.action_row(conn, action_id, user_id))
     except LookupError:
         return
     after_decision(conn, user_id, action)
@@ -2229,7 +2229,7 @@ class ApplicationDeadline:
     fields = ("deadline",)
 
     def read(self, conn: sqlite3.Connection, user_id: str, subject_id: str) -> dict[str, Any]:
-        lock = automation._for_update(conn)
+        lock = automation.for_update_clause(conn)
         if conn.execute(f"SELECT 1 FROM applications WHERE id=? AND user_id=?{lock}", (subject_id, user_id)).fetchone() is None:
             from .actions import ApplicationNotFoundError
 

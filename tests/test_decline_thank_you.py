@@ -26,7 +26,7 @@ from fastapi.testclient import TestClient
 from opportunity_app import STATIC_DIR, automation, mail_message, outreach, outreach_delivery, outreach_inbox, outreach_thank_you
 from opportunity_app.api import create_app
 from opportunity_app.outreach import greeting_line
-from opportunity_app.outreach_drafting import resolve_provider
+from opportunity_app.outreach_config import resolve_provider
 from opportunity_app.outreach_gmail import THANK_YOU_KIND, send_thank_you, thank_you_row
 from opportunity_app.outreach_schedule import run_due_sends
 from opportunity_app.outreach_settings import OutreachSettings
@@ -869,7 +869,7 @@ class ThankYouRulesTests(DeclineCase):
         # And if a reply-capture change ever logs it, the rules still refuse it.
         record = self.record(raw, thread="t-desk", received=datetime.now(timezone.utc) + timedelta(minutes=5))
         with self.conn:
-            outreach._log(self.conn, desk["id"], USER, "reply_logged", detail=record["text"], data=record["data"])
+            outreach.log_event(self.conn, desk["id"], USER, "reply_logged", detail=record["text"], data=record["data"])
             self.conn.execute("UPDATE outreach_targets SET status='replied' WHERE id=?", (desk["id"],))
         self.assert_not_thanked(desk["id"], "Not thanked automatically: sent by an automated system", "(failed: R4, R6)")
 
@@ -1247,7 +1247,7 @@ class ThankYouRulesTests(DeclineCase):
         self.assertEqual(self.notices(), [], "a reply left for the student is no alarm")
 
     def test_the_shared_inbox_check_lives_with_contact_finding_and_leaves_it_unchanged(self):
-        from opportunity_app.outreach_contacts import _is_generic, is_shared_inbox
+        from opportunity_app.outreach_contacts import is_generic_address, is_shared_inbox
 
         for address in ("careers@acme.com", "university-recruiting@acme.com", "Hiring.Team@acme.com", "no-reply@acme.com",
                         *(f"{local}@acme.com" for local in ROLE_INBOXES)):
@@ -1256,7 +1256,7 @@ class ThankYouRulesTests(DeclineCase):
         for address in (f"{local}@acme.com" for local in PEOPLE):
             with self.subTest(address=address):
                 self.assertFalse(is_shared_inbox(address))
-        self.assertFalse(_is_generic("no-reply@acme.com"), "contact finding never picks a no-reply inbox to write to")
+        self.assertFalse(is_generic_address("no-reply@acme.com"), "contact finding never picks a no-reply inbox to write to")
 
 
 class LedgerTests(DeclineCase):
@@ -2012,7 +2012,7 @@ class ReviewFindingGateTests(DeclineCase):
         data = {"source": "gmail", "gmail_id": gmail_id, "from": "dana@acme.com", "received_at": received.isoformat(timespec="seconds"),
                 "thread_id": "t-decline", "message_id": f"<{gmail_id}@acme.com>", "full_text": text, "readings": {}}
         with closing(connect_product(self.platform_path)) as other, other:
-            outreach._log(other, target_id, USER, "reply_logged", detail=text, data=data)
+            outreach.log_event(other, target_id, USER, "reply_logged", detail=text, data=data)
 
     def raw_send(self, target_id, thread):
         """An email of the student's, logged from another connection just after their reply arrived."""

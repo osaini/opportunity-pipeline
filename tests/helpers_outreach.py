@@ -7,8 +7,8 @@ import json
 import httpx
 
 from opportunity_app.agent_providers import ProviderReply
-from opportunity_app.outreach_contacts import SafeFetcher
 from opportunity_app.timestamps import utc_now
+from opportunity_app.web_fetch import SafeFetcher
 
 
 # The owner token of the app the drafting tests build; test_call_prep_fields builds its app with the same token.

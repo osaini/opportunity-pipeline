@@ -59,8 +59,9 @@ from . import outreach_research as research
 from .agent_providers import CliAgentProvider, complete_text
 from .mail_message import mailbox_key
 from .mail_trust import registrable_domain
-from .outreach import LEGAL_SUFFIXES, _log, get_target
-from .outreach_contacts import FetchResult, is_shared_inbox
+from .outreach import LEGAL_SUFFIXES, log_event, get_target
+from .outreach_config import resolve_provider
+from .outreach_contacts import is_shared_inbox
 from .outreach_identity import (
     company_words,
     contact_domain,
@@ -77,6 +78,7 @@ from .outreach_identity import (
 )
 from .outreach_linkedin import CMD_META, LinkedInClient, LinkedInUnavailable, username_from
 from .timestamps import parse_app_instant, utc_now
+from .web_fetch import FetchResult
 
 # Kinds of inbox message a person at the company wrote (outreach_inbox).
 PERSON_KINDS = ("reply", "possible")
@@ -133,8 +135,8 @@ def _person_name(name: str, company: str) -> str:
     """A name that reads as a person's: two or more words, not the company's own name or only role words ("Acme Recruiting Team")."""
     clean = " ".join(str(name or "").replace('"', "").split())
     clean = re.sub(r"\s*\((?:via\s+)?google calendar\)\s*$", "", clean, flags=re.IGNORECASE)
-    words = research._tokens(clean)
-    if len(words) < 2 or " ".join(words) in research._company_names(company) or CMD_META.search(clean):
+    words = research.word_tokens(clean)
+    if len(words) < 2 or " ".join(words) in research.company_names(company) or CMD_META.search(clean):
         return ""
     ignore = set(company_words(company).split())
     if all(word in ignore or role_word(word) for word in words) or words[-1] in _ROLE_NAME_ENDINGS:
@@ -394,7 +396,7 @@ def _company_named(text: str, company: str) -> bool:
 def _folded(text: str) -> list[str]:
     """A name's words in lower case with the accents dropped (José Núñez is jose nunez)."""
     plain = "".join(char for char in unicodedata.normalize("NFKD", str(text or "")) if not unicodedata.combining(char))
-    return research._tokens(plain)
+    return research.word_tokens(plain)
 
 
 def _same_name(wanted: str, found: set[str]) -> bool:
@@ -431,8 +433,8 @@ def _result_blocks(people: list[dict[str, str]]) -> list[str] | None:
     starts: list[int] = []
     cursor = 0
     for person in people:
-        wanted = research._tokens(person["name"])
-        found = next((index for index in range(cursor, len(lines)) if wanted and research._tokens(lines[index])[:len(wanted)] == wanted), None)
+        wanted = research.word_tokens(person["name"])
+        found = next((index for index in range(cursor, len(lines)) if wanted and research.word_tokens(lines[index])[:len(wanted)] == wanted), None)
         if found is None:
             return None
         starts.append(found)
@@ -440,9 +442,9 @@ def _result_blocks(people: list[dict[str, str]]) -> list[str] | None:
     blocks = []
     for number, start in enumerate(starts):
         end = starts[number + 1] if number + 1 < len(starts) else len(lines)
-        own = research._tokens(people[number]["name"])
+        own = research.word_tokens(people[number]["name"])
         for index in range(start + 1, end):
-            if _RESULT_EDGE.match(lines[index]) or research._tokens(lines[index])[:len(own)] == own:
+            if _RESULT_EDGE.match(lines[index]) or research.word_tokens(lines[index])[:len(own)] == own:
                 end = index
                 break
             # Another result's name is the line before its degree ("Dana Ortiz", then "3rd").
@@ -463,14 +465,14 @@ def pick_profile(people: list[dict[str, str]], name: str, company: str) -> tuple
     return "", [{"username": person["username"], "name": person["name"]} for person in named][:5]
 
 
-def _profile_page(profile: dict[str, Any]) -> research._Page:
+def _profile_page(profile: dict[str, Any]) -> research.ResearchPage:
     """The profile as a page with one line for each of its lines.
 
     The word checks hold a note to the lines around its quote, so a profile fed
     in as one long line would let a name or a number anywhere in it back any note.
     """
     lines = [line.strip() for text in profile["sections"].values() for line in str(text).splitlines() if line.strip()]
-    return research._Page(FetchResult(profile["url"], 200, "".join(f"<p>{html.escape(line)}</p>" for line in lines)))
+    return research.ResearchPage(FetchResult(profile["url"], 200, "".join(f"<p>{html.escape(line)}</p>" for line in lines)))
 
 
 def _header(profile: dict[str, Any]) -> list[str]:
@@ -534,7 +536,7 @@ def check_notes(
         if span is None:
             refused.append({"topic": topic, "reason": "the quoted words are not in the profile"})
             continue
-        if research._negated(text) != research._negated(quote):
+        if research.says_not(text) != research.says_not(quote):
             refused.append({"topic": topic, "reason": "the note and its quote disagree on a not"})
             continue
         missing = page.missing(text, span, "", person=name)
@@ -545,7 +547,7 @@ def check_notes(
     if judge is not None and kept:
         items = [{"id": f"n{index}", "fact": note["text"], "about": name, "page": profile["url"], **page.passage(note["_span"])}
                  for index, note in enumerate(kept)]
-        verdicts = research._second_read(items, judge)
+        verdicts = research.second_read(items, judge)
         confirmed = []
         for index, note in enumerate(kept):
             verdict = verdicts.get(f"n{index}")
@@ -563,8 +565,8 @@ def check_notes(
     return kept, refused
 
 
-def _who_key(name: str, linkedin: str) -> str:
-    return f"{' '.join(research._tokens(name))}|{username_from(linkedin)}"
+def who_key(name: str, linkedin: str) -> str:
+    return f"{' '.join(research.word_tokens(name))}|{username_from(linkedin)}"
 
 
 def interviewer_due(conn: sqlite3.Connection, target: dict[str, Any], user_id: str, now: datetime | None = None) -> bool:
@@ -576,7 +578,7 @@ def interviewer_due(conn: sqlite3.Connection, target: dict[str, Any], user_id: s
     """
     record = interviewer_of(target)
     who = find_interviewer(conn, target, user_id, now)
-    if _who_key(who["name"], target.get("interviewer_linkedin") or "") != record.get("key"):
+    if who_key(who["name"], target.get("interviewer_linkedin") or "") != record.get("key"):
         return True
     if record.get("notes"):
         return False
@@ -603,7 +605,7 @@ def read_interviewer(
     with conn:
         conn.execute("UPDATE outreach_targets SET interviewer_tried_at=? WHERE id=? AND user_id=?", (utc_now(), target_id, user_id))
     who = find_interviewer(conn, target, user_id)
-    key = _who_key(who["name"], target.get("interviewer_linkedin") or "")
+    key = who_key(who["name"], target.get("interviewer_linkedin") or "")
     # Only how many people LinkedIn offered is kept: their names and profile links are other people's, and nothing shows them.
     record: dict[str, Any] = {**who, "key": key, "linkedin": None, "notes": [], "refused": [], "candidate_count": 0}
     error = ""
@@ -652,13 +654,13 @@ def read_interviewer(
         now = conn.execute("SELECT company, website FROM outreach_targets WHERE id=? AND user_id=?", (target_id, user_id)).fetchone()
         if now is not None and research.company_changed(target, now[0], now[1]):
             # Renamed while LinkedIn was read: the profile was matched to the old company, so it is not kept.
-            _log(conn, target_id, user_id, "interviewer_read", detail="The company changed during the look-up, so it was not kept")
+            log_event(conn, target_id, user_id, "interviewer_read", detail="The company changed during the look-up, so it was not kept")
             return get_target(conn, target_id, user_id=user_id)
         conn.execute(
             "UPDATE outreach_targets SET interviewer_json=?, interviewer_at=?, interviewer_error=?, updated_at=? WHERE id=? AND user_id=?",
             (json.dumps(record, ensure_ascii=False), utc_now(), error, utc_now(), target_id, user_id),
         )
-        _log(conn, target_id, user_id, "interviewer_read", detail=error or f"{record['name']}: {len(record['notes'])} notes from LinkedIn")
+        log_event(conn, target_id, user_id, "interviewer_read", detail=error or f"{record['name']}: {len(record['notes'])} notes from LinkedIn")
     return get_target(conn, target_id, user_id=user_id)
 
 
@@ -674,9 +676,7 @@ def web_interviewer(
 
 
 def model_writer(provider_factory: Callable[[str, str], Any], provider: str | None) -> Callable[[str, str], str] | None:
-    """The call prep writer (outreach_drafting.resolve_provider), or None when it is the no-AI template."""
-    from .outreach_drafting import resolve_provider
-
+    """The call prep writer (outreach_config.resolve_provider), or None when it is the no-AI template."""
     provider_id, model = resolve_provider(provider, purpose="call_prep")
     if provider_id == "legacy":
         return None

@@ -276,7 +276,7 @@ def _apply_internal_automation(conn: sqlite3.Connection, sql: str) -> None:
     conn.executescript(sql)
 
 
-# What an outreach event records beside its text (outreach._log's ``data``): a
+# What an outreach event records beside its text (outreach.log_event's ``data``): a
 # reply read from Gmail keeps its ids, its sender, and both readings of it.
 _DECLINE_THANK_YOU_COLUMNS = (
     ("outreach_events", "detail_json", "TEXT NOT NULL DEFAULT '{}'"),

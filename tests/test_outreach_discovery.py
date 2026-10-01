@@ -16,7 +16,8 @@ from fastapi.testclient import TestClient
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
 from opportunity_app.outreach import create_target, get_target, list_targets
-from opportunity_app.outreach_contacts import SafeFetcher, apply_candidate, crawl_site, discover_candidates, find_contacts
+from opportunity_app.outreach_contacts import apply_candidate, crawl_site, discover_candidates, find_contacts
+from opportunity_app.web_fetch import SafeFetcher
 from opportunity_app.outreach_discovery import DiscoveryBusy, DiscoveryManager, _RunLock, _scope_brief, run_discovery, scope_definitions, validate_proposals
 from opportunity_app.schema import connect_product, ensure_product_schema
 
@@ -340,7 +341,7 @@ class DiscoveryTests(unittest.TestCase):
         leaving the comma searched every page for "acme robotics," and rejected
         real companies with "no source mentions the company".
         """
-        from opportunity_app.outreach_discovery import _mentions_company
+        from opportunity_app.outreach_discovery import mentions_company
 
         page = "About Acme Robotics -- we build robots."
         for name in (
@@ -354,15 +355,15 @@ class DiscoveryTests(unittest.TestCase):
             "Acme Robotics Company",
         ):
             with self.subTest(name=name):
-                self.assertTrue(_mentions_company(page, name, "acme.example"))
+                self.assertTrue(mentions_company(page, name, "acme.example"))
 
     def test_a_different_company_is_still_not_a_mention(self):
-        from opportunity_app.outreach_discovery import _mentions_company
+        from opportunity_app.outreach_discovery import mentions_company
 
         page = "About Acme Robotics -- we build robots."
-        self.assertFalse(_mentions_company(page, "Bovi Robotics, Inc.", "bovi.com"))
+        self.assertFalse(mentions_company(page, "Bovi Robotics, Inc.", "bovi.com"))
         self.assertTrue(
-            _mentions_company("Careers at bovi.com", "Bovi Robotics, Inc.", "bovi.com"),
+            mentions_company("Careers at bovi.com", "Bovi Robotics, Inc.", "bovi.com"),
             "the domain is still an independent way to match",
         )
 

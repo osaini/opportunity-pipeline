@@ -29,7 +29,7 @@ import httpcore
 import httpx
 
 from opportunity_app import schema
-from opportunity_app.outreach import DraftChangedError, _draft_fingerprint, approve_draft, create_target, get_target, update_target
+from opportunity_app.outreach import DraftChangedError, compute_draft_fingerprint, approve_draft, create_target, get_target, update_target
 from opportunity_app.outreach_contacts import (
     add_manual_contact,
     apply_candidate,
@@ -40,11 +40,6 @@ from opportunity_app.outreach_contacts import (
     find_contacts,
     guess_strength,
     list_candidates,
-    SafeFetcher,
-    _DeadlineBackend,
-    _DeadlineStream,
-    _FETCH_CLOCK,
-    default_client,
 )
 from opportunity_app.outreach_discovery import run_discovery
 from opportunity_app.outreach_email_search import check_person, search_emails
@@ -52,6 +47,7 @@ from opportunity_app.outreach_gmail import _mime
 from opportunity_app.outreach_recontact import RecontactManager, apply_recontact, eligible_targets, recontact_targets
 from opportunity_app.outreach_smtp import ACCEPTED, CATCH_ALL, REJECTED, UNKNOWN, SmtpVerifier, classify
 from opportunity_app.schema import connect_product, ensure_product_schema
+from opportunity_app.web_fetch import _FETCH_CLOCK, SafeFetcher, _DeadlineBackend, _DeadlineStream, default_client
 
 from helpers_platform import build_and_migrate
 from helpers_outreach import USER, company, only_for, proposals, safe_fetcher, site_transport
@@ -603,7 +599,7 @@ class StoredContactTests(DatabaseCase):
         fields = ["initial", "S", "B", "jane@acme.test", "[]", item["draft_generated_by"]]
         old_formula = hashlib.sha256(json.dumps(fields, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
         self.assertEqual(item["draft_fingerprint"], old_formula)
-        self.assertNotEqual(_draft_fingerprint(*fields[:6], "hello@acme.test"), old_formula)
+        self.assertNotEqual(compute_draft_fingerprint(*fields[:6], "hello@acme.test"), old_formula)
 
     def test_a_cc_must_look_like_an_address(self):
         target = create_target(self.conn, {"company": "Acme"}, user_id=USER)

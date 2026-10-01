@@ -30,9 +30,6 @@ from urllib.parse import quote
 
 import httpx
 
-from .mail_message import MAILER_DAEMONS, decode_base64url, header_map
-from .outreach import AWAITING_REPLY, _log, get_target
-from .outreach_drafting import _keep_current_draft
 from .gmail_client import (
     ClientFactory,
     GmailAuthError,
@@ -42,6 +39,9 @@ from .gmail_client import (
     LookSchedule,
     connection_state,
 )
+from .mail_message import MAILER_DAEMONS, decode_base64url, header_map
+from .outreach import AWAITING_REPLY, log_event, get_target
+from .outreach_versions import keep_current_draft
 from .outreach_gmail import (
     BOUNCE_EVENT,
     SENT_EVENT,
@@ -153,14 +153,14 @@ def record_bounce(
     }
     with conn:
         # The words that bounced stay in the draft history once a new contact changes them.
-        _keep_current_draft(conn, target_id, user_id, "initial")
+        keep_current_draft(conn, target_id, user_id, "initial")
         conn.execute(
             f"UPDATE outreach_targets SET {', '.join(f'{column}=?' for column in assignments)}, updated_at=? WHERE id=? AND user_id=?",
             [*assignments.values(), timestamp, target_id, user_id],
         )
         if reverted:
-            _log(conn, target_id, user_id, "status", from_status=target["status"], to_status="drafted")
-        _log(conn, target_id, user_id, BOUNCE_EVENT if whole else PARTIAL_BOUNCE_EVENT, detail=json.dumps(detail, sort_keys=True))
+            log_event(conn, target_id, user_id, "status", from_status=target["status"], to_status="drafted")
+        log_event(conn, target_id, user_id, BOUNCE_EVENT if whole else PARTIAL_BOUNCE_EVENT, detail=json.dumps(detail, sort_keys=True))
     return get_target(conn, target_id, user_id=user_id)
 
 
@@ -226,7 +226,7 @@ def read_notice(raw: bytes) -> dict[str, Any] | None:
     return {"failed": sorted(set(failed)), "reason": reason}
 
 
-def _is_delivery_notice(message: dict[str, Any]) -> bool:
+def is_delivery_notice(message: dict[str, Any]) -> bool:
     """Whether a message's headers alone make it a delivery notice of any kind (a failure or a delay), never mail."""
     headers = header_map(message)
     sender = parseaddr(headers.get("from", ""))[1].casefold()
@@ -234,9 +234,9 @@ def _is_delivery_notice(message: dict[str, Any]) -> bool:
     return sender.split("@", 1)[0] in MAILER_DAEMONS or ("multipart/report" in content_type and "delivery-status" in content_type)
 
 
-def _headers_say_failure(message: dict[str, Any]) -> dict[str, Any] | None:
+def headers_say_failure(message: dict[str, Any]) -> dict[str, Any] | None:
     """What a message's headers alone say, if it looks like a delivery failure notice."""
-    if not _is_delivery_notice(message):
+    if not is_delivery_notice(message):
         return None
     headers = header_map(message)
     subject = headers.get("subject", "")
@@ -270,7 +270,7 @@ def _notice_in_thread(gmail: _Gmail, thread: dict[str, Any], message_id: str) ->
             continue
         if int(message.get("internalDate") or 0) < sent_at:
             continue
-        hint = _headers_say_failure(message)
+        hint = headers_say_failure(message)
         if not hint:
             continue
         notice_id = str(message.get("id", ""))

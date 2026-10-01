@@ -232,7 +232,7 @@ def revoke_device(conn: sqlite3.Connection, device_id: str, *, user_id: str) -> 
     return bool(cursor.rowcount)
 
 
-def _canonical_url(value: str) -> tuple[str, str, str]:
+def split_canonical_url(value: str) -> tuple[str, str, str]:
     try:
         parsed = urllib.parse.urlsplit(value)
     except ValueError:
@@ -256,7 +256,7 @@ def _canonical_url(value: str) -> tuple[str, str, str]:
 def application_candidates(
     conn: sqlite3.Connection, page_url: str, *, user_id: str
 ) -> dict[str, Any]:
-    canonical, host, path = _canonical_url(page_url)
+    canonical, host, path = split_canonical_url(page_url)
     if not canonical:
         raise ExtensionApplyError("Application page URL must use HTTP or HTTPS")
     rows = conn.execute(
@@ -274,7 +274,7 @@ def application_candidates(
     ).fetchall()
     candidates: list[dict[str, Any]] = []
     for row in rows:
-        source_canonical, source_host, source_path = _canonical_url(str(row["source_url"]))
+        source_canonical, source_host, source_path = split_canonical_url(str(row["source_url"]))
         if source_canonical == canonical:
             match_kind = "exact_url"
         elif source_host == host and source_path == path:
@@ -481,7 +481,7 @@ def sync_session(
     user_id: str,
 ) -> dict[str, Any]:
     page_url = str(payload.get("page_url", ""))
-    if not _canonical_url(page_url)[0]:
+    if not split_canonical_url(page_url)[0]:
         raise ExtensionApplyError("Apply sessions require an HTTP or HTTPS page URL")
     application_id = str(payload.get("application_id") or "") or None
     if application_id:
@@ -556,7 +556,7 @@ def sync_step(
     if not session:
         raise ExtensionApplyError("Apply session must be synchronized before its steps")
     page_url = str(payload.get("page_url", ""))
-    if not _canonical_url(page_url)[0]:
+    if not split_canonical_url(page_url)[0]:
         raise ExtensionApplyError("Apply steps require an HTTP or HTTPS page URL")
     status_value = str(payload.get("status", "scanned"))
     if status_value not in {"scanned", "reviewed", "filled", "manual", "completed"}:

@@ -26,23 +26,19 @@ import sqlite3
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
-from .agent_providers import CliAgentProvider
-from .outreach import _log, website_domain
+from .outreach import log_event, website_domain
+from .outreach_batch import answers_by_target
 from .outreach_contacts import (
     EMAIL_PATTERN,
-    SafeFetcher,
-    _email_on_domain,
-    _emails_from_page,
-    _is_generic,
-    _PageParser,
-    _same_site,
-    fetch_site_robots,
+    email_on_domain,
+    emails_from_page,
+    is_generic_address,
+    PageParser,
     list_candidates,
-    public_web_url_error,
     store_candidate,
-    USER_AGENT,
 )
 from .timestamps import utc_now
+from .web_fetch import USER_AGENT, SafeFetcher, fetch_site_robots, public_web_url_error, same_site
 
 Runner = Callable[[str], str]
 
@@ -149,9 +145,9 @@ def check_person(
         return {"reason": "the company has no website to take its mail domain from"}
     if not name or not EMAIL_PATTERN.fullmatch(email):
         return {"reason": "no name or no usable address"}
-    if not _email_on_domain(email, domain):
+    if not email_on_domain(email, domain):
         return {"reason": f"{email} is not on {domain}"}
-    if _is_generic(email):
+    if is_generic_address(email):
         return {"reason": f"{email} is a shared inbox"}
     if public_web_url_error(source_url):
         return {"reason": "its source is not a public http(s) page"}
@@ -165,15 +161,15 @@ def check_person(
     kind = result.content_type.lower()
     if kind and "html" not in kind and "text/plain" not in kind:
         return {"reason": f"its source is not a web page ({kind.split(';')[0]})"}
-    parser = _PageParser()
+    parser = PageParser()
     parser.feed(result.text)
     parser.close()
-    printed = _emails_from_page(parser)
+    printed = emails_from_page(parser)
     if email not in printed:
         return {"reason": f"its source does not print {email}"}
     if not names(" ".join(parser.lines), name):
         return {"reason": f"its source does not name {name}"}
-    own_site = _same_site(result.url, domain)
+    own_site = same_site(result.url, domain)
     return {
         "name": name,
         "role": role,
@@ -198,22 +194,10 @@ def search_batch(
     verifier: Any = None,
 ) -> list[dict[str, Any]]:
     """Research one batch of companies and store every address its page backs up."""
-    parsed = CliAgentProvider.extract_json(runner(build_prompt(targets)))
-    answers = parsed.get("companies")
-    if not isinstance(answers, list):
-        raise ValueError("The email search reply had no companies list")
-    by_name = {target["company"].casefold(): target for target in targets}
-    seen: set[str] = set()
+    answered, unanswered = answers_by_target(runner(build_prompt(targets)), targets, "email search")
     results: list[dict[str, Any]] = []
     guard = hop_guard(fetcher)  # one robots.txt cache for the batch
-    for answer in answers:
-        if not isinstance(answer, dict):
-            continue
-        key = " ".join(str(answer.get("company") or "").split()).casefold()
-        target = by_name.get(key)
-        if target is None or key in seen:
-            continue
-        seen.add(key)
+    for answer, target in answered:
         people = answer.get("people") if isinstance(answer.get("people"), list) else []
         checked = [
             {**check_person(person, target, fetcher=fetcher, hop_check=guard), "proposed": str(person.get("email") or "")[:320]}
@@ -228,17 +212,16 @@ def search_batch(
         with conn:
             for item in kept:
                 store_candidate(conn, target["id"], user_id, item, timestamp)
-            _log(conn, target["id"], user_id, "email_search",
+            log_event(conn, target["id"], user_id, "email_search",
                  detail=f"{len(kept)} of {len(checked)} proposed addresses printed on their pages"[:2_000])
         results.append({
             "target_id": target["id"], "company": target["company"],
             "kept": [item["email"] for item in kept],
             "refused": [{"email": item["proposed"], "reason": item["reason"]} for item in checked if item["reason"]],
         })
-    for key, target in by_name.items():
-        if key not in seen:
-            results.append({"target_id": target["id"], "company": target["company"], "kept": [],
-                            "refused": [], "error": "the search did not answer for it"})
+    for target in unanswered:
+        results.append({"target_id": target["id"], "company": target["company"], "kept": [],
+                        "refused": [], "error": "the search did not answer for it"})
     return results
 
 

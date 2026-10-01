@@ -20,6 +20,7 @@ from cryptography.fernet import Fernet
 
 from .actions import ApplicationNotFoundError, add_application_task, update_application
 from .inbox_classifiers import classify_email
+from .outreach_config import sender_account
 from .timestamps import utc_now
 from .typesafe_decisions import DecisionClient
 
@@ -114,8 +115,7 @@ async def _gmail_account(client: httpx.AsyncClient, access_token: str) -> str:
     """The address a new Gmail connection signed into, or a ValueError that refuses the connection.
 
     Fails closed: a connection whose account cannot be confirmed is not saved.
-    PIPELINE_OUTREACH_ACCOUNT is read here rather than through outreach_drafting,
-    which imports this module.
+    PIPELINE_OUTREACH_ACCOUNT is read through outreach_config.
     """
     try:
         profile = await client.get(GMAIL_PROFILE_URL, headers={"Authorization": f"Bearer {access_token}"})
@@ -135,7 +135,7 @@ async def _gmail_account(client: httpx.AsyncClient, access_token: str) -> str:
         address = ""
     if not address:
         raise ValueError("Could not confirm which Gmail account connected; try connecting again")
-    expected = os.environ.get("PIPELINE_OUTREACH_ACCOUNT", "").strip()
+    expected = sender_account()
     if expected and expected.casefold() != address.casefold():
         raise ValueError(f"Google signed in as {address}, but this pipeline's mailbox is {expected}. Connect again and choose {expected}.")
     return address

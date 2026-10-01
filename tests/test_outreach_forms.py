@@ -910,9 +910,9 @@ class FormSubmitterCheckTests(unittest.TestCase):
 
 class _Page:
     def __init__(self, url, raw):
-        from opportunity_app.outreach_contacts import _PageParser
+        from opportunity_app.outreach_contacts import PageParser
 
-        self.parser = _PageParser()
+        self.parser = PageParser()
         self.parser.feed(raw)
         self.parser.close()
         self.record = {"url": url, "raw": raw, "parser": self.parser}

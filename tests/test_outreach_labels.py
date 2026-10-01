@@ -17,9 +17,10 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, automation, outreach, outreach_gmail, outreach_inbox, outreach_labels, schema
+from opportunity_app import STATIC_DIR, automation, inbox_watcher, outreach, outreach_gmail, outreach_inbox, outreach_labels, schema
 from opportunity_app.api import create_app
-from opportunity_app.outreach_inbox import InboxWatcher, decide_possible_reply
+from opportunity_app.inbox_watcher import InboxWatcher
+from opportunity_app.outreach_inbox import decide_possible_reply
 from opportunity_app.schema import connect_product
 from opportunity_app.settings_store import get_setting, put_setting
 from opportunity_app.timestamps import utc_now
@@ -1011,7 +1012,7 @@ class WatcherTests(LabelCase):
             "label_refused": "Gmail would not create a label with that name; choose another in Outreach settings",
         }
         for state, text in expected.items():
-            self.assertEqual(outreach_inbox.STEP_ERRORS[state], text)
+            self.assertEqual(inbox_watcher.STEP_ERRORS[state], text)
             self.assertNotIn("@", text)
         self.seeded(1)
         with self.conn:

@@ -32,7 +32,7 @@ from typing import Any
 from pipeline_core.visibility import capture_visible_sql
 
 from . import automation
-from .actions import OpportunityNotFoundError, _intent_state
+from .actions import OpportunityNotFoundError, intent_state
 from .database import rollback_quietly
 from .profile_store import read_stored_profile
 from .timestamps import utc_now
@@ -354,7 +354,7 @@ def pick_view(conn: sqlite3.Connection, user_id: str, opportunity_id: str) -> di
         "enabled": automation.mode(conn, user_id, FEATURE) == "on",
         # A pick is made only when a save changes the role, and never while paused (pick_after_save).
         "paused": automation.paused(conn, user_id),
-        "saved": _intent_state(conn, opportunity_id, user_id) == "saved",
+        "saved": intent_state(conn, opportunity_id, user_id) == "saved",
         "pick": stored_pick(conn, user_id, opportunity_id),
         "suggestion": pick_variant(conn, user_id, opportunity_id, visible_to=user_id),
         "options": resume_options(conn, user_id),

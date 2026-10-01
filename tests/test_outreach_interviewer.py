@@ -12,6 +12,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from opportunity_app import outreach_linkedin, outreach_research
+from opportunity_app.outreach_config import LINKEDIN_ENV
 from opportunity_app.outreach_interviewer import NOTES_INSTRUCTIONS
 from opportunity_app.outreach import create_target, get_target, log_reply, update_target
 from opportunity_app.outreach_interviewer import _meeting, confirm_profile, find_interviewer, interviewer_due, pick_profile, read_interviewer
@@ -73,21 +74,21 @@ class LinkedInGuardTests(unittest.TestCase):
 
     def test_nothing_is_read_without_an_account_set(self):
         fake = FakeLinkedIn()
-        with mock.patch.dict("os.environ", {outreach_linkedin.ACCOUNT_ENV: ""}):
+        with mock.patch.dict("os.environ", {LINKEDIN_ENV: ""}):
             with self.assertRaisesRegex(LinkedInUnavailable, "LinkedIn is off"):
                 self.client(fake).profile("danaortiz")
         self.assertEqual(fake.calls, [])
 
     def test_nothing_is_read_when_signed_in_as_another_account(self):
         fake = FakeLinkedIn(me="students-real-account")
-        with mock.patch.dict("os.environ", {outreach_linkedin.ACCOUNT_ENV: "https://www.linkedin.com/in/test-student-123/"}):
+        with mock.patch.dict("os.environ", {LINKEDIN_ENV: "https://www.linkedin.com/in/test-student-123/"}):
             with self.assertRaisesRegex(LinkedInUnavailable, "signed in as students-real-account, not test-student-123"):
                 self.client(fake).profile("danaortiz")
         self.assertEqual([tool for tool, _ in fake.calls], ["get_my_profile"])
 
     def test_nothing_is_read_when_the_server_could_import_the_browsers_sign_in(self):
         fake = FakeLinkedIn()
-        with mock.patch.dict("os.environ", {outreach_linkedin.ACCOUNT_ENV: "test-student-123"}):
+        with mock.patch.dict("os.environ", {LINKEDIN_ENV: "test-student-123"}):
             for config in ("Transport: stdio (uvx mcp-server-linkedin@latest)", GOOD_CONFIG + " --import-from-browser"):
                 with self.assertRaisesRegex(LinkedInUnavailable, "Nothing was read from LinkedIn"):
                     self.client(fake, config).profile("danaortiz")
@@ -106,7 +107,7 @@ class LinkedInGuardTests(unittest.TestCase):
         clock = iter([100.0, 101.0, 102.0, 103.0, 104.0, 105.0])
         client = LinkedInClient(call=FakeLinkedIn(), config=lambda: GOOD_CONFIG, sleep=waits.append, clock=lambda: next(clock), min_gap=20)
         with mock.patch.object(outreach_linkedin, "_last_call", [0.0]), \
-                mock.patch.dict("os.environ", {outreach_linkedin.ACCOUNT_ENV: "test-student-123"}):
+                mock.patch.dict("os.environ", {LINKEDIN_ENV: "test-student-123"}):
             client.profile("danaortiz")
         self.assertTrue(waits and all(wait > 0 for wait in waits), "the profile read waited after the account check")
 
@@ -203,7 +204,7 @@ class LinkedInGuardTests(unittest.TestCase):
 
     def test_a_name_searched_for_carries_no_command_characters(self):
         fake = FakeLinkedIn()
-        with mock.patch.dict("os.environ", {outreach_linkedin.ACCOUNT_ENV: "test-student-123"}):
+        with mock.patch.dict("os.environ", {LINKEDIN_ENV: "test-student-123"}):
             self.client(fake).search_people('Dana & echo INJECTED | rem ^Ortiz% "Acme" !')
         keywords = [arguments["keywords"] for tool, arguments in fake.calls if tool == "search_people"][0]
         self.assertFalse(outreach_linkedin.CMD_META.search(keywords), keywords)
@@ -220,7 +221,7 @@ class InterviewerTests(unittest.TestCase):
             "company": "Chargebot", "website": "https://chargebot.example", "contact_email": "hello@chargebot.example",
         }, user_id=USER)
         update_target(self.conn, self.target["id"], {"status": "call_scheduled"}, user_id=USER)
-        patcher = mock.patch.dict("os.environ", {outreach_linkedin.ACCOUNT_ENV: "test-student-123"})
+        patcher = mock.patch.dict("os.environ", {LINKEDIN_ENV: "test-student-123"})
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -330,7 +331,7 @@ class InterviewerTests(unittest.TestCase):
 
     def test_who_is_kept_even_when_linkedin_is_off(self):
         self.inbox("1", "dana@chargebot.example", "Dana Ortiz", "Re: call", "2026-09-28T18:30:00+00:00")
-        with mock.patch.dict("os.environ", {outreach_linkedin.ACCOUNT_ENV: ""}):
+        with mock.patch.dict("os.environ", {LINKEDIN_ENV: ""}):
             target = read_interviewer(self.conn, self.target["id"], user_id=USER,
                                       client=LinkedInClient(call=FakeLinkedIn(), config=lambda: GOOD_CONFIG), writer=None)
         self.assertEqual(target["interviewer"]["name"], "Dana Ortiz")

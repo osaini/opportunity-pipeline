@@ -48,26 +48,27 @@ from . import ROOT, automation
 from .outreach import (
     UNSENT_STATUSES,
     DraftChangedError,
-    _log,
+    log_event,
     get_target,
     missing_location_message,
     update_target,
+    website_domain,
 )
-from .outreach_contacts import Resolver, _resolve_host
-from .outreach_drafting import sender_account
+from .outreach_config import sender_account
 from .outreach_gmail import (
     IN_PROGRESS,
     SendConflictError,
     SendNeedsCheckError,
-    _claim,
-    _claim_held,
-    _claimed,
-    _settle_claim,
+    send_claim_row,
+    send_claim_held,
+    claimed_send,
+    settle_send_claim,
     attachment_path,
     attachment_problem,
 )
 from .preparation import confirmed_facts
 from .timestamps import utc_now
+from .web_fetch import USER_AGENT, Resolver, close_browser, resolve_host, same_site, site_robots
 
 FORM_STATES = ("found", "submitted", "unconfirmed", "needs_you", "failed")
 SUBMITTED_EVENT = "form_submitted"
@@ -286,18 +287,16 @@ def find_contact_form(pages: list[dict[str, Any]], *, fetcher: Any = None, rende
     if not pages or (form is not None and CONTACT_LINK.search(form["page_url"])):
         return form
     fallback = form
-    from urllib.parse import urljoin, urlsplit
-
-    from .outreach_contacts import USER_AGENT, _same_site, site_robots
+    from urllib.parse import urljoin
 
     home = pages[0]["url"]
-    domain = (urlsplit(home).hostname or "").lower().removeprefix("www.")
+    domain = website_domain(home)
     seen = {page["url"].split("#", 1)[0].rstrip("/") for page in pages}
     links: list[str] = []
     for page in pages:
         for href, text in getattr(page.get("parser"), "links", []):
             absolute = urljoin(page["url"], href).split("#", 1)[0]
-            if absolute.startswith(("http://", "https://")) and _same_site(absolute, domain) and CONTACT_LINK.search(f"{href} {text}"):
+            if absolute.startswith(("http://", "https://")) and same_site(absolute, domain) and CONTACT_LINK.search(f"{href} {text}"):
                 links.append(absolute)
     contact_pages = [link for link in dict.fromkeys(links)][:MAX_FORM_PAGES]
     unread = [link for link in contact_pages if link.rstrip("/") not in seen]
@@ -349,16 +348,16 @@ def record_contact_form(
             (target_id, user_id, form["page_url"], json.dumps(form["fields"]), form["captcha"], int(form["accepts_file"]), timestamp, timestamp),
         )
         if existing is None:
-            _log(conn, target_id, user_id, "contact_form_found", detail=form["page_url"])
+            log_event(conn, target_id, user_id, "contact_form_found", detail=form["page_url"])
     return form
 
 
 def set_contact_form(conn: sqlite3.Connection, target_id: str, page_url: str, *, user_id: str) -> dict[str, Any]:
     """The student names the page with the company's contact form themselves."""
-    from .outreach import _validate_web_url
+    from .outreach import validate_web_url
 
     page_url = page_url.strip()
-    _validate_web_url(page_url, "Contact form page")
+    validate_web_url(page_url, "Contact form page")
     target = get_target(conn, target_id, user_id=user_id)
     form = target["contact_form"]
     if form and form["state"] in {"submitted", "unconfirmed"}:
@@ -374,7 +373,7 @@ def set_contact_form(conn: sqlite3.Connection, target_id: str, page_url: str, *,
             """,
             (target_id, user_id, page_url, timestamp, timestamp),
         )
-        _log(conn, target_id, user_id, "contact_form_set", detail=page_url)
+        log_event(conn, target_id, user_id, "contact_form_set", detail=page_url)
     return get_target(conn, target_id, user_id=user_id)
 
 
@@ -797,7 +796,7 @@ class FormSubmitter:
         *,
         headed: bool = False,
         person_wait: float = 0,
-        resolve: Resolver = _resolve_host,
+        resolve: Resolver = resolve_host,
         screenshot_dir: Path = SCREENSHOT_DIR,
         launch_args: list[str] | None = None,
         route_hook: Callable[[Any], None] | None = None,
@@ -822,16 +821,7 @@ class FormSubmitter:
         return self
 
     def __exit__(self, *_exc: Any) -> None:
-        for closer in (
-            lambda: self._context and self._context.close(),
-            lambda: self._browser and self._browser.close(),
-            lambda: self._playwright and self._playwright.stop(),
-        ):
-            try:
-                closer()
-            except Exception:  # noqa: BLE001 - shutting down
-                pass
-        self._playwright = self._browser = self._context = None
+        close_browser(self)
 
     def _start(self) -> None:
         if self._context is not None:
@@ -1244,10 +1234,10 @@ def form_ready(target: dict[str, Any], *, fingerprint: str | None = None, retry:
 def _click_held(row: Any) -> bool:
     """Whether a request may still be pressing the button under this form claim ('clicking').
 
-    Held exactly as a claim still being worked on would be (_claim_held): by
+    Held exactly as a claim still being worked on would be (send_claim_held): by
     this process while its request runs, or by another for a grace period.
     """
-    return row["state"] == automation.FORM_HANDED_OVER and _claim_held({**dict(row), "state": "drafting"})
+    return row["state"] == automation.FORM_HANDED_OVER and send_claim_held({**dict(row), "state": "drafting"})
 
 
 def submit_contact_form(
@@ -1272,9 +1262,9 @@ def submit_contact_form(
     form_ready(target, fingerprint=fingerprint, retry=retry_unconfirmed)
     identity = identity_for(conn, user_id)
     stale_token = ""
-    existing = _claim(conn, target_id, user_id, "initial")
+    existing = send_claim_row(conn, target_id, user_id, "initial")
     if existing is not None:
-        if _claim_held(existing) or _click_held(existing):
+        if send_claim_held(existing) or _click_held(existing):
             raise SendConflictError(IN_PROGRESS)
         if existing["state"] == "sent":
             raise ValueError("This first message was already sent")
@@ -1295,7 +1285,7 @@ def submit_contact_form(
         form_ready(fresh, fingerprint=fingerprint or target["draft_fingerprint"], retry=retry_unconfirmed)
         return fresh
 
-    with _claimed(conn, target_id, user_id, "initial", "form", revalidate, stale_token=stale_token) as (token, fresh):
+    with claimed_send(conn, target_id, user_id, "initial", "form", revalidate, stale_token=stale_token) as (token, fresh):
         def hand_over() -> bool:
             """Just before the button: hand the claim over, in one step with checking the pause.
 
@@ -1321,7 +1311,7 @@ def submit_contact_form(
                     attachment=attachment, name=target_id, **submit_options,
                 )
         except BaseException:
-            _settle_claim(conn, target_id, "initial", token, "unconfirmed")
+            settle_send_claim(conn, target_id, "initial", token, "unconfirmed")
             raise
         outcome = result["outcome"]
         # Stopped by a pause just before the button: nothing went, and the form waits as it was.
@@ -1348,9 +1338,9 @@ def submit_contact_form(
                     ("found" if held else outcome, result.get("note", "")[:500], timestamp, timestamp, target_id, user_id),
                 )
                 event = {"submitted": SUBMITTED_EVENT, "unconfirmed": UNCONFIRMED_EVENT}.get(outcome, NOT_SENT_EVENT)
-                _log(conn, target_id, user_id, event, detail=json.dumps(detail, sort_keys=True))
+                log_event(conn, target_id, user_id, event, detail=json.dumps(detail, sort_keys=True))
         except BaseException:
-            _settle_claim(conn, target_id, "initial", token, "sent" if outcome == "submitted" else "unconfirmed")
+            settle_send_claim(conn, target_id, "initial", token, "sent" if outcome == "submitted" else "unconfirmed")
             raise
     marked = True
     if outcome == "submitted":

@@ -34,7 +34,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from pipeline_core import MAX_PER_COMPANY, OpportunityFilters, OpportunityRepository
 
-from . import DEFAULT_PLATFORM_DB, DEFAULT_PROFILE, STATIC_DIR
+from . import APPLY_ROOT, DEFAULT_PLATFORM_DB, DEFAULT_PROFILE, STATIC_DIR
 from . import application_inbox
 from .legacy import load_env_file
 from . import automation as automation_core
@@ -268,13 +268,12 @@ from .outreach import (
     update_target as update_outreach_target,
 )
 from .outreach_contacts import (
-    SafeFetcher,
     add_manual_contact as add_manual_outreach_contact,
     apply_candidate as apply_outreach_candidate,
-    default_fetcher as default_contact_fetcher,
     find_contacts as find_outreach_contacts,
     list_candidates as list_outreach_candidates,
 )
+from .web_fetch import SafeFetcher, default_fetcher as default_contact_fetcher
 from .outreach_call_prep import (
     CallPrepWorker, NotReplied, ReplyRequired, auto_queue_call_prep, queue_call_prep,
 )
@@ -288,19 +287,19 @@ from .system_status import SystemStatus
 from .boards import BoardLookupExpired, BoardTracker
 from .outreach_settings import OutreachSettings
 from .document_pdf import markdown_to_html, pdf_renderer
-from .outreach_drafting import (
-    MAX_COMMENT_CHARS as MAX_DRAFT_COMMENT_CHARS,
+from .outreach_drafting import MAX_COMMENT_CHARS as MAX_DRAFT_COMMENT_CHARS, generate_draft as generate_outreach_draft
+from .outreach_versions import (
     DraftVersionNotFoundError,
     draft_versions as outreach_draft_versions,
-    generate_draft as generate_outreach_draft,
     restore_draft_version as restore_outreach_draft_version,
-    sender_account,
 )
+from .outreach_config import sender_account
 from .outreach_delivery import bounce_from_text, check_deliveries
-from .outreach_inbox import InboxWatcher, PossibleReplyNotFound, PossibleReplySettled, capture_replies, decide_possible_reply
+from .inbox_watcher import InboxWatcher
+from .outreach_inbox import PossibleReplyNotFound, PossibleReplySettled, capture_replies, decide_possible_reply
 from .outreach_forms import default_submitter_factory as default_form_submitter_factory, set_contact_form, submit_contact_form
 from . import apply_policy, apply_preflight, apply_runs, apply_sensitive
-from .apply_runs import APPLY_ROOT, recover_stale as recover_stale_applications
+from .apply_runs import recover_stale as recover_stale_applications
 from .apply_schema_client import SchemaClient, default_schema_client_factory
 from .outreach_automation import AutomationWorker, settings as automation_settings, update_settings as update_automation_settings
 from .outreach_schedule import cancel_send, schedule_send
@@ -2721,7 +2720,7 @@ def create_app(
     ) -> dict[str, Any]:
         # One action, for the application timeline's Undo on an automatic change.
         try:
-            row = automation_core._row(conn, action_id, user_id)
+            row = automation_core.action_row(conn, action_id, user_id)
         except LookupError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such automation action") from exc
         return automation_core._decode(row)

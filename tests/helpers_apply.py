@@ -13,12 +13,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from opportunity_app import actions, apply_preflight, apply_runs, apply_sensitive, automation, preparation
+from opportunity_app import SERVER_INSTANCE, actions, apply_preflight, apply_runs, apply_sensitive, automation, preparation
 from opportunity_app.apply_checks import question_key
 from opportunity_app.apply_policy import SchemaField, Sources, build_plan
 from pipeline_core.identity import employer_key
 from opportunity_app.apply_sensitive import StoreRefused, add_entry
-from opportunity_app.outreach_gmail import SERVER_INSTANCE
 from opportunity_app.profile import update_profile
 from opportunity_app.schema import connect_product
 from opportunity_app.timestamps import utc_now

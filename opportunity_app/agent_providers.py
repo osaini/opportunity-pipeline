@@ -118,14 +118,14 @@ def _build_provider_catalog() -> list[dict[str, Any]]:
             "claude-code",
             "Claude Code (subscription)",
             os.environ.get("CLAUDE_AGENT_MODEL", "subscription"),
-            _cli_available(_cli_binary("claude-code")),
+            cli_available(cli_binary("claude-code")),
             "Install Claude Code and log in (`claude`) to use your Claude subscription.",
         ),
         (
             "codex-cli",
             "Codex CLI (subscription)",
             os.environ.get("CODEX_AGENT_MODEL", "subscription"),
-            _cli_available(_cli_binary("codex-cli")),
+            cli_available(cli_binary("codex-cli")),
             "Install Codex CLI and log in (`codex login`) to use your ChatGPT subscription.",
         ),
     ]
@@ -148,13 +148,37 @@ CLI_CONFIG = {
 }
 
 
-def _cli_binary(provider_id: str) -> str:
+def cli_binary(provider_id: str) -> str:
     binary, override_env = CLI_CONFIG[provider_id]
     return os.environ.get(override_env) or binary
 
 
-def _cli_available(binary: str) -> bool:
+def cli_available(binary: str) -> bool:
     return bool(shutil.which(binary))
+
+
+# The Claude Code flags for a call with no tools and no MCP servers (a reviewer, or complete_text).
+CLAUDE_NO_TOOLS = ["-p", "--output-format", "text", "--tools", "", "--strict-mcp-config"]
+# The start of every Codex CLI call here: a read-only sandbox, run outside any repository.
+CODEX_READ_ONLY = ["exec", "--skip-git-repo-check", "--sandbox", "read-only"]
+
+
+def run_headless(command: list[str], prompt: str, *, timeout: float, cwd: str) -> subprocess.CompletedProcess:
+    """Run a Claude Code or Codex CLI command with the prompt on stdin, and return what it did.
+
+    Only the invocation is shared: UTF-8 with undecodable bytes replaced, no console window on Windows. Each caller
+    chooses its own directory (an empty one, outside the project), checks the return code and words its own error,
+    because what a student sees on a failure differs per caller. A timeout or a missing binary raises as subprocess does.
+    """
+    return subprocess.run(
+        command, input=prompt, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=timeout, cwd=cwd, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+
+
+def failure_detail(completed: subprocess.CompletedProcess) -> str:
+    """What a failed CLI said: its stderr, else its stdout, trimmed."""
+    return (completed.stderr or completed.stdout or "").strip()
 
 
 def configured_provider(provider: str) -> dict[str, Any]:
@@ -393,7 +417,7 @@ class CliAgentProvider:
         self.provider_id = provider_id
         self.name = provider_id
         self.model = model
-        self.binary = _cli_binary(provider_id)
+        self.binary = cli_binary(provider_id)
         self.timeout = float(timeout or os.environ.get("PIPELINE_AGENT_CLI_TIMEOUT", "180"))
         self._runner = runner
 
@@ -444,8 +468,8 @@ class CliAgentProvider:
         it into local files or be re-parsed by a cmd.exe shim.
         """
         if self.provider_id == "claude-code":
-            return [self.binary, "-p", "--output-format", "text", "--tools", "", "--strict-mcp-config"]
-        return [self.binary, "exec", "--skip-git-repo-check", "--sandbox", "read-only", "-"]
+            return [self.binary, *CLAUDE_NO_TOOLS]
+        return [self.binary, *CODEX_READ_ONLY, "-"]
 
     def _invoke(self, command: list[str], stdin: str) -> str:
         try:
@@ -454,11 +478,7 @@ class CliAgentProvider:
             else:
                 # A directory of its own and empty, as the sibling CLI runners use, not the shared system temp.
                 with tempfile.TemporaryDirectory(prefix="agent-cli-", ignore_cleanup_errors=True) as workdir:
-                    completed = subprocess.run(
-                        command, input=stdin, capture_output=True, text=True, encoding="utf-8",
-                        errors="replace", timeout=self.timeout, cwd=workdir,
-                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                    )
+                    completed = run_headless(command, stdin, timeout=self.timeout, cwd=workdir)
         except (OSError, subprocess.SubprocessError) as exc:
             raise RuntimeError(f"{self.provider_id} CLI could not start: {exc}") from exc
         if getattr(completed, "returncode", 1) != 0:

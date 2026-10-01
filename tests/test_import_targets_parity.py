@@ -22,9 +22,10 @@ from uuid import uuid4
 from opportunity_app import outreach
 from opportunity_app.outreach import (
     IMPORT_IGNORED_FIELDS, OUTREACH_ORIGINS, _apply_draft_side_effects, _apply_status_side_effects, _claim_detail,
-    _is_unique_violation, _log, _normalize, company_key, create_target, existing_keys, get_target, import_targets,
+    log_event, _normalize, company_key, create_target, existing_keys, get_target, import_targets,
     website_domain,
 )
+from opportunity_app.database import is_unique_violation
 from opportunity_app.schema import connect_product
 from opportunity_app.timestamps import utc_now
 
@@ -68,15 +69,15 @@ def reference_create_target(conn, payload, *, user_id, today=None, origin="manua
                 f"INSERT INTO outreach_targets({', '.join(columns)}) VALUES({', '.join('?' * len(columns))})",
                 [target_id, user_id, *values.values(), timestamp, timestamp],
             )
-            _log(conn, target_id, user_id, "created", to_status=values["status"])
+            log_event(conn, target_id, user_id, "created", to_status=values["status"])
             if values.get("location") and origin == "import":
-                _log(conn, target_id, user_id, "location_import_claim", detail=_claim_detail(payload))
+                log_event(conn, target_id, user_id, "location_import_claim", detail=_claim_detail(payload))
             conn.execute(
                 "DELETE FROM outreach_dismissed WHERE user_id=? AND company_key=?",
                 (user_id, company_key(values["company"])),
             )
     except Exception as exc:
-        if _is_unique_violation(exc):
+        if is_unique_violation(exc):
             raise ValueError(f"{values['company']} is already in your outreach list") from exc
         raise
     return get_target(conn, target_id, user_id=user_id, today=today)

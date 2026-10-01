@@ -30,6 +30,7 @@ from typing import Any
 from pipeline_core.env import iter_env_pairs
 
 from . import ROOT
+from .agent_providers import CLI_CONFIG, cli_available, cli_binary
 
 MIN_PYTHON = (3, 11)
 GENERATED_SECRETS = {
@@ -196,11 +197,8 @@ def set_env_values(path: Path, updates: dict[str, str], *, overwrite: bool = Fal
 
 
 def detect_agent_cli() -> str:
-    for provider, binary, override in (
-        ("claude-code", "claude", "PIPELINE_CLAUDE_BIN"),
-        ("codex-cli", "codex", "PIPELINE_CODEX_BIN"),
-    ):
-        if shutil.which(os.environ.get(override) or binary):
+    for provider in CLI_CONFIG:
+        if cli_available(cli_binary(provider)):
             return provider
     return ""
 
@@ -363,11 +361,11 @@ def _validate_automation_settings(profile: dict[str, Any], errors: list[str], wa
 def _validate_apply_agent_settings(profile: dict[str, Any], errors: list[str], warnings: list[str]) -> None:
     """The per-student Apply for me settings: how the name is written on an application, and the limits."""
     from .apply_runs import DEFAULT_LIMITS, LIMIT_MAXIMUM
-    from .profile import _name_parts_errors
+    from .profile import name_parts_errors
 
     parts = profile.get("name_parts")
     if parts is not None:
-        errors.extend(_name_parts_errors(parts))
+        errors.extend(name_parts_errors(parts))
     settings = profile.get("apply_agent")
     if settings is None:
         return

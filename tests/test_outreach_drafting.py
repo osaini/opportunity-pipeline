@@ -33,12 +33,10 @@ from opportunity_app.outreach import (
 from opportunity_app.outreach_drafting import (
     INSTRUCTIONS,
     DraftRejected,
-    DraftVersionNotFoundError,
-    draft_versions,
     generate_draft,
-    restore_draft_version,
     _states_a_lead_result, _unsupported_numbers, validate_draft,
 )
+from opportunity_app.outreach_versions import DraftVersionNotFoundError, draft_versions, restore_draft_version
 from opportunity_app.schema import connect_product, ensure_product_schema
 from opportunity_app.timestamps import utc_now
 

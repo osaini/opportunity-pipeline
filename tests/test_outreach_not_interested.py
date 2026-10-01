@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from opportunity_app import STATIC_DIR, internal_automation, schema
 from opportunity_app.api import create_app
 from opportunity_app.outreach import (
-    _log,
+    log_event,
     company_key,
     create_target,
     existing_keys,
@@ -201,7 +201,7 @@ class NotInterestedAutomationTests(unittest.TestCase):
         target = self.target(name, status="replied", sent_at=(date.today() - timedelta(days=5)).isoformat(),
                              email_subject="Internship question", email_body="Hi,\n\nA short note.\n\nSam")
         with self.conn:
-            _log(self.conn, target["id"], USER, "reply_logged", detail="Thanks for writing. Could we talk next week?")
+            log_event(self.conn, target["id"], USER, "reply_logged", detail="Thanks for writing. Could we talk next week?")
         return target
 
     def test_call_prep_and_the_thank_you_do_not_start_on_their_own(self):

@@ -16,29 +16,22 @@ choose_contact() is the one place that decides what an unattended run may use.
 from __future__ import annotations
 
 import html
-import ipaddress
 import json
 import re
-import socket
 import sqlite3
-import threading
 import time
-from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any, Callable
 from urllib.parse import urljoin, urlsplit
-from urllib.robotparser import RobotFileParser
 from uuid import uuid4
 
-import httpcore
 import httpx
 
-from .outreach import _EMAIL, MANUAL_CONTACT_ROUTE, _log, get_target, update_target, website_domain
+from .outreach import EMAIL_ADDRESS, MANUAL_CONTACT_ROUTE, log_event, get_target, update_target, website_domain
 from .timestamps import utc_now
+from .web_fetch import USER_AGENT, SafeFetcher, public_web_url_error, same_site, site_robots
 
-USER_AGENT = "Mozilla/5.0 (compatible; internship-pipeline-outreach/1.0; one student's research)"
 MAX_PAGES = 12
-MAX_PAGE_BYTES = 2 * 1024 * 1024
 # Pages rendered in a browser when the plain crawl found no one: a team page
 # built by scripts reads as empty HTML.
 MAX_RENDERED_PAGES = 4
@@ -149,37 +142,6 @@ CLOUDFLARE_PROTECTED = "/cdn-cgi/l/email-protection"
 # which one the company uses. Small companies most often give people first@.
 PATTERN_PREFERENCE = ("first", "first.last", "flast", "firstlast", "first_last")
 
-Resolver = Callable[[str], list[str]]
-
-
-@dataclass(frozen=True)
-class FetchResult:
-    url: str
-    status: int
-    text: str
-    error: str | None = None
-    content_type: str = ""
-
-
-def public_web_url_error(url: str) -> str | None:
-    """Validate the URL shape before DNS is consulted."""
-    try:
-        parsed = urlsplit(str(url or "").strip())
-        host = parsed.hostname
-        if parsed.scheme not in {"http", "https"} or not host or parsed.username or parsed.password:
-            return "invalid"
-        lowered = host.rstrip(".").lower()
-        if lowered == "localhost" or lowered.endswith(".localhost"):
-            return "private"
-        try:
-            ipaddress.ip_address(lowered)
-        except ValueError:
-            return None
-        return "private"
-    except ValueError:
-        return "invalid"
-
-
 def decode_cloudflare_email(encoded: str) -> str:
     """The address behind Cloudflare's email obfuscation (a hex XOR string), or ""."""
     try:
@@ -202,175 +164,7 @@ def deobfuscate(text: str) -> str:
     return _SPELLED_OUT.sub(spelled, text)
 
 
-def _resolve_host(host: str) -> list[str]:
-    return sorted({item[4][0] for item in socket.getaddrinfo(host, None)})
-
-
-class _FetchClock(threading.local):
-    """When the fetch this thread is running must be over (time.monotonic), or None for no limit."""
-
-    until: float | None = None
-
-
-_FETCH_CLOCK = _FetchClock()
-
-
-def _within_deadline(timeout: float | None, error: type[Exception]) -> float | None:
-    """A socket wait cut down to what is left of the fetch's deadline; ``error`` once none is left."""
-    until = _FETCH_CLOCK.until
-    if until is None:
-        return timeout
-    left = until - time.monotonic()
-    if left <= 0:
-        raise error("the fetch's deadline passed")
-    return left if timeout is None else min(timeout, left)
-
-
-class _DeadlineStream(httpcore.NetworkStream):
-    """A connection whose every read and write gives up when the fetch's deadline does.
-
-    httpx's timeout limits each wait on the socket, so a server that sends one
-    byte of its status line or headers every few seconds never trips it, and
-    ``iter_bytes`` is not reached until the headers are in.
-    """
-
-    def __init__(self, inner: httpcore.NetworkStream) -> None:
-        self._inner = inner
-
-    def read(self, max_bytes: int, timeout: float | None = None) -> bytes:
-        return self._inner.read(max_bytes, _within_deadline(timeout, httpcore.ReadTimeout))
-
-    def write(self, buffer: bytes, timeout: float | None = None) -> None:
-        self._inner.write(buffer, _within_deadline(timeout, httpcore.WriteTimeout))
-
-    def close(self) -> None:
-        self._inner.close()
-
-    def start_tls(self, ssl_context: Any, server_hostname: str | None = None, timeout: float | None = None) -> httpcore.NetworkStream:
-        return _DeadlineStream(self._inner.start_tls(ssl_context, server_hostname, _within_deadline(timeout, httpcore.ConnectTimeout)))
-
-    def get_extra_info(self, info: str) -> Any:
-        return self._inner.get_extra_info(info)
-
-
-class _DeadlineBackend(httpcore.NetworkBackend):
-    def __init__(self, inner: httpcore.NetworkBackend) -> None:
-        self._inner = inner
-
-    def connect_tcp(self, host: str, port: int, timeout: float | None = None, local_address: str | None = None, socket_options: Any = None) -> httpcore.NetworkStream:
-        stream = self._inner.connect_tcp(host, port, _within_deadline(timeout, httpcore.ConnectTimeout), local_address, socket_options)
-        return _DeadlineStream(stream)
-
-    def connect_unix_socket(self, path: str, timeout: float | None = None, socket_options: Any = None) -> httpcore.NetworkStream:
-        return _DeadlineStream(self._inner.connect_unix_socket(path, _within_deadline(timeout, httpcore.ConnectTimeout), socket_options))
-
-    def sleep(self, seconds: float) -> None:
-        self._inner.sleep(seconds)
-
-
-def _bound_by_deadline(client: httpx.Client) -> None:
-    """Make every real connection of ``client`` obey the fetch deadline (see _DeadlineStream).
-
-    A transport that opens no sockets (a test's MockTransport) needs nothing. A
-    real one that cannot be wrapped is an error, not a silent loss of the limit.
-    """
-    for transport in (client._transport, *client._mounts.values()):
-        if not isinstance(transport, httpx.HTTPTransport):
-            continue
-        pool = getattr(transport, "_pool", None)
-        backend = getattr(pool, "_network_backend", None)
-        if backend is None:
-            raise RuntimeError("This httpx version's connection pool cannot be bounded by a fetch deadline")
-        if not isinstance(backend, _DeadlineBackend):
-            pool._network_backend = _DeadlineBackend(backend)
-
-
-class SafeFetcher:
-    """Fetch public web pages with bounded bodies and checked redirect hops."""
-
-    def __init__(
-        self, client: httpx.Client, resolve: Resolver = _resolve_host, clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        self.client = client
-        self.resolve = resolve
-        self.clock = clock
-        _bound_by_deadline(client)
-
-    def __enter__(self) -> "SafeFetcher":
-        self.client.__enter__()
-        return self
-
-    def __exit__(self, *args: Any) -> None:
-        self.client.__exit__(*args)
-
-    def fetch(
-        self, url: str, *, same_host_only: bool, hop_check: Callable[[str], str | None] | None = None,
-        deadline_seconds: float | None = None,
-    ) -> FetchResult:
-        """hop_check, when given, is asked about every URL before it is requested, redirects included.
-
-        The client's timeout limits each wait for the server, not the whole
-        fetch: a server that sends a byte every few seconds never trips it.
-        ``deadline_seconds`` bounds the whole fetch, redirects, headers, and body
-        together (looking the host up is the operating system's own wait).
-        """
-        start_host = (urlsplit(url).hostname or "").lower().removeprefix("www.")
-        current = url
-        stop_at = self.clock() + deadline_seconds if deadline_seconds is not None else None
-        for redirects in range(6):
-            if stop_at is not None and self.clock() >= stop_at:
-                return FetchResult(current, 0, "", "timeout")
-            policy = public_web_url_error(current)
-            if policy:
-                return FetchResult(current, 0, "", policy)
-            refused = hop_check(current) if hop_check is not None else None
-            if refused:
-                return FetchResult(current, 0, "", refused)
-            host = (urlsplit(current).hostname or "").lower()
-            if same_host_only and host.removeprefix("www.") != start_host:
-                return FetchResult(current, 0, "", "left site")
-            try:
-                addresses = self.resolve(host)
-                if not addresses:
-                    return FetchResult(current, 0, "", "dns")
-                if any(not ipaddress.ip_address(address).is_global for address in addresses):
-                    return FetchResult(current, 0, "", "private")
-            except Exception:
-                return FetchResult(current, 0, "", "dns")
-            _FETCH_CLOCK.until = time.monotonic() + (stop_at - self.clock()) if stop_at is not None else None
-            try:
-                with self.client.stream("GET", current) as response:
-                    status = response.status_code
-                    if status in {301, 302, 303, 307, 308}:
-                        location = response.headers.get("location")
-                        if not location:
-                            return FetchResult(str(response.url), status, "", "redirect")
-                        if redirects == 5:
-                            return FetchResult(str(response.url), status, "", "redirect")
-                        current = urljoin(str(response.url), location)
-                        continue
-                    chunks: list[bytes] = []
-                    size = 0
-                    for chunk in response.iter_bytes():
-                        size += len(chunk)
-                        if size > MAX_PAGE_BYTES:
-                            return FetchResult(str(response.url), status, "", "too_large")
-                        if stop_at is not None and self.clock() >= stop_at:
-                            return FetchResult(str(response.url), status, "", "timeout")
-                        chunks.append(chunk)
-                    encoding = response.encoding or "utf-8"
-                    return FetchResult(
-                        str(response.url), status, b"".join(chunks).decode(encoding, errors="replace"),
-                        content_type=response.headers.get("content-type", ""),
-                    )
-            except Exception:
-                return FetchResult(current, 0, "", "timeout" if stop_at is not None and self.clock() >= stop_at else "network")
-            finally:
-                _FETCH_CLOCK.until = None
-        return FetchResult(current, 0, "", "redirect")
-
-
-class _PageParser(HTMLParser):
+class PageParser(HTMLParser):
     """Collect links, visible text lines, and JSON-LD blocks from one page."""
 
     BLOCK_TAGS = {"p", "div", "li", "h1", "h2", "h3", "h4", "h5", "h6", "br", "tr", "td", "section", "article", "span", "a"}
@@ -451,25 +245,7 @@ class _PageParser(HTMLParser):
         self._flush()
 
 
-def default_client() -> httpx.Client:
-    return httpx.Client(
-        timeout=10.0,
-        follow_redirects=False,
-        verify=True,
-        headers={"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"},
-    )
-
-
-def default_fetcher() -> SafeFetcher:
-    return SafeFetcher(default_client())
-
-
-def _same_site(url: str, domain: str) -> bool:
-    host = (urlsplit(url).hostname or "").lower()
-    return host == domain or host.endswith(f".{domain}")
-
-
-def _email_on_domain(email: str, domain: str) -> bool:
+def email_on_domain(email: str, domain: str) -> bool:
     email_domain = email.rsplit("@", 1)[-1].lower()
     return email_domain == domain or email_domain.endswith(f".{domain}")
 
@@ -492,7 +268,7 @@ def mail_domain_accepts(client: httpx.Client, domain: str) -> bool | None:
     return any(answer.get("type") == 15 for answer in payload.get("Answer") or [])
 
 
-def _page_priority(url: str, text: str, keywords: tuple[tuple[str, int], ...] = PAGE_KEYWORDS) -> int | None:
+def page_priority(url: str, text: str, keywords: tuple[tuple[str, int], ...] = PAGE_KEYWORDS) -> int | None:
     haystack = f"{urlsplit(url).path} {text}".lower()
     ranks = [rank for keyword, rank in keywords if keyword in haystack]
     return min(ranks) if ranks else None
@@ -505,7 +281,7 @@ def _role_rank(role: str) -> int:
     return len(PREFERRED_ROLES)
 
 
-def _people_from_page(parser: _PageParser) -> list[dict[str, str]]:
+def _people_from_page(parser: PageParser) -> list[dict[str, str]]:
     people: list[dict[str, str]] = []
     for block in parser.json_ld:
         try:
@@ -567,7 +343,7 @@ def _people_from_page(parser: _PageParser) -> list[dict[str, str]]:
     return people
 
 
-def _emails_from_page(parser: _PageParser) -> set[str]:
+def emails_from_page(parser: PageParser) -> set[str]:
     found = set()
     for href, _text in parser.links:
         if href.lower().startswith("mailto:"):
@@ -597,7 +373,7 @@ def company_mail_domains(pages: list[dict[str, Any]], domain: str) -> list[str]:
         parser = page.get("parser")
         if parser is None:
             continue
-        for email in _emails_from_page(parser):
+        for email in emails_from_page(parser):
             other = email.rsplit("@", 1)[-1]
             if other == domain or other.endswith(f".{domain}"):
                 continue
@@ -630,25 +406,6 @@ def _pattern_of(email: str, name: str) -> str | None:
         if build(first, last) == local:
             return pattern
     return None
-
-
-def fetch_site_robots(start: str, fetcher: SafeFetcher) -> tuple[RobotFileParser, bool]:
-    """The site's robots.txt rules, and whether the answer is settled enough to reuse.
-
-    A missing or unreadable file allows everything. The flag is True for a file that was read (200) or is
-    plainly absent (404, 410), and False for a failed fetch or any other status, which a later try may answer
-    differently.
-    """
-    robots = RobotFileParser()
-    response = fetcher.fetch(urljoin(start, "/robots.txt"), same_host_only=True)
-    read = not response.error and response.status == 200
-    robots.parse(response.text.splitlines() if read else [])
-    return robots, read or (not response.error and response.status in (404, 410))
-
-
-def site_robots(start: str, fetcher: SafeFetcher) -> RobotFileParser:
-    """The site's robots.txt rules; a missing or unreadable file allows everything."""
-    return fetch_site_robots(start, fetcher)[0]
 
 
 def crawl_site(
@@ -691,21 +448,21 @@ def crawl_site(
             errors.append(f"{url}: {response.error}")
             continue
         final_url = response.url
-        if response.status >= 400 or not _same_site(final_url, domain):
+        if response.status >= 400 or not same_site(final_url, domain):
             errors.append(f"{url}: HTTP {response.status}" if response.status >= 400 else f"{url}: left the company site")
             continue
         if response.content_type and "html" not in response.content_type.lower():
             continue
         raw = response.text
-        parser = _PageParser()
+        parser = PageParser()
         parser.feed(raw)
         parser.close()
         pages.append({"url": final_url, "parser": parser, "raw": raw})
         for href, text in parser.links:
             absolute = urljoin(final_url, href)
-            if not absolute.startswith(("http://", "https://")) or not _same_site(absolute, domain):
+            if not absolute.startswith(("http://", "https://")) or not same_site(absolute, domain):
                 continue
-            rank = _page_priority(absolute, text, keywords)
+            rank = page_priority(absolute, text, keywords)
             if rank is not None and absolute.split("#", 1)[0].rstrip("/") not in seen:
                 queue.append((rank, absolute))
     return {"domain": domain, "pages": pages, "blocked": blocked, "errors": errors}
@@ -723,16 +480,16 @@ def _collect(pages: list[dict[str, Any]], domain: str) -> tuple[dict[str, dict[s
             existing = people.get(key)
             if existing is None or (not existing["role"] and person["role"]):
                 people[key] = {**person, "email": existing["email"] if existing else person["email"], "evidence_url": page["url"]}
-            if person["email"] and _email_on_domain(person["email"], domain):
+            if person["email"] and email_on_domain(person["email"], domain):
                 people[key]["email"] = person["email"].lower()
                 emails.setdefault(person["email"].lower(), page["url"])
-        for address in _emails_from_page(page["parser"]):
-            if _email_on_domain(address, domain):
+        for address in emails_from_page(page["parser"]):
+            if email_on_domain(address, domain):
                 emails.setdefault(address, page["url"])
     return people, emails
 
 
-def _is_generic(address: str) -> bool:
+def is_generic_address(address: str) -> bool:
     return address.split("@", 1)[0].lower() in GENERIC_LOCAL_PARTS
 
 
@@ -750,7 +507,7 @@ def candidates_from_pages(pages: list[dict[str, Any]], domain: str, *, mail_ok: 
     observed: list[tuple[str, str]] = []
     for address, evidence in emails.items():
         owner = next((person for person in people.values() if person.get("email") == address), None)
-        if _is_generic(address):
+        if is_generic_address(address):
             local = address.split("@", 1)[0]
             candidates.append({"name": "", "role": f"{local}@ inbox", "email": address, "method": "site_generic",
                                "confidence": "confirmed", "evidence_url": evidence})
@@ -809,7 +566,7 @@ VERIFICATION_ORDER = {"smtp_accepted": 0, "": 1, "catch_all": 1, "smtp_unknown":
 
 
 def _has_personal_address(people: dict[str, dict[str, Any]], emails: dict[str, str]) -> bool:
-    return bool(people) or any(not _is_generic(address) for address in emails)
+    return bool(people) or any(not is_generic_address(address) for address in emails)
 
 
 def discover_candidates(
@@ -958,7 +715,7 @@ def find_contacts(
             (None if result["mail_domain_ok"] is None else int(result["mail_domain_ok"]),
              json.dumps(company_mail_domains(result["pages"], result["domain"])), timestamp, target_id, user_id),
         )
-        _log(conn, target_id, user_id, "contacts_searched",
+        log_event(conn, target_id, user_id, "contacts_searched",
              detail=f"{len(result['candidates'])} candidates from {len(result['pages_checked'])} pages"
              + (" (rendered in a browser)" if result["rendered"] else ""))
     from .outreach_forms import record_contact_form
@@ -1068,7 +825,7 @@ def apply_candidate(
     # the greeting in the student's own style (outreach._readdress_drafts).
     update_target(conn, target_id, changes, user_id=user_id, before_write=before_write)
     with conn:
-        _log(conn, target_id, user_id, "contact_applied",
+        log_event(conn, target_id, user_id, "contact_applied",
              detail=f"{row['email']} ({row['confidence']}, {row['method'].replace('_', ' ')})" + (f", cc {cc}" if cc else ""))
     return get_target(conn, target_id, user_id=user_id)
 
@@ -1091,7 +848,7 @@ def add_manual_contact(
     """
     get_target(conn, target_id, user_id=user_id)
     email, name, role, evidence_url = email.strip(), " ".join(name.split()), " ".join(role.split()), evidence_url.strip()
-    if not _EMAIL.match(email):
+    if not EMAIL_ADDRESS.match(email):
         raise ValueError("That does not look like an email address")
     if evidence_url and public_web_url_error(evidence_url):
         raise ValueError("Where you found it must be a public http(s) URL")
@@ -1165,7 +922,7 @@ def choose_contact(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
     usable = [candidate for candidate in candidates if candidate.get("email")]
     personal = [
         candidate for candidate in usable
-        if candidate["method"] == "site_published" and candidate["confidence"] == "confirmed" and not _is_generic(candidate["email"])
+        if candidate["method"] == "site_published" and candidate["confidence"] == "confirmed" and not is_generic_address(candidate["email"])
     ]
     if personal:
         best = min(personal, key=lambda item: _role_rank(item["role"]) if item["name"] else len(PREFERRED_ROLES) + 1)

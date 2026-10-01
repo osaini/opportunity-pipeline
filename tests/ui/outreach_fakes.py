@@ -21,7 +21,7 @@ from unittest import mock
 import httpx
 
 from opportunity_app.agent_providers import ProviderReply
-from opportunity_app.outreach_contacts import SafeFetcher
+from opportunity_app.web_fetch import SafeFetcher
 from opportunity_app.outreach_discovery import DiscoveryManager
 from opportunity_app.outreach_recontact import RecontactManager
 from opportunity_app.system_status import SystemStatus

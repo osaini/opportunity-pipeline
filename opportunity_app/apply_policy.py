@@ -714,10 +714,6 @@ def _yes_no(options: Iterable[str]) -> bool:
     return bool(words) and words <= {"yes", "no"}
 
 
-def _plain(html_text: str) -> str:
-    return " ".join(html.unescape(_TAGS.sub(" ", html_text)).split())
-
-
 def statement_control(control: str, options: Iterable[str]) -> bool:
     """Whether a stored, ticked statement can be put into this control: a box, or a Yes/No question with one "Yes"."""
     return control == "checkbox" or (control == "select" and _yes_no(options))
@@ -740,7 +736,7 @@ def _statement_parts(item: SchemaField, control: str, category: str = "", answer
     yes_no = control == "select" and category in apply_sensitive.STATEMENT_CATEGORIES and _yes_no(item.options)
     if not yes_no and (control != "checkbox" or not item.options):
         return item.label, False
-    description = _plain(item.description)
+    description = _plain_text(item.description)
     # A box says what it agrees to in its option, a Yes/No question in its question: that is the text that has to be specific.
     own = normalized_text(item.label) if yes_no else normalized_text(item.options[0])
     short = len(own.split()) < _SPECIFIC_STATEMENT_WORDS

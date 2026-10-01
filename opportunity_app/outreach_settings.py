@@ -35,21 +35,23 @@ from typing import Any
 
 from . import ROOT
 from .agent_providers import catalog_snapshot, default_provider, provider_catalog
+from .outreach_config import (
+    ATTACHMENT_ENV,
+    CALL_PREP_ENV,
+    COMPANY_RESEARCH_ENV,
+    DRAFT_ENV,
+    FOLLOW_UP_ENV,
+    LINKEDIN_ENV,
+    RESEARCH_ENV,
+    REVIEW_ENV,
+    THANK_YOU_ENV,
+)
 from .outreach_linkedin import username_from
 from .outreach_gmail import attachment_path, attachment_problem
 from .resumes import DEFAULT_STORAGE, ResumeNotFoundError, list_resumes, resume_file_path
 
-DRAFT_ENV = "PIPELINE_OUTREACH_PROVIDER"
-RESEARCH_ENV = "PIPELINE_OUTREACH_DISCOVERY_PROVIDER"
-COMPANY_RESEARCH_ENV = "PIPELINE_OUTREACH_COMPANY_RESEARCH_PROVIDER"
-FOLLOW_UP_ENV = "PIPELINE_OUTREACH_FOLLOW_UP_PROVIDER"
-CALL_PREP_ENV = "PIPELINE_OUTREACH_CALL_PREP_PROVIDER"
-REVIEW_ENV = "PIPELINE_OUTREACH_REVIEW_PROVIDER"
-THANK_YOU_ENV = "PIPELINE_OUTREACH_THANK_YOU_PROVIDER"
 # Writers that fall back to the first-email setting when left empty.
 FOLLOWING_DRAFTS = {"follow_up_provider": FOLLOW_UP_ENV, "call_prep_provider": CALL_PREP_ENV, "thank_you_provider": THANK_YOU_ENV}
-ATTACHMENT_ENV = "PIPELINE_OUTREACH_ATTACHMENT"
-LINKEDIN_ENV = "PIPELINE_LINKEDIN_ACCOUNT"
 RESEARCH_AGENTS = ("claude-code", "codex-cli")
 LEGACY_OPTION = {
     "id": "legacy", "label": "Grounded template (no AI)", "available": True,

@@ -32,7 +32,8 @@ from typing import Any, Callable
 
 import httpx
 
-from .agent_providers import _cli_binary
+from .outreach_config import REVIEW_ENV, resolve_provider
+from .agent_providers import CLAUDE_NO_TOOLS, CODEX_READ_ONLY, cli_binary, failure_detail, run_headless
 from .outreach import get_target
 from .outreach_delivery import check_deliveries
 from .outreach_inbox import OnReply, capture_replies
@@ -100,7 +101,6 @@ def fresh_look(
     return {"ok": not failed, "reason": FRESH_LOOK_REASONS.get(failed, failed)}
 
 
-REVIEW_ENV = "PIPELINE_OUTREACH_REVIEW_PROVIDER"
 # Which company's models a provider runs: a reviewer from the drafter's own
 # family shares its blind spots, so the automatic choice avoids it.
 FAMILY = {"claude-code": "anthropic", "anthropic": "anthropic", "codex-cli": "openai", "openai": "openai"}
@@ -116,7 +116,6 @@ def review_choice(purpose: str = "follow_up") -> tuple[str, str]:
     thank-you after a decline), else the best one there is.
     """
     from .agent_providers import provider_catalog
-    from .outreach_drafting import resolve_provider
 
     catalog = {item["id"]: item for item in provider_catalog()}
     chosen = os.environ.get(REVIEW_ENV, "").strip()
@@ -156,16 +155,12 @@ def review_runner(purpose: str = "follow_up") -> tuple[str, Runner]:
             answer = Path(workdir) / "answer.txt"
             if provider == "codex-cli":
                 # Read-only sandbox, and the final message alone from its own file.
-                command = [_cli_binary("codex-cli"), "exec", "--skip-git-repo-check", "--sandbox", "read-only",
-                           "--output-last-message", str(answer), "-"]
+                command = [cli_binary("codex-cli"), *CODEX_READ_ONLY, "--output-last-message", str(answer), "-"]
             else:
-                command = [_cli_binary("claude-code"), "-p", "--output-format", "text", "--tools", "", "--strict-mcp-config"]
-            completed = subprocess.run(
-                command, input=prompt, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=REVIEW_TIMEOUT_SECONDS, cwd=workdir, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
+                command = [cli_binary("claude-code"), *CLAUDE_NO_TOOLS]
+            completed = run_headless(command, prompt, timeout=REVIEW_TIMEOUT_SECONDS, cwd=workdir)
             if completed.returncode != 0:
-                detail = (completed.stderr or completed.stdout or "").strip()
+                detail = failure_detail(completed)
                 raise RuntimeError(f"{provider} exited {completed.returncode}: {detail[-300:] or 'no output'}")
             return answer.read_text(encoding="utf-8") if answer.exists() else completed.stdout
 
@@ -181,7 +176,7 @@ def _thread(target: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
     return thread
 
 
-def _one_answer(output: Any) -> dict[str, Any] | None:
+def one_answer(output: Any) -> dict[str, Any] | None:
     """The reviewer's answer when its reply is exactly one JSON object, else None.
 
     A reply with two objects (the example echoed back, then the real answer)
@@ -198,6 +193,34 @@ def _one_answer(output: Any) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return answer if isinstance(answer, dict) else None
+
+
+def ask_reviewer(
+    runner: Runner, prompt: str, held: dict[str, Any], *, catch: tuple[type[BaseException], ...],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Send the prompt to the reviewer and read its answer, failing closed: (answer, None), or (None, a hold).
+
+    The answer is returned only when it is exactly one object whose "send" is a bool and whose "problems" is a list of
+    strings. ``catch`` is what a runner may raise that means "could not run": a follow-up lets any other error
+    propagate to its scheduler, the thank-you passes Exception. The messages are shown on the card, and
+    outreach_thank_you.notice_reason matches the first by its prefix, so they stay as they are.
+    """
+    try:
+        output = runner(prompt)
+    except catch as exc:
+        return None, {**held, "problems": [f"The reviewer could not run: {exc}"[:300]]}
+    answer = one_answer(output)
+    if answer is None:
+        return None, {**held, "problems": ["The reviewer's answer could not be read"]}
+    send, problems = answer.get("send"), answer.get("problems")
+    if not isinstance(send, bool) or not isinstance(problems, list) or not all(isinstance(item, str) for item in problems):
+        return None, {**held, "problems": ["The reviewer's answer could not be read"]}
+    return answer, None
+
+
+def review_log_detail(name: str, verdict: dict[str, Any]) -> str:
+    """The history line for a review: who passed or held it, and why."""
+    return (f"Passed by {name}" if verdict["send"] else f"Held by {name}: " + "; ".join(verdict["problems"]))[:1_000]
 
 
 def review_follow_up(
@@ -226,16 +249,10 @@ def review_follow_up(
         "follow_up": {"subject": target["follow_up_subject"], "body": target["follow_up_body"]},
     }
     prompt = f"{REVIEW_INSTRUCTIONS}\n\nJSON input:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
-    try:
-        output = runner(prompt)
-    except (RuntimeError, OSError, subprocess.SubprocessError, ValueError) as exc:
-        return {**held, "problems": [f"The reviewer could not run: {exc}"[:300]]}
-    answer = _one_answer(output)
-    if answer is None:
-        return {**held, "problems": ["The reviewer's answer could not be read"]}
-    send, problems, away = answer.get("send"), answer.get("problems"), answer.get("away_until")
-    if not isinstance(send, bool) or not isinstance(problems, list) or not all(isinstance(item, str) for item in problems):
-        return {**held, "problems": ["The reviewer's answer could not be read"]}
+    answer, hold = ask_reviewer(runner, prompt, held, catch=(RuntimeError, OSError, subprocess.SubprocessError, ValueError))
+    if hold is not None:
+        return hold
+    send, problems, away = answer["send"], answer["problems"], answer.get("away_until")
     away_until = None
     if away:
         try:

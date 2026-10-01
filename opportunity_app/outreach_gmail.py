@@ -47,7 +47,7 @@ from uuid import uuid4
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
 
-from . import ROOT, automation
+from . import ROOT, SERVER_INSTANCE, automation
 from .connections import OAUTH_PROVIDERS
 from .gmail_client import (
     GMAIL_API,
@@ -67,13 +67,14 @@ from .outreach import (
     DRAFT_KINDS,
     UNSENT_STATUSES,
     DraftChangedError,
-    _is_unique_violation,
-    _log,
+    log_event,
     get_target,
+    latest_event_stamp,
     missing_location_message,
     update_target,
 )
-from .outreach_drafting import sender_account
+from .database import is_unique_violation
+from .outreach_config import ATTACHMENT_ENV, gmail_web_url, sender_account
 from .timestamps import parse_app_instant, utc_now
 from .user_time import user_timezone
 
@@ -96,7 +97,7 @@ _URL = re.compile(r"""https?://[^\s<>"']+""")
 
 def attachment_path() -> Path | None:
     """PIPELINE_OUTREACH_ATTACHMENT, resolved against the project root when relative."""
-    value = os.environ.get("PIPELINE_OUTREACH_ATTACHMENT", "").strip().strip('"')
+    value = os.environ.get(ATTACHMENT_ENV, "").strip().strip('"')
     if not value:
         return None
     path = Path(value).expanduser()
@@ -521,8 +522,7 @@ def _public_draft(detail: dict[str, Any]) -> dict[str, Any]:
 
 
 def draft_url(account: str, message_id: str) -> str:
-    authuser = quote(account) if account else "0"
-    return f"https://mail.google.com/mail/?authuser={authuser}#drafts?compose={quote(message_id)}"
+    return gmail_web_url(f"drafts?compose={quote(message_id)}", account)
 
 
 def _previous_draft(
@@ -626,8 +626,7 @@ def _draft_still_there(gmail: _Gmail, draft_id: str) -> bool:
 # The server runs as one process, so a claim from another instance was left by
 # a process that has since died or been replaced. Its request may still have
 # been finishing its one Gmail call, hence the grace period before it counts as
-# stale.
-SERVER_INSTANCE = uuid4().hex
+# stale. SERVER_INSTANCE is one id per process (opportunity_app/__init__.py), shared with Apply for me's claims.
 FOREIGN_CLAIM_GRACE = timedelta(minutes=5)
 IN_PROGRESS = "This email is already being sent or written to Gmail. Wait a moment, then reload"
 _SEND_UNCERTAIN = (
@@ -667,13 +666,13 @@ class SendUnconfirmedError(RuntimeError):
     """Gmail did not confirm a send it may have carried out."""
 
 
-def _claim(conn: sqlite3.Connection, target_id: str, user_id: str, kind: str) -> sqlite3.Row | None:
+def send_claim_row(conn: sqlite3.Connection, target_id: str, user_id: str, kind: str) -> sqlite3.Row | None:
     return conn.execute(
         "SELECT * FROM outreach_send_claims WHERE target_id=? AND user_id=? AND kind=?", (target_id, user_id, kind)
     ).fetchone()
 
 
-def _claim_held(row: sqlite3.Row) -> bool:
+def send_claim_held(row: sqlite3.Row) -> bool:
     """Whether a request may still be working under this claim."""
     if row["state"] not in {"drafting", "sending"}:
         return False
@@ -700,7 +699,7 @@ _RUNNING: set[str] = set()
 
 
 @contextmanager
-def _claimed(
+def claimed_send(
     conn: sqlite3.Connection, target_id: str, user_id: str, kind: str, action: str,
     revalidate: Callable[[], Any], *, stale_token: str = "",
 ) -> Iterator[tuple[str, Any]]:
@@ -728,7 +727,7 @@ def _claimed(
                 )
                 result = revalidate()
         except Exception as exc:
-            if _is_unique_violation(exc):
+            if is_unique_violation(exc):
                 raise SendConflictError(IN_PROGRESS) from exc
             raise
         yield token, result
@@ -736,7 +735,7 @@ def _claimed(
         _RUNNING.discard(token)
 
 
-def _settle_claim(conn: sqlite3.Connection, target_id: str, kind: str, token: str, state: str | None) -> None:
+def settle_send_claim(conn: sqlite3.Connection, target_id: str, kind: str, token: str, state: str | None) -> None:
     """Move our own claim to ``state``, or drop it when ``state`` is None. Never raises."""
     try:
         with conn:
@@ -762,11 +761,8 @@ def event_tie_order(conn: sqlite3.Connection, alias: str = "e") -> str:
 
 def last_bounce(conn: sqlite3.Connection, target_id: str, user_id: str) -> datetime | None:
     """When this target's email last bounced, or None."""
-    row = conn.execute(
-        "SELECT MAX(created_at) FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=?",
-        (target_id, user_id, BOUNCE_EVENT),
-    ).fetchone()
-    return datetime.fromisoformat(row[0]) if row and row[0] else None
+    stamp = latest_event_stamp(conn, target_id, user_id, BOUNCE_EVENT)
+    return datetime.fromisoformat(stamp) if stamp else None
 
 
 def _since(stamp: str, bounce: datetime | None) -> bool:
@@ -867,24 +863,24 @@ def _post_under_claim(
     try:
         response = gmail.request("POST", path, json=payload)
     except _NOTHING_SENT:
-        _settle_claim(conn, target_id, kind, token, None)
+        settle_send_claim(conn, target_id, kind, token, None)
         raise
     except httpx.HTTPError as exc:
-        _settle_claim(conn, target_id, kind, token, "unconfirmed")
+        settle_send_claim(conn, target_id, kind, token, "unconfirmed")
         raise SendUnconfirmedError(f"Gmail did not answer, so {uncertain}") from exc
     except BaseException:
-        _settle_claim(conn, target_id, kind, token, "unconfirmed")
+        settle_send_claim(conn, target_id, kind, token, "unconfirmed")
         raise
     if response.status_code == 200:
         try:
             return response.json()
         except BaseException:
-            _settle_claim(conn, target_id, kind, token, "unconfirmed")
+            settle_send_claim(conn, target_id, kind, token, "unconfirmed")
             raise
     if 400 <= response.status_code < 500:
-        _settle_claim(conn, target_id, kind, token, None)
+        settle_send_claim(conn, target_id, kind, token, None)
         raise RuntimeError(f"{refused} (HTTP {response.status_code}). Nothing was sent")
-    _settle_claim(conn, target_id, kind, token, "unconfirmed")
+    settle_send_claim(conn, target_id, kind, token, "unconfirmed")
     raise SendUnconfirmedError(f"Gmail did not confirm it (HTTP {response.status_code}), so {uncertain}")
 
 
@@ -905,9 +901,9 @@ def create_gmail_draft(
     """
     _approved_for(conn, target_id, user_id, kind, sending=False)
     stale_token = ""
-    existing = _claim(conn, target_id, user_id, kind)
+    existing = send_claim_row(conn, target_id, user_id, kind)
     if existing is not None:
-        if _claim_held(existing):
+        if send_claim_held(existing):
             raise SendConflictError(IN_PROGRESS)
         if _superseded(conn, existing, target_id, user_id):
             stale_token = existing["token"]
@@ -917,11 +913,11 @@ def create_gmail_draft(
             raise SendConflictError(f"{_claim_reason(existing)} Until then no new draft is made.")
     account = sender_account()
     revalidate = lambda: _approved_for(conn, target_id, user_id, kind, sending=False)  # noqa: E731
-    with _claimed(conn, target_id, user_id, kind, "draft", revalidate, stale_token=stale_token) as (token, approved):
+    with claimed_send(conn, target_id, user_id, kind, "draft", revalidate, stale_token=stale_token) as (token, approved):
         try:
             client = client_factory()
         except BaseException:
-            _settle_claim(conn, target_id, kind, token, None)
+            settle_send_claim(conn, target_id, kind, token, None)
             raise
         with client:
             try:
@@ -931,10 +927,10 @@ def create_gmail_draft(
                 previous = approved.live_draft(conn, gmail, user_id)
                 raw = None if previous else approved.raw(account)
             except BaseException:
-                _settle_claim(conn, target_id, kind, token, None)
+                settle_send_claim(conn, target_id, kind, token, None)
                 raise
             if previous:
-                _settle_claim(conn, target_id, kind, token, None)
+                settle_send_claim(conn, target_id, kind, token, None)
                 public = _public_draft(previous)
                 return {**public, "url": draft_url(account, previous["message_id"]), "reused": True}
             created = _post_under_claim(
@@ -951,11 +947,11 @@ def create_gmail_draft(
                     "thread_id": str(created["message"].get("threadId", "")),
                 }
                 with conn:
-                    _log(conn, target_id, user_id, DRAFT_EVENT, detail=json.dumps(detail, sort_keys=True))
+                    log_event(conn, target_id, user_id, DRAFT_EVENT, detail=json.dumps(detail, sort_keys=True))
                     conn.execute("DELETE FROM outreach_send_claims WHERE target_id=? AND kind=? AND token=?", (target_id, kind, token))
             except BaseException:
                 # The draft exists but is not recorded, so the next send asks first.
-                _settle_claim(conn, target_id, kind, token, "unconfirmed")
+                settle_send_claim(conn, target_id, kind, token, "unconfirmed")
                 raise
     public = _public_draft(detail)
     return {**public, "url": draft_url(account, detail["message_id"]), "reused": False}
@@ -988,9 +984,9 @@ def send_gmail_message(
     _approved_for(conn, target_id, user_id, kind, sending=True, fingerprint=fingerprint)
     reasons: dict[str, str] = {}
     stale_token = ""
-    existing = _claim(conn, target_id, user_id, kind)
+    existing = send_claim_row(conn, target_id, user_id, kind)
     if existing is not None:
-        if _claim_held(existing):
+        if send_claim_held(existing):
             raise SendConflictError(IN_PROGRESS)
         stale_token = existing["token"]
         if _superseded(conn, existing, target_id, user_id):
@@ -1028,7 +1024,7 @@ def send_gmail_message(
                 raise SendConflictError("A Gmail draft of this email was just made. Send it from Gmail, or delete it and send again")
             return fresh, fresh.raw(account)
 
-        with _claimed(conn, target_id, user_id, kind, "send", revalidate, stale_token=stale_token) as (token, (approved, raw)):
+        with claimed_send(conn, target_id, user_id, kind, "send", revalidate, stale_token=stale_token) as (token, (approved, raw)):
             sent = _post_under_claim(
                 conn, gmail, target_id, kind, token, "/messages/send", {"raw": raw},
                 refused="Gmail did not send the email",
@@ -1043,9 +1039,9 @@ def send_gmail_message(
                 }
                 with conn:
                     conn.execute("UPDATE outreach_send_claims SET state='sent' WHERE target_id=? AND kind=? AND token=?", (target_id, kind, token))
-                    _log(conn, target_id, user_id, SENT_EVENT, detail=json.dumps(detail, sort_keys=True))
+                    log_event(conn, target_id, user_id, SENT_EVENT, detail=json.dumps(detail, sort_keys=True))
             except BaseException:
-                _settle_claim(conn, target_id, kind, token, "sent")
+                settle_send_claim(conn, target_id, kind, token, "sent")
                 raise
     try:
         updated = update_target(conn, target_id, {"status": SENT_STATUS[kind]}, user_id=user_id)
@@ -1143,8 +1139,7 @@ def thank_you_mime(account: str, row: dict[str, Any]) -> str:
 
 
 def thread_url(account: str, thread_id: str) -> str:
-    authuser = quote(account) if account else "0"
-    return f"https://mail.google.com/mail/?authuser={authuser}#all/{quote(thread_id)}"
+    return gmail_web_url(f"all/{quote(thread_id)}", account)
 
 
 def send_thank_you(
@@ -1171,9 +1166,9 @@ def send_thank_you(
     _thank_you_ready(conn, target_id, user_id, fingerprint, states)
     reasons: dict[str, str] = {}
     stale_token = ""
-    existing = _claim(conn, target_id, user_id, THANK_YOU_KIND)
+    existing = send_claim_row(conn, target_id, user_id, THANK_YOU_KIND)
     if existing is not None:
-        if _claim_held(existing):
+        if send_claim_held(existing):
             raise SendConflictError(IN_PROGRESS)
         stale_token = existing["token"]
         if existing["state"] == "sent":
@@ -1192,7 +1187,7 @@ def send_thank_you(
             fresh = _thank_you_ready(conn, target_id, user_id, fingerprint, states)
             return fresh, thank_you_mime(account, fresh)
 
-        with _claimed(conn, target_id, user_id, THANK_YOU_KIND, "send", revalidate, stale_token=stale_token) as (token, (row, raw)):
+        with claimed_send(conn, target_id, user_id, THANK_YOU_KIND, "send", revalidate, stale_token=stale_token) as (token, (row, raw)):
             sent = _post_under_claim(
                 conn, gmail, target_id, THANK_YOU_KIND, token, "/messages/send", {"raw": raw, "threadId": row["thread_id"]},
                 refused="Gmail did not send the thank-you",
@@ -1209,13 +1204,13 @@ def send_thank_you(
                 with conn:
                     conn.execute("UPDATE outreach_send_claims SET state='sent' WHERE target_id=? AND kind=? AND token=?",
                                  (target_id, THANK_YOU_KIND, token))
-                    _log(conn, target_id, user_id, THANK_YOU_SENT_EVENT, detail=json.dumps(detail, sort_keys=True))
+                    log_event(conn, target_id, user_id, THANK_YOU_SENT_EVENT, detail=json.dumps(detail, sort_keys=True))
                     conn.execute(
                         "UPDATE outreach_thank_yous SET state='sent', note='', updated_at=? WHERE target_id=? AND user_id=?",
                         (stamp, target_id, user_id),
                     )
             except BaseException:
-                _settle_claim(conn, target_id, THANK_YOU_KIND, token, "sent")
+                settle_send_claim(conn, target_id, THANK_YOU_KIND, token, "sent")
                 raise
     return {**detail, "account": account, "sent_at": stamp, "url": thread_url(account, detail["thread_id"])}
 
@@ -1235,9 +1230,9 @@ def create_thank_you_draft(
     row = thank_you_row(conn, target_id, user_id)
     if row is None:
         raise ThankYouChanged("There is no thank-you for this company")
-    existing = _claim(conn, target_id, user_id, THANK_YOU_KIND)
+    existing = send_claim_row(conn, target_id, user_id, THANK_YOU_KIND)
     if existing is not None:
-        if _claim_held(existing):
+        if send_claim_held(existing):
             raise SendConflictError(IN_PROGRESS)
         if existing["state"] == "sent":
             raise ValueError("The thank-you was already sent from Gmail")
@@ -1250,11 +1245,11 @@ def create_thank_you_draft(
             raise ThankYouChanged("The thank-you changed while its draft was being made. Reload and try again")
         return fresh
 
-    with _claimed(conn, target_id, user_id, THANK_YOU_KIND, "draft", revalidate) as (token, fresh):
+    with claimed_send(conn, target_id, user_id, THANK_YOU_KIND, "draft", revalidate) as (token, fresh):
         try:
             client = client_factory()
         except BaseException:
-            _settle_claim(conn, target_id, THANK_YOU_KIND, token, None)
+            settle_send_claim(conn, target_id, THANK_YOU_KIND, token, None)
             raise
         with client:
             try:
@@ -1263,7 +1258,7 @@ def create_thank_you_draft(
                 _require_account(gmail, account)
                 raw = thank_you_mime(account, fresh)
             except BaseException:
-                _settle_claim(conn, target_id, THANK_YOU_KIND, token, None)
+                settle_send_claim(conn, target_id, THANK_YOU_KIND, token, None)
                 raise
             created = _post_under_claim(
                 conn, gmail, target_id, THANK_YOU_KIND, token, "/drafts", {"message": {"raw": raw, "threadId": fresh["thread_id"]}},
@@ -1277,11 +1272,11 @@ def create_thank_you_draft(
                     "thread_id": str(message.get("threadId", "") or fresh["thread_id"]),
                 }
                 with conn:
-                    _log(conn, target_id, user_id, THANK_YOU_DRAFT_EVENT, detail=json.dumps(detail, sort_keys=True))
+                    log_event(conn, target_id, user_id, THANK_YOU_DRAFT_EVENT, detail=json.dumps(detail, sort_keys=True))
                     conn.execute("DELETE FROM outreach_send_claims WHERE target_id=? AND kind=? AND token=?", (target_id, THANK_YOU_KIND, token))
             except BaseException:
                 # The draft exists but is not recorded, so the next send asks first.
-                _settle_claim(conn, target_id, THANK_YOU_KIND, token, "unconfirmed")
+                settle_send_claim(conn, target_id, THANK_YOU_KIND, token, "unconfirmed")
                 raise
     return {**detail, "url": draft_url(account, detail["message_id"])}
 

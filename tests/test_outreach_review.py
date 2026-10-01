@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR, gmail_client, outreach_delivery, outreach_inbox
 from opportunity_app.api import create_app
-from opportunity_app.outreach import _log
+from opportunity_app.outreach import log_event
 from opportunity_app.outreach_automation import update_settings
 from opportunity_app.outreach_review import review_runner
 from opportunity_app.outreach_schedule import MAX_ATTEMPTS, run_due_sends
@@ -536,7 +536,7 @@ class SendGateTests(unittest.TestCase):
     def test_a_reply_logged_while_the_reviewer_reads_cancels_the_follow_up(self):
         self.review_on()
         target = self.scheduled_follow_up()
-        reviewer = self.passes_while(lambda other: _log(other, target["id"], USER, "reply_logged", detail="Thanks! Let's talk Tuesday."))
+        reviewer = self.passes_while(lambda other: log_event(other, target["id"], USER, "reply_logged", detail="Thanks! Let's talk Tuesday."))
         self.assertEqual([item["state"] for item in self.due(target, reviewer=reviewer)], ["cancelled"])
         self.assertEqual(len(reviewer.prompts), 1)
         self.assertEqual(len(self.gmail.sent), 1, "only the first email ever went")
