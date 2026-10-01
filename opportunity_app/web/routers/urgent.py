@@ -5,9 +5,10 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import Depends, HTTPException, Query, status
 
 from pipeline_core import OpportunityRepository
+from ..overrides import shared_router
 from ...early_programs import EarlyProgramNotFoundError, early_programs, set_program_status
 from ...urgent import urgent_queue
 from ...schema import LOCAL_USER_ID
@@ -16,7 +17,7 @@ from ..dependencies import get_ctx, repository, require_auth, writable_connectio
 from ..models.opportunities import EarlyProgramStatusRequest
 
 
-router = APIRouter()
+router = shared_router()
 
 
 @router.get("/api/v1/urgent")

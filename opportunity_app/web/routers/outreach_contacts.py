@@ -6,8 +6,9 @@ import sqlite3
 from contextlib import ExitStack
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status
 
+from ..overrides import shared_router
 from ...inbox_classifiers import client_for as inbox_client_for
 from ...outreach import (
     OutreachNotFoundError,
@@ -28,7 +29,7 @@ from ..errors import outreach_not_found
 from ..models.outreach import OutreachManualContactRequest, OutreachReplyRequest
 
 
-router = APIRouter()
+router = shared_router()
 
 
 @router.post("/api/v1/outreach/{target_id}/confirm-research")

@@ -5,8 +5,9 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status
 
+from ..overrides import shared_router
 from ...student_agent import (
     AgentNotFoundError,
     activity_feed,
@@ -23,7 +24,7 @@ from ..dependencies import get_ctx, require_auth, writable_connection
 from ..models.agent import AgentDecisionRequest, AgentMessageRequest, AgentThreadRequest
 
 
-router = APIRouter()
+router = shared_router()
 
 
 @router.get("/api/v1/agent/providers")

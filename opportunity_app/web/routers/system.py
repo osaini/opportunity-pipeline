@@ -7,8 +7,9 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, status
 
+from ..overrides import shared_router
 from ...refresh import RefreshBusy, fresh_steps
 from ...database import connect_product, is_postgres_target
 from ...boards import BoardLookupExpired, BoardTracker
@@ -17,8 +18,8 @@ from ..dependencies import get_ctx, require_owner
 from ..models.system import BoardAddRequest, BoardLookupRequest, RefreshStatusResponse
 
 
-health_router = APIRouter()
-router = APIRouter()
+health_router = shared_router()
+router = shared_router()
 
 
 def refresh_status_payload(ctx: AppContext) -> RefreshStatusResponse:

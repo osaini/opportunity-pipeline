@@ -7,8 +7,9 @@ import json
 import sqlite3
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
+from fastapi import Depends, File, HTTPException, Query, Response, UploadFile, status
 
+from ..overrides import shared_router
 from ... import application_inbox
 from ...actions import (
     APPLICATION_STAGES,
@@ -29,7 +30,7 @@ from ..dependencies import require_auth, writable_connection
 from ..models.applications import ApplicationUpdateRequest, ContactCreateRequest, TaskCreateRequest, TaskUpdateRequest
 
 
-router = APIRouter()
+router = shared_router()
 
 
 @router.get("/api/v1/applications")

@@ -5,8 +5,9 @@ from __future__ import annotations
 import sqlite3
 from typing import Any, Callable
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import Depends, HTTPException, Query, status
 
+from ..overrides import shared_router
 from ... import application_inbox
 from ... import automation as automation_core
 from ... import automation_health
@@ -23,7 +24,7 @@ from ..models.automation import (
 )
 
 
-router = APIRouter()
+router = shared_router()
 
 
 # Everything the app does on its own (automation.py): the switches, the

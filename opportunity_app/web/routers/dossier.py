@@ -7,8 +7,9 @@ import sqlite3
 from contextlib import closing
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import Depends, HTTPException, Response, status
 
+from ..overrides import shared_router
 from ...dossier import (
     DossierNotFoundError,
     create_share,
@@ -27,7 +28,7 @@ from ..dependencies import get_ctx, require_auth, writable_connection
 from ..models.dossier import DossierItemRequest, DossierPreviewRequest, DossierSettingsRequest, DossierShareRequest
 
 
-router = APIRouter()
+router = shared_router()
 
 
 @router.get("/api/v1/dossier")

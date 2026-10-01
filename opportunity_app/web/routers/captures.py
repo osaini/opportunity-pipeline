@@ -5,8 +5,9 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import Depends, File, HTTPException, UploadFile, status
 
+from ..overrides import shared_router
 from ...captures import (
     MAX_CAPTURE_BYTES,
     CaptureNotFoundError,
@@ -21,7 +22,7 @@ from ..dependencies import get_ctx, require_auth, writable_connection
 from ..models.captures import CaptureConfirmRequest, CaptureUrlRequest
 
 
-router = APIRouter()
+router = shared_router()
 
 
 @router.post("/api/v1/opportunity-captures/url", status_code=status.HTTP_201_CREATED)

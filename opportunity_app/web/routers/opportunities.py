@@ -5,9 +5,10 @@ from __future__ import annotations
 import sqlite3
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Header, Query, Response, status
+from fastapi import Depends, HTTPException, Header, Query, Response, status
 
 from pipeline_core import MAX_PER_COMPANY, OpportunityFilters, OpportunityRepository
+from ..overrides import shared_router
 from ... import resume_variants
 from ...actions import OpportunityNotFoundError, record_intent
 from ...company_tags import CompanyNotFoundError, decorate_with_tags, set_company_tag, tag_facets_for_keys
@@ -37,9 +38,9 @@ from ..models.opportunities import (
 )
 
 
-router = APIRouter()
-review_router = APIRouter()
-facets_router = APIRouter()
+router = shared_router()
+review_router = shared_router()
+facets_router = shared_router()
 
 
 @router.get("/api/v1/opportunities", response_model=OpportunityListResponse)

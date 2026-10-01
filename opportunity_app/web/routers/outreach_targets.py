@@ -8,8 +8,9 @@ import os
 import sqlite3
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
+from fastapi import Depends, File, HTTPException, Query, Response, UploadFile, status
 
+from ..overrides import shared_router
 from ...company_tags import decorate_outreach_with_tags, sync_outreach_tags
 from ...outreach import (
     CONTACT_CONFIDENCE,
@@ -41,8 +42,8 @@ from ..models.outreach import OutreachTargetRequest
 from ..payloads import outreach_discovery_payload, outreach_recontact_payload
 
 
-router = APIRouter()
-detail_router = APIRouter()
+router = shared_router()
+detail_router = shared_router()
 
 
 def outreach_compose_settings() -> dict[str, str]:

@@ -5,8 +5,9 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status
 
+from ..overrides import shared_router
 from ...schema import LOCAL_USER_ID
 from ...outreach import OutreachNotFoundError
 from ...outreach_call_prep import NotReplied, ReplyRequired, queue_call_prep
@@ -20,9 +21,9 @@ from ..models.outreach import OutreachDiscoveryRequest, RecontactApplyRequest
 from ..payloads import outreach_discovery_payload, outreach_recontact_payload
 
 
-discovery_router = APIRouter()
-recontact_router = APIRouter()
-router = APIRouter()
+discovery_router = shared_router()
+recontact_router = shared_router()
+router = shared_router()
 
 
 def require_recontact_owner(ctx: AppContext, user_id: str) -> RecontactManager:

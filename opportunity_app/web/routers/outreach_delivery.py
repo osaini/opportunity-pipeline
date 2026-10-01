@@ -6,8 +6,9 @@ import sqlite3
 from typing import Any, Literal
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status
 
+from ..overrides import shared_router
 from ...inbox_classifiers import client_for as inbox_client_for
 from ...outreach import (
     DraftChangedError,
@@ -43,7 +44,7 @@ from ..models.outreach import (
 )
 
 
-router = APIRouter()
+router = shared_router()
 
 
 @router.post("/api/v1/outreach/{target_id}/gmail-draft")

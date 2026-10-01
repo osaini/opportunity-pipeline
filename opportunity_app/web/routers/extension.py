@@ -6,9 +6,10 @@ import sqlite3
 from contextlib import closing
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse
 
+from ..overrides import shared_router
 from ...actions import ApplicationNotFoundError
 from ...document_artifacts import backfill_approved_artifacts
 from ...extension_apply import (
@@ -39,7 +40,7 @@ from ..models.extension import (
 )
 
 
-router = APIRouter()
+router = shared_router()
 
 
 @router.post("/api/v1/extension/pairings", status_code=status.HTTP_201_CREATED)

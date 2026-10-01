@@ -6,8 +6,9 @@ import sqlite3
 from contextlib import closing
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status
 
+from ..overrides import shared_router
 from ...market import (
     MarketNotFoundError,
     create_issue,
@@ -23,7 +24,7 @@ from ..dependencies import get_ctx, require_auth, writable_connection
 from ..models.market import MarketIssueRequest, MarketSnapshotRequest
 
 
-router = APIRouter()
+router = shared_router()
 
 
 @router.post("/api/v1/market/snapshots", status_code=status.HTTP_201_CREATED)

@@ -5,8 +5,9 @@ from __future__ import annotations
 import sqlite3
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import Depends, HTTPException, Query, status
 
+from ..overrides import shared_router
 from ...outreach import DraftChangedError, OutreachNotFoundError, approve_draft as approve_outreach_draft
 from ...outreach_drafting import generate_draft as generate_outreach_draft
 from ...outreach_versions import (
@@ -20,8 +21,8 @@ from ..errors import outreach_not_found
 from ..models.outreach import OutreachApprovalRequest, OutreachDraftRequest
 
 
-router = APIRouter()
-history_router = APIRouter()
+router = shared_router()
+history_router = shared_router()
 
 
 @router.post("/api/v1/outreach/{target_id}/draft")

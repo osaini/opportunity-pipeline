@@ -10,8 +10,9 @@ import sqlite3
 from contextlib import closing
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Header, Request, status
+from fastapi import Depends, HTTPException, Header, Request, status
 
+from ..overrides import shared_router
 from ... import automation as automation_core
 from ...actions import ApplicationNotFoundError
 from ...auth import constant_time_equal
@@ -51,7 +52,7 @@ from ..models.connections import (
 )
 
 
-router = APIRouter()
+router = shared_router()
 
 
 @router.get("/api/v1/connections")

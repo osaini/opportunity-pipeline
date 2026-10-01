@@ -3,8 +3,8 @@
 The routes are not built here. They live on module-level routers (``web.routers``) that FastAPI analyses once, when the module is
 imported; every app then lists the same route objects (``app.router.routes.extend``). ``include_router`` would copy each route and
 pay the analysis again, which is what made ``create_app`` cost most of a second. The shared routes carry no reference to an app
-(``dependency_overrides_provider`` is None), and read everything per-app from ``request.app.state.ctx``. Because of that,
-``app.dependency_overrides`` does not reach them; nothing uses it.
+and read everything per-app from ``request.app.state.ctx``. ``app.dependency_overrides`` still applies per app: the routers'
+override provider answers with the overrides of the app serving each request (web.overrides).
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from .overrides import SharedRouteApp
 from .. import DEFAULT_PLATFORM_DB, STATIC_DIR
 from .. import bootstrap
 from ..apply_runs import recover_stale as recover_stale_applications
@@ -182,7 +183,7 @@ def create_app(
         recovery_sandbox=recovery_sandbox,
     )
     ctx = build_context(settings)
-    app = FastAPI(
+    app = SharedRouteApp(
         title="Opportunity Pipeline API",
         version="1.0.0",
         description="Student, employer, administrator, agent, and operations API over the opportunity pipeline.",

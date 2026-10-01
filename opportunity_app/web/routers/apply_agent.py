@@ -5,8 +5,9 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import Depends, HTTPException, Response, status
 
+from ..overrides import shared_router
 from ... import automation as automation_core
 from ...actions import OpportunityNotFoundError
 from ... import apply_classify, apply_policy, apply_preflight, apply_runs, apply_sensitive
@@ -22,7 +23,7 @@ from ..models.apply_agent import (
 )
 
 
-router = APIRouter()
+router = shared_router()
 
 
 def apply_schema_client(ctx: AppContext) -> SchemaClient:

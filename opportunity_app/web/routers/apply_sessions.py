@@ -5,8 +5,9 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status
 
+from ..overrides import shared_router
 from ...apply_sessions import (
     ApplicationNotOwned,
     ApplySessionForeign,
@@ -18,7 +19,7 @@ from ..dependencies import require_auth, writable_connection
 from ..models.extension import ApplySessionRequest
 
 
-router = APIRouter()
+router = shared_router()
 
 
 @router.get("/api/v1/apply-sessions")

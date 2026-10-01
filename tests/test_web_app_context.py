@@ -33,6 +33,8 @@ from starlette.routing import Mount
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
 from opportunity_app.web.context import AppOptions
+from opportunity_app.web.dependencies import require_auth
+from opportunity_app.web.overrides import SERVING_APP_OVERRIDES
 
 from helpers_platform import build_and_migrate
 
@@ -171,12 +173,21 @@ class SharedRouteTableTests(unittest.TestCase):
         self.assertTrue(all(a is b for a, b in zip(first, second)), "a route was rebuilt for the second app")
 
     def test_a_shared_route_holds_no_reference_to_any_app(self):
-        # The sharing depends on this FastAPI behaviour: a route created on a standalone APIRouter has no
-        # dependency_overrides_provider, so it cannot serve one app's dependency_overrides to another. If a FastAPI upgrade
-        # binds routes to an app, this fails and the shared table has to be revisited.
+        # Every shared route reads overrides through the one provider that looks up the app serving the request; none is
+        # bound to an app, so one app's dependency_overrides can never reach another's requests.
         for route in self.apps[0].routes:
             if isinstance(route, APIRoute):
-                self.assertIsNone(route.dependency_overrides_provider, route.path)
+                self.assertIs(route.dependency_overrides_provider, SERVING_APP_OVERRIDES, route.path)
+
+    def test_an_override_on_one_app_reaches_only_that_app(self):
+        # As when each app built its own routes: app.dependency_overrides applies to that app's requests and no other's.
+        first, second = self.apps
+        first.dependency_overrides[require_auth] = lambda: "local-user"
+        self.addCleanup(first.dependency_overrides.clear)
+        self.assertEqual(TestClient(first).get("/api/v1/profile").status_code, 200, "the override stood in for sign-in")
+        self.assertEqual(TestClient(second).get("/api/v1/profile").status_code, 401, "the other app still asks for sign-in")
+        first.dependency_overrides.clear()
+        self.assertEqual(TestClient(first).get("/api/v1/profile").status_code, 401, "clearing the override restores sign-in")
 
     def test_the_assets_mount_and_the_context_belong_to_one_app(self):
         first, second = self.apps

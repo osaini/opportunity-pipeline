@@ -5,8 +5,9 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status
 
+from ..overrides import shared_router
 from ...outreach_automation import settings as automation_settings, update_settings as update_automation_settings
 from ... import outreach_label_name, outreach_labels
 from ...outreach_gmail import gmail_drafts_status
@@ -15,8 +16,8 @@ from ..dependencies import get_ctx, require_auth, require_owner, writable_connec
 from ..models.outreach import GmailLabelRequest, OutreachAutomationRequest, OutreachSettingsRequest
 
 
-automation_router = APIRouter()
-router = APIRouter()
+automation_router = shared_router()
+router = shared_router()
 
 
 def gmail_label_view(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:

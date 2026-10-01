@@ -5,9 +5,10 @@ from __future__ import annotations
 import sqlite3
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Response, UploadFile, status
+from fastapi import Depends, File, Form, HTTPException, Query, Response, UploadFile, status
 from fastapi.responses import FileResponse
 
+from ..overrides import shared_router
 from ...document_artifacts import delete_document, delete_document_artifact, ensure_document_artifact
 from ...preparation import (
     MAX_MOCK_AUDIO_BYTES,
@@ -40,7 +41,7 @@ from ..models.preparation import (
 )
 
 
-router = APIRouter()
+router = shared_router()
 
 
 @router.get("/api/v1/preparation/documents")

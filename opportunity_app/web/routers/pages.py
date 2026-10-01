@@ -4,15 +4,16 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import Depends
 from fastapi.responses import HTMLResponse
 
+from ..overrides import shared_router
 from ..assets import versioned_page
 from ..context import AppContext
 from ..dependencies import get_ctx
 
 
-router = APIRouter()
+router = shared_router()
 
 
 @router.get("/employer", include_in_schema=False)

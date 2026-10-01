@@ -10,8 +10,9 @@ from contextlib import closing
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
+from fastapi import Cookie, Depends, HTTPException, Request, Response, status
 
+from ..overrides import shared_router
 from ...auth import (
     authenticate_email_password,
     authenticate_password,
@@ -40,8 +41,8 @@ from ..models.session import (
 )
 
 
-router = APIRouter()
-sign_out_router = APIRouter()
+router = shared_router()
+sign_out_router = shared_router()
 
 
 def _display_name(conn_target: str, user_id: str) -> str:

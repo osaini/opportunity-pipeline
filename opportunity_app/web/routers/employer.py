@@ -5,8 +5,9 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status
 
+from ..overrides import shared_router
 from ...dossier import DossierNotFoundError
 from ...employer import (
     EmployerNotFoundError,
@@ -37,7 +38,7 @@ from ..models.employer import (
 )
 
 
-router = APIRouter()
+router = shared_router()
 
 
 @router.post("/api/v1/employer/organizations", status_code=status.HTTP_201_CREATED)

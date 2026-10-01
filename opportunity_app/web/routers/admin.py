@@ -5,8 +5,9 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status
 
+from ..overrides import shared_router
 from ...employer import (
     EmployerNotFoundError,
     admin_overview,
@@ -32,7 +33,7 @@ from ..models.admin import (
 )
 
 
-router = APIRouter()
+router = shared_router()
 
 
 @router.get("/api/v1/admin/overview")

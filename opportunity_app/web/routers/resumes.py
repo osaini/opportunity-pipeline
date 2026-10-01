@@ -5,9 +5,10 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile, status
+from fastapi import Depends, File, HTTPException, Response, UploadFile, status
 from fastapi.responses import FileResponse
 
+from ..overrides import shared_router
 from ... import resume_variants
 from ...resumes import (
     MAX_RESUME_BYTES,
@@ -26,7 +27,7 @@ from ..dependencies import get_ctx, require_auth, writable_connection
 from ..models.resumes import ResumeConfirmRequest, ResumeVariantRequest
 
 
-router = APIRouter()
+router = shared_router()
 
 
 @router.get("/api/v1/resumes")
