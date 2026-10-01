@@ -3,34 +3,22 @@
 from __future__ import annotations
 
 import os
-from unittest import mock
 
-import pytest
 from playwright.sync_api import expect
 
 import outreach_fakes
 from conftest import OWNER_TOKEN
-from test_outreach_journey import card_for, open_details, open_outreach, seed_target
+from helpers_platform import sample_docx
+from ui_helpers import assert_accessible, card_for, open_details, open_outreach, seed_target
 
 BEARER = {"Authorization": f"Bearer {OWNER_TOKEN}"}
 
 
-@pytest.fixture
-def restored_environment():
-    # The server runs in this process, so its settings are this process's environment.
-    with mock.patch.dict(os.environ, {}):
-        yield
-    if outreach_fakes.SETTINGS_ENV and outreach_fakes.SETTINGS_ENV.exists():
-        outreach_fakes.SETTINGS_ENV.unlink()
-
-
 def test_settings_save_at_once_and_attach_a_resume_under_its_own_name(owner_page, base_url, restored_environment):
-    import test_platform
-
     uploaded = owner_page.request.post(
         f"{base_url}/api/v1/resumes", headers=BEARER,
         multipart={"resume": {"name": "Student Resume.docx", "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                              "buffer": test_platform.PlatformTests.sample_docx()}},
+                              "buffer": sample_docx()}},
     )
     assert uploaded.status == 201, uploaded.text()
 
@@ -66,9 +54,7 @@ def test_settings_save_at_once_and_attach_a_resume_under_its_own_name(owner_page
     env_text = outreach_fakes.SETTINGS_ENV.read_text(encoding="utf-8")
     assert "PIPELINE_OUTREACH_PROVIDER=legacy" in env_text
 
-    from test_accessibility import _assert_accessible
-
-    _assert_accessible(owner_page, "the outreach settings tab")
+    assert_accessible(owner_page, "the outreach settings tab")
 
     attach.select_option("")
     expect(panel.locator(".form-status")).to_have_text("Attachment saved.")

@@ -171,7 +171,7 @@ class EntryPointsRunTests(unittest.TestCase):
         # exploratory testing and the browser suite's shared fixtures.
         source = (ROOT / "scripts" / "serve_for_testing.py").read_text(encoding="utf-8")
         tests = ROOT / "tests"
-        for match in re.finditer(r"^(?:from|import)\s+(helpers_platform|outreach_fakes|apply_fake_ats)\b", source, re.MULTILINE):
+        for match in re.finditer(r"^(?:from|import)\s+(helpers_platform|outreach_fakes|apply_fake_ats|sandbox_app)\b", source, re.MULTILINE):
             name = match.group(1)
             with self.subTest(helper=name):
                 self.assertTrue((tests / f"{name}.py").is_file() or (tests / "ui" / f"{name}.py").is_file(), f"{name}.py is not under tests/ or tests/ui/")

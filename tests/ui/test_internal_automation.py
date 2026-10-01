@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import re
-from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -17,8 +16,9 @@ from playwright.sync_api import expect
 
 from conftest import OWNER_TOKEN, native_selects, wait_for_results
 from opportunity_app import auto_triage, automation
-from opportunity_app.schema import connect_product, utc_now
+from opportunity_app.schema import utc_now
 from opportunity_app.user_time import user_timezone
+from ui_helpers import assert_accessible, db
 
 BEARER = {"Authorization": f"Bearer {OWNER_TOKEN}"}
 USER = "local-user"
@@ -26,10 +26,6 @@ VARIANTS = [
     {"label": "Hardware", "keywords": ["CAD", "SolidWorks", "mechanical"]},
     {"label": "Software", "keywords": ["Python", "React", "backend"]},
 ]
-
-
-def db(live_server):
-    return closing(connect_product(live_server.live_path))
 
 
 def set_profile(live_server, **values):
@@ -140,8 +136,6 @@ def test_the_role_shows_its_resume_pick_and_the_student_can_change_it(owner_page
 
 
 def test_the_new_controls_are_accessible_in_both_themes(owner_page, live_server):
-    from test_accessibility import _assert_accessible
-
     add_resume(live_server, name="hardware.pdf", label="Hardware")
     add_resume(live_server, name="draft.pdf", status="draft")
     set_profile(live_server, resume_variants=VARIANTS, default_variant="Hardware")
@@ -150,10 +144,10 @@ def test_the_new_controls_are_accessible_in_both_themes(owner_page, live_server)
         open_profile(owner_page)
         expect(owner_page.locator(".resume-variant")).to_have_count(2)
         expect(owner_page.locator(".automation-auto-passed")).to_contain_text("Nothing was passed on automatically")
-        _assert_accessible(owner_page, f"the résumé variants and Auto-passed list ({theme})")
+        assert_accessible(owner_page, f"the résumé variants and Auto-passed list ({theme})")
         open_saved_role(owner_page)
         expect(owner_page.locator(".resume-pick").get_by_label("Change résumé")).to_be_visible()
-        _assert_accessible(owner_page, f"the résumé pick on a role ({theme})")
+        assert_accessible(owner_page, f"the résumé pick on a role ({theme})")
         owner_page.locator("#detail-close").click()
 
 

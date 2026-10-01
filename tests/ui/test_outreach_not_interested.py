@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from playwright.sync_api import expect
 
-from test_outreach_journey import card_for, open_outreach, open_tab, row_for, seed_target
+from ui_helpers import card_for, open_outreach, open_tab, row_for, seed_target
 
 
 def test_not_interested_files_a_company_under_its_own_tab_and_moving_back_returns_it(owner_page, base_url):

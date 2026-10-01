@@ -38,12 +38,9 @@ sys.path.insert(0, str(REPO_ROOT / "tests" / "ui"))
 
 import uvicorn  # noqa: E402
 
-from opportunity_app import STATIC_DIR  # noqa: E402
-from opportunity_app.api import create_app  # noqa: E402
-
 from helpers_platform import build_and_migrate_fresh  # noqa: E402
-import outreach_fakes  # noqa: E402
-from apply_fake_ats import FakeApplyAgentFactory, FakeSchemaClient, JOB_URL  # noqa: E402
+from apply_fake_ats import JOB_URL  # noqa: E402
+from sandbox_app import build_sandbox_app  # noqa: E402
 
 # Fixed so tooling and documentation can rely on them. They only ever guard a
 # throwaway database on loopback.
@@ -115,47 +112,18 @@ def main() -> int:
 
     root = Path(tempfile.mkdtemp(prefix="opportunity-sandbox-"))
     _, platform_path = build_and_migrate_fresh(root)
-    # A fixed compose account, set before the app reads .env (which never
-    # overrides a variable already set), keeps personal settings out of the sandbox.
-    os.environ["PIPELINE_OUTREACH_COMPOSE"] = "gmail"
-    os.environ["PIPELINE_OUTREACH_ACCOUNT"] = outreach_fakes.COMPOSE_ACCOUNT
     fake_apply = fake_apply_enabled()
     if fake_apply:
         seed_fake_apply(platform_path, root / "resumes")
-    app = create_app(
-        # A throwaway database: recovery codes come back in the response so an
-        # exploring agent can walk the flow. A real copy never does this.
-        recovery_sandbox=True,
-        db_path=platform_path,
-        access_token=OWNER_TOKEN,
+    app = build_sandbox_app(
+        root,
+        platform_path,
+        owner_token=OWNER_TOKEN,
         employer_token=EMPLOYER_TOKEN,
         admin_token=ADMIN_TOKEN,
-        static_dir=STATIC_DIR,
-        resume_storage=root / "resumes",
-        capture_storage=root / "captures",
-        interview_storage=root / "mock-interviews",
-        early_programs_file=REPO_ROOT / "tests" / "fixtures" / "early_programs.json",
-        # A fuzzer or an exploring agent will exceed the production window
-        # immediately, and 429s would mask the failures worth finding.
-        rate_limit_per_minute=1_000_000,
-        # Outreach drafting, contact finding, and the deep search answer from
-        # offline fakes, so exploring the sandbox never reaches a model or a website.
-        outreach_provider_factory=outreach_fakes.provider_factory,
-        outreach_draft_provider="anthropic",
-        outreach_contact_client_factory=outreach_fakes.contact_client,
-        outreach_contact_delay=0,
-        outreach_discovery_manager=outreach_fakes.discovery_manager(platform_path, root / "outreach-reports"),
-        outreach_recontact_manager=outreach_fakes.recontact_manager(platform_path),
-        system_status=outreach_fakes.system_status(root / "system-status"),
-        board_tracker=outreach_fakes.board_tracker(root / "boards"),
-        outreach_settings=outreach_fakes.outreach_settings(root),
-        # Jev review endpoints also stay deterministic and offline. This is
-        # particularly important for fuzzing, which exercises every operation.
-        typesafe_client_factory=outreach_fakes.FakeTypeSafeClient,
-        inbox_client_factory=outreach_fakes.FakeTypeSafeClient,
-        # Apply for me: the fictional listing (any board, any job) and an agent that only says a window could open.
-        apply_schema_client_factory=(lambda: FakeSchemaClient(any_job=True)) if fake_apply else None,
-        apply_agent_factory=FakeApplyAgentFactory() if fake_apply else None,
+        fake_apply=fake_apply,
+        # A throwaway database: recovery codes come back in the response so an exploring agent can walk the flow.
+        recovery_sandbox=True,
     )
     if fake_apply:
         from opportunity_app import automation

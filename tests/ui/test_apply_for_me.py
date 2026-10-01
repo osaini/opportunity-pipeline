@@ -7,9 +7,7 @@ database directly, the way the switches and uploads would.
 
 from __future__ import annotations
 
-import hashlib
 import json
-from contextlib import closing
 
 import pytest
 from axe_core_python.sync_playwright import Axe
@@ -18,63 +16,9 @@ from playwright.sync_api import expect
 from apply_fake_ats import JOB_URL
 from conftest import OWNER_TOKEN, wait_for_results
 from opportunity_app import actions
-from opportunity_app.schema import connect_product, utc_now
+from ui_helpers import AXE_OPTIONS, USER, confirm_posting, db, fact, open_saved_role, prepare
 
 BEARER = {"Authorization": f"Bearer {OWNER_TOKEN}"}
-USER = "local-user"
-AXE_OPTIONS = {"runOnly": {"type": "tag", "values": ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]}}
-
-
-def db(live_server):
-    return closing(connect_product(live_server.live_path))
-
-
-def fact(conn, path, value):
-    conn.execute(
-        "INSERT INTO profile_facts(user_id, field_path, value_json, source, confirmed, created_at, updated_at) VALUES(?, ?, ?, 'user', 1, ?, ?) "
-        "ON CONFLICT(user_id, field_path) DO UPDATE SET value_json=excluded.value_json, confirmed=1",
-        (USER, path, json.dumps(value), utc_now(), utc_now()))
-
-
-def prepare(live_server, *, turn_on=True):
-    """Acme Robotics (saved) becomes a Greenhouse role; the student has a name for applications, an email and a résumé."""
-    data = b"%PDF-1.4 a fictional resume for the UI suite"
-    resumes = live_server.live_path.parent / "resumes"
-    resumes.mkdir(parents=True, exist_ok=True)
-    (resumes / "resume-file-ui.pdf").write_bytes(data)
-    with db(live_server) as conn, conn:
-        conn.execute("UPDATE opportunities SET url=? WHERE company='Acme Robotics'", (JOB_URL,))
-        fact(conn, "name_parts", {"first": "Sam", "last": "Rivera", "preferred": ""})
-        fact(conn, "contact", {"email": "sam.rivera@example.test"})
-        stamp = utc_now()
-        conn.execute(
-            "INSERT INTO resume_files(id, user_id, original_name, media_type, byte_size, sha256, storage_path, created_at) VALUES('resume-file-ui', ?, 'Sam Rivera Resume.pdf', 'application/pdf', ?, ?, 'resume-file-ui.pdf', ?)",
-            (USER, len(data), hashlib.sha256(data).hexdigest(), stamp))
-        conn.execute("INSERT INTO resume_versions(id, resume_file_id, user_id, extracted_text, status, created_at, confirmed_at) VALUES('resume-ui', 'resume-file-ui', ?, 't', 'confirmed', ?, ?)", (USER, stamp, stamp))
-
-
-@pytest.fixture
-def apply_ready(live_server, base_url, pristine_database):
-    """Seeded and switched on before the page loads, so the page reads the switch as on."""
-    import httpx
-
-    prepare(live_server)
-    response = httpx.put(f"{base_url}/api/v1/automation/settings", headers=BEARER, json={"modes": {"apply_agent": "on"}})
-    assert response.status_code == 200, response.text
-
-
-def open_saved_role(page, company="Acme Robotics"):
-    page.click("#saved-nav")
-    wait_for_results(page)
-    page.locator(".opportunity-card", has_text=company).locator(".card-button").click()
-    page.wait_for_selector("#detail-panel.is-open")
-
-
-def confirm_posting(section):
-    """The sandbox's fake board answers every role with Example Robotics' listing, so the saved Acme role never matches it:
-    the student says it is the right posting before an answer is saved."""
-    expect(section.locator(".apply-mismatch")).to_contain_text("Greenhouse's form is for Robotics Software Intern at Example Robotics, not Acme Robotics")
-    section.get_by_label("This is the right posting").check()
 
 
 def tracker_rows(live_server):

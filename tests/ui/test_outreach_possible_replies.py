@@ -27,7 +27,7 @@ import pytest
 from playwright.sync_api import expect
 
 from conftest import OWNER_TOKEN
-from test_outreach_journey import card_for, open_details, open_outreach, row_for, seed_target
+from ui_helpers import assert_accessible, card_for, describe, open_details, open_outreach, row_for, seed_target
 from opportunity_app.outreach import get_target
 from opportunity_app.outreach_inbox import _record_possible, _record_reply
 from opportunity_app.schema import connect_product, utc_now
@@ -568,17 +568,15 @@ def _card_with_every_part(page, base_url, live_server):
 
 @pytest.mark.parametrize("theme", ["light", "dark"])
 def test_a_card_with_possible_replies_is_accessible(owner_page, base_url, live_server, theme):
-    from test_accessibility import _assert_accessible
-
     if theme == "dark":
         owner_page.evaluate("document.documentElement.dataset.theme = 'dark'")
     card = _card_with_every_part(owner_page, base_url, live_server)
-    _assert_accessible(owner_page, f"an outreach card with possible replies ({theme})")
+    assert_accessible(owner_page, f"an outreach card with possible replies ({theme})")
     # Asking to confirm changes the button; the page must stay accessible while it asks.
     _, no = answers(possible_block(card))
     no.click()
     expect(no).to_have_text(ASKING)
-    _assert_accessible(owner_page, f"an outreach card asking to confirm Not a reply ({theme})")
+    assert_accessible(owner_page, f"an outreach card asking to confirm Not a reply ({theme})")
 
 
 def test_the_answers_are_named_by_the_words_they_show(owner_page, base_url, live_server):
@@ -589,8 +587,6 @@ def test_the_answers_are_named_by_the_words_they_show(owner_page, base_url, live
     the possible replies alone.
     """
     from axe_core_python.sync_playwright import Axe
-
-    from test_accessibility import _describe
 
     card = _card_with_every_part(owner_page, base_url, live_server)
     options = {"runOnly": {"type": "rule", "values": ["label-content-name-mismatch"]}}
@@ -606,7 +602,7 @@ def test_the_answers_are_named_by_the_words_they_show(owner_page, base_url, live
     expect(no).to_have_text(ASKING)
     asking = mismatches()
     assert not (before or asking), (
-        f"before any click:\n{_describe(before) or '  none'}\nwhile asking to confirm Not a reply:\n{_describe(asking) or '  none'}")
+        f"before any click:\n{describe(before) or '  none'}\nwhile asking to confirm Not a reply:\n{describe(asking) or '  none'}")
 
 
 def test_escape_or_leaving_backs_out_of_the_not_a_reply_question(owner_page, base_url, live_server):
