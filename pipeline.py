@@ -764,16 +764,26 @@ def fingerprint_text(text: str | None) -> str:
     # body. Treat those as unfingerprintable instead.
     if len(tokens) < 3:
         return ""
-    weights = [0] * 64
-    for index in range(len(tokens) - 2):
-        shingle = " ".join(tokens[index : index + 3])
-        digest = int(hashlib.sha256(shingle.encode("utf-8")).hexdigest()[:16], 16)
-        for bit in range(64):
-            weights[bit] += 1 if (digest >> bit) & 1 else -1
+    # SimHash: bit i is set when more shingles have bit i set than clear. With
+    # `shingles` hashes, that is `2 * (shingles with the bit set) > shingles`; a
+    # tie leaves the bit unset. Counting one column of the 64-character binary
+    # strings at a time does the same tally as a per-bit Python loop per
+    # shingle, at about a third of the cost. format(..., "064b") is big-endian,
+    # so column `column` is bit 63 - column.
+    shingles = len(tokens) - 2
+    columns = zip(
+        *(
+            format(
+                int(hashlib.sha256(" ".join(tokens[index : index + 3]).encode("utf-8")).hexdigest()[:16], 16),
+                "064b",
+            )
+            for index in range(shingles)
+        )
+    )
     value = 0
-    for bit in range(64):
-        if weights[bit] > 0:
-            value |= 1 << bit
+    for column, bits in enumerate(columns):
+        if 2 * bits.count("1") > shingles:
+            value |= 1 << (63 - column)
     return f"{value:016x}"
 
 
@@ -1348,7 +1358,7 @@ def upsert_jobs(
         # clause, so role_type and fingerprint below describe the values that
         # actually land in the row.
         existing = conn.execute(
-            "SELECT description, location FROM jobs WHERE source_key=? AND external_id=?",
+            "SELECT description, location, content_fingerprint FROM jobs WHERE source_key=? AND external_id=?",
             (source_key, external_id),
         ).fetchone()
         if existing:
@@ -1356,7 +1366,14 @@ def upsert_jobs(
             location = location or existing["location"]
         role_type = classify_role(record["title"], description)
         fp = fingerprint(record["company"], record["title"], location)
-        content_fp = fingerprint_text(description)
+        # The SimHash depends only on the description, so a row whose merged
+        # description is the stored one keeps its stored fingerprint. Blank
+        # means "never computed" (or too short to fingerprint), so it is
+        # recomputed.
+        if existing and description == existing["description"] and existing["content_fingerprint"]:
+            content_fp = existing["content_fingerprint"]
+        else:
+            content_fp = fingerprint_text(description)
         conn.execute(
             """
             INSERT INTO jobs (
