@@ -21,7 +21,6 @@ except PIPELINE_OUTREACH_ACCOUNT.
 from __future__ import annotations
 
 import argparse
-import base64
 import html
 import json
 import re
@@ -37,6 +36,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from . import ROOT
 from .connections import OAUTH_PROVIDERS
 from .database import is_postgres_target
+from .mail_message import decode_base64url
 from .outreach_gmail import GMAIL_API, MODIFY_SCOPE, PROVIDER, READ_SCOPE, THROTTLE_REASONS
 from .schema import LOCAL_USER_ID, _has_column, connect_product
 from .setup import read_env
@@ -317,7 +317,7 @@ def _search(session: _Session, query: str, limit: int, out: Callable[[str], None
 def _decode(part: dict[str, Any]) -> str:
     data = (part.get("body") or {}).get("data") or ""
     try:
-        raw = base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
+        raw = decode_base64url(data)
     except ValueError:
         return ""
     charset = re.search(r"charset=\"?([\w.:-]+)", _header({"payload": part}, "Content-Type"), re.IGNORECASE)

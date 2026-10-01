@@ -16,7 +16,6 @@ report names exactly which recipient failed and why. Only notices are read.
 
 from __future__ import annotations
 
-import base64
 import email
 import html
 import json
@@ -31,6 +30,7 @@ from urllib.parse import quote
 
 import httpx
 
+from .mail_message import MAILER_DAEMONS, decode_base64url, header_map
 from .outreach import AWAITING_REPLY, _log, get_target
 from .outreach_drafting import _keep_current_draft
 from .outreach_gmail import (
@@ -59,7 +59,6 @@ WATCH_FOR = timedelta(days=3)
 # for the oldest watched send is still found.
 NOTICE_SEARCH = "from:(mailer-daemon OR postmaster) newer_than:4d"
 _HEADERS = ("From", "Subject", "Content-Type", "X-Failed-Recipients")
-_DAEMONS = {"mailer-daemon", "mailerdaemon", "mail-daemon", "postmaster"}
 _DELAY = re.compile(r"\(delay\)|\bdelayed\b|\bwarning\b|\bwill (retry|keep trying)\b|\btemporar(y|ily)\b", re.IGNORECASE)
 # Wording that makes a notice a failure even when it also mentions retrying.
 _FAILED_WORDING = re.compile(r"\(failure\)|\bpermanent(ly)?\b|\bgave up\b|\bgiving up\b|\bcould ?n[o']t be delivered\b|\b5\d\d[ -]5\.\d\.\d+", re.IGNORECASE)
@@ -224,26 +223,19 @@ def read_notice(raw: bytes) -> dict[str, Any] | None:
     return {"failed": sorted(set(failed)), "reason": reason}
 
 
-def _header_map(message: dict[str, Any]) -> dict[str, str]:
-    return {
-        str(item.get("name", "")).lower(): str(item.get("value", ""))
-        for item in (message.get("payload") or {}).get("headers") or []
-    }
-
-
 def _is_delivery_notice(message: dict[str, Any]) -> bool:
     """Whether a message's headers alone make it a delivery notice of any kind (a failure or a delay), never mail."""
-    headers = _header_map(message)
+    headers = header_map(message)
     sender = parseaddr(headers.get("from", ""))[1].casefold()
     content_type = f"{headers.get('content-type', '')} {(message.get('payload') or {}).get('mimeType', '')}".casefold()
-    return sender.split("@", 1)[0] in _DAEMONS or ("multipart/report" in content_type and "delivery-status" in content_type)
+    return sender.split("@", 1)[0] in MAILER_DAEMONS or ("multipart/report" in content_type and "delivery-status" in content_type)
 
 
 def _headers_say_failure(message: dict[str, Any]) -> dict[str, Any] | None:
     """What a message's headers alone say, if it looks like a delivery failure notice."""
     if not _is_delivery_notice(message):
         return None
-    headers = _header_map(message)
+    headers = header_map(message)
     subject = headers.get("subject", "")
     if _DELAY.search(subject) and "failure" not in subject.casefold():
         return None
@@ -261,7 +253,7 @@ def _raw(gmail: _Gmail, message_id: str) -> tuple[bytes, int] | None:
     data = response.json()
     raw = str(data.get("raw", ""))
     try:
-        return base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)), int(data.get("internalDate") or 0)
+        return decode_base64url(raw), int(data.get("internalDate") or 0)
     except (ValueError, TypeError):
         return None
 

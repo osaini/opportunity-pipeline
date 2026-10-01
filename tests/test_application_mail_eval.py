@@ -32,6 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from opportunity_app import application_inbox, mail_trust
+from opportunity_app.mail_message import host_of
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "application_mail_eval.json"
 # What the rules scored on 2026-09-27: precision per predicted label (correct / predicted).
@@ -63,7 +64,7 @@ def examples(key="emails"):
     rows = []
     for item in data[key]:
         domain = item["sender"].rsplit("@", 1)[1].rstrip(">").strip().lower()
-        hosts = [mail_trust.host_of(link.rstrip(".,")) for link in re.findall(r"https?://[^\s<>\"']+", item["body"])]
+        hosts = [host_of(link.rstrip(".,")) for link in re.findall(r"https?://[^\s<>\"']+", item["body"])]
         label, confidence, _prior = application_inbox.classify_rules(item["subject"], item["body"], domain, hosts, RECEIVED)
         rows.append({
             "id": item["id"], "truth": item["label"], "label": label, "confidence": confidence,

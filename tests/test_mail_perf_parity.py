@@ -16,6 +16,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from opportunity_app import application_inbox, mail_trust, outreach_inbox
+from opportunity_app.mail_message import host_of
 from opportunity_app import outreach_gmail_sends as sends
 from opportunity_app.outreach import DRAFT_KINDS, UNSENT_STATUSES, get_target
 from opportunity_app.outreach_gmail import DRAFT_EVENT, _already_sent, last_bounce
@@ -218,7 +219,7 @@ def reference_refresh_suggestions(conn, user_id):
     keys.pop("", None)
     with conn:
         for row in applications:
-            host = mt.host_of(row["url"])
+            host = host_of(row["url"])
             domain = mt.registrable_domain(host)
             key = mt.company_key(row["company"])
             if not domain or not key or mt.not_an_employer(domain) or mt._url_hosts_elsewhere(conn, domain, key):
@@ -231,7 +232,7 @@ def reference_refresh_suggestions(conn, user_id):
             key = mt.company_key(row["company"])
             if key not in keys:
                 continue
-            host = mt.host_of(row["website"] if "//" in str(row["website"]) else f"https://{row['website']}")
+            host = host_of(row["website"] if "//" in str(row["website"]) else f"https://{row['website']}")
             mt.suggest(conn, user_id, company=keys[key], host=host, source="outreach",
                        evidence=f"Your outreach record for {row['company']} lists the website {mt.registrable_domain(host) or host}.")
     after = conn.execute("SELECT COUNT(*) FROM employer_domains WHERE user_id=?", (user_id,)).fetchone()[0]

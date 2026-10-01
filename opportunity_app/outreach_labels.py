@@ -57,9 +57,10 @@ from urllib.parse import quote
 import httpx
 
 from . import automation
+from .mail_message import MAILER_DAEMONS, header_map
 from .mail_trust import FREEMAIL, registrable_domain
 from .outreach import UNSENT_STATUSES
-from .outreach_delivery import _DAEMONS, _is_delivery_notice
+from .outreach_delivery import _is_delivery_notice
 from .outreach_drafting import sender_account
 from .outreach_gmail import (
     DRAFT_EVENT,
@@ -976,7 +977,7 @@ def _sweep_labelled(
     # A delivery notice is never labelled, so left in the listing it would be read again every pass and could hold the sweep back.
     query = (
         f"after:{int(kept['after']) - SWEEP_OVERLAP_SECONDS} -in:chats -in:drafts "
-        f"-from:({' OR '.join(sorted(_DAEMONS))}) -label:{search_form(name)}"
+        f"-from:({' OR '.join(sorted(MAILER_DAEMONS))}) -label:{search_form(name)}"
     )
     for _page in range(SWEEP_PAGES):
         params: dict[str, Any] = {"q": query, "maxResults": 100}
@@ -1058,10 +1059,7 @@ def _outreach_target(labeller: _Labeller, gmail_id: str, addresses: dict[str, st
     labeller._refuse(response)
     if response.status_code != 200:
         raise _Stop("unreachable")
-    headers = {
-        str(item.get("name", "")).casefold(): str(item.get("value", ""))
-        for item in (response.json().get("payload") or {}).get("headers") or [] if isinstance(item, dict)
-    }
+    headers = header_map(response.json(), guarded=True)
     for address in _addresses(headers.get("to"), headers.get("cc"), headers.get("bcc")):
         if address in addresses:
             return addresses[address]

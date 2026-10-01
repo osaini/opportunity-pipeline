@@ -57,11 +57,12 @@ from typing import Any, Callable
 
 from . import outreach_research as research
 from .agent_providers import CliAgentProvider, complete_text
+from .mail_message import mailbox_key
 from .mail_trust import registrable_domain
 from .outreach import LEGAL_SUFFIXES, _log, get_target
 from .outreach_contacts import FetchResult, is_shared_inbox
 from .outreach_inbox import (
-    _alias, _company_words, _contact_domain, _domain, _institution, _is_own, _normal, _own_domains, _platform, _role_word,
+    _alias, _company_words, _contact_domain, _domain, _institution, _is_own, _own_domains, _platform, _role_word,
     _website_domain, _website_strength, is_person,
 )
 from .outreach_linkedin import CMD_META, LinkedInClient, LinkedInUnavailable, username_from
@@ -183,7 +184,7 @@ def company_domains(target: dict[str, Any]) -> tuple[dict[str, bool], set[str]]:
             continue
         domain, strong = _contact_domain(address, site, own, company)
         if field == "contact_email":
-            written.add(_normal(address))
+            written.add(mailbox_key(address))
             if domain:
                 domains[domain] = domains.get(domain, False) or strong
             continue
@@ -193,7 +194,7 @@ def company_domains(target: dict[str, Any]) -> tuple[dict[str, bool], set[str]]:
             domains[domain] = domains.get(domain, False) or strong
         host = _domain(address)
         if any(host == known or host.endswith(f".{known}") for known in domains):
-            written.add(_normal(address))
+            written.add(mailbox_key(address))
     return domains, written
 
 
@@ -203,7 +204,7 @@ def _at_company(sender: str, domains: dict[str, bool], written: set[str]) -> boo
     A university-wide domain (stateu.edu) counts only for the addresses written
     to, never for everyone at the university; a department's own host does.
     """
-    if _normal(sender) in written or (_alias(sender) and _alias(sender) in {_alias(address) for address in written}):
+    if mailbox_key(sender) in written or (_alias(sender) and _alias(sender) in {_alias(address) for address in written}):
         return True
     host = _domain(sender)
     for own, strong in domains.items():
@@ -225,7 +226,7 @@ def _mailbox(
     """The people at the company who wrote, those tied to it from a domain it does not own, and the calendar
     invitations sent by an inbox that is not a person (interviews@); each newest first."""
     domains, written = company_domains(target)
-    contact = _normal(str(target.get("contact_email") or ""))
+    contact = mailbox_key(str(target.get("contact_email") or ""))
     contact_name = _person_name(target.get("contact_name") or "", target["company"])
     rows = conn.execute(
         f"""
@@ -242,7 +243,7 @@ def _mailbox(
         sender, from_name, subject, received = (str(row[1] or "").casefold(), row[2], str(row[3] or ""), str(row[4] or ""))
         name = _person_name(from_name, target["company"])
         # A reply from the exact address the student wrote to is the contact's, whatever short name it is signed with.
-        if not name and contact and _normal(sender) == contact:
+        if not name and contact and mailbox_key(sender) == contact:
             name = contact_name
         at_company = _at_company(sender, domains, written)
         if not name or _scheduling_inbox(sender) or not is_person(sender, target["company"]):

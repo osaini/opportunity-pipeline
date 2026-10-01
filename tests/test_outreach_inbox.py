@@ -14,8 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import httpx
 
-from opportunity_app import automation, outreach_gmail, outreach_inbox
-from opportunity_app.outreach_inbox import InboxWatcher, reply_text, strip_quoted
+from opportunity_app import automation, mail_message, outreach_gmail, outreach_inbox
+from opportunity_app.mail_message import reply_text, strip_quoted
+from opportunity_app.outreach_inbox import InboxWatcher
 from opportunity_app.schema import connect_product, utc_now
 
 from helpers_gmail import (
@@ -726,7 +727,7 @@ class ReplyCaptureTests(ReplyCaptureFixture, unittest.TestCase):
         target = self.sent_target()
         self.arrive_in_thread("broken-1", mail("Talk soon.", sender="Ana <ana@bovi.example>"))
         self.arrive("reply-9", mail("Yes, let's talk."))
-        with mock.patch.object(outreach_inbox, "_sender", side_effect=[IndexError("bad header"), ("Greg Lee", "greg@bovi.example")]):
+        with mock.patch.object(mail_message, "sender", side_effect=[IndexError("bad header"), ("Greg Lee", "greg@bovi.example")]):
             result = self.check()
         self.assertEqual(result["state"], "ok")
         self.assertEqual([item["reason"] for item in result["possible"]] + [item["from"] for item in result["replies"]],

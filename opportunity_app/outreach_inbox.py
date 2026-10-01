@@ -39,9 +39,7 @@ it on.
 
 from __future__ import annotations
 
-import base64
 import email
-import html
 import json
 import logging
 import re
@@ -52,18 +50,34 @@ from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from email import policy
 from email.message import EmailMessage
-from email.utils import getaddresses, parseaddr, parsedate_to_datetime
+from email.utils import getaddresses, parseaddr
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable
 from urllib.parse import quote, urlsplit
 
 import httpx
 
 from pipeline import identity_tokens, normalized
 
-from . import automation, outreach_labels
+from . import automation, mail_message, outreach_labels
 from .inbox_classifiers import read_reply
-from .mail_trust import FREEMAIL, READ_CATEGORIES, authenticate, host_of, listed, not_an_employer, registrable_domain, sender_lists
+from .mail_message import (
+    FULL_TEXT_LIMIT,
+    MAILER_DAEMONS,
+    URL,
+    answers_something,
+    body_text,
+    full_reply_text,
+    header_map,
+    host_of,
+    is_automatic,
+    is_bulk_or_generated,
+    kept_headers,
+    link_hosts_or_none,
+    mailbox_key,
+    reply_text,
+)
+from .mail_trust import FREEMAIL, READ_CATEGORIES, authenticate, listed, not_an_employer, registrable_domain, sender_lists
 from .outreach import (
     BOUNCED,
     _log,
@@ -120,21 +134,11 @@ REJUDGE_BUDGET = 25
 THREAD_FALLBACK = 20
 # A search's from:(...) list is kept under this length; a longer one is split.
 QUERY_LENGTH = 1_500
-_DAEMONS = {"mailer-daemon", "mailerdaemon", "mail-daemon", "postmaster"}
-# "Re:", "RE[2]:", "[Acme] Re:", and replies in other languages (AW, SV, Antw, VS, Rif, Odp, Ynt).
-# Forwards are not answers: a forward is fresh content.
-_ANSWER_SUBJECT = re.compile(r"^\s*(\[[^\]]{1,60}\]\s*)*(re|aw|sv|antw|vs|rif|odp|ynt)\s*(\[\d+\]|\(\d+\))?\s*[:：]", re.IGNORECASE)
 # Senders that are a machine rather than a person or a shared inbox.
 _MACHINE_SENDER = re.compile(
     r"^(no-?reply|do-?not-?reply|donotreply|notifications?|notify|alerts?|mailer|bounces?|news(letters?)?|"
     r"marketing|updates?|digest|calendar(-notification)?|invitations?|billing|invoices?|receipts?|"
     r"system|robot|bot|automated|auto|wordpress|forms?)([+._-]|$)|(no-?reply|noreply|donotreply)",
-    re.IGNORECASE,
-)
-_AUTO_SUBJECT = re.compile(
-    r"^\s*(automatic reply|auto(matic)?[- ]?reply|auto:|out of (the )?office|ooo\b|away from|automatische antwort|"
-    r"abwesenheit|r[ée]ponse automatique|absence|respuesta autom[áa]tica|fuera de la oficina|risposta automatica|"
-    r"resposta autom[áa]tica|automatisch antwoord|automatiskt svar|autosvar)",
     re.IGNORECASE,
 )
 # The first part of a website host that names a section, not the company (careers.acme.com is acme.com).
@@ -156,11 +160,6 @@ PLATFORM_HOSTS = {
 }
 # Registrable domains that stand for a whole university or government: never "anyone at the domain".
 _INSTITUTION = re.compile(r"(^|\.)(edu|gov|mil)$|(^|\.)(ac|edu|gov|mil|govt|gob|gouv)\.[a-z]{2}$")
-_URL = re.compile(r"""https?://[^\s<>"'`]+""", re.IGNORECASE)
-# Where the quoted email starts in a reply: "On Fri, ... wrote:", "-----Original Message-----",
-# Outlook's "From: ... Sent: ..." header block, or a "> " line.
-_ON_WROTE = re.compile(r"^\s*On .{0,300}wrote:\s*$", re.IGNORECASE | re.DOTALL)
-_ORIGINAL = re.compile(r"^\s*-{2,}\s*(original message|forwarded message)\s*-{2,}\s*$", re.IGNORECASE)
 
 _LAST_CAPTURE: dict[str, datetime] = {}
 _CAPTURE_LOCK = threading.Lock()
@@ -195,264 +194,12 @@ def owned_sql(table: str = "") -> str:
 # --- Reading a message ----------------------------------------------------------
 
 
-def _html_text(markup: str) -> str:
-    markup = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", markup)
-    markup = re.sub(r"(?i)<br\s*/?>|</(p|div|li|tr|h\d)>", "\n", markup)
-    markup = re.sub(r"(?is)<blockquote\b.*", "", markup)
-    return html.unescape(re.sub(r"<[^>]+>", "", markup))
-
-
-def _quote_start(lines: list[str]) -> tuple[int, str] | None:
-    """Where the quoted email starts, and how: "quote" (a "> " line), "wrote" or "wrote2" (an "On ... wrote:"
-    line, or one split over two lines), or "header" (Outlook's From:/Sent: block, or an Original Message line)."""
-    for index, line in enumerate(lines):
-        pair = f"{line} {lines[index + 1]}" if index + 1 < len(lines) else line
-        header_block = line.startswith("From:") and any(
-            following.startswith(("Sent:", "Date:")) for following in lines[index + 1:index + 3]
-        )
-        if line.lstrip().startswith(">"):
-            return index, "quote"
-        if _ORIGINAL.match(line) or header_block:
-            return index, "header"
-        if _ON_WROTE.match(line):
-            return index, "wrote"
-        if line.lstrip().startswith("On ") and _ON_WROTE.match(pair):
-            return index, "wrote2"
-    return None
-
-
-def strip_quoted(text: str) -> str:
-    """The reply above the email it quotes."""
-    lines = text.replace("\r\n", "\n").split("\n")
-    found = _quote_start(lines)
-    if found is not None:
-        lines = lines[:found[0]]
-    return "\n".join(lines).strip()
-
-
-def written_between_quotes(text: str, sent: Iterable[str] = ()) -> str:
-    """What the sender wrote after the email they quote begins: between its quoted lines, or below them.
-
-    strip_quoted keeps only what is above the quote, so an answer typed inline
-    ("> Would you have time for a call?" then "Sure, Thursday?") is lost there.
-    A "> " quote marks its lines. An Outlook-style quote (a From:/Sent: block,
-    or an Original Message line) does not, so below it every line that is not
-    a header field and not the student's own words (``sent``: the emails they
-    sent, which it quotes) counts as written by the sender. With nothing in
-    ``sent``, every line below such a header counts: nothing is ruled out.
-    """
-    lines = text.replace("\r\n", "\n").split("\n")
-    found = _quote_start(lines)
-    if found is None:
-        return ""
-    index, how = found
-    if how == "header":
-        return _written_below_header(lines[index:], sent)
-    rest = lines[index + {"quote": 0, "wrote": 1, "wrote2": 2}[how]:]
-    return "\n".join(line for line in rest if line.strip() and not line.lstrip().startswith(">")).strip()
-
-
-# The fields of an Outlook header block ("From:", "Sent:", "To:", "Subject:"), with or without bold marks.
-_HEADER_FIELD = re.compile(r"^\s*\**\s*(from|sent|date|to|cc|bcc|subject|importance|reply-to)\s*:", re.IGNORECASE)
-_QUOTE_MARKS = re.compile(r"^[\s>]+")
-_FLAT = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"', "\u00a0": " ", "\u200b": None, "\ufeff": None})
-
-
-def _flat(text: str) -> str:
-    """Text as compared with what the student sent: curly quotes straightened, spaces collapsed, case folded."""
-    return " ".join(str(text).translate(_FLAT).split()).casefold()
-
-
-def _header_starts(lines: list[str], index: int) -> bool:
-    line = lines[index]
-    return bool(_ORIGINAL.match(line)) or (
-        _HEADER_FIELD.match(line) is not None and line.lstrip(" *").casefold().startswith("from")
-        and any(_HEADER_FIELD.match(following) and following.lstrip(" *").casefold().startswith(("sent", "date"))
-                for following in [other for other in lines[index + 1:index + 6] if other.strip()][:2])
-    )
-
-
-def _written_below_header(lines: list[str], sent: Iterable[str]) -> str:
-    """The lines below an Outlook quote's header that are neither header fields nor the student's own words.
-
-    Words are the student's when they are a whole line of what they sent, or
-    four or more words that run on in it. A paragraph is tried whole first,
-    since a long line can come back re-wrapped into short pieces; a paragraph
-    that is not theirs as a whole is tried line by line. A header block quoted
-    further down (the thread's older email) is skipped the same way. What is
-    left, the sender wrote.
-    """
-    bodies = [str(body) for body in sent if str(body or "").strip()]
-    whole_lines = {_flat(line) for body in bodies for line in body.replace("\r\n", "\n").split("\n")} - {""}
-    running = " ".join(_flat(body) for body in bodies)
-
-    def theirs(words: str) -> bool:  # the student's own
-        return not words or words in whole_lines or (
-            len(words.split()) >= 4 and re.search(rf"(?<!\w){re.escape(words)}(?!\w)", running) is not None
-        )
-
-    paragraphs: list[list[str]] = [[]]
-    in_header = False
-    for index, line in enumerate(lines):
-        if not line.strip():
-            paragraphs.append([])
-            continue
-        if index == 0 or _header_starts(lines, index):
-            in_header = True
-            paragraphs.append([])
-            continue
-        if in_header and _HEADER_FIELD.match(line):
-            continue
-        in_header = False
-        paragraphs[-1].append(line.strip())
-    written: list[str] = []
-    for paragraph in paragraphs:
-        if theirs(_flat(" ".join(_QUOTE_MARKS.sub("", line) for line in paragraph))):
-            continue
-        written.extend(line for line in paragraph if not theirs(_flat(_QUOTE_MARKS.sub("", line))))
-    return "\n".join(written)
-
-
-def _html_full_text(markup: str) -> str:
-    """HTML as text with each quoted (<blockquote>) line marked "> ", as a plain-text reply marks it."""
-    markup = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", markup)
-    markup = re.sub(r"(?i)<br\s*/?>|</(p|div|li|tr|h\d)>", "\n", markup)
-    markup = re.sub(r"(?i)<blockquote\b[^>]*>", "\n\x00quote-open\x00\n", markup)
-    markup = re.sub(r"(?i)</blockquote\s*>", "\n\x00quote-close\x00\n", markup)
-    text = html.unescape(re.sub(r"<[^>]+>", "", markup))
-    depth, lines = 0, []
-    for line in text.split("\n"):
-        if line == "\x00quote-open\x00":
-            depth += 1
-        elif line == "\x00quote-close\x00":
-            depth = max(0, depth - 1)
-        else:
-            lines.append(f"> {line}" if depth and line.strip() else line)
-    return "\n".join(lines)
-
-
-FULL_TEXT_LIMIT = 20_000
-
-
-def _body_text(message: EmailMessage, *, whole: bool) -> str:
-    body = message.get_body(preferencelist=("plain", "html"))
-    if body is None:
-        return ""
-    try:
-        text = str(body.get_content())
-    except (LookupError, ValueError):
-        return ""
-    if body.get_content_type() == "text/html":
-        return _html_full_text(text) if whole else _html_text(text)
-    return text
-
-
-def reply_text(message: EmailMessage) -> str:
-    return strip_quoted(_body_text(message, whole=False))[:20_000]
-
-
-def full_reply_text(message: EmailMessage) -> str:
-    """The whole message as it arrived, quoted lines marked "> ", so an answer typed inline is kept."""
-    return _body_text(message, whole=True).replace("\r\n", "\n").strip()
-
-
-def _header(message: EmailMessage, name: str, raw: str) -> Any:
-    """One header as the message's policy parses it, or its raw text when the parser fails on it (a stray ":;")."""
-    try:
-        return message.policy.header_fetch_parse(name, raw)
-    except Exception:  # noqa: BLE001 - the header parser raises IndexError and others on odd headers
-        return raw
-
-
-def _addresses(message: EmailMessage, *names: str) -> list[str]:
-    """Every address in these headers, lowercased. Reads the parsed header, which copes with 'Reyes, Dana <…>'.
-
-    Each header is parsed on its own, so one the parser cannot read (a Cc of
-    "a@b.com, :;") falls back to its raw text instead of failing the message.
-    """
-    found: list[str] = []
-    for name in names:
-        for header, raw in message.raw_items():
-            if str(header).casefold() != name.casefold():
-                continue
-            value = _header(message, header, raw)
-            try:
-                parsed = [str(address.addr_spec) for address in getattr(value, "addresses", ())]
-            except Exception:  # noqa: BLE001 - as above
-                parsed = []
-            if not parsed:
-                parsed = [address for _name, address in getaddresses([str(raw)])]
-            found += [address.strip().casefold() for address in parsed if "@" in address]
-    return found
-
-
-def _sender(message: EmailMessage) -> tuple[str, str]:
-    """(display name, address) of the one who wrote it. Copes with 'Lee, Greg <greg@…>', where a comma splits the name."""
-    value = next((_header(message, name, raw) for name, raw in message.raw_items() if str(name).casefold() == "from"), None)
-    try:
-        parsed = list(getattr(value, "addresses", ()))
-    except Exception:  # noqa: BLE001 - the header parser raises IndexError and others on odd headers
-        parsed = []
-    for address in parsed:
-        if "@" in str(address.addr_spec):
-            name = str(address.display_name or "")
-            # The name before a comma the header parser split off ("Lee, Greg"): both halves are the name.
-            if parsed.index(address) > 0 and not name.count("@"):
-                name = " ".join(str(part.display_name or part.addr_spec or "") for part in parsed[:parsed.index(address) + 1]).strip()
-            return name, str(address.addr_spec).strip().casefold()
-    found = _addresses(message, "From")
-    if found:
-        return parseaddr(str(value or ""))[0], found[0]
-    name, address = parseaddr(str(value or ""))
-    return name, address.strip().casefold()
-
-
-def _received(data: dict[str, Any], message: EmailMessage) -> datetime | None:
-    """When Gmail received it; its Date header when Gmail gives no time; None when neither says."""
-    stamp = int(data.get("internalDate") or 0)
-    if stamp > 0:
-        return datetime.fromtimestamp(stamp / 1000, tz=timezone.utc)
-    try:
-        dated = parsedate_to_datetime(str(message.get("Date", "")))
-    except (TypeError, ValueError, IndexError):
-        return None
-    return (dated if dated.tzinfo else dated.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
-
-
-def answers_something(message: EmailMessage) -> bool:
-    """Whether a message is written as a reply, not a fresh email or a forward."""
-    return bool(message.get("In-Reply-To") or message.get("References")) or bool(
-        _ANSWER_SUBJECT.match(str(message.get("Subject", "")))
-    )
-
-
-def is_bulk(message: EmailMessage) -> bool:
-    """Sent to many, or through a mailing or sales tool: list headers, or a bulk precedence."""
-    if message.get("List-Unsubscribe") or message.get("List-Id"):
-        return True
-    if str(message.get("Precedence", "")).strip().casefold() in {"bulk", "junk", "list"}:
-        return True
-    auto = str(message.get("Auto-Submitted", "")).strip().casefold()
-    return bool(auto) and auto not in {"no", "auto-replied"}
-
-
-def is_automatic(message: EmailMessage) -> bool:
-    """An out-of-office or other automatic answer (RFC 3834), by its headers or its subject."""
-    if str(message.get("Auto-Submitted", "")).strip().casefold() == "auto-replied":
-        return True
-    if message.get("X-Autoreply") or message.get("X-Autorespond"):
-        return True
-    if str(message.get("Precedence", "")).strip().casefold() == "auto_reply":
-        return True
-    return bool(_AUTO_SUBJECT.search(str(message.get("Subject", ""))))
-
-
 def _delivery_kind(message: EmailMessage, sender: str) -> str:
     """'delivery' for a delivery or delay notice, from any sender; 'receipt' for a read receipt; else ''."""
     content_type = str(message.get("Content-Type", "")).casefold()
     if "multipart/report" in content_type and "disposition-notification" in content_type:
         return "receipt"
-    if sender.split("@", 1)[0] in _DAEMONS or message.get("X-Failed-Recipients"):
+    if sender.split("@", 1)[0] in MAILER_DAEMONS or message.get("X-Failed-Recipients"):
         return "delivery"
     if "multipart/report" in content_type:
         return "delivery"
@@ -516,13 +263,13 @@ def name_matches_address(display: str, address: str, company: str = "") -> bool:
 
 
 def _link_hosts(message: EmailMessage) -> set[str]:
-    return {host for host in (host_of(url) for url in _URL.findall(_body_text(message, whole=False))) if host}
+    return {host for host in (host_of(url) for url in URL.findall(body_text(message, whole=False))) if host}
 
 
 def _job_mail(message: EmailMessage, sender: str) -> bool:
     """Whether a job system had a hand in it: its sender, return path or signer is an applicant, assessment or scheduling
     system, or it links to an applicant or assessment system (a LinkedIn or Calendly link in a signature does not count)."""
-    hosts = {_domain(sender), *(_domain(address) for address in _addresses(message, "Return-Path"))}
+    hosts = {_domain(sender), *(_domain(address) for address in mail_message.addresses(message, "Return-Path"))}
     for result in str(message.get("Authentication-Results", "")).split(";"):
         signer = re.search(r"header\.(?:d|i)=@?([^\s;]+)", result)
         if signer:
@@ -542,7 +289,7 @@ _SALES_HOSTS = (
 def _sales_tool(message: EmailMessage) -> bool:
     if any(str(name).casefold().startswith("x-hubspot") for name in message.keys()):
         return True
-    hosts = _link_hosts(message) | {_domain(address) for address in _addresses(message, "Return-Path")}
+    hosts = _link_hosts(message) | {_domain(address) for address in mail_message.addresses(message, "Return-Path")}
     return any(marker in host for host in hosts for marker in _SALES_HOSTS)
 
 
@@ -551,18 +298,6 @@ def _sales_tool(message: EmailMessage) -> bool:
 
 def _domain(address: str) -> str:
     return address.rsplit("@", 1)[-1].casefold().strip().rstrip(".>") if "@" in address else ""
-
-
-def _normal(address: str) -> str:
-    """An address as a mailbox: lowercased, without a +tag, and Gmail's dots and googlemail.com folded away."""
-    text = str(address or "").strip().casefold()
-    if "@" not in text:
-        return text
-    local, domain = text.rsplit("@", 1)
-    local = local.split("+", 1)[0] or local
-    if domain in {"gmail.com", "googlemail.com"}:
-        local, domain = local.replace(".", ""), "gmail.com"
-    return f"{local}@{domain}"
 
 
 def _platform(host: str) -> bool:
@@ -737,7 +472,7 @@ def _watched(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict
     ).fetchall():
         if _stamp(event["created_at"]):
             marked.setdefault(event["target_id"], []).append(_stamp(event["created_at"]))
-    account = _normal(sender_account())
+    account = mailbox_key(sender_account())
     own = _own_domains()
     watched = []
     for row in rows:
@@ -751,7 +486,7 @@ def _watched(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict
         # A draft sent from Gmail went to whoever its To line named, which the student may have changed there.
         written += [address for _at, detail in own_sends for _name, address in getaddresses([str(detail.get("sent_to_header") or "")])]
         addresses = {text.strip().casefold() for text in written if "@" in text}
-        addresses = {address for address in addresses if _normal(address) != account}
+        addresses = {address for address in addresses if mailbox_key(address) != account}
         # The app's own sends say to the second when the email went; a send marked
         # by hand has only a date, so the day before it is the earliest a reply counts.
         starts: list[tuple[datetime, bool]] = [(at, False) for at, _detail in own_sends]
@@ -783,7 +518,7 @@ def _watched(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict
         aliases = {_alias(address) for address in addresses} - {""}
         company = {address for address in addresses if address in primary or any(
             _domain(address) == own_domain or _domain(address).endswith(f".{own_domain}") for own_domain in domains)}
-        outsiders = {_normal(address) for address in addresses - company}
+        outsiders = {mailbox_key(address) for address in addresses - company}
         for field in ("contact_email", "contact_cc"):
             domain, strong = _contact_domain(str(row[field] or ""), site, own, row["company"])
             if domain:
@@ -798,7 +533,7 @@ def _watched(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict
         since, date_only = min(starts, key=lambda start: start[0])
         watched.append({
             "id": row["id"], "company": row["company"], "status": row["status"], "addresses": addresses,
-            "mailboxes": {_normal(address) for address in company} | aliases, "outsiders": outsiders, "aliases": aliases,
+            "mailboxes": {mailbox_key(address) for address in company} | aliases, "outsiders": outsiders, "aliases": aliases,
             "domains": domains, "since": since,
             "since_is_date": date_only, "last": latest, "via_form": via_form,
             "subject": " ".join(str(row["email_subject"] or "").split()),
@@ -825,7 +560,7 @@ def _at_domain(domain: str, target: dict[str, Any]) -> bool | None:
 
 
 def _at_company(sender: str, target: dict[str, Any]) -> bool:
-    return _normal(sender) in target["mailboxes"] or _at_domain(_domain(sender), target) is not None
+    return mailbox_key(sender) in target["mailboxes"] or _at_domain(_domain(sender), target) is not None
 
 
 def _owner(
@@ -844,7 +579,7 @@ def _owner(
             if thread_id in target["threads"]:
                 return [target], "thread"
     by_latest = sorted(watched, key=lambda target: target["last"], reverse=True)
-    mailbox, domain = _normal(sender), _domain(sender)
+    mailbox, domain = mailbox_key(sender), _domain(sender)
     names = {mailbox, _alias(sender)} - {""}
     for how, matches in (
         ("address", [target for target in by_latest if names & target["mailboxes"]]),
@@ -854,7 +589,7 @@ def _owner(
         if matches:
             return matches, how
     # Relayed: an applicant system or LinkedIn writes for someone whose Reply-To is at the company.
-    others = {_normal(address) for address in _addresses(message, "Reply-To", "Sender")} - {mailbox}
+    others = {mailbox_key(address) for address in mail_message.addresses(message, "Reply-To", "Sender")} - {mailbox}
     matches = [target for target in by_latest if others & target["mailboxes"]
                or any(_at_domain(_domain(other), target) is not None for other in others)]
     return (matches, "reply_to") if matches else ([], "")
@@ -887,9 +622,9 @@ def _shared_subjects(watched: list[dict[str, Any]]) -> set[str]:
 
 def _addressed(message: EmailMessage, account: str) -> bool:
     """Whether the student was in its To or Cc line, not only a blind copy."""
-    recipients = {_normal(address) for address in _addresses(message, "To", "Cc")}
+    recipients = {mailbox_key(address) for address in mail_message.addresses(message, "To", "Cc")}
     if account:
-        return _normal(account) in recipients
+        return mailbox_key(account) in recipients
     return bool(recipients) and "undisclosed" not in str(message.get("To", "")).casefold()
 
 
@@ -927,7 +662,7 @@ def _judge(
     target = targets[0]
     local = sender.split("@", 1)[0]
     subject = str(message.get("Subject", ""))
-    if (account and _normal(sender) == _normal(account)) or "SENT" in labels or "DRAFT" in labels:
+    if (account and mailbox_key(sender) == mailbox_key(account)) or "SENT" in labels or "DRAFT" in labels:
         return IGNORED, "own"
     delivery = _delivery_kind(message, sender)
     if delivery:
@@ -937,7 +672,7 @@ def _judge(
     # Someone at the company writing through a relay (an applicant system, LinkedIn): its Reply-To. That lets the
     # message be shown, never counted: counting rests on the sender's own address.
     relayed = any(is_person(other, target["company"]) and _at_company(other, target)
-                  for other in _addresses(message, "Reply-To", "Sender"))
+                  for other in mail_message.addresses(message, "Reply-To", "Sender"))
     own_person = is_person(sender, target["company"])
     person = own_person or relayed
     if how == "thread":
@@ -968,9 +703,9 @@ def _judge(
             return POSSIBLE, "before_marked_sent"
         return IGNORED, "before"
     if how == "name":
-        if is_bulk(message) or not person or not _addressed(message, account) or is_automatic(message):
+        if is_bulk_or_generated(message) or not person or not _addressed(message, account) or is_automatic(message):
             return IGNORED, "no_company"
-    elif is_bulk(message):
+    elif is_bulk_or_generated(message):
         # From the address written to, or a person, through a mailing or sales tool: shown, never set aside.
         if how != "address" and not person and not answers_something(message):
             return IGNORED, "list"
@@ -1103,72 +838,6 @@ def _remember(
 # None when they could not all be read), which outreach_thank_you.thank_you_blockers checks before anything
 # is sent on its own.
 REPLY_META = {"thread_id", "message_id", "subject", "from_name", "full_text", "reply_to", "headers", "link_hosts"}
-# The headers kept with a Gmail reply: who it was to, whether a person or a system sent it, and Gmail's own sender
-# check. Headers only, never more of the body than full_text already keeps.
-KEPT_HEADERS = (
-    "From", "Sender", "To", "Cc", "Subject", "Return-Path", "Auto-Submitted", "X-Auto-Response-Suppress",
-    "List-Unsubscribe", "List-Id", "Precedence", "X-Autoreply", "X-Autorespond", "DKIM-Signature", "Authentication-Results",
-)
-# A message with more of these, or a longer one, is not kept at all, so a check that reads them fails closed.
-KEPT_HEADER_LIMIT = 4_000
-KEPT_HEADER_COUNT = 40
-LINK_HOST_LIMIT = 50
-_LINK = re.compile(r"""https?://[^\s<>"'`]+""", re.IGNORECASE)
-
-
-def kept_headers(message: EmailMessage) -> list[list[str]] | None:
-    """The KEPT_HEADERS of a message, in the order they arrived and as they arrived ([name, raw value] pairs).
-
-    None when there are too many or one is too long to keep whole: a check
-    that reads them then finds none, and fails closed.
-    """
-    wanted = {name.casefold() for name in KEPT_HEADERS}
-    kept: list[list[str]] = []
-    for name, value in message.raw_items():
-        if str(name).casefold() not in wanted:
-            continue
-        text = str(value).encode("utf-8", "surrogateescape").decode("utf-8", "replace")
-        if len(text) > KEPT_HEADER_LIMIT or len(kept) >= KEPT_HEADER_COUNT:
-            return None
-        kept.append([str(name), text])
-    return kept
-
-
-def _hosts(text: str) -> Iterable[str]:
-    from .mail_trust import host_of
-
-    for url in _LINK.finditer(html.unescape(str(text or ""))):
-        host = host_of(url.group(0).rstrip(".,;:!?)]}'\""))
-        if host:
-            yield host
-
-
-def hosts_in(text: str) -> set[str]:
-    """The host of every link in a text. Hosts only."""
-    return set(_hosts(text))
-
-
-def link_hosts(message: EmailMessage) -> list[str] | None:
-    """The host of every link in a message's text parts, plain and HTML (href too), quoted parts included. Hosts only.
-
-    None when a text part cannot be read (a charset Python does not know) or
-    it links more than LINK_HOST_LIMIT hosts: like kept_headers, a check that
-    reads them then fails closed rather than missing a link it never saw.
-    """
-    hosts: list[str] = []
-    for part in message.walk():
-        if part.is_multipart() or part.get_content_maintype() != "text":
-            continue
-        try:
-            content = str(part.get_content())
-        except Exception:  # noqa: BLE001 - a part that cannot be read hides its links, so none are vouched for
-            return None
-        for host in _hosts(content):
-            if host not in hosts:
-                if len(hosts) >= LINK_HOST_LIMIT:
-                    return None
-                hosts.append(host)
-    return hosts
 
 
 def _meta_value(value: Any) -> Any:
@@ -1191,7 +860,7 @@ def reply_meta(message: EmailMessage, *, thread_id: str, message_id: str, subjec
             address.casefold() for _name, address in getaddresses([str(message.get("Reply-To", ""))]) if address
         )[:300],
         "headers": lambda: kept_headers(message),
-        "link_hosts": lambda: link_hosts(message),
+        "link_hosts": lambda: link_hosts_or_none(message),
     }
     for key, read in readers.items():
         try:
@@ -1604,15 +1273,15 @@ def capture_replies(
         thread_id = str(data.get("threadId") or thread_hint or "")
         try:
             raw = str(data.get("raw", ""))
-            message = email.message_from_bytes(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)), policy=policy.default)
+            message = email.message_from_bytes(mail_message.decode_base64url(raw), policy=policy.default)
             # No time from Gmail or the Date header: taken as arriving now, never as "before the first email".
-            received_at = _received(data, message) or now
-            display, sender = _sender(message)
+            received_at = mail_message.received_or_none(data, message) or now
+            display, sender = mail_message.sender(message)
             subject = " ".join(str(message.get("Subject", "")).split())[:300]
             text = reply_text(message)
             targets, how = _owner(watched, message, sender, thread_id)
             if not targets and by_name:
-                targets, how = _named(watched, message, _body_text(message, whole=False)), "name"
+                targets, how = _named(watched, message, body_text(message, whole=False)), "name"
             kind, reason = _judge(message, targets=targets, how=how, sender=sender, display=display, account=account,
                                   labels=labels, received_at=received_at, text=text, thread_id=thread_id) if targets else (IGNORED, "no_company")
         except (IndexError, KeyError, LookupError, AttributeError, TypeError, ValueError, UnicodeError):
@@ -1708,11 +1377,10 @@ def capture_replies(
         complete = True
         for message in response.json().get("messages") or []:
             labels = message.get("labelIds") or []
-            headers = {str(item.get("name", "")).lower(): str(item.get("value", ""))
-                       for item in (message.get("payload") or {}).get("headers") or []}
+            headers = header_map(message)
             if "SENT" in labels or "DRAFT" in labels or _headers_say_failure(message):
                 continue  # the student's own, or a delivery notice (outreach_delivery reads those)
-            if account and _normal(parseaddr(headers.get("from", ""))[1]) == _normal(account):
+            if account and mailbox_key(parseaddr(headers.get("from", ""))[1]) == mailbox_key(account):
                 continue
             complete = read(gmail, str(message.get("id", "")), thread_id, exempt=True) and complete
         return complete

@@ -49,6 +49,7 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from . import ROOT, automation
 from .connections import OAUTH_PROVIDERS
+from .mail_message import URL_TAIL
 from .outreach import (
     DRAFT_KINDS,
     UNSENT_STATUSES,
@@ -83,7 +84,6 @@ SENT_STATUS = {"initial": "sent", "follow_up": "followed_up"}
 # the compose window instead of flat text. Trailing sentence punctuation is left
 # outside the link.
 _URL = re.compile(r"""https?://[^\s<>"']+""")
-_URL_TAIL = ".,;:!?)]}'\""
 
 ClientFactory = Callable[[], httpx.Client]
 
@@ -524,7 +524,7 @@ def html_body(body: str) -> str:
     def anchor(match: re.Match[str]) -> str:
         url = match.group(0)
         tail = ""
-        while url and url[-1] in _URL_TAIL:
+        while url and url[-1] in URL_TAIL:
             url, tail = url[:-1], url[-1] + tail
         if not url:
             return match.group(0)

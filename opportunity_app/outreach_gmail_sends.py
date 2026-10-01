@@ -28,6 +28,7 @@ from uuid import uuid4
 
 import httpx
 
+from .mail_message import header_map, received_or_epoch
 from .outreach import DRAFT_KINDS, UNSENT_STATUSES, OutreachNotFoundError, _log, get_target, update_target
 from .outreach_gmail import (
     DRAFT_EVENT,
@@ -185,10 +186,6 @@ def _metadata(gmail: _Gmail, message_id: str) -> dict[str, Any] | None:
                 format="metadata", metadataHeaders=list(_HEADERS))
 
 
-def _headers(message: dict[str, Any]) -> dict[str, str]:
-    return {str(item.get("name", "")).lower(): str(item.get("value", "")) for item in (message.get("payload") or {}).get("headers") or []}
-
-
 def _addresses(value: str) -> set[str]:
     return {address.casefold() for _name, address in getaddresses([value]) if "@" in address}
 
@@ -223,7 +220,7 @@ def _find_sent(gmail: _Gmail, item: dict[str, Any], seen: dict[str, Any] | None 
         message = _metadata(gmail, str(reference.get("id", "")))
         if not message or int(message.get("internalDate") or 0) < made_ms:
             continue
-        headers = _headers(message)
+        headers = header_map(message)
         same_thread = bool(detail.get("thread_id")) and message.get("threadId") == detail.get("thread_id")
         to_contact = contact in _addresses(headers.get("to", ""))
         if same_thread or (to_contact and _same_subject(headers.get("subject", ""), subject)):
@@ -248,8 +245,8 @@ def _record_sent(conn: sqlite3.Connection, item: dict[str, Any], message: dict[s
     """Record a send made in Gmail exactly as a send from the app, and move the company on."""
     detail, target = item["detail"], item["target"]
     kind, target_id = detail["kind"], target["id"]
-    headers = _headers(message)
-    sent_at = datetime.fromtimestamp(int(message.get("internalDate") or 0) / 1000, tz=timezone.utc)
+    headers = header_map(message)
+    sent_at = received_or_epoch(message)
     record = {
         "kind": kind, "fingerprint": detail.get("fingerprint", ""), "attachment": detail.get("attachment", ""),
         "to": target["contact_email"], "cc": target["contact_cc"],

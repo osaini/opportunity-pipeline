@@ -17,7 +17,7 @@ PIPELINE_OUTREACH_ACCOUNT names the address the student sends from):
   and its whole message was kept (full_text). Nothing may be typed into the
   email it quotes: not between its "> " lines, and, below an Outlook
   From:/Sent: header (which marks no line), no line that is not the
-  student's own first email or follow-up (outreach_inbox.written_between_quotes).
+  student's own first email or follow-up (mail_message.written_between_quotes).
   Anything there leaves it to the student.
 - It passes every rule in ``thank_you_blockers``, read from its own headers as
   Gmail delivered them: in the student's thread or from the address they
@@ -109,6 +109,7 @@ import httpx
 
 from . import automation
 from .inbox_classifiers import JEV_NOT_ASKED, MIN_CONFIDENCE
+from .mail_message import FULL_TEXT_LIMIT, hosts_in, is_automatic, written_between_quotes
 from .outreach import (
     REPLY_PATTERNS,
     OutreachNotFoundError,
@@ -167,8 +168,6 @@ DELAY_MINUTES = (40, 150)
 DETECTION_MARGIN = timedelta(minutes=10)
 MAX_WORDS = 70
 SIGN_OFF = "Best"
-# The whole of a reply is kept up to this long (outreach_inbox.FULL_TEXT_LIMIT); a longer one is not read whole.
-FULL_TEXT_LIMIT = 20_000
 WROTE_AGAIN = "They wrote again, so the thank-you was not sent. Read their reply."
 STUDENT_WROTE = "You wrote to them after their reply, so the thank-you was not sent."
 NOT_INTERESTED_STOP = "You marked the company not interested, so the thank-you was not sent."
@@ -797,8 +796,6 @@ def _more_than_no(text: str, names: Iterable[str]) -> str:
 def _unquoted(item: dict[str, Any], sent: Iterable[str] = ()) -> str:
     """A reply's own words: above the email it quotes, and anything typed into it (between its quoted lines, or
     below an Outlook header in lines that are not the student's own, ``sent``)."""
-    from .outreach_inbox import written_between_quotes
-
     between = written_between_quotes(str(item["data"].get("full_text") or ""), sent)
     return f"{item['text']}\n{between}".strip()
 
@@ -848,7 +845,7 @@ def _whole_text_kept(item: dict[str, Any]) -> bool:
 #
 # A reply both readings call a decline can still be the wrong one to thank: a help desk's automatic
 # acknowledgement, a job system's rejection sent in a recruiter's name, a blast the student was Bcc'd on.
-# Each rule reads the reply's own headers as Gmail delivered them (outreach_inbox.KEPT_HEADERS, kept on
+# Each rule reads the reply's own headers as Gmail delivered them (mail_message.KEPT_HEADERS, kept on
 # its reply_logged event); a reply whose headers are not on record, or cannot be read, fails them all.
 
 # The card's words for each rule, after NOT_THANKED. Plain and short.
@@ -1086,7 +1083,7 @@ def thank_you_blockers(conn: sqlite3.Connection, target: dict[str, Any], reply: 
       no sending address is set, so nothing can be confirmed.
     - R4: written by a person: Auto-Submitted absent or "no"; no
       X-Auto-Response-Suppress, List-Unsubscribe or List-Id; no Precedence
-      bulk, list or junk; not an automatic reply (outreach_inbox.is_automatic).
+      bulk, list or junk; not an automatic reply (mail_message.is_automatic).
     - R5: not job-system mail: the From, Sender, Return-Path and every DKIM
       d= domain, by registrable domain, are on no list of mail_trust's
       shipped list but documentation domains (ats, assessment, scheduling,
@@ -1107,7 +1104,6 @@ def thank_you_blockers(conn: sqlite3.Connection, target: dict[str, Any], reply: 
     from .outreach_contacts import is_shared_inbox
     from .outreach_drafting import sender_account
     from .outreach_forms import ALWAYS_AUTOMATIC
-    from .outreach_inbox import hosts_in, is_automatic
 
     data = reply["data"]
     sender = str(data.get("from") or "").strip().casefold()
@@ -1214,8 +1210,6 @@ def eligibility(conn: sqlite3.Connection, target: dict[str, Any], user_id: str) 
         confidence = 0.0
     if confidence < MIN_CONFIDENCE:
         return None, f"Jev was only {round(confidence * 100)}% sure"
-    from .outreach_inbox import written_between_quotes
-
     # The strict reading covers what they wrote: above the quote, and anything typed into it. The quoted
     # lines themselves are the student's own email, which often asks for a call, so they are not read as
     # theirs; below an Outlook header, a line counts as the student's only when it is in what they sent.
