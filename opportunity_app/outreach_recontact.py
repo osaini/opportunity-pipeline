@@ -40,6 +40,7 @@ PERSON_BASES = {"confirmed", "strong_guess", "weak_guess"}
 # The raw outreach_targets columns upgradeable() reads. Selecting a pass's candidates from these alone (not through
 # get_target, which also builds the replies, schedules and thank-you state for every row) is only equivalent while
 # upgradeable() reads nothing that _record derives or rewrites. If it ever needs a derived field, widen the selection.
+# One difference remains: a malformed row that is not upgradeable is no longer built, so it no longer fails a pass.
 _UPGRADEABLE_COLUMNS = ("sent_at", "status", "not_interested_at", "draft_status", "website", "contact_email")
 
 
@@ -89,6 +90,11 @@ def recontact_targets(
     due = _upgradeable_ids(conn, user_id=user_id, chosen=set(target_ids) if target_ids is not None else None)
     if limit is not None:
         due = due[:max(0, limit)]
+    # Build each due target once before any search runs, as the old selection did, so a malformed row (bad JSON, a bad
+    # follow_up_at) fails the pass before find_contacts fetches or writes anything. Only the due targets are built; a
+    # malformed row that is not due no longer fails the pass.
+    for target_id in due:
+        get_target(conn, target_id, user_id=user_id)
 
     errors: dict[str, str] = {}
     for target_id in due:

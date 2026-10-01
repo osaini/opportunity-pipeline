@@ -90,6 +90,12 @@ class ImportBuildsNothingTests(unittest.TestCase):
 
 
 class ServerStartBuildsOnceTests(unittest.TestCase):
+    """Pins that each start path calls create_app once and hands that app to uvicorn.
+
+    The old double build came from the module body building a second app at import, before these patches apply, so that
+    half is pinned by ImportBuildsNothingTests (builds_at_import == 0), not here.
+    """
+
     def counting_create_app(self, api):
         built = []
 
