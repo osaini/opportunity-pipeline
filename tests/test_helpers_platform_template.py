@@ -12,6 +12,7 @@ import re
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import closing
 from datetime import datetime
@@ -81,14 +82,24 @@ class TemplateCopyTests(unittest.TestCase):
             self.assertEqual(rows, [("legacy-v1", str(legacy_path.resolve()))])
 
     def test_the_profile_file_is_older_than_the_stored_profile_as_on_a_real_run(self):
-        """schema.py lets a file that is newer than profiles.updated_at overwrite the database profile."""
+        """schema.py lets a profile.json newer than profiles.updated_at overwrite the database profile, so a copy must not
+        hand out a profile.json that is newer than its stored stamp.
+
+        A real migration stamps updated_at from Python's clock right after profile.json was written, and on Windows the
+        file system's clock can read a microsecond or so later (seen on the CI runner: .324160 vs .324159), so the fresh
+        case is not strictly older either. Allow that skew, but not a file written after the template was built: the
+        warm-up and the pause below make a copy that forgot to carry the template's mtime over at least 0.2 s too new.
+        """
+        skew = 0.01
+        self.make("warm", helpers.build_and_migrate)
+        time.sleep(0.2)
         for name, builder in (("fresh", helpers.build_and_migrate_fresh), ("cached", helpers.build_and_migrate)):
             with self.subTest(name):
                 legacy, platform = self.make(name, builder)
                 with closing(sqlite3.connect(platform)) as conn:
                     updated_at = conn.execute("SELECT updated_at FROM profiles").fetchone()[0]
-                stored = datetime.fromisoformat(updated_at).timestamp()
-                self.assertLess((legacy.parent / "profile.json").stat().st_mtime, stored)
+                newer_by = (legacy.parent / "profile.json").stat().st_mtime - datetime.fromisoformat(updated_at).timestamp()
+                self.assertLess(newer_by, skew, f"profile.json is {newer_by:.6f} s newer than profiles.updated_at {updated_at}")
 
     def test_the_activation_stamp_is_fresh_not_the_templates(self):
         first_legacy, first_platform = self.make("first", helpers.build_and_migrate)
