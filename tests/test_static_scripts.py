@@ -3,8 +3,10 @@
 index.html loads them in dependency order with `defer`. Each is its own IIFE, and they share one namespace,
 window.OpportunityApp: a file publishes what other files use with `Object.assign(App, {...})`, takes what earlier files
 published with `const {...} = App`, and reaches a function that loads later through a small wrapper that looks it up when
-called. These checks read the scripts as text, so a name a file needs but no earlier file publishes fails here, in the
-fast suite, instead of as a ReferenceError the first time a button is pressed in a browser.
+called. These checks read the scripts as text, so a name a file takes but no earlier file publishes fails here, in the
+fast suite, and so does a name a file uses without taking it (a dropped import), instead of as a ReferenceError the first
+time a button is pressed in a browser. The second check is a text scan, not a scope analyser: it looks for a name some
+other script publishes, used as a bare identifier. It cannot see a misspelled name or a browser global that does not exist.
 """
 
 import re
@@ -28,6 +30,17 @@ EXPORT_BLOCK = re.compile(r"Object\.assign\(App, \{(.*?)\}\);", re.S)
 IMPORT_BLOCK = re.compile(r"const \{([^}]*)\} = App;")
 FORWARD_WRAPPER = re.compile(r"^  const (\w+) = \(\.\.\.args\) => App\.(\w+)\(\.\.\.args\);$", re.M)
 APP_MEMBER = re.compile(r"\bApp\.(\w+)")
+
+
+def executable_code(text):
+    """The script with comments and string contents removed, so a name inside prose is not mistaken for a use."""
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    text = re.sub(r"(?m)^\s*//.*$", "", text)
+    text = re.sub(r"(?m)(?<![:\"'])//[^\n]*$", "", text)
+    text = re.sub(r'"(?:\\.|[^"\\\n])*"', ' ""', text)
+    text = re.sub(r"'(?:\\.|[^'\\\n])*'", " ''", text)
+    # A template literal keeps only its ${...} expressions.
+    return re.sub(r"`((?:\\.|[^`\\])*)`", lambda match: " ".join(re.findall(r"\$\{([^}]*)\}", match.group(1))), text)
 
 
 def names(block):
@@ -79,6 +92,31 @@ class StaticScriptsTest(unittest.TestCase):
                 with self.subTest(script=name, forward=target):
                     self.assertEqual(local, target)
                     self.assertIn(published.get(target), set(loaded[position + 1:]), f"{name} looks up {target}, which no later script publishes")
+
+    def test_a_script_takes_every_published_name_it_uses(self):
+        loaded = page_scripts()
+        scripts = app_scripts()
+        published = {}
+        for name in loaded:
+            for block in EXPORT_BLOCK.findall(scripts[name]):
+                for exported in names(block):
+                    published[exported] = name
+        for name in loaded:
+            text = scripts[name]
+            code = executable_code(text)
+            code = IMPORT_BLOCK.sub("", EXPORT_BLOCK.sub("", code))
+            code = FORWARD_WRAPPER.sub("", code)
+            code = re.sub(r"\bApp\.\w+", "", code)
+            taken = {taken for block in IMPORT_BLOCK.findall(text) for taken in names(block)}
+            taken |= {local for local, _ in FORWARD_WRAPPER.findall(text)}
+            for exported, publisher in published.items():
+                if publisher == name or exported in taken:
+                    continue
+                declared = re.search(rf"\b(?:const|let|var|function|class)\s+{re.escape(exported)}\b", code)
+                # A bare identifier: not a property (.x), not an object key (x:), not part of a longer name.
+                used = re.search(rf"(?<![.\w$]){re.escape(exported)}\b(?!\s*:)", code)
+                with self.subTest(script=name, name=exported):
+                    self.assertFalse(used and not declared, f"{name} uses {exported}, which {publisher} publishes, but never takes it")
 
     def test_every_published_name_is_used_by_another_script(self):
         loaded = page_scripts()
