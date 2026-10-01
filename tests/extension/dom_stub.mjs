@@ -15,10 +15,8 @@
 //                          checkbox sits in, its legend or aria-labelledby text or aria-label
 import vm from "node:vm";
 import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import path from "node:path";
-
-const EXTENSION_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "apps", "extension");
+import { EXTENSION_DIR, injectedFiles } from "./engine_files.mjs";
 
 class StubEvent {
   constructor(type, init = {}) {
@@ -241,7 +239,7 @@ export function loadContentScript(page, { contentScript = true } = {}) {
     setTimeout,
   });
   // contentScript: false loads only the three files a page gets from the agent, with no chrome.*.
-  for (const filename of contentScript ? ["adapters.js", "field-engine.js", "apply-engine.js", "content.js"] : ["adapters.js", "field-engine.js", "apply-engine.js"]) {
+  for (const filename of contentScript ? injectedFiles() : injectedFiles().filter((name) => name !== "content.js")) {
     const source = readFileSync(path.join(EXTENSION_DIR, filename), "utf8");
     vm.runInContext(source, context, { filename });
   }

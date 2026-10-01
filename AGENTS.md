@@ -23,9 +23,16 @@ loopback-only.
 | Legacy pipeline + CLI | `pipeline.py` (entry point) and `pipeline_core/` (`paths`, `config`, `http`, `text`, `sources`, `store`, `liveness`, `retention`, `discovery`, `fetch`, `importers`, `scoring`, `reports`, `artifacts`, `cli`) | No third-party dependencies. See rule 4 for the two allowed non-stdlib imports. The web app reaches it only through `opportunity_app/legacy.py`. |
 | Shared read model | `pipeline_core/read_model.py` | Framework-neutral read model shared by CLI parity tests and the web app; standard library only. |
 | Web API | `opportunity_app/` | FastAPI. `opportunity_app/web/` holds the app: `app.py` (create_app), `context.py`, `dependencies.py`, `middleware.py` and `routers/<feature>.py`. `api.py` is the thin entry module (`create_app`, lazy `app`, CLI `main`). |
-| Frontend | `opportunity_app/static/` | Vanilla JS. No framework, no build step. `app.js` is ~110KB. |
+| Frontend | `opportunity_app/static/` | Vanilla JS. No framework, no build step. Ordered classic scripts (`app-context.js` first, `app.js` last), each an IIFE sharing `window.OpportunityApp`; `index.html` lists them in load order. |
 | Browser extension | `apps/extension/` | Tested by `node tests/extension/run_tests.mjs`. |
 | Schema | `migrations/*.sql` | SQLite by default; PostgreSQL supported. |
+
+The browser app is `app-context.js`, `app-ui.js`, `app-http.js`, … `app-detail.js`, then `app.js`, loaded as ordered
+deferred classic scripts (not ES modules, so `versioned_page` stamps and caches each one). A script takes what earlier
+ones publish with `const {...} = App`, reaches a function defined in a later one through a `(...args) => App.name(...args)`
+wrapper, and publishes what others use with `Object.assign(App, {...})`; `tests/test_static_scripts.py` checks all of it.
+A new page is one entry in `VIEWS` (`app-context.js`) plus a `registerViewHandlers` call beside its loader; a new
+poller registers a stop function with `registerSessionPoller`. Add a new script to `index.html` in load order.
 
 Once Gmail is reconnected with the label permission, the app adds the student's
 label (Outreach settings) to every outreach thread: the emails the student sent
@@ -167,10 +174,10 @@ This is the part worth internalising, because it explains where bugs hide.
 
 | Suite | Sees | Blind to |
 | --- | --- | --- |
-| `tests/` (unittest) | Routes, DB, auth, business logic | Anything in `app.js` or `styles.css`. Authenticates with a bearer token, so it never exercises the CSRF path, which only applies to cookie-authenticated browser requests. |
+| `tests/` (unittest) | Routes, DB, auth, business logic | Anything in the browser scripts (`app*.js`) or `styles.css`. Authenticates with a bearer token, so it never exercises the CSRF path, which only applies to cookie-authenticated browser requests. |
 | `tests/ui/` (Playwright) | Real rendering, real event handlers, real cookies, console and network | Server internals; anything behind a feature flag or credential it does not have |
 | `scripts/run_api_fuzz.py` | Every operation in the schema, with generated input | Anything requiring a valid multi-step sequence; connector routes and the outreach draft/find-contacts routes are excluded |
-| `node --check` in CI | That `app.js` parses | Whether any of it runs |
+| `node --check` in CI (`scripts/check-js-syntax.mjs`) | That every browser and extension script parses | Whether any of it runs |
 
 A P0 bug lived in the gap between rows one and two from the day the platform
 landed (`d592e85`, 2026-08-10) until the browser suite was added: `app.js` dropped

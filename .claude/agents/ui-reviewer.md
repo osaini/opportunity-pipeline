@@ -45,8 +45,8 @@ Do not edit files. Return findings ordered by severity. For each one give:
 
 1. The exact steps that reproduce it, starting from a fresh sign-in.
 2. What happened, and what a user would reasonably have expected.
-3. The responsible code, located by reading `opportunity_app/static/app.js`,
-   `styles.css`, or `opportunity_app/api.py` — a finding with a file and line is
+3. The responsible code, located by reading the scripts in `opportunity_app/static/`
+   (`app-*.js`, `app.js`), `styles.css`, or `opportunity_app/api.py` — a finding with a file and line is
    worth several without.
 4. Whether it is a defect or a deliberate tradeoff. Say so plainly when it is the
    latter.
