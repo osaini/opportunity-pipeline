@@ -67,7 +67,7 @@ COMPLETENESS_FIELDS = (
 )
 
 
-# Profile fields pipeline.score_job reads. With none set, every score is the
+# Profile fields pipeline_core.scoring.score_job reads. With none set, every score is the
 # unexplained base score, so the UI must say matches are not personalized yet.
 SCORING_FIELDS = (
     "preferred_role_types",

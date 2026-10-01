@@ -55,7 +55,7 @@ def backup_sqlite(conn: sqlite3.Connection, label: str, keep: int = PURGE_BACKUP
 
 
 def _deadline_passed(job: sqlite3.Row, today: str) -> bool:
-    # Imported lazily: pipeline.py stays runnable without the product package
+    # Imported lazily: the legacy pipeline stays runnable without the product package
     # on the path for every other command.
     from opportunity_app.opportunity_metadata import extract_deadline
 

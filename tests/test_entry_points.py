@@ -212,6 +212,18 @@ class EntryPointsRunTests(unittest.TestCase):
                 self.assertIn("main", {node.name for node in tree.body if isinstance(node, ast.FunctionDef)})
                 self.assertTrue(main_guard_calls_main(source), f"{name} has no __main__ guard that calls main()")
 
+    def test_pipeline_py_is_only_the_entry_point_and_re_exports_nothing(self):
+        # The legacy pipeline lives in pipeline_core/. pipeline.py stays where `python pipeline.py ...` and the scheduled tasks
+        # run it, but it must not grow back into a facade: a name re-exported here is a second place a test could patch
+        # without the code that looks the name up noticing, and the web app's one door is opportunity_app/legacy.py.
+        source = (ROOT / "pipeline.py").read_text(encoding="utf-8")
+        tree = ast.parse(source, filename="pipeline.py")
+        imports = [(node.module, [alias.name for alias in node.names]) for node in tree.body if isinstance(node, ast.ImportFrom)]
+        self.assertEqual(imports, [("__future__", ["annotations"]), ("pipeline_core.cli", ["main"])])
+        others = [node for node in tree.body if not isinstance(node, (ast.ImportFrom, ast.Expr, ast.If))]
+        self.assertEqual(others, [], "pipeline.py defines or imports more than the entry point")
+        self.assertTrue(main_guard_calls_main(source))
+
     def test_the_sandbox_server_still_finds_the_test_helpers_it_imports(self):
         # scripts/serve_for_testing.py imports helpers out of tests/ and tests/ui/ by bare module name; moving one silently breaks
         # exploratory testing and the browser suite's shared fixtures.

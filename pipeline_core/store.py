@@ -27,7 +27,7 @@ VALID_STATUSES = {
 
 
 def connect(db_path: Path | None = None) -> sqlite3.Connection:
-    """Open (and create) a pipeline database: `db_path`, or the module's DB_PATH read now."""
+    """Open (and create) a pipeline database: `db_path`, or `paths.DB_PATH` read now."""
     path = paths.DB_PATH if db_path is None else db_path
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)

@@ -1,6 +1,6 @@
 """The `.env` line rules, written once, standard library only.
 
-`pipeline.load_env_file` (fills gaps in the process environment, first line wins)
+`pipeline_core.config.load_env_file` (fills gaps in the process environment, first line wins)
 and `opportunity_app.setup.read_env` (a dict, last line wins) both read through
 this, so the two cannot drift on what a line means. Duplicate keys are left to the
 caller on purpose: the two readers have always differed there.
