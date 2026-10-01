@@ -50,7 +50,7 @@ import httpx
 from . import automation
 from .gmail_client import ClientFactory, GmailAuthError
 from .outreach import (
-    NOT_INTERESTED, DraftChangedError, UNSENT_STATUSES, city_state, get_target, heard_back, log_event, withdraw_auto_approval,
+    NOT_INTERESTED, DraftChangedError, OutreachNotFoundError, UNSENT_STATUSES, city_state, get_target, heard_back, log_event, withdraw_auto_approval,
 )
 from .outreach_gmail import (
     SENT_EVENT,
@@ -517,7 +517,6 @@ def _held_by_pause(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
 
 def _after_hours(conn: sqlite3.Connection, row: sqlite3.Row, moment: datetime) -> bool:
     """Whether ``moment`` is outside a thank-you's window (9:00 to 17:00 on a weekday) in the recipient's zone."""
-    from .outreach import OutreachNotFoundError
     from .outreach_thank_you import in_window  # imported here: it imports this module
 
     try:
@@ -678,7 +677,6 @@ def _send_one(
 
 def _send_thank_you(conn: sqlite3.Connection, row: sqlite3.Row, *, client_factory: ClientFactory, now: datetime) -> str:
     """Hand a thank-you to Gmail (outreach_gmail.send_thank_you) and settle its outcome as _send_one does an email's."""
-    from .outreach import OutreachNotFoundError
 
     try:
         send_thank_you(

@@ -1,6 +1,7 @@
 """Does the second read catch wrong facts and keep true ones? Fake pages, a real model.
 
-The research check (opportunity_app/outreach_research.py) keeps a fact only
+The research check (opportunity_app/quote_check.py, run by
+opportunity_app/outreach_research.py) keeps a fact only
 when its words are on the page and a second model, reading the page's own
 passage, confirms the fact says what the page says. Word checks alone kept
 failing on meaning: another person's bio pinned on a founder, a "not" dropped,
