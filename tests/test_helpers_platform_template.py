@@ -12,9 +12,10 @@ import re
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import closing
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -81,14 +82,25 @@ class TemplateCopyTests(unittest.TestCase):
             self.assertEqual(rows, [("legacy-v1", str(legacy_path.resolve()))])
 
     def test_the_profile_file_is_older_than_the_stored_profile_as_on_a_real_run(self):
-        """schema.py lets a file that is newer than profiles.updated_at overwrite the database profile."""
+        """schema.py lets a file that is newer than profiles.updated_at overwrite the database profile.
+
+        It compares the file's mtime as a microsecond ISO string with the stored stamp, and only a strictly newer
+        file wins, so this applies the same comparison. Comparing raw floats would fail on NTFS, whose 100 ns mtimes
+        read a hair newer than the same microsecond stored in the database (seen on the Windows CI runner).
+        """
+        # Build the template first, then wait, so the copy's freshly written profile.json is strictly newer than the
+        # template's stamp: only then does a copy that forgot to carry the template's mtime over fail here, whatever
+        # order the tests run in.
+        self.make("warm", helpers.build_and_migrate)
+        time.sleep(0.05)
         for name, builder in (("fresh", helpers.build_and_migrate_fresh), ("cached", helpers.build_and_migrate)):
             with self.subTest(name):
                 legacy, platform = self.make(name, builder)
                 with closing(sqlite3.connect(platform)) as conn:
                     updated_at = conn.execute("SELECT updated_at FROM profiles").fetchone()[0]
-                stored = datetime.fromisoformat(updated_at).timestamp()
-                self.assertLess((legacy.parent / "profile.json").stat().st_mtime, stored)
+                mtime = (legacy.parent / "profile.json").stat().st_mtime
+                changed_at = datetime.fromtimestamp(mtime, timezone.utc).isoformat(timespec="microseconds")
+                self.assertFalse(changed_at > str(updated_at), f"profile.json ({changed_at}) would win over {updated_at}")
 
     def test_the_activation_stamp_is_fresh_not_the_templates(self):
         first_legacy, first_platform = self.make("first", helpers.build_and_migrate)
