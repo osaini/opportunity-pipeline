@@ -338,15 +338,29 @@ def refresh_suggestions(conn: sqlite3.Connection, user_id: str) -> int:
     ).fetchall()
     keys = {company_key(row["company"]): row["company"] for row in applications}
     keys.pop("", None)
+    # Every (company, domain) the student already has a row for, whatever its status (a dismissal included): suggest
+    # leaves such a row alone, so neither it nor the posting scan below is run for one. Rows written here join it.
+    known = {
+        (str(row["company_key"]), str(row["domain"]))
+        for row in conn.execute("SELECT company_key, domain FROM employer_domains WHERE user_id=?", (user_id,)).fetchall()
+    }
+    elsewhere: dict[tuple[str, str], bool] = {}
     with conn:
         for row in applications:
             host = host_of(row["url"])
             domain = registrable_domain(host)
             key = company_key(row["company"])
-            if not domain or not key or not_an_employer(domain) or _url_hosts_elsewhere(conn, domain, key):
+            if not domain or not key or not_an_employer(domain):
                 continue
-            suggest(conn, user_id, company=row["company"], host=domain, source="job_url",
-                    evidence=f"The posting you applied to at {row['company']} is on {domain}.")
+            if (key, registrable_domain(domain)) in known:
+                continue
+            if (domain, key) not in elsewhere:
+                elsewhere[(domain, key)] = _url_hosts_elsewhere(conn, domain, key)
+            if elsewhere[(domain, key)]:
+                continue
+            if suggest(conn, user_id, company=row["company"], host=domain, source="job_url",
+                       evidence=f"The posting you applied to at {row['company']} is on {domain}."):
+                known.add((key, registrable_domain(domain)))
         for row in conn.execute(
             "SELECT company, website FROM outreach_targets WHERE user_id=? AND website IS NOT NULL AND website<>''", (user_id,),
         ).fetchall():
@@ -354,8 +368,11 @@ def refresh_suggestions(conn: sqlite3.Connection, user_id: str) -> int:
             if key not in keys:
                 continue
             host = host_of(row["website"] if "//" in str(row["website"]) else f"https://{row['website']}")
-            suggest(conn, user_id, company=keys[key], host=host, source="outreach",
-                    evidence=f"Your outreach record for {row['company']} lists the website {registrable_domain(host) or host}.")
+            if (key, registrable_domain(host)) in known:
+                continue
+            if suggest(conn, user_id, company=keys[key], host=host, source="outreach",
+                       evidence=f"Your outreach record for {row['company']} lists the website {registrable_domain(host) or host}."):
+                known.add((key, registrable_domain(host)))
     after = conn.execute("SELECT COUNT(*) FROM employer_domains WHERE user_id=?", (user_id,)).fetchone()[0]
     return int(after) - int(before)
 

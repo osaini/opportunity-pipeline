@@ -885,11 +885,6 @@ def _shared_subjects(watched: list[dict[str, Any]]) -> set[str]:
     return {subject for subject, count in seen.items() if count > 1}
 
 
-def _thread_of(message: EmailMessage, target: dict[str, Any]) -> str:
-    """Set by read() on the parsed message: the Gmail thread it was found in."""
-    return str(getattr(message, "gmail_thread_id", "") or "")
-
-
 def _addressed(message: EmailMessage, account: str) -> bool:
     """Whether the student was in its To or Cc line, not only a blind copy."""
     recipients = {_normal(address) for address in _addresses(message, "To", "Cc")}
@@ -918,7 +913,7 @@ def _acknowledged(target: dict[str, Any], sender: str, subject: str, text: str, 
 
 def _judge(
     message: EmailMessage, *, targets: list[dict[str, Any]], how: str, sender: str, display: str, account: str,
-    labels: list[str], received_at: datetime, text: str,
+    labels: list[str], received_at: datetime, text: str, thread_id: str,
 ) -> tuple[str, str]:
     """What a message found for a company is (REPLY, AUTOMATIC, POSSIBLE or IGNORED), and the reason code (outreach.REPLY_REASONS).
 
@@ -926,6 +921,8 @@ def _judge(
     company answering is a reply. Anything in between is a possible reply,
     which the student sees and settles, and which holds every automatic step
     meanwhile. See the module docstring.
+
+    ``thread_id`` is the Gmail thread the message was found in.
     """
     target = targets[0]
     local = sender.split("@", 1)[0]
@@ -944,7 +941,7 @@ def _judge(
     own_person = is_person(sender, target["company"])
     person = own_person or relayed
     if how == "thread":
-        sent = target["threads"].get(_thread_of(message, target), None)
+        sent = target["threads"].get(thread_id, None)
         if sent is not None and received_at < sent - timedelta(minutes=5):
             return IGNORED, "before"  # an earlier message in the thread the student's email joined
         if _at_company(sender, target):
@@ -1046,12 +1043,21 @@ def _judge_match(
 # --- Recording ------------------------------------------------------------------------
 
 
-def _seen(conn: sqlite3.Connection, user_id: str, gmail_id: str) -> bool:
-    """Read already, and judged under these rules (a row older rules set aside is read again)."""
-    row = conn.execute(
+def _stored(conn: sqlite3.Connection, user_id: str, gmail_id: str) -> Any:
+    """The (kind, rules) row kept for a message read before, or None."""
+    return conn.execute(
         "SELECT kind, rules FROM outreach_inbox_messages WHERE user_id=? AND gmail_id=?", (user_id, gmail_id)
     ).fetchone()
+
+
+def _settled(row: Any) -> bool:
+    """Whether a stored row means read already and judged under these rules (a row older rules set aside is read again)."""
     return row is not None and not (row[0] in REJUDGED and int(row[1] or 0) < RULES)
+
+
+def _seen(conn: sqlite3.Connection, user_id: str, gmail_id: str) -> bool:
+    """Read already, and judged under these rules (a row older rules set aside is read again)."""
+    return _settled(_stored(conn, user_id, gmail_id))
 
 
 def _remember(
@@ -1571,7 +1577,10 @@ def capture_replies(
         False when it was not read (the budget ran out, or Gmail did not answer), so a later check reads it.
         ``exempt`` reads are outside the budget: a sent thread's messages, and the forced company's mail.
         """
-        if not gmail_id or _seen(conn, user_id, gmail_id):
+        if not gmail_id:
+            return True
+        stored = _stored(conn, user_id, gmail_id)
+        if _settled(stored):
             return True
         if not exempt:
             if budget[0] <= 0:
@@ -1601,12 +1610,11 @@ def capture_replies(
             display, sender = _sender(message)
             subject = " ".join(str(message.get("Subject", "")).split())[:300]
             text = reply_text(message)
-            message.gmail_thread_id = thread_id  # type: ignore[attr-defined]
             targets, how = _owner(watched, message, sender, thread_id)
             if not targets and by_name:
                 targets, how = _named(watched, message, _body_text(message, whole=False)), "name"
             kind, reason = _judge(message, targets=targets, how=how, sender=sender, display=display, account=account,
-                                  labels=labels, received_at=received_at, text=text) if targets else (IGNORED, "no_company")
+                                  labels=labels, received_at=received_at, text=text, thread_id=thread_id) if targets else (IGNORED, "no_company")
         except (IndexError, KeyError, LookupError, AttributeError, TypeError, ValueError, UnicodeError):
             # Headers Python's parser cannot read (a stray quote): never the end of every later check. In a sent
             # thread it is shown, to open in Gmail; elsewhere it is set aside with why.
@@ -1639,9 +1647,8 @@ def capture_replies(
             return True
         # Mail from before these rules was judged by older ones: never counted now without the student, unless
         # someone at the company answered in the thread of the student's email and older rules never saw it.
-        judged_before = conn.execute(
-            "SELECT 1 FROM outreach_inbox_messages WHERE user_id=? AND gmail_id=? AND rules < ?", (user_id, gmail_id, RULES),
-        ).fetchone() is not None
+        # The row read above: a row that passed _settled as unsettled and exists is one older rules set aside.
+        judged_before = stored is not None and int(stored[1] or 0) < RULES
         early = (activated is not None and received_at < activated) or judged_before
         if early and kind == REPLY and (reason != "thread" or judged_before):
             kind, reason = POSSIBLE, "found_late"

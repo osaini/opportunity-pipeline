@@ -1,6 +1,7 @@
 """The Gmail label on every outreach thread (sent emails and replies), against a mocked Gmail."""
 
 import json
+import os
 import re
 import sys
 import tempfile
@@ -1812,6 +1813,119 @@ class SentSweepTests(LabelCase):
         self.assertEqual(len(self.gmail.searches), 2)
         self.assertTrue(self.gmail.searches[0].startswith("after:"))
         self.assertTrue(self.gmail.searches[1].startswith("in:sent after:"))
+
+
+class MarksSharedTests(LabelCase):
+    """One pass builds the companies' marks once per set of own addresses, and everything it does is as if each step built them itself."""
+
+    PLAY = "test_a_pass_builds_the_marks_once_per_set_of_own_addresses"
+
+    def counting(self):
+        real = outreach_labels._outreach_marks
+        calls = []
+
+        def counted(conn, user_id, own):
+            calls.append(set(own))
+            return real(conn, user_id, own)
+
+        return mock.patch.object(outreach_labels, "_outreach_marks", side_effect=counted), calls
+
+    def play(self, *, account_in_env=True):
+        """Four passes that reach every step that reads the marks: the history search, the sent rows and the sent sweep."""
+        later = lambda minutes: START + timedelta(minutes=minutes)
+        env = mock.patch.dict("os.environ")
+        env.start()
+        self.addCleanup(env.stop)
+        if not account_in_env:
+            os.environ.pop("PIPELINE_OUTREACH_ACCOUNT", None)
+        self.target("t-1", contact_email="greg@bovi.example", email_subject="Robotics internship plan")
+        self.target("t-2", contact_email="ann@orbit.example", contact_cc="mentor@elsewhere.example, ann@orbit.example",
+                    email_subject="Orbit systems internship")
+        self.target("t-3", status="drafted", contact_email="drafty@zed.example")
+        self.event("t-1", outreach_gmail.SENT_EVENT, {"thread_id": "th-1", "to": "greg@bovi.example"})
+        self.event("t-2", outreach_gmail.DRAFT_EVENT, {"to": "ann@orbit.example", "cc": "cc@orbit.example"})
+        self.thread("th-1", ("s-1", ["SENT"]))
+        self.seeded(2)
+        HistorySearchTests.addressed(self, "h-1")
+        self.gmail.sent_search.append("h-1")
+        self.gmail.threads["h-1"] = "th-h"
+        self.thread("th-h", ("h-1", ["SENT"]))
+        results = [self.run_pass(later(0))]
+        SentSweepTests.sent_message(self, "n-1", "th-new")
+        SentSweepTests.sent_message(self, "n-2", "th-ann", to="ann@orbit.example")
+        SentSweepTests.sent_message(self, "n-3", "th-x", to="friend@elsewhere.example", subject="Lunch")
+        results.append(self.run_pass(later(10)))
+        with self.conn:
+            self.conn.execute("UPDATE outreach_targets SET contact_email='greg2@bovi.example' WHERE id='t-1'")
+        results.append(self.run_pass(later(13)))
+        results.append(self.run_pass(later(16)))
+        searches = self.conn.execute("SELECT * FROM outreach_label_searches ORDER BY target_id").fetchall()
+        replies = self.conn.execute(
+            "SELECT gmail_id, thread_id, label_name, labeled_at, label_note FROM outreach_inbox_messages ORDER BY gmail_id").fetchall()
+        self.conn.rollback()
+        return {
+            "results": results, "requests": self.paths(), "searches": list(self.gmail.searches), "modifies": self.modifies(),
+            "threads": self.sent_rows(), "searched": [dict(row) for row in searches], "replies": [dict(row) for row in replies],
+            "sweep": self.setting(outreach_labels.SWEEP_SETTING),
+        }
+
+    def played(self, rebuilding=False, **kwargs):
+        """The scenario in a fresh fixture; with ``rebuilding``, every step builds the marks itself, as each did before they were shared."""
+        case = type(self)(self.PLAY)
+        case.setUp()
+        try:
+            if not rebuilding:
+                return case.play(**kwargs)
+            with mock.patch.object(
+                outreach_labels._Marks, "get", lambda marks, own: outreach_labels._outreach_marks(marks.conn, marks.user_id, own),
+            ):
+                return case.play(**kwargs)
+        finally:
+            case.doCleanups()
+
+    def test_the_requests_results_and_rows_are_those_of_a_pass_that_builds_the_marks_in_every_step(self):
+        for kwargs in ({}, {"account_in_env": False}):
+            with self.subTest(**kwargs):
+                kept = self.played(**kwargs)
+                self.assertTrue(kept["searches"] and kept["modifies"] and kept["searched"], "the scenario must reach the search and the sweep")
+                self.assertEqual(kept, self.played(rebuilding=True, **kwargs))
+
+    def test_a_pass_builds_the_marks_once_per_set_of_own_addresses(self):
+        self.target("t-1", contact_email="greg@bovi.example", email_subject="Robotics internship plan")
+        patch, calls = self.counting()
+        with patch:
+            self.run_pass()
+        self.assertEqual(calls, [{ACCOUNT}], "the work check, the history search and the search itself share one build")
+        # The next pass has a sweep to start: its work check, search and sweep share one build too.
+        calls.clear()
+        SentSweepTests.sent_message(self, "n-1", "th-new")
+        with patch:
+            self.run_pass(START + timedelta(minutes=10))
+        self.assertEqual(calls, [{ACCOUNT}])
+        calls.clear()
+        with patch:
+            self.run_pass(START + timedelta(minutes=13))
+        self.assertEqual(calls, [{ACCOUNT}])
+
+    def test_without_the_account_in_the_environment_each_distinct_set_is_built_once_as_before(self):
+        self.target("t-1", contact_email="greg@bovi.example", email_subject="Robotics internship plan")
+        patch, calls = self.counting()
+        with mock.patch.dict("os.environ"), patch:
+            os.environ.pop("PIPELINE_OUTREACH_ACCOUNT")
+            self.run_pass()
+        self.assertEqual(sorted(calls, key=sorted), [set(), {ACCOUNT}], "the work check names no address, the other steps the mailbox's")
+
+    def test_labels_off_paused_or_nothing_sent_build_no_marks(self):
+        patch, calls = self.counting()
+        with patch:
+            self.run_pass()  # nothing sent yet
+            self.target("t-1", contact_email="greg@bovi.example", email_subject="Robotics internship plan")
+            outreach_labels.set_label_name(self.conn, USER, "")
+            self.run_pass(START + timedelta(minutes=3))
+            outreach_labels.set_label_name(self.conn, USER, None)
+            self.pause()
+            self.run_pass(START + timedelta(minutes=6))
+        self.assertEqual(calls, [])
 
 
 class MigrationTests(unittest.TestCase):

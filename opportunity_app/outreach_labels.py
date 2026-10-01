@@ -283,13 +283,14 @@ def _run(conn: sqlite3.Connection, user_id: str, client_factory: ClientFactory, 
             "WHERE user_id=? AND kind='reply' AND label_name<>? ORDER BY received_at, gmail_id LIMIT ?",
             (user_id, name, PER_PASS + 1),
         ).fetchall()]
-        work = bool(pending) or bool(_sent_rows(conn, user_id, name, 1)) or bool(_search_candidates(conn, user_id, 1))
-        if not work and not _labelled_threads(conn, user_id, name) and not _sweeping_sent(conn, user_id, name, known):
+        marks = _Marks(conn, user_id)
+        work = bool(pending) or bool(_sent_rows(conn, user_id, name, 1)) or bool(_search_candidates(conn, user_id, 1, marks=marks))
+        if not work and not _labelled_threads(conn, user_id, name) and not _sweeping_sent(conn, user_id, name, known, marks):
             return {"state": "ok", "detail": {"labelled": 0}}
         if MODIFY_SCOPE not in granted:
             return {"state": "needs_label_permission"} if work else {"state": "ok", "detail": {"labelled": 0}}
         _discard(conn)
-        return _label(conn, connection(), user_id, known, name, pending, now)
+        return _label(conn, connection(), user_id, known, name, pending, now, marks)
 
 
 def _labelled_threads(conn: sqlite3.Connection, user_id: str, name: str) -> list[str]:
@@ -452,6 +453,26 @@ def _outreach_marks(conn: sqlite3.Connection, user_id: str, own: set[str]) -> di
     return marks
 
 
+class _Marks:
+    """_outreach_marks for one label pass: built the first time a set of own addresses asks, then shared.
+
+    Nothing a pass does changes the targets or events the marks read (it writes only outreach_label_threads,
+    outreach_label_searches and the label columns), so one build serves every step. Each caller still names its own
+    addresses and gets the marks for exactly that set, as before; a caller that names none builds nothing until it asks.
+    The marks are shared, so callers only read them.
+    """
+
+    def __init__(self, conn: sqlite3.Connection, user_id: str):
+        self.conn, self.user_id = conn, user_id
+        self._built: dict[frozenset[str], dict[str, dict[str, Any]]] = {}
+
+    def get(self, own: set[str]) -> dict[str, dict[str, Any]]:
+        key = frozenset(own)
+        if key not in self._built:
+            self._built[key] = _outreach_marks(self.conn, self.user_id, own)
+        return self._built[key]
+
+
 def _host(address: str) -> str:
     return address.rsplit("@", 1)[-1]
 
@@ -468,15 +489,17 @@ def _index(marks: dict[str, dict[str, Any]]) -> tuple[dict[str, str], dict[str, 
     return addresses, subjects
 
 
-def _sweeping_sent(conn: sqlite3.Connection, user_id: str, name: str, account: str) -> bool:
+def _sweeping_sent(conn: sqlite3.Connection, user_id: str, name: str, account: str, marks: _Marks | None = None) -> bool:
     """Whether the sweep has sent mail to look for: it has started under this name and some company has an address or subject."""
     if _kept(conn, user_id, name) is None:
         return False
-    addresses, subjects = _index(_outreach_marks(conn, user_id, _own_addresses(account)))
+    addresses, subjects = _index((marks or _Marks(conn, user_id)).get(_own_addresses(account)))
     return bool(addresses or subjects)
 
 
-def _search_candidates(conn: sqlite3.Connection, user_id: str, limit: int, account: str = "") -> list[tuple[str, str]]:
+def _search_candidates(
+    conn: sqlite3.Connection, user_id: str, limit: int, account: str = "", marks: _Marks | None = None,
+) -> list[tuple[str, str]]:
     """(company, query) for each company whose Sent mail has not been searched with the query it has now.
 
     Only companies that have gone out, or that an app send names. A company is searched once, and once more only when
@@ -496,10 +519,10 @@ def _search_candidates(conn: sqlite3.Connection, user_id: str, limit: int, accou
     searched = {str(item[0]): str(item[1]) for item in conn.execute(
         "SELECT target_id, query FROM outreach_label_searches WHERE user_id=?", (user_id,),
     ).fetchall()}
-    marks = _outreach_marks(conn, user_id, _own_addresses(account))
+    built = (marks or _Marks(conn, user_id)).get(_own_addresses(account))
     wanted: list[tuple[str, str]] = []
     for target_id in gone_out:
-        query = _history_query(marks.get(target_id))
+        query = _history_query(built.get(target_id))
         if searched.get(target_id) != query:
             wanted.append((target_id, query))
             if len(wanted) >= limit:
@@ -659,9 +682,10 @@ def _invalid_label(response: httpx.Response) -> bool:
 
 def _label(
     conn: sqlite3.Connection, gmail: _Gmail, user_id: str, account: str, name: str, pending: list[dict[str, Any]],
-    now: datetime,
+    now: datetime, marks: _Marks | None = None,
 ) -> dict[str, Any]:
     labeller = _Labeller(gmail, user_id, account, name)
+    marks = marks or _Marks(conn, user_id)
     counts = {"labelled": 0, "gone": 0, "failed": 0, "relabelled": 0, "sent_labelled": 0, "searched": 0, "found": 0}
     detail: dict[str, Any] = {"label": name}
     stamp = now.isoformat(timespec="seconds")
@@ -747,7 +771,7 @@ def _label(
                 settle([gmail_id], thread_id, outcome)
         more = more or len(pending) > PER_PASS  # the window was the oldest rows only
         _discard(conn)
-        _search_history(conn, labeller, user_id, now, counts, detail)
+        _search_history(conn, labeller, user_id, now, counts, detail, marks)
         sent = _sent_rows(conn, user_id, name, PER_PASS + 1)
         for item in sent:
             thread_id = str(item["thread_id"])
@@ -761,7 +785,7 @@ def _label(
             done[thread_id] = labeller.thread(thread_id)[0]
             settle_sent(thread_id, done[thread_id])
         more = more or len(sent) > PER_PASS
-        _sweep(conn, labeller, user_id, name, now, done, detail, fresh, counts)
+        _sweep(conn, labeller, user_id, name, now, done, detail, fresh, counts, marks)
     except _Stop as stop:
         return result(stop.state)
     return result()
@@ -781,6 +805,7 @@ def _settle_sent(
 
 def _search_history(
     conn: sqlite3.Connection, labeller: _Labeller, user_id: str, now: datetime, counts: dict[str, int], detail: dict[str, Any],
+    marks: _Marks | None = None,
 ) -> None:
     """Search Sent for each company that has gone out and not been searched since it last changed, for the threads the app did not send itself.
 
@@ -790,12 +815,13 @@ def _search_history(
     searched only when Gmail answered, so a failed search is tried again. It reads up to SEARCH_PAGES pages and keeps up to
     SEARCH_THREADS threads; a search cut short by either says so in ``search_truncated`` rather than passing as complete.
     """
-    candidates = _search_candidates(conn, user_id, SEARCHES_PER_PASS, labeller.account)
+    marks = marks or _Marks(conn, user_id)
+    candidates = _search_candidates(conn, user_id, SEARCHES_PER_PASS, labeller.account, marks)
     if not candidates:
         return
-    marks = _outreach_marks(conn, user_id, _own_addresses(labeller.account))
+    built = marks.get(_own_addresses(labeller.account))
     for target_id, query in candidates:
-        mark = marks.get(target_id) or {"created_at": "", "sent_at": "", "addresses": [], "subjects": []}
+        mark = built.get(target_id) or {"created_at": "", "sent_at": "", "addresses": [], "subjects": []}
         threads: list[str] = []
         truncated = False
         if query:
@@ -868,7 +894,7 @@ def _kept(conn: sqlite3.Connection, user_id: str, name: str) -> dict[str, Any] |
 
 def _sweep(
     conn: sqlite3.Connection, labeller: _Labeller, user_id: str, name: str, now: datetime, done: dict[str, str],
-    detail: dict[str, Any], fresh: bool = False, counts: dict[str, int] | None = None,
+    detail: dict[str, Any], fresh: bool = False, counts: dict[str, int] | None = None, marks: _Marks | None = None,
 ) -> None:
     """Label what joined an outreach thread since the last pass, and the sent mail that is outreach and not yet a thread.
 
@@ -889,7 +915,7 @@ def _sweep(
         return
     counts = counts if counts is not None else {"sent_labelled": 0, "gone": 0, "failed": 0}
     wanted = set(_labelled_threads(conn, user_id, name))
-    addresses, subjects = _index(_outreach_marks(conn, user_id, _own_addresses(labeller.account)))
+    addresses, subjects = _index((marks or _Marks(conn, user_id)).get(_own_addresses(labeller.account)))
     if not wanted and not addresses and not subjects:
         return
     start = int(now.timestamp())
