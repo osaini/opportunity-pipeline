@@ -613,6 +613,15 @@ class OpportunityRepository:
         return _row_to_opportunity(row) if row else None
 
     def facets(self) -> dict[str, list[str]]:
+        return self.facets_with_company_keys()[0]
+
+    def facets_with_company_keys(self) -> tuple[dict[str, list[str]], set[str]]:
+        """The facets, and the non-empty `company_sort_key` of every row they were collected from.
+
+        The keys let a caller that needs the companies behind the same rows (the tag facets) reuse this scan instead of
+        reading the view again. They are collected for a tenant (`user_id` set) only, where the scan is the active,
+        non-duplicate, capture-visible set; for the unscoped CLI path the set is empty.
+        """
         # `opportunity_read_model` is an expensive view: a window function over
         # every source plus a correlated latest-interaction subquery. This used
         # to run five SELECT DISTINCTs and a terms scan against it, evaluating
@@ -627,6 +636,7 @@ class OpportunityRepository:
         }
         collected: dict[str, set[str]] = {key: set() for key in columns}
         terms: set[str] = set()
+        company_keys: set[str] = set()
         if self.user_id is None:
             cursor = self.connection.execute(
                 "SELECT role_type, status, region, source_name, remote_mode, terms_json "
@@ -639,10 +649,12 @@ class OpportunityRepository:
                 *self._tenant_sql(
                     OpportunityFilters(),
                     "tenant.role_type, tenant.status, tenant.region, "
-                    "tenant.source_name, tenant.remote_mode, tenant.terms_json",
+                    "tenant.source_name, tenant.remote_mode, tenant.terms_json, tenant.company_sort_key",
                 )
             )
         for row in cursor:
+            if self.user_id is not None and row["company_sort_key"]:
+                company_keys.add(str(row["company_sort_key"]))
             for key, column in columns.items():
                 value = row[column]
                 # The previous per-column query filtered `<> ''`; NULL never
@@ -657,7 +669,7 @@ class OpportunityRepository:
             key: sorted(values, key=_nocase_key) for key, values in collected.items()
         }
         result["terms"] = sorted(terms, key=str.casefold)
-        return result
+        return result, company_keys
 
     def stats(self) -> dict[str, int]:
         # Deliberately unpaged: these count the whole inventory, which is why

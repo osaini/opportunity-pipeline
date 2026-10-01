@@ -478,8 +478,18 @@ def tag_facets(conn: sqlite3.Connection, *, user_id: str) -> list[dict[str, Any]
         """,
         [user_id],
     ).fetchall()
+    return tag_facets_for_keys(conn, (row["company_key"] for row in rows), user_id=user_id)
+
+
+def tag_facets_for_keys(conn: sqlite3.Connection, company_keys: Iterable[str], *, user_id: str) -> list[dict[str, Any]]:
+    """tag_facets for companies already known: the `company_sort_key` of each active, visible posting.
+
+    OpportunityRepository.facets_with_company_keys returns exactly that set from the scan it already runs for the other
+    facets (default filters: active, not a duplicate, capture-visible to the same user), so /facets reads the view once.
+    """
+
     counts: dict[str, int] = defaultdict(int)
-    for tags in tags_for_companies(conn, (row["company_key"] for row in rows), user_id=user_id).values():
+    for tags in tags_for_companies(conn, company_keys, user_id=user_id).values():
         for item in tags:
             counts[item["tag"]] += 1
     return [{"tag": tag, "companies": count} for tag, count in sorted(counts.items())]
