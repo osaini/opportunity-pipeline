@@ -42,7 +42,9 @@ import httpx
 
 from . import apply_runs, automation, internal_automation, outreach_thank_you
 from .background import PollingWorker, discard_open_transaction, record_health_quietly, step_error
-from .outreach import log_event, get_target, greeting_style, greets_contact, heard_back, list_targets, without_greeting
+from .outreach import (
+    get_target, greeting_style, greets_contact, heard_back, latest_event_stamp, list_targets, log_event, without_greeting,
+)
 from .outreach_contacts import apply_choice, choose_contact, find_contacts, list_candidates
 from .outreach_forms import form_due
 from .outreach_gmail import last_bounce
@@ -98,11 +100,8 @@ def update_settings(conn: sqlite3.Connection, changes: dict[str, Any], *, user_i
 
 
 def _latest(conn: sqlite3.Connection, target_id: str, user_id: str, event_type: str) -> datetime | None:
-    row = conn.execute(
-        "SELECT MAX(created_at) FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=?",
-        (target_id, user_id, event_type),
-    ).fetchone()
-    return datetime.fromisoformat(row[0]) if row and row[0] else None
+    stamp = latest_event_stamp(conn, target_id, user_id, event_type)
+    return datetime.fromisoformat(stamp) if stamp else None
 
 
 def recovery_due(conn: sqlite3.Connection, *, user_id: str) -> list[str]:

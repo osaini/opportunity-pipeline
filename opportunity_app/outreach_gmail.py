@@ -53,12 +53,13 @@ from .outreach import (
     DRAFT_KINDS,
     UNSENT_STATUSES,
     DraftChangedError,
-    _is_unique_violation,
     log_event,
     get_target,
+    latest_event_stamp,
     missing_location_message,
     update_target,
 )
+from .database import is_unique_violation
 from .outreach_config import gmail_web_url, sender_account
 from .schema import utc_now
 from .user_time import user_timezone
@@ -757,7 +758,7 @@ def claimed_send(
                 )
                 result = revalidate()
         except Exception as exc:
-            if _is_unique_violation(exc):
+            if is_unique_violation(exc):
                 raise SendConflictError(IN_PROGRESS) from exc
             raise
         yield token, result
@@ -791,11 +792,8 @@ def event_tie_order(conn: sqlite3.Connection, alias: str = "e") -> str:
 
 def last_bounce(conn: sqlite3.Connection, target_id: str, user_id: str) -> datetime | None:
     """When this target's email last bounced, or None."""
-    row = conn.execute(
-        "SELECT MAX(created_at) FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=?",
-        (target_id, user_id, BOUNCE_EVENT),
-    ).fetchone()
-    return datetime.fromisoformat(row[0]) if row and row[0] else None
+    stamp = latest_event_stamp(conn, target_id, user_id, BOUNCE_EVENT)
+    return datetime.fromisoformat(stamp) if stamp else None
 
 
 def _since(stamp: str, bounce: datetime | None) -> bool:

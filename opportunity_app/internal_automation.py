@@ -604,11 +604,10 @@ def _follow_up_key(target: dict[str, Any]) -> str:
 
 
 def _latest_event(conn: sqlite3.Connection, target_id: str, user_id: str, event_type: str) -> datetime | None:
-    row = conn.execute(
-        "SELECT MAX(created_at) FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=?",
-        (target_id, user_id, event_type),
-    ).fetchone()
-    return automation._parse(row[0]) if row and row[0] else None
+    from .outreach import latest_event_stamp
+
+    stamp = latest_event_stamp(conn, target_id, user_id, event_type)
+    return automation._parse(stamp) if stamp else None
 
 
 def follow_up_draft_due(conn: sqlite3.Connection, user_id: str, *, now: datetime | None = None) -> list[dict[str, Any]]:

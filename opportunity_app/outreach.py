@@ -27,7 +27,7 @@ from uuid import uuid4
 
 from pipeline import PROFILE_PATH
 
-from .database import is_unique_violation as _is_unique_violation
+from .database import is_unique_violation
 from .inbox_classifiers import read_reply
 from .outreach_config import gmail_web_url, sender_account
 from .schema import LOCAL_USER_ID, utc_now
@@ -815,6 +815,19 @@ def _event_time(conn: sqlite3.Connection, target_id: str) -> str:
     return now
 
 
+def latest_event_stamp(conn: sqlite3.Connection, target_id: str, user_id: str, event_type: str) -> str | None:
+    """The newest created_at of this target's events of one type, as stored (not parsed), or None.
+
+    Callers parse it themselves: they differ on how a naive or malformed stamp reads, so the query is shared and
+    the parsing is not.
+    """
+    row = conn.execute(
+        "SELECT MAX(created_at) FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=?",
+        (target_id, user_id, event_type),
+    ).fetchone()
+    return row[0] if row and row[0] else None
+
+
 def log_event(
     conn: sqlite3.Connection, target_id: str, user_id: str, event_type: str, *, from_status: str | None = None,
     to_status: str | None = None, detail: str = "", data: dict[str, Any] | None = None,
@@ -1411,7 +1424,7 @@ def _create_target(
                 (user_id, company_key(values["company"])),
             )
     except Exception as exc:
-        if _is_unique_violation(exc):
+        if is_unique_violation(exc):
             raise ValueError(f"{values['company']} is already in your outreach list") from exc
         raise
     return target_id
@@ -1633,7 +1646,7 @@ def update_target(
                 return previous
             continue
         except Exception as exc:
-            if _is_unique_violation(exc):
+            if is_unique_violation(exc):
                 raise ValueError(f"{values.get('company')} is already in your outreach list") from exc
             raise
         return get_target(conn, target_id, user_id=user_id, today=today)
