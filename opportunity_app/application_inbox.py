@@ -1868,9 +1868,12 @@ def after_decision(conn: sqlite3.Connection, user_id: str, action: dict[str, Any
 
 def _settle_event(conn: sqlite3.Connection, user_id: str, gmail_id: str, event_id: str, *, application_id: str | None) -> None:
     """Once none of an email's proposals waits, its card is decided: confirmed when anything was applied, else ignored."""
-    if not event_id or _message_actions(conn, user_id, gmail_id, "proposed"):
+    if not event_id:
         return
-    applied = any(action["status"] == "applied" for action in _message_actions(conn, user_id, gmail_id))
+    actions = _message_actions(conn, user_id, gmail_id)
+    if any(action["status"] == "proposed" for action in actions):
+        return
+    applied = any(action["status"] == "applied" for action in actions)
     with conn:
         conn.execute(
             """

@@ -15,7 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import mail_trust, outreach_inbox
+from opportunity_app import application_inbox, mail_trust, outreach_inbox
 from opportunity_app import outreach_gmail_sends as sends
 from opportunity_app.outreach import DRAFT_KINDS, UNSENT_STATUSES, get_target
 from opportunity_app.outreach_gmail import DRAFT_EVENT, _already_sent, last_bounce
@@ -396,7 +396,78 @@ class SeenRowParityTests(unittest.TestCase):
         self.assertTrue(any(self.reference(conn, case) == (False, False) for case in cases), "a message never read is covered")
 
 
-MIGRATION_0048 =Path(__file__).resolve().parent.parent / "migrations" / "0048_mail_hot_path_indexes.sql"
+def reference_settle_event(conn, user_id, gmail_id, event_id, *, application_id):
+    """REFERENCE: application_inbox._settle_event as it was before inbox-8 (the ledger read twice)."""
+    ai = application_inbox
+    if not event_id or ai._message_actions(conn, user_id, gmail_id, "proposed"):
+        return
+    applied = any(action["status"] == "applied" for action in ai._message_actions(conn, user_id, gmail_id))
+    with conn:
+        conn.execute(
+            """
+            UPDATE monitored_events SET status=?, decided_at=?, decided_by='student', application_id=COALESCE(?, application_id)
+            WHERE id=? AND user_id=? AND status='pending'
+            """,
+            ("confirmed" if applied else "ignored", "2026-09-30T00:00:00+00:00", application_id, event_id, user_id),
+        )
+
+
+class SettleEventParityTests(unittest.TestCase):
+    STATUSES = ("proposed", "applied", "rejected", "superseded", "undone")
+
+    def add_case(self, conn, name, statuses):
+        stamp = "2026-09-30T10:00:00+00:00"
+        insert = (
+            "INSERT INTO automation_actions(id, user_id, feature, action_type, subject_kind, subject_id, status, idempotency_key, created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?)"
+        )
+        with conn:
+            conn.execute(
+                "INSERT INTO monitored_events(id, user_id, external_id, event_type, confidence, payload_json, status, created_at) "
+                "VALUES(?,?,?,?,?,?,?,?)", (f"ev-{name}", USER, f"gmail:{name}", "rejection", 0.9, "{}", "pending", stamp),
+            )
+            for number, status in enumerate(statuses):
+                conn.execute(insert, (f"act-{name}-{number}", USER, application_inbox.FEATURE, "application.stage", "application",
+                                      "app-1", status, f"gmail:{name}:{number}", stamp))
+            # Another email's proposal, with a lookalike id, and another feature's action on this email: neither counts.
+            conn.execute(insert, (f"act-{name}-other", USER, application_inbox.FEATURE, "application.stage", "application",
+                                  "app-1", "proposed", f"gmail:{name}x:0", stamp))
+            conn.execute(insert, (f"act-{name}-feature", USER, "another_feature", "x", "application", "app-1", "proposed",
+                                  f"gmail:{name}:9", stamp))
+
+    def card(self, conn, name):
+        row = conn.execute("SELECT status, application_id FROM monitored_events WHERE id=?", (f"ev-{name}",)).fetchone()
+        return tuple(row)
+
+    def test_every_mix_of_ledger_statuses_settles_the_card_as_before(self):
+        conn, _ids = database(self, 1, 1, datetime.now(timezone.utc))
+        cases = [()] + [(a,) for a in self.STATUSES] + [(a, b) for a in self.STATUSES for b in self.STATUSES if a != b] \
+            + [("applied", "rejected", "proposed"), ("applied", "rejected", "superseded")]
+        outcomes = set()
+        for number, statuses in enumerate(cases):
+            old, new = f"old{number}", f"new{number}"
+            self.add_case(conn, old, statuses)
+            self.add_case(conn, new, statuses)
+            reference_settle_event(conn, USER, old, f"ev-{old}", application_id=None)
+            application_inbox._settle_event(conn, USER, new, f"ev-{new}", application_id=None)
+            with self.subTest(statuses=statuses):
+                self.assertEqual(self.card(conn, new)[0], self.card(conn, old)[0])
+            outcomes.add(self.card(conn, new)[0])
+        self.assertEqual(outcomes, {"pending", "confirmed", "ignored"}, "the cases must reach every outcome")
+
+    def test_the_ledger_is_read_once_and_nothing_is_read_without_an_event(self):
+        conn, _ids = database(self, 1, 2, datetime.now(timezone.utc))
+        self.add_case(conn, "once", ("rejected", "superseded"))
+        with mock.patch.object(application_inbox, "_message_actions", wraps=application_inbox._message_actions) as read:
+            application_inbox._settle_event(conn, USER, "once", "ev-once", application_id=None)
+            self.assertEqual(read.call_count, 1)
+            read.reset_mock()
+            application_inbox._settle_event(conn, USER, "once", "", application_id=None)
+            self.assertEqual(read.call_count, 0)
+        self.assertEqual(self.card(conn, "once"), ("ignored", None))
+
+
+MIGRATION_0048 = Path(__file__).resolve().parent.parent / "migrations" / "0048_mail_hot_path_indexes.sql"
 
 
 class MailIndexMigrationTests(unittest.TestCase):
