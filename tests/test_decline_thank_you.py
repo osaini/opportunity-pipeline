@@ -1246,7 +1246,7 @@ class ThankYouRulesTests(DeclineCase):
         self.assertEqual(self.notices(), [], "a reply left for the student is no alarm")
 
     def test_the_shared_inbox_check_lives_with_contact_finding_and_leaves_it_unchanged(self):
-        from opportunity_app.outreach_contacts import _is_generic, is_shared_inbox
+        from opportunity_app.outreach_contacts import is_generic_address, is_shared_inbox
 
         for address in ("careers@acme.com", "university-recruiting@acme.com", "Hiring.Team@acme.com", "no-reply@acme.com",
                         *(f"{local}@acme.com" for local in ROLE_INBOXES)):
@@ -1255,7 +1255,7 @@ class ThankYouRulesTests(DeclineCase):
         for address in (f"{local}@acme.com" for local in PEOPLE):
             with self.subTest(address=address):
                 self.assertFalse(is_shared_inbox(address))
-        self.assertFalse(_is_generic("no-reply@acme.com"), "contact finding never picks a no-reply inbox to write to")
+        self.assertFalse(is_generic_address("no-reply@acme.com"), "contact finding never picks a no-reply inbox to write to")
 
 
 class LedgerTests(DeclineCase):

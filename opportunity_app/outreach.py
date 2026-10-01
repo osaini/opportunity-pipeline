@@ -1585,7 +1585,7 @@ def update_target_tx(
 ) -> dict[str, Any]:
     """update_target's writes, inside a transaction the caller owns (automation runs it with its ledger insert).
 
-    As in actions._update_application_tx, a no-op write locks the row first
+    As in actions.update_application_tx, a no-op write locks the row first
     (SQLite's write lock; the row's lock on PostgreSQL), and only then is the
     row read, so what is written follows what is stored now: nothing can land
     between the read and the write. Returns the row as it was (``previous``)

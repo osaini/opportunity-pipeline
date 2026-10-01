@@ -246,13 +246,13 @@ class CheckBriefTests(unittest.TestCase):
         from opportunity_app.web_fetch import FetchResult
 
         history = "<p>" + "Background paragraph about the company history. " * 60 + "</p>"
-        page = research._Page(FetchResult("https://news.example/release", 200,
+        page = research.ResearchPage(FetchResult("https://news.example/release", 200,
                                           "<p>AUSTIN, Texas, May 12, 2026 /PRNewswire/</p>" + history
                                           + "<p>Chargebot says its hardware can ship directly and is already deployed in the field.</p>"))
         shown = page.passage(page.find_quote("its hardware can ship directly and is already deployed"))["passage"]
         self.assertIn("already deployed in the field", shown, "a long paragraph before the quote never pushes it out")
         self.assertLessEqual(len(shown), research.PASSAGE_CHARS + research.QUOTE_LINE_CHARS)
-        short = research._Page(FetchResult("https://news.example/short", 200,
+        short = research.ResearchPage(FetchResult("https://news.example/short", 200,
                                            "<p>AUSTIN, Texas, May 12, 2026 /PRNewswire/</p><p>Chargebot today named Dana Ortiz CEO.</p>"))
         self.assertIn("May 12, 2026", short.passage(short.find_quote("Chargebot today named Dana Ortiz CEO"))["passage"])
 
@@ -391,10 +391,10 @@ class CheckBriefTests(unittest.TestCase):
         self.assertEqual(self.refused(self.check(hidden)), {hidden["text"]: "its source does not name the company"})
 
     def test_the_shared_company_check_never_matches_an_empty_domain(self):
-        from opportunity_app.outreach_discovery import _mentions_company
+        from opportunity_app.outreach_discovery import mentions_company
 
-        self.assertFalse(_mentions_company(OTHER_COMPANY, "Chargebot", ""))
-        self.assertTrue(_mentions_company(PRESS, "Chargebot, Inc.", ""))
+        self.assertFalse(mentions_company(OTHER_COMPANY, "Chargebot", ""))
+        self.assertTrue(mentions_company(PRESS, "Chargebot, Inc.", ""))
 
     def test_a_competitor_fact_is_about_the_competitor_and_says_who_linked_them(self):
         rival = {**fact("competitors", "Voltarm builds charging robots with lidar", "https://news.example/voltarm",
@@ -718,7 +718,7 @@ class CheckBriefTests(unittest.TestCase):
         self.assertEqual(self.refused(brief)[SEED["text"]], "a second read of the page says it does not state this: no reason given")
         digits = {}
         self.assertEqual(
-            research._second_read([{"id": "f0"}], lambda i, c: json.dumps({"verdicts": [{"id": "f0", "supported": False, "why": "quote says 4.5M, fact says 45M"}]}), rivals=digits),
+            research.second_read([{"id": "f0"}], lambda i, c: json.dumps({"verdicts": [{"id": "f0", "supported": False, "why": "quote says 4.5M, fact says 45M"}]}), rivals=digits),
             {"f0": (False, "quote says 4.5M, fact says 45M")}, "a reason may carry numbers: it is not a gap",
         )
 

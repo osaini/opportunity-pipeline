@@ -2719,7 +2719,7 @@ def create_app(
     ) -> dict[str, Any]:
         # One action, for the application timeline's Undo on an automatic change.
         try:
-            row = automation_core._row(conn, action_id, user_id)
+            row = automation_core.action_row(conn, action_id, user_id)
         except LookupError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such automation action") from exc
         return automation_core._decode(row)

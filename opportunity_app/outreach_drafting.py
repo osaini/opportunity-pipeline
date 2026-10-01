@@ -147,7 +147,7 @@ class DraftRejected(ValueError):
     """The model's draft cited or stated something the inputs do not support."""
 
 
-def _entry_name(entry: Any) -> str:
+def entry_name(entry: Any) -> str:
     if isinstance(entry, dict):
         return str(entry.get("organization") or entry.get("title") or entry.get("name") or "").strip()
     return str(entry).strip()
@@ -168,8 +168,8 @@ def outreach_proof(facts: dict[str, Any]) -> tuple[dict[str, list[Any]], list[st
             use = entry.get("outreach", "support") if isinstance(entry, dict) else "support"
             if use == "omit":
                 continue
-            if use == "lead" and _entry_name(entry):
-                lead.append(_entry_name(entry))
+            if use == "lead" and entry_name(entry):
+                lead.append(entry_name(entry))
             kept.append({key: item for key, item in entry.items() if key != "outreach"} if isinstance(entry, dict) else entry)
         if kept:
             proof[field] = kept
@@ -317,7 +317,7 @@ def _opening(body: str) -> str:
 # not a fact. A scheme-less link is a dotted host ending in a 2+ letter TLD, optionally followed by a path. The
 # label before the TLD must hold a letter and the TLD must end the word, so 3.5, U.S., Ph.D., e.g. and v2.0
 # are not hosts, nor is "2024.Then" (a missing space after a full stop). Call prep's number check shares this.
-_ADDRESS = re.compile(
+ADDRESS_PATTERN = re.compile(
     r"\S+@\S+|https?://\S+"
     # A scheme-less host such as github.com/t/x or acme360.com. The ending must be lowercase, so a number run into the
     # next sentence ("$2.5M.Series A", "40k.Users") stays a number rather than being taken for a domain.
@@ -327,7 +327,7 @@ _ADDRESS = re.compile(
 
 def _entry_names(entry: Any) -> set[str]:
     """Every name a reader would recognize an entry by."""
-    names = {_entry_name(entry)}
+    names = {entry_name(entry)}
     if isinstance(entry, dict):
         names |= {str(entry.get(key) or "").strip() for key in ("organization", "name")}
     return {name for name in names if len(name) >= 3}
@@ -337,7 +337,7 @@ def _primary_entries(inputs: dict[str, Any]) -> list[Any]:
     primary = inputs.get("primary_experience")
     return [
         entry for field in PROOF_FIELDS for entry in inputs["student"].get(field, [])
-        if primary and _entry_name(entry) == primary
+        if primary and entry_name(entry) == primary
     ]
 
 
@@ -345,7 +345,7 @@ def _states_a_lead_result(body: str, inputs: dict[str, Any]) -> bool:
     """Whether the body gives a number from the primary experience, not one that only belongs to the company."""
     research = {**inputs["company_research"], **inputs["unverified_research"]}
     lead_numbers = _supported_numbers(_input_text(_primary_entries(inputs))) - _supported_numbers(_input_text(research))
-    return any(needed in lead_numbers for _, needed in _number_keys(_ADDRESS.sub(" ", body)))
+    return any(needed in lead_numbers for _, needed in _number_keys(ADDRESS_PATTERN.sub(" ", body)))
 
 
 def _other_entries_named(body: str, inputs: dict[str, Any]) -> list[str]:
@@ -375,7 +375,7 @@ _NOT_A_FACT = IDENTIFIER_KEYS | {"max_words"}
 def _input_text(value: Any):
     """Every piece of the inputs' own words a number may come from, with addresses taken out."""
     if isinstance(value, str):
-        yield _ADDRESS.sub(" ", value)
+        yield ADDRESS_PATTERN.sub(" ", value)
     elif isinstance(value, dict):
         for key, item in value.items():
             if key not in _NOT_A_FACT:
@@ -406,7 +406,7 @@ def _number_keys(text: str) -> list[tuple[str, str]]:
     # Imported here: outreach_research pulls in outreach_discovery, which imports this module.
     from . import outreach_research as research
 
-    tokens = research._tokens(text)
+    tokens = research.word_tokens(text)
     keys = []
     for index, token in enumerate(tokens):
         if token[0].isdigit():
@@ -425,7 +425,7 @@ def _unsupported_numbers(text: str, inputs: dict[str, Any], *more: str) -> list[
     allowed = _supported_numbers(_input_text(inputs))
     found = []
     for piece in (text, *more):
-        for key, needed in _number_keys(_ADDRESS.sub(" ", piece)):
+        for key, needed in _number_keys(ADDRESS_PATTERN.sub(" ", piece)):
             if needed not in allowed and needed not in found:
                 found.append(needed)
     return found
@@ -434,7 +434,7 @@ def _unsupported_numbers(text: str, inputs: dict[str, Any], *more: str) -> list[
 _FIELD_BASIS = re.compile(r"^((?:profile|research|unverified):\w+)[\[.]")
 
 
-def _field_basis(basis: str) -> str:
+def field_basis(basis: str) -> str:
     """Reduce a basis that points inside a field, like profile:experience[0].title, to the field itself."""
     match = _FIELD_BASIS.match(basis)
     return match.group(1) if match else basis
@@ -462,7 +462,7 @@ def validate_draft(
     for claim in claims:
         if not isinstance(claim, dict):
             continue
-        basis = _field_basis(str(claim.get("basis") or "").strip())
+        basis = field_basis(str(claim.get("basis") or "").strip())
         text = str(claim.get("text") or "").strip()[:500]
         if basis not in allowed:
             problems.append(f"the claim {text[:80]!r} cites {basis or 'nothing'}, which is not in the inputs")
@@ -543,7 +543,7 @@ def template_draft(inputs: dict[str, Any], kind: str) -> dict[str, Any]:
     lead = next(
         (
             (field, entry) for field in PROOF_FIELDS for entry in student.get(field, [])
-            if isinstance(entry, dict) and _entry_name(entry) in inputs["lead_with"] and entry.get("highlights")
+            if isinstance(entry, dict) and entry_name(entry) in inputs["lead_with"] and entry.get("highlights")
         ),
         None,
     )
@@ -552,7 +552,7 @@ def template_draft(inputs: dict[str, Any], kind: str) -> dict[str, Any]:
     if lead:
         field, entry = lead
         highlight = str(entry["highlights"][0]).rstrip(".")
-        skill_sentence = f" At {_entry_name(entry)}, I {highlight[:1].lower()}{highlight[1:]}."
+        skill_sentence = f" At {entry_name(entry)}, I {highlight[:1].lower()}{highlight[1:]}."
         claims.append({"text": highlight, "basis": f"profile:{field}"})
     elif skills:
         skill_sentence = f" I work with {', '.join(skills)}."

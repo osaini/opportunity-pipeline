@@ -40,7 +40,7 @@ from urllib.parse import quote, urljoin, urlsplit
 import httpx
 
 from .outreach import LOCATION_BASES, US_STATES, log_event, company_key, get_target, local_today, website_domain
-from .outreach_contacts import _page_priority, _PageParser, crawl_site
+from .outreach_contacts import page_priority, PageParser, crawl_site
 from .web_fetch import USER_AGENT, SafeFetcher, same_site, site_robots
 from .outreach_render import PlaywrightRenderer
 from .schema import utc_now
@@ -125,7 +125,7 @@ class SecUnavailableError(RuntimeError):
 # Locations stated on the company's own site
 
 
-def _state_code(text: str) -> str:
+def state_code(text: str) -> str:
     value = " ".join(str(text or "").split()).strip(" .")
     if value.upper() in US_STATES:
         return value.upper()
@@ -155,7 +155,7 @@ def format_location(city: str, region: str = "", country: str = "", *, from_pros
     city = _city(city, from_prose=from_prose)
     if not city:
         return ""
-    state = _state_code(region)
+    state = state_code(region)
     country = " ".join(str(country or "").split())
     if state and country.casefold() in {"", "us", "usa", "united states", "united states of america"}:
         return f"{city}, {state}"
@@ -170,7 +170,7 @@ def same_place(first: str, second: str) -> bool:
     """Whether two location strings name the same city (and state, when both give one)."""
     def split(text: str) -> tuple[str, str]:
         head, _, rest = str(text or "").partition(",")
-        return " ".join(head.casefold().split()), _state_code(rest.split(",")[0]) if rest else ""
+        return " ".join(head.casefold().split()), state_code(rest.split(",")[0]) if rest else ""
 
     (city_a, state_a), (city_b, state_b) = split(first), split(second)
     return bool(city_a) and city_a == city_b and (not state_a or not state_b or state_a == state_b)
@@ -386,13 +386,13 @@ def rendered_pages(
         rendered = renderer.render(url)
         if rendered is None or not same_site(rendered[0], domain):
             continue
-        parser = _PageParser()
+        parser = PageParser()
         parser.feed(rendered[1])
         parser.close()
         pages.append({"url": rendered[0], "parser": parser, "raw": rendered[1]})
         for href, text in parser.links:
             link = urljoin(rendered[0], href)
-            rank = _page_priority(link, text, keywords)
+            rank = page_priority(link, text, keywords)
             if rank is not None and link.startswith(("http://", "https://")) and same_site(link, domain):
                 queue.append((rank, link))
     return pages

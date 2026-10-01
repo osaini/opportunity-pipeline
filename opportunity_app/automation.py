@@ -50,7 +50,7 @@ its own, and a pause or a student's edit could land between it and the
 change. perform() starts with pause_guard; approve, reject, and undo start by
 claiming the action (_claim). On SQLite that first write takes the database's
 write lock; on PostgreSQL the handlers' reads also lock the rows they read
-(_for_update), so what was read is still true when the change is written.
+(for_update_clause), so what was read is still true when the change is written.
 """
 
 from __future__ import annotations
@@ -456,7 +456,7 @@ def _write_modes(conn: sqlite3.Connection, user_id: str, plans: list[tuple[str, 
             _put_setting(conn, user_id, f"{key}.on_since", stamp, stamp)
 
 
-def _set_modes(conn: sqlite3.Connection, user_id: str, changes: dict[str, str], *, now: datetime | None = None) -> None:
+def set_modes(conn: sqlite3.Connection, user_id: str, changes: dict[str, str], *, now: datetime | None = None) -> None:
     """Validate every change, then write them all in one transaction (the legacy outreach switches use this)."""
     apply_settings(conn, user_id, modes=changes, paused=None, now=now)
 
@@ -691,7 +691,7 @@ class Handler(Protocol):
     """How one action_type reads, makes, and takes back its change. None of these opens a transaction.
 
     ``read`` runs after the caller's transaction has made its first write, and
-    on PostgreSQL locks what it reads (_for_update), so the values it returns
+    on PostgreSQL locks what it reads (for_update_clause), so the values it returns
     still hold when ``apply`` or ``undo`` writes.
 
     A handler may also define ``effective(before, after, timestamp)``: what its
@@ -718,7 +718,7 @@ class Handler(Protocol):
     ) -> dict[str, Any] | None: ...
 
 
-def _for_update(conn: sqlite3.Connection) -> str:
+def for_update_clause(conn: sqlite3.Connection) -> str:
     """The row lock for a read that a later write in the same transaction relies on: PostgreSQL only.
 
     SQLite needs none: every ledger transaction writes first, and that holds
@@ -772,7 +772,7 @@ class ApplicationStage:
     Undo restores both, only while both are still what this action left.
 
     A move to a closed stage also cancels the application's follow-up
-    reminder (actions._update_application_tx). apply records when it did, and
+    reminder (actions.update_application_tx). apply records when it did, and
     undo schedules that reminder again, but only while it is still the one
     this move cancelled (unchanged since) and the follow-up date is still set
     and still ahead. Otherwise undo says the reminder was not restored, so the
@@ -790,7 +790,7 @@ class ApplicationStage:
 
     def read(self, conn: sqlite3.Connection, user_id: str, subject_id: str) -> dict[str, Any]:
         row = conn.execute(
-            f"SELECT stage, applied_at FROM applications WHERE id=? AND user_id=?{_for_update(conn)}", (subject_id, user_id),
+            f"SELECT stage, applied_at FROM applications WHERE id=? AND user_id=?{for_update_clause(conn)}", (subject_id, user_id),
         ).fetchone()
         if row is None:
             raise actions.ApplicationNotFoundError(subject_id)
@@ -807,7 +807,7 @@ class ApplicationStage:
             raise ValueError(f"Unsupported application stage: {stage}")
         if after.get("only_from") is not None and before["stage"] != after["only_from"]:
             return dict(before)
-        return {"stage": stage, "applied_at": actions._next_applied_at(before["applied_at"], stage, after.get("applied_at"), timestamp)}
+        return {"stage": stage, "applied_at": actions.applied_at_for_stage(before["applied_at"], stage, after.get("applied_at"), timestamp)}
 
     @staticmethod
     def _reminder(conn: sqlite3.Connection, user_id: str, subject_id: str) -> Any:
@@ -826,7 +826,7 @@ class ApplicationStage:
             from . import internal_automation  # imported here: it imports this module
 
             archive = internal_automation.automatic_archive(conn, subject_id)
-        actions._update_application_tx(
+        actions.update_application_tx(
             conn, subject_id, stage=after["stage"], applied_at=after.get("applied_at"), user_id=user_id,
             source=source, timestamp=timestamp,
         )
@@ -866,7 +866,7 @@ class ApplicationStage:
     def _reschedule(self, conn: sqlite3.Connection, user_id: str, subject_id: str, cancelled_at: str, timestamp: str) -> str:
         """Schedule again a follow-up reminder a move to a closed stage cancelled: restored, no_date, passed, or changed."""
         row = conn.execute(
-            f"SELECT follow_up_at FROM applications WHERE id=? AND user_id=?{_for_update(conn)}", (subject_id, user_id),
+            f"SELECT follow_up_at FROM applications WHERE id=? AND user_id=?{for_update_clause(conn)}", (subject_id, user_id),
         ).fetchone()
         due = _parse(row["follow_up_at"]) if row is not None else None
         if due is None:
@@ -941,12 +941,12 @@ class OpportunityIntent:
     fields = ("intent",)
 
     def _lock(self, conn: sqlite3.Connection, subject_id: str) -> bool:
-        return conn.execute(f"SELECT 1 FROM opportunities WHERE id=?{_for_update(conn)}", (subject_id,)).fetchone() is not None
+        return conn.execute(f"SELECT 1 FROM opportunities WHERE id=?{for_update_clause(conn)}", (subject_id,)).fetchone() is not None
 
     def read(self, conn: sqlite3.Connection, user_id: str, subject_id: str) -> dict[str, Any]:
         if not self._lock(conn, subject_id):
             raise actions.OpportunityNotFoundError(subject_id)
-        return {"intent": actions._intent_state(conn, subject_id, user_id)}
+        return {"intent": actions.intent_state(conn, subject_id, user_id)}
 
     def effective(self, before: dict[str, Any], after: dict[str, Any], timestamp: str) -> dict[str, Any]:
         if after.get("intent") not in INTENTS:
@@ -964,7 +964,7 @@ class OpportunityIntent:
             (subject_id, user_id, subject_id, user_id),
         ).fetchone() is not None:
             raise NotApplicable("You already acted on this role, so it was left as it is")
-        response = actions._record_intent_tx(
+        response = actions.record_intent_tx(
             conn, subject_id, after["intent"] or "undo", user_id=user_id, source=source, timestamp=timestamp,
         )
         if response["unchanged"]:
@@ -987,7 +987,7 @@ class OpportunityIntent:
         ).fetchone()
         if added is None or latest is None or int(latest["id"]) != int(added):
             raise Superseded("The saved or passed choice changed since, so it was left as it is")
-        actions._record_intent_tx(conn, subject_id, before["intent"] or "undo", user_id=user_id, source=source, timestamp=timestamp)
+        actions.record_intent_tx(conn, subject_id, before["intent"] or "undo", user_id=user_id, source=source, timestamp=timestamp)
 
 
 class ApplicationTask:
@@ -1016,7 +1016,7 @@ class ApplicationTask:
     ) -> dict[str, Any]:
         task = after["task"]
         due_at = user_timezone(conn, user_id).normalize_instant(task.get("due_at"), field="due_at")
-        row = actions._add_application_task_tx(
+        row = actions.add_application_task_tx(
             conn, subject_id, title=str(task["title"]), due_at=due_at, user_id=user_id,
             origin=str(task.get("origin") or "automation"), origin_ref=str(task.get("origin_ref") or ""),
             source=source, timestamp=timestamp, link=str(task.get("link") or ""),
@@ -1077,7 +1077,7 @@ class OutreachStatus:
 
     def read(self, conn: sqlite3.Connection, user_id: str, subject_id: str) -> dict[str, Any]:
         row = conn.execute(
-            f"SELECT status FROM outreach_targets WHERE id=? AND user_id=?{_for_update(conn)}", (subject_id, user_id),
+            f"SELECT status FROM outreach_targets WHERE id=? AND user_id=?{for_update_clause(conn)}", (subject_id, user_id),
         ).fetchone()
         if row is None:
             from .outreach import OutreachNotFoundError
@@ -1116,7 +1116,7 @@ class OutreachStatus:
         from .outreach import log_event
 
         row = conn.execute(
-            f"SELECT status, follow_up_at FROM outreach_targets WHERE id=? AND user_id=?{_for_update(conn)}", (subject_id, user_id),
+            f"SELECT status, follow_up_at FROM outreach_targets WHERE id=? AND user_id=?{for_update_clause(conn)}", (subject_id, user_id),
         ).fetchone()
         if row is None:
             raise Superseded("The company is no longer in your outreach list, so there is nothing to undo")
@@ -1166,7 +1166,7 @@ class OutreachFollowUpDraft:
     def _row(conn: sqlite3.Connection, user_id: str, subject_id: str) -> Any:
         return conn.execute(
             "SELECT status, contact_email, contact_cc, follow_up_subject, follow_up_body, follow_up_claims_json, "
-            f"follow_up_generated_by, follow_up_status FROM outreach_targets WHERE id=? AND user_id=?{_for_update(conn)}",
+            f"follow_up_generated_by, follow_up_status FROM outreach_targets WHERE id=? AND user_id=?{for_update_clause(conn)}",
             (subject_id, user_id),
         ).fetchone()
 
@@ -1261,7 +1261,7 @@ class ResumePick:
         if conn.execute("SELECT 1 FROM opportunities WHERE id=?", (subject_id,)).fetchone() is None:
             raise actions.OpportunityNotFoundError(subject_id)
         row = conn.execute(
-            f"SELECT resume_file_id, picked_by FROM opportunity_resume_picks WHERE user_id=? AND opportunity_id=?{_for_update(conn)}",
+            f"SELECT resume_file_id, picked_by FROM opportunity_resume_picks WHERE user_id=? AND opportunity_id=?{for_update_clause(conn)}",
             (user_id, subject_id),
         ).fetchone()
         return {"resume_pick": None if row is None else {"resume_file_id": row["resume_file_id"], "picked_by": row["picked_by"]}}
@@ -1329,7 +1329,7 @@ class OutreachThankYou:
 
     def read(self, conn: sqlite3.Connection, user_id: str, subject_id: str) -> dict[str, Any]:
         if conn.execute(
-            f"SELECT 1 FROM outreach_targets WHERE id=? AND user_id=?{_for_update(conn)}", (subject_id, user_id),
+            f"SELECT 1 FROM outreach_targets WHERE id=? AND user_id=?{for_update_clause(conn)}", (subject_id, user_id),
         ).fetchone() is None:
             from .outreach import OutreachNotFoundError
 
@@ -1463,7 +1463,7 @@ def _by_key(conn: sqlite3.Connection, user_id: str, idempotency_key: str) -> Any
     ).fetchone()
 
 
-def _row(conn: sqlite3.Connection, action_id: str, user_id: str) -> Any:
+def action_row(conn: sqlite3.Connection, action_id: str, user_id: str) -> Any:
     row = conn.execute("SELECT * FROM automation_actions WHERE id=? AND user_id=?", (action_id, user_id)).fetchone()
     if row is None:
         raise LookupError(action_id)
@@ -1492,7 +1492,7 @@ def _claim(conn: sqlite3.Connection, action_id: str, user_id: str, status: str, 
         "UPDATE automation_actions SET decided_at=? WHERE id=? AND user_id=? AND status=?",
         (timestamp, action_id, user_id, status),
     ).rowcount
-    row = _row(conn, action_id, user_id)
+    row = action_row(conn, action_id, user_id)
     if claimed != 1:
         raise ValueError(f"{refusal}; this one is {row['status']}")
     return row
@@ -1637,7 +1637,7 @@ def perform_in(
             "INSERT INTO automation_held(action_id, user_id, after_json, created_at) VALUES(?, ?, ?, ?)",
             (action_id, user_id, _dumps(held), timestamp),
         )
-    return _decode(_row(conn, action_id, user_id))
+    return _decode(action_row(conn, action_id, user_id))
 
 
 CORRECTABLE_SUBJECTS = ("application",)
@@ -1676,7 +1676,7 @@ def approve(conn: sqlite3.Connection, action_id: str, user_id: str, *, subject_i
             if action["subject_kind"] not in CORRECTABLE_SUBJECTS:
                 raise ValueError("This proposal is not about an application, so another one cannot be chosen for it")
             _apply_corrected(conn, action, handler, user_id, subject_id, timestamp)
-            return _decode(_row(conn, action_id, user_id))
+            return _decode(action_row(conn, action_id, user_id))
         try:
             current = handler.read(conn, user_id, action["subject_id"])
         except LookupError:
@@ -1704,7 +1704,7 @@ def approve(conn: sqlite3.Connection, action_id: str, user_id: str, *, subject_i
             )
     if superseded is not None:
         raise superseded
-    return _decode(_row(conn, action_id, user_id))
+    return _decode(action_row(conn, action_id, user_id))
 
 
 # Per feature: correct(conn, user_id, action, subject_id, before) for a proposal approved for another
@@ -1735,7 +1735,7 @@ def _corrected(
 
 def correction_refusal(conn: sqlite3.Connection, action_id: str, user_id: str, subject_id: str) -> str | None:
     """Why approving this proposal for ``subject_id`` would be refused, or None. Reads only; approve() checks again."""
-    action = _with_held(conn, _decode(_row(conn, action_id, user_id)))
+    action = _with_held(conn, _decode(action_row(conn, action_id, user_id)))
     if action["status"] != "proposed" or subject_id == action["subject_id"]:
         return None
     if action["subject_kind"] not in CORRECTABLE_SUBJECTS:
@@ -1792,7 +1792,7 @@ def reject(conn: sqlite3.Connection, action_id: str, user_id: str) -> dict[str, 
         )
         release_held(conn, action_id, user_id)
         breaker = _trip_breaker(conn, user_id, row["feature"], action_id, timestamp)
-    return {**_decode(_row(conn, action_id, user_id)), "feature_paused": breaker is not None, "breaker_notice": breaker}
+    return {**_decode(action_row(conn, action_id, user_id)), "feature_paused": breaker is not None, "breaker_notice": breaker}
 
 
 def undo(conn: sqlite3.Connection, action_id: str, user_id: str) -> dict[str, Any]:
@@ -1834,7 +1834,7 @@ def undo(conn: sqlite3.Connection, action_id: str, user_id: str) -> dict[str, An
             breaker = _trip_breaker(conn, user_id, action["feature"], action_id, timestamp)
     if superseded is not None:
         raise superseded
-    return {**_decode(_row(conn, action_id, user_id)), **extra, "feature_paused": breaker is not None, "breaker_notice": breaker}
+    return {**_decode(action_row(conn, action_id, user_id)), **extra, "feature_paused": breaker is not None, "breaker_notice": breaker}
 
 
 def review(conn: sqlite3.Connection, action_id: str, user_id: str, verdict: str) -> dict[str, Any]:
@@ -1842,14 +1842,14 @@ def review(conn: sqlite3.Connection, action_id: str, user_id: str, verdict: str)
     if verdict not in VERDICTS:
         raise ValueError("A shadow action is reviewed as right or wrong")
     with conn:
-        row = _row(conn, action_id, user_id)
+        row = action_row(conn, action_id, user_id)
         if row["status"] != "shadow":
             raise ValueError(f"Only a shadow action can be reviewed; this one is {row['status']}")
         conn.execute(
             "UPDATE automation_actions SET review=?, reviewed_at=? WHERE id=? AND user_id=?",
             (verdict, utc_now(), action_id, user_id),
         )
-    return _decode(_row(conn, action_id, user_id))
+    return _decode(action_row(conn, action_id, user_id))
 
 
 StatusFilter = str | list[str] | tuple[str, ...] | None
@@ -1959,7 +1959,7 @@ def _trip_breaker(conn: sqlite3.Connection, user_id: str, feature: str, action_i
         "title": f"Turned off {definition.label}: you undid or rejected {what}",
         "body": "Turn it back on under Automation when you want it again.",
     }
-    _insert_notice(conn, user_id, event_key=f"{BREAKER_NOTICE_PREFIX}{feature}:{action_id}", level="warning",
+    insert_notice(conn, user_id, event_key=f"{BREAKER_NOTICE_PREFIX}{feature}:{action_id}", level="warning",
                    title=notice["title"], body=notice["body"], timestamp=timestamp)
     return notice
 
@@ -1967,7 +1967,7 @@ def _trip_breaker(conn: sqlite3.Connection, user_id: str, feature: str, action_i
 # --- Notices -----------------------------------------------------------------------------
 
 
-def _insert_notice(
+def insert_notice(
     conn: sqlite3.Connection, user_id: str, *, event_key: str, level: str, title: str, body: str, timestamp: str,
 ) -> bool:
     if level not in NOTICE_LEVELS:
@@ -1987,7 +1987,7 @@ def notice(conn: sqlite3.Connection, user_id: str, *, event_key: str, level: str
     ``body`` is shown on the desktop too, so it never holds an email's text, a link, or an address.
     """
     with conn:
-        return _insert_notice(conn, user_id, event_key=event_key, level=level, title=title, body=body, timestamp=utc_now())
+        return insert_notice(conn, user_id, event_key=event_key, level=level, title=title, body=body, timestamp=utc_now())
 
 
 def list_notices(conn: sqlite3.Connection, user_id: str, *, unread_only: bool = False, limit: int = 20) -> list[dict[str, Any]]:

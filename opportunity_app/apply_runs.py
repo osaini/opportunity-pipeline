@@ -609,7 +609,7 @@ def _conflict(conn: sqlite3.Connection, user_id: str, opportunity_id: str, ats: 
 
 
 def _claim_row(conn: sqlite3.Connection, token: str, user_id: str, *, lock: bool = False) -> Any:
-    suffix = automation._for_update(conn) if lock else ""
+    suffix = automation.for_update_clause(conn) if lock else ""
     return conn.execute(
         f"SELECT * FROM application_submit_claims WHERE token=? AND user_id=?{suffix}", (token, user_id),
     ).fetchone()
@@ -743,12 +743,12 @@ def _after_missed_settle(conn: sqlite3.Connection, token: str, user_id: str, det
         company = _title_of(conn, row["opportunity_id"])[1] or "the company"
         with conn:
             _submitted_event(conn, row["application_id"], detail, stamp)
-            automation._insert_notice(
+            automation.insert_notice(
                 conn, user_id, event_key=f"apply-late-confirmation:{token}", level="warning",
                 title=f"Greenhouse showed its confirmation page for {company}, after this attempt was marked as not sent. Check it.",
                 body="", timestamp=stamp,
             )
-    except Exception:  # noqa: BLE001 - like outreach_gmail._settle_claim: a failed report never hides the result
+    except Exception:  # noqa: BLE001 - like outreach_gmail.settle_send_claim: a failed report never hides the result
         LOGGER.exception("A late confirmation for an apply claim was not recorded")
 
 
@@ -867,10 +867,10 @@ def record_stage(
     with conn:
         conn.execute("UPDATE applications SET updated_at=updated_at WHERE id=? AND user_id=?", (row["application_id"], user_id))
         stage = conn.execute(
-            f"SELECT stage FROM applications WHERE id=? AND user_id=?{automation._for_update(conn)}", (row["application_id"], user_id),
+            f"SELECT stage FROM applications WHERE id=? AND user_id=?{automation.for_update_clause(conn)}", (row["application_id"], user_id),
         ).fetchone()
         if stage is not None and stage["stage"] == "applying":
-            actions._update_application_tx(
+            actions.update_application_tx(
                 conn, row["application_id"], stage="applied", applied_at=row["submitted_at"], user_id=user_id,
                 source=source or _settled_by(row)[0], timestamp=stamp,
             )
@@ -1126,7 +1126,7 @@ def mark_review(
             automation._put_setting(conn, user_id, f"{GATE_RESET_KEY}:{ats}", stamp, stamp)
             tripped = True
             needed = limits(conn, user_id)["rehearsals_before_submit"]
-            automation._insert_notice(
+            automation.insert_notice(
                 conn, user_id, event_key=f"apply-breaker:{ats}:{stamp}", level="warning",
                 title=f"Apply for me: {BREAKER_LIMIT} of your last {BREAKER_WINDOW} reviews were wrong",
                 body=f"It needs {needed} new clean rehearsals that you mark right before it offers to submit again.", timestamp=stamp,

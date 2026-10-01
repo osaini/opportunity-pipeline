@@ -90,7 +90,7 @@ def update_settings(conn: sqlite3.Connection, changes: dict[str, Any], *, user_i
     unknown = set(changes) - set(SETTINGS)
     if unknown:
         raise ValueError(f"Unknown automation settings: {', '.join(sorted(unknown))}")
-    automation._set_modes(conn, user_id, {key: "on" if value else "off" for key, value in changes.items()})
+    automation.set_modes(conn, user_id, {key: "on" if value else "off" for key, value in changes.items()})
     return settings(conn, user_id=user_id)
 
 

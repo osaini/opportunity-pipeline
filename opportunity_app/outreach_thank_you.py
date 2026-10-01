@@ -141,7 +141,7 @@ from .outreach_gmail import (
     thank_you_fingerprint,
     thank_you_row,
 )
-from .outreach_schedule import _label, next_morning, recipient_zone
+from .outreach_schedule import send_time_label, next_morning, recipient_zone
 from .schema import utc_now
 
 LOGGER = logging.getLogger(__name__)
@@ -1337,7 +1337,7 @@ def plan(
     zone, basis = recipient_zone(conn, target, user_id=user_id)
     received = _parse(data.get("received_at")) or reply["at"]
     send_at = plan_send_at(received, zone, f"{target_id}:{data['gmail_id']}", now, seed=f"{target_id}:{THANK_YOU_KIND}")
-    label = _label(send_at, zone, basis)
+    label = send_time_label(send_at, zone, basis)
     subject = _subject(str(data.get("subject") or ""), target.get("email_subject") or "")
     fingerprint = thank_you_fingerprint(to_email, to_name, subject, body, str(data["message_id"]), str(data["thread_id"]))
     readings = data.get("readings") or {}
@@ -1479,7 +1479,7 @@ def settle_in(conn: sqlite3.Connection, target_id: str, user_id: str, state: str
         company = spoken_company(row["company"]) if row is not None else "a company"
         # 'failed' covers a send Gmail may have carried out, so it is "stopped", never "was not sent".
         title = f"Thank-you to {company} {'held' if state == 'held' else 'stopped'}: {notice_reason(state, note)}"
-        automation._insert_notice(
+        automation.insert_notice(
             conn, user_id, event_key=f"thank-you:{state}:{target_id}:{stamp}", level="warning", title=title,
             body="Open Outreach to read it, then send it anyway or dismiss it.", timestamp=stamp,
         )
@@ -1534,7 +1534,7 @@ def _followed_up(conn: sqlite3.Connection, target_id: str, user_id: str) -> bool
 
 def review(conn: sqlite3.Connection, target_id: str, *, user_id: str, runner: Callable[[str], str], reviewer: str) -> dict[str, Any]:
     """Whether the thank-you may go, with the reviewer's problems. Every failure to get a clear answer holds it."""
-    from .outreach_review import _one_answer
+    from .outreach_review import one_answer
 
     target = get_target(conn, target_id, user_id=user_id)
     thank_you = thank_you_row(conn, target_id, user_id)
@@ -1569,7 +1569,7 @@ def review(conn: sqlite3.Connection, target_id: str, *, user_id: str, runner: Ca
         output = runner(prompt)
     except Exception as exc:  # noqa: BLE001 - a reviewer that cannot run holds it
         return {**held, "problems": [f"The reviewer could not run: {exc}"[:300]]}
-    answer = _one_answer(output)
+    answer = one_answer(output)
     if answer is None:
         return {**held, "problems": ["The reviewer's answer could not be read"]}
     send, problems = answer.get("send"), answer.get("problems")
@@ -1719,56 +1719,56 @@ def gate(
     hand-over (which reads the records once more).
     """
     from .outreach_review import review_runner
-    from .outreach_schedule import GMAIL_HOLD_MARGIN, _finish, _hold_for_retry, _wait_for_gmail
+    from .outreach_schedule import GMAIL_HOLD_MARGIN, finish_send, hold_for_retry, wait_for_gmail
 
     target_id, user_id = row["target_id"], row["user_id"]
     thank_you = thank_you_row(conn, target_id, user_id)
     if thank_you is None or thank_you["state"] != "scheduled" or thank_you["fingerprint"] != row["fingerprint"]:
-        _finish(conn, row, "cancelled", "The thank-you changed or was stopped after it was scheduled")
+        finish_send(conn, row, "cancelled", "The thank-you changed or was stopped after it was scheduled")
         return "cancelled"
     stop = problem_now(conn, target_id, user_id, thank_you)
     if stop:
-        _finish(conn, row, *stop)
+        finish_send(conn, row, *stop)
         return stop[0]
     missing = requirement_hold(conn, user_id)
     if missing:
-        _finish(conn, row, "held", missing)
+        finish_send(conn, row, "held", missing)
         return "held"
     # The reply's own rules (R1 to R7), read again: the student's address or the company may have changed.
     blockers = blockers_now(conn, target_id, user_id, thank_you)
     if blockers:
         LOGGER.debug("Thank-you for outreach target %s not sent: %s", target_id, blocker_reason(blockers))
-        _finish(conn, row, "cancelled", blocker_note(blockers))
+        finish_send(conn, row, "cancelled", blocker_note(blockers))
         return "cancelled"
     try:
         name, run = (reviewer or (lambda: review_runner("thank_you")))()
         verdict = review(conn, target_id, user_id=user_id, runner=run, reviewer=name)
     except Exception as exc:  # noqa: BLE001 - a reviewer that cannot be set up holds it
-        _finish(conn, row, "held", f"The reviewer could not run: {exc}"[:500])
+        finish_send(conn, row, "held", f"The reviewer could not run: {exc}"[:500])
         return "held"
     with conn:
         log_event(conn, target_id, user_id, REVIEWED_EVENT, detail=(
             f"Passed by {name}" if verdict["send"] else f"Held by {name}: " + "; ".join(verdict["problems"])
         )[:1_000])
     if not verdict["send"]:
-        _finish(conn, row, "held", "The reviewer held it: " + "; ".join(verdict["problems"]))
+        finish_send(conn, row, "held", "The reviewer held it: " + "; ".join(verdict["problems"]))
         return "held"
     # The reviewer can take minutes, and the InboxWatcher keeps reading Gmail meanwhile.
     fresh = thank_you_row(conn, target_id, user_id)
     stop = problem_now(conn, target_id, user_id, fresh) if fresh is not None else ("cancelled", "The thank-you is no longer there")
     if stop:
-        _finish(conn, row, *stop)
+        finish_send(conn, row, *stop)
         return stop[0]
     news, why = _thread_news(conn, client_factory, user_id, thank_you)
     if news == "throttled":
         hold = backoff_until(user_id)
         if hold is not None:
-            return _wait_for_gmail(conn, row, hold + GMAIL_HOLD_MARGIN)
-        return _hold_for_retry(conn, row, now, f"Could not read their thread in Gmail first: {why}")
+            return wait_for_gmail(conn, row, hold + GMAIL_HOLD_MARGIN)
+        return hold_for_retry(conn, row, now, f"Could not read their thread in Gmail first: {why}")
     if news == "error":
-        return _hold_for_retry(conn, row, now, f"Could not read their thread in Gmail first: {why}")
+        return hold_for_retry(conn, row, now, f"Could not read their thread in Gmail first: {why}")
     if news in {"they", "student", "draft"}:
-        _finish(conn, row, "cancelled", {"they": WROTE_AGAIN, "student": STUDENT_WROTE, "draft": DRAFT_STARTED}[news])
+        finish_send(conn, row, "cancelled", {"they": WROTE_AGAIN, "student": STUDENT_WROTE, "draft": DRAFT_STARTED}[news])
         return "cancelled"
     return None
 
@@ -1781,15 +1781,15 @@ def recover_stuck(conn: sqlite3.Connection, now: datetime, stuck_after: timedelt
     can offer it again; a claim it left unconfirmed makes the next Send it
     anyway ask for that look first. Returns how many were stopped.
     """
-    from .outreach_gmail import _claim, _claim_held
+    from .outreach_gmail import send_claim_row, send_claim_held
 
     cutoff = (now - stuck_after).isoformat(timespec="microseconds")
     stopped = 0
     for row in conn.execute(
         "SELECT target_id, user_id FROM outreach_thank_yous WHERE state='sending' AND updated_at<?", (cutoff,),
     ).fetchall():
-        claim = _claim(conn, row["target_id"], row["user_id"], THANK_YOU_KIND)
-        if claim is not None and _claim_held(claim):
+        claim = send_claim_row(conn, row["target_id"], row["user_id"], THANK_YOU_KIND)
+        if claim is not None and send_claim_held(claim):
             continue
         with conn:
             if settle_in(conn, row["target_id"], row["user_id"], "failed", STUCK_SENDING):

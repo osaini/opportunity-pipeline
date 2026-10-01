@@ -59,7 +59,7 @@ WATCH_FOR = timedelta(days=3)
 # for the oldest watched send is still found.
 NOTICE_SEARCH = "from:(mailer-daemon OR postmaster) newer_than:4d"
 _HEADERS = ("From", "Subject", "Content-Type", "X-Failed-Recipients")
-_DAEMONS = {"mailer-daemon", "mailerdaemon", "mail-daemon", "postmaster"}
+MAILER_DAEMONS = {"mailer-daemon", "mailerdaemon", "mail-daemon", "postmaster"}
 _DELAY = re.compile(r"\(delay\)|\bdelayed\b|\bwarning\b|\bwill (retry|keep trying)\b|\btemporar(y|ily)\b", re.IGNORECASE)
 # Wording that makes a notice a failure even when it also mentions retrying.
 _FAILED_WORDING = re.compile(r"\(failure\)|\bpermanent(ly)?\b|\bgave up\b|\bgiving up\b|\bcould ?n[o']t be delivered\b|\b5\d\d[ -]5\.\d\.\d+", re.IGNORECASE)
@@ -231,17 +231,17 @@ def _header_map(message: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def _is_delivery_notice(message: dict[str, Any]) -> bool:
+def is_delivery_notice(message: dict[str, Any]) -> bool:
     """Whether a message's headers alone make it a delivery notice of any kind (a failure or a delay), never mail."""
     headers = _header_map(message)
     sender = parseaddr(headers.get("from", ""))[1].casefold()
     content_type = f"{headers.get('content-type', '')} {(message.get('payload') or {}).get('mimeType', '')}".casefold()
-    return sender.split("@", 1)[0] in _DAEMONS or ("multipart/report" in content_type and "delivery-status" in content_type)
+    return sender.split("@", 1)[0] in MAILER_DAEMONS or ("multipart/report" in content_type and "delivery-status" in content_type)
 
 
-def _headers_say_failure(message: dict[str, Any]) -> dict[str, Any] | None:
+def headers_say_failure(message: dict[str, Any]) -> dict[str, Any] | None:
     """What a message's headers alone say, if it looks like a delivery failure notice."""
-    if not _is_delivery_notice(message):
+    if not is_delivery_notice(message):
         return None
     headers = _header_map(message)
     subject = headers.get("subject", "")
@@ -275,7 +275,7 @@ def _notice_in_thread(gmail: _Gmail, thread: dict[str, Any], message_id: str) ->
             continue
         if int(message.get("internalDate") or 0) < sent_at:
             continue
-        hint = _headers_say_failure(message)
+        hint = headers_say_failure(message)
         if not hint:
             continue
         notice_id = str(message.get("id", ""))

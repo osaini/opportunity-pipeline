@@ -1887,7 +1887,7 @@ def _settle_event(conn: sqlite3.Connection, user_id: str, gmail_id: str, event_i
 def after_superseded(conn: sqlite3.Connection, user_id: str, action_id: str) -> None:
     """After an approval found the application changed since: settle the email card if nothing else waits."""
     try:
-        action = automation._decode(automation._row(conn, action_id, user_id))
+        action = automation._decode(automation.action_row(conn, action_id, user_id))
     except LookupError:
         return
     after_decision(conn, user_id, action)
@@ -2240,7 +2240,7 @@ class ApplicationDeadline:
     fields = ("deadline",)
 
     def read(self, conn: sqlite3.Connection, user_id: str, subject_id: str) -> dict[str, Any]:
-        lock = automation._for_update(conn)
+        lock = automation.for_update_clause(conn)
         if conn.execute(f"SELECT 1 FROM applications WHERE id=? AND user_id=?{lock}", (subject_id, user_id)).fetchone() is None:
             from .actions import ApplicationNotFoundError
 

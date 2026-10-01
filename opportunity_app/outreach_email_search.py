@@ -30,10 +30,10 @@ from .agent_providers import CliAgentProvider
 from .outreach import log_event, website_domain
 from .outreach_contacts import (
     EMAIL_PATTERN,
-    _email_on_domain,
-    _emails_from_page,
-    _is_generic,
-    _PageParser,
+    email_on_domain,
+    emails_from_page,
+    is_generic_address,
+    PageParser,
     list_candidates,
     store_candidate,
 )
@@ -145,9 +145,9 @@ def check_person(
         return {"reason": "the company has no website to take its mail domain from"}
     if not name or not EMAIL_PATTERN.fullmatch(email):
         return {"reason": "no name or no usable address"}
-    if not _email_on_domain(email, domain):
+    if not email_on_domain(email, domain):
         return {"reason": f"{email} is not on {domain}"}
-    if _is_generic(email):
+    if is_generic_address(email):
         return {"reason": f"{email} is a shared inbox"}
     if public_web_url_error(source_url):
         return {"reason": "its source is not a public http(s) page"}
@@ -161,10 +161,10 @@ def check_person(
     kind = result.content_type.lower()
     if kind and "html" not in kind and "text/plain" not in kind:
         return {"reason": f"its source is not a web page ({kind.split(';')[0]})"}
-    parser = _PageParser()
+    parser = PageParser()
     parser.feed(result.text)
     parser.close()
-    printed = _emails_from_page(parser)
+    printed = emails_from_page(parser)
     if email not in printed:
         return {"reason": f"its source does not print {email}"}
     if not names(" ".join(parser.lines), name):

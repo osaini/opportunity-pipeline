@@ -41,9 +41,9 @@ TODAY = date(2026, 9, 18)
 
 
 def page(url, html):
-    from opportunity_app.outreach_contacts import _PageParser
+    from opportunity_app.outreach_contacts import PageParser
 
-    parser = _PageParser()
+    parser = PageParser()
     parser.feed(html)
     parser.close()
     return {"url": url, "parser": parser}

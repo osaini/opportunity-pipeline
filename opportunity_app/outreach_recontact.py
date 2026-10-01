@@ -27,7 +27,7 @@ from typing import Any, Callable
 
 from .background import SingleFlightManager
 from .outreach import get_target
-from .outreach_contacts import _is_generic, apply_choice, choose_contact, find_contacts, list_candidates
+from .outreach_contacts import is_generic_address, apply_choice, choose_contact, find_contacts, list_candidates
 from .schema import connect_product
 from .web_fetch import SafeFetcher, default_fetcher
 
@@ -49,7 +49,7 @@ def upgradeable(target: dict[str, Any]) -> bool:
         return False
     if target["draft_status"] == "approved" or not target["website"]:
         return False
-    return not target["contact_email"] or _is_generic(target["contact_email"])
+    return not target["contact_email"] or is_generic_address(target["contact_email"])
 
 
 def _upgradeable_ids(conn: sqlite3.Connection, *, user_id: str, chosen: set[str] | None = None) -> list[str]:
@@ -105,9 +105,9 @@ def recontact_targets(
     search: dict[str, Any] = {"searched": 0, "found": 0, "results": []}
     if runner is not None:
         # Imported here: outreach_discovery owns the error handling for a search run.
-        from .outreach_discovery import _search_other_sites
+        from .outreach_discovery import search_other_sites
 
-        search = _search_other_sites(conn, due, user_id=user_id, runner=runner, fetcher=fetcher, verifier=verifier)
+        search = search_other_sites(conn, due, user_id=user_id, runner=runner, fetcher=fetcher, verifier=verifier)
 
     results = _decide(
         conn, due, user_id=user_id, errors=errors, apply=apply, redraft=redraft,

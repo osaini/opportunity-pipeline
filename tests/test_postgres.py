@@ -722,7 +722,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
         [flight] = automation.in_flight(self.conn, AUTOMATION_USER)
         self.conn.commit()
         self.assertEqual((flight["kind"], flight["action"]), ("thank_you", "send"))
-        outreach_schedule._finish(self.conn, row, "failed", "Gmail did not confirm it (HTTP 503)")
+        outreach_schedule.finish_send(self.conn, row, "failed", "Gmail did not confirm it (HTTP 503)")
         stored = self.conn.execute("SELECT state, note FROM outreach_thank_yous WHERE target_id='t-1'").fetchone()
         self.conn.commit()
         self.assertEqual((stored["state"], stored["note"]), ("failed", "Gmail did not confirm it (HTTP 503)"))

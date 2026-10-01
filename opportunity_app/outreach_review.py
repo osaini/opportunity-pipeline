@@ -176,7 +176,7 @@ def _thread(target: dict[str, Any]) -> dict[str, list[dict[str, str]]]:
     return thread
 
 
-def _one_answer(output: Any) -> dict[str, Any] | None:
+def one_answer(output: Any) -> dict[str, Any] | None:
     """The reviewer's answer when its reply is exactly one JSON object, else None.
 
     A reply with two objects (the example echoed back, then the real answer)
@@ -225,7 +225,7 @@ def review_follow_up(
         output = runner(prompt)
     except (RuntimeError, OSError, subprocess.SubprocessError, ValueError) as exc:
         return {**held, "problems": [f"The reviewer could not run: {exc}"[:300]]}
-    answer = _one_answer(output)
+    answer = one_answer(output)
     if answer is None:
         return {**held, "problems": ["The reviewer's answer could not be read"]}
     send, problems, away = answer.get("send"), answer.get("problems"), answer.get("away_until")

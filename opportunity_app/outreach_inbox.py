@@ -68,7 +68,7 @@ from .outreach import (
     website_domain,
 )
 from .outreach_contacts import GENERIC_LOCAL_PARTS
-from .outreach_delivery import _headers_say_failure
+from .outreach_delivery import headers_say_failure
 from .outreach_gmail import (
     SENT_EVENT,
     ClientFactory,
@@ -1259,7 +1259,7 @@ def _record_reply(
             title = f"{target['company']} replied" + (
                 f" on {day:%b} {day.day} (found late)" if late and day else ""
             )
-            automation._insert_notice(conn, user_id, event_key=f"outreach-reply:{gmail_id}", level="info", title=title,
+            automation.insert_notice(conn, user_id, event_key=f"outreach-reply:{gmail_id}", level="info", title=title,
                                       body="Their reply is logged in Outreach.", timestamp=utc_now())
     current = get_target(conn, target["id"], user_id=user_id)
     if current["status"] in REOPENED_BY_REPLY:
@@ -1306,7 +1306,7 @@ def _record_possible(
         if notify:
             title = f"{target['company']} may have replied" if len(targets) == 1 else "A company you wrote to may have replied"
             body = "Open Outreach to check it." + (" Gmail put it in Spam." if in_spam else "")
-            automation._insert_notice(conn, user_id, event_key=f"outreach-possible-reply:{gmail_id}", level="info",
+            automation.insert_notice(conn, user_id, event_key=f"outreach-possible-reply:{gmail_id}", level="info",
                                       title=title, body=body, timestamp=utc_now())
     return {"target_id": target["id"], "company": target["company"], "from": sender, "reason": reason,
             "companies": [other["company"] for other in targets]}
@@ -1700,7 +1700,7 @@ def capture_replies(
             labels = message.get("labelIds") or []
             headers = {str(item.get("name", "")).lower(): str(item.get("value", ""))
                        for item in (message.get("payload") or {}).get("headers") or []}
-            if "SENT" in labels or "DRAFT" in labels or _headers_say_failure(message):
+            if "SENT" in labels or "DRAFT" in labels or headers_say_failure(message):
                 continue  # the student's own, or a delivery notice (outreach_delivery reads those)
             if account and _normal(parseaddr(headers.get("from", ""))[1]) == _normal(account):
                 continue

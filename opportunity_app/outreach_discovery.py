@@ -313,7 +313,7 @@ _LEGAL_SUFFIX_RE = re.compile(
 )
 
 
-def _mentions_company(text: str, company: str, domain: str) -> bool:
+def mentions_company(text: str, company: str, domain: str) -> bool:
     haystack = " ".join(text.casefold().split())
     full = " ".join(company.casefold().split())
     names = {full}
@@ -393,7 +393,7 @@ def validate_proposals(
             private = any(checked[url].error == "private" for url in results)
             reject("a source points at a private or local address" if private else "none of its source URLs loaded")
             continue
-        if not any(_mentions_company(checked[url].text, company, domain) for url in live):
+        if not any(mentions_company(checked[url].text, company, domain) for url in live):
             reject("no source mentions the company")
             continue
         kept_urls = [url for url, state in results.items() if state != "dead"]
@@ -629,7 +629,7 @@ def _run(
                 finish=email_runner is None,
             ))
         if email_runner is not None:
-            report["email_search"] = _search_other_sites(
+            report["email_search"] = search_other_sites(
                 conn, [item["target_id"] for item in follow_through], user_id=user_id,
                 runner=email_runner, fetcher=fetcher, verifier=verifier,
             )
@@ -689,7 +689,7 @@ def _run(
     }
 
 
-def _search_other_sites(
+def search_other_sites(
     conn: Any, target_ids: list[str], *, user_id: str, runner: Runner, fetcher: SafeFetcher, verifier: Any,
 ) -> dict[str, Any]:
     """The other-sites email search for the targets still without a person to write to."""

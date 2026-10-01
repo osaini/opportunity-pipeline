@@ -164,7 +164,7 @@ def deobfuscate(text: str) -> str:
     return _SPELLED_OUT.sub(spelled, text)
 
 
-class _PageParser(HTMLParser):
+class PageParser(HTMLParser):
     """Collect links, visible text lines, and JSON-LD blocks from one page."""
 
     BLOCK_TAGS = {"p", "div", "li", "h1", "h2", "h3", "h4", "h5", "h6", "br", "tr", "td", "section", "article", "span", "a"}
@@ -245,7 +245,7 @@ class _PageParser(HTMLParser):
         self._flush()
 
 
-def _email_on_domain(email: str, domain: str) -> bool:
+def email_on_domain(email: str, domain: str) -> bool:
     email_domain = email.rsplit("@", 1)[-1].lower()
     return email_domain == domain or email_domain.endswith(f".{domain}")
 
@@ -268,7 +268,7 @@ def mail_domain_accepts(client: httpx.Client, domain: str) -> bool | None:
     return any(answer.get("type") == 15 for answer in payload.get("Answer") or [])
 
 
-def _page_priority(url: str, text: str, keywords: tuple[tuple[str, int], ...] = PAGE_KEYWORDS) -> int | None:
+def page_priority(url: str, text: str, keywords: tuple[tuple[str, int], ...] = PAGE_KEYWORDS) -> int | None:
     haystack = f"{urlsplit(url).path} {text}".lower()
     ranks = [rank for keyword, rank in keywords if keyword in haystack]
     return min(ranks) if ranks else None
@@ -281,7 +281,7 @@ def _role_rank(role: str) -> int:
     return len(PREFERRED_ROLES)
 
 
-def _people_from_page(parser: _PageParser) -> list[dict[str, str]]:
+def _people_from_page(parser: PageParser) -> list[dict[str, str]]:
     people: list[dict[str, str]] = []
     for block in parser.json_ld:
         try:
@@ -343,7 +343,7 @@ def _people_from_page(parser: _PageParser) -> list[dict[str, str]]:
     return people
 
 
-def _emails_from_page(parser: _PageParser) -> set[str]:
+def emails_from_page(parser: PageParser) -> set[str]:
     found = set()
     for href, _text in parser.links:
         if href.lower().startswith("mailto:"):
@@ -373,7 +373,7 @@ def company_mail_domains(pages: list[dict[str, Any]], domain: str) -> list[str]:
         parser = page.get("parser")
         if parser is None:
             continue
-        for email in _emails_from_page(parser):
+        for email in emails_from_page(parser):
             other = email.rsplit("@", 1)[-1]
             if other == domain or other.endswith(f".{domain}"):
                 continue
@@ -454,7 +454,7 @@ def crawl_site(
         if response.content_type and "html" not in response.content_type.lower():
             continue
         raw = response.text
-        parser = _PageParser()
+        parser = PageParser()
         parser.feed(raw)
         parser.close()
         pages.append({"url": final_url, "parser": parser, "raw": raw})
@@ -462,7 +462,7 @@ def crawl_site(
             absolute = urljoin(final_url, href)
             if not absolute.startswith(("http://", "https://")) or not same_site(absolute, domain):
                 continue
-            rank = _page_priority(absolute, text, keywords)
+            rank = page_priority(absolute, text, keywords)
             if rank is not None and absolute.split("#", 1)[0].rstrip("/") not in seen:
                 queue.append((rank, absolute))
     return {"domain": domain, "pages": pages, "blocked": blocked, "errors": errors}
@@ -480,16 +480,16 @@ def _collect(pages: list[dict[str, Any]], domain: str) -> tuple[dict[str, dict[s
             existing = people.get(key)
             if existing is None or (not existing["role"] and person["role"]):
                 people[key] = {**person, "email": existing["email"] if existing else person["email"], "evidence_url": page["url"]}
-            if person["email"] and _email_on_domain(person["email"], domain):
+            if person["email"] and email_on_domain(person["email"], domain):
                 people[key]["email"] = person["email"].lower()
                 emails.setdefault(person["email"].lower(), page["url"])
-        for address in _emails_from_page(page["parser"]):
-            if _email_on_domain(address, domain):
+        for address in emails_from_page(page["parser"]):
+            if email_on_domain(address, domain):
                 emails.setdefault(address, page["url"])
     return people, emails
 
 
-def _is_generic(address: str) -> bool:
+def is_generic_address(address: str) -> bool:
     return address.split("@", 1)[0].lower() in GENERIC_LOCAL_PARTS
 
 
@@ -507,7 +507,7 @@ def candidates_from_pages(pages: list[dict[str, Any]], domain: str, *, mail_ok: 
     observed: list[tuple[str, str]] = []
     for address, evidence in emails.items():
         owner = next((person for person in people.values() if person.get("email") == address), None)
-        if _is_generic(address):
+        if is_generic_address(address):
             local = address.split("@", 1)[0]
             candidates.append({"name": "", "role": f"{local}@ inbox", "email": address, "method": "site_generic",
                                "confidence": "confirmed", "evidence_url": evidence})
@@ -566,7 +566,7 @@ VERIFICATION_ORDER = {"smtp_accepted": 0, "": 1, "catch_all": 1, "smtp_unknown":
 
 
 def _has_personal_address(people: dict[str, dict[str, Any]], emails: dict[str, str]) -> bool:
-    return bool(people) or any(not _is_generic(address) for address in emails)
+    return bool(people) or any(not is_generic_address(address) for address in emails)
 
 
 def discover_candidates(
@@ -922,7 +922,7 @@ def choose_contact(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
     usable = [candidate for candidate in candidates if candidate.get("email")]
     personal = [
         candidate for candidate in usable
-        if candidate["method"] == "site_published" and candidate["confidence"] == "confirmed" and not _is_generic(candidate["email"])
+        if candidate["method"] == "site_published" and candidate["confidence"] == "confirmed" and not is_generic_address(candidate["email"])
     ]
     if personal:
         best = min(personal, key=lambda item: _role_rank(item["role"]) if item["name"] else len(PREFERRED_ROLES) + 1)

@@ -59,7 +59,7 @@ import httpx
 from . import automation
 from .mail_trust import FREEMAIL, registrable_domain
 from .outreach import UNSENT_STATUSES
-from .outreach_delivery import _DAEMONS, _is_delivery_notice
+from .outreach_delivery import MAILER_DAEMONS, is_delivery_notice
 from .outreach_config import sender_account
 from .outreach_gmail import (
     DRAFT_EVENT,
@@ -655,7 +655,7 @@ class _Labeller:
         targets = [
             str(item["id"]) for item in messages
             if "DRAFT" not in (item.get("labelIds") or []) and label_id not in (item.get("labelIds") or [])
-            and not _is_delivery_notice(item)
+            and not is_delivery_notice(item)
         ]
         for start in range(0, len(targets), BATCH_LIMIT):
             if self._add(targets[start:start + BATCH_LIMIT], label_id) != "labelled":
@@ -976,7 +976,7 @@ def _sweep_labelled(
     # A delivery notice is never labelled, so left in the listing it would be read again every pass and could hold the sweep back.
     query = (
         f"after:{int(kept['after']) - SWEEP_OVERLAP_SECONDS} -in:chats -in:drafts "
-        f"-from:({' OR '.join(sorted(_DAEMONS))}) -label:{search_form(name)}"
+        f"-from:({' OR '.join(sorted(MAILER_DAEMONS))}) -label:{search_form(name)}"
     )
     for _page in range(SWEEP_PAGES):
         params: dict[str, Any] = {"q": query, "maxResults": 100}

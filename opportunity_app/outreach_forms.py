@@ -59,10 +59,10 @@ from .outreach_gmail import (
     IN_PROGRESS,
     SendConflictError,
     SendNeedsCheckError,
-    _claim,
-    _claim_held,
-    _claimed,
-    _settle_claim,
+    send_claim_row,
+    send_claim_held,
+    claimed_send,
+    settle_send_claim,
     attachment_path,
     attachment_problem,
 )
@@ -1234,10 +1234,10 @@ def form_ready(target: dict[str, Any], *, fingerprint: str | None = None, retry:
 def _click_held(row: Any) -> bool:
     """Whether a request may still be pressing the button under this form claim ('clicking').
 
-    Held exactly as a claim still being worked on would be (_claim_held): by
+    Held exactly as a claim still being worked on would be (send_claim_held): by
     this process while its request runs, or by another for a grace period.
     """
-    return row["state"] == automation.FORM_HANDED_OVER and _claim_held({**dict(row), "state": "drafting"})
+    return row["state"] == automation.FORM_HANDED_OVER and send_claim_held({**dict(row), "state": "drafting"})
 
 
 def submit_contact_form(
@@ -1262,9 +1262,9 @@ def submit_contact_form(
     form_ready(target, fingerprint=fingerprint, retry=retry_unconfirmed)
     identity = identity_for(conn, user_id)
     stale_token = ""
-    existing = _claim(conn, target_id, user_id, "initial")
+    existing = send_claim_row(conn, target_id, user_id, "initial")
     if existing is not None:
-        if _claim_held(existing) or _click_held(existing):
+        if send_claim_held(existing) or _click_held(existing):
             raise SendConflictError(IN_PROGRESS)
         if existing["state"] == "sent":
             raise ValueError("This first message was already sent")
@@ -1285,7 +1285,7 @@ def submit_contact_form(
         form_ready(fresh, fingerprint=fingerprint or target["draft_fingerprint"], retry=retry_unconfirmed)
         return fresh
 
-    with _claimed(conn, target_id, user_id, "initial", "form", revalidate, stale_token=stale_token) as (token, fresh):
+    with claimed_send(conn, target_id, user_id, "initial", "form", revalidate, stale_token=stale_token) as (token, fresh):
         def hand_over() -> bool:
             """Just before the button: hand the claim over, in one step with checking the pause.
 
@@ -1311,7 +1311,7 @@ def submit_contact_form(
                     attachment=attachment, name=target_id, **submit_options,
                 )
         except BaseException:
-            _settle_claim(conn, target_id, "initial", token, "unconfirmed")
+            settle_send_claim(conn, target_id, "initial", token, "unconfirmed")
             raise
         outcome = result["outcome"]
         # Stopped by a pause just before the button: nothing went, and the form waits as it was.
@@ -1340,7 +1340,7 @@ def submit_contact_form(
                 event = {"submitted": SUBMITTED_EVENT, "unconfirmed": UNCONFIRMED_EVENT}.get(outcome, NOT_SENT_EVENT)
                 log_event(conn, target_id, user_id, event, detail=json.dumps(detail, sort_keys=True))
         except BaseException:
-            _settle_claim(conn, target_id, "initial", token, "sent" if outcome == "submitted" else "unconfirmed")
+            settle_send_claim(conn, target_id, "initial", token, "sent" if outcome == "submitted" else "unconfirmed")
             raise
     marked = True
     if outcome == "submitted":

@@ -99,13 +99,13 @@ from . import outreach_research as research
 from .background import PollingWorker
 from .outreach_call_questions import standing_questions
 from .outreach_interviewer import (
-    TOPICS as INTERVIEWER_TOPICS, _who_key, find_interviewer, interviewer_due, interviewer_of,
+    TOPICS as INTERVIEWER_TOPICS, who_key, find_interviewer, interviewer_due, interviewer_of,
 )
 from .agent_providers import CliAgentProvider, complete_text
 from .operations import JobDeferred, enqueue_job, recover_stale_jobs, run_next_job
 from .outreach import CALL_PREP_STATUSES, OutreachNotFoundError, log_event, get_target, local_today
 from .outreach_drafting import (
-    DRAFT_FACT_FIELDS, IDENTIFIER_KEYS, INFERENCE_BASIS, RESEARCH_FIELDS, ProviderFactory, _ADDRESS, _entry_name, _field_basis,
+    DRAFT_FACT_FIELDS, IDENTIFIER_KEYS, INFERENCE_BASIS, RESEARCH_FIELDS, ProviderFactory, ADDRESS_PATTERN, entry_name, field_basis,
     outreach_proof,
 )
 from .outreach_config import resolve_provider
@@ -294,7 +294,7 @@ def current_interviewer(conn: sqlite3.Connection, target: dict[str, Any], user_i
     other one is printed or sent to a model.
     """
     who = find_interviewer(conn, target, user_id)
-    key = _who_key(who["name"], target.get("interviewer_linkedin") or "")
+    key = who_key(who["name"], target.get("interviewer_linkedin") or "")
     record = interviewer_of(target)
     if record.get("key") == key:
         return target
@@ -381,7 +381,7 @@ def _id_list(value: Any) -> list[str]:
 
 def _numbers_beyond(text: str, basis: str) -> list[str]:
     """Numbers in ``text`` that ``basis`` does not carry. Whether its names and claims stay within is the second read's question."""
-    return sorted(research._numbers(research._tokens(text)) - research._numbers(research._tokens(basis)))
+    return sorted(research.number_tokens(research.word_tokens(text)) - research.number_tokens(research.word_tokens(basis)))
 
 
 def _said_by_id(inputs: dict[str, Any]) -> dict[str, str]:
@@ -525,7 +525,7 @@ def _validate_talking_points(entries: list[Any], inputs: dict[str, Any]) -> tupl
         if not isinstance(entry, dict):
             continue
         text = _text(entry.get("text"), MAX_BULLET_CHARS)
-        basis = _field_basis(str(entry.get("basis") or "").strip())
+        basis = field_basis(str(entry.get("basis") or "").strip())
         if not text:
             continue
         if basis == INFERENCE_BASIS:
@@ -546,7 +546,7 @@ def _validate_talking_points(entries: list[Any], inputs: dict[str, Any]) -> tupl
 def _strings(value: Any):
     """Every piece of text in the inputs a number may come from."""
     if isinstance(value, str):
-        yield _ADDRESS.sub(" ", value)
+        yield ADDRESS_PATTERN.sub(" ", value)
     elif isinstance(value, dict):
         for key, item in value.items():
             if key not in _NOT_A_SOURCE:
@@ -565,8 +565,8 @@ def _unsupported_numbers(text: str, inputs: dict[str, Any]) -> list[str]:
     """
     allowed: set[str] = set()
     for piece in _strings(inputs):
-        allowed |= research._numbers(research._tokens(piece))
-    found = [token for token in research._tokens(_ADDRESS.sub(" ", text)) if token[0].isdigit() and token not in allowed]
+        allowed |= research.number_tokens(research.word_tokens(piece))
+    found = [token for token in research.word_tokens(ADDRESS_PATTERN.sub(" ", text)) if token[0].isdigit() and token not in allowed]
     return list(dict.fromkeys(found))
 
 
@@ -643,7 +643,7 @@ def second_read_lines(sections: dict[str, Any], inputs: dict[str, Any], judge: C
             items.append({"id": f"t{index}", "line": f"lands on: {entry['lands_on']}", "cites": cited(entry["from"])})
     for index, entry in enumerate(sections["reading"]):
         items.append({"id": f"r{index}", "line": entry["text"], "cites": cited(entry["facts"])})
-    verdicts = research._second_read(items, judge, LINE_CHECK_INSTRUCTIONS)
+    verdicts = research.second_read(items, judge, LINE_CHECK_INSTRUCTIONS)
     yes = {key for key, (supported, _why) in verdicts.items() if supported}
     return {
         "questions": [entry for index, entry in enumerate(sections["questions"]) if f"q{index}" in yes],
@@ -661,7 +661,7 @@ def template_call_prep(inputs: dict[str, Any]) -> dict[str, Any]:
     points = []
     for field in ("experience", "projects"):
         for entry in inputs["student"].get(field, []):
-            if not isinstance(entry, dict) or _entry_name(entry) not in inputs["lead_with"]:
+            if not isinstance(entry, dict) or entry_name(entry) not in inputs["lead_with"]:
                 continue
             points += [{"text": _clean(line), "basis": f"profile:{field}", "lands_on": "", "from": []} for line in entry.get("highlights", [])]
     company = inputs["company_research"].get("company", "the company")
