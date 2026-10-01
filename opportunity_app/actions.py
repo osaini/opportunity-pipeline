@@ -187,16 +187,30 @@ def ensure_application_tx(
         (opportunity_id, user_id),
     ).fetchone()
     application_id = str(row["id"])
+    log_application_event(
+        conn, application_id, event_type, detail or {}, timestamp, from_stage=row["stage"], to_stage=row["stage"],
+    )
+    return application_id
+
+
+def log_application_event(
+    conn: sqlite3.Connection, application_id: str, event_type: str, detail: Any, timestamp: str,
+    *, from_stage: str | None = None, to_stage: str | None = None, encoded: str | None = None,
+) -> None:
+    """Append one row to an application's timeline. The caller owns the transaction.
+
+    ``detail`` is stored as ``json.dumps(detail)``, or pass ``encoded`` to store
+    text already encoded another way (apply_runs sorts its keys). ``from_stage``
+    and ``to_stage`` are NULL unless the event names a stage.
+    """
     conn.execute(
         """
         INSERT INTO application_events(
-            application_id, event_type, from_stage, to_stage,
-            detail_json, created_at
+            application_id, event_type, from_stage, to_stage, detail_json, created_at
         ) VALUES(?, ?, ?, ?, ?, ?)
         """,
-        (application_id, event_type, row["stage"], row["stage"], json.dumps(detail or {}), timestamp),
+        (application_id, event_type, from_stage, to_stage, json.dumps(detail) if encoded is None else encoded, timestamp),
     )
-    return application_id
 
 
 def list_applications(conn: sqlite3.Connection, *, user_id: str) -> list[dict[str, Any]]:
@@ -388,14 +402,7 @@ def add_application_contact(
             """,
             (contact_id, application_id, user_id, name.strip(), role.strip(), email.strip(), phone.strip(), timestamp, timestamp),
         )
-        conn.execute(
-            """
-            INSERT INTO application_events(
-                application_id, event_type, from_stage, to_stage, detail_json, created_at
-            ) VALUES(?, 'contact_added', NULL, NULL, ?, ?)
-            """,
-            (application_id, json.dumps({"contact_id": contact_id, "name": name.strip()}), timestamp),
-        )
+        log_application_event(conn, application_id, "contact_added", {"contact_id": contact_id, "name": name.strip()}, timestamp)
     return dict(conn.execute("SELECT * FROM application_contacts WHERE id=?", (contact_id,)).fetchone())
 
 
@@ -468,14 +475,7 @@ def _add_application_task_tx(
     detail: dict[str, Any] = {"task_id": task_id, "title": title.strip()}
     if source != "user":
         detail["source"] = source
-    conn.execute(
-        """
-        INSERT INTO application_events(
-            application_id, event_type, from_stage, to_stage, detail_json, created_at
-        ) VALUES(?, 'task_added', NULL, NULL, ?, ?)
-        """,
-        (application_id, json.dumps(detail), timestamp),
-    )
+    log_application_event(conn, application_id, "task_added", detail, timestamp)
     return dict(conn.execute("SELECT * FROM application_tasks WHERE id=?", (task_id,)).fetchone())
 
 
@@ -500,14 +500,7 @@ def update_application_task(
             "UPDATE application_tasks SET status=?, updated_at=? WHERE id=? AND user_id=?",
             (status, timestamp, task_id, user_id),
         )
-        conn.execute(
-            """
-            INSERT INTO application_events(
-                application_id, event_type, from_stage, to_stage, detail_json, created_at
-            ) VALUES(?, 'task_status_changed', NULL, NULL, ?, ?)
-            """,
-            (row["application_id"], json.dumps({"task_id": task_id, "status": status}), timestamp),
-        )
+        log_application_event(conn, row["application_id"], "task_status_changed", {"task_id": task_id, "status": status}, timestamp)
     return dict(conn.execute("SELECT * FROM application_tasks WHERE id=?", (task_id,)).fetchone())
 
 
@@ -642,20 +635,9 @@ def _update_application_tx(
         ),
     )
     if next_stage != existing["stage"]:
-        conn.execute(
-            """
-            INSERT INTO application_events(
-                application_id, event_type, from_stage, to_stage,
-                detail_json, created_at
-            ) VALUES(?, 'stage_changed', ?, ?, ?, ?)
-            """,
-            (
-                application_id,
-                existing["stage"],
-                next_stage,
-                json.dumps({"source": source}),
-                timestamp,
-            ),
+        log_application_event(
+            conn, application_id, "stage_changed", {"source": source}, timestamp,
+            from_stage=existing["stage"], to_stage=next_stage,
         )
     changed_fields = []
     if notes is not None and notes != existing["notes"]:
@@ -667,18 +649,8 @@ def _update_application_tx(
     if next_stage == existing["stage"] and next_applied_at != existing["applied_at"]:
         changed_fields.append("applied_at")
     if changed_fields:
-        conn.execute(
-            """
-            INSERT INTO application_events(
-                application_id, event_type, from_stage, to_stage,
-                detail_json, created_at
-            ) VALUES(?, 'application_updated', NULL, NULL, ?, ?)
-            """,
-            (
-                application_id,
-                json.dumps({"source": source, "fields": changed_fields}),
-                timestamp,
-            ),
+        log_application_event(
+            conn, application_id, "application_updated", {"source": source, "fields": changed_fields}, timestamp,
         )
     if next_stage in TERMINAL_APPLICATION_STAGES or (follow_up_at is not None and not next_follow_up):
         conn.execute(

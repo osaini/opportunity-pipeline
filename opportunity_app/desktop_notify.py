@@ -157,6 +157,8 @@ def _switched_on_at(conn: sqlite3.Connection, user_id: str) -> datetime | None:
     The mode is read through the registry (automation.mode), so a value the
     switch does not take is off. Its user_settings row's updated_at moves only
     when the switch is saved, which the Automation panel does only on a change.
+    (automation.on_since keeps a dedicated record that a same-value re-save does
+    not move; auto_triage uses it. This reads updated_at on purpose, unchanged.)
     """
     if automation.mode(conn, user_id, SWITCH) != "on":
         return None

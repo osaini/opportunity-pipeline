@@ -705,11 +705,7 @@ def _settle_tx(
 def _submitted_event(
     conn: sqlite3.Connection, application_id: str, detail: dict[str, Any] | None, stamp: str,
 ) -> None:
-    conn.execute(
-        "INSERT INTO application_events(application_id, event_type, from_stage, to_stage, detail_json, created_at) "
-        "VALUES(?, 'apply_agent_submitted', NULL, NULL, ?, ?)",
-        (application_id, _dumps(detail or {}), stamp),
-    )
+    actions.log_application_event(conn, application_id, "apply_agent_submitted", None, stamp, encoded=_dumps(detail or {}))
 
 
 def _after_missed_settle(conn: sqlite3.Connection, token: str, user_id: str, detail: dict[str, Any] | None, stamp: str) -> None:

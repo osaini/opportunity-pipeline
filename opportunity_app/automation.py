@@ -893,20 +893,14 @@ class ApplicationStage:
             raise Superseded(f"{_capitalized(_changed({'stage': after['stage'], 'applied_at': after['applied_at']}, current))} "
                              "changed since, so it was left as it is")
         if before["stage"] != after["stage"]:
-            conn.execute(
-                """
-                INSERT INTO application_events(application_id, event_type, from_stage, to_stage, detail_json, created_at)
-                VALUES(?, 'stage_changed', ?, ?, ?, ?)
-                """,
-                (subject_id, after["stage"], before["stage"], json.dumps({"source": source}), timestamp),
+            # The undo direction: from what the action made back to what it replaced.
+            actions.log_application_event(
+                conn, subject_id, "stage_changed", {"source": source}, timestamp,
+                from_stage=after["stage"], to_stage=before["stage"],
             )
         else:
-            conn.execute(
-                """
-                INSERT INTO application_events(application_id, event_type, from_stage, to_stage, detail_json, created_at)
-                VALUES(?, 'application_updated', NULL, NULL, ?, ?)
-                """,
-                (subject_id, json.dumps({"source": source, "fields": ["applied_at"]}), timestamp),
+            actions.log_application_event(
+                conn, subject_id, "application_updated", {"source": source, "fields": ["applied_at"]}, timestamp,
             )
 
 
@@ -1041,12 +1035,9 @@ class ApplicationTask:
             if row["status"] != "open":
                 raise Superseded("The task was marked done since, so it was left as it is")
             raise Superseded("The task was edited since, so it was left as it is")
-        conn.execute(
-            """
-            INSERT INTO application_events(application_id, event_type, from_stage, to_stage, detail_json, created_at)
-            VALUES(?, 'task_removed', NULL, NULL, ?, ?)
-            """,
-            (subject_id, json.dumps({"task_id": created.get("task_id"), "title": created.get("title"), "source": source}), timestamp),
+        actions.log_application_event(
+            conn, subject_id, "task_removed",
+            {"task_id": created.get("task_id"), "title": created.get("title"), "source": source}, timestamp,
         )
 
 

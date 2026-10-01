@@ -152,6 +152,7 @@ import httpx
 from pipeline import identity_tokens, normalized
 
 from . import automation, internal_automation, mail_trust
+from .actions import log_application_event
 from .connections import classify_monitored_message
 from .database import is_transient_error
 from .extension_apply import _canonical_url
@@ -2267,12 +2268,9 @@ class ApplicationDeadline:
             "SELECT id, deadline_on FROM email_deadlines WHERE user_id=? AND gmail_id=? AND application_id=?",
             (user_id, spec["gmail_id"], subject_id),
         ).fetchone()
-        conn.execute(
-            """
-            INSERT INTO application_events(application_id, event_type, from_stage, to_stage, detail_json, created_at)
-            VALUES(?, 'deadline_added', NULL, NULL, ?, ?)
-            """,
-            (subject_id, json.dumps({"deadline_id": row["id"], "deadline_on": row["deadline_on"], "source": source}), timestamp),
+        log_application_event(
+            conn, subject_id, "deadline_added",
+            {"deadline_id": row["id"], "deadline_on": row["deadline_on"], "source": source}, timestamp,
         )
         return {"deadline_id": row["id"], "deadline_on": row["deadline_on"]}
 
@@ -2285,12 +2283,8 @@ class ApplicationDeadline:
         ).rowcount
         if not deleted:
             raise automation.Superseded("The deadline was already removed")
-        conn.execute(
-            """
-            INSERT INTO application_events(application_id, event_type, from_stage, to_stage, detail_json, created_at)
-            VALUES(?, 'deadline_removed', NULL, NULL, ?, ?)
-            """,
-            (subject_id, json.dumps({"deadline_id": created.get("deadline_id"), "source": source}), timestamp),
+        log_application_event(
+            conn, subject_id, "deadline_removed", {"deadline_id": created.get("deadline_id"), "source": source}, timestamp,
         )
 
 
