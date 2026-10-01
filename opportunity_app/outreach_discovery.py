@@ -55,12 +55,13 @@ from .outreach import (
     location_usable,
     website_domain,
 )
-from .outreach_contacts import FetchResult, SafeFetcher, apply_choice, choose_contact, default_fetcher, find_contacts, list_candidates
+from .outreach_contacts import apply_choice, choose_contact, find_contacts, list_candidates
 from .outreach_drafting import outreach_proof
 from .outreach_profile import SecUnavailableError, form_d_lookup, record_form_d, render_site_location, sec_fetcher
 from .outreach_render import PlaywrightRenderer, default_renderer
 from .preparation import confirmed_facts
 from .schema import connect_product, utc_now
+from .web_fetch import FetchResult, SafeFetcher, default_fetcher
 
 # Briefs are templates filled from the student's confirmed profile, so every
 # student searches their own regions and fields. A student can replace any

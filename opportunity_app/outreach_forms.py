@@ -52,8 +52,8 @@ from .outreach import (
     get_target,
     missing_location_message,
     update_target,
+    website_domain,
 )
-from .outreach_contacts import Resolver, _resolve_host
 from .outreach_drafting import sender_account
 from .outreach_gmail import (
     IN_PROGRESS,
@@ -68,6 +68,7 @@ from .outreach_gmail import (
 )
 from .preparation import confirmed_facts
 from .schema import utc_now
+from .web_fetch import USER_AGENT, Resolver, close_browser, resolve_host, same_site, site_robots
 
 FORM_STATES = ("found", "submitted", "unconfirmed", "needs_you", "failed")
 SUBMITTED_EVENT = "form_submitted"
@@ -286,18 +287,16 @@ def find_contact_form(pages: list[dict[str, Any]], *, fetcher: Any = None, rende
     if not pages or (form is not None and CONTACT_LINK.search(form["page_url"])):
         return form
     fallback = form
-    from urllib.parse import urljoin, urlsplit
-
-    from .outreach_contacts import USER_AGENT, _same_site, site_robots
+    from urllib.parse import urljoin
 
     home = pages[0]["url"]
-    domain = (urlsplit(home).hostname or "").lower().removeprefix("www.")
+    domain = website_domain(home)
     seen = {page["url"].split("#", 1)[0].rstrip("/") for page in pages}
     links: list[str] = []
     for page in pages:
         for href, text in getattr(page.get("parser"), "links", []):
             absolute = urljoin(page["url"], href).split("#", 1)[0]
-            if absolute.startswith(("http://", "https://")) and _same_site(absolute, domain) and CONTACT_LINK.search(f"{href} {text}"):
+            if absolute.startswith(("http://", "https://")) and same_site(absolute, domain) and CONTACT_LINK.search(f"{href} {text}"):
                 links.append(absolute)
     contact_pages = [link for link in dict.fromkeys(links)][:MAX_FORM_PAGES]
     unread = [link for link in contact_pages if link.rstrip("/") not in seen]
@@ -797,7 +796,7 @@ class FormSubmitter:
         *,
         headed: bool = False,
         person_wait: float = 0,
-        resolve: Resolver = _resolve_host,
+        resolve: Resolver = resolve_host,
         screenshot_dir: Path = SCREENSHOT_DIR,
         launch_args: list[str] | None = None,
         route_hook: Callable[[Any], None] | None = None,
@@ -822,16 +821,7 @@ class FormSubmitter:
         return self
 
     def __exit__(self, *_exc: Any) -> None:
-        for closer in (
-            lambda: self._context and self._context.close(),
-            lambda: self._browser and self._browser.close(),
-            lambda: self._playwright and self._playwright.stop(),
-        ):
-            try:
-                closer()
-            except Exception:  # noqa: BLE001 - shutting down
-                pass
-        self._playwright = self._browser = self._context = None
+        close_browser(self)
 
     def _start(self) -> None:
         if self._context is not None:

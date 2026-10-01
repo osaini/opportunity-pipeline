@@ -33,6 +33,7 @@ from .inbox_classifiers import read_reply
 from .schema import LOCAL_USER_ID, utc_now
 from .typesafe_decisions import DecisionClient
 from .user_time import user_timezone
+from .web_fetch import public_web_url_error
 
 
 # How contact_route opens for an address the student typed in themselves.
@@ -202,8 +203,6 @@ def _clean_urls(value: Any) -> list[str]:
 
 
 def _validate_web_url(value: str, field: str) -> None:
-    from .outreach_contacts import public_web_url_error
-
     if public_web_url_error(value):
         raise ValueError(f"{field} must be a public http(s) URL without credentials")
 

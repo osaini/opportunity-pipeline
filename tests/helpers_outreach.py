@@ -7,7 +7,7 @@ import json
 import httpx
 
 from opportunity_app.agent_providers import ProviderReply
-from opportunity_app.outreach_contacts import SafeFetcher
+from opportunity_app.web_fetch import SafeFetcher
 from opportunity_app.schema import utc_now
 
 

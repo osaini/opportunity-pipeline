@@ -81,7 +81,8 @@ from uuid import uuid4
 from .agent_providers import CliAgentProvider, cli_available, cli_binary, complete_text
 from .operations import enqueue_job
 from .outreach import LEGAL_SUFFIXES, OutreachNotFoundError, _log, company_key, get_target, website_domain
-from .outreach_contacts import FetchResult, SafeFetcher, _PageParser, public_web_url_error
+from .outreach_contacts import _PageParser
+from .web_fetch import FetchResult, SafeFetcher, public_web_url_error
 from .outreach_discovery import RUNNERS, UNVERIFIABLE_STATUSES
 from .outreach_email_search import BLOCKED_HOSTS
 from .preparation import confirmed_facts

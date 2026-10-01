@@ -43,10 +43,11 @@ import httpx
 from . import apply_runs, automation, internal_automation, outreach_thank_you
 from .background import PollingWorker, discard_open_transaction, record_health_quietly, step_error
 from .outreach import _log, get_target, greeting_style, greets_contact, heard_back, list_targets, without_greeting
-from .outreach_contacts import SafeFetcher, apply_choice, choose_contact, find_contacts, list_candidates
+from .outreach_contacts import apply_choice, choose_contact, find_contacts, list_candidates
 from .outreach_forms import form_due
 from .outreach_gmail import last_bounce
 from .schema import connect_product, utc_now
+from .web_fetch import SafeFetcher
 
 LOGGER = logging.getLogger(__name__)
 

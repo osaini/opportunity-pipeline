@@ -59,7 +59,8 @@ from . import outreach_research as research
 from .agent_providers import CliAgentProvider, complete_text
 from .mail_trust import registrable_domain
 from .outreach import LEGAL_SUFFIXES, _log, get_target
-from .outreach_contacts import FetchResult, is_shared_inbox
+from .outreach_contacts import is_shared_inbox
+from .web_fetch import FetchResult
 from .outreach_inbox import (
     _alias, _company_words, _contact_domain, _domain, _institution, _is_own, _normal, _own_domains, _platform, _role_word,
     _website_domain, _website_strength, is_person,

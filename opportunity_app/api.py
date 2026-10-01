@@ -266,13 +266,12 @@ from .outreach import (
     update_target as update_outreach_target,
 )
 from .outreach_contacts import (
-    SafeFetcher,
     add_manual_contact as add_manual_outreach_contact,
     apply_candidate as apply_outreach_candidate,
-    default_fetcher as default_contact_fetcher,
     find_contacts as find_outreach_contacts,
     list_candidates as list_outreach_candidates,
 )
+from .web_fetch import SafeFetcher, default_fetcher as default_contact_fetcher
 from .outreach_call_prep import (
     CallPrepWorker, NotReplied, ReplyRequired, auto_queue_call_prep, queue_call_prep,
 )

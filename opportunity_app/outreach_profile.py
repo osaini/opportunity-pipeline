@@ -40,7 +40,8 @@ from urllib.parse import quote, urljoin, urlsplit
 import httpx
 
 from .outreach import LOCATION_BASES, US_STATES, _log, company_key, get_target, local_today, website_domain
-from .outreach_contacts import USER_AGENT, SafeFetcher, _page_priority, _PageParser, _same_site, crawl_site, site_robots
+from .outreach_contacts import _page_priority, _PageParser, crawl_site
+from .web_fetch import USER_AGENT, SafeFetcher, same_site, site_robots
 from .outreach_render import PlaywrightRenderer
 from .schema import utc_now
 
@@ -383,7 +384,7 @@ def rendered_pages(
             continue
         seen.add(key)
         rendered = renderer.render(url)
-        if rendered is None or not _same_site(rendered[0], domain):
+        if rendered is None or not same_site(rendered[0], domain):
             continue
         parser = _PageParser()
         parser.feed(rendered[1])
@@ -392,7 +393,7 @@ def rendered_pages(
         for href, text in parser.links:
             link = urljoin(rendered[0], href)
             rank = _page_priority(link, text, keywords)
-            if rank is not None and link.startswith(("http://", "https://")) and _same_site(link, domain):
+            if rank is not None and link.startswith(("http://", "https://")) and same_site(link, domain):
                 queue.append((rank, link))
     return pages
 

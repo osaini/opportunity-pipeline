@@ -30,19 +30,15 @@ from .agent_providers import CliAgentProvider
 from .outreach import _log, website_domain
 from .outreach_contacts import (
     EMAIL_PATTERN,
-    SafeFetcher,
     _email_on_domain,
     _emails_from_page,
     _is_generic,
     _PageParser,
-    _same_site,
-    fetch_site_robots,
     list_candidates,
-    public_web_url_error,
     store_candidate,
-    USER_AGENT,
 )
 from .schema import utc_now
+from .web_fetch import USER_AGENT, SafeFetcher, fetch_site_robots, public_web_url_error, same_site
 
 Runner = Callable[[str], str]
 
@@ -173,7 +169,7 @@ def check_person(
         return {"reason": f"its source does not print {email}"}
     if not names(" ".join(parser.lines), name):
         return {"reason": f"its source does not name {name}"}
-    own_site = _same_site(result.url, domain)
+    own_site = same_site(result.url, domain)
     return {
         "name": name,
         "role": role,

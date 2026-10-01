@@ -16,7 +16,8 @@ from fastapi.testclient import TestClient
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
 from opportunity_app.outreach import create_target, get_target, list_targets
-from opportunity_app.outreach_contacts import SafeFetcher, apply_candidate, crawl_site, discover_candidates, find_contacts
+from opportunity_app.outreach_contacts import apply_candidate, crawl_site, discover_candidates, find_contacts
+from opportunity_app.web_fetch import SafeFetcher
 from opportunity_app.outreach_discovery import DiscoveryBusy, DiscoveryManager, _RunLock, _scope_brief, run_discovery, scope_definitions, validate_proposals
 from opportunity_app.schema import connect_product, ensure_product_schema
 

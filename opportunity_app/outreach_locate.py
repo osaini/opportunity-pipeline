@@ -22,7 +22,7 @@ from typing import Any, Callable
 
 from .agent_providers import CliAgentProvider
 from .outreach import PAGE_CHECKED_BASES, website_domain
-from .outreach_contacts import SafeFetcher, public_web_url_error
+from .web_fetch import SafeFetcher, public_web_url_error
 from .outreach_discovery import _mentions_company
 from .outreach_profile import _state_code, apply_location, format_location
 

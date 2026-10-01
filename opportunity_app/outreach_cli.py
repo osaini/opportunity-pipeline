@@ -57,7 +57,7 @@ from . import DEFAULT_PLATFORM_DB
 from .agent_providers import build_provider
 from .database import is_postgres_target
 from .outreach import queue_follow_up_reminders
-from .outreach_contacts import default_fetcher
+from .web_fetch import default_fetcher
 from .outreach_discovery import DEFAULT_SCOPES, MAX_PER_SCOPE, RUNNERS, SCOPES, DiscoveryBusy, run_discovery
 from .outreach_locate import BATCH_SIZE, locate_targets
 from .outreach_profile import SEC_USER_AGENT_ENV, enrich_targets, sec_fetcher
