@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from ...employer import (
     EmployerNotFoundError,
     admin_overview,
+    audit,
     create_moderation_item,
     resolve_moderation_item,
     school_aggregate,
@@ -17,7 +18,7 @@ from ...employer import (
     set_source_control,
     verify_organization,
 )
-from ...operations import OperationsError, enqueue_job, queue_status, retry_dead_job, run_retention
+from ...operations import OperationsError, enqueue_job, retry_dead_job, run_retention, service_overview
 from ...notifications import connector_health
 from ..context import AppContext
 from ..dependencies import admin_connection, get_ctx
@@ -41,59 +42,7 @@ def operations_overview(
 ) -> dict[str, Any]:
     conn, _actor = context
     overview = admin_overview(conn)
-    requests = int(ctx.runtime.metrics["requests"])
-    read_latencies = sorted(ctx.runtime.metrics["read_latency_ms"])
-    write_latencies = sorted(ctx.runtime.metrics["write_latency_ms"])
-
-    def p95(values: list[float]) -> float | None:
-        if not values:
-            return None
-        index = max(0, (len(values) * 95 + 99) // 100 - 1)
-        return round(float(values[index]), 3)
-
-    read_p95 = p95(read_latencies)
-    write_p95 = p95(write_latencies)
-    error_rate = round(int(ctx.runtime.metrics["errors"]) / requests, 4) if requests else 0.0
-    overview["service"] = {
-        "requests": requests,
-        "errors": int(ctx.runtime.metrics["errors"]),
-        "error_rate": error_rate,
-        "rate_limited": int(ctx.runtime.metrics["rate_limited"]),
-        "average_latency_ms": round(float(ctx.runtime.metrics["latency_ms_total"]) / requests, 3) if requests else 0,
-        "read_p95_ms": read_p95,
-        "write_p95_ms": write_p95,
-    }
-    queue = queue_status(conn)
-    overview["queue"] = queue
-    alerts = []
-    if error_rate > 0.02:
-        alerts.append({"key": "api_error_rate", "severity": "critical", "value": error_rate, "threshold": 0.02})
-    if read_p95 is not None and read_p95 > 750:
-        alerts.append({"key": "read_p95_ms", "severity": "warning", "value": read_p95, "threshold": 750})
-    if write_p95 is not None and write_p95 > 1_500:
-        alerts.append({"key": "write_p95_ms", "severity": "warning", "value": write_p95, "threshold": 1_500})
-    if queue["states"]["dead"]:
-        alerts.append({"key": "dead_letter_jobs", "severity": "critical", "value": queue["states"]["dead"], "threshold": 0})
-    if queue["backpressure"]:
-        alerts.append({"key": "queue_backpressure", "severity": "critical", "value": True, "threshold": False})
-    overview["slo"] = {
-        "availability_target": 0.995,
-        "read_p95_target_ms": 750,
-        "write_p95_target_ms": 1_500,
-        "queue_age_target_seconds": 600,
-        "status": "alerting" if alerts else "within_observed_thresholds",
-        "scope": "current process window; external durable telemetry required for monthly SLOs",
-    }
-    overview["alerts"] = alerts
-    overview["recent_traces"] = list(ctx.runtime.traces)[-50:]
-    overview["product_analytics"] = {
-        "application_events": int(conn.execute("SELECT COUNT(*) FROM application_events").fetchone()[0]),
-        "apply_sessions": int(conn.execute("SELECT COUNT(*) FROM application_form_sessions").fetchone()[0]),
-        "agent_turns": int(conn.execute("SELECT COUNT(*) FROM agent_turns").fetchone()[0]),
-        "active_dossier_shares": int(conn.execute("SELECT COUNT(*) FROM dossier_consent_grants WHERE status='active'").fetchone()[0]),
-        "contains_user_identifiers": False,
-    }
-    return overview
+    return service_overview(conn, overview, ctx.runtime.metrics, ctx.runtime.traces)
 
 
 @router.post("/api/v1/admin/jobs", status_code=status.HTTP_201_CREATED)
@@ -103,7 +52,6 @@ def admin_enqueue_job(
 ) -> dict[str, Any]:
     conn, actor = context
     record = enqueue_job(conn, payload.job_type, payload.payload, payload.idempotency_key, max_attempts=payload.max_attempts)
-    from ...employer import audit
     with conn:
         audit(conn, actor, "job_enqueued", "job", record["id"], {"job_type": payload.job_type})
     return record
