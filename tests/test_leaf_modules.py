@@ -943,11 +943,12 @@ class OutreachIdentityTests(unittest.TestCase):
             with self.subTest(module=module):
                 self.assertIn(f"{PACKAGE}.contact_names", all_imports(APP / module))
 
-    def test_the_interviewer_and_research_take_identity_from_it_not_from_the_mail_reader(self):
-        for module in ("outreach_interviewer.py", "outreach_research.py"):
+    def test_the_interviewer_and_the_quote_check_take_identity_from_it_not_from_the_mail_reader(self):
+        for module in ("outreach_interviewer.py", "quote_check.py"):
             with self.subTest(module=module):
                 self.assertNotIn(f"{PACKAGE}.outreach_inbox", all_imports(APP / module))
                 self.assertIn(f"{PACKAGE}.outreach_identity", all_imports(APP / module))
+        self.assertNotIn(f"{PACKAGE}.outreach_inbox", all_imports(APP / "outreach_research.py"))
 
 
 # --- Workstream B: background workers, the AI CLI runner, outreach leaves ---------------------------------------------

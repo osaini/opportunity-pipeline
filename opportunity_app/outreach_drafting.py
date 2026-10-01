@@ -28,6 +28,7 @@ from .outreach import (
 from .outreach_config import resolve_provider, sender_account
 from .outreach_versions import insert_version, keep_current_draft
 from .preparation import confirmed_facts
+from .quote_check import word_tokens
 from .timestamps import utc_now
 
 ProviderFactory = Callable[[str, str], AgentProvider]
@@ -399,14 +400,11 @@ def _number_keys(text: str) -> list[tuple[str, str]]:
     """Each number in the text as (its key, the key a draft needs to claim it).
 
     Whole numbers, as outreach_call_prep checks them, not pieces of text: the tokenizer
-    is the research module's, so 1,500 and 1500 are one number and a range such as
+    is the quote check's (quote_check.word_tokens), so 1,500 and 1500 are one number and a range such as
     2019-2023 is two. A number written as a percentage (45% or 45 percent) is claimed
     as a percentage, so it needs 45% in the inputs, not a headcount of 45.
     """
-    # Imported here: outreach_research pulls in outreach_discovery, which imports this module.
-    from . import outreach_research as research
-
-    tokens = research.word_tokens(text)
+    tokens = word_tokens(text)
     keys = []
     for index, token in enumerate(tokens):
         if token[0].isdigit():

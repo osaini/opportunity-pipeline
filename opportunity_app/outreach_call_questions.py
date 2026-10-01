@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from . import ROOT
-from .outreach_research import SECTION_IDS
+from .quote_check import SECTION_IDS
 
 QUESTIONS_PATH = ROOT / "config" / "call_prep.local.json"
 MAX_QUESTIONS = 8

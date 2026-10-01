@@ -118,7 +118,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
         "background application_inbox inbox_watcher internal_automation auto_triage apply_runs apply_preflight "
         "outreach_gmail outreach_gmail_sends outreach_delivery outreach_inbox outreach_labels outreach_schedule "
         "outreach_thank_you outreach_automation outreach_recontact outreach_review outreach_call_prep "
-        "outreach_call_questions outreach_forms outreach_discovery outreach_research outreach_drafting "
+        "outreach_call_questions outreach_forms outreach_discovery outreach_research quote_check outreach_drafting "
         "outreach_interviewer outreach_email_search outreach_locate outreach_profile outreach_settings "
         "refresh desktop_notify operations student_agent urgent"
     ),
@@ -146,7 +146,6 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
     (_P + "automation", _P + "outreach", "ten handler bodies use outreach records: outreach imports the ledger at the top"),
     (_P + "automation", _P + "resume_variants", "setup_requirement: resume_variants imports the ledger at the top"),
     (_P + "launch", _P + "api", "create_app and LOOPBACK_HOSTS: api imports system_status, which would import launch if that were hoisted too"),
-    (_P + "outreach_drafting", _P + "outreach_research", "the research module: outreach_research reaches drafting through operations, application_inbox and internal_automation"),
     (_P + "outreach_gmail", _P + "outreach_labels", "label_name: outreach_labels imports outreach_gmail at the top"),
     (_P + "outreach_gmail", _P + "outreach_thank_you", "problem_now: outreach_thank_you imports outreach_gmail at the top"),
     (_P + "outreach_inbox", _P + "outreach_thank_you", "on_new_reply: outreach_thank_you reaches outreach_inbox through outreach_review"),

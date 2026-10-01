@@ -23,6 +23,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 from test_outreach_research import TARGET, fetcher_for, reply
 from opportunity_app import outreach_research as research
+from opportunity_app import quote_check
 from opportunity_app.agent_providers import build_provider
 
 TEAM = ("<html><body><h1>Chargebot team</h1><h3>Dana Ortiz</h3><p>Co-founder and CTO</p>"
@@ -70,7 +71,7 @@ args = parser.parse_args()
 judge = research.text_model(build_provider, args.provider, "claude-code")
 fetcher, _ = fetcher_for(SITES)
 with fetcher:
-    brief = research.check_brief(reply(*[case for case, _ in CASES]), TARGET, fetcher=fetcher, judge=judge)
+    brief = quote_check.check_brief(reply(*[case for case, _ in CASES]), TARGET, fetcher=fetcher, judge=judge)
 kept = {item["text"] for item in brief["facts"] if item["checked"]}
 reasons = {item["text"]: item["reason"] for item in brief["refused"]}
 right = 0
