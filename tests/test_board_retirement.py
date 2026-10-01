@@ -17,7 +17,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pipeline
-from pipeline_core import paths, sources, store
+from pipeline_core import paths, retention, sources, store
 
 SOURCE = {"kind": "greenhouse", "company": "Acme", "token": "acme"}
 KEY = "greenhouse:acme"
@@ -87,7 +87,7 @@ class BoardRetirementTests(unittest.TestCase):
                 self.assertEqual(self.active(), {"1", "2", "3"})
 
         with contextlib.redirect_stdout(io.StringIO()):
-            tally = pipeline.purge_expired(self.conn, dry_run=True)
+            tally = retention.purge_expired(self.conn, dry_run=True)
         self.assertEqual(tally["retired"], 0)
 
     def test_a_board_that_stays_empty_retires_once_the_streak_and_grace_are_met(self):

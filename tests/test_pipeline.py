@@ -13,7 +13,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pipeline
-from pipeline_core import artifacts, clock, config as core_config, sources as core_sources, paths, scoring, store, text
+from pipeline_core import artifacts, clock, config as core_config, sources as core_sources, liveness, paths, retention, scoring, store, text
 from pipeline_core.regions import match_region, region_label
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -2022,7 +2022,7 @@ class PipelineTests(unittest.TestCase):
         # The banner uses U+2019 and an accented "expirée". A pattern spelled
         # with an ASCII apostrophe only matches because the body is normalized
         # first, which is the bug this guard exists for.
-        verdict = pipeline.classify_liveness(
+        verdict = liveness.classify_liveness(
             status=200,
             requested_url="https://example.com/jobs/1",
             final_url="https://example.com/jobs/1",
@@ -2032,7 +2032,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(verdict["code"], "expired_body")
 
     def test_liveness_filled_pattern_ignores_application_forms(self):
-        live = pipeline.classify_liveness(
+        live = liveness.classify_liveness(
             status=200,
             body_text=(
                 "This position is open. Once the application form has been filled out "
@@ -2043,7 +2043,7 @@ class PipelineTests(unittest.TestCase):
 
         # Same guard without the trailing "out" -- the preceding word is what
         # rules it out here.
-        still_live = pipeline.classify_liveness(
+        still_live = liveness.classify_liveness(
             status=200,
             body_text=(
                 "About this role. Once the application form has been filled we respond. "
@@ -2052,7 +2052,7 @@ class PipelineTests(unittest.TestCase):
         )
         self.assertNotEqual(still_live["result"], "expired")
 
-        dead = pipeline.classify_liveness(
+        dead = liveness.classify_liveness(
             status=200,
             body_text="The job you are trying to apply for has been filled. " + "x" * 400,
         )
@@ -2062,7 +2062,7 @@ class PipelineTests(unittest.TestCase):
         # A Cloudflare interstitial is short and has no apply control, so
         # without the ordering guard it would fall through to
         # insufficient_content and permanently retire a live posting.
-        verdict = pipeline.classify_liveness(
+        verdict = liveness.classify_liveness(
             status=200,
             body_text="Just a moment... Ray ID: 8f2b1c",
         )
@@ -2072,7 +2072,7 @@ class PipelineTests(unittest.TestCase):
     def test_liveness_treats_server_errors_as_uncertain(self):
         for status in (403, 500, 502, 503):
             with self.subTest(status=status):
-                verdict = pipeline.classify_liveness(status=status, body_text="502 Bad Gateway")
+                verdict = liveness.classify_liveness(status=status, body_text="502 Bad Gateway")
                 self.assertEqual(verdict["result"], "uncertain")
 
     def test_liveness_never_retires_a_posting_on_a_throttle(self):
@@ -2087,7 +2087,7 @@ class PipelineTests(unittest.TestCase):
 
         for body in ("Too Many Requests", "Rate limit exceeded. Please retry later.", ""):
             with self.subTest(body=body):
-                verdict = pipeline.classify_liveness(
+                verdict = liveness.classify_liveness(
                     status=429,
                     requested_url="https://example.com/jobs/1",
                     final_url="https://example.com/jobs/1",
@@ -2099,14 +2099,14 @@ class PipelineTests(unittest.TestCase):
     def test_liveness_gone_statuses_expire(self):
         for status in (404, 410):
             with self.subTest(status=status):
-                verdict = pipeline.classify_liveness(status=status, body_text="Not found")
+                verdict = liveness.classify_liveness(status=status, body_text="Not found")
                 self.assertEqual(verdict["result"], "expired")
                 self.assertEqual(verdict["code"], "http_gone")
 
     def test_liveness_ignores_apply_controls_after_redirect_off_posting(self):
         # A dead permalink that redirects to a listing page still renders Apply
         # buttons -- for other jobs. The lost job id is what gives it away.
-        verdict = pipeline.classify_liveness(
+        verdict = liveness.classify_liveness(
             status=200,
             requested_url="https://careers.example.com/job/1234567",
             final_url="https://careers.example.com/search",
@@ -2117,7 +2117,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(verdict["code"], "redirected_off_posting")
 
     def test_liveness_apply_control_marks_active(self):
-        verdict = pipeline.classify_liveness(
+        verdict = liveness.classify_liveness(
             status=200,
             requested_url="https://example.com/jobs/1234567",
             final_url="https://example.com/jobs/1234567",
@@ -2127,7 +2127,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(verdict["result"], "active")
 
     def test_liveness_thin_page_without_apply_control_expires(self):
-        verdict = pipeline.classify_liveness(status=200, body_text="Home About Careers")
+        verdict = liveness.classify_liveness(status=200, body_text="Home About Careers")
         self.assertEqual(verdict["result"], "expired")
         self.assertEqual(verdict["code"], "insufficient_content")
 
@@ -2176,8 +2176,8 @@ class PipelineTests(unittest.TestCase):
                 def fake_request_text(url, retries=2):
                     return 404, url, "Not found"
 
-                with unittest.mock.patch.object(pipeline, "request_text", fake_request_text):
-                    tally = pipeline.check_liveness(conn)
+                with unittest.mock.patch.object(liveness, "request_text", fake_request_text):
+                    tally = liveness.check_liveness(conn)
 
                 self.assertEqual(tally["expired"], 2)
                 self.assertEqual(tally["retired"], 1)
@@ -2227,11 +2227,11 @@ class PipelineTests(unittest.TestCase):
                     "UPDATE jobs SET status='shortlisted' WHERE external_id='shortlisted-retired'"
                 )
 
-                preview = pipeline.purge_expired(conn, today="2026-09-14", dry_run=True)
+                preview = retention.purge_expired(conn, today="2026-09-14", dry_run=True)
                 self.assertEqual(preview["deleted"], 0)
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 7)
 
-                tally = pipeline.purge_expired(conn, today="2026-09-14")
+                tally = retention.purge_expired(conn, today="2026-09-14")
                 remaining = {
                     row["external_id"] for row in conn.execute("SELECT external_id FROM jobs")
                 }
@@ -2261,15 +2261,15 @@ class PipelineTests(unittest.TestCase):
                 conn.commit()
                 backups = Path(tmp) / "backups"
 
-                pipeline.purge_expired(conn, today="2026-09-14", dry_run=True)
+                retention.purge_expired(conn, today="2026-09-14", dry_run=True)
                 self.assertFalse(backups.exists(), "a dry run must not write a backup")
 
-                with unittest.mock.patch.object(pipeline, "backup_sqlite", side_effect=OSError("disk full")):
+                with unittest.mock.patch.object(retention, "backup_sqlite", side_effect=OSError("disk full")):
                     with self.assertRaises(OSError):
-                        pipeline.purge_expired(conn, today="2026-09-14")
+                        retention.purge_expired(conn, today="2026-09-14")
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 1)
 
-                tally = pipeline.purge_expired(conn, today="2026-09-14")
+                tally = retention.purge_expired(conn, today="2026-09-14")
                 self.assertEqual(tally["deleted"], 1)
                 snapshots = list(backups.glob("pipeline-*.db"))
                 self.assertEqual(len(snapshots), 1)
@@ -2294,14 +2294,14 @@ class PipelineTests(unittest.TestCase):
                 manual = Path(tmp) / "backups" / "pipeline-20260914-pre-purge.db"
                 manual.parent.mkdir()
                 manual.write_bytes(b"hand-made backup")
-                created = [pipeline.backup_sqlite(conn, "pipeline", keep=3) for _ in range(5)]
+                created = [retention.backup_sqlite(conn, "pipeline", keep=3) for _ in range(5)]
             finally:
                 conn.close()
             remaining = sorted((Path(tmp) / "backups").glob("pipeline-*.db"))
             self.assertEqual(remaining, sorted([manual, *created[-3:]]), "manual backups are never pruned")
             memory = sqlite3.connect(":memory:")
             try:
-                self.assertIsNone(pipeline.backup_sqlite(memory, "memory"))
+                self.assertIsNone(retention.backup_sqlite(memory, "memory"))
             finally:
                 memory.close()
 
@@ -2320,8 +2320,8 @@ class PipelineTests(unittest.TestCase):
             try:
                 conn.execute("CREATE TABLE t(x)")
                 conn.commit()
-                with unittest.mock.patch.object(pipeline, "datetime", Clock):
-                    created = [pipeline.backup_sqlite(conn, "pipeline", keep=keep) for _ in clock_times]
+                with unittest.mock.patch.object(retention, "datetime", Clock):
+                    created = [retention.backup_sqlite(conn, "pipeline", keep=keep) for _ in clock_times]
                 kept = sorted((tmp / "backups").glob("pipeline-*.db"))
                 return created, kept, [path.exists() for path in created]
             finally:
@@ -2385,8 +2385,8 @@ class PipelineTests(unittest.TestCase):
                     # Only the canonical's page is gone.
                     return (404, url, "Not found") if url == canonical["url"] else (200, url, "x" * 500)
 
-                with unittest.mock.patch.object(pipeline, "request_text", fake_request_text):
-                    pipeline.check_liveness(conn, check_all=True)
+                with unittest.mock.patch.object(liveness, "request_text", fake_request_text):
+                    liveness.check_liveness(conn, check_all=True)
 
                 survivors = conn.execute(
                     "SELECT id FROM jobs WHERE active=1 AND duplicate_of IS NULL"
@@ -2436,8 +2436,8 @@ class PipelineTests(unittest.TestCase):
                         def thin(url, retries=2):
                             return 200, url, "<div id='root'></div>"
 
-                        with unittest.mock.patch.object(pipeline, "request_text", thin):
-                            tally = pipeline.check_liveness(conn)
+                        with unittest.mock.patch.object(liveness, "request_text", thin):
+                            tally = liveness.check_liveness(conn)
                         self.assertEqual(tally["retired"], 0)
                         self.assertEqual(tally["uncertain"], 1)
                         self.assertEqual(
@@ -2453,9 +2453,9 @@ class PipelineTests(unittest.TestCase):
                 conn = store.connect()
                 self._one_agent_row(conn, "agent:jina")
                 with unittest.mock.patch.object(
-                    pipeline, "request_text", lambda url, retries=2: (404, url, "Gone")
+                    liveness, "request_text", lambda url, retries=2: (404, url, "Gone")
                 ):
-                    tally = pipeline.check_liveness(conn)
+                    tally = liveness.check_liveness(conn)
                 self.assertEqual(tally["retired"], 1)
                 conn.close()
 
@@ -2473,11 +2473,11 @@ class PipelineTests(unittest.TestCase):
                 conn.commit()
 
                 with unittest.mock.patch.object(
-                    pipeline,
+                    liveness,
                     "request_text",
                     lambda url, retries=2: (200, url, "Just a moment... Ray ID: 1"),
                 ):
-                    tally = pipeline.check_liveness(conn)
+                    tally = liveness.check_liveness(conn)
 
                 self.assertEqual(tally["uncertain"], 1)
                 self.assertGreater(
@@ -2492,9 +2492,9 @@ class PipelineTests(unittest.TestCase):
                 conn = store.connect()
                 self._one_agent_row(conn, status="shortlisted")
                 with unittest.mock.patch.object(
-                    pipeline, "request_text", lambda url, retries=2: (404, url, "Gone")
+                    liveness, "request_text", lambda url, retries=2: (404, url, "Gone")
                 ):
-                    tally = pipeline.check_liveness(conn)
+                    tally = liveness.check_liveness(conn)
                 self.assertEqual(tally["expired"], 1)
                 # You picked this one deliberately; it must not vanish silently.
                 self.assertEqual(tally["retired"], 0)
@@ -2530,9 +2530,9 @@ class PipelineTests(unittest.TestCase):
                         raise KeyboardInterrupt("interrupted mid-run")
                     return 404, url, "Gone"
 
-                with unittest.mock.patch.object(pipeline, "request_text", flaky):
+                with unittest.mock.patch.object(liveness, "request_text", flaky):
                     with self.assertRaises(KeyboardInterrupt):
-                        pipeline.check_liveness(conn)
+                        liveness.check_liveness(conn)
                 conn.close()
 
                 # Reopening proves the first row's retirement was durable, not
@@ -2569,13 +2569,13 @@ class PipelineTests(unittest.TestCase):
                     calls.append(url)
                     return 404, url, "Not found"
 
-                with unittest.mock.patch.object(pipeline, "request_text", fake_request_text):
-                    pipeline.check_liveness(conn)
+                with unittest.mock.patch.object(liveness, "request_text", fake_request_text):
+                    liveness.check_liveness(conn)
                 # The Greenhouse batch already retires its own rows.
                 self.assertEqual(calls, [])
 
-                with unittest.mock.patch.object(pipeline, "request_text", fake_request_text):
-                    pipeline.check_liveness(conn, check_all=True)
+                with unittest.mock.patch.object(liveness, "request_text", fake_request_text):
+                    liveness.check_liveness(conn, check_all=True)
                 self.assertEqual(len(calls), 1)
                 conn.close()
 
@@ -2602,8 +2602,8 @@ class PipelineTests(unittest.TestCase):
                 def fake_request_text(url, retries=2):
                     return 404, url, "Not found"
 
-                with unittest.mock.patch.object(pipeline, "request_text", fake_request_text):
-                    tally = pipeline.check_liveness(conn, dry_run=True)
+                with unittest.mock.patch.object(liveness, "request_text", fake_request_text):
+                    tally = liveness.check_liveness(conn, dry_run=True)
 
                 self.assertEqual(tally["expired"], 1)
                 self.assertEqual(tally["retired"], 0)
@@ -2635,8 +2635,8 @@ class PipelineTests(unittest.TestCase):
                 def fake_request_text(url, retries=2):
                     raise RuntimeError("network down")
 
-                with unittest.mock.patch.object(pipeline, "request_text", fake_request_text):
-                    tally = pipeline.check_liveness(conn)
+                with unittest.mock.patch.object(liveness, "request_text", fake_request_text):
+                    tally = liveness.check_liveness(conn)
 
                 self.assertEqual(tally["error"], 1)
                 self.assertEqual(tally["retired"], 0)
