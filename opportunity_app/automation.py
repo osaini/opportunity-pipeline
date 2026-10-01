@@ -65,6 +65,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 from . import actions
+from .apply_claims import claim_held
 from .database import is_unique_violation
 from .outreach_config import sender_account
 from .schema import PAUSE_NEVER_CHANGED
@@ -539,7 +540,7 @@ def in_flight(conn: sqlite3.Connection, user_id: str, *, now: datetime | None = 
     Each item's action is 'send', 'form' or 'application'. A Gmail draft being
     saved is not a send, and a form still being filled in can still be stopped
     by a pause (for an automatic one), so neither is listed. An application is
-    listed while its claim is 'clicking' and held (apply_runs.claim_held): by
+    listed while its claim is 'clicking' and held (apply_claims.claim_held): by
     its heartbeat, not its age, since a Finish in browser claim can be
     minutes old at hand-over and still be running.
     """
@@ -578,8 +579,6 @@ def in_flight(conn: sqlite3.Connection, user_id: str, *, now: datetime | None = 
             "source": "form_claim" if form else "send_claim", "target_id": row["target_id"], "company": row["company"] or "",
             "kind": row["kind"], "action": "form" if form else "send", "label": "", "at": row["claimed_at"],
         })
-    from .apply_runs import claim_held  # imported here: it imports this module
-
     for row in conn.execute(
         """
         SELECT c.application_id, c.token, c.instance, c.heartbeat_at, c.mode, c.handed_over_at, o.company
@@ -632,8 +631,6 @@ def unconfirmed(conn: sqlite3.Connection, user_id: str, *, now: datetime | None 
             "target_id": row["target_id"], "company": row["company"] or "", "kind": row["kind"],
             "action": row["action"], "at": row["claimed_at"],
         })
-    from .apply_runs import claim_held  # imported here: it imports this module
-
     for row in conn.execute(
         """
         SELECT c.application_id, c.token, c.instance, c.heartbeat_at, c.mode, c.state, c.handed_over_at, c.updated_at, o.company

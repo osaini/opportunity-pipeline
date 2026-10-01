@@ -107,7 +107,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
     2: _app("agent_providers web_fetch gmail_client typesafe_decisions outreach_smtp document_pdf"),
     # L3 domain.
     3: _app(
-        "actions auth apply_checks apply_classify apply_greenhouse apply_policy apply_sensitive apply_schema_client automation boards captures connections "
+        "actions auth apply_checks apply_claims apply_classify apply_greenhouse apply_policy apply_sensitive apply_schema_client automation boards captures connections "
         "dossier employer market early_programs extension_apply mail_trust notifications purge ingestion profile resumes "
         "resume_variants preparation document_artifacts inbox_classifiers "
         "outreach outreach_config outreach_identity outreach_versions outreach_contacts outreach_linkedin outreach_batch "
