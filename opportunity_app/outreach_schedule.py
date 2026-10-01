@@ -301,7 +301,7 @@ def _gate(
     every watched company's replies, and a reply it finds for another company
     is read (by Jev too) and handled as the InboxWatcher would have.
     """
-    from .outreach_review import FRESH_LOOK_REASONS, fresh_look, review_follow_up, review_runner
+    from .outreach_review import FRESH_LOOK_REASONS, fresh_look, review_follow_up, review_log_detail, review_runner
 
     target_id, user_id = row["target_id"], row["user_id"]
     # Marking a company not interested stops what it has queued; this catches a send that was already being checked.
@@ -361,9 +361,7 @@ def _gate(
         finish_send(conn, row, "failed", f"The follow-up reviewer could not run: {exc}. Nothing was sent"[:500])
         return "failed"
     with conn:
-        log_event(conn, target_id, user_id, "follow_up_reviewed", detail=(
-            f"Passed by {name}" if verdict["send"] else f"Held by {name}: " + "; ".join(verdict["problems"])
-        )[:1_000])
+        log_event(conn, target_id, user_id, "follow_up_reviewed", detail=review_log_detail(name, verdict))
     if verdict["send"]:
         # The review can take minutes: a reply, or an email that may be one, found meanwhile still stops it.
         return _answered(conn, row, get_target(conn, target_id, user_id=user_id), now)

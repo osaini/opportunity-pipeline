@@ -195,6 +195,34 @@ def one_answer(output: Any) -> dict[str, Any] | None:
     return answer if isinstance(answer, dict) else None
 
 
+def ask_reviewer(
+    runner: Runner, prompt: str, held: dict[str, Any], *, catch: tuple[type[BaseException], ...],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Send the prompt to the reviewer and read its answer, failing closed: (answer, None), or (None, a hold).
+
+    The answer is returned only when it is exactly one object whose "send" is a bool and whose "problems" is a list of
+    strings. ``catch`` is what a runner may raise that means "could not run": a follow-up lets any other error
+    propagate to its scheduler, the thank-you passes Exception. The messages are shown on the card, and
+    outreach_thank_you.notice_reason matches the first by its prefix, so they stay as they are.
+    """
+    try:
+        output = runner(prompt)
+    except catch as exc:
+        return None, {**held, "problems": [f"The reviewer could not run: {exc}"[:300]]}
+    answer = one_answer(output)
+    if answer is None:
+        return None, {**held, "problems": ["The reviewer's answer could not be read"]}
+    send, problems = answer.get("send"), answer.get("problems")
+    if not isinstance(send, bool) or not isinstance(problems, list) or not all(isinstance(item, str) for item in problems):
+        return None, {**held, "problems": ["The reviewer's answer could not be read"]}
+    return answer, None
+
+
+def review_log_detail(name: str, verdict: dict[str, Any]) -> str:
+    """The history line for a review: who passed or held it, and why."""
+    return (f"Passed by {name}" if verdict["send"] else f"Held by {name}: " + "; ".join(verdict["problems"]))[:1_000]
+
+
 def review_follow_up(
     conn: sqlite3.Connection, target_id: str, *, user_id: str, runner: Runner, reviewer: str, today: date,
 ) -> dict[str, Any]:
@@ -221,16 +249,10 @@ def review_follow_up(
         "follow_up": {"subject": target["follow_up_subject"], "body": target["follow_up_body"]},
     }
     prompt = f"{REVIEW_INSTRUCTIONS}\n\nJSON input:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
-    try:
-        output = runner(prompt)
-    except (RuntimeError, OSError, subprocess.SubprocessError, ValueError) as exc:
-        return {**held, "problems": [f"The reviewer could not run: {exc}"[:300]]}
-    answer = one_answer(output)
-    if answer is None:
-        return {**held, "problems": ["The reviewer's answer could not be read"]}
-    send, problems, away = answer.get("send"), answer.get("problems"), answer.get("away_until")
-    if not isinstance(send, bool) or not isinstance(problems, list) or not all(isinstance(item, str) for item in problems):
-        return {**held, "problems": ["The reviewer's answer could not be read"]}
+    answer, hold = ask_reviewer(runner, prompt, held, catch=(RuntimeError, OSError, subprocess.SubprocessError, ValueError))
+    if hold is not None:
+        return hold
+    send, problems, away = answer["send"], answer["problems"], answer.get("away_until")
     away_until = None
     if away:
         try:

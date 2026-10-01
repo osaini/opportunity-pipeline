@@ -1533,7 +1533,7 @@ def _followed_up(conn: sqlite3.Connection, target_id: str, user_id: str) -> bool
 
 def review(conn: sqlite3.Connection, target_id: str, *, user_id: str, runner: Callable[[str], str], reviewer: str) -> dict[str, Any]:
     """Whether the thank-you may go, with the reviewer's problems. Every failure to get a clear answer holds it."""
-    from .outreach_review import one_answer
+    from .outreach_review import ask_reviewer
 
     target = get_target(conn, target_id, user_id=user_id)
     thank_you = thank_you_row(conn, target_id, user_id)
@@ -1564,16 +1564,11 @@ def review(conn: sqlite3.Connection, target_id: str, *, user_id: str, runner: Ca
     if target.get("follow_up_body") and _followed_up(conn, target_id, user_id):
         payload["follow_up"] = {"subject": target["follow_up_subject"], "body": target["follow_up_body"]}
     prompt = f"{REVIEW_INSTRUCTIONS}\n\nJSON input:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
-    try:
-        output = runner(prompt)
-    except Exception as exc:  # noqa: BLE001 - a reviewer that cannot run holds it
-        return {**held, "problems": [f"The reviewer could not run: {exc}"[:300]]}
-    answer = one_answer(output)
-    if answer is None:
-        return {**held, "problems": ["The reviewer's answer could not be read"]}
-    send, problems = answer.get("send"), answer.get("problems")
-    if not isinstance(send, bool) or not isinstance(problems, list) or not all(isinstance(item, str) for item in problems):
-        return {**held, "problems": ["The reviewer's answer could not be read"]}
+    # A reviewer that cannot run holds it, whatever it raised.
+    answer, hold = ask_reviewer(runner, prompt, held, catch=(Exception,))
+    if hold is not None:
+        return hold
+    send, problems = answer["send"], answer["problems"]
     if not send or problems:
         return {**held, "problems": [item[:300] for item in problems] or ["The reviewer did not pass it and gave no reason"]}
     return {"send": True, "problems": [], "reviewer": reviewer}
@@ -1717,7 +1712,7 @@ def gate(
     logged while it ran; and last Gmail's own thread, read just before the
     hand-over (which reads the records once more).
     """
-    from .outreach_review import review_runner
+    from .outreach_review import review_log_detail, review_runner
     from .outreach_schedule import GMAIL_HOLD_MARGIN, finish_send, hold_for_retry, wait_for_gmail
 
     target_id, user_id = row["target_id"], row["user_id"]
@@ -1746,9 +1741,7 @@ def gate(
         finish_send(conn, row, "held", f"The reviewer could not run: {exc}"[:500])
         return "held"
     with conn:
-        log_event(conn, target_id, user_id, REVIEWED_EVENT, detail=(
-            f"Passed by {name}" if verdict["send"] else f"Held by {name}: " + "; ".join(verdict["problems"])
-        )[:1_000])
+        log_event(conn, target_id, user_id, REVIEWED_EVENT, detail=review_log_detail(name, verdict))
     if not verdict["send"]:
         finish_send(conn, row, "held", "The reviewer held it: " + "; ".join(verdict["problems"]))
         return "held"
