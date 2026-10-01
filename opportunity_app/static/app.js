@@ -1268,6 +1268,34 @@
     return node;
   }
 
+  // An <a> that opens in a new tab. It does not vet the address: every caller
+  // keeps the URL policy it always had (safeExternalUrl, a scheme test, or
+  // none), because those policies deliberately differ.
+  function externalLink(href, text, { className = "", ariaLabel = "" } = {}) {
+    const link = element("a", className, text);
+    link.href = href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    if (ariaLabel) link.setAttribute("aria-label", ariaLabel);
+    return link;
+  }
+
+  // The "Open in Gmail" link on a mail row; only an address inside Gmail itself gets one.
+  function gmailOpenLink(url, subject) {
+    if (typeof url !== "string" || !url.startsWith("https://mail.google.com/")) return null;
+    return externalLink(url, "Open in Gmail", { className: "text-button", ariaLabel: `Open in Gmail: ${subject}` });
+  }
+
+  // An <option>. selected is left untouched when omitted, so a call site that
+  // never set it keeps the browser's own default.
+  function optionElement(value, text, selected) {
+    const node = document.createElement("option");
+    node.value = value;
+    node.textContent = text;
+    if (selected !== undefined) node.selected = selected;
+    return node;
+  }
+
   function chip(text, tone = "") {
     return element("span", `chip ${tone}`.trim(), text);
   }
@@ -1377,10 +1405,7 @@
     pass.type = "button";
     pass.addEventListener("click", () => runIntent(item, item.intent_state === "passed" ? "undo" : "passed", pass));
 
-    const apply = element("a", "card-action is-apply", "Apply ↗");
-    apply.href = item.url;
-    apply.target = "_blank";
-    apply.rel = "noopener noreferrer";
+    const apply = externalLink(item.url, "Apply ↗", { className: "card-action is-apply" });
     apply.addEventListener("click", (event) => {
       event.preventDefault();
       if (!window.confirm(`Open the employer application for ${item.title} at ${item.company}? Nothing will be submitted automatically.`)) return;
@@ -1609,10 +1634,7 @@
     const current = select.value;
     select.options.length = 1;
     values.forEach((value) => {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = value;
-      select.appendChild(option);
+      select.appendChild(optionElement(value, value));
     });
     if (values.includes(current)) select.value = current;
   }
@@ -2019,12 +2041,8 @@
     label.appendChild(element("span", "", "Stage"));
     const select = document.createElement("select");
     select.dataset.savedStage = item.stage;
-    ["applying", "applied", "interview", "offer", "rejected", "withdrawn", "archived"].forEach((stage) => {
-      const option = document.createElement("option");
-      option.value = stage;
-      option.textContent = stage[0].toUpperCase() + stage.slice(1);
-      option.selected = item.stage === stage;
-      select.appendChild(option);
+    APPLICATION_STAGES.forEach((stage) => {
+      select.appendChild(optionElement(stage, stageLabel(stage), item.stage === stage));
     });
     // Every stage change is audited (and "applied" stamps a date), so keyboard
     // browsing through the list must not save each stage it passes.
@@ -2058,10 +2076,7 @@
       },
     });
     label.appendChild(select);
-    const source = element("a", "application-link", "Open posting ↗");
-    source.href = item.url;
-    source.target = "_blank";
-    source.rel = "noopener noreferrer";
+    const source = externalLink(item.url, "Open posting ↗", { className: "application-link" });
     controls.append(label, source);
     const trackerFields = element("form", "tracker-fields");
     const notesLabel = element("label", "");
@@ -2157,11 +2172,7 @@
         if (safeLink) {
           // The assessment or scheduling page, kept only here in the app.
           const row = element("div", "tracker-task-row");
-          const open = element("a", "text-button tracker-task-link", "Open");
-          open.href = safeLink;
-          open.target = "_blank";
-          open.rel = "noopener noreferrer";
-          open.setAttribute("aria-label", `Open the page for ${task.title}`);
+          const open = externalLink(safeLink, "Open", { className: "text-button tracker-task-link", ariaLabel: `Open the page for ${task.title}` });
           row.append(label, open);
           taskList.appendChild(row);
           return;
@@ -2252,14 +2263,8 @@
           // Only the company matched (its one open application): a guess until the student confirms it.
           const guessed = mail.matched_by === "company_single" ? "Matched by the company name only, not confirmed" : "";
           row.appendChild(element("small", "", [mail.sender_domain, formatDate(mail.received_at), guessed].filter(Boolean).join(" · ")));
-          if (typeof mail.gmail_url === "string" && mail.gmail_url.startsWith("https://mail.google.com/")) {
-            const open = element("a", "text-button", "Open in Gmail");
-            open.href = mail.gmail_url;
-            open.target = "_blank";
-            open.rel = "noopener noreferrer";
-            open.setAttribute("aria-label", `Open in Gmail: ${mail.subject || "this email"}`);
-            row.appendChild(open);
-          }
+          const open = gmailOpenLink(mail.gmail_url, mail.subject || "this email");
+          if (open) row.appendChild(open);
           list.appendChild(row);
         });
         emailSection.appendChild(list);
@@ -2431,12 +2436,17 @@
   }
 
   const APPLICATION_STAGES = ["applying", "applied", "interview", "offer", "rejected", "withdrawn", "archived"];
+
+  function stageLabel(stage) {
+    return stage[0].toUpperCase() + stage.slice(1);
+  }
+
   const APPLICATION_TABS = [
     { id: "all", label: "All applications", test: () => true },
     { id: "active", label: "In progress", test: (item) => ["applying", "applied", "interview", "offer"].includes(item.stage) },
     ...APPLICATION_STAGES.map((stage) => ({
       id: stage,
-      label: stage[0].toUpperCase() + stage.slice(1),
+      label: stageLabel(stage),
       group: "Stages",
       tone: stage === "interview" || stage === "offer" ? "is-good" : "",
       test: (item) => item.stage === stage,
@@ -2581,7 +2591,7 @@
           const column = element("section", "board-column");
           const items = payload.items.filter((item) => item.stage === stage);
           const heading = element("div", "board-column-heading");
-          heading.appendChild(element("h3", "", stage[0].toUpperCase() + stage.slice(1)));
+          heading.appendChild(element("h3", "", stageLabel(stage)));
           heading.appendChild(chip(String(items.length)));
           column.appendChild(heading);
           const list = element("div", "board-column-list");
@@ -2654,11 +2664,7 @@
     const select = document.createElement("select");
     select.name = name;
     choices.forEach(([optionValue, text]) => {
-      const option = document.createElement("option");
-      option.value = optionValue;
-      option.textContent = text;
-      option.selected = optionValue === value;
-      select.appendChild(option);
+      select.appendChild(optionElement(optionValue, text, optionValue === value));
     });
     select.dataset.initial = select.value;
     label.appendChild(select);
@@ -3042,10 +3048,7 @@
     section.appendChild(element("h4", "", "Contact form"));
     if (form) {
       const where = element("p", "outreach-note");
-      const link = element("a", "", form.page_url);
-      link.href = form.page_url;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
+      const link = externalLink(form.page_url, form.page_url);
       where.append(document.createTextNode("On their site at "), link, document.createTextNode("."));
       section.appendChild(where);
       if (form.captcha) {
@@ -3577,10 +3580,7 @@
         row.appendChild(element("span", "", claim.text));
         const sourceHref = safeExternalUrl(claim.basis);
         if (sourceHref) {
-          const source = element("a", "", "source ↗");
-          source.href = sourceHref;
-          source.target = "_blank";
-          source.rel = "noopener noreferrer";
+          const source = externalLink(sourceHref, "source ↗");
           row.appendChild(source);
           if (item.research_confidence === "unverified") row.appendChild(element("small", "", "unverified deep-search source"));
         } else {
@@ -3747,10 +3747,7 @@
         if (verification) tags.appendChild(chip(verification[0], verification[1]));
         const evidenceHref = safeExternalUrl(candidate.evidence_url);
         if (evidenceHref) {
-          const evidence = element("a", "outreach-evidence", "Evidence ↗");
-          evidence.href = evidenceHref;
-          evidence.target = "_blank";
-          evidence.rel = "noopener noreferrer";
+          const evidence = externalLink(evidenceHref, "Evidence ↗", { className: "outreach-evidence" });
           tags.appendChild(evidence);
         }
         row.append(who, tags);
@@ -4254,8 +4251,8 @@
     field.append(label, select, help, status);
     function show(setting) {
       select.replaceChildren(
-        Object.assign(document.createElement("option"), { value: "rules", textContent: "Keyword rules (no AI)" }),
-        Object.assign(document.createElement("option"), { value: "jev", textContent: setting.available ? "Jev (TypeSafe)" : "Jev (TypeSafe, not set up)" }),
+        optionElement("rules", "Keyword rules (no AI)"),
+        optionElement("jev", setting.available ? "Jev (TypeSafe)" : "Jev (TypeSafe, not set up)"),
       );
       select.value = setting.enabled ? "jev" : "rules";
       select.disabled = false;
@@ -4493,22 +4490,14 @@
     }
 
     function providerOption(option, current) {
-      const node = document.createElement("option");
-      node.value = option.id;
-      node.textContent = option.available ? option.label : `${option.label} (not set up)`;
-      node.selected = option.id === current;
-      return node;
+      return optionElement(option.id, option.available ? option.label : `${option.label} (not set up)`, option.id === current);
     }
 
     const drafts = settings.draft_provider;
     const defaultLabel = drafts.options.find((option) => option.id === drafts.default)?.label || drafts.default;
     const [draftField, draftSelect] = selectField("settings-draft-provider", "Who writes first-email drafts",
       "Every draft still waits for your approval, whoever writes it.");
-    const automatic = document.createElement("option");
-    automatic.value = "";
-    automatic.textContent = `Automatic (now: ${defaultLabel})`;
-    automatic.selected = !drafts.value;
-    draftSelect.appendChild(automatic);
+    draftSelect.appendChild(optionElement("", `Automatic (now: ${defaultLabel})`, !drafts.value));
     drafts.options.forEach((option) => draftSelect.appendChild(providerOption(option, drafts.value)));
     const draftHint = element("p", "profile-help");
     const showDraftHint = () => {
@@ -4526,11 +4515,7 @@
     function followingField(key, id, labelText, help, what) {
       const setting = settings[key];
       const [field, select] = selectField(id, labelText, help);
-      const same = document.createElement("option");
-      same.value = "";
-      same.textContent = "Same as first-email drafts";
-      same.selected = !setting.value;
-      select.appendChild(same);
+      select.appendChild(optionElement("", "Same as first-email drafts", !setting.value));
       setting.options.forEach((option) => select.appendChild(providerOption(option, setting.value)));
       const hint = element("p", "profile-help");
       const showHint = () => {
@@ -4594,11 +4579,7 @@
     const companyResearch = settings.company_research_agent;
     const [companyResearchField, companyResearchSelect] = selectField("settings-company-research-agent", "Who researches a company for call prep",
       "Reads a company's site, job posts, patents, papers, and news for what they build and how; a fact is kept only when its quote is found on the page it cites. Runs when a company replies, or when you press Research this company.");
-    const sameResearch = document.createElement("option");
-    sameResearch.value = "";
-    sameResearch.textContent = "Same as the web research above";
-    sameResearch.selected = !companyResearch.value;
-    companyResearchSelect.appendChild(sameResearch);
+    companyResearchSelect.appendChild(optionElement("", "Same as the web research above", !companyResearch.value));
     companyResearch.options.forEach((option) => companyResearchSelect.appendChild(providerOption(option, companyResearch.value)));
     companyResearchSelect.addEventListener("change", () => save({ company_research_agent: companyResearchSelect.value }, "Company research agent"));
 
@@ -4622,19 +4603,10 @@
     function renderAttachment() {
       const attachment = settings.attachment;
       attachSelect.replaceChildren();
-      const none = document.createElement("option");
-      none.value = "";
-      none.textContent = "Nothing";
-      attachSelect.appendChild(none);
-      const current = document.createElement("option");
-      current.value = "__current";
-      current.textContent = `Current: ${attachment.name}`;
-      if (attachment.name) attachSelect.appendChild(current);
+      attachSelect.appendChild(optionElement("", "Nothing"));
+      if (attachment.name) attachSelect.appendChild(optionElement("__current", `Current: ${attachment.name}`));
       attachment.resumes.forEach((resume) => {
-        const node = document.createElement("option");
-        node.value = resume.id;
-        node.textContent = `${resume.name} (uploaded ${formatDate(resume.created_at)})`;
-        attachSelect.appendChild(node);
+        attachSelect.appendChild(optionElement(resume.id, `${resume.name} (uploaded ${formatDate(resume.created_at)})`));
       });
       attachSelect.value = attachment.name ? "__current" : "";
       attachState.className = attachment.problem ? "form-error" : "profile-help";
@@ -5043,10 +5015,7 @@
   function outreachSourceLink(label, url) {
     const safe = safeExternalUrl(url);
     if (!safe) return document.createTextNode(label);
-    const link = element("a", "", `${label} ↗`);
-    link.href = safe;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
+    const link = externalLink(safe, `${label} ↗`);
     return link;
   }
 
@@ -5172,10 +5141,7 @@
       line.append(`LinkedIn read ${formatDate(linkedin.read_at)} through your test account${linkedin.confirmed ? "" : `; ${linkedin.why || "it is not confirmed as this person"}, so check it is them`}. `);
       const href = safeExternalUrl(linkedin.url);
       if (href) {
-        const link = element("a", "", "Profile ↗");
-        link.href = href;
-        link.target = "_blank";
-        link.rel = "noopener noreferrer";
+        const link = externalLink(href, "Profile ↗");
         line.appendChild(link);
       }
       box.appendChild(line);
@@ -5285,10 +5251,7 @@
         row.appendChild(element("span", "", claim.text));
         const sourceHref = safeExternalUrl(claim.basis);
         if (sourceHref) {
-          const source = element("a", "", "source ↗");
-          source.href = sourceHref;
-          source.target = "_blank";
-          source.rel = "noopener noreferrer";
+          const source = externalLink(sourceHref, "source ↗");
           row.appendChild(source);
         } else {
           const [where, field] = claim.basis.split(":");
@@ -5306,10 +5269,7 @@
             (Array.isArray(claim.sources) ? claim.sources : []).forEach((url) => {
               const href = safeExternalUrl(url);
               if (!href) return;
-              const from = element("a", "", "source ↗");
-              from.href = href;
-              from.target = "_blank";
-              from.rel = "noopener noreferrer";
+              const from = externalLink(href, "source ↗");
               row.appendChild(from);
             });
             list.appendChild(row);
@@ -5358,12 +5318,7 @@
   }
 
   function thankYouLink(href, text, label) {
-    const link = element("a", "secondary-button", text);
-    link.href = href;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    if (label) link.setAttribute("aria-label", label);
-    return link;
+    return externalLink(href, text, { className: "secondary-button", ariaLabel: label });
   }
 
   function thankYouAction(item, text, run, label) {
@@ -5583,14 +5538,8 @@
         onConfirm: () => decide("not_reply", no),
       });
       actions.append(yes, no);
-      if (typeof mail.gmail_url === "string" && mail.gmail_url.startsWith("https://mail.google.com/")) {
-        const open = element("a", "text-button", "Open in Gmail");
-        open.href = mail.gmail_url;
-        open.target = "_blank";
-        open.rel = "noopener noreferrer";
-        open.setAttribute("aria-label", `Open in Gmail: ${subject}`);
-        actions.appendChild(open);
-      }
+      const open = gmailOpenLink(mail.gmail_url, subject);
+      if (open) actions.appendChild(open);
       entry.appendChild(actions);
       box.appendChild(entry);
     });
@@ -5628,10 +5577,7 @@
   function briefSourceLink(url, quote, found) {
     const href = safeExternalUrl(url);
     if (!href) return null;
-    const link = element("a", "", `${sourceHost(url)} ↗`);
-    link.href = href;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
+    const link = externalLink(href, `${sourceHost(url)} ↗`);
     if (quote) {
       link.title = found
         ? `The page says: "${quote}"`
@@ -5794,10 +5740,7 @@
     if (setAside) side.appendChild(chip(`Not interested since ${formatDate(item.not_interested_at)}`, "is-warning"));
     const link = safeExternalUrl(item.website) || item.source_urls.map(safeExternalUrl).find(Boolean);
     if (link) {
-      const site = element("a", "secondary-button", "Research source ↗");
-      site.href = link;
-      site.target = "_blank";
-      site.rel = "noopener noreferrer";
+      const site = externalLink(link, "Research source ↗", { className: "secondary-button" });
       side.appendChild(site);
     }
     // Filed under Not interested, never deleted; automation leaves it alone until it is moved back.
@@ -5874,11 +5817,7 @@
     label.appendChild(element("span", "", "Status"));
     const select = document.createElement("select");
     Object.entries(OUTREACH_STATUS_LABELS).forEach(([value, text]) => {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = text;
-      option.selected = item.status === value;
-      select.appendChild(option);
+      select.appendChild(optionElement(value, text, item.status === value));
     });
     autoSaveSelect(select, {
       saved: () => item.status,
@@ -6347,11 +6286,7 @@
     priorityLabel.appendChild(element("span", "", "Priority"));
     const priority = document.createElement("select");
     ["P1", "P2", "P3"].forEach((value) => {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = value;
-      option.selected = value === "P2";
-      priority.appendChild(option);
+      priority.appendChild(optionElement(value, value, value === "P2"));
     });
     priorityLabel.appendChild(priority);
     addForm.appendChild(priorityLabel);
@@ -6439,11 +6374,7 @@
     sortLabel.appendChild(element("span", "", "Sort"));
     const sort = document.createElement("select");
     Object.entries(OUTREACH_SORTS).forEach(([value, [text]]) => {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = text;
-      option.selected = state.outreachSort === value;
-      sort.appendChild(option);
+      sort.appendChild(optionElement(value, text, state.outreachSort === value));
     });
     sort.addEventListener("change", async () => {
       state.outreachSort = sort.value;
@@ -6678,11 +6609,7 @@
     const select = document.createElement("select");
     select.name = name;
     [["", "Not answered"], ["true", "Yes"], ["false", "No"]].forEach(([optionValue, text]) => {
-      const option = document.createElement("option");
-      option.value = optionValue;
-      option.textContent = text;
-      option.selected = value === null || value === undefined ? optionValue === "" : optionValue === String(value);
-      select.appendChild(option);
+      select.appendChild(optionElement(optionValue, text, value === null || value === undefined ? optionValue === "" : optionValue === String(value)));
     });
     label.appendChild(select);
     form.appendChild(label);
@@ -7132,11 +7059,7 @@
     digestLabel.appendChild(element("span", "", "Digest frequency"));
     const digest = document.createElement("select");
     ["immediate", "daily", "weekly", "off"].forEach((value) => {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = value;
-      option.selected = value === preferences.digest_frequency;
-      digest.appendChild(option);
+      digest.appendChild(optionElement(value, value, value === preferences.digest_frequency));
     });
     digestLabel.appendChild(digest);
     form.appendChild(digestLabel);
@@ -7300,16 +7223,10 @@
       return `${a.company} ${a.title}`.localeCompare(`${b.company} ${b.title}`, undefined, { sensitivity: "base" });
     });
     if (!selected || !sorted.some((application) => application.id === selected)) {
-      const placeholder = document.createElement("option");
-      placeholder.value = "";
-      placeholder.textContent = "Choose an application";
-      select.appendChild(placeholder);
+      select.appendChild(optionElement("", "Choose an application"));
     }
     sorted.forEach((application) => {
-      const option = document.createElement("option");
-      option.value = application.id;
-      option.textContent = `${application.company} — ${application.title}${rank.has(application.id) ? " (matched)" : ""}`;
-      select.appendChild(option);
+      select.appendChild(optionElement(application.id, `${application.company} — ${application.title}${rank.has(application.id) ? " (matched)" : ""}`));
     });
     select.value = sorted.some((application) => application.id === selected) ? selected : "";
     return select;
@@ -7390,7 +7307,7 @@
     profileBlock(section, "Memory").appendChild(settings);
     const itemForm = element("form", "notification-form");
     const kindLabel = element("label", "profile-field"); kindLabel.appendChild(element("span", "", "Item classification"));
-    const kind = document.createElement("select"); ["user_opinion", "deterministic_analysis", "ai_suggestion"].forEach((value) => { const option = document.createElement("option"); option.value = value; option.textContent = humanizeKey(value); kind.appendChild(option); }); kindLabel.appendChild(kind); itemForm.appendChild(kindLabel);
+    const kind = document.createElement("select"); ["user_opinion", "deterministic_analysis", "ai_suggestion"].forEach((value) => { kind.appendChild(optionElement(value, humanizeKey(value))); }); kindLabel.appendChild(kind); itemForm.appendChild(kindLabel);
     const fieldPath = profileField(itemForm, "Field name", "field_path", "");
     const value = profileField(itemForm, "Value", "value", "", {multiline: true});
     const add = element("button", "secondary-button", "Add classified item"); add.type = "submit"; itemForm.appendChild(add);
@@ -7769,10 +7686,7 @@
       select.id = id;
       select.dataset.automationKey = feature.key;
       feature.modes.forEach((mode) => {
-        const option = document.createElement("option");
-        option.value = mode;
-        option.textContent = AUTOMATION_MODE_LABELS[mode] || mode;
-        select.appendChild(option);
+        select.appendChild(optionElement(mode, AUTOMATION_MODE_LABELS[mode] || mode));
       });
       const reason = element("p", "profile-help automation-reason");
       reason.id = `${id}-reason`;
@@ -8809,10 +8723,7 @@
 
   function opportunityOptions(select, applications) {
     applications.forEach((application) => {
-      const option = document.createElement("option");
-      option.value = application.opportunity_id;
-      option.textContent = `${application.company} — ${application.title}`;
-      select.appendChild(option);
+      select.appendChild(optionElement(application.opportunity_id, `${application.company} — ${application.title}`));
     });
   }
 
@@ -9123,22 +9034,13 @@
       const type = document.createElement("select");
       type.setAttribute("aria-label", "Document type");
       [["resume", "Resume variant"], ["cover_letter", "Cover letter"]].forEach(([value, label]) => {
-        const option = document.createElement("option");
-        option.value = value;
-        option.textContent = label;
-        type.appendChild(option);
+        type.appendChild(optionElement(value, label));
       });
       const provider = document.createElement("select");
       provider.setAttribute("aria-label", "Draft generation method");
-      const groundedOption = document.createElement("option");
-      groundedOption.value = "";
-      groundedOption.textContent = "Grounded template (no AI)";
-      provider.appendChild(groundedOption);
+      provider.appendChild(optionElement("", "Grounded template (no AI)"));
       (providersPayload.items || []).filter((item) => item.configured).forEach((item) => {
-        const option = document.createElement("option");
-        option.value = item.id;
-        option.textContent = `${item.display_name} · ${item.model}`;
-        provider.appendChild(option);
+        provider.appendChild(optionElement(item.id, `${item.display_name} · ${item.model}`));
       });
       const generate = element("button", "primary-button", "Generate grounded draft");
       generate.type = "submit";
@@ -9331,15 +9233,9 @@
       const providerSelect = document.createElement("select");
       providerSelect.className = "agent-provider-select";
       providerSelect.setAttribute("aria-label", "Agent provider for new thread");
-      const legacyOption = document.createElement("option");
-      legacyOption.value = "legacy";
-      legacyOption.textContent = "Built-in grounded assistant · no API key";
-      providerSelect.appendChild(legacyOption);
+      providerSelect.appendChild(optionElement("legacy", "Built-in grounded assistant · no API key"));
       providers.forEach((provider) => {
-        const option = document.createElement("option");
-        option.value = provider.id;
-        option.textContent = `${provider.display_name} · ${provider.model}`;
-        providerSelect.appendChild(option);
+        providerSelect.appendChild(optionElement(provider.id, `${provider.display_name} · ${provider.model}`));
       });
       const newThread = element("button", "secondary-button", "New thread");
       newThread.type = "button";
@@ -9893,21 +9789,14 @@
     if (item.source_note) body.appendChild(element("p", "urgent-source", `Source: ${item.source_note}`));
 
     const actions = element("div", "program-actions");
-    const link = element("a", "secondary-button", "Official page");
-    link.href = item.url;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
-    link.setAttribute("aria-label", `Official page for ${item.name} at ${item.host} (opens in a new tab)`);
+    const link = externalLink(item.url, "Official page", { className: "secondary-button", ariaLabel: `Official page for ${item.name} at ${item.host} (opens in a new tab)` });
     link.dataset.programControl = "official";
     const select = element("select", "program-status");
     select.dataset.programControl = "status";
     select.dataset.savedStatus = item.status;
     select.setAttribute("aria-label", `Your status for ${item.name} at ${item.host}`);
     Object.entries(PROGRAM_STATUS_LABELS).forEach(([value, label]) => {
-      const option = element("option", "", label);
-      option.value = value;
-      option.selected = value === item.status;
-      select.appendChild(option);
+      select.appendChild(optionElement(value, label, value === item.status));
     });
     autoSaveSelect(select, {
       saved: () => item.status,
@@ -10485,16 +10374,10 @@
       label.appendChild(element("span", "", "Change résumé"));
       const select = document.createElement("select");
       if (!pick) {
-        const none = document.createElement("option");
-        none.value = "";
-        none.textContent = "Choose a résumé for this role";
-        select.appendChild(none);
+        select.appendChild(optionElement("", "Choose a résumé for this role"));
       }
       view.options.forEach((option) => {
-        const entry = document.createElement("option");
-        entry.value = option.resume_file_id;
-        entry.textContent = resumeOptionText(option);
-        select.appendChild(entry);
+        select.appendChild(optionElement(option.resume_file_id, resumeOptionText(option)));
       });
       select.value = pick?.resume_file_id || "";
       label.appendChild(select);
@@ -10634,15 +10517,9 @@
     if (action.control === "select" || action.control === "checkbox") {
       const select = document.createElement("select");
       select.id = id;
-      const none = document.createElement("option");
-      none.value = "";
-      none.textContent = action.control === "select" ? "Choose an option" : "Choose yes or no";
-      select.appendChild(none);
+      select.appendChild(optionElement("", action.control === "select" ? "Choose an option" : "Choose yes or no"));
       (action.control === "select" ? action.options : ["Yes", "No"]).forEach((option) => {
-        const entry = document.createElement("option");
-        entry.value = option;
-        entry.textContent = option;
-        select.appendChild(entry);
+        select.appendChild(optionElement(option, option));
       });
       label.appendChild(select);
       form.appendChild(label);
@@ -10769,10 +10646,7 @@
     line.append("This statement links to ");
     safe.forEach((address, index) => {
       if (index) line.append(", ");
-      const link = element("a", "", address);
-      link.href = address;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
+      const link = externalLink(address, address);
       line.appendChild(link);
     });
     return line;
@@ -10978,10 +10852,7 @@
     const words = [posting.title, posting.company].filter(Boolean).join(" at ");
     line.append("Read from ");
     if (posting.url) {
-      const link = element("a", "", words);
-      link.href = posting.url;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
+      const link = externalLink(posting.url, words);
       line.appendChild(link);
     } else {
       line.append(words);
@@ -11102,10 +10973,7 @@
           const links = (field.links || []).filter((address) => /^https?:\/\//i.test(address));
           links.forEach((address, index) => {
             line.append(index ? ", " : " · links to ");
-            const link = element("a", "", address);
-            link.href = address;
-            link.target = "_blank";
-            link.rel = "noopener noreferrer";
+            const link = externalLink(address, address);
             line.appendChild(link);
           });
           list.appendChild(line);
@@ -11256,10 +11124,7 @@
       kindLabel.appendChild(element("span", "", "Kind"));
       const kind = document.createElement("select");
       on.forEach((entry) => {
-        const option = document.createElement("option");
-        option.value = entry.category;
-        option.textContent = entry.label;
-        kind.appendChild(option);
+        kind.appendChild(optionElement(entry.category, entry.label));
       });
       kindLabel.appendChild(kind);
       kind.dataset.focus = "add-kind";
@@ -11464,10 +11329,7 @@
       pick.appendChild(element("span", "", "List"));
       const select = document.createElement("select");
       settings.label_fields.forEach((field) => {
-        const option = document.createElement("option");
-        option.value = field;
-        option.textContent = FIELD_WORDS[field] || field;
-        select.appendChild(option);
+        select.appendChild(optionElement(field, FIELD_WORDS[field] || field));
       });
       pick.appendChild(select);
       const typed = element("label", "profile-field");
@@ -11608,10 +11470,7 @@
     overview.appendChild(element("p", "detail-description", item.description || "No description was captured. Use the original posting below."));
     content.appendChild(overview);
 
-    const sourceLink = element("a", "primary-link", "Open original posting ↗");
-    sourceLink.href = item.url;
-    sourceLink.target = "_blank";
-    sourceLink.rel = "noopener noreferrer";
+    const sourceLink = externalLink(item.url, "Open original posting ↗", { className: "primary-link" });
     content.appendChild(sourceLink);
 
     els.detailContent.replaceChildren(content);
