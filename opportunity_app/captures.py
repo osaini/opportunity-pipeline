@@ -28,6 +28,7 @@ from .company_tags import regenerate_company_tags
 from .opportunity_metadata import extract_opportunity_metadata
 from .resumes import ResumeValidationError, detect_media_type, extract_pdf, scan_resume_file
 from .schema import utc_now
+from .storage_paths import confined_path
 
 
 DEFAULT_CAPTURE_STORAGE = ROOT / "data" / "captures"
@@ -45,9 +46,8 @@ class CaptureNotFoundError(LookupError):
 
 
 def _safe_path(root: Path, name: str) -> Path:
-    resolved_root = root.expanduser().resolve()
-    candidate = (resolved_root / name).resolve()
-    if candidate.parent != resolved_root:
+    candidate = confined_path(root, name)
+    if candidate is None:
         raise CaptureValidationError("Invalid capture storage path")
     return candidate
 
