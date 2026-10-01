@@ -37,6 +37,9 @@ what puts a module there.
   L4  workflows: code that runs the product across domain modules or on a schedule: sending, inbox capture, thank-you and
       schedule workflows, automation handlers, apply runs, discovery and research, and the background worker base.
   L5  entry points: the FastAPI app, the launcher, the worker, and every CLI that is run as `python -m opportunity_app.X`.
+      One exception: purge. It has a `__main__` guard (the daily run calls `python -m opportunity_app.purge`), but its
+      logic is a domain operation (expire records) and main() is a thin wrapper, so it stays in L3 where refresh (L4),
+      the manual refresh workflow, can import it at the top of the file. Do not move it up without moving refresh up too.
 
 One deviation from the proposal in the refactor audit (critic.md): it put integrations ABOVE domain (L3) and workflows
 at L4. Today's top-level graph forbids that. outreach.py (domain) imports web_fetch and typesafe_decisions, outreach_config
@@ -110,17 +113,17 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
         "outreach outreach_config outreach_identity outreach_versions outreach_contacts outreach_linkedin outreach_batch "
         "outreach_render"
     ),
-    # L4 workflows.
+    # L4 workflows. refresh is the manual refresh/purge workflow run in a background thread; api (L5) is its only importer.
     4: _app(
         "background application_inbox inbox_watcher internal_automation auto_triage apply_runs apply_preflight "
         "outreach_gmail outreach_gmail_sends outreach_delivery outreach_inbox outreach_labels outreach_schedule "
         "outreach_thank_you outreach_automation outreach_recontact outreach_review outreach_call_prep "
         "outreach_call_questions outreach_forms outreach_discovery outreach_research outreach_drafting "
         "outreach_interviewer outreach_email_search outreach_locate outreach_profile outreach_settings "
-        "desktop_notify operations student_agent urgent"
+        "refresh desktop_notify operations student_agent urgent"
     ),
     # L5 entry points.
-    5: _app("api launch worker daily system_status migrate ops_cli outreach_cli pipeline_mailbox refresh setup"),
+    5: _app("api launch worker daily system_status migrate ops_cli outreach_cli pipeline_mailbox setup"),
 }
 
 # (importer, imported module, reason). One entry per pair of modules; see the module docstring for what needs one.
@@ -383,9 +386,27 @@ def analyse(
     return Analysis(unclassified, classified_but_missing, classified_twice, unresolved, top_upward, top_cycles, unlisted_lazy, stale)
 
 
+def read_source(path: Path) -> str:
+    """A module's text. utf-8-sig, because a file saved with a BOM (Windows PowerShell 5.1 writes one) is valid Python but ast.parse rejects it."""
+    return path.read_text(encoding="utf-8-sig")
+
+
+def leaf_violations(modules: dict[str, tuple[Path, bool]], sources: dict[str, str], leaves: Iterable[str]) -> list[str]:
+    """First-party imports (top-level or function-level) made by modules that are documented to import nothing first-party."""
+    known = frozenset(modules)
+    found = []
+    for name in sorted(leaves):
+        if name not in modules:
+            continue
+        edges, unresolved = imports_of(name, modules[name][1], sources[name], known)
+        found.extend(f"{name}:{edge.line} imports {edge.target}" for edge in edges)
+        found.extend(unresolved)
+    return found
+
+
 def _real_analysis() -> Analysis:
     modules = discover_modules()
-    sources = {name: path.read_text(encoding="utf-8") for name, (path, _is_package) in modules.items()}
+    sources = {name: read_source(path) for name, (path, _is_package) in modules.items()}
     return analyse(modules, sources, LAYER_MEMBERS, ALLOWLIST)
 
 
@@ -416,6 +437,14 @@ class LayerMapTests(unittest.TestCase):
 
     def test_allowlist_has_no_stale_entries(self):
         self.assertNone(self.analysis.stale_allowlist, "the allowlist only shrinks: delete entries that are no longer needed")
+
+    def test_integrations_import_nothing_first_party(self):
+        modules = discover_modules()
+        sources = {name: read_source(path) for name, (path, _is_package) in modules.items()}
+        self.assertNone(
+            leaf_violations(modules, sources, LAYER_MEMBERS[2]),
+            "L2 integrations are leaves; placing them below domain (see the module docstring) is only sound while they stay leaves",
+        )
 
     def test_every_allowlist_entry_gives_a_reason(self):
         thin = [f"({a}, {b})" for a, b, reason in ALLOWLIST if len(reason.split()) < 3]
@@ -523,6 +552,20 @@ class AnalysisBitesTests(unittest.TestCase):
         self.assertEqual(found.unclassified, ["opportunity_app.extra"])
         layers = {**self.LAYERS, 2: self.LAYERS[2] | {"opportunity_app.ghost"}}
         self.assertEqual(self.run_rules(self.clean(), layers).classified_but_missing, ["opportunity_app.ghost"])
+
+    def test_an_integration_that_imports_a_first_party_module_is_not_a_leaf(self):
+        modules = {"opportunity_app.low": (Path("low.py"), False), "opportunity_app.mid": (Path("mid.py"), False)}
+        sources = {"opportunity_app.low": "import os\n", "opportunity_app.mid": "def f():\n    from .low import x\n"}
+        self.assertEqual(leaf_violations(modules, sources, ["opportunity_app.low"]), [])
+        self.assertEqual(leaf_violations(modules, sources, ["opportunity_app.mid"]), ["opportunity_app.mid:2 imports opportunity_app.low"])
+
+    def test_a_source_file_with_a_utf8_bom_is_read(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "bom.py"
+            path.write_bytes(b"\xef\xbb\xbfimport os\n")
+            self.assertEqual(ast.parse(read_source(path)).body[0].names[0].name, "os")
 
     def test_module_in_two_layers_fails(self):
         layers = {**self.LAYERS, 2: self.LAYERS[2] | {"opportunity_app.low"}}
