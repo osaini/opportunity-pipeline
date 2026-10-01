@@ -711,7 +711,9 @@ class DeferredDedupeTests(TempDbCase):
             path.write_text(json.dumps(spread), encoding="utf-8")
             new, old = self.open_db("new.db"), self.open_db("old.db")
             with unittest.mock.patch("sys.stdout", io.StringIO()), unittest.mock.patch("sys.stderr", io.StringIO()):
-                with unittest.mock.patch.object(importers, "deduplicate", wraps=store.deduplicate) as spy:
+                # One spy on both bindings, so a per-channel pass inside upsert_jobs (store) counts as well as the final pass (importers).
+                spy = unittest.mock.Mock(wraps=store.deduplicate)
+                with unittest.mock.patch.object(importers, "deduplicate", spy),                         unittest.mock.patch.object(store, "deduplicate", spy):
                     importers.import_discovered(new, path)
                 self.assertEqual(spy.call_count, 1)
 
@@ -719,7 +721,7 @@ class DeferredDedupeTests(TempDbCase):
                     return _reference_upsert_jobs(conn, source_key, source_name, batch, seen)
 
                 # The old side runs the frozen upsert and the frozen link pass, so it shares no changed code with the new side.
-                with unittest.mock.patch.object(importers, "upsert_jobs", eager),                         unittest.mock.patch.object(importers, "deduplicate", _reference_deduplicate):
+                with unittest.mock.patch.object(importers, "upsert_jobs", eager),                         unittest.mock.patch.object(importers, "deduplicate", _reference_deduplicate),                         unittest.mock.patch.object(store, "deduplicate", _reference_deduplicate):
                     importers.import_discovered(old, path)
         self.assertGreater(new.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 0)
         self.assertEqual(links(old), links(new))
