@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, apply_runs, automation, outreach_schedule, schema
+from opportunity_app import STATIC_DIR, apply_runs, automation, automation_health, outreach_schedule, schema
 from opportunity_app.actions import record_intent, update_application
 from opportunity_app.api import create_app
 from opportunity_app.automation import Feature
@@ -639,10 +639,10 @@ class PostgresAutomationContractTests(unittest.TestCase):
             )
         automation.set_paused(self.conn, AUTOMATION_USER, True)
         with mock.patch.dict("os.environ", {"PIPELINE_TIMEZONE": "America/Chicago", "PIPELINE_GMAIL_TOKEN_DAYS": "7"}):
-            summary = automation.health_summary(self.conn, AUTOMATION_USER, now=datetime(2026, 9, 27, 0, 0, tzinfo=timezone.utc))
+            summary = automation_health.health_summary(self.conn, AUTOMATION_USER, now=datetime(2026, 9, 27, 0, 0, tzinfo=timezone.utc))
         self.conn.commit()
         self.assertEqual([item["key"] for item in summary["banner"]], ["paused", "gmail_expiring"])
-        self.assertEqual(summary["banner"][0]["text"], automation.PAUSED_BANNER)
+        self.assertEqual(summary["banner"][0]["text"], automation_health.PAUSED_BANNER)
         self.assertEqual([(item["target_id"], item["company"]) for item in summary["unconfirmed"]], [("t-1", "Bovi")])
         self.assertEqual([item["feature"] for item in summary["breaker_off"]], [AUTOMATION_SWITCH.key])
         self.assertEqual(summary["counts"], {"proposed": 0, "shadow_unreviewed": 0, "applied_last_24h": 2})

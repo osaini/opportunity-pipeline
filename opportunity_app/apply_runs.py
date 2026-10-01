@@ -1457,6 +1457,11 @@ def setup_requirement(conn: sqlite3.Connection, user_id: str) -> str:
     return ""
 
 
+def register() -> None:
+    """Tell the automation registry what apply_agent needs. Called once at startup (bootstrap.register_all)."""
+    automation.register_requirement("apply_agent", lambda conn, user_id: setup_requirement(conn, user_id))
+
+
 def list_ats_labels(conn: sqlite3.Connection, user_id: str, ats: str = ATS_GREENHOUSE) -> dict[str, dict[str, str]]:
     """The exact option labels the student confirmed, by field: {field: {label, confirmed_at}}."""
     rows = conn.execute("SELECT field, label, confirmed_at FROM apply_ats_labels WHERE user_id=? AND ats=? ORDER BY field", (user_id, ats)).fetchall()

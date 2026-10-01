@@ -21,7 +21,7 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, application_inbox, automation, inbox_watcher, internal_automation, mail_trust, outreach_gmail
+from opportunity_app import STATIC_DIR, application_inbox, automation, automation_health, inbox_watcher, internal_automation, mail_trust, outreach_gmail
 from opportunity_app.actions import record_intent, update_application
 from opportunity_app.api import create_app
 from opportunity_app.application_inbox import match_application, parse_message
@@ -542,7 +542,7 @@ class LiveMailTests(MailCase):
         self.assertIn("www.hackerrank.com", self.actions()[0]["evidence"]["excerpt"], "a link is cut to its host")
         for notice in automation.list_notices(self.conn, USER):
             self.assertNotIn("hackerrank.com/test", json.dumps(notice))
-        health = json.dumps(automation.health_summary(self.conn, USER))
+        health = json.dumps(automation_health.health_summary(self.conn, USER))
         self.assertNotIn("very-secret-token", health)
         event = self.conn.execute("SELECT payload_json FROM monitored_events WHERE external_id='gmail:m-7'").fetchone()
         self.assertNotIn("very-secret-token", event["payload_json"])

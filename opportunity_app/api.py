@@ -38,6 +38,7 @@ from . import APPLY_ROOT, DEFAULT_PLATFORM_DB, DEFAULT_PROFILE, STATIC_DIR
 from . import application_inbox
 from .legacy import load_env_file
 from . import automation as automation_core
+from . import automation_health
 from . import auto_triage, mail_trust, resume_variants
 from .actions import (
     APPLICATION_STAGES,
@@ -304,7 +305,7 @@ from .apply_runs import recover_stale as recover_stale_applications
 from .apply_schema_client import SchemaClient, default_schema_client_factory
 from .outreach_automation import AutomationWorker, settings as automation_settings, update_settings as update_automation_settings
 from .outreach_schedule import cancel_send, schedule_send
-from . import outreach_labels, outreach_thank_you
+from . import bootstrap, outreach_labels, outreach_thank_you
 from .gmail_client import GmailAuthError, default_client_factory as default_gmail_client_factory
 from .outreach_gmail import (
     SendConflictError,
@@ -1041,6 +1042,8 @@ def create_app(
     recovery_sandbox: bool = False,
 ) -> FastAPI:
     """Build an isolated app instance for production and tests."""
+
+    bootstrap.register_all()  # the automation, scheduler and callback registries, once per process (bootstrap.py)
 
     load_env_file()
     environment_database = os.environ.get("DATABASE_URL") if db_path == DEFAULT_PLATFORM_DB else None
@@ -2626,7 +2629,7 @@ def create_app(
     def automation_view(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
         return {
             "settings": automation_core.settings_payload(conn, user_id),
-            "health": automation_core.health_summary(conn, user_id),
+            "health": automation_health.health_summary(conn, user_id),
             "application_mail": application_inbox.status(conn, user_id),
         }
 

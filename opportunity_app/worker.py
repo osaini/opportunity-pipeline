@@ -96,6 +96,9 @@ def main() -> int:
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--poll-seconds", type=float, default=2.0)
     args = parser.parse_args()
+    from . import bootstrap  # imported here: --help should not load every workflow module
+
+    bootstrap.register_all()
     if args.once:
         run_once(args.db)
         return 0

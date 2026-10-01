@@ -107,7 +107,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
     2: _app("agent_providers web_fetch gmail_client typesafe_decisions outreach_smtp document_pdf"),
     # L3 domain.
     3: _app(
-        "actions auth apply_checks apply_claims apply_classify apply_greenhouse apply_policy apply_sensitive apply_schema_client automation boards captures connections "
+        "actions auth apply_checks apply_claims apply_classify apply_greenhouse apply_policy apply_sensitive apply_schema_client automation automation_health boards captures connections "
         "dossier employer market early_programs extension_apply mail_trust notifications purge ingestion profile resumes "
         "resume_variants preparation document_artifacts inbox_classifiers "
         "outreach outreach_config outreach_identity outreach_versions outreach_contacts outreach_linkedin outreach_batch "
@@ -115,7 +115,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
     ),
     # L4 workflows. refresh is the manual refresh/purge workflow run in a background thread; api (L5) is its only importer.
     4: _app(
-        "background application_inbox inbox_watcher internal_automation auto_triage apply_runs apply_preflight "
+        "background application_inbox inbox_watcher internal_automation automation_handlers auto_triage apply_runs apply_preflight "
         "outreach_gmail outreach_gmail_sends outreach_delivery outreach_inbox outreach_labels outreach_schedule "
         "outreach_thank_you outreach_automation outreach_recontact outreach_review outreach_call_prep "
         "outreach_call_questions outreach_forms outreach_discovery outreach_research outreach_drafting "
@@ -123,7 +123,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
         "refresh desktop_notify operations student_agent urgent"
     ),
     # L5 entry points.
-    5: _app("api launch worker daily system_status migrate ops_cli outreach_cli pipeline_mailbox setup"),
+    5: _app("api bootstrap launch worker daily system_status migrate ops_cli outreach_cli pipeline_mailbox setup"),
 }
 
 # (importer, imported module, reason). One entry per pair of modules; see the module docstring for what needs one.
@@ -131,10 +131,6 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
 _P = "opportunity_app."
 ALLOWLIST: tuple[tuple[str, str, str], ...] = (
     # --- Upward: a lower layer reaches a higher one at call time. Each is a registry or callback that is looked up late.
-    (_P + "automation", _P + "apply_runs", "setup_requirement and claim_held: the ledger asks the apply handler about its own claim and setup"),
-    (_P + "automation", _P + "auto_triage", "requirement: the ledger's setup check for the triage handler, which imports the ledger"),
-    (_P + "automation", _P + "internal_automation", "automatic_archive: the ledger calls its own archive handler when a stage moves"),
-    (_P + "automation", _P + "outreach_drafting", "save_draft_tx: the ledger's follow-up handler saves the generated draft through the drafting module"),
     (_P + "connections", _P + "application_inbox", "decide_event: deciding a monitored mail event is delegated to the inbox workflow"),
     (_P + "outreach", _P + "outreach_thank_you", "on_not_interested and on_new_reply: outreach records notify the thank-you workflow after a decline or reply"),
     (_P + "outreach_contacts", _P + "outreach_forms", "record_contact_form: contact search records the contact form the form workflow found"),
@@ -142,8 +138,6 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
     (_P + "outreach_settings", _P + "setup", "set_env_values: the settings page writes .env through the setup CLI's helper"),
     # --- Same layer, but hoisting the import would close a top-level cycle. One entry per cycle edge that must stay lazy.
     (_P + "actions", _P + "resume_variants", "safe_pick_after_save: resume_variants imports actions at the top"),
-    (_P + "automation", _P + "outreach", "ten handler bodies use outreach records: outreach imports the ledger at the top"),
-    (_P + "automation", _P + "resume_variants", "setup_requirement: resume_variants imports the ledger at the top"),
     (_P + "launch", _P + "api", "create_app and LOOPBACK_HOSTS: api imports system_status, which would import launch if that were hoisted too"),
     (_P + "outreach_discovery", _P + "outreach_locate", "locate_targets: outreach_locate imports discovery at the top"),
     (_P + "outreach_drafting", _P + "outreach_research", "the research module: outreach_research imports outreach_discovery, which imports drafting at the top"),

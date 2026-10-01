@@ -18,7 +18,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import SERVER_INSTANCE, actions, apply_runs, automation, schema, urgent
+from opportunity_app import SERVER_INSTANCE, actions, apply_runs, automation, automation_health, schema, urgent
 from opportunity_app.apply_runs import ClaimHeldError, ClaimRefused
 from pipeline_core.identity import employer_key
 from opportunity_app.operations import ACCOUNT_QUERIES, delete_account, export_account, run_retention
@@ -870,27 +870,27 @@ class ReaderTests(ApplyCase):
         self.assertEqual({item["company"] for item in items}, {BLUEFIN})
 
     def test_the_pause_text_reads_correctly_with_one_two_and_three_kinds(self):
-        base = automation.PAUSED_BANNER
+        base = automation_health.PAUSED_BANNER
         email = {"action": "send"}
         form = {"action": "form"}
         application = {"action": "application"}
-        self.assertEqual(automation.paused_text([application]), f"{base} 1 application was already being submitted and can't be stopped.")
-        self.assertEqual(automation.paused_text([application, application]), f"{base} 2 applications were already being submitted and can't be stopped.")
-        self.assertEqual(automation.paused_text([email, application]),
+        self.assertEqual(automation_health.paused_text([application]), f"{base} 1 application was already being submitted and can't be stopped.")
+        self.assertEqual(automation_health.paused_text([application, application]), f"{base} 2 applications were already being submitted and can't be stopped.")
+        self.assertEqual(automation_health.paused_text([email, application]),
                          f"{base} 1 email was already handed to Gmail and 1 application was already being submitted, and neither can be stopped.")
         self.assertEqual(
-            automation.paused_text([email, form, application]),
+            automation_health.paused_text([email, form, application]),
             f"{base} 1 email was already handed to Gmail, 1 contact form was already being sent, and 1 application was already being submitted, "
             "and none of them can be stopped.",
         )
-        self.assertEqual(automation.paused_text([]), base)
+        self.assertEqual(automation_health.paused_text([]), base)
 
     def test_pausing_reports_an_application_already_handed_over(self):
         held = self.raw_claim(state="clicking", instance=SERVER_INSTANCE, mode="handoff", handed_over_at=self.at(-1).isoformat(timespec="microseconds"))
         apply_runs.RUNNING.add(held)
         result = automation.set_paused(self.conn, USER, True)
         self.assertEqual([item["action"] for item in result["in_flight"]], ["application"])
-        summary = automation.health_summary(self.conn, USER)
+        summary = automation_health.health_summary(self.conn, USER)
         self.assertIn("1 application was already being submitted and can't be stopped.", summary["banner"][0]["text"])
 
     def test_the_urgent_kinds_exist_in_both_registries(self):
@@ -943,7 +943,7 @@ class WorkerStepTests(ApplyCase):
         report = self.worker().run_once()
         self.assertEqual(report["apply"]["recovered"], {USER: {"failed": 1, "unconfirmed": 0, "stage_retried": 0, "runs_failed": 0}})
         self.assertEqual(self.claim_row(token)["state"], "failed")
-        health = {row["component"]: row for row in automation.health_summary(self.conn, USER)["components"]}
+        health = {row["component"]: row for row in automation_health.health_summary(self.conn, USER)["components"]}
         self.assertIn("apply_agent.runner", health)
         self.assertEqual(health["apply_agent.runner"]["last_error"], "")
 
@@ -1014,7 +1014,7 @@ class WorkerStepTests(ApplyCase):
         apply_root = self.root / "apply"
         with mock.patch.object(apply_runs, "purge_evidence", side_effect=RuntimeError("the disk went away")):
             self.worker(apply_root).run_once()
-        health = {row["component"]: row for row in automation.health_summary(self.conn, USER)["components"]}
+        health = {row["component"]: row for row in automation_health.health_summary(self.conn, USER)["components"]}
         self.assertIn("the disk went away", health["apply_agent.retention"]["last_error"])
         self.worker(apply_root).run_once()
         row = self.conn.execute("SELECT last_ok_at, last_error_at FROM automation_health WHERE user_id=? AND component='apply_agent.retention'", (USER,)).fetchone()

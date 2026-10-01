@@ -23,7 +23,7 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, automation, mail_message, outreach, outreach_delivery, outreach_inbox, outreach_thank_you
+from opportunity_app import STATIC_DIR, automation, automation_health, mail_message, outreach, outreach_delivery, outreach_inbox, outreach_thank_you
 from opportunity_app.api import create_app
 from opportunity_app.outreach import greeting_line
 from opportunity_app.outreach_config import resolve_provider
@@ -608,7 +608,7 @@ class EligibilityTests(DeclineCase):
         outreach_thank_you.run_for_user(self.conn, USER, report, provider_factory=None)
         self.assertEqual(report, {})
         self.assertIsNone(thank_you_row(self.conn, other["id"], USER))
-        health = {item["component"]: item for item in automation.health_summary(self.conn, USER)["components"]}
+        health = {item["component"]: item for item in automation_health.health_summary(self.conn, USER)["components"]}
         self.assertIn("needs Jev inbox suggestions on", health["outreach.thank_you"]["last_error"])
         settings = {item["key"]: item for item in automation.settings_payload(self.conn, USER)["features"]}
         self.assertIn("Jev inbox suggestions", settings["decline_thank_you"]["requirement"])
@@ -644,7 +644,7 @@ class EligibilityTests(DeclineCase):
             report = {}
             outreach_thank_you.run_for_user(self.conn, USER, report, provider_factory=None)
             self.assertEqual(report, {})
-            health = {item["component"]: item for item in automation.health_summary(self.conn, USER)["components"]}
+            health = {item["component"]: item for item in automation_health.health_summary(self.conn, USER)["components"]}
             self.assertIn("needs PIPELINE_OUTREACH_ACCOUNT", health["outreach.thank_you"]["last_error"])
         self.assertIsNone(thank_you_row(self.conn, target["id"], USER))
         # Set again, the same decline is thanked.
@@ -728,7 +728,7 @@ class EligibilityTests(DeclineCase):
         report = {}
         outreach_thank_you.run_for_user(self.conn, USER, report, provider_factory=None)
         self.assertEqual([item["target_id"] for item in report["thank_yous"]], [target["id"]])
-        health = {item["component"]: item for item in automation.health_summary(self.conn, USER)["components"]}
+        health = {item["component"]: item for item in automation_health.health_summary(self.conn, USER)["components"]}
         self.assertTrue(health["outreach.thank_you"]["last_ok_at"])
         self.assertEqual(health["outreach.thank_you"]["detail"], {"planned": 1})
 
@@ -1205,7 +1205,7 @@ class ThankYouRulesTests(DeclineCase):
         report = {}
         outreach_thank_you.run_for_user(self.conn, USER, report, provider_factory=None)
         self.assertEqual([item["target_id"] for item in report["thank_yous"]], [bovi["id"]], "the next company is still thanked")
-        health = {item["component"]: item for item in automation.health_summary(self.conn, USER)["components"]}
+        health = {item["component"]: item for item in automation_health.health_summary(self.conn, USER)["components"]}
         self.assertEqual((health["outreach.thank_you"]["last_error"], health["outreach.thank_you"]["detail"]), ("", {"planned": 1}))
         self.assert_not_thanked(self.acme["id"], "Not thanked automatically: its email headers are missing or could not be read", "(failed: headers)")
 

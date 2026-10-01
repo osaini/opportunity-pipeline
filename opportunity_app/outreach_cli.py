@@ -129,6 +129,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     load_env_file()
     args = build_parser().parse_args(argv)
+    from . import bootstrap  # imported here: --help should not load every workflow module
+
+    bootstrap.register_all()
     # connect_product takes a Path for SQLite and the URL itself for PostgreSQL.
     target = args.db if is_postgres_target(args.db) else Path(args.db)
     with closing(connect_product(target)) as conn:

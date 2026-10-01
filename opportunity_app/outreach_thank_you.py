@@ -1274,9 +1274,6 @@ def _breaker_group(row: dict[str, Any]) -> str | None:
     return ":".join(parts[1:]) if len(parts) >= 3 and parts[0] in {"thank-you", "thank-you-status"} else None
 
 
-automation.register_breaker_group(FEATURE, _breaker_group, "decline")
-
-
 def plan(
     conn: sqlite3.Connection, target_id: str, *, user_id: str, provider_factory: Callable[[str, str], Any] | None,
     provider: str | None = None, now: datetime | None = None,
@@ -1933,3 +1930,8 @@ def send_anyway(
                 (row["state"], (str(exc) or row["note"])[:500], utc_now(), target_id, user_id),
             )
         raise
+
+
+def register() -> None:
+    """Hand the automation registry this feature's breaker grouping. Called once at startup (bootstrap.register_all)."""
+    automation.register_breaker_group(FEATURE, _breaker_group, "decline")

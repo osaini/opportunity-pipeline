@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import httpx
 
-from opportunity_app import automation, inbox_watcher, mail_message, outreach_gmail, outreach_inbox
+from opportunity_app import automation, automation_health, inbox_watcher, mail_message, outreach_gmail, outreach_inbox
 from opportunity_app.inbox_watcher import InboxWatcher
 from opportunity_app.mail_message import reply_text, strip_quoted
 from opportunity_app.schema import connect_product
@@ -975,7 +975,7 @@ class ReplyCaptureTests(ReplyCaptureFixture, unittest.TestCase):
             row = dict(conn.execute("SELECT * FROM connector_accounts WHERE provider='gmail_drafts'").fetchone())
             self.assertTrue(row["backoff_until"], "the hold survives a restart")
             self.assertEqual(row["last_error"], "Gmail asked the app to slow down (HTTP 403)")
-            self.assertEqual(automation.gmail_health(conn, USER)["state"], "throttled")
+            self.assertEqual(automation_health.gmail_health(conn, USER)["state"], "throttled")
         # Gmail answers again: the next pass records it, and the reply is captured.
         outreach_gmail._BACKOFF.clear()
         with closing(connect_product(self.platform_path)) as conn:
