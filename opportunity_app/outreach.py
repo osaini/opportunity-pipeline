@@ -1339,9 +1339,27 @@ def create_target(
     origin: str = "manual",
     discovery_run_id: str | None = None,
 ) -> dict[str, Any]:
+    today = today or local_today(conn, user_id)
+    target_id = _create_target(conn, payload, user_id=user_id, today=today, origin=origin, discovery_run_id=discovery_run_id)
+    return get_target(conn, target_id, user_id=user_id, today=today)
+
+
+def _create_target(
+    conn: sqlite3.Connection,
+    payload: dict[str, Any],
+    *,
+    user_id: str,
+    today: date,
+    origin: str,
+    discovery_run_id: str | None,
+    research_confidence: str | None = None,
+) -> str:
+    """create_target without reading the new target back: the id of the row it committed.
+
+    ``research_confidence`` is written with the row, for a caller that would otherwise change it afterwards.
+    """
     if origin not in OUTREACH_ORIGINS:
         raise ValueError(f"origin must be one of: {', '.join(OUTREACH_ORIGINS)}")
-    today = today or local_today(conn, user_id)
     values = _normalize(payload, partial=False)
     values.setdefault("status", "not_started")
     _apply_status_side_effects(values, None, today)
@@ -1349,6 +1367,8 @@ def create_target(
     values["origin"] = origin
     if origin == "discovery":
         values["research_confidence"] = "unverified"
+    elif research_confidence is not None:
+        values["research_confidence"] = research_confidence
     # Only a target the student created here may claim they typed its location.
     # An import file's word is not evidence of anything, so it records no basis
     # at all; what the file claimed is kept as an event below.
@@ -1363,7 +1383,8 @@ def create_target(
         with conn:
             # "Acme Robotics, Inc." is the same company as a tracked "Acme Robotics".
             tracked = conn.execute("SELECT company FROM outreach_targets WHERE user_id=?", (user_id,)).fetchall()
-            same = next((row[0] for row in tracked if company_key(row[0]) == company_key(values["company"])), None)
+            wanted = company_key(values["company"])
+            same = next((row[0] for row in tracked if company_key(row[0]) == wanted), None)
             if same is not None:
                 raise ValueError(f"{same} is already in your outreach list")
             conn.execute(
@@ -1384,7 +1405,7 @@ def create_target(
         if _is_unique_violation(exc):
             raise ValueError(f"{values['company']} is already in your outreach list") from exc
         raise
-    return get_target(conn, target_id, user_id=user_id, today=today)
+    return target_id
 
 
 class _ConfirmRaced(Exception):
@@ -1691,6 +1712,7 @@ def import_targets(
     if len(records) > 500:
         raise ValueError("Outreach imports are limited to 500 targets")
     names, domains = existing_keys(conn, user_id=user_id)
+    today = local_today(conn, user_id)
     imported, skipped, errors, created_ids = 0, 0, [], []
     for index, record in enumerate(records, start=1):
         record = {key: value for key, value in record.items() if key not in IMPORT_IGNORED_FIELDS}
@@ -1704,21 +1726,18 @@ def import_targets(
             continue
         try:
             internal_confidence = record.pop("_research_confidence", None)
-            target = create_target(conn, record, user_id=user_id, origin=origin, discovery_run_id=discovery_run_id)
-            if internal_confidence == "unverified" and target["research_confidence"] != "unverified":
-                with conn:
-                    conn.execute(
-                        "UPDATE outreach_targets SET research_confidence='unverified' WHERE id=? AND user_id=?",
-                        (target["id"], user_id),
-                    )
-                target = get_target(conn, target["id"], user_id=user_id)
+            # One INSERT and no read-back: only the new id is used, and "unverified" is written with the row.
+            target_id = _create_target(
+                conn, record, user_id=user_id, today=today, origin=origin, discovery_run_id=discovery_run_id,
+                research_confidence="unverified" if internal_confidence == "unverified" else None,
+            )
         except ValueError as exc:
             errors.append({"row": index, "company": company, "error": str(exc)})
             continue
         names.add(company_key(company))
         if domain:
             domains.add(domain)
-        created_ids.append(target["id"])
+        created_ids.append(target_id)
         imported += 1
     return {"imported": imported, "skipped": skipped, "errors": errors, "created_ids": created_ids}
 
