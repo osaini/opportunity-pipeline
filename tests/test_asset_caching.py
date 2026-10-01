@@ -151,6 +151,8 @@ class AssetCachingTests(unittest.TestCase):
         absolute = outside.resolve().as_posix()
         probes = (
             f"/assets//{absolute}?v={digest}",
+            # A Windows drive path, which pathlib also treats as absolute.
+            f"/assets/{absolute}?v={digest}",
             f"/assets/%2e%2e/outside.txt?v={digest}",
             f"/assets/%2e%2e%2foutside.txt?v={digest}",
             f"/assets/..%5coutside.txt?v={digest}",
@@ -169,6 +171,27 @@ class AssetCachingTests(unittest.TestCase):
                         response = client.get(probe)
                     self.assertEqual(response.headers["Cache-Control"], "no-cache")
                     self.assertNotIn(outside.read_bytes(), hashed)
+
+    def test_spellings_of_a_real_asset_are_not_versioned_or_cached_as_new_names(self):
+        """Windows opens styles.css as STYLES.CSS or "styles.css..". Each spelling
+        must not get a hash, a cache entry or the immutable header of its own."""
+
+        with TestClient(self.app) as client:
+            digest = re.search(r"/assets/styles\.css\?v=([^\"']+)", client.get("/").text).group(1)
+            hashed = []
+            real_sha256 = hashlib.sha256
+
+            def spy(data=b"", *args, **kwargs):
+                hashed.append(data)
+                return real_sha256(data, *args, **kwargs)
+
+            with mock.patch("opportunity_app.api.hashlib.sha256", spy):
+                self.assertIn("immutable", client.get(f"/assets/styles.css?v={digest}").headers["Cache-Control"])
+                for alias in ("STYLES.CSS", "Styles.Css", "styles.css.", "styles.css..", "styles.css..."):
+                    with self.subTest(alias=alias):
+                        response = client.get(f"/assets/{alias}?v={digest}")
+                        self.assertNotIn("immutable", response.headers["Cache-Control"])
+            self.assertEqual(hashed, [], "the real file's hash was cached, and no spelling hashed it again")
 
     def test_a_revalidation_304_keeps_the_immutable_header(self):
         """A browser updates its stored headers from a 304, so it must not
