@@ -116,7 +116,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
     ),
     # L4 workflows. refresh is the manual refresh/purge workflow run in a background thread; api (L5) is its only importer.
     4: _app(
-        "background application_inbox inbox_watcher internal_automation auto_triage apply_runs apply_preflight "
+        "background application_inbox application_mail_rules inbox_watcher internal_automation auto_triage apply_runs apply_preflight "
         "outreach_gmail outreach_gmail_sends outreach_delivery outreach_inbox outreach_labels outreach_schedule "
         "outreach_thank_you outreach_automation outreach_recontact outreach_review outreach_call_prep "
         "outreach_call_questions outreach_forms outreach_discovery outreach_research outreach_drafting "

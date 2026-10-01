@@ -21,10 +21,19 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, application_inbox, automation, inbox_watcher, internal_automation, mail_trust, gmail_connection
+from opportunity_app import (
+    STATIC_DIR,
+    application_inbox,
+    application_mail_rules,
+    automation,
+    gmail_connection,
+    inbox_watcher,
+    internal_automation,
+    mail_trust,
+)
 from opportunity_app.actions import record_intent, update_application
 from opportunity_app.api import create_app
-from opportunity_app.application_inbox import match_application, parse_message
+from opportunity_app.application_mail_rules import match_application, parse_message
 from opportunity_app.connections import classify_monitored_message, decide_monitored_event, monitored_event
 from opportunity_app.operations import export_account
 from opportunity_app.schema import connect_product
@@ -1179,7 +1188,7 @@ class ConfirmationWordingTests(unittest.TestCase):
                         f"We have received your application. {sentence}")
                 # The connector's email cards read the same rules, so this pins their label too.
                 self.assertEqual(classify_monitored_message(subject, body), ("application_confirmation", 0.9))
-                self.assertEqual(application_inbox.classify_rules(subject, body, "us.greenhouse-mail.io", [])[0], "application_confirmation")
+                self.assertEqual(application_mail_rules.classify_rules(subject, body, "us.greenhouse-mail.io", [])[0], "application_confirmation")
 
     def test_a_definite_rejection_invitation_or_offer_still_counts(self):
         cases = {
@@ -1234,7 +1243,7 @@ class ConfirmationWordingTests(unittest.TestCase):
         for body, label in self.REAL_NEWS.items():
             with self.subTest(body=body):
                 self.assertEqual(classify_monitored_message("An update", body)[0], label)
-                self.assertEqual(application_inbox.classify_rules("An update", body, "us.greenhouse-mail.io", [])[0], label)
+                self.assertEqual(application_mail_rules.classify_rules("An update", body, "us.greenhouse-mail.io", [])[0], label)
 
     def test_an_offer_always_gets_its_card(self):
         # C2: an offer gets a notice and a card, so the wording the old rule caught still counts.
@@ -1248,7 +1257,7 @@ class StatedDateTests(unittest.TestCase):
     RECEIVED = datetime(2026, 9, 27, 12, tzinfo=timezone.utc)
 
     def found(self, text):
-        return application_inbox.stated_deadline(text, self.RECEIVED)
+        return application_mail_rules.stated_deadline(text, self.RECEIVED)
 
     def test_only_a_date_right_after_its_cue_is_a_deadline(self):
         both = self.found("This invitation was sent by the Acme recruiting team on September 28, 2026. "
@@ -1265,12 +1274,12 @@ class StatedDateTests(unittest.TestCase):
     def test_more_than_one_date_is_a_doubt(self):
         found = self.found("Complete the test by October 5, 2026. Your references are due by October 20, 2026.")
         self.assertEqual(found.on, date(2026, 10, 5))
-        self.assertIn(application_inbox.MANY_DATES, found.doubts)
+        self.assertIn(application_mail_rules.MANY_DATES, found.doubts)
 
     def test_a_numeric_date_that_reads_two_ways_is_a_doubt(self):
         found = self.found("Please complete the assessment by 10/11/2026.")
         self.assertEqual(found.on, date(2026, 10, 11))
-        self.assertIn(application_inbox.TWO_READINGS, found.doubts)
+        self.assertIn(application_mail_rules.TWO_READINGS, found.doubts)
         self.assertEqual(self.found("Please complete the assessment by 13/10/2026.").on, date(2026, 10, 13), "only day/month reads")
         self.assertEqual(self.found("Please complete the assessment by 10/10/2026.").doubts, (), "the same either way")
 
@@ -1504,7 +1513,7 @@ class ReviewFixMailTests(MailCase):
         for action_type in ("application.deadline", "application.task"):
             [action] = self.actions(action_type=action_type)
             self.assertEqual(action["status"], "proposed", action_type)
-            self.assertIn(application_inbox.TWO_READINGS, action["evidence"]["why_proposal"])
+            self.assertIn(application_mail_rules.TWO_READINGS, action["evidence"]["why_proposal"])
 
     def proposed_test_task(self, gmail_id, token):
         """An unverified HackerRank invitation, so its task is only proposed; returns (task action, link)."""
