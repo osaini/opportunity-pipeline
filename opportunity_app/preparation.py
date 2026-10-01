@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from . import ROOT
 from .agent_providers import AgentProvider
 from .profile import is_answered
 from .storage_paths import confined_path
@@ -21,7 +22,7 @@ class PreparationNotFoundError(LookupError):
 
 
 MAX_MOCK_AUDIO_BYTES = 15 * 1024 * 1024
-DEFAULT_MOCK_AUDIO_STORAGE = Path(__file__).resolve().parent.parent / "data" / "private" / "mock-interviews"
+DEFAULT_MOCK_AUDIO_STORAGE = ROOT / "data" / "private" / "mock-interviews"
 MOCK_AUDIO_EXTENSIONS = {
     "audio/webm": ".webm",
     "audio/ogg": ".ogg",

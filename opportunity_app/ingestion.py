@@ -19,12 +19,13 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
+from . import ROOT
 from .legacy import load_sources
 from .timestamps import utc_now
 
-PIPELINE_CLI = Path(__file__).resolve().parents[1] / "pipeline.py"
-DEFAULT_DISCOVERED_PATH = Path(__file__).resolve().parents[1] / "data" / "discovered_jobs.json"
-SOURCES_CONFIG = Path(__file__).resolve().parents[1] / "config" / "sources.json"
+PIPELINE_CLI = ROOT / "pipeline.py"
+DEFAULT_DISCOVERED_PATH = ROOT / "data" / "discovered_jobs.json"
+SOURCES_CONFIG = ROOT / "config" / "sources.json"
 
 STAGE_COMMANDS = {
     "fetch": ["fetch"],
