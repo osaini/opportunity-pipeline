@@ -197,9 +197,11 @@ class EntryPointsRunTests(unittest.TestCase):
         self.assertFalse(main_guard_calls_main(head + guard + "    other()" + NL))
 
     def test_the_api_module_exposes_app_create_app_and_a_parser(self):
+        from fastapi import FastAPI
+
         api = importlib.import_module("opportunity_app.api")
         self.assertTrue(callable(api.create_app))
-        self.assertEqual(type(api.app).__name__, "FastAPI", "the Dockerfile's `uvicorn opportunity_app.api:app` needs a module-level app")
+        self.assertIsInstance(api.app, FastAPI, "the Dockerfile's `uvicorn opportunity_app.api:app` needs a module-level app")
         self.assertTrue(callable(api.build_parser))
         parsed = api.build_parser().parse_args([])
         self.assertTrue(hasattr(parsed, "host") and hasattr(parsed, "port"))
