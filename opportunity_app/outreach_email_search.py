@@ -26,8 +26,8 @@ import sqlite3
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
-from .agent_providers import CliAgentProvider
 from .outreach import log_event, website_domain
+from .outreach_batch import answers_by_target
 from .outreach_contacts import (
     EMAIL_PATTERN,
     email_on_domain,
@@ -194,22 +194,10 @@ def search_batch(
     verifier: Any = None,
 ) -> list[dict[str, Any]]:
     """Research one batch of companies and store every address its page backs up."""
-    parsed = CliAgentProvider.extract_json(runner(build_prompt(targets)))
-    answers = parsed.get("companies")
-    if not isinstance(answers, list):
-        raise ValueError("The email search reply had no companies list")
-    by_name = {target["company"].casefold(): target for target in targets}
-    seen: set[str] = set()
+    answered, unanswered = answers_by_target(runner(build_prompt(targets)), targets, "email search")
     results: list[dict[str, Any]] = []
     guard = hop_guard(fetcher)  # one robots.txt cache for the batch
-    for answer in answers:
-        if not isinstance(answer, dict):
-            continue
-        key = " ".join(str(answer.get("company") or "").split()).casefold()
-        target = by_name.get(key)
-        if target is None or key in seen:
-            continue
-        seen.add(key)
+    for answer, target in answered:
         people = answer.get("people") if isinstance(answer.get("people"), list) else []
         checked = [
             {**check_person(person, target, fetcher=fetcher, hop_check=guard), "proposed": str(person.get("email") or "")[:320]}
@@ -231,10 +219,9 @@ def search_batch(
             "kept": [item["email"] for item in kept],
             "refused": [{"email": item["proposed"], "reason": item["reason"]} for item in checked if item["reason"]],
         })
-    for key, target in by_name.items():
-        if key not in seen:
-            results.append({"target_id": target["id"], "company": target["company"], "kept": [],
-                            "refused": [], "error": "the search did not answer for it"})
+    for target in unanswered:
+        results.append({"target_id": target["id"], "company": target["company"], "kept": [],
+                        "refused": [], "error": "the search did not answer for it"})
     return results
 
 

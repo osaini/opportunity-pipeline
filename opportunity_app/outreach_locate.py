@@ -20,8 +20,8 @@ import re
 import sqlite3
 from typing import Any, Callable
 
-from .agent_providers import CliAgentProvider
 from .outreach import PAGE_CHECKED_BASES, website_domain
+from .outreach_batch import answers_by_target
 from .web_fetch import SafeFetcher, public_web_url_error
 from .outreach_discovery import mentions_company
 from .outreach_profile import state_code, apply_location, format_location
@@ -142,22 +142,9 @@ def locate_batch(
     fetcher: SafeFetcher,
 ) -> list[dict[str, Any]]:
     """Research one batch of companies and record every location its source backs up."""
-    raw = runner(build_prompt(targets))
-    parsed = CliAgentProvider.extract_json(raw)
-    proposals = parsed.get("companies")
-    if not isinstance(proposals, list):
-        raise ValueError("The location search reply had no companies list")
-    by_name = {target["company"].casefold(): target for target in targets}
-    seen: set[str] = set()
+    answered, unanswered = answers_by_target(runner(build_prompt(targets)), targets, "location search")
     results = []
-    for proposal in proposals:
-        if not isinstance(proposal, dict):
-            continue
-        name = " ".join(str(proposal.get("company") or "").split()).casefold()
-        target = by_name.get(name)
-        if target is None or name in seen:
-            continue
-        seen.add(name)
+    for proposal, target in answered:
         checked = check_proposal(proposal, target, fetcher=fetcher)
         outcome = "refused" if checked["reason"] else apply_location(
             conn, target["id"], user_id=user_id, location=checked["location"],
@@ -168,12 +155,11 @@ def locate_batch(
             "source_url": checked["source_url"], "note": checked["note"], "reason": checked["reason"],
             "outcome": outcome,
         })
-    for name, target in by_name.items():
-        if name not in seen:
-            results.append({
-                "target_id": target["id"], "company": target["company"], "location": "", "source_url": "",
-                "note": "", "reason": "the search did not answer for it", "outcome": "refused",
-            })
+    for target in unanswered:
+        results.append({
+            "target_id": target["id"], "company": target["company"], "location": "", "source_url": "",
+            "note": "", "reason": "the search did not answer for it", "outcome": "refused",
+        })
     return results
 
 
