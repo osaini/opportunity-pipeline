@@ -27,6 +27,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pipeline_core.env import iter_env_pairs
+
 from . import ROOT
 
 MIN_PYTHON = (3, 11)
@@ -153,21 +155,8 @@ class Paths:
 
 
 def read_env(path: Path) -> dict[str, str]:
-    values: dict[str, str] = {}
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return values
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, _, value = stripped.partition("=")
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
-        values[key.strip()] = value
-    return values
+    """The .env as a dict. A repeated key keeps its last line (pipeline.load_env_file keeps the first)."""
+    return dict(iter_env_pairs(path))
 
 
 def set_env_values(path: Path, updates: dict[str, str], *, overwrite: bool = False) -> list[str]:

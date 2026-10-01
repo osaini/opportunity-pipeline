@@ -30,6 +30,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Iterable
 
+from pipeline_core.env import iter_env_pairs
 from pipeline_core.identity import identity_tokens, normalized, sort_key
 from pipeline_core.read_model import RANKED_VIEW_PER_COMPANY
 from pipeline_core.regions import is_uninformative_location, match_region, region_label
@@ -167,19 +168,7 @@ def load_env_file(path: Path = ENV_PATH) -> None:
     then looks like a broken source. A real environment variable always wins,
     so `USAJOBS_API_KEY=... python3 pipeline.py fetch` still overrides the file.
     """
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, _, value = stripped.partition("=")
-        key = key.strip()
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
+    for key, value in iter_env_pairs(path):
         if key and key not in os.environ:
             os.environ[key] = value
 
@@ -2694,8 +2683,7 @@ def import_manual(conn: sqlite3.Connection, path: Path) -> int:
             url = row["url"].strip()
             records.append(
                 {
-                    "external_id": row.get("external_id", "").strip()
-                    or hashlib.sha256(canonical_url(url).encode("utf-8")).hexdigest()[:20],
+                    "external_id": row.get("external_id", "").strip() or url_external_id(url, linkedin_ids=False),
                     "company": row["company"].strip(),
                     "title": row["title"].strip(),
                     "location": row.get("location", "").strip(),
@@ -2711,6 +2699,20 @@ def import_manual(conn: sqlite3.Connection, path: Path) -> int:
 
 
 LINKEDIN_JOB_ID_RE = re.compile(r"/jobs/view/(\d+)")
+
+
+def url_external_id(url: str, *, linkedin_ids: bool) -> str:
+    """The external id an imported posting gets when its source gave none.
+
+    Email and discovered imports keep a LinkedIn job's own id (`linkedin_ids=True`).
+    The manual CSV import does not (`False`): it hashes the URL even for a LinkedIn
+    link, and changing that would re-key existing manual rows and duplicate them.
+    """
+    if linkedin_ids:
+        match = LINKEDIN_JOB_ID_RE.search(url)
+        if match:
+            return match.group(1)
+    return hashlib.sha256(canonical_url(url).encode("utf-8")).hexdigest()[:20]
 LINKEDIN_POSTED_HINT_RE = re.compile(r"posted on (\d{1,2}/\d{1,2}/\d{4})", re.I)
 
 
@@ -2751,12 +2753,7 @@ def import_emails(conn: sqlite3.Connection, path: Path) -> int:
             print(f"  skipping record {index}: missing company/title/url", file=sys.stderr)
             skipped += 1
             continue
-        job_id_match = LINKEDIN_JOB_ID_RE.search(url)
-        external_id = (
-            job_id_match.group(1)
-            if job_id_match
-            else hashlib.sha256(canonical_url(url).encode("utf-8")).hexdigest()[:20]
-        )
+        external_id = url_external_id(url, linkedin_ids=True)
         records.append(
             {
                 "external_id": external_id,
@@ -2966,12 +2963,7 @@ def import_discovered(conn: sqlite3.Connection, path: Path) -> int:
             print(f"  skipping record {index}: url is not http(s): {url!r}", file=sys.stderr)
             skipped += 1
             continue
-        job_id_match = LINKEDIN_JOB_ID_RE.search(url)
-        external_id = (
-            job_id_match.group(1)
-            if job_id_match
-            else hashlib.sha256(canonical_url(url).encode("utf-8")).hexdigest()[:20]
-        )
+        external_id = url_external_id(url, linkedin_ids=True)
         by_channel.setdefault(channel, []).append(
             {
                 "external_id": external_id,
