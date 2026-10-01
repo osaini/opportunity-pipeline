@@ -30,7 +30,6 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from pipeline_core import MAX_PER_COMPANY, OpportunityFilters, OpportunityRepository
 
@@ -288,7 +287,7 @@ from .system_status import SystemStatus
 from .boards import BoardLookupExpired, BoardTracker
 from .outreach_settings import OutreachSettings
 from .document_pdf import markdown_to_html, pdf_renderer
-from .outreach_drafting import MAX_COMMENT_CHARS as MAX_DRAFT_COMMENT_CHARS, generate_draft as generate_outreach_draft
+from .outreach_drafting import generate_draft as generate_outreach_draft
 from .outreach_versions import (
     DraftVersionNotFoundError,
     draft_versions as outreach_draft_versions,
@@ -342,617 +341,137 @@ LAUNCH_SESSION_SECONDS = 60 * 60 * 24 * 30
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost")
 
 
-class SessionRequest(BaseModel):
-    token: str | None = Field(default=None, min_length=1, max_length=512)
-    email: str | None = Field(default=None, max_length=320)
-    password: str | None = Field(default=None, max_length=512)
-    launch_ticket: str | None = Field(default=None, min_length=1, max_length=128)
-
-
-class LaunchTicketResponse(BaseModel):
-    ticket: str
-    expires_in: int
-
-
-class SessionResponse(BaseModel):
-    authenticated: bool
-    user_id: str
-    display_name: str
-    api_token: str | None = None
-
-
-class RefreshStepResponse(BaseModel):
-    key: str
-    label: str
-    state: Literal["pending", "running", "done", "failed", "skipped"]
-    done: int
-    total: int
-    detail: str
-
-
-class RefreshStatusResponse(BaseModel):
-    available: bool
-    state: Literal["idle", "running", "succeeded", "failed"]
-    started_at: str | None = None
-    finished_at: str | None = None
-    error: str | None = None
-    steps: list[RefreshStepResponse]
-
-
-class RegistrationRequest(BaseModel):
-    invite_token: str | None = Field(default=None, min_length=1, max_length=512)
-    email: str = Field(min_length=3, max_length=320)
-    password: str = Field(min_length=12, max_length=512)
-    display_name: str = Field(min_length=1, max_length=200)
-
-
-class RecoveryRequest(BaseModel):
-    email: str = Field(min_length=3, max_length=320)
-
-
-class RecoveryCompleteRequest(BaseModel):
-    challenge_id: str = Field(min_length=1, max_length=200)
-    code: str = Field(pattern=r"^\d{6}$")
-    new_password: str = Field(min_length=12, max_length=512)
-
-
-class OpportunityListResponse(BaseModel):
-    items: list[dict[str, Any]]
-    total: int
-    limit: int
-    offset: int
-    sort: str
-    # The per-employer cap applied (0: none). Items carry `company_total` when set.
-    per_company: int = 0
-    # False while the caller's profile has no scoring inputs, so every score is
-    # the base score and no match reasons exist yet.
-    personalized: bool = True
-
-
-class IntentRequest(BaseModel):
-    action: Literal["seen", "saved", "passed", "apply_opened", "undo"]
-
-
-class ApplicationUpdateRequest(BaseModel):
-    stage: Literal["applying", "applied", "interview", "offer", "rejected", "withdrawn", "archived"] | None = None
-    notes: str | None = Field(default=None, max_length=10_000)
-    follow_up_at: str | None = Field(default=None, max_length=80)
-    timezone: str = Field(default="UTC", min_length=1, max_length=100)
-
-
-class OutreachTargetRequest(BaseModel):
-    company: str | None = Field(default=None, max_length=200)
-    channel: str | None = Field(default=None, max_length=100)
-    priority: Literal["P1", "P2", "P3"] | None = None
-    website: str | None = Field(default=None, max_length=500)
-    location: str | None = Field(default=None, max_length=200)
-    summary: str | None = Field(default=None, max_length=5_000)
-    fit_rationale: str | None = Field(default=None, max_length=5_000)
-    activity_signal: str | None = Field(default=None, max_length=5_000)
-    contact_name: str | None = Field(default=None, max_length=500)
-    contact_role: str | None = Field(default=None, max_length=500)
-    contact_email: str | None = Field(default=None, max_length=320)
-    contact_cc: str | None = Field(default=None, max_length=320)
-    contact_linkedin: str | None = Field(default=None, max_length=500)
-    contact_route: str | None = Field(default=None, max_length=2_000)
-    contact_confidence: Literal["confirmed", "unverified", "unknown"] | None = None
-    status: Literal[
-        "not_started", "drafted", "sent", "followed_up", "replied",
-        "call_scheduled", "offer", "declined", "no_response", "paused",
-    ] | None = None
-    deadline_label: str | None = Field(default=None, max_length=200)
-    deadline_date: str | None = Field(default=None, max_length=10)
-    email_subject: str | None = Field(default=None, max_length=300)
-    email_body: str | None = Field(default=None, max_length=20_000)
-    sent_at: str | None = Field(default=None, max_length=10)
-    follow_up_at: str | None = Field(default=None, max_length=10)
-    notes: str | None = Field(default=None, max_length=10_000)
-    source_urls: list[str] | None = Field(default=None, max_length=50)
-    researched_at: str | None = Field(default=None, max_length=10)
-    follow_up_subject: str | None = Field(default=None, max_length=300)
-    follow_up_body: str | None = Field(default=None, max_length=20_000)
-    call_prep: str | None = Field(default=None, max_length=20_000)
-    contact_evidence_url: str | None = Field(default=None, max_length=500)
-    # Who the call is with, when it is not the person emailed (call prep reads
-    # their LinkedIn); the tracker checks the link is a linkedin.com/in/ page.
-    interviewer_name: str | None = Field(default=None, max_length=200)
-    interviewer_linkedin: str | None = Field(default=None, max_length=300)
-    # PATCH only: the student vouches for a location nothing has checked yet.
-    # It carries the location the page showed, so a place that changed between
-    # the render and the click is refused instead of silently confirmed. A bare
-    # bool still parses, so the refusal is an explanatory 422 from the tracker
-    # rather than a shapeless validation error; the length bound belongs to the
-    # string arm, because on the union it is applied to a bool too and raises.
-    confirm_location: Annotated[str, Field(max_length=200)] | bool | None = None
-    # True files the company under Not interested (kept, and left alone by automation); False moves it back.
-    not_interested: bool | None = None
-
-
-class OutreachDraftRequest(BaseModel):
-    kind: Literal["initial", "follow_up"] = "initial"
-    comments: str = Field(default="", max_length=MAX_DRAFT_COMMENT_CHARS)
-
-
-class OutreachApprovalRequest(BaseModel):
-    kind: Literal["initial", "follow_up"] = "initial"
-    acknowledge_warnings: bool = False
-    fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
-
-
-class OutreachThankYouSendRequest(BaseModel):
-    # The thank-you the card showed; one changed since is not sent.
-    fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
-    # As for OutreachSendRequest: the check a 428 answer named, once the student has looked in Gmail.
-    sent_folder_check: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
-
-
-class OutreachSendRequest(BaseModel):
-    kind: Literal["initial", "follow_up"] = "initial"
-    # The approved draft the student confirmed; a draft changed since is not sent.
-    fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
-    # The check a 428 answer named, sent back once the student has looked in
-    # Gmail. It vouches for exactly the reasons that answer gave.
-    sent_folder_check: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
-
-
-class OutreachFormSubmitRequest(BaseModel):
-    # The approved draft the student confirmed; a draft changed since is not sent.
-    fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
-    # The student looked and the earlier, unconfirmed send did not arrive.
-    retry_unconfirmed: bool = False
-    # Open a browser window the student can see, to solve a CAPTCHA themselves.
-    in_browser: bool = False
-
-
-class OutreachContactFormRequest(BaseModel):
-    page_url: str = Field(min_length=8, max_length=2_000)
-
-
-class OutreachManualContactRequest(BaseModel):
-    email: str = Field(min_length=3, max_length=320)
-    name: str = Field(default="", max_length=200)
-    role: str = Field(default="", max_length=200)
-    evidence_url: str = Field(default="", max_length=500)
-    confirmed: bool = False
-
-
-class OutreachReplyRequest(BaseModel):
-    text: str = Field(min_length=1, max_length=20_000)
-    # The student says a text that reads like a bounce notice is a real reply.
-    as_reply: bool = False
-
-
-class PossibleReplyDecisionRequest(BaseModel):
-    # Whether an email kept as a possible reply is one (outreach_inbox.decide_possible_reply).
-    decision: Literal["reply", "not_reply"]
-
-
-class OutreachAutomationRequest(BaseModel):
-    auto_drafts: bool | None = None
-    bounce_recovery: bool | None = None
-    bounce_auto_resend: bool | None = None
-    scheduled_sending: bool | None = None
-    follow_up_review: bool | None = None
-    form_submission: bool | None = None
-
-
-AutomationFeatureKey = Annotated[str, Field(min_length=1, max_length=64)]
-AutomationNoticeId = Annotated[str, Field(min_length=1, max_length=100)]
-
-
-class AutomationSettingsRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    # Each key is an automation feature; an unknown key is refused with 422.
-    modes: dict[AutomationFeatureKey, Literal["off", "shadow", "on"]] | None = Field(default=None, max_length=50)
-    paused: bool | None = None
-
-
-class AutomationReviewRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    verdict: Literal["right", "wrong"]
-
-
-class AutomationApproveRequest(BaseModel):
-    """Optional: the application the student chose instead of the proposed one."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    subject_id: str | None = Field(default=None, min_length=1, max_length=200)
-
-
-class AutomationNoticesReadRequest(BaseModel):
-    """Either the ids of the notices to mark read, or ``all`` for every unread notice; not both."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    ids: list[AutomationNoticeId] | None = Field(default=None, max_length=100)
-    all: bool = False
-
-    @model_validator(mode="after")
-    def ids_or_all(self) -> "AutomationNoticesReadRequest":
-        if self.all == (self.ids is not None):
-            raise ValueError("Send either ids or all: true")
-        return self
-
-
-class OutreachScheduleRequest(BaseModel):
-    kind: Literal["initial", "follow_up"] = "initial"
-    fingerprint: str = Field(min_length=1, max_length=128)
-
-
-class OutreachBounceRequest(BaseModel):
-    # The delivery failure notice the student pasted, if any.
-    text: str = Field(default="", max_length=20_000)
-
-
-class InboxSuggestionsRequest(BaseModel):
-    enabled: bool
-
-
-class OutreachDiscoveryRequest(BaseModel):
-    scopes: list[Literal["local-accelerators", "us-startups", "recently-funded"]] | None = Field(default=None, max_length=3)
-
-
-class OutreachSettingsRequest(BaseModel):
-    draft_provider: str | None = Field(default=None, max_length=40)
-    follow_up_provider: str | None = Field(default=None, max_length=40)
-    call_prep_provider: str | None = Field(default=None, max_length=40)
-    thank_you_provider: str | None = Field(default=None, max_length=40)
-    review_provider: str | None = Field(default=None, max_length=40)
-    research_agent: str | None = Field(default=None, max_length=40)
-    company_research_agent: str | None = Field(default=None, max_length=40)
-    linkedin_account: str | None = Field(default=None, max_length=300)
-    attachment_resume_id: str | None = Field(default=None, max_length=100)
-
-
-class GmailLabelRequest(BaseModel):
-    # None goes back to the default label name; an empty string turns the label off.
-    value: str | None = Field(default=None, max_length=100)
-
-
-class BoardLookupRequest(BaseModel):
-    company: str = Field(min_length=1, max_length=120)
-
-
-class BoardAddRequest(BaseModel):
-    lookup_id: str = Field(min_length=1, max_length=64)
-    student_confirmed: bool = False
-
-
-class RecontactChoice(BaseModel):
-    target_id: str = Field(min_length=1, max_length=100)
-    to: str = Field(min_length=3, max_length=320)
-
-
-class RecontactApplyRequest(BaseModel):
-    choices: list[RecontactChoice] = Field(min_length=1, max_length=500)
-    redraft: bool = False
-
-
-class ContactCreateRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=200)
-    role: str = Field(default="", max_length=200)
-    email: str = Field(default="", max_length=320)
-    phone: str = Field(default="", max_length=80)
-
-
-class TaskCreateRequest(BaseModel):
-    title: str = Field(min_length=1, max_length=500)
-    due_at: str | None = Field(default=None, max_length=80)
-    # The browser's IANA zone, so a datetime-local value is stored as an instant.
-    timezone: str | None = Field(default=None, min_length=1, max_length=100)
-
-
-class DeadlineRequest(BaseModel):
-    deadline_on: str = Field(min_length=10, max_length=10)
-    note: str = Field(default="", max_length=200)
-
-
-class CompanyTagRequest(BaseModel):
-    # The company as displayed on the opportunity; matched on the stored fold.
-    company: str = Field(min_length=1, max_length=200)
-    tag: str = Field(min_length=1, max_length=25)
-    # False removes the tag (an automatic one stays removed after a refresh).
-    present: bool
-
-
-class EarlyProgramStatusRequest(BaseModel):
-    status: Literal["todo", "applied", "skipped"]
-
-
-class TaskUpdateRequest(BaseModel):
-    status: Literal["open", "done"]
-
-
-class ProfileUpdateRequest(BaseModel):
-    updates: dict[str, Any]
-    confirmed_fields: list[str] = Field(default_factory=list, max_length=100)
-
-
-class ApplyAnswerRequest(BaseModel):
-    key: str = Field(min_length=1, max_length=200)
-    answer: str | list[str] = Field(max_length=10_000)
-    reusable: bool = False
-    posting_confirmed: bool = False
-
-
-class ApplyLabelRequest(BaseModel):
-    label: str = Field(min_length=1, max_length=200)
-
-
-class ApplySensitiveAnswerRequest(BaseModel):
-    # The Needs you form: only the student's answer and the tick. The category, wording and options come from the form.
-    key: str = Field(min_length=1, max_length=200)
-    answer: str | list[str] | bool
-    consent: bool = False
-    any_company: bool = False
-    posting_confirmed: bool = False
-
-
-class ApplySensitiveEntryRequest(BaseModel):
-    # The settings page: an entry added without a form in hand, so the student gives the exact question and the category.
-    category: str = Field(min_length=1, max_length=40)
-    question: str = Field(min_length=1, max_length=4_000)
-    answer: str | list[str] = Field(default="", max_length=2_000)
-    answer_kind: str = Field(default="", max_length=20)
-    company: str = Field(default="", max_length=200)
-    links: list[str] = Field(default_factory=list, max_length=8)
-    consent: bool = False
-
-
-class ApplySensitiveCategoriesRequest(BaseModel):
-    categories: list[str] = Field(max_length=20)
-
-
-class ResumeConfirmRequest(BaseModel):
-    confirmed_data: dict[str, Any] = Field(default_factory=dict)
-    profile_updates: dict[str, Any] = Field(default_factory=dict)
-    confirmed_profile_fields: list[str] = Field(default_factory=list, max_length=100)
-
-
-class ResumeVariantRequest(BaseModel):
-    # The student's own name for this résumé's kind of role; empty stops it being a variant.
-    variant_label: str = Field(default="", max_length=60)
-
-
-class ResumePickRequest(BaseModel):
-    resume_file_id: str = Field(min_length=1, max_length=200)
-
-
-class CaptureUrlRequest(BaseModel):
-    url: str = Field(min_length=8, max_length=2_000)
-
-
-class CaptureConfirmRequest(BaseModel):
-    company: str = Field(min_length=1, max_length=300)
-    title: str = Field(min_length=1, max_length=500)
-    url: str = Field(min_length=8, max_length=2_000)
-    location: str = Field(default="", max_length=500)
-    role_type: str = Field(default="other", max_length=80)
-    description: str = Field(default="", max_length=200_000)
-
-
-class DocumentCreateRequest(BaseModel):
-    opportunity_id: str = Field(min_length=1, max_length=500)
-    document_type: Literal["resume", "cover_letter"]
-    # Any provider the Preparation page offers, subscriptions included.
-    provider: Literal["openai", "anthropic", "claude-code", "codex-cli"] | None = None
-
-
-class DocumentEditRequest(BaseModel):
-    content: str = Field(min_length=1, max_length=500_000)
-    evidence_fields: list[str] = Field(min_length=1, max_length=100)
-
-
-class AnswerSaveRequest(BaseModel):
-    question: str = Field(min_length=1, max_length=2_000)
-    answer: str = Field(min_length=1, max_length=50_000)
-    company: str = Field(default="", max_length=300)
-    tags: list[str] = Field(default_factory=list, max_length=100)
-
-
-class InterviewCreateRequest(BaseModel):
-    opportunity_id: str = Field(min_length=1, max_length=500)
-
-
-class MockAnswerRequest(BaseModel):
-    answer_text: str = Field(default="", max_length=100_000)
-    transcript: str = Field(default="", max_length=100_000)
-
-
-class AgentThreadRequest(BaseModel):
-    title: str = Field(default="Career planning", max_length=200)
-    provider: Literal["openai", "anthropic", "claude-code", "codex-cli", "legacy"] | None = None
-
-
-class AgentMessageRequest(BaseModel):
-    content: str = Field(min_length=1, max_length=20_000)
-
-
-class AgentDecisionRequest(BaseModel):
-    decision: Literal["approve", "reject"]
-
-
-class ApplySessionRequest(BaseModel):
-    session_id: str = Field(min_length=1, max_length=200)
-    application_id: str | None = Field(default=None, max_length=500)
-    page_url: str = Field(min_length=8, max_length=2_000)
-    ats_type: str = Field(default="generic", max_length=100)
-    fields: list[dict[str, Any]] = Field(default_factory=list, max_length=500)
-    status: Literal["draft", "reviewed", "completed"] = "draft"
-
-
-class ExtensionPairingRedeemRequest(BaseModel):
-    code: str = Field(min_length=20, max_length=200)
-    device_name: str = Field(default="Chrome Apply Mode", max_length=120)
-
-
-class ExtensionSessionRequest(BaseModel):
-    application_id: str | None = Field(default=None, max_length=500)
-    page_url: str = Field(min_length=8, max_length=2_000)
-    ats_type: str = Field(default="generic", max_length=100)
-    fields: list[dict[str, Any]] = Field(default_factory=list, max_length=500)
-    status: Literal["draft", "reviewed", "completed"] = "draft"
-
-
-class ExtensionStepRequest(BaseModel):
-    page_url: str = Field(min_length=8, max_length=2_000)
-    ats_type: str = Field(default="generic", max_length=100)
-    fields: list[dict[str, Any]] = Field(default_factory=list, max_length=500)
-    summary: dict[str, int] = Field(default_factory=dict)
-    status: Literal["scanned", "reviewed", "filled", "manual", "completed"] = "scanned"
-
-
-class ExtensionAnswerRequest(BaseModel):
-    question: str = Field(min_length=1, max_length=2_000)
-    answer: str = Field(min_length=1, max_length=50_000)
-    company: str = Field(default="", max_length=300)
-    tags: list[str] = Field(default_factory=list, max_length=100)
-
-
-class ConnectorRequest(BaseModel):
-    provider: Literal["sandbox", "google", "microsoft"] = "sandbox"
-
-
-class OAuthCompleteRequest(BaseModel):
-    state: str = Field(min_length=20, max_length=500)
-    code: str = Field(min_length=1, max_length=4_000)
-
-
-class MonitoredMessageRequest(BaseModel):
-    connector_id: str = Field(min_length=1, max_length=500)
-    external_id: str = Field(min_length=1, max_length=500)
-    subject: str = Field(default="", max_length=2_000)
-    body: str = Field(default="", max_length=100_000)
-    sender: str = Field(default="", max_length=500)
-
-
-class MonitoredDecisionRequest(BaseModel):
-    decision: Literal["confirm", "ignore"]
-    application_id: str | None = Field(default=None, max_length=500)
-
-
-class NotificationPreferencesRequest(BaseModel):
-    updates: dict[str, Any]
-
-
-class NotificationOptOutRequest(BaseModel):
-    channel: Literal["email", "push", "sms", "voice"]
-    keyword: str = Field(min_length=3, max_length=20)
-
-
-class PhoneRequest(BaseModel):
-    phone_e164: str = Field(min_length=8, max_length=20)
-
-
-class PhoneConfirmRequest(BaseModel):
-    challenge_id: str = Field(min_length=1, max_length=200)
-    code: str = Field(min_length=6, max_length=6)
-
-
-class DossierSettingsRequest(BaseModel):
-    paused: bool
-    retention_days: int = Field(ge=1, le=3650)
-
-
-class DossierItemRequest(BaseModel):
-    item_type: Literal["user_opinion", "deterministic_analysis", "ai_suggestion"]
-    field_path: str = Field(min_length=1, max_length=500)
-    value: Any
-    evidence: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
-
-
-class DossierShareRequest(BaseModel):
-    recipient: str = Field(min_length=1, max_length=500)
-    item_ids: list[str] = Field(min_length=1, max_length=200)
-    expires_in_days: int = Field(default=30, ge=1, le=365)
-
-
-class DossierPreviewRequest(BaseModel):
-    item_ids: list[str] = Field(min_length=1, max_length=200)
-
-
-class MarketSnapshotRequest(BaseModel):
-    as_of: str | None = Field(default=None, max_length=80)
-
-
-class MarketIssueRequest(BaseModel):
-    snapshot_id: str = Field(min_length=1, max_length=200)
-    title: str = Field(min_length=1, max_length=300)
-    slug: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$", max_length=200)
-
-
-class OrganizationRequest(BaseModel):
-    name: str = Field(min_length=1, max_length=300)
-    organization_type: Literal["employer", "school"] = "employer"
-
-
-class RequisitionRequest(BaseModel):
-    title: str = Field(min_length=1, max_length=500)
-    description: str = Field(default="", max_length=200_000)
-    rubric: list[dict[str, Any]] = Field(min_length=1, max_length=100)
-
-
-class CandidateShareRequest(BaseModel):
-    share_token: str = Field(min_length=20, max_length=500)
-
-
-class CandidateDecisionRequest(BaseModel):
-    status: Literal["shortlisted", "interview", "offer", "rejected"]
-    reason: str = Field(min_length=1, max_length=2_000)
-
-
-class FeatureFlagRequest(BaseModel):
-    enabled: bool
-    description: str = Field(default="", max_length=1_000)
-
-
-class OrganizationVerificationRequest(BaseModel):
-    approved: bool
-
-
-class RequisitionImportRequest(BaseModel):
-    organization_id: str = Field(min_length=1, max_length=200)
-    requisitions: list[dict[str, Any]] = Field(min_length=1, max_length=500)
-
-
-class EmployerMessageRequest(BaseModel):
-    body: str = Field(min_length=1, max_length=10_000)
-
-
-class EmployerInterviewRequest(BaseModel):
-    starts_at: str = Field(min_length=1, max_length=80)
-    timezone: str = Field(min_length=1, max_length=100)
-    location: str = Field(default="", max_length=500)
-
-
-class SourceControlRequest(BaseModel):
-    enabled: bool
-    moderation_status: Literal["approved", "review", "blocked"]
-    note: str = Field(default="", max_length=2_000)
-
-
-class ModerationCreateRequest(BaseModel):
-    target_type: str = Field(min_length=1, max_length=100)
-    target_id: str = Field(min_length=1, max_length=500)
-    reason: str = Field(min_length=1, max_length=2_000)
-
-
-class ModerationResolveRequest(BaseModel):
-    status: Literal["resolved", "dismissed"]
-    resolution: str = Field(min_length=1, max_length=2_000)
-
-
-class JobCreateRequest(BaseModel):
-    job_type: Literal[
-        "retention", "connector_health", "notification_digest", "reminder_dispatch",
-        "pipeline_fetch", "pipeline_enrich", "pipeline_score", "pipeline_liveness", "pipeline_report",
-    ]
-    payload: dict[str, Any] = Field(default_factory=dict)
-    idempotency_key: str = Field(min_length=1, max_length=500)
-    max_attempts: int = Field(default=3, ge=1, le=20)
+from .web.models.session import (
+    LaunchTicketResponse,
+    RecoveryCompleteRequest,
+    RecoveryRequest,
+    RegistrationRequest,
+    SessionRequest,
+    SessionResponse,
+)
+from .web.models.system import (
+    BoardAddRequest,
+    BoardLookupRequest,
+    RefreshStatusResponse,
+    RefreshStepResponse,
+)
+from .web.models.opportunities import (
+    CompanyTagRequest,
+    DeadlineRequest,
+    EarlyProgramStatusRequest,
+    InboxSuggestionsRequest,
+    IntentRequest,
+    OpportunityListResponse,
+    ResumePickRequest,
+)
+from .web.models.applications import (
+    ApplicationUpdateRequest,
+    ContactCreateRequest,
+    TaskCreateRequest,
+    TaskUpdateRequest,
+)
+from .web.models.outreach import (
+    GmailLabelRequest,
+    OutreachApprovalRequest,
+    OutreachAutomationRequest,
+    OutreachBounceRequest,
+    OutreachContactFormRequest,
+    OutreachDiscoveryRequest,
+    OutreachDraftRequest,
+    OutreachFormSubmitRequest,
+    OutreachManualContactRequest,
+    OutreachReplyRequest,
+    OutreachScheduleRequest,
+    OutreachSendRequest,
+    OutreachSettingsRequest,
+    OutreachTargetRequest,
+    OutreachThankYouSendRequest,
+    PossibleReplyDecisionRequest,
+    RecontactApplyRequest,
+    RecontactChoice,
+)
+from .web.models.automation import (
+    AutomationApproveRequest,
+    AutomationFeatureKey,
+    AutomationNoticeId,
+    AutomationNoticesReadRequest,
+    AutomationReviewRequest,
+    AutomationSettingsRequest,
+)
+from .web.models.account import (
+    ProfileUpdateRequest,
+)
+from .web.models.apply_agent import (
+    ApplyAnswerRequest,
+    ApplyLabelRequest,
+    ApplySensitiveAnswerRequest,
+    ApplySensitiveCategoriesRequest,
+    ApplySensitiveEntryRequest,
+)
+from .web.models.resumes import (
+    ResumeConfirmRequest,
+    ResumeVariantRequest,
+)
+from .web.models.captures import (
+    CaptureConfirmRequest,
+    CaptureUrlRequest,
+)
+from .web.models.preparation import (
+    AnswerSaveRequest,
+    DocumentCreateRequest,
+    DocumentEditRequest,
+    InterviewCreateRequest,
+    MockAnswerRequest,
+)
+from .web.models.agent import (
+    AgentDecisionRequest,
+    AgentMessageRequest,
+    AgentThreadRequest,
+)
+from .web.models.extension import (
+    ApplySessionRequest,
+    ExtensionAnswerRequest,
+    ExtensionPairingRedeemRequest,
+    ExtensionSessionRequest,
+    ExtensionStepRequest,
+)
+from .web.models.connections import (
+    ConnectorRequest,
+    MonitoredDecisionRequest,
+    MonitoredMessageRequest,
+    NotificationOptOutRequest,
+    NotificationPreferencesRequest,
+    OAuthCompleteRequest,
+    PhoneConfirmRequest,
+    PhoneRequest,
+)
+from .web.models.dossier import (
+    DossierItemRequest,
+    DossierPreviewRequest,
+    DossierSettingsRequest,
+    DossierShareRequest,
+)
+from .web.models.market import (
+    MarketIssueRequest,
+    MarketSnapshotRequest,
+)
+from .web.models.employer import (
+    CandidateDecisionRequest,
+    CandidateShareRequest,
+    EmployerInterviewRequest,
+    EmployerMessageRequest,
+    OrganizationRequest,
+    RequisitionImportRequest,
+    RequisitionRequest,
+)
+from .web.models.admin import (
+    FeatureFlagRequest,
+    JobCreateRequest,
+    ModerationCreateRequest,
+    ModerationResolveRequest,
+    OrganizationVerificationRequest,
+    SourceControlRequest,
+)
 
 
 def _session_signature(access_token: str) -> str:
