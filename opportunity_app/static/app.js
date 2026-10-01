@@ -34,12 +34,9 @@
     refreshTimer: null,
     detailReturnFocus: null,
     trackerStatus: null,
-    // The active subtab per page; each page reads its own entry.
-    subtabs: {
-      discover: "all", saved: "all", urgent: "all", applications: "all",
-      outreach: "to-contact", prepare: "all", agent: "all", profile: "all",
-      programs: "open",
-    },
+    // The active subtab per page; each page reads its own entry. Filled from
+    // VIEWS, which holds every page's default.
+    subtabs: {},
     // Outreach cards acted on in this tab stay visible after they move out of it.
     outreachKeep: new Set(),
     outreachQuery: "",
@@ -9637,7 +9634,7 @@
     programsMeta.label = payload.label || "Programs";
     programsMeta.evidence = payload.evidence_labels || programsMeta.evidence;
     els.programsNavLabel.textContent = programsMeta.label;
-    SUBNAV_TITLES.programs = programsMeta.label;
+    VIEWS.programs.subnavTitle = programsMeta.label;
   }
 
   // The student's own name for the tab, remembered in this browser so a reload
@@ -10055,15 +10052,66 @@
     return section;
   }
 
-  const SUBNAV_TITLES = {
-    discover: "Discover", urgent: "Urgent", saved: "Saved", applications: "Applications",
-    outreach: "Outreach", prepare: "Prepare", agent: "Agent", profile: "Profile",
-    programs: "Programs",
+  // The nine pages, in navigation order. What differs from page to page lives
+  // here, so a new page is one entry plus its loader (and the server's own route
+  // for its path). nav is the sidebar button; deck marks the pages that list
+  // opportunities (filter bar, stats, paging, display toggle); sections marks
+  // the pages built from sections that the rail filters in place. tabs() and
+  // load() are thunks: some pages' tabs read live state (deckTabs, programsTabs),
+  // and the tables and loaders they name are defined further down. Programs'
+  // subnavTitle is replaced by the student's own name for the page.
+  const VIEWS = {
+    discover: {
+      nav: els.discoverNav, path: "/", subnavTitle: "Discover", defaultSubtab: "all", deck: true,
+      eyebrow: "Ready for review", title: "Find the roles worth your time.",
+      tabs: () => deckTabs(), load: () => loadOpportunities(),
+    },
+    urgent: {
+      nav: els.urgentNav, path: "/urgent", subnavTitle: "Urgent", defaultSubtab: "all",
+      eyebrow: "Overdue first, then the next 14 days", title: "What needs doing next.",
+      tabs: () => URGENT_TABS, load: () => loadUrgent(),
+    },
+    saved: {
+      nav: els.savedNav, path: "/saved", subnavTitle: "Saved", defaultSubtab: "all", deck: true,
+      eyebrow: "Saved shortlist", title: "Return to the roles you chose.",
+      tabs: () => deckTabs(), load: () => loadOpportunities(),
+    },
+    applications: {
+      nav: els.applicationsNav, path: "/applications", subnavTitle: "Applications", defaultSubtab: "all",
+      eyebrow: "Application tracker", title: "Keep every application moving.",
+      tabs: () => APPLICATION_TABS, load: () => loadApplications(),
+    },
+    outreach: {
+      nav: els.outreachNav, path: "/outreach", subnavTitle: "Outreach", defaultSubtab: "to-contact",
+      eyebrow: "Startup cold outreach", title: "Reach the startups before they post.",
+      tabs: () => OUTREACH_TABS, load: () => loadOutreach(),
+    },
+    programs: {
+      nav: els.programsNav, path: "/programs", subnavTitle: "Programs", defaultSubtab: "open",
+      eyebrow: "Soonest deadline first", title: "Programs that fit where you are.",
+      tabs: () => programsTabs(), load: () => loadPrograms(),
+    },
+    prepare: {
+      nav: els.prepareNav, path: "/prepare", subnavTitle: "Prepare", defaultSubtab: "all", sections: true,
+      eyebrow: "Evidence-grounded practice", title: "Prepare without inventing a thing.",
+      tabs: () => [{ id: "all", label: "All sections" }], load: () => loadPreparation(),
+    },
+    agent: {
+      nav: els.agentNav, path: "/agent", subnavTitle: "Agent", defaultSubtab: "all", sections: true,
+      eyebrow: "Auditable career copilot", title: "Ask your pipeline, then decide.",
+      tabs: () => [{ id: "all", label: "All sections" }], load: () => loadAgent(),
+    },
+    profile: {
+      nav: els.profileNav, path: "/profile", subnavTitle: "Profile", defaultSubtab: "all", sections: true,
+      eyebrow: "Onboarding and evidence", title: "Build the profile behind every match.",
+      tabs: () => [{ id: "all", label: "All sections" }], load: () => loadProfile(),
+    },
   };
+  Object.entries(VIEWS).forEach(([name, view]) => { state.subtabs[name] = view.defaultSubtab; });
 
   // Each page lists its subtabs in the rail: { id, label, count, tone, group }.
   function renderSubnav(tabs) {
-    els.subnavTitle.textContent = SUBNAV_TITLES[state.view] || "";
+    els.subnavTitle.textContent = VIEWS[state.view]?.subnavTitle || "";
     const active = state.subtabs[state.view];
     const nodes = [];
     let group = null;
@@ -10101,13 +10149,11 @@
 
   // Pages built from sections (Profile, Prepare, Agent) filter what is already
   // rendered; list pages reload with the tab's filter.
-  const SECTION_VIEWS = new Set(["prepare", "agent", "profile"]);
-
   function selectSubtab(id) {
     const changed = state.subtabs[state.view] !== id;
     state.subtabs[state.view] = id;
     markActiveSubtab();
-    if (SECTION_VIEWS.has(state.view)) {
+    if (VIEWS[state.view].sections) {
       applySectionFilter();
       els.results.querySelector(":scope > :not([hidden])")?.scrollIntoView?.({ block: "nearest" });
       return;
@@ -10166,35 +10212,16 @@
   }
 
   function initialSubnavTabs(view) {
-    if (view === "discover" || view === "saved") return deckTabs();
-    if (view === "urgent") return URGENT_TABS;
-    if (view === "applications") return APPLICATION_TABS;
-    if (view === "outreach") return OUTREACH_TABS;
-    if (view === "programs") return programsTabs();
-    return [{ id: "all", label: "All sections" }];
+    return VIEWS[view].tabs();
   }
 
   async function loadCurrentView() {
-    if (state.view === "urgent") return loadUrgent();
-    if (state.view === "agent") return loadAgent();
-    if (state.view === "prepare") return loadPreparation();
-    if (state.view === "profile") return loadProfile();
-    if (state.view === "applications") return loadApplications();
-    if (state.view === "outreach") return loadOutreach();
-    if (state.view === "programs") return loadPrograms();
-    return loadOpportunities();
+    return VIEWS[state.view].load();
   }
 
+  // An unknown path is the Discover page.
   function viewForPath(pathname) {
-    if (pathname === "/urgent") return "urgent";
-    if (pathname === "/saved") return "saved";
-    if (pathname === "/applications") return "applications";
-    if (pathname === "/outreach") return "outreach";
-    if (pathname === "/programs") return "programs";
-    if (pathname === "/profile") return "profile";
-    if (pathname === "/prepare") return "prepare";
-    if (pathname === "/agent") return "agent";
-    return "discover";
+    return Object.keys(VIEWS).find((name) => VIEWS[name].path === pathname) || "discover";
   }
 
   function setView(view, { updateHistory = true } = {}) {
@@ -10203,37 +10230,28 @@
     state.loadSequence += 1;
     state.view = view;
     state.offset = 0;
-    els.discoverNav.classList.toggle("is-active", view === "discover");
-    els.urgentNav.classList.toggle("is-active", view === "urgent");
-    els.savedNav.classList.toggle("is-active", view === "saved");
-    els.applicationsNav.classList.toggle("is-active", view === "applications");
-    els.outreachNav.classList.toggle("is-active", view === "outreach");
-    els.programsNav.classList.toggle("is-active", view === "programs");
-    els.prepareNav.classList.toggle("is-active", view === "prepare");
-    els.agentNav.classList.toggle("is-active", view === "agent");
-    els.profileNav.classList.toggle("is-active", view === "profile");
+    Object.entries(VIEWS).forEach(([name, entry]) => entry.nav.classList.toggle("is-active", view === name));
     document.querySelectorAll(".nav-list .nav-item").forEach((button) => {
       if (button.id === `${view}-nav`) button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
     });
-    const isCollection = view === "discover" || view === "saved";
+    const isCollection = Boolean(VIEWS[view].deck);
     els.keyboardHint.hidden = !isCollection;
     if (isCollection) els.results.setAttribute("aria-describedby", "keyboard-hint");
     else els.results.removeAttribute("aria-describedby");
     if (!isCollection) els.results.removeAttribute("role");
     els.filterPanel.hidden = !isCollection;
     els.personalizePrompt.hidden = view !== "discover" || state.personalized;
-    els.statsGrid.hidden = view === "urgent" || view === "applications" || view === "outreach" || view === "programs" || view === "profile" || view === "prepare" || view === "agent";
+    els.statsGrid.hidden = !VIEWS[view].deck;
     els.paginations.forEach((nav) => { nav.hidden = !isCollection; });
     els.displayToggle.hidden = !isCollection;
-    els.results.classList.toggle("is-profile", view === "profile" || view === "prepare" || view === "agent");
-    els.resultsEyebrow.textContent = view === "programs" ? "Soonest deadline first" : view === "urgent" ? "Overdue first, then the next 14 days" : view === "outreach" ? "Startup cold outreach" : view === "agent" ? "Auditable career copilot" : view === "prepare" ? "Evidence-grounded practice" : view === "profile" ? "Onboarding and evidence" : view === "applications" ? "Application tracker" : view === "saved" ? "Saved shortlist" : "Ready for review";
-    els.pageTitle.textContent = view === "programs" ? "Programs that fit where you are." : view === "urgent" ? "What needs doing next." : view === "outreach" ? "Reach the startups before they post." : view === "agent" ? "Ask your pipeline, then decide." : view === "prepare" ? "Prepare without inventing a thing." : view === "profile" ? "Build the profile behind every match." : view === "applications" ? "Keep every application moving." : view === "saved" ? "Return to the roles you chose." : "Find the roles worth your time.";
+    els.results.classList.toggle("is-profile", Boolean(VIEWS[view].sections));
+    els.resultsEyebrow.textContent = VIEWS[view].eyebrow;
+    els.pageTitle.textContent = VIEWS[view].title;
     if (view !== "outreach") state.outreachKeep.clear();
     renderSubnav(initialSubnavTabs(view));
     if (updateHistory) {
-      const path = view === "discover" ? "/" : `/${view}`;
-      window.history.pushState({ view }, "", path);
+      window.history.pushState({ view }, "", VIEWS[view].path);
     }
     loadCurrentView();
     if (view !== "urgent") invalidateUrgentBadge();
@@ -11661,15 +11679,7 @@
     applyTheme(next);
     announce(`Theme set to ${next}.`);
   });
-  els.discoverNav.addEventListener("click", () => setView("discover"));
-  els.urgentNav.addEventListener("click", () => setView("urgent"));
-  els.savedNav.addEventListener("click", () => setView("saved"));
-  els.applicationsNav.addEventListener("click", () => setView("applications"));
-  els.outreachNav.addEventListener("click", () => setView("outreach"));
-  els.programsNav.addEventListener("click", () => setView("programs"));
-  els.prepareNav.addEventListener("click", () => setView("prepare"));
-  els.agentNav.addEventListener("click", () => setView("agent"));
-  els.profileNav.addEventListener("click", () => setView("profile"));
+  Object.entries(VIEWS).forEach(([name, view]) => view.nav.addEventListener("click", () => setView(name)));
   els.personalizeButton.addEventListener("click", () => setView("profile"));
 
   function setDisplayMode(mode) {
