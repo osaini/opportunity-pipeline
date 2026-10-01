@@ -36,7 +36,7 @@ from .agent_providers import _cli_binary
 from .outreach import get_target
 from .outreach_delivery import check_deliveries
 from .outreach_inbox import OnReply, capture_replies
-from .outreach_gmail import ClientFactory, GmailThrottled
+from .gmail_client import ClientFactory, GmailThrottled
 from .preparation import confirmed_facts
 from .typesafe_decisions import DecisionClient
 

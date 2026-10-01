@@ -49,11 +49,10 @@ import httpx
 
 from . import automation
 from .outreach import NOT_INTERESTED, DraftChangedError, UNSENT_STATUSES, _city_state, _log, get_target, heard_back
+from .gmail_client import ClientFactory, GmailAuthError
 from .outreach_gmail import (
     SENT_EVENT,
     THANK_YOU_KIND,
-    ClientFactory,
-    GmailAuthError,
     SendConflictError,
     SendNeedsCheckError,
     SendUnconfirmedError,

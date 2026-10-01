@@ -16,7 +16,7 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, outreach_delivery, outreach_gmail, outreach_inbox
+from opportunity_app import STATIC_DIR, gmail_client, outreach_delivery, outreach_inbox
 from opportunity_app.api import create_app
 from opportunity_app.outreach import _log
 from opportunity_app.outreach_automation import update_settings
@@ -291,7 +291,7 @@ class SendGateTests(unittest.TestCase):
 
         target = self.scheduled_follow_up()
         with mock.patch("opportunity_app.outreach_review.check_deliveries",
-                        side_effect=outreach_gmail.GmailThrottled("Gmail asked the app to slow down")):
+                        side_effect=gmail_client.GmailThrottled("Gmail asked the app to slow down")):
             look = fresh_look(self.conn, target["id"], user_id=USER, client_factory=self.factory)
         self.assertEqual(look, {"ok": False, "reason": "Gmail asked the app to slow down"})
 

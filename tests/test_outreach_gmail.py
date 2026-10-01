@@ -20,7 +20,7 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, automation, outreach_delivery, outreach_gmail
+from opportunity_app import STATIC_DIR, automation, gmail_client, outreach_delivery, outreach_gmail
 from opportunity_app.api import create_app
 from opportunity_app.schema import connect_product
 from opportunity_app.timestamps import utc_now
@@ -719,11 +719,11 @@ class GmailDraftTests(unittest.TestCase):
         self.gmail.read_response = rate_limited
         with closing(connect_product(self.platform_path)) as conn, self.gmail_client() as client:
             gmail = outreach_gmail._Gmail(conn, client, USER)
-            with self.assertRaises(outreach_gmail.GmailThrottled):
+            with self.assertRaises(gmail_client.GmailThrottled):
                 gmail.request("GET", "/messages", params={"q": "from:greg@bovi.example"})
-            self.assertIsInstance(outreach_gmail.GmailThrottled("x"), httpx.TransportError, "read as could not reach Gmail")
+            self.assertIsInstance(gmail_client.GmailThrottled("x"), httpx.TransportError, "read as could not reach Gmail")
             asked = len(self.gmail.requests)
-            with self.assertRaises(outreach_gmail.GmailThrottled):
+            with self.assertRaises(gmail_client.GmailThrottled):
                 gmail.request("GET", "/messages")
             self.assertEqual(len(self.gmail.requests), asked, "a read while held back never reaches Google")
             self.assertEqual(automation.gmail_health(conn, USER)["state"], "throttled")
@@ -763,7 +763,7 @@ class GmailDraftTests(unittest.TestCase):
                 self.gmail.read_response = lambda header=header: rate_limited(status=429, headers={"Retry-After": header})
                 with closing(connect_product(self.platform_path)) as conn, self.gmail_client() as client, \
                         mock.patch.object(outreach_gmail, "_now", return_value=now):
-                    with self.assertRaises(outreach_gmail.GmailThrottled) as caught:
+                    with self.assertRaises(gmail_client.GmailThrottled) as caught:
                         outreach_gmail._Gmail(conn, client, USER).request("GET", "/messages")
                 self.assertEqual(caught.exception.until - now, expected)
                 self.assertEqual(self.connector()["backoff_until"], (now + expected).isoformat(timespec="seconds"))
@@ -777,7 +777,7 @@ class GmailDraftTests(unittest.TestCase):
             gmail = outreach_gmail._Gmail(conn, client, USER)
 
             def throttled_wait():
-                with self.assertRaises(outreach_gmail.GmailThrottled) as caught:
+                with self.assertRaises(gmail_client.GmailThrottled) as caught:
                     gmail.request("GET", "/messages")
                 wait = (caught.exception.until - clock[0]).total_seconds()
                 clock[0] = caught.exception.until + timedelta(seconds=1)
@@ -835,7 +835,7 @@ class GmailDraftTests(unittest.TestCase):
                          ((datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(timespec="seconds"),))
             conn.commit()
         with closing(connect_product(self.platform_path)) as conn, self.gmail_client() as client:
-            with self.assertRaises(outreach_gmail.GmailThrottled):
+            with self.assertRaises(gmail_client.GmailThrottled):
                 outreach_gmail._Gmail(conn, client, USER).request("GET", "/profile")
         self.assertEqual(self.gmail.requests, [])
 
@@ -870,7 +870,7 @@ class GmailDraftTests(unittest.TestCase):
             # A hold on the row is cleared by the next success, however soon.
             self.gmail.read_response = rate_limited
             clock[0] = start + timedelta(minutes=7)
-            with self.assertRaises(outreach_gmail.GmailThrottled):
+            with self.assertRaises(gmail_client.GmailThrottled):
                 gmail.request("GET", "/messages")
             self.assertTrue(self.connector()["backoff_until"])
             self.gmail.read_response = None
@@ -895,7 +895,7 @@ class GmailDraftTests(unittest.TestCase):
                     self.assertTrue(conn.in_transaction)
                     self.assertEqual(gmail.request("GET", "/profile").status_code, 200)
                     self.gmail.read_response = rate_limited
-                    with self.assertRaises(outreach_gmail.GmailThrottled):
+                    with self.assertRaises(gmail_client.GmailThrottled):
                         gmail.request("GET", "/messages")
                     raise Rollback
             marker = conn.execute("SELECT 1 FROM user_settings WHERE key='test.marker'").fetchone()
@@ -913,7 +913,7 @@ class GmailDraftTests(unittest.TestCase):
             gmail = outreach_gmail._Gmail(conn, client, USER)
             self.assertEqual(gmail.request("GET", "/profile").status_code, 200)
             self.gmail.read_response = lambda: rate_limited(status=429)
-            with self.assertRaises(outreach_gmail.GmailThrottled):
+            with self.assertRaises(gmail_client.GmailThrottled):
                 gmail.request("GET", "/messages")
             row = self.connector()
             self.assertEqual((row["last_ok_at"], row["backoff_until"], row["last_error"]), (None, None, ""),
@@ -928,7 +928,7 @@ class GmailDraftTests(unittest.TestCase):
             # A restart forgets memory; the saved hold still keeps reads back.
             outreach_gmail._BACKOFF.clear()
             asked = len(self.gmail.requests)
-            with self.assertRaises(outreach_gmail.GmailThrottled):
+            with self.assertRaises(gmail_client.GmailThrottled):
                 outreach_gmail._Gmail(raw, client, USER).request("GET", "/profile")
             self.assertEqual(len(self.gmail.requests), asked)
             # Once Gmail answers again, the success clears the hold and the error, again on persisting.
@@ -948,10 +948,10 @@ class GmailDraftTests(unittest.TestCase):
         self.gmail.read_response = lambda: httpx.Response(503)
         with closing(connect_product(self.platform_path)) as conn, self.gmail_client() as client:
             gmail = outreach_gmail._Gmail(conn, client, USER)
-            with self.assertRaises(outreach_gmail.GmailThrottled):
+            with self.assertRaises(gmail_client.GmailThrottled):
                 gmail.request("GET", "/messages")
             asked = len(self.gmail.requests)
-            with self.assertRaises(outreach_gmail.GmailThrottled):
+            with self.assertRaises(gmail_client.GmailThrottled):
                 gmail.request("GET", "/messages")
             self.assertEqual(len(self.gmail.requests), asked, "held back, as for a rate limit")
             row = self.connector()

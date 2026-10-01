@@ -44,11 +44,11 @@ from email.utils import getaddresses
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 from uuid import uuid4
 
 from pipeline_core.identity import employer_key
 
+from .mail_message import host_of
 from .timestamps import utc_now
 
 SENDERS_PATH = Path(__file__).resolve().parent / "data" / "application_senders.json"
@@ -145,13 +145,6 @@ def same_organization(first: str, second: str) -> bool:
     """Whether two hosts share a registrable domain. False when either has none."""
     a, b = registrable_domain(first), registrable_domain(second)
     return bool(a and b and a == b)
-
-
-def host_of(url: str) -> str:
-    try:
-        return (urlsplit(str(url or "").strip()).hostname or "").lower().rstrip(".")
-    except ValueError:
-        return ""
 
 
 # --- The shipped sender list -----------------------------------------------------------

@@ -23,7 +23,7 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, automation, outreach, outreach_delivery, outreach_inbox, outreach_thank_you
+from opportunity_app import STATIC_DIR, automation, mail_message, outreach, outreach_delivery, outreach_inbox, outreach_thank_you
 from opportunity_app.api import create_app
 from opportunity_app.outreach import greeting_line
 from opportunity_app.outreach_drafting import resolve_provider
@@ -816,13 +816,13 @@ class ThankYouRulesTests(DeclineCase):
         kept = {
             "source": "gmail", "gmail_id": "r-1", "from": sender.casefold(), "received_at": received.isoformat(timespec="seconds"),
             "readings": BOTH_DECLINED, "thread_id": thread or self.thread, "message_id": "<r-1@acme.com>",
-            "subject": str(message["Subject"]), "from_name": name, "full_text": outreach_inbox.full_reply_text(message), "reply_to": "",
-            "headers": outreach_inbox.kept_headers(message), "link_hosts": outreach_inbox.link_hosts(message), **data,
+            "subject": str(message["Subject"]), "from_name": name, "full_text": mail_message.full_reply_text(message), "reply_to": "",
+            "headers": mail_message.kept_headers(message), "link_hosts": mail_message.link_hosts_or_none(message), **data,
         }
         for key in drop:
             kept.pop(key, None)
         detected = detected or datetime.now(timezone.utc)
-        return {"id": "event-r-1", "text": outreach_inbox.reply_text(message), "data": kept,
+        return {"id": "event-r-1", "text": mail_message.reply_text(message), "data": kept,
                 "created_at": detected.isoformat(timespec="microseconds"), "at": received}
 
     def blockers(self, raw=None, *, target=None, **options):
@@ -1160,7 +1160,7 @@ class ThankYouRulesTests(DeclineCase):
         self.assertEqual(self.blockers(raw_reply(delivered=no_check)), ["R7"], "no sender check from Gmail")
         self.assertEqual(self.blockers(raw_reply(to=None)), ["R3"], "no To or Cc")
         long_header = raw_reply(extra=f"X-Autorespond: {'x' * 5_000}\n")
-        self.assertIsNone(outreach_inbox.kept_headers(BytesParser(policy=policy.default).parsebytes(long_header)))
+        self.assertIsNone(mail_message.kept_headers(BytesParser(policy=policy.default).parsebytes(long_header)))
         # A reply on record with no headers (logged before they were kept) is never thanked.
         self.decline()
         row = self.conn.execute("SELECT id, detail_json FROM outreach_events WHERE target_id=? AND event_type='reply_logged'",
@@ -1175,16 +1175,16 @@ class ThankYouRulesTests(DeclineCase):
         def parsed(raw):
             return BytesParser(policy=policy.default).parsebytes(raw)
 
-        many = " ".join(f"https://site{number}.com/" for number in range(outreach_inbox.LINK_HOST_LIMIT + 10))
+        many = " ".join(f"https://site{number}.com/" for number in range(mail_message.LINK_HOST_LIMIT + 10))
         crowded = raw_reply(f"{DECLINE}\n\n{many}\nhttps://boards.greenhouse.io/acme")
-        self.assertIsNone(outreach_inbox.link_hosts(parsed(crowded)), "more hosts than are kept")
+        self.assertIsNone(mail_message.link_hosts_or_none(parsed(crowded)), "more hosts than are kept")
         self.assertEqual(self.blockers(crowded), ["links"])
         bogus = raw_reply(GREENHOUSE_REJECTION, html=GREENHOUSE_HTML).replace(
             b"Content-Type: text/html; charset=UTF-8", b"Content-Type: text/html; charset=x-bogus")
-        self.assertIsNone(outreach_inbox.link_hosts(parsed(bogus)), "a part in a charset Python does not know")
+        self.assertIsNone(mail_message.link_hosts_or_none(parsed(bogus)), "a part in a charset Python does not know")
         self.assertEqual(self.blockers(bogus), ["links"])
-        enough = raw_reply(f"{DECLINE}\n\n" + " ".join(f"https://site{number}.com/" for number in range(outreach_inbox.LINK_HOST_LIMIT)))
-        self.assertEqual(len(outreach_inbox.link_hosts(parsed(enough))), outreach_inbox.LINK_HOST_LIMIT, "up to the limit, all kept")
+        enough = raw_reply(f"{DECLINE}\n\n" + " ".join(f"https://site{number}.com/" for number in range(mail_message.LINK_HOST_LIMIT)))
+        self.assertEqual(len(mail_message.link_hosts_or_none(parsed(enough))), mail_message.LINK_HOST_LIMIT, "up to the limit, all kept")
         self.assertEqual(self.blockers(enough), [])
         self.assertEqual(outreach_thank_you.blocker_note(["links"]), "Not thanked automatically: the links in it could not all be read")
         # From Gmail: kept as not readable, and never thanked.
@@ -1218,7 +1218,7 @@ class ThankYouRulesTests(DeclineCase):
             "SELECT detail_json FROM outreach_events WHERE target_id=? AND event_type='reply_logged'", (self.acme["id"],),
         ).fetchone()[0])
         names = [name for name, _value in data["headers"]]
-        self.assertTrue(set(names) <= set(outreach_inbox.KEPT_HEADERS), names)
+        self.assertTrue(set(names) <= set(mail_message.KEPT_HEADERS), names)
         self.assertIn("Authentication-Results", names)
         self.assertNotIn("X-Mailer", names)
         self.assertNotIn("Message-ID", names)
@@ -1610,36 +1610,36 @@ class QuotingTests(unittest.TestCase):
         return BytesParser(policy=policy.default).parsebytes(raw)
 
     def test_an_answer_typed_between_the_quoted_lines_is_found(self):
-        self.assertEqual(outreach_inbox.strip_quoted(INLINE), "Unfortunately we're not in a position to take interns right now.")
-        self.assertEqual(outreach_inbox.written_between_quotes(INLINE), "Happy to do a quick call though. How is Thursday at 2?")
-        self.assertEqual(outreach_inbox.written_between_quotes(QUOTED), "", "a quote with nothing typed in it, its attribution split over two lines")
-        self.assertEqual(outreach_inbox.written_between_quotes(DECLINE), "")
+        self.assertEqual(mail_message.strip_quoted(INLINE), "Unfortunately we're not in a position to take interns right now.")
+        self.assertEqual(mail_message.written_between_quotes(INLINE), "Happy to do a quick call though. How is Thursday at 2?")
+        self.assertEqual(mail_message.written_between_quotes(QUOTED), "", "a quote with nothing typed in it, its attribution split over two lines")
+        self.assertEqual(mail_message.written_between_quotes(DECLINE), "")
         outlook = f"{DECLINE}\n\nFrom: Test Student <student@example.com>\nSent: Monday, September 28, 2026 9:00 AM\nWould you have time for a call?"
-        self.assertEqual(outreach_inbox.written_between_quotes(outlook, ["Would you have time for a call?"]), "",
+        self.assertEqual(mail_message.written_between_quotes(outlook, ["Would you have time for a call?"]), "",
                          "below an Outlook header, the student's own line is theirs")
-        self.assertEqual(outreach_inbox.written_between_quotes(outlook), "Would you have time for a call?",
+        self.assertEqual(mail_message.written_between_quotes(outlook), "Would you have time for a call?",
                          "with nothing sent to compare, nothing below an Outlook header is ruled out")
 
     def test_an_answer_typed_inside_an_outlook_quote_is_found(self):
         clean = f"{DECLINE}\n\n{OUTLOOK_HEADER}{FIRST_EMAIL}"
-        self.assertEqual(outreach_inbox.strip_quoted(clean), DECLINE)
-        self.assertEqual(outreach_inbox.written_between_quotes(clean, [FIRST_EMAIL]), "", "their header and the student's own email")
+        self.assertEqual(mail_message.strip_quoted(clean), DECLINE)
+        self.assertEqual(mail_message.written_between_quotes(clean, [FIRST_EMAIL]), "", "their header and the student's own email")
         inline = clean.replace("next week?", "next week?\n\nSure, Thursday at 2 works for me.")
-        self.assertEqual(outreach_inbox.written_between_quotes(inline, [FIRST_EMAIL]), "Sure, Thursday at 2 works for me.")
+        self.assertEqual(mail_message.written_between_quotes(inline, [FIRST_EMAIL]), "Sure, Thursday at 2 works for me.")
         joined = clean.replace("\nTest Student", "\nHappy to chat though.\nTest Student")
-        self.assertEqual(outreach_inbox.written_between_quotes(joined, [FIRST_EMAIL]), "Happy to chat though.")
+        self.assertEqual(mail_message.written_between_quotes(joined, [FIRST_EMAIL]), "Happy to chat though.")
         short = clean.replace("Hi Dana,", "Hi Dana,\nSure")
-        self.assertEqual(outreach_inbox.written_between_quotes(short, [FIRST_EMAIL, "Please make sure to write."]), "Sure",
+        self.assertEqual(mail_message.written_between_quotes(short, [FIRST_EMAIL, "Please make sure to write."]), "Sure",
                          "a short line counts as the student's only when it is one of their whole lines")
         # Outlook's plain text re-wraps long lines at 76; a paragraph is the student's as a whole.
         wrapped = "\n".join(textwrap.fill(line, 76) if line else "" for line in FIRST_EMAIL.split("\n"))
-        self.assertEqual(outreach_inbox.written_between_quotes(f"{DECLINE}\n\n{OUTLOOK_HEADER}{wrapped}", [FIRST_EMAIL]), "")
+        self.assertEqual(mail_message.written_between_quotes(f"{DECLINE}\n\n{OUTLOOK_HEADER}{wrapped}", [FIRST_EMAIL]), "")
         original = f"{DECLINE}\n\n-----Original Message-----\n{OUTLOOK_HEADER}{FIRST_EMAIL}"
-        self.assertEqual(outreach_inbox.written_between_quotes(original, [FIRST_EMAIL]), "")
+        self.assertEqual(mail_message.written_between_quotes(original, [FIRST_EMAIL]), "")
         # A follow-up quoted above the first email, with the first email's own header further down.
         thread = f"{DECLINE}\n\n{OUTLOOK_HEADER}Just following up.\n\n{OUTLOOK_HEADER}{FIRST_EMAIL}"
-        self.assertEqual(outreach_inbox.written_between_quotes(thread, [FIRST_EMAIL, "Just following up."]), "")
-        self.assertEqual(outreach_inbox.written_between_quotes(thread, [FIRST_EMAIL]), "Just following up.",
+        self.assertEqual(mail_message.written_between_quotes(thread, [FIRST_EMAIL, "Just following up."]), "")
+        self.assertEqual(mail_message.written_between_quotes(thread, [FIRST_EMAIL]), "Just following up.",
                          "a follow-up that is not on record is not the student's")
 
     def test_an_html_outlook_reply_keeps_what_was_typed_into_the_quote(self):
@@ -1652,8 +1652,8 @@ class QuotingTests(unittest.TestCase):
             f"<b>To:</b> Dana Lee<br><b>Subject:</b> Robotics internship question</div><div>{quoted}</div>\n"
         ).encode()
         message = self.parse(raw)
-        self.assertEqual(outreach_inbox.reply_text(message), "We're not hiring interns right now.")
-        self.assertEqual(outreach_inbox.written_between_quotes(outreach_inbox.full_reply_text(message), [FIRST_EMAIL]),
+        self.assertEqual(mail_message.reply_text(message), "We're not hiring interns right now.")
+        self.assertEqual(mail_message.written_between_quotes(mail_message.full_reply_text(message), [FIRST_EMAIL]),
                          "Happy to chat Thursday.")
 
     def test_an_html_reply_keeps_its_quote_marked_and_what_follows_it(self):
@@ -1664,11 +1664,11 @@ class QuotingTests(unittest.TestCase):
             "<div>Actually, Thursday works?</div></div>\n"
         ).encode()
         message = self.parse(raw)
-        self.assertEqual(outreach_inbox.reply_text(message), "We're not hiring interns.")
-        whole = outreach_inbox.full_reply_text(message)
+        self.assertEqual(mail_message.reply_text(message), "We're not hiring interns.")
+        whole = mail_message.full_reply_text(message)
         self.assertIn("> Would you have time", whole)
         self.assertIn("> for a call?", whole)
-        self.assertEqual(outreach_inbox.written_between_quotes(whole), "Actually, Thursday works?")
+        self.assertEqual(mail_message.written_between_quotes(whole), "Actually, Thursday works?")
 
 
 class StrictRulesTests(unittest.TestCase):

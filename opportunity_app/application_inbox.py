@@ -128,10 +128,8 @@ down a role that is not tracked never counts.
 
 from __future__ import annotations
 
-import base64
 import email
 import hashlib
-import html
 import json
 import logging
 import os
@@ -157,8 +155,19 @@ from .connections import classify_monitored_message
 from .database import is_transient_error
 from .extension_apply import _canonical_url
 from .inbox_classifiers import classify_email
+from .mail_message import (
+    URL,
+    clean_url,
+    decode_base64url,
+    has_list_headers,
+    host_of,
+    html_text_spaced,
+    received_or_epoch,
+    strip_queries,
+)
 from .outreach_drafting import sender_account
-from .outreach_gmail import ClientFactory, GmailAuthError, GmailThrottled, _connector, _Gmail
+from .gmail_client import ClientFactory, GmailAuthError, GmailThrottled, connection_state
+from .outreach_gmail import _connector, _Gmail
 from .settings_store import setting_updated_at
 from .timestamps import parse_app_instant, utc_now
 from .typesafe_decisions import DecisionClient
@@ -215,20 +224,8 @@ _PASS_LOCKS_GUARD = threading.Lock()
 
 # --- Reading one message ---------------------------------------------------------------
 
-_URL = re.compile(r"""https?://[^\s<>"'`]+""", re.IGNORECASE)
-_URL_TAIL = ".,;:!?)]}'\""
 _FORWARD = re.compile(r"^\s*-{2,}\s*forwarded message\s*-{2,}\s*$|^\s*begin forwarded message:", re.IGNORECASE | re.MULTILINE)
 _FORWARD_SUBJECT = re.compile(r"^\s*(fwd?|fw)\s*:", re.IGNORECASE)
-
-
-def _html_text(markup: str) -> str:
-    markup = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", markup)
-    markup = re.sub(r"(?i)<br\s*/?>|</(p|div|li|tr|h\d)>", "\n", markup)
-    return html.unescape(re.sub(r"<[^>]+>", " ", markup))
-
-
-def _clean_url(url: str) -> str:
-    return html.unescape(url).rstrip(_URL_TAIL)
 
 
 @dataclass
@@ -255,7 +252,7 @@ class Mail:
     def link_hosts(self) -> list[str]:
         hosts: list[str] = []
         for link in self.links:
-            host = mail_trust.host_of(link)
+            host = host_of(link)
             if host and host not in hosts:
                 hosts.append(host)
         return hosts
@@ -263,9 +260,8 @@ class Mail:
 
 def parse_message(data: dict[str, Any]) -> Mail:
     """A Gmail messages.get answer in the raw format, read."""
-    raw = str(data.get("raw", ""))
-    message = email.message_from_bytes(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)), policy=policy.default)
-    received_at = datetime.fromtimestamp(int(data.get("internalDate") or 0) / 1000, tz=timezone.utc)
+    message = email.message_from_bytes(decode_base64url(str(data.get("raw", ""))), policy=policy.default)
+    received_at = received_or_epoch(data)
     name, address = parseaddr(str(message.get("From", "")))
     address = address.strip().lower()
     date_header = str(message.get("Date", "") or "")
@@ -285,14 +281,14 @@ def parse_message(data: dict[str, Any]) -> Mail:
             content = str(part.get_content())
         except (LookupError, ValueError):
             continue
-        for url in _URL.findall(content):
-            cleaned = _clean_url(url)
+        for url in URL.findall(content):
+            cleaned = clean_url(url)
             if cleaned not in links:
                 links.append(cleaned)
         if part.get_content_type() == "text/plain" and not plain:
             plain = content
         elif part.get_content_type() == "text/html":
-            texts.append(_html_text(content))
+            texts.append(html_text_spaced(content))
     text = plain or (texts[0] if texts else "")
     subject = " ".join(str(message.get("Subject", "") or "").split())
     return Mail(
@@ -301,8 +297,7 @@ def parse_message(data: dict[str, Any]) -> Mail:
         date_header=date_header[:200], sent_at=sent_at, sender=address, sender_name=" ".join(str(name).split()),
         sender_domain=address.rsplit("@", 1)[1] if "@" in address else "", subject=subject,
         text=text.replace("\r\n", "\n")[:TEXT_LIMIT], links=links[:200],
-        bulk=bool(message.get("List-Unsubscribe") or message.get("List-Id"))
-        or str(message.get("Precedence", "")).strip().lower() in {"bulk", "list", "junk"},
+        bulk=has_list_headers(message),
         forwarded=bool(_FORWARD_SUBJECT.match(subject) or _FORWARD.search(text)),
         message=message,
     )
@@ -310,16 +305,11 @@ def parse_message(data: dict[str, Any]) -> Mail:
 
 def redact(text: str) -> str:
     """Every link cut to its host, so no token or tracking id in a query string is ever kept."""
-    return _URL.sub(lambda match: mail_trust.host_of(_clean_url(match.group(0))) or "[link]", str(text or ""))
+    return URL.sub(lambda match: host_of(clean_url(match.group(0))) or "[link]", str(text or ""))
 
 
 def excerpt(text: str) -> str:
     return " ".join(redact(text).split())[:EXCERPT_LIMIT]
-
-
-def _strip_queries(text: str) -> str:
-    """For anything logged: a URL keeps its host and path, never its query string."""
-    return re.sub(r"(https?://[^\s?#]+)[?#][^\s]*", r"\1", str(text or ""))
 
 
 # --- What it means ---------------------------------------------------------------------
@@ -520,7 +510,7 @@ def _trim_name(phrase: str) -> str:
     return " ".join(words).strip(" .,!:;-")
 
 
-def _named(name: str) -> str:
+def _usable_company_name(name: str) -> str:
     name = _trim_name(name)
     tokens = identity_tokens(name)
     return name[:120] if name and tokens and not tokens <= GENERIC_NAMES else ""
@@ -531,13 +521,13 @@ def named_company(mail: Mail) -> str:
     for text in (mail.subject, mail.text[:2000]):
         for cue in _COMPANY_CUES:
             found = cue.search(text)
-            if found and _named(found.group("c")):
-                return _named(found.group("c"))
+            if found and _usable_company_name(found.group("c")):
+                return _usable_company_name(found.group("c"))
     lead = _SUBJECT_LEAD.search(mail.subject)
-    if lead and _named(lead.group("c")):
-        return _named(lead.group("c"))
+    if lead and _usable_company_name(lead.group("c")):
+        return _usable_company_name(lead.group("c"))
     display = _DISPLAY_NOISE.sub("", mail.sender_name).strip(" -,")
-    return _named(display) if "@" not in display else ""
+    return _usable_company_name(display) if "@" not in display else ""
 
 
 def named_title(mail: Mail) -> str:
@@ -874,7 +864,7 @@ def _open_guard(application_id: str) -> Callable[[sqlite3.Connection, dict[str, 
     return check
 
 
-def _platform(mail: Mail) -> str:
+def _platform_name(mail: Mail) -> str:
     for host in [mail.sender_domain, *mail.link_hosts]:
         for domain, name in PLATFORM_NAMES.items():
             if host == domain or host.endswith(f".{domain}"):
@@ -884,7 +874,7 @@ def _platform(mail: Mail) -> str:
 
 def _first_link(mail: Mail, category: str) -> str:
     for link in mail.links:
-        if mail_trust.listed(mail_trust.host_of(link), (category,)) and link.lower().startswith(("https://", "http://")):
+        if mail_trust.listed(host_of(link), (category,)) and link.lower().startswith(("https://", "http://")):
             return link[:2_000]
     return ""
 
@@ -1056,7 +1046,7 @@ def plan(
         if archive and (label == "assessment" or found):
             stage_change(current, ANY_TIER)
         if label == "assessment":
-            platform = _platform(mail)
+            platform = _platform_name(mail)
             title = f"Complete the {platform} assessment" if platform else "Complete the assessment"
             due = f"{found.on.isoformat()}T23:59:00" if found else None
             task(title, due, _first_link(mail, "assessment"), ANY_TIER, [] if found is None else _date_blockers(found))
@@ -1302,7 +1292,7 @@ def _queue_ids(conn: sqlite3.Connection, user_id: str, column: str, ids: list[st
     return len(added)
 
 
-def _record(conn: sqlite3.Connection, user_id: str, mail: Mail | None, gmail_id: str, outcome: Outcome, *,
+def _record_outcome(conn: sqlite3.Connection, user_id: str, mail: Mail | None, gmail_id: str, outcome: Outcome, *,
             queue: str | None, origin: str, received_at: str = "", expect: Any = _ANY) -> None:
     """Record one message's outcome and take it off its queue, in one transaction."""
     with conn:
@@ -1427,16 +1417,16 @@ def _drain(
             _dequeue(conn, user_id, queue, gmail_id)  # read already (by another pass, or found twice)
             continue
         if _outreach_owns(conn, user_id, gmail_id):
-            _record(conn, user_id, None, gmail_id, Outcome("outreach"), queue=queue, origin=origin, expect=expect)
+            _record_outcome(conn, user_id, None, gmail_id, Outcome("outreach"), queue=queue, origin=origin, expect=expect)
             continue
         if not budget.take():
             break
         data = _fetch(gmail, gmail_id)
         if data is None:
-            _record(conn, user_id, None, gmail_id, Outcome("gone"), queue=queue, origin=origin, expect=expect)
+            _record_outcome(conn, user_id, None, gmail_id, Outcome("gone"), queue=queue, origin=origin, expect=expect)
             continue
         mail, outcome = _decide_safely(conn, user_id, data, decisions=decisions, sync=sync, origin=origin, now=now)
-        _record(conn, user_id, mail, gmail_id, outcome, queue=queue, origin=origin, expect=expect)
+        _record_outcome(conn, user_id, mail, gmail_id, outcome, queue=queue, origin=origin, expect=expect)
         _tally(totals, outcome)
 
 
@@ -1457,10 +1447,10 @@ def _rescan(
             break
         data = _fetch(gmail, row["gmail_id"])
         if data is None:
-            _record(conn, user_id, None, row["gmail_id"], Outcome("gone"), queue=None, origin=row["origin"], expect=expect)
+            _record_outcome(conn, user_id, None, row["gmail_id"], Outcome("gone"), queue=None, origin=row["origin"], expect=expect)
             continue
         mail, outcome = _decide_safely(conn, user_id, data, decisions=decisions, sync=sync, origin=row["origin"], now=now)
-        _record(conn, user_id, mail, row["gmail_id"], outcome, queue=None, origin=row["origin"], expect=expect)
+        _record_outcome(conn, user_id, mail, row["gmail_id"], outcome, queue=None, origin=row["origin"], expect=expect)
         _tally(totals, outcome)
 
 
@@ -1713,9 +1703,9 @@ def run_pass(
         last = parse_app_instant(sync.get("last_pass_at"))
         if not force and last is not None and now - last < PASS_EVERY:
             return {**result, "skipped": True}
-        row = _connector(conn, user_id)
-        if not row or row["status"] != "connected":
-            return {**result, "state": "not_connected" if not row or row["status"] == "disconnected" else "needs_reconnect"}
+        state = connection_state(_connector(conn, user_id))
+        if state != "connected":
+            return {**result, "state": state}
         totals: dict[str, int] = {}
         try:
             with conn:
@@ -1751,7 +1741,7 @@ def run_pass(
             return _failed(conn, user_id, {**result, "state": "unreachable", "detail": totals}, str(exc))
         except (httpx.HTTPError, ValueError) as exc:
             return _failed(conn, user_id, {**result, "state": "unreachable", "detail": totals},
-                           f"{type(exc).__name__}: {_strip_queries(str(exc))[:200]}")
+                           f"{type(exc).__name__}: {strip_queries(str(exc))[:200]}")
         except Exception as exc:
             if not is_transient_error(exc):
                 raise
@@ -1774,7 +1764,7 @@ def _failed(conn: sqlite3.Connection, user_id: str, result: dict[str, Any], erro
         conn.rollback()
     try:
         with conn:
-            _update_sync(conn, user_id, last_error=_strip_queries(error)[:300])
+            _update_sync(conn, user_id, last_error=strip_queries(error)[:300])
     except Exception:  # noqa: BLE001 - the state is still reported
         LOGGER.warning("Could not record why an application mail pass stopped", exc_info=True)
     return result
