@@ -12,6 +12,7 @@ per process, a dependency module). These tests pin three things that split could
   imports the modules that register them.
 """
 
+import ast
 import json
 import sqlite3
 import subprocess
@@ -177,6 +178,31 @@ class SharedRouteTableTests(unittest.TestCase):
     def test_an_unknown_keyword_is_still_refused(self):
         with self.assertRaises(TypeError):
             create_app(not_an_option=True)
+
+
+class WebModuleSourceGuardTests(unittest.TestCase):
+    """The route handlers keep their names (they are the endpoint names and operation ids), and three of them are named like domain
+    modules: profile, resumes and connections. A module that defined such a function and also imported the module of that name would
+    have the function shadow the import."""
+
+    def test_no_web_module_defines_a_top_level_name_it_also_imports_or_defines_twice(self):
+        offenders = []
+        for path in sorted((ROOT / "opportunity_app" / "web").rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            imported, defined = set(), []
+            for node in tree.body:
+                if isinstance(node, ast.Import):
+                    imported |= {alias.asname or alias.name.split(".")[0] for alias in node.names}
+                elif isinstance(node, ast.ImportFrom):
+                    imported |= {alias.asname or alias.name for alias in node.names}
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    defined.append(node.name)
+                elif isinstance(node, ast.Assign):
+                    defined += [target.id for target in node.targets if isinstance(target, ast.Name)]
+            clash = sorted(set(defined) & imported) + sorted({name for name in defined if defined.count(name) > 1})
+            if clash:
+                offenders.append(f"{path.relative_to(ROOT).as_posix()}: {clash}")
+        self.assertEqual(offenders, [])
 
 
 class AHandlersDatabaseErrorIsNotAMissingDatabaseTests(unittest.TestCase):
