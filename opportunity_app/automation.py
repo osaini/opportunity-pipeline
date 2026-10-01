@@ -383,11 +383,19 @@ def can_turn_on(conn: sqlite3.Connection, user_id: str, key: str, *, now: dateti
     A feature with an unmet requirement (REQUIREMENTS) cannot be; a
     shadow-capable one must also have earned acting on its own in shadow.
     """
-    feature = _feature(key)
     current = mode(conn, user_id, key)
     if current == "on":
         return True, ""
-    missing = requirement(conn, user_id, key)
+    return _can_turn_on(conn, user_id, key, current, requirement(conn, user_id, key), now=now)
+
+
+def _can_turn_on(
+    conn: sqlite3.Connection, user_id: str, key: str, current: str, missing: str, *, now: datetime | None = None,
+) -> tuple[bool, str]:
+    """can_turn_on for a caller that already has the feature's mode and requirement (settings_payload)."""
+    feature = _feature(key)
+    if current == "on":
+        return True, ""
     if missing:
         return False, missing
     if not feature.shadow_capable:
@@ -664,14 +672,15 @@ def settings_payload(conn: sqlite3.Connection, user_id: str, *, now: datetime | 
     current = modes(conn, user_id)
     features = []
     for feature in FEATURES.values():
-        allowed, reason = can_turn_on(conn, user_id, feature.key, now=now)
+        missing = requirement(conn, user_id, feature.key)
+        allowed, reason = _can_turn_on(conn, user_id, feature.key, current[feature.key], missing, now=now)
         features.append({
             "key": feature.key, "label": feature.label, "description": feature.description, "group": feature.group,
             "risk": feature.risk, "modes": list(feature.modes), "mode": current[feature.key],
             "shadow_since": _setting(conn, user_id, f"{feature.key}.shadow_since") if feature.shadow_capable else None,
             "can_turn_on": allowed, "can_turn_on_reason": reason,
             # What it still needs to act, whatever its mode: a switch left on can lose a requirement later.
-            "requirement": requirement(conn, user_id, feature.key),
+            "requirement": missing,
         })
     return {"paused": paused(conn, user_id), "features": features}
 
