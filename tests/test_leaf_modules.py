@@ -552,14 +552,28 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=ROOT, check=True)
         self.assertEqual(done.stdout.strip(), "False")
 
-    def test_only_the_legacy_adapter_imports_pipeline(self):
+    def test_only_the_legacy_adapter_imports_the_legacy_pipeline(self):
+        # pipeline.py is split into these pipeline_core modules; the web app reaches them through opportunity_app/legacy.py.
+        # (identity, regions, env, visibility and read_model are shared leaves, not part of the legacy door.)
+        split = {
+            "paths", "clock", "config", "text", "http", "sources", "store", "liveness", "retention", "discovery", "fetch",
+            "importers", "scoring", "reports", "artifacts", "cli",
+        }
         offenders = []
         for path in sorted((ROOT / "opportunity_app").rglob("*.py")):
             if path.name == "legacy.py":
                 continue
-            if "pipeline" in all_imports(path):
-                offenders.append(path.name)
-        self.assertEqual(offenders, [], "web modules must import pipeline names through opportunity_app.legacy")
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
+                names = []
+                if isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and not node.level:
+                    names = [node.module or ""] + [f"{node.module}.{alias.name}" for alias in node.names]
+                for name in names:
+                    parts = name.split(".")
+                    if parts[0] == "pipeline" or (parts[0] == "pipeline_core" and len(parts) > 1 and parts[1] in split):
+                        offenders.append(f"{path.name}: {name}")
+        self.assertEqual(offenders, [], "web modules must import the legacy pipeline through opportunity_app.legacy")
 
     def test_the_regions_moved_to_pipeline_core_still_bucket_locations(self):
         from pipeline_core.regions import match_region, region_label

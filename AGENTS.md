@@ -20,7 +20,7 @@ loopback-only.
 
 | Piece | Where | Notes |
 | --- | --- | --- |
-| Legacy pipeline + CLI | `pipeline.py` | No third-party dependencies. See rule 4 for the two allowed non-stdlib imports. |
+| Legacy pipeline + CLI | `pipeline.py` (entry point) and `pipeline_core/` (`paths`, `config`, `http`, `text`, `sources`, `store`, `liveness`, `retention`, `discovery`, `fetch`, `importers`, `scoring`, `reports`, `artifacts`, `cli`) | No third-party dependencies. See rule 4 for the two allowed non-stdlib imports. The web app reaches it only through `opportunity_app/legacy.py`. |
 | Shared read model | `pipeline_core/read_model.py` | Framework-neutral read model shared by CLI parity tests and the web app; standard library only. |
 | Web API | `opportunity_app/` | FastAPI. `api.py` is ~2,300 lines and holds every route. |
 | Frontend | `opportunity_app/static/` | Vanilla JS. No framework, no build step. `app.js` is ~110KB. |

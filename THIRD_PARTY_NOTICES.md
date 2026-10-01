@@ -12,7 +12,7 @@ licences, reproduced below.
 - **Copyright:** © 2026 Santiago Fernández de Valderrama
 - **Licence:** MIT
 
-Ported into `pipeline.py` (transliterated from JavaScript to Python, with the
+Ported into `pipeline_core/` (`liveness.py` and `text.py`; transliterated from JavaScript to Python, with the
 upstream explanatory comments retained because they document the real-world
 failures each guard exists to prevent):
 
