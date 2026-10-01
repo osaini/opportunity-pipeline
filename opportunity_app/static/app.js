@@ -2843,6 +2843,58 @@
   // it, pressing Escape, or waiting a few seconds puts it back.
   const SEND_CONFIRM_MS = 8000;
 
+  // Gives a button the two-click ask: the first click arms it (the label turns
+  // into the question, the prompt is announced, and the arm lapses after
+  // SEND_CONFIRM_MS), a second click runs onConfirm. Leaving the button or
+  // pressing Escape disarms it. dataset.confirming stays set until reset(), so
+  // it is still set while onConfirm is in flight. beforeClick returns true to
+  // refuse the click outright; shouldArm false makes a click confirm at once.
+  // Returns reset(), for onConfirm to put the button back after a failure.
+  function armConfirm(button, { idleLabel, armedLabel, prompt, idleAriaLabel, armedAriaLabel, confirmValue = "true", shouldArm = () => true, beforeClick, onConfirm }) {
+    let timer = null;
+    const reset = () => {
+      clearTimeout(timer);
+      timer = null;
+      delete button.dataset.confirming;
+      button.textContent = idleLabel();
+      if (idleAriaLabel) button.setAttribute("aria-label", idleAriaLabel());
+    };
+    button.addEventListener("blur", () => { if (button.dataset.confirming) reset(); });
+    button.addEventListener("keydown", (event) => { if (event.key === "Escape" && button.dataset.confirming) reset(); });
+    button.addEventListener("click", async () => {
+      if (beforeClick?.()) return;
+      if (shouldArm() && !button.dataset.confirming) {
+        button.dataset.confirming = confirmValue;
+        button.textContent = armedLabel();
+        if (armedAriaLabel) button.setAttribute("aria-label", armedAriaLabel());
+        announce(prompt());
+        timer = setTimeout(reset, SEND_CONFIRM_MS);
+        return;
+      }
+      clearTimeout(timer);
+      await onConfirm();
+    });
+    return reset;
+  }
+
+  // After a 428 the server has named what the student must look for in Gmail.
+  // The next confirmed click sends that check, once: whatever that attempt's
+  // outcome, a later one has to be vouched for again.
+  function sentFolderCheck() {
+    let check = "";
+    return {
+      get pending() { return check; },
+      // Adds the remembered check to a request body, and forgets it.
+      attach(payload) {
+        if (check) payload.sent_folder_check = check;
+        check = "";
+      },
+      note(error) {
+        if (error.status === 428 && typeof error.detail?.check === "string") check = error.detail.check;
+      },
+    };
+  }
+
   function gmailSendButton(gmail, item, kind, { now = false } = {}) {
     const attachment = gmail.attachment ? ` with ${gmail.attachment}` : "";
     const label = now ? "Send now" : kind === "follow_up" ? `Send follow-up${attachment}` : `Send${attachment}`;
@@ -2853,64 +2905,47 @@
       button.disabled = true;
       button.title = gmail.attachment_problem;
     }
-    // After a 428 the server has named what the student must look for in
-    // Gmail. The next confirmed click sends that check, once: whatever that
-    // attempt's outcome, a later one has to be vouched for again.
-    let check = "";
-    let timer = null;
-    const idleLabel = () => (check ? `Checked Gmail — send again${attachment}` : label);
-    const reset = () => {
-      clearTimeout(timer);
-      timer = null;
-      delete button.dataset.confirming;
-      button.textContent = idleLabel();
-    };
-    button.addEventListener("blur", () => { if (button.dataset.confirming) reset(); });
-    button.addEventListener("keydown", (event) => { if (event.key === "Escape" && button.dataset.confirming) reset(); });
-    button.addEventListener("click", async () => {
-      if (refuseUnsavedHandOff(button, kind)) return;
-      if (!button.dataset.confirming) {
-        button.dataset.confirming = "true";
-        button.textContent = `Send to ${recipients}?`;
-        announce(`Press again to send the ${kind === "follow_up" ? "follow-up" : "email"} to ${recipients} from ${gmail.account || "Gmail"}.`);
-        timer = setTimeout(reset, SEND_CONFIRM_MS);
-        return;
-      }
-      clearTimeout(timer);
-      button.disabled = true;
-      button.textContent = "Sending…";
-      const payload = { kind, fingerprint: kind === "follow_up" ? item.follow_up_fingerprint : item.draft_fingerprint };
-      if (check) payload.sent_folder_check = check;
-      check = "";
-      try {
-        const sent = await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/gmail-send`, {
-          method: "POST",
-          body: JSON.stringify(payload),
-        });
-        state.outreachOpen = item.id;
-        watchForBounces();
-        if (sent.marked === false) {
-          announce(`Sent to ${sent.to}, but ${item.company} could not be marked ${kind === "follow_up" ? "followed up" : "sent"}. Press "I sent it" to catch it up.`);
-        } else {
-          announce(kind === "follow_up"
-            ? `Sent the follow-up to ${sent.to}. ${item.company} is marked followed up.`
-            : `Sent to ${sent.to} from ${sent.account || "Gmail"}. ${item.company} is marked sent, with a follow-up set for ${formatCalendarDate(sent.follow_up_at)}.`);
-        }
-        await loadOutreach();
-      } catch (error) {
-        // Gmail may already have this email: the message says where to look,
-        // and the next confirmed click vouches for having looked.
-        if (error.status === 428 && typeof error.detail?.check === "string") check = error.detail.check;
-        reset();
-        button.disabled = false;
-        // A changed or already-sent draft means the card is stale; reloading
-        // clears errors, so the reason is shown after it.
-        if (error.status === 409 || error.status === 422) {
+    const sentCheck = sentFolderCheck();
+    const reset = armConfirm(button, {
+      idleLabel: () => (sentCheck.pending ? `Checked Gmail — send again${attachment}` : label),
+      armedLabel: () => `Send to ${recipients}?`,
+      prompt: () => `Press again to send the ${kind === "follow_up" ? "follow-up" : "email"} to ${recipients} from ${gmail.account || "Gmail"}.`,
+      beforeClick: () => refuseUnsavedHandOff(button, kind),
+      onConfirm: async () => {
+        button.disabled = true;
+        button.textContent = "Sending…";
+        const payload = { kind, fingerprint: kind === "follow_up" ? item.follow_up_fingerprint : item.draft_fingerprint };
+        sentCheck.attach(payload);
+        try {
+          const sent = await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/gmail-send`, {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
           state.outreachOpen = item.id;
+          watchForBounces();
+          if (sent.marked === false) {
+            announce(`Sent to ${sent.to}, but ${item.company} could not be marked ${kind === "follow_up" ? "followed up" : "sent"}. Press "I sent it" to catch it up.`);
+          } else {
+            announce(kind === "follow_up"
+              ? `Sent the follow-up to ${sent.to}. ${item.company} is marked followed up.`
+              : `Sent to ${sent.to} from ${sent.account || "Gmail"}. ${item.company} is marked sent, with a follow-up set for ${formatCalendarDate(sent.follow_up_at)}.`);
+          }
           await loadOutreach();
+        } catch (error) {
+          // Gmail may already have this email: the message says where to look,
+          // and the next confirmed click vouches for having looked.
+          sentCheck.note(error);
+          reset();
+          button.disabled = false;
+          // A changed or already-sent draft means the card is stale; reloading
+          // clears errors, so the reason is shown after it.
+          if (error.status === 409 || error.status === 422) {
+            state.outreachOpen = item.id;
+            await loadOutreach();
+          }
+          showError(error.message);
         }
-        showError(error.message);
-      }
+      },
     });
     return button;
   }
@@ -2967,46 +3002,34 @@
     const button = element("button", inBrowser ? "secondary-button outreach-compose" : "primary-button outreach-compose outreach-send", label);
     button.type = "button";
     if (inBrowser) button.title = "Opens a browser window on this computer with the form filled in. Solve the CAPTCHA there; the app sends the form once it is solved.";
-    let timer = null;
-    const reset = () => {
-      clearTimeout(timer);
-      timer = null;
-      delete button.dataset.confirming;
-      button.textContent = label;
-    };
-    button.addEventListener("blur", () => { if (button.dataset.confirming) reset(); });
-    button.addEventListener("keydown", (event) => { if (event.key === "Escape" && button.dataset.confirming) reset(); });
-    button.addEventListener("click", async () => {
-      if (refuseUnsavedHandOff(button, "initial")) return;
-      if (!button.dataset.confirming) {
-        button.dataset.confirming = "true";
-        button.textContent = `Send through ${formHost(item)}'s form?`;
-        announce(`Press again to send the approved email through ${item.company}'s contact form as you, from ${item.contact_form.page_url}.`);
-        timer = setTimeout(reset, SEND_CONFIRM_MS);
-        return;
-      }
-      clearTimeout(timer);
-      button.disabled = true;
-      button.textContent = inBrowser ? "Waiting for you in the browser…" : "Sending…";
-      if (inBrowser) announce("A browser window is opening with the form filled in. Solve the CAPTCHA there; the app sends the form once it is solved.");
-      try {
-        const result = await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/form-submit`, {
-          method: "POST",
-          body: JSON.stringify({ fingerprint: item.draft_fingerprint, retry_unconfirmed: retry, in_browser: inBrowser }),
-        });
-        state.outreachOpen = item.id;
-        if (result.outcome === "submitted" || result.outcome === "unconfirmed") watchForBounces();
-        announce(formOutcomeMessage(item, result));
-        await loadOutreach();
-      } catch (error) {
-        reset();
-        button.disabled = false;
-        if ([409, 422, 428].includes(error.status)) {
+    const reset = armConfirm(button, {
+      idleLabel: () => label,
+      armedLabel: () => `Send through ${formHost(item)}'s form?`,
+      prompt: () => `Press again to send the approved email through ${item.company}'s contact form as you, from ${item.contact_form.page_url}.`,
+      beforeClick: () => refuseUnsavedHandOff(button, "initial"),
+      onConfirm: async () => {
+        button.disabled = true;
+        button.textContent = inBrowser ? "Waiting for you in the browser…" : "Sending…";
+        if (inBrowser) announce("A browser window is opening with the form filled in. Solve the CAPTCHA there; the app sends the form once it is solved.");
+        try {
+          const result = await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/form-submit`, {
+            method: "POST",
+            body: JSON.stringify({ fingerprint: item.draft_fingerprint, retry_unconfirmed: retry, in_browser: inBrowser }),
+          });
           state.outreachOpen = item.id;
+          if (result.outcome === "submitted" || result.outcome === "unconfirmed") watchForBounces();
+          announce(formOutcomeMessage(item, result));
           await loadOutreach();
+        } catch (error) {
+          reset();
+          button.disabled = false;
+          if ([409, 422, 428].includes(error.status)) {
+            state.outreachOpen = item.id;
+            await loadOutreach();
+          }
+          showError(error.message);
         }
-        showError(error.message);
-      }
+      },
     });
     return button;
   }
@@ -3180,41 +3203,30 @@
     const label = kind === "follow_up" ? "Schedule follow-up for their morning" : "Schedule for their morning";
     const button = element("button", "primary-button outreach-compose outreach-schedule", label);
     button.type = "button";
-    let timer = null;
-    const reset = () => {
-      clearTimeout(timer);
-      delete button.dataset.confirming;
-      button.textContent = label;
-    };
-    button.addEventListener("blur", () => { if (button.dataset.confirming) reset(); });
-    button.addEventListener("keydown", (event) => { if (event.key === "Escape" && button.dataset.confirming) reset(); });
-    button.addEventListener("click", async () => {
-      if (refuseUnsavedHandOff(button, kind)) return;
-      if (!button.dataset.confirming) {
-        button.dataset.confirming = "true";
-        button.textContent = `Schedule to ${recipients}?`;
-        announce(`Press again to schedule the ${kind === "follow_up" ? "follow-up" : "email"} to ${recipients} for their next weekday morning.`);
-        timer = setTimeout(reset, SEND_CONFIRM_MS);
-        return;
-      }
-      clearTimeout(timer);
-      button.disabled = true;
-      try {
-        const scheduled = await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/schedule`, {
-          method: "POST",
-          body: JSON.stringify({ kind, fingerprint: kind === "follow_up" ? item.follow_up_fingerprint : item.draft_fingerprint }),
-        });
-        state.outreachOpen = item.id;
-        state.outreachKeep.add(item.id);
-        await loadOutreach();
-        announce(automationPaused()
-          ? `Scheduled for ${scheduled.label}. Automation is paused, so it goes out after you resume.`
-          : `Scheduled: goes out ${scheduled.label}.`);
-      } catch (error) {
-        reset();
-        button.disabled = false;
-        showError(error.message);
-      }
+    const reset = armConfirm(button, {
+      idleLabel: () => label,
+      armedLabel: () => `Schedule to ${recipients}?`,
+      prompt: () => `Press again to schedule the ${kind === "follow_up" ? "follow-up" : "email"} to ${recipients} for their next weekday morning.`,
+      beforeClick: () => refuseUnsavedHandOff(button, kind),
+      onConfirm: async () => {
+        button.disabled = true;
+        try {
+          const scheduled = await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/schedule`, {
+            method: "POST",
+            body: JSON.stringify({ kind, fingerprint: kind === "follow_up" ? item.follow_up_fingerprint : item.draft_fingerprint }),
+          });
+          state.outreachOpen = item.id;
+          state.outreachKeep.add(item.id);
+          await loadOutreach();
+          announce(automationPaused()
+            ? `Scheduled for ${scheduled.label}. Automation is paused, so it goes out after you resume.`
+            : `Scheduled: goes out ${scheduled.label}.`);
+        } catch (error) {
+          reset();
+          button.disabled = false;
+          showError(error.message);
+        }
+      },
     });
     return button;
   }
@@ -5423,44 +5435,32 @@
     const label = "Send it anyway";
     const button = element("button", "primary-button", label);
     button.type = "button";
-    let check = "";
-    let timer = null;
-    const reset = () => {
-      clearTimeout(timer);
-      delete button.dataset.confirming;
-      button.textContent = check ? "Checked Gmail — send again" : label;
-    };
-    button.addEventListener("blur", () => { if (button.dataset.confirming) reset(); });
-    button.addEventListener("keydown", (event) => { if (event.key === "Escape" && button.dataset.confirming) reset(); });
-    button.addEventListener("click", async () => {
-      if (!button.dataset.confirming) {
-        button.dataset.confirming = "true";
-        button.textContent = `Send to ${thankYou.to_email}?`;
-        announce(`Press again to send the thank-you to ${thankYou.to_email}.`);
-        timer = setTimeout(reset, SEND_CONFIRM_MS);
-        return;
-      }
-      clearTimeout(timer);
-      button.disabled = true;
-      button.textContent = "Sending…";
-      const payload = { fingerprint: thankYou.fingerprint };
-      if (check) payload.sent_folder_check = check;
-      check = "";
-      try {
-        await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/thank-you/send`, { method: "POST", body: JSON.stringify(payload) });
-        state.outreachOpen = item.id;
-        await loadOutreach();
-        announce(`Sent the thank-you to ${thankYou.to_email}.`);
-      } catch (error) {
-        if (error.status === 428 && typeof error.detail?.check === "string") check = error.detail.check;
-        reset();
-        button.disabled = false;
-        if (error.status === 409 || error.status === 422) {
+    const sentCheck = sentFolderCheck();
+    const reset = armConfirm(button, {
+      idleLabel: () => (sentCheck.pending ? "Checked Gmail — send again" : label),
+      armedLabel: () => `Send to ${thankYou.to_email}?`,
+      prompt: () => `Press again to send the thank-you to ${thankYou.to_email}.`,
+      onConfirm: async () => {
+        button.disabled = true;
+        button.textContent = "Sending…";
+        const payload = { fingerprint: thankYou.fingerprint };
+        sentCheck.attach(payload);
+        try {
+          await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/thank-you/send`, { method: "POST", body: JSON.stringify(payload) });
           state.outreachOpen = item.id;
           await loadOutreach();
+          announce(`Sent the thank-you to ${thankYou.to_email}.`);
+        } catch (error) {
+          sentCheck.note(error);
+          reset();
+          button.disabled = false;
+          if (error.status === 409 || error.status === 422) {
+            state.outreachOpen = item.id;
+            await loadOutreach();
+          }
+          showError(error.message);
         }
-        showError(error.message);
-      }
+      },
     });
     return button;
   }
@@ -5572,28 +5572,16 @@
       // A follow-up is in line for this company, or for another it could be from: a misclick here would
       // let it go to someone who may have answered, so the button asks once more, as Send does.
       const releases = Boolean(mail.holds_follow_up) || ["scheduled", "sending"].includes(item.scheduled?.follow_up?.state);
-      let timer = null;
-      const disarm = () => {
-        clearTimeout(timer);
-        timer = null;
-        delete no.dataset.confirming;
-        no.textContent = "Not a reply";
-        no.setAttribute("aria-label", `Not a reply: ${about}`);
-      };
-      no.addEventListener("click", () => {
-        if (releases && !no.dataset.confirming) {
-          no.dataset.confirming = "1";
-          no.textContent = "Not a reply: let the follow-up go?";
-          no.setAttribute("aria-label", `Not a reply: let the follow-up go? ${about}`);
-          announce("Press Not a reply again to let the follow-up go.");
-          timer = setTimeout(disarm, SEND_CONFIRM_MS);
-          return;
-        }
-        clearTimeout(timer);
-        decide("not_reply", no);
+      armConfirm(no, {
+        idleLabel: () => "Not a reply",
+        armedLabel: () => "Not a reply: let the follow-up go?",
+        idleAriaLabel: () => `Not a reply: ${about}`,
+        armedAriaLabel: () => `Not a reply: let the follow-up go? ${about}`,
+        prompt: () => "Press Not a reply again to let the follow-up go.",
+        confirmValue: "1",
+        shouldArm: () => releases,
+        onConfirm: () => decide("not_reply", no),
       });
-      no.addEventListener("blur", () => { if (no.dataset.confirming) disarm(); });
-      no.addEventListener("keydown", (event) => { if (event.key === "Escape" && no.dataset.confirming) disarm(); });
       actions.append(yes, no);
       if (typeof mail.gmail_url === "string" && mail.gmail_url.startsWith("https://mail.google.com/")) {
         const open = element("a", "text-button", "Open in Gmail");
