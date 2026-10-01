@@ -29,7 +29,7 @@ set aside, matched to a company by its domain alone, or the student dismissed
 is read here too; _reclaim takes back any such message this reader had once
 left to outreach.
 
-What it means. The keyword rules (connections.classify_monitored_message) plus
+What it means. The keyword rules (monitored_classifier.classify_monitored_message) plus
 what the sender says: mail from an assessment platform is an assessment unless
 it is an offer, a rejection, or thanks for a finished test; a scheduling-tool
 link or sender is scheduling unless the text says more. Jev answers when the
@@ -151,7 +151,7 @@ from pipeline_core.identity import identity_tokens, normalized
 
 from . import automation, internal_automation, mail_trust
 from .actions import log_application_event
-from .connections import classify_monitored_message
+from .monitored_classifier import classify_monitored_message
 from .database import is_transient_error
 from .extension_apply import split_canonical_url
 from .inbox_classifiers import classify_email

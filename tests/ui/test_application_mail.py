@@ -19,7 +19,7 @@ from playwright.sync_api import expect
 from conftest import wait_for_results
 from opportunity_app import automation
 from opportunity_app.actions import record_intent
-from opportunity_app.schema import connect_product
+from opportunity_app.database import connect_product
 from opportunity_app.timestamps import utc_now
 from ui_helpers import assert_accessible
 

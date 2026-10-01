@@ -23,7 +23,9 @@ from opportunity_app import STATIC_DIR, apply_claims, apply_runs, automation, au
 from opportunity_app.actions import record_intent, update_application
 from opportunity_app.api import create_app
 from opportunity_app.automation import Feature
-from opportunity_app.schema import MIGRATIONS_DIR, connect_product, ensure_product_schema, migrate_legacy_database
+from opportunity_app.schema import MIGRATIONS_DIR, ensure_product_schema
+from opportunity_app.legacy_sync import migrate_legacy_database
+from opportunity_app.database import connect_product, has_column
 from opportunity_app.timestamps import utc_now
 from pipeline_core import OpportunityFilters, OpportunityRepository
 from pipeline_core.identity import employer_key
@@ -219,7 +221,8 @@ class PostgresContractTests(unittest.TestCase):
         from datetime import date, timedelta
 
         from opportunity_app import urgent
-        from opportunity_app.schema import LOCAL_USER_ID, connect_product
+        from opportunity_app.schema import LOCAL_USER_ID
+        from opportunity_app.database import connect_product
 
         auth = {"Authorization": "Bearer pg-secret"}
         soon = (date.today() + timedelta(days=3)).isoformat()
@@ -390,7 +393,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
 
     def test_migration_0037_applies_and_a_rerun_repairs_a_half_applied_upgrade(self):
         for table, column in AUTOMATION_COLUMNS:
-            self.assertTrue(schema._has_column(self.conn, table, column), f"{table}.{column}")
+            self.assertTrue(has_column(self.conn, table, column), f"{table}.{column}")
         stamp = utc_now()
         with self.conn:
             self.conn.execute(
@@ -405,7 +408,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
             self.conn.execute("DELETE FROM schema_migrations WHERE name='0037_automation.sql'")
         ensure_product_schema(self.conn)
         for table, column in AUTOMATION_COLUMNS:
-            self.assertTrue(schema._has_column(self.conn, table, column), f"{table}.{column} after the rerun")
+            self.assertTrue(has_column(self.conn, table, column), f"{table}.{column} after the rerun")
         marker = self.conn.execute("SELECT 1 FROM schema_migrations WHERE name='0037_automation.sql'").fetchone()
         self.assertIsNotNone(marker)
         seeded = self.conn.execute("SELECT value, updated_at FROM user_settings WHERE user_id='student-2' AND key='automation_paused'").fetchone()
@@ -420,12 +423,12 @@ class PostgresAutomationContractTests(unittest.TestCase):
         from opportunity_app import application_inbox
 
         for table, column in (("application_tasks", "link"), ("monitored_events", "decided_by")):
-            self.assertTrue(schema._has_column(self.conn, table, column), f"{table}.{column}")
+            self.assertTrue(has_column(self.conn, table, column), f"{table}.{column}")
         with self.conn:
             self.conn.execute("ALTER TABLE monitored_events DROP COLUMN decided_by")
             self.conn.execute("DELETE FROM schema_migrations WHERE name='0038_application_mail.sql'")
         ensure_product_schema(self.conn)
-        self.assertTrue(schema._has_column(self.conn, "monitored_events", "decided_by"))
+        self.assertTrue(has_column(self.conn, "monitored_events", "decided_by"))
         with self.conn:
             self.conn.execute(
                 "INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, 'application_mail', 'on', ?) "
@@ -658,12 +661,12 @@ class PostgresAutomationContractTests(unittest.TestCase):
         sending = mock.patch.dict("os.environ", {"PIPELINE_OUTREACH_ACCOUNT": "student@school.example"})
         sending.start()
         self.addCleanup(sending.stop)
-        self.assertTrue(schema._has_column(self.conn, "outreach_events", "detail_json"))
+        self.assertTrue(has_column(self.conn, "outreach_events", "detail_json"))
         with self.conn:
             self.conn.execute("ALTER TABLE outreach_events DROP COLUMN detail_json")
             self.conn.execute("DELETE FROM schema_migrations WHERE name='0040_decline_thank_you.sql'")
         ensure_product_schema(self.conn)
-        self.assertTrue(schema._has_column(self.conn, "outreach_events", "detail_json"), "a half-applied 0040 is repaired")
+        self.assertTrue(has_column(self.conn, "outreach_events", "detail_json"), "a half-applied 0040 is repaired")
         self.conn.commit()
         self.outreach_target("t-1", "Bovi")
         with self.conn:
@@ -743,7 +746,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
         self.assertEqual({column for _table, column, _definition in schema._OUTREACH_REPLY_RULES_COLUMNS}, set(REPLY_RULES_COLUMNS),
                          "the table as 0039 left it, below, lacks every column 0041 adds")
         for column in REPLY_RULES_COLUMNS:
-            self.assertTrue(schema._has_column(self.conn, "outreach_inbox_messages", column), column)
+            self.assertTrue(has_column(self.conn, "outreach_inbox_messages", column), column)
         self.assertIn("(user_id, target_id, kind)", self.index_definition(REPLY_RULES_INDEX) or "")
         # The table as 0039 left it, holding what the old code read; then a crash after the first two
         # ALTERs and before the marker. SQLite keeps ALTERs a crash interrupts and PostgreSQL rolls them
@@ -762,7 +765,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
             self.conn.execute("ALTER TABLE outreach_inbox_messages ADD COLUMN rules INTEGER NOT NULL DEFAULT 0")
         ensure_product_schema(self.conn)
         for column in REPLY_RULES_COLUMNS:
-            self.assertTrue(schema._has_column(self.conn, "outreach_inbox_messages", column), f"{column} after the rerun")
+            self.assertTrue(has_column(self.conn, "outreach_inbox_messages", column), f"{column} after the rerun")
         self.assertIn("(user_id, target_id, kind)", self.index_definition(REPLY_RULES_INDEX) or "")
         markers = self.conn.execute("SELECT COUNT(*) AS n FROM schema_migrations WHERE name=?", (outreach_inbox.MIGRATION,)).fetchone()["n"]
         types = {row["column_name"]: (row["data_type"], row["is_nullable"]) for row in self.conn.execute(
@@ -793,7 +796,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
         """Another schema in the same database already has the columns (a copy, a second app): 0041 still adds them here.
 
         information_schema.columns lists every schema the user can see. Asked
-        without table_schema=current_schema(), _has_column found the other
+        without table_schema=current_schema(), has_column found the other
         copy's column and the ALTER here was skipped, so every write of the new
         columns failed.
         """
@@ -816,11 +819,11 @@ class PostgresAutomationContractTests(unittest.TestCase):
             for column in ("text", "decided_at"):
                 self.conn.execute(f"ALTER TABLE outreach_inbox_messages DROP COLUMN {column}")
             self.conn.execute("DELETE FROM schema_migrations WHERE name=?", (outreach_inbox.MIGRATION,))
-        self.assertFalse(schema._has_column(self.conn, "outreach_inbox_messages", "text"), "the other schema's column is not this one's")
+        self.assertFalse(has_column(self.conn, "outreach_inbox_messages", "text"), "the other schema's column is not this one's")
         self.conn.commit()
         ensure_product_schema(self.conn)
         for column in REPLY_RULES_COLUMNS:
-            self.assertTrue(schema._has_column(self.conn, "outreach_inbox_messages", column), column)
+            self.assertTrue(has_column(self.conn, "outreach_inbox_messages", column), column)
         self.conn.commit()
         self.outreach_target("t-1", "Bovi")
         with self.conn:
@@ -835,7 +838,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
         self.assertEqual({(table, column) for table, column, _definition in schema._GMAIL_REPLY_LABELS_COLUMNS},
                          set(GMAIL_REPLY_LABELS_COLUMNS), "the columns dropped below are every column 0043 adds")
         for table, column in GMAIL_REPLY_LABELS_COLUMNS:
-            self.assertTrue(schema._has_column(self.conn, table, column), f"{table}.{column}")
+            self.assertTrue(has_column(self.conn, table, column), f"{table}.{column}")
         self.assertIn("(user_id, kind, label_name)", self.index_definition(GMAIL_REPLY_LABELS_INDEX) or "")
         # The tables as 0042 left them, holding what the old code read; then a crash after the first ALTER and
         # before the marker. SQLite keeps ALTERs a crash interrupts and PostgreSQL rolls them back; the rerun
@@ -852,7 +855,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
             self.conn.execute("ALTER TABLE outreach_inbox_messages ADD COLUMN label_name TEXT NOT NULL DEFAULT ''")
         ensure_product_schema(self.conn)
         for table, column in GMAIL_REPLY_LABELS_COLUMNS:
-            self.assertTrue(schema._has_column(self.conn, table, column), f"{table}.{column} after the rerun")
+            self.assertTrue(has_column(self.conn, table, column), f"{table}.{column} after the rerun")
         self.assertIn("(user_id, kind, label_name)", self.index_definition(GMAIL_REPLY_LABELS_INDEX) or "")
         markers = self.conn.execute("SELECT COUNT(*) AS n FROM schema_migrations WHERE name=?", (GMAIL_REPLY_LABELS_MIGRATION,)).fetchone()["n"]
         types = {(row["table_name"], row["column_name"]): (row["data_type"], row["is_nullable"]) for row in self.conn.execute(
@@ -891,10 +894,10 @@ class PostgresAutomationContractTests(unittest.TestCase):
         with self.conn:
             self.conn.execute("ALTER TABLE connector_accounts DROP COLUMN account_email")
             self.conn.execute("DELETE FROM schema_migrations WHERE name=?", (GMAIL_REPLY_LABELS_MIGRATION,))
-        self.assertFalse(schema._has_column(self.conn, "connector_accounts", "account_email"), "the other schema's column is not this one's")
+        self.assertFalse(has_column(self.conn, "connector_accounts", "account_email"), "the other schema's column is not this one's")
         self.conn.commit()
         ensure_product_schema(self.conn)
-        self.assertTrue(schema._has_column(self.conn, "connector_accounts", "account_email"))
+        self.assertTrue(has_column(self.conn, "connector_accounts", "account_email"))
         self.conn.commit()
 
     def test_migration_0044_adds_the_sent_label_tables_and_a_rerun_changes_nothing(self):
@@ -1296,7 +1299,7 @@ class PostgresApplyContractTests(unittest.TestCase):
         for table in APPLY_TABLES:
             self.assertEqual(self.conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"], 0, table)
         for table, column in APPLY_COLUMNS:
-            self.assertTrue(schema._has_column(self.conn, table, column), f"{table}.{column}")
+            self.assertTrue(has_column(self.conn, table, column), f"{table}.{column}")
         for name in APPLY_LOCKS:
             row = self.conn.execute("SELECT indexdef FROM pg_indexes WHERE schemaname=current_schema() AND indexname=?", (name,)).fetchone()
             self.conn.commit()
@@ -1308,7 +1311,7 @@ class PostgresApplyContractTests(unittest.TestCase):
             self.conn.execute("DELETE FROM schema_migrations WHERE name='0045_apply_agent.sql'")
         ensure_product_schema(self.conn)
         for table, column in APPLY_COLUMNS:
-            self.assertTrue(schema._has_column(self.conn, table, column), f"{table}.{column} after the rerun")
+            self.assertTrue(has_column(self.conn, table, column), f"{table}.{column} after the rerun")
         self.assertIsNotNone(self.conn.execute("SELECT 1 FROM schema_migrations WHERE name='0045_apply_agent.sql'").fetchone())
         schema._apply_apply_agent(self.conn, (MIGRATIONS_DIR / "0045_apply_agent.sql").read_text(encoding="utf-8"))
         self.conn.commit()

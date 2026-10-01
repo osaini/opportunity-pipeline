@@ -18,9 +18,8 @@ from pathlib import Path
 from typing import Any
 
 from . import DEFAULT_PLATFORM_DB
-from .database import is_postgres_target
+from .database import is_postgres_target, connect_product
 from .legacy import backup_sqlite
-from .schema import connect_product
 
 _CHUNK = 500
 

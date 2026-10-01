@@ -20,7 +20,7 @@ from opportunity_app.mail_message import host_of
 from opportunity_app import outreach_gmail_sends as sends
 from opportunity_app.outreach import DRAFT_KINDS, UNSENT_STATUSES, get_target
 from opportunity_app.outreach_gmail import DRAFT_EVENT, _already_sent, last_bounce
-from opportunity_app.schema import connect_product
+from opportunity_app.database import connect_product
 
 import helpers_platform
 from helpers_mail_perf import USER, populate_outreach

@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import SERVER_INSTANCE, STATIC_DIR, automation, automation_health, gmail_client, outreach_delivery, outreach_gmail
 from opportunity_app.api import create_app
-from opportunity_app.schema import connect_product
+from opportunity_app.database import connect_product
 from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate

@@ -20,7 +20,8 @@ realdata_guard.install()
 
 import pipeline
 from opportunity_app import DEFAULT_LEGACY_DB, DEFAULT_PLATFORM_DB
-from opportunity_app.schema import connect_product, ensure_product_schema
+from opportunity_app.schema import ensure_product_schema
+from opportunity_app.database import connect_product
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"

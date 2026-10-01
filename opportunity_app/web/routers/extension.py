@@ -27,7 +27,7 @@ from ...extension_apply import (
     sync_step as sync_extension_step,
 )
 from ...preparation import save_answer
-from ...schema import connect_product
+from ...database import connect_product
 from ... import apply_classify
 from ..context import AppContext
 from ..dependencies import extension_connection, get_ctx, require_auth, writable_connection

@@ -36,7 +36,7 @@ from opportunity_app.outreach_settings import OutreachSettings
 from opportunity_app.outreach_reply_senders import thank_you_blockers
 from opportunity_app.outreach_thank_you import STUDENT_WROTE, WROTE_AGAIN, plan, plan_send_at, stable_delay
 from opportunity_app.outreach_thank_you_writing import MAX_WORDS, recipient_name, template, validate, write
-from opportunity_app.schema import connect_product
+from opportunity_app.database import connect_product
 from opportunity_app.timestamps import utc_now
 from opportunity_app.typesafe_decisions import TypeSafeResponseError
 

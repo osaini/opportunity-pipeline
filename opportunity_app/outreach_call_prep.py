@@ -110,7 +110,7 @@ from .outreach_drafting import (
 )
 from .outreach_config import resolve_provider
 from .preparation import confirmed_facts
-from .schema import connect_product
+from .database import connect_product
 from .timestamps import utc_now
 
 LOGGER = logging.getLogger(__name__)

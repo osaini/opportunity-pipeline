@@ -1,4 +1,10 @@
-"""Durable bounded worker for product maintenance jobs."""
+"""Durable bounded worker for product maintenance jobs.
+
+This is the hosted maintenance worker: it drains the durable job queue (operations.run_next_job), runs the
+pipeline stages on their schedules, and runs retention. It is not the in-app workers. The student's own
+automation (outreach_automation.AutomationWorker) and call-prep research (outreach_call_prep.CallPrepWorker)
+run as threads inside the web app, started by api.create_app. Run it with `python -m opportunity_app.worker`.
+"""
 
 from __future__ import annotations
 
@@ -10,12 +16,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import APPLY_ROOT, DEFAULT_PLATFORM_DB
-from .database import is_postgres_target
+from .database import is_postgres_target, connect_product
 from .ingestion import make_stage_handler
 from .notifications import connector_health, run_notification_digest, send_due_reminders
 from .outreach import queue_follow_up_reminders
 from .operations import enqueue_job, recover_stale_jobs, run_next_job, run_retention
-from .schema import connect_product
 
 STAGES = ("fetch", "enrich", "score", "liveness", "report")
 # Run by a thread inside the web app, which recovers its own interrupted jobs.
@@ -91,7 +96,7 @@ def run_once(target: Path | str = DEFAULT_PLATFORM_DB):
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--db", default=str(DEFAULT_PLATFORM_DB), help="SQLite path or PostgreSQL URL")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--poll-seconds", type=float, default=2.0)

@@ -20,7 +20,7 @@ import unittest
 from pathlib import Path
 
 from pipeline_core import OpportunityFilters, OpportunityRepository
-from opportunity_app.schema import connect_product
+from opportunity_app.database import connect_product
 
 import sys
 

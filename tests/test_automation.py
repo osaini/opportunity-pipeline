@@ -29,7 +29,8 @@ from opportunity_app.actions import (
 )
 from opportunity_app.automation import OFF_SHADOW_ON, AutomationGateError, Feature, Superseded
 from opportunity_app.outreach_automation import SETTINGS, settings, update_settings
-from opportunity_app.schema import connect_product, ensure_product_schema
+from opportunity_app.schema import ensure_product_schema
+from opportunity_app.database import connect_product, has_column
 from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
@@ -1307,7 +1308,7 @@ class MigrationTests(unittest.TestCase):
 
     def assert_migrated(self, conn, user_id):
         for table, column in NEW_COLUMNS:
-            self.assertTrue(schema._has_column(conn, table, column), f"{table}.{column}")
+            self.assertTrue(has_column(conn, table, column), f"{table}.{column}")
         for table in ("automation_actions", "automation_health", "automation_notices"):
             conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
         self.assertIn("0037_automation.sql", {row[0] for row in conn.execute("SELECT name FROM schema_migrations")})

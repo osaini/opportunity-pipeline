@@ -258,13 +258,33 @@ class AHandlersDatabaseErrorIsNotAMissingDatabaseTests(unittest.TestCase):
             self.assertEqual(client.get("/api/v1/health").json()["database"], "missing")
 
 
-class ImportingTheApiRegistersTheAutomationModulesTests(unittest.TestCase):
-    def test_a_fresh_interpreter_that_imports_only_the_api_has_every_handler_and_breaker_group(self):
+class BuildingTheAppRegistersTheAutomationModulesTests(unittest.TestCase):
+    """Nothing registers at import time (bootstrap.py); create_app does, so a fresh interpreter that builds an app has every handler."""
+
+    def test_a_fresh_interpreter_that_imports_only_the_api_registers_nothing_until_create_app_runs(self):
         code = (
             "import json, sys; sys.path.insert(0, %r); import opportunity_app.api; from opportunity_app import automation; "
-            "print('REPORT' + json.dumps({'handlers': sorted(automation.HANDLERS), 'breakers': sorted(automation.BREAKER_GROUPS), "
-            "'corrections': sorted(automation.CORRECTIONS)}))" % str(ROOT)
+            "print('REPORT' + json.dumps({'handlers': sorted(automation.HANDLERS)}))" % str(ROOT)
         )
+        done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=ROOT, timeout=300)
+        lines = [line for line in done.stdout.splitlines() if line.startswith("REPORT")]
+        self.assertTrue(lines, f"probe failed:\n{done.stdout}\n{done.stderr}")
+        self.assertEqual(json.loads(lines[-1][len("REPORT"):])["handlers"], [])
+
+    def test_a_fresh_interpreter_that_builds_an_app_has_every_handler_and_breaker_group(self):
+        with tempfile.TemporaryDirectory() as directory:
+            code = (
+                "import json, sys; sys.path.insert(0, %r); from pathlib import Path; from opportunity_app.api import create_app; "
+                "from opportunity_app import automation; root = Path(%r); "
+                "create_app(db_path=root / 'platform.db', access_token='probe-token', resume_storage=root / 'resumes', "
+                "capture_storage=root / 'captures', interview_storage=root / 'audio', apply_storage=root / 'apply', "
+                "start_call_prep_worker=False, start_inbox_watcher=False, start_automation_worker=False); "
+                "print('REPORT' + json.dumps({'handlers': sorted(automation.HANDLERS), 'breakers': sorted(automation.BREAKER_GROUPS), "
+                "'corrections': sorted(automation.CORRECTIONS)}))" % (str(ROOT), directory)
+            )
+            self.assert_registered(code)
+
+    def assert_registered(self, code):
         done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=ROOT, timeout=300)
         lines = [line for line in done.stdout.splitlines() if line.startswith("REPORT")]
         self.assertTrue(lines, f"probe failed:\n{done.stdout}\n{done.stderr}")

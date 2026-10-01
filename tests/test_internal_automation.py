@@ -30,7 +30,8 @@ from opportunity_app.outreach_delivery import record_bounce
 from opportunity_app.outreach_versions import draft_versions
 from opportunity_app.refresh import RefreshManager
 from opportunity_app.resumes import ResumeValidationError, confirm_variant, resume_record
-from opportunity_app.schema import connect_product, ensure_product_schema
+from opportunity_app.schema import ensure_product_schema
+from opportunity_app.database import connect_product, has_column
 from opportunity_app.timestamps import utc_now
 from opportunity_app.urgent import urgent_queue
 from opportunity_app.user_time import user_timezone
@@ -685,7 +686,7 @@ class ArchiveTests(Case):
         self.on("archive_silent_applications")
         internal_automation.archive_silent_applications(self.conn, USER, force=True)
         self.assertTrue(internal_automation.automation_archived(self.conn, "app-job-b"))
-        # The sync resets an imported application's stage with no stage_changed event (schema._migrate_status).
+        # The sync resets an imported application's stage with no stage_changed event (legacy_sync._migrate_status).
         with self.conn:
             self.conn.execute("UPDATE applications SET stage='applied' WHERE id='app-job-b'")
         self.assertFalse(internal_automation.automation_archived(self.conn, "app-job-b"), "it sits at Applied, not archived")
@@ -1532,7 +1533,7 @@ class MigrationTests(Case):
         with self.conn:
             self.conn.execute("DELETE FROM schema_migrations WHERE name='0039_internal_automation.sql'")
         ensure_product_schema(self.conn)
-        self.assertTrue(schema._has_column(self.conn, "resume_files", "variant_label"))
+        self.assertTrue(has_column(self.conn, "resume_files", "variant_label"))
         self.conn.execute("SELECT COUNT(*) FROM opportunity_resume_picks").fetchone()
         schema._apply_internal_automation(self.conn, (MIGRATIONS / "0039_internal_automation.sql").read_text(encoding="utf-8"))
         self.conn.commit()

@@ -10,7 +10,7 @@ from pathlib import Path
 from cryptography.fernet import Fernet
 
 from . import DEFAULT_PLATFORM_DB
-from .operations import encrypted_database_backup, restore_database_backup
+from .backups import encrypted_database_backup, restore_database_backup
 
 
 def _key() -> bytes:

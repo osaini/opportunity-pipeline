@@ -22,7 +22,8 @@ from fastapi.testclient import TestClient
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
 from opportunity_app.outreach import list_targets
-from opportunity_app.schema import LOCAL_USER_ID, connect_product
+from opportunity_app.database import connect_product
+from opportunity_app.schema import LOCAL_USER_ID
 
 from helpers_platform import build_and_migrate
 

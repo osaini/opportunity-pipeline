@@ -42,7 +42,7 @@ import httpx
 
 from . import apply_runs, automation, internal_automation, outreach_thank_you
 from .background import PollingWorker, record_health_quietly, step_error
-from .database import rollback_quietly
+from .database import rollback_quietly, connect_product
 from .outreach import (
     get_target, greeting_style, greets_contact, heard_back, latest_event_stamp, list_targets, log_event, without_greeting,
     withdraw_auto_approval,
@@ -50,7 +50,6 @@ from .outreach import (
 from .outreach_contacts import apply_choice, choose_contact, find_contacts, list_candidates
 from .outreach_forms import form_due
 from .outreach_gmail import last_bounce
-from .schema import connect_product
 from .timestamps import utc_now
 from .web_fetch import SafeFetcher
 

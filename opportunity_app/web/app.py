@@ -26,7 +26,8 @@ from ..apply_runs import recover_stale as recover_stale_applications
 from ..captures import DEFAULT_CAPTURE_STORAGE
 from ..preparation import DEFAULT_MOCK_AUDIO_STORAGE
 from ..resumes import DEFAULT_STORAGE
-from ..schema import connect_product, ensure_product_schema
+from ..database import connect_product
+from ..schema import ensure_product_schema
 from .context import AppOptions, build_context
 from .middleware import security_headers
 from .routers import ROUTERS_AFTER_ASSETS, ROUTERS_BEFORE_ASSETS

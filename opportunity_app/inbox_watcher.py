@@ -18,12 +18,11 @@ from typing import Any, Callable
 
 from . import application_inbox, automation, outreach_labels
 from .background import PollingWorker, record_health_quietly, step_error
-from .database import rollback_quietly
+from .database import rollback_quietly, connect_product
 from .gmail_client import PROVIDER, ClientFactory
 from .outreach_delivery import check_deliveries
 from .outreach_gmail import _connector, gmail_notices, persist_gmail_health
 from .outreach_inbox import OnReply, capture_replies
-from .schema import connect_product
 from .timestamps import parse_app_instant, utc_now
 from .typesafe_decisions import DecisionClient
 from .user_time import user_timezone

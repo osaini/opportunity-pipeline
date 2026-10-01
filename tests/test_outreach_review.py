@@ -22,7 +22,7 @@ from opportunity_app.outreach import log_event
 from opportunity_app.outreach_automation import update_settings
 from opportunity_app.outreach_review import review_runner
 from opportunity_app.outreach_schedule import MAX_ATTEMPTS, run_due_sends
-from opportunity_app.schema import connect_product
+from opportunity_app.database import connect_product
 from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate

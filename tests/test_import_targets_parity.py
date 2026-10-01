@@ -25,8 +25,7 @@ from opportunity_app.outreach import (
     log_event, _normalize, company_key, create_target, existing_keys, get_target, import_targets,
 )
 from opportunity_app.contact_names import website_domain
-from opportunity_app.database import is_unique_violation
-from opportunity_app.schema import connect_product
+from opportunity_app.database import is_unique_violation, connect_product
 from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate

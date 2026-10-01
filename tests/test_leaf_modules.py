@@ -102,12 +102,15 @@ def dotted(*names: str) -> set[str]:
 LEAVES: dict[str, tuple[set[str], set[str]]] = {
     # Workstream T: time, database, settings, JSON, stored profile
     "opportunity_app/timestamps.py": (set(), set()),
-    # PostgreSQL support imports psycopg inside PostgresConnection, so SQLite-only installs never need it.
-    "opportunity_app/database.py": (set(), {"psycopg"}),
+    # PostgreSQL support imports psycopg inside PostgresConnection, so SQLite-only installs never need it. The connection
+    # factory's default paths are the package's own constants.
+    "opportunity_app/database.py": ({f"{PACKAGE}.DEFAULT_LEGACY_DB", f"{PACKAGE}.DEFAULT_PLATFORM_DB"}, {"psycopg"}),
     "opportunity_app/settings_store.py": (set(), set()),
     "opportunity_app/json_values.py": (set(), set()),
     "opportunity_app/profile_store.py": (dotted("json_values"), set()),
     "opportunity_app/user_time.py": (set(), set()),
+    # Keyword rules over an application email: pure text, split out of connections so the inbox workflow can use them.
+    "opportunity_app/monitored_classifier.py": (set(), set()),
     # Workstream I: identity and the legacy boundary
     "pipeline_core/identity.py": (set(), set()),
     "pipeline_core/regions.py": ({"pipeline_core.identity"}, set()),
@@ -659,13 +662,13 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         self.assertEqual(pipeline.DB_PATH, before)
 
     def test_one_ruleset_version_constant_backs_every_fit_score_read_and_write(self):
-        from opportunity_app import schema
+        from opportunity_app import legacy_sync, schema
         from pipeline_core.read_model import RULESET_VERSION
 
         self.assertEqual(RULESET_VERSION, "legacy-v1")  # the SQL views in migrations/0001, 0020 and 0021 bake this in
         self.assertFalse(hasattr(schema, "RULESET_VERSION") and schema.RULESET_VERSION is not RULESET_VERSION)
         # The migration_runs key is a different concept that happens to read the same today.
-        self.assertEqual(schema.LEGACY_MIGRATION_KEY, "legacy-v1")
+        self.assertEqual(legacy_sync.LEGACY_MIGRATION_KEY, "legacy-v1")
         for relative in ("actions.py", "extension_apply.py", "profile.py"):
             with self.subTest(module=relative):
                 text = (ROOT / "opportunity_app" / relative).read_text(encoding="utf-8")
@@ -955,7 +958,7 @@ class OutreachIdentityTests(unittest.TestCase):
 
 from opportunity_app import agent_providers, background, inbox_watcher, outreach_batch, outreach_config, outreach_review, web_fetch  # noqa: E402
 from opportunity_app.outreach import create_target, get_target, latest_event_stamp, log_event, withdraw_auto_approval  # noqa: E402
-from opportunity_app.schema import connect_product  # noqa: E402
+from opportunity_app.database import connect_product  # noqa: E402
 
 from helpers_platform import build_and_migrate  # noqa: E402
 

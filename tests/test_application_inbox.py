@@ -25,9 +25,11 @@ from opportunity_app import STATIC_DIR, application_inbox, automation, automatio
 from opportunity_app.actions import record_intent, update_application
 from opportunity_app.api import create_app
 from opportunity_app.application_inbox import match_application, parse_message
-from opportunity_app.connections import classify_monitored_message, decide_monitored_event, monitored_event
+from opportunity_app.connections import monitored_event
+from opportunity_app.monitored_events import decide_monitored_event
+from opportunity_app.monitored_classifier import classify_monitored_message
 from opportunity_app.operations import export_account
-from opportunity_app.schema import connect_product
+from opportunity_app.database import connect_product
 from opportunity_app.timestamps import parse_app_instant, utc_now
 from opportunity_app.urgent import urgent_queue
 
@@ -846,7 +848,7 @@ class DecisionTests(MailCase):
         proposals = self.proposed_interview()
         self.assertTrue(proposals)
         event = self.conn.execute("SELECT id FROM monitored_events WHERE external_id='gmail:m-50'").fetchone()
-        from opportunity_app.connections import decide_monitored_event
+        from opportunity_app.monitored_events import decide_monitored_event
 
         decided = decide_monitored_event(self.conn, event["id"], "confirm", self.acme, user_id=USER)
         self.assertEqual((decided["status"], decided["application_id"], decided["decided_by"]), ("confirmed", self.acme, "student"))
@@ -860,7 +862,7 @@ class DecisionTests(MailCase):
     def test_ignoring_the_email_card_sets_its_proposals_aside_without_the_breaker(self):
         self.proposed_interview()
         event = self.conn.execute("SELECT id FROM monitored_events WHERE external_id='gmail:m-50'").fetchone()
-        from opportunity_app.connections import decide_monitored_event
+        from opportunity_app.monitored_events import decide_monitored_event
 
         decide_monitored_event(self.conn, event["id"], "ignore", None, user_id=USER)
         statuses = {action["action_type"]: action["status"] for action in self.actions()}
@@ -993,6 +995,7 @@ class WatcherTests(MailCase):
 class MigrationTests(unittest.TestCase):
     def test_a_half_applied_0038_is_repaired_by_running_it_again(self):
         from opportunity_app import schema
+        from opportunity_app.database import has_column
 
         migrations = Path(__file__).resolve().parent.parent / "migrations"
         with tempfile.TemporaryDirectory() as directory:
@@ -1012,7 +1015,7 @@ class MigrationTests(unittest.TestCase):
                 conn.commit()
                 schema.ensure_product_schema(conn)
                 for table, column in (("application_tasks", "link"), ("monitored_events", "decided_by")):
-                    self.assertTrue(schema._has_column(conn, table, column), f"{table}.{column}")
+                    self.assertTrue(has_column(conn, table, column), f"{table}.{column}")
                 for table in ("application_mail_sync", "application_mail_messages", "email_deadlines", "employer_domains", "automation_held"):
                     self.assertIsNotNone(conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone(), table)
                 self.assertIsNotNone(conn.execute("SELECT 1 FROM schema_migrations WHERE name='0038_application_mail.sql'").fetchone())

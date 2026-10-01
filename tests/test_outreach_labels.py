@@ -21,7 +21,7 @@ from opportunity_app import STATIC_DIR, automation, inbox_watcher, outreach, out
 from opportunity_app.api import create_app
 from opportunity_app.inbox_watcher import InboxWatcher
 from opportunity_app.outreach_inbox import decide_possible_reply
-from opportunity_app.schema import connect_product
+from opportunity_app.database import connect_product, has_column
 from opportunity_app.settings_store import get_setting, put_setting
 from opportunity_app.timestamps import utc_now
 
@@ -1976,14 +1976,14 @@ class MigrationTests(unittest.TestCase):
                     conn.execute("INSERT INTO schema_migrations(name, applied_at) VALUES(?, ?)", (migration.name, utc_now()))
                 conn.commit()
                 for table, column in (("outreach_inbox_messages", "label_name"), ("connector_accounts", "account_email")):
-                    self.assertFalse(schema._has_column(conn, table, column), "not there before 0043")
+                    self.assertFalse(has_column(conn, table, column), "not there before 0043")
                 # The crash: one column added, the rest (and the marker) not.
                 conn.execute("ALTER TABLE outreach_inbox_messages ADD COLUMN label_name TEXT NOT NULL DEFAULT ''")
                 conn.commit()
                 schema.ensure_product_schema(conn)
                 for table, column in (("outreach_inbox_messages", "label_name"), ("outreach_inbox_messages", "labeled_at"),
                                       ("outreach_inbox_messages", "label_note"), ("connector_accounts", "account_email")):
-                    self.assertTrue(schema._has_column(conn, table, column), f"{table}.{column}")
+                    self.assertTrue(has_column(conn, table, column), f"{table}.{column}")
                 self.assertIsNotNone(conn.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_outreach_inbox_messages_labels'").fetchone())
                 self.assertIsNotNone(conn.execute("SELECT 1 FROM schema_migrations WHERE name='0043_gmail_reply_labels.sql'").fetchone())
