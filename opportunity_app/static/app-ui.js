@@ -134,12 +134,25 @@
   // One formatter per shape, built on first use and then kept: they run per
   // card and per timeline row, and the first Intl formatter costs a few
   // milliseconds (locale data), which a page that shows no date should not pay
-  // at load. The locale is the browser's own, which does not change mid-session.
+  // at load. The locale is the browser's own, which does not change mid-session,
+  // but the time zone can (travel, a system change on a long-lived tab), and a
+  // formatter keeps the zone it was built with while calendarDate() reads dates
+  // in the current one. So a kept formatter is rebuilt when the zone changes.
   // Each function below keeps its own answer for an empty or invalid value, and
   // they differ on purpose (see each one).
   function lazyFormat(make) {
     let formatter = null;
-    return { format: (...args) => (formatter ||= make()).format(...args) };
+    let zone;
+    return {
+      format: (...args) => {
+        const current = browserTimeZone();
+        if (!formatter || current !== zone) {
+          formatter = make();
+          zone = current;
+        }
+        return formatter.format(...args);
+      },
+    };
   }
 
   const DATE_FORMAT = lazyFormat(() => new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }));

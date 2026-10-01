@@ -452,3 +452,32 @@ def test_an_urgent_date_note_is_shown_under_its_source(owner_page, base_url):
     expect(note).to_have_text("Estimated from last cycle")
     # The note sits right under the row's date source, in the same muted style.
     assert note.evaluate("el => el.previousElementSibling.classList.contains('urgent-source')")
+
+
+def test_date_formatters_follow_a_time_zone_change_in_a_long_lived_tab(owner_page):
+    """A formatter built under one zone must not outlive it.
+
+    A calendar date is read in the current zone, so a formatter that kept the old
+    zone shows the previous day (or the wrong clock time) after travel.
+    """
+    probe = """() => {
+        const app = window.OpportunityApp;
+        const stamp = "2026-10-01T12:00:00Z";
+        return {
+            zone: app.browserTimeZone(),
+            deadline: app.formatCalendarDate("2026-10-01"),
+            stamp: app.formatWeekdayDateTime(stamp),
+        };
+    }"""
+    session = owner_page.context.new_cdp_session(owner_page)
+    try:
+        session.send("Emulation.setTimezoneOverride", {"timezoneId": "America/Los_Angeles"})
+        west = owner_page.evaluate(probe)
+        session.send("Emulation.setTimezoneOverride", {"timezoneId": "Pacific/Auckland"})
+        east = owner_page.evaluate(probe)
+    finally:
+        session.send("Emulation.setTimezoneOverride", {"timezoneId": ""})
+    assert west["zone"] == "America/Los_Angeles" and east["zone"] == "Pacific/Auckland"
+    assert "Oct 1, 2026" in west["deadline"] and "Oct 1, 2026" in east["deadline"]
+    assert "Oct 1" in west["stamp"] and "5:00" in west["stamp"]
+    assert "Oct 2" in east["stamp"] and "1:00" in east["stamp"]
