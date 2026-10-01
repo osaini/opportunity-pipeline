@@ -1,4 +1,10 @@
-"""Durable bounded worker for product maintenance jobs."""
+"""Durable bounded worker for product maintenance jobs.
+
+This is the hosted maintenance worker: it drains the durable job queue (operations.run_next_job), runs the
+pipeline stages on their schedules, and runs retention. It is not the in-app workers. The student's own
+automation (outreach_automation.AutomationWorker) and call-prep research (outreach_call_prep.CallPrepWorker)
+run as threads inside the web app, started by api.create_app. Run it with `python -m opportunity_app.worker`.
+"""
 
 from __future__ import annotations
 

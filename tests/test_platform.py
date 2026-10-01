@@ -30,7 +30,8 @@ from opportunity_app.profile import get_profile, update_profile
 from opportunity_app.schema import LOCAL_USER_ID
 from opportunity_app.legacy_sync import migrate_legacy_database
 from opportunity_app.database import connect_product, _postgres_schema, _postgres_sql
-from opportunity_app.operations import encrypted_backup, enqueue_job, queue_status, restore_backup, retry_dead_job, run_next_job
+from opportunity_app.operations import enqueue_job, queue_status, retry_dead_job, run_next_job
+from opportunity_app.backups import encrypted_backup, restore_backup
 from pipeline_core import OpportunityFilters, OpportunityRepository
 from helpers_source import read_all
 

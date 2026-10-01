@@ -121,7 +121,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
         "outreach_thank_you outreach_automation outreach_recontact outreach_review outreach_call_prep "
         "outreach_call_questions outreach_forms outreach_discovery outreach_research outreach_drafting "
         "outreach_interviewer outreach_email_search outreach_locate outreach_profile outreach_settings "
-        "refresh desktop_notify operations student_agent urgent monitored_events"
+        "refresh desktop_notify operations backups student_agent urgent monitored_events"
     ),
     # L5 entry points.
     5: _app("api launch worker daily system_status migrate ops_cli outreach_cli pipeline_mailbox setup"),
