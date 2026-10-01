@@ -33,7 +33,7 @@ from .auto_triage import triage_after_sync
 from .daily_lock import TEMPFAIL_EXIT, DailyRunMutex
 from .legacy import load_sources
 from .purge import purge_expired_opportunities
-from .schema import migrate_legacy_database
+from .legacy_sync import migrate_legacy_database
 from .database import connect_product
 from .timestamps import utc_now
 

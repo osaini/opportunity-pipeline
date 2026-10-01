@@ -101,8 +101,9 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
         | _core(". env identity visibility regions read_model")
         | frozenset({"pipeline"})
     ),
-    # L1 storage. company_tags is here because schema.py imports it; legacy is the one adapter onto pipeline.py.
-    1: _app("schema settings_store profile_store company_tags legacy"),
+    # L1 storage. company_tags is here because schema.py imports it; legacy is the one adapter onto pipeline.py; legacy_sync
+    # writes the product database from the legacy one, so it sits beside schema, which it imports one way.
+    1: _app("schema legacy_sync settings_store profile_store company_tags legacy"),
     # L2 integrations. Leaves: none of them imports another first-party module.
     2: _app("agent_providers web_fetch gmail_client typesafe_decisions outreach_smtp document_pdf"),
     # L3 domain.

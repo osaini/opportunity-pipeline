@@ -27,7 +27,7 @@ from collections import defaultdict
 from opportunity_app.company_tags import capture_visible_sql, tag_facets, tag_facets_for_keys, tags_for_companies
 from opportunity_app.outreach import create_target, filtered_target_ids, get_target, list_targets
 from opportunity_app.outreach_recontact import eligible_targets, upgradeable
-from opportunity_app.schema import migrate_legacy_database
+from opportunity_app.legacy_sync import migrate_legacy_database
 from opportunity_app.database import connect_product
 from opportunity_app.timestamps import utc_now
 from pipeline_core import OpportunityFilters, OpportunityRepository

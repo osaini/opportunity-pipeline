@@ -276,7 +276,7 @@ def enable_personal_data_hooks(root: Path) -> str:
 
 def _ensure_databases(paths: Paths) -> None:
     from .legacy import create_database
-    from .schema import migrate_legacy_database
+    from .legacy_sync import migrate_legacy_database
 
     create_database(paths.legacy_db)
     migrate_legacy_database(paths.legacy_db, paths.platform_db, paths.profile)

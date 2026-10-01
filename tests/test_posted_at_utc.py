@@ -23,7 +23,7 @@ from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import schema
+from opportunity_app import legacy_sync, schema
 from opportunity_app.schema import (
     backfill_posted_at_utc,
     ensure_product_schema,
@@ -336,7 +336,7 @@ class SyncRefreshTests(unittest.TestCase):
              None, 50, "[]", "discovered", "", None, None),
         )
         conn.commit(); conn.close()
-        schema.migrate_legacy_database(legacy, self.root / "platform.db", build_profile(self.root))
+        legacy_sync.migrate_legacy_database(legacy, self.root / "platform.db", build_profile(self.root))
         # closing(), not `with sqlite3.connect(...)`: the latter manages the
         # transaction and leaves the connection open, which holds the file and
         # breaks the temporary directory's cleanup on Windows.

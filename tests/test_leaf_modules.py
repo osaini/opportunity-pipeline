@@ -660,13 +660,13 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         self.assertEqual(pipeline.DB_PATH, before)
 
     def test_one_ruleset_version_constant_backs_every_fit_score_read_and_write(self):
-        from opportunity_app import schema
+        from opportunity_app import legacy_sync, schema
         from pipeline_core.read_model import RULESET_VERSION
 
         self.assertEqual(RULESET_VERSION, "legacy-v1")  # the SQL views in migrations/0001, 0020 and 0021 bake this in
         self.assertFalse(hasattr(schema, "RULESET_VERSION") and schema.RULESET_VERSION is not RULESET_VERSION)
         # The migration_runs key is a different concept that happens to read the same today.
-        self.assertEqual(schema.LEGACY_MIGRATION_KEY, "legacy-v1")
+        self.assertEqual(legacy_sync.LEGACY_MIGRATION_KEY, "legacy-v1")
         for relative in ("actions.py", "extension_apply.py", "profile.py"):
             with self.subTest(module=relative):
                 text = (ROOT / "opportunity_app" / relative).read_text(encoding="utf-8")

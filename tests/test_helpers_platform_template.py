@@ -82,7 +82,7 @@ class TemplateCopyTests(unittest.TestCase):
             self.assertEqual(rows, [("legacy-v1", str(legacy_path.resolve()))])
 
     def test_the_profile_file_is_older_than_the_stored_profile_as_on_a_real_run(self):
-        """schema.py lets a profile.json newer than profiles.updated_at overwrite the database profile, so a copy must not
+        """legacy_sync.py lets a profile.json newer than profiles.updated_at overwrite the database profile, so a copy must not
         hand out a profile.json that is newer than its stored stamp.
 
         A real migration stamps updated_at from Python's clock right after profile.json was written, and on Windows the
@@ -194,6 +194,34 @@ class TemplateCopyTests(unittest.TestCase):
                 self.assertEqual(conn.execute("PRAGMA synchronous").fetchone()[0], 0, "OFF")
         with closing(database.connect_product(self.root / "after.db")) as conn:
             self.assertEqual(conn.execute("PRAGMA synchronous").fetchone()[0], 2, "FULL again")
+
+
+    def test_the_migration_a_build_runs_opens_its_target_without_the_fsync_too(self):
+        """legacy_sync.migrate_legacy_database looks connect_product up in its own namespace, so the patch must reach it there."""
+        from opportunity_app import legacy_sync
+
+        class Stop(Exception):
+            pass
+
+        seen = []
+
+        def spy(conn):
+            seen.append(conn.execute("PRAGMA synchronous").fetchone()[0])
+            raise Stop
+
+        legacy = self.root / "pipeline.db"
+        helpers._write_legacy_database(legacy)
+        profile = helpers.build_profile(self.root)
+        for fast, expected in ((False, 2), (True, 0)):
+            seen.clear()
+            with mock.patch.object(legacy_sync, "ensure_product_schema", spy):
+                with self.assertRaises(Stop):
+                    if fast:
+                        with helpers.fast_throwaway_databases():
+                            legacy_sync.migrate_legacy_database(legacy, self.root / "fast.db", profile)
+                    else:
+                        legacy_sync.migrate_legacy_database(legacy, self.root / "plain.db", profile)
+            self.assertEqual(seen, [expected], "fast" if fast else "plain")
 
 
 if __name__ == "__main__":

@@ -25,8 +25,8 @@ realdata_guard.install()
 
 PROFILE_REGIONS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "profile_regions.json"
 
-from opportunity_app import database, schema, timestamps
-from opportunity_app.schema import migrate_legacy_database
+from opportunity_app import database, legacy_sync, schema, timestamps
+from opportunity_app.legacy_sync import migrate_legacy_database
 
 LEGACY_SCHEMA = """
 CREATE TABLE jobs (
@@ -155,7 +155,7 @@ def fast_throwaway_databases():
     worth nothing there, and each migration commits (and so fsyncs) once: turning
     the fsync off cuts a full migration roughly fourfold. This patches
     ``connect_product`` where the builders look it up (``database`` for this module's own
-    calls, ``schema`` for the migration it runs) only for the duration of the block
+    calls, ``legacy_sync`` for the migration it runs) only for the duration of the block
     and only from test code; production connections keep SQLite's default
     ``synchronous=FULL``.
     """
@@ -167,7 +167,7 @@ def fast_throwaway_databases():
             conn.execute("PRAGMA synchronous = OFF")
         return conn
 
-    with mock.patch.object(database, "connect_product", connect), mock.patch.object(schema, "connect_product", connect):
+    with mock.patch.object(database, "connect_product", connect), mock.patch.object(legacy_sync, "connect_product", connect):
         yield
 
 
