@@ -351,12 +351,7 @@ def _opening(body: str) -> str:
     return paragraphs[0]
 
 
-_NUMBER = re.compile(r"(?<![\w@.])\d[\d,.]*%?")
 _ADDRESS = re.compile(r"\S+@\S+|https?://\S+")
-
-
-def _numbers(text: str) -> set[str]:
-    return {match.rstrip(".,") for match in _NUMBER.findall(text)} - {""}
 
 
 def _entry_names(entry: Any) -> set[str]:
@@ -378,8 +373,8 @@ def _primary_entries(inputs: dict[str, Any]) -> list[Any]:
 def _states_a_lead_result(body: str, inputs: dict[str, Any]) -> bool:
     """Whether the body gives a number from the primary experience, not one that only belongs to the company."""
     research = {**inputs["company_research"], **inputs["unverified_research"]}
-    lead_numbers = _numbers(json.dumps(_primary_entries(inputs), ensure_ascii=False)) - _numbers(json.dumps(research, ensure_ascii=False))
-    return bool(lead_numbers & _numbers(_ADDRESS.sub(" ", body)))
+    lead_numbers = _supported_numbers(_input_text(_primary_entries(inputs))) - _supported_numbers(_input_text(research))
+    return any(needed in lead_numbers for _, needed in _number_keys(_ADDRESS.sub(" ", body)))
 
 
 def _other_entries_named(body: str, inputs: dict[str, Any]) -> list[str]:
@@ -417,31 +412,46 @@ def _input_text(value: Any):
         yield str(value)
 
 
-def _whole_number(token: str) -> str:
-    """The number as a comparison key: 09 and 9 are one number, 3.5 stays itself."""
-    return (token.lstrip("0") or "0") if token.isdigit() else token
+def _number_key(token: str) -> str:
+    """The number as a comparison key: 09 and 9 are one number, 3.50 and 3.5 are one, 3.5 and 5 are not."""
+    whole, point, fraction = token.partition(".")
+    whole = whole.lstrip("0") or "0"
+    fraction = fraction.rstrip("0")
+    return f"{whole}.{fraction}" if fraction else whole
 
 
-def _unsupported_numbers(body: str, inputs: dict[str, Any]) -> list[str]:
-    """Numbers in the draft that are no whole number in the inputs' own words.
+def _number_keys(text: str) -> list[tuple[str, str]]:
+    """Each number in the text as (its key, the key a draft needs to claim it).
 
-    Whole numbers, as outreach_call_prep checks them, not pieces of text: an
-    invented 9 is not found in a 90 or in 2019. The tokenizer is the research
-    module's, so 1,500 and 1500 are one number, 45% and 45 percent are one, and
-    a range such as 2019-2023 is two.
+    Whole numbers, as outreach_call_prep checks them, not pieces of text: the tokenizer
+    is the research module's, so 1,500 and 1500 are one number and a range such as
+    2019-2023 is two. A number written as a percentage (45% or 45 percent) is claimed
+    as a percentage, so it needs 45% in the inputs, not a headcount of 45.
     """
     # Imported here: outreach_research pulls in outreach_discovery, which imports this module.
     from . import outreach_research as research
 
-    allowed = {
-        _whole_number(token)
-        for piece in _input_text(inputs)
-        for token in research._numbers(research._tokens(piece))
-    }
+    tokens = research._tokens(text)
+    keys = []
+    for index, token in enumerate(tokens):
+        if token[0].isdigit():
+            key = _number_key(token)
+            keys.append((key, key + "%" if tokens[index + 1:index + 2] == ["percent"] else key))
+    return keys
+
+
+def _supported_numbers(pieces) -> set[str]:
+    """What the pieces of the inputs' own words let a draft claim: a bare 45 may be a 45% too, a 45% is only a percentage."""
+    return {key for piece in pieces for pair in _number_keys(piece) for key in pair}
+
+
+def _unsupported_numbers(body: str, inputs: dict[str, Any]) -> list[str]:
+    """Numbers in the draft that are no whole number in the inputs' own words (see _number_keys)."""
+    allowed = _supported_numbers(_input_text(inputs))
     found = []
-    for token in research._tokens(_ADDRESS.sub(" ", body)):
-        if token[0].isdigit() and _whole_number(token) not in allowed and token not in found:
-            found.append(token)
+    for key, needed in _number_keys(_ADDRESS.sub(" ", body)):
+        if needed not in allowed and needed not in found:
+            found.append(needed)
     return found
 
 

@@ -37,7 +37,7 @@ from opportunity_app.outreach_drafting import (
     draft_versions,
     generate_draft,
     restore_draft_version,
-    _unsupported_numbers,
+    _states_a_lead_result, _unsupported_numbers,
 )
 from opportunity_app.schema import connect_product, ensure_product_schema, utc_now
 
@@ -796,6 +796,36 @@ class UnsupportedNumbersTests(unittest.TestCase):
     def test_a_decimal_does_not_support_its_fractional_part(self):
         inputs = self.inputs(experience=[{"title": "Held a 3.5 GPA"}])
         self.assertEqual(_unsupported_numbers("I held a 3.5 GPA and a 5 point lead.", inputs), ["5"])
+
+    def test_a_decimal_or_amount_in_the_inputs_passes_with_or_without_trailing_zeros(self):
+        inputs = self.inputs(experience=[{"title": "GPA 3.50", "note": "Saved $725.00 a month, shipped v1.0"}])
+        self.assertEqual(_unsupported_numbers("I held a 3.5 GPA, saved $725 a month and shipped version 1.", inputs), [])
+        inputs = self.inputs(experience=[{"title": "GPA 3.5", "note": "Saved $725 a month"}])
+        self.assertEqual(_unsupported_numbers("I held a 3.50 GPA and saved $725.00 a month.", inputs), [])
+        self.assertEqual(_unsupported_numbers("I held a 3.55 GPA.", inputs), ["3.55"])
+
+    def test_a_percentage_needs_a_percentage_in_the_inputs_not_a_headcount(self):
+        headcount = self.inputs(experience=[{"title": "Led 45 employees"}])
+        self.assertEqual(_unsupported_numbers("I cut costs 45%.", headcount), ["45%"])
+        self.assertEqual(_unsupported_numbers("I cut costs 45 percent.", headcount), ["45%"])
+        percentage = self.inputs(experience=[{"title": "Cut scrap 45%"}])
+        self.assertEqual(_unsupported_numbers("I cut scrap 45% and 45 percent, and met 45 people.", percentage), [])
+
+    def test_the_lead_result_check_reads_numbers_the_same_way(self):
+        def lead(title, body, research=""):
+            inputs = {
+                "student": {"experience": [{"title": title}, {"title": "Other"}]},
+                "primary_experience": title,
+                "company_research": {"summary": research},
+                "unverified_research": {},
+            }
+            return _states_a_lead_result(body, inputs)
+
+        self.assertTrue(lead("Raised 1500 dollars", "I raised $1,500 at Acme."))
+        self.assertTrue(lead("Cut scrap 45%", "I cut scrap 45 percent."))
+        self.assertTrue(lead("Held GPA 3.50", "I held a 3.5 GPA."))
+        self.assertFalse(lead("Cut scrap 45%", "I cut scrap by half."))
+        self.assertFalse(lead("Cut scrap 45%", "I know your 45 person team.", research="a team of 45"))
 
     def test_numbers_inside_an_address_are_not_the_drafts_claims(self):
         body = "Write to me at student2024@example.edu or see https://example.edu/p/99."
