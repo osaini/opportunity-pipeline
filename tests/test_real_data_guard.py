@@ -4,6 +4,7 @@ Importing this module installs the guard, which is what protects a plain `python
 it from tests/conftest.py). The tests below never touch a real database: they assert the open is refused before it happens.
 """
 
+import ast
 import sqlite3
 import sys
 import tempfile
@@ -161,12 +162,56 @@ class EveryTestModuleIsGuardedTests(unittest.TestCase):
     # Modules that import one of these install the guard as a side effect (each of these imports helpers_platform or the guard).
     INSTALLERS = ("realdata_guard", "helpers_platform", "helpers_apply", "helpers_gmail")
 
+    @staticmethod
+    def _module_level(body):
+        """Statements that run when the module is imported: the top level, and inside top-level try/if blocks."""
+        for node in body:
+            yield node
+            if isinstance(node, ast.Try):
+                for block in (node.body, *(handler.body for handler in node.handlers), node.orelse, node.finalbody):
+                    yield from EveryTestModuleIsGuardedTests._module_level(block)
+            elif isinstance(node, ast.If):
+                yield from EveryTestModuleIsGuardedTests._module_level(node.body)
+                yield from EveryTestModuleIsGuardedTests._module_level(node.orelse)
+
+    @classmethod
+    def _imported_names(cls, tree):
+        """Last components of every module imported at import time, plus names pulled in by `from tests import x`."""
+        names = set()
+        for node in cls._module_level(tree.body):
+            if isinstance(node, ast.Import):
+                names.update(alias.name.rsplit(".", 1)[-1] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names.add(node.module.rsplit(".", 1)[-1])
+                if node.module == "tests":
+                    names.update(alias.name for alias in node.names)
+        return names
+
     def test_every_test_module_imports_something_that_installs_the_guard(self):
         modules = sorted((ROOT / "tests").glob("test_*.py"))
         self.assertGreater(len(modules), 50)
         unguarded = [path.name for path in modules
-                     if not any(name in path.read_text(encoding="utf-8") for name in self.INSTALLERS)]
-        self.assertEqual(unguarded, [], "import realdata_guard and call install() in these modules")
+                     if not self._imported_names(ast.parse(path.read_text(encoding="utf-8"))) & set(self.INSTALLERS)]
+        self.assertEqual(unguarded, [], "import realdata_guard (or a helper that installs it) at module level in these modules; "
+                                        "a mention in a string or an import inside a function does not run on import")
+
+    def test_local_helper_imports_resolve_when_a_module_runs_alone(self):
+        """`python -m unittest tests.test_x` does not put tests/ on sys.path, so a bare `import helpers_x` needs one first."""
+        local = {path.stem for path in (ROOT / "tests").glob("*.py") if not path.stem.startswith("test_")}
+        broken = []
+        for path in sorted((ROOT / "tests").glob("test_*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            path_added = False
+            for node in tree.body:
+                if isinstance(node, ast.Expr) and "sys.path.insert" in ast.unparse(node):
+                    path_added = True
+                elif isinstance(node, ast.Try):
+                    continue  # the try/except ImportError fallback to `from tests import ...` handles both spellings
+                elif isinstance(node, (ast.Import, ast.ImportFrom)) and not path_added:
+                    targets = [alias.name for alias in node.names] if isinstance(node, ast.Import) else [node.module or ""]
+                    if any(target.split(".")[0] in local for target in targets):
+                        broken.append(f"{path.name}:{node.lineno}")
+        self.assertEqual(broken, [], "insert tests/ on sys.path before these imports, or use the try/except tests.<module> fallback")
 
     def test_the_installing_helpers_really_import_it(self):
         tests = ROOT / "tests"

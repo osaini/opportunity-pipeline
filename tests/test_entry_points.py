@@ -26,6 +26,13 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+try:
+    import realdata_guard
+except ImportError:  # imported as tests.<module>, with tests/ not on sys.path
+    from tests import realdata_guard
+# Guards this module's own run against opening data/*.db (AGENTS.md hard rule 1); see tests/realdata_guard.py.
+realdata_guard.install()
+
 ROOT = Path(__file__).resolve().parent.parent
 
 # `python -m <module> ...`: module -> runs `--help` in a subprocess. `opportunity_app.api` is checked by import below because

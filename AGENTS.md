@@ -189,11 +189,13 @@ weaken the suite; do not loosen them to make a move pass.
 - `tests/test_entry_points.py` checks that every `python -m opportunity_app.<module>`,
   `scripts/<file>` and `uvicorn opportunity_app.api:app` that launchers, scheduled
   tasks, the Dockerfile, CI and the docs name still resolves and answers `--help`.
-- `tests/realdata_guard.py` (installed by `tests/conftest.py`, `helpers_platform.py`
-  and `test_real_data_guard.py`) makes any test that opens a `data/*.db` file, in
-  this checkout or the main one, fail with `RealDataAccessError`.
+- `tests/realdata_guard.py` makes any test that opens a file inside a real `data/`
+  directory (this checkout's or the main checkout's, whatever the file's suffix, so
+  dated backups too) fail with `RealDataAccessError`. `tests/conftest.py` installs it
+  for pytest, and every `tests/test_*.py` module installs it at import time so a
+  single-module `unittest` run is guarded too; `test_real_data_guard.py` enforces that.
 - Negative source-text guards read every file they could be hiding in, through
-  `tests/helpers_source.py` (all `static/*.js`, every `apply*` module, every
+  `tests/helpers_source.py` (all `static/*.js`, every `apply*` module at any depth, every
   `apps/extension/**/*.js`, `pipeline.py` plus all of `pipeline_core/`). When you
   add a guard that greps source, scan the directory, never one file.
 
