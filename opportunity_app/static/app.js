@@ -915,11 +915,12 @@
     note.textContent = ` (needs attention: ${problems.join("; ")})`;
   }
 
-  function relativeWhen(stamp) {
+  // Empty or invalid reads as "".
+  function formatWeekdayDateTime(stamp) {
     if (!stamp) return "";
     const moment = new Date(stamp);
     if (Number.isNaN(moment.getTime())) return "";
-    return moment.toLocaleString(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    return WEEKDAY_DATE_TIME_FORMAT.format(moment);
   }
 
   const SOURCE_HEALTH_LABELS = {
@@ -1066,8 +1067,8 @@
       item.appendChild(head);
       const facts = [job.schedule];
       if (job.installed) {
-        if (job.last_run_at) facts.push(`last ran ${relativeWhen(job.last_run_at)}`);
-        if (job.next_run_at && job.job !== "autostart") facts.push(`next ${relativeWhen(job.next_run_at)}`);
+        if (job.last_run_at) facts.push(`last ran ${formatWeekdayDateTime(job.last_run_at)}`);
+        if (job.next_run_at && job.job !== "autostart") facts.push(`next ${formatWeekdayDateTime(job.next_run_at)}`);
       }
       item.appendChild(element("p", "profile-help", facts.join(" · ")));
       if (job.job === "daily" && payload.daily) {
@@ -1075,8 +1076,8 @@
         const summary = !daily.ran
           ? "No daily refresh has run on this computer yet."
           : daily.in_progress
-            ? `A daily refresh started ${relativeWhen(daily.started_at)} and has not finished.`
-            : `Last finished ${relativeWhen(daily.finished_at)}${daily.exit_code ? ` with problems (exit ${daily.exit_code}); see data/run.log` : ""}.`;
+            ? `A daily refresh started ${formatWeekdayDateTime(daily.started_at)} and has not finished.`
+            : `Last finished ${formatWeekdayDateTime(daily.finished_at)}${daily.exit_code ? ` with problems (exit ${daily.exit_code}); see data/run.log` : ""}.`;
         item.appendChild(element("p", daily.overdue && !daily.in_progress ? "form-error" : "profile-help", summary));
       }
       if (!job.installed && job.job !== "autostart") {
@@ -1130,7 +1131,7 @@
           row.append(element("strong", "", item.name), document.createTextNode(" "), chip(label, tone));
           const facts = [];
           if (item.failures_in_a_row) facts.push(`${plural(item.failures_in_a_row, "failed attempt", "failed attempts")} in a row`);
-          facts.push(item.last_success_at ? `last answered ${relativeWhen(item.last_success_at)}` : item.health === "never" ? "added since the last refresh, or never reached" : "never answered");
+          facts.push(item.last_success_at ? `last answered ${formatWeekdayDateTime(item.last_success_at)}` : item.health === "never" ? "added since the last refresh, or never reached" : "never answered");
           row.appendChild(element("p", "profile-help", facts.join(" · ")));
           if (item.last_error) row.appendChild(element("p", "profile-help system-status-error", item.last_error));
           list.appendChild(row);
@@ -1222,15 +1223,29 @@
     element.textContent = value || fallback;
   }
 
+  // One formatter per shape, built once: they run per card and per timeline
+  // row. The locale is the browser's own, which does not change mid-session.
+  // Each function below keeps its own answer for an empty or invalid value, and
+  // they differ on purpose (see each one).
+  const DATE_FORMAT = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" });
+  const DATE_TIME_FORMAT = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  const WEEKDAY_DATE_TIME_FORMAT = new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  const WEEKDAY_DAY_FORMAT = new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric" });
+  const CLOCK_FORMAT = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
+  const RELATIVE_FORMAT = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+
+  // The browser's time zone name, or undefined when it reports none. The two
+  // callers that send it choose their own fallback.
+  function browserTimeZone() {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  }
+
+  // Empty reads as "Not listed"; a value that is not a date comes back as it was.
   function formatDate(value) {
     if (!value) return "Not listed";
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return value;
-    return new Intl.DateTimeFormat(undefined, {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    }).format(date);
+    return DATE_FORMAT.format(date);
   }
 
   // Deadlines and follow-ups are calendar days. Some arrive date-only and some
@@ -1250,7 +1265,7 @@
     if (!value) return "Not listed";
     const date = calendarDate(value);
     if (Number.isNaN(date.getTime())) return value;
-    return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(date);
+    return DATE_FORMAT.format(date);
   }
 
   function deadlineState(value) {
@@ -2135,7 +2150,7 @@
       // a real edit keeps an untouched save from clearing the reminder.
       if (followUp.value !== initialFollowUp) {
         body.follow_up_at = followUp.value || "";
-        body.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+        body.timezone = browserTimeZone() || "UTC";
       }
       try {
         await api(`/api/v1/applications/${encodeURIComponent(item.id)}`, {
@@ -2226,7 +2241,7 @@
             body: JSON.stringify({
               title: taskTitle.value,
               due_at: taskDue.value || null,
-              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || null,
+              timezone: browserTimeZone() || null,
             }),
           });
           owner.dataset.loaded = "";
@@ -3349,7 +3364,7 @@
     if (!likelyExpiresAt || Number.isNaN(when.getTime()) || when.getTime() <= Date.now()) {
       return "Google may ask again soon; reconnecting now avoids a gap.";
     }
-    const day = new Intl.DateTimeFormat(undefined, { weekday: "short", month: "short", day: "numeric" }).format(when);
+    const day = WEEKDAY_DAY_FORMAT.format(when);
     return `Google will likely ask again by ${day}; reconnecting now avoids a gap.`;
   }
 
@@ -3628,10 +3643,12 @@
     group.appendChild(panel);
   }
 
+  // No empty-value guard: null is the epoch (new Date(null) is valid), while ""
+  // and undefined come back as "".
   function formatDateTime(value) {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return value || "";
-    return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(date);
+    return DATE_TIME_FORMAT.format(date);
   }
 
   function draftVersionOrigin(version) {
@@ -7569,9 +7586,8 @@
     const moment = new Date(stamp);
     if (!stamp || Number.isNaN(moment.getTime())) return "";
     const seconds = Math.round((moment.getTime() - Date.now()) / 1000);
-    const format = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
     for (const [unit, size] of [["year", 31_536_000], ["month", 2_592_000], ["week", 604_800], ["day", 86_400], ["hour", 3_600], ["minute", 60]]) {
-      if (Math.abs(seconds) >= size) return format.format(Math.round(seconds / size), unit);
+      if (Math.abs(seconds) >= size) return RELATIVE_FORMAT.format(Math.round(seconds / size), unit);
     }
     return "just now";
   }
@@ -7581,7 +7597,7 @@
     const date = new Date(stamp);
     if (!stamp || Number.isNaN(date.getTime())) return "";
     if (date.toDateString() === new Date().toDateString()) {
-      return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date);
+      return CLOCK_FORMAT.format(date);
     }
     return formatDateTime(stamp);
   }
@@ -10837,7 +10853,7 @@
     } else {
       line.append(words);
     }
-    const when = result.from_cache ? "a copy kept for up to an hour" : relativeWhen(result.checked_at);
+    const when = result.from_cache ? "a copy kept for up to an hour" : formatWeekdayDateTime(result.checked_at);
     line.append(` on Greenhouse${when ? `, ${when}` : ""}.`);
     body.appendChild(line);
     if (!posting.differs) return;
