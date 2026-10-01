@@ -17,6 +17,7 @@ import unittest
 import unittest.mock
 
 import pipeline
+from pipeline_core import sources
 
 BASE = "https://boards-api.greenhouse.io/v1/boards/acme"
 TERMS = ["intern", "co-op"]
@@ -59,8 +60,8 @@ class GreenhouseFetchTests(unittest.TestCase):
                     return detail
             raise AssertionError(f"unexpected request {url}")
 
-        with unittest.mock.patch.object(pipeline, "request_json", side_effect=fake):
-            records = pipeline.greenhouse_jobs(
+        with unittest.mock.patch.object(sources, "request_json", side_effect=fake):
+            records = sources.greenhouse_jobs(
                 {"kind": "greenhouse", "company": "Acme", "token": "acme"}, TERMS
             )
         return records, calls

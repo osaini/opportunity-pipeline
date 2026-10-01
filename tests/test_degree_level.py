@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 import unittest
 
-import pipeline
+from pipeline_core import scoring
 from opportunity_app.setup import validate_profile
 
 try:
@@ -78,12 +78,12 @@ class StudentDegreeLevelTests(unittest.TestCase):
         }
         for degree, levels in cases.items():
             with self.subTest(degree=degree):
-                self.assertEqual(pipeline.degree_levels(degree), levels)
+                self.assertEqual(scoring.degree_levels(degree), levels)
 
     def test_degree_without_a_level_names_none(self):
         for degree in ("Chemical Engineering", "", None, "Associate of Science", "Materials Science"):
             with self.subTest(degree=degree):
-                self.assertEqual(pipeline.degree_levels(degree), set())
+                self.assertEqual(scoring.degree_levels(degree), set())
 
 
 class TitleDegreeLevelTests(unittest.TestCase):
@@ -111,7 +111,7 @@ class TitleDegreeLevelTests(unittest.TestCase):
         }
         for title, levels in cases.items():
             with self.subTest(title=title):
-                self.assertEqual(pipeline.title_degree_levels(title), levels)
+                self.assertEqual(scoring.title_degree_levels(title), levels)
 
     def test_words_that_do_not_name_a_degree_level(self):
         for title in (
@@ -130,14 +130,14 @@ class TitleDegreeLevelTests(unittest.TestCase):
             "Engineering Intern",
         ):
             with self.subTest(title=title):
-                self.assertEqual(pipeline.title_degree_levels(title), set())
+                self.assertEqual(scoring.title_degree_levels(title), set())
 
 
 class DegreeLevelScoringTests(unittest.TestCase):
     def test_graduate_only_title_is_penalised_for_a_bachelors_student(self):
         profile = _profile(degree="B.S. Mechanical Engineering")
-        plain, _ = pipeline.score_job(_job(title="2027 Summer Intern, Software Engineer"), profile)
-        score, reasons = pipeline.score_job(_job(title="2027 Summer Intern, MS/PhD, Software Engineer"), profile)
+        plain, _ = scoring.score_job(_job(title="2027 Summer Intern, Software Engineer"), profile)
+        score, reasons = scoring.score_job(_job(title="2027 Summer Intern, MS/PhD, Software Engineer"), profile)
         self.assertEqual(
             _degree_reasons(reasons), ["-35 degree level: title asks for master's or PhD, not bachelor's"]
         )
@@ -153,26 +153,26 @@ class DegreeLevelScoringTests(unittest.TestCase):
             "Engineering Intern",
         ):
             with self.subTest(title=title):
-                _, reasons = pipeline.score_job(_job(title=title), profile)
+                _, reasons = scoring.score_job(_job(title=title), profile)
                 self.assertEqual(_degree_reasons(reasons), [])
 
     def test_masters_student_is_penalised_for_a_bachelors_only_title(self):
-        _, reasons = pipeline.score_job(
+        _, reasons = scoring.score_job(
             _job(title="Analog Layout Intern, BS - Summer 2027"), _profile(degree="M.S. Electrical Engineering")
         )
         self.assertEqual(_degree_reasons(reasons), ["-35 degree level: title asks for bachelor's, not master's"])
 
     def test_mba_title_takes_an_mba_student_but_not_another_masters(self):
         job = _job(title="2027 Summer Intern, MBA, Strategic Finance")
-        _, mba = pipeline.score_job(job, _profile(degree="MBA"))
-        _, ms = pipeline.score_job(job, _profile(degree="M.S. Industrial Engineering"))
+        _, mba = scoring.score_job(job, _profile(degree="MBA"))
+        _, ms = scoring.score_job(job, _profile(degree="M.S. Industrial Engineering"))
         self.assertEqual(_degree_reasons(mba), [])
         self.assertEqual(_degree_reasons(ms), ["-35 degree level: title asks for MBA, not master's"])
 
     def test_combined_program_is_penalised_only_when_neither_level_fits(self):
         profile = _profile(degree="B.S./M.S. Electrical Engineering")
-        _, masters = pipeline.score_job(_job(title="Digital IC Design Intern, MS - Summer 2027"), profile)
-        _, phd = pipeline.score_job(_job(title="2027 Summer Intern, PhD, Data Science"), profile)
+        _, masters = scoring.score_job(_job(title="Digital IC Design Intern, MS - Summer 2027"), profile)
+        _, phd = scoring.score_job(_job(title="2027 Summer Intern, PhD, Data Science"), profile)
         self.assertEqual(_degree_reasons(masters), [])
         self.assertEqual(_degree_reasons(phd), ["-35 degree level: title asks for PhD, not bachelor's or master's"])
 
@@ -180,13 +180,13 @@ class DegreeLevelScoringTests(unittest.TestCase):
         job = _job(title="2027 Summer Intern, MS/PhD, Software Engineer")
         for profile in (_profile(degree="Mechanical Engineering"), _profile(degree=""), _profile(degree=None), _profile()):
             with self.subTest(degree=profile.get("degree", "missing")):
-                _, reasons = pipeline.score_job(job, profile)
+                _, reasons = scoring.score_job(job, profile)
                 self.assertEqual(_degree_reasons(reasons), [])
 
     def test_description_alone_never_sets_the_level(self):
         # "BS, MS, or PhD" in a description is usually inclusive; only the title is read.
         job = _job(title="Firmware Intern", description="Currently pursuing an MS or PhD in electrical engineering.")
-        _, reasons = pipeline.score_job(job, _profile(degree="B.S. Mechanical Engineering"))
+        _, reasons = scoring.score_job(job, _profile(degree="B.S. Mechanical Engineering"))
         self.assertEqual(_degree_reasons(reasons), [])
 
 

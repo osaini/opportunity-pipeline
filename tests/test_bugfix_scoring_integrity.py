@@ -18,7 +18,7 @@ import re
 import sqlite3
 import unittest
 
-import pipeline
+from pipeline_core import artifacts, scoring
 from opportunity_app.opportunity_metadata import extract_deadline, extract_opportunity_metadata
 
 try:
@@ -95,7 +95,7 @@ class YearlyPayRequiresPeriodTests(unittest.TestCase):
 
 class ExperienceYearsTests(unittest.TestCase):
     def penalties(self, description):
-        _, reasons = pipeline.score_job(_job(description=description), _profile())
+        _, reasons = scoring.score_job(_job(description=description), _profile())
         return [reason for reason in reasons if "years" in reason and reason.startswith("-")]
 
     def test_age_requirement_is_not_experience(self):
@@ -129,15 +129,15 @@ class ExperienceYearsTests(unittest.TestCase):
 
     def test_explicit_zero_max_experience_is_preserved(self):
         description = "1 year of experience preferred."
-        _, zero = pipeline.score_job(_job(description=description), _profile(max_years_experience=0))
-        _, one = pipeline.score_job(_job(description=description), _profile(max_years_experience=1))
+        _, zero = scoring.score_job(_job(description=description), _profile(max_years_experience=0))
+        _, one = scoring.score_job(_job(description=description), _profile(max_years_experience=1))
         self.assertIn("-18 asks for 1+ years", zero)
         self.assertNotIn("-18 asks for 1+ years", one)
 
 
 class SeniorityTests(unittest.TestCase):
     def seniority(self, title):
-        _, reasons = pipeline.score_job(_job(title=title, role_type="other"), _profile())
+        _, reasons = scoring.score_job(_job(title=title, role_type="other"), _profile())
         return [reason for reason in reasons if "seniority" in reason]
 
     def test_seniority_words_match_whole_words_only(self):
@@ -172,8 +172,8 @@ class ProfileNullHardeningTests(unittest.TestCase):
             )
         }
         job = _job(title="Engineering Intern Summer 2027", location="Austin, TX")
-        null_score, null_reasons = pipeline.score_job(job, _profile(**nulls))
-        empty_score, empty_reasons = pipeline.score_job(
+        null_score, null_reasons = scoring.score_job(job, _profile(**nulls))
+        empty_score, empty_reasons = scoring.score_job(
             job, _profile(**{key: [] for key in nulls})
         )
         self.assertEqual((null_score, null_reasons), (empty_score, empty_reasons))
@@ -181,7 +181,7 @@ class ProfileNullHardeningTests(unittest.TestCase):
     def test_null_numbers_take_their_defaults(self):
         job = _job(description="Requires 2 years of experience.", location="Seattle, WA")
         regions = [{"name": "Austin", "state_markers": ["tx"], "places": ["austin"]}]
-        _, reasons = pipeline.score_job(
+        _, reasons = scoring.score_job(
             job, _profile(max_years_experience=None, out_of_region_penalty=None, regions=regions)
         )
         self.assertIn("-18 asks for 2+ years", reasons)
@@ -189,7 +189,7 @@ class ProfileNullHardeningTests(unittest.TestCase):
 
     def test_explicit_zero_penalty_is_preserved(self):
         regions = [{"name": "Austin", "state_markers": ["tx"], "places": ["austin"]}]
-        _, reasons = pipeline.score_job(
+        _, reasons = scoring.score_job(
             _job(location="Seattle, WA"), _profile(out_of_region_penalty=0, regions=regions)
         )
         self.assertTrue(any(reason.startswith("-0 outside target regions") for reason in reasons))
@@ -200,18 +200,18 @@ class ProfileNullHardeningTests(unittest.TestCase):
             {"name": None, "state_markers": ["tx"], "places": ["austin"]},
             {"name": "Austin", "state_markers": ["tx"], "places": ["austin"], "bonus": 12},
         ]
-        _, reasons = pipeline.score_job(_job(location="Austin, TX"), _profile(regions=regions))
+        _, reasons = scoring.score_job(_job(location="Austin, TX"), _profile(regions=regions))
         self.assertIn("+12 location: Austin (target radius)", reasons)
 
     def test_null_region_bonus_adds_nothing(self):
         regions = [{"name": "Austin", "state_markers": ["tx"], "places": ["austin"], "bonus": None}]
-        score, reasons = pipeline.score_job(_job(location="Austin, TX"), _profile(regions=regions))
+        score, reasons = scoring.score_job(_job(location="Austin, TX"), _profile(regions=regions))
         self.assertIn("+0 location: Austin (target radius)", reasons)
         self.assertEqual(score, _reason_total(reasons))
 
     def test_null_region_markers_do_not_crash(self):
         regions = [{"name": "Austin", "aliases": None, "state_markers": None, "places": None}]
-        score, _ = pipeline.score_job(_job(location="Austin, TX"), _profile(regions=regions))
+        score, _ = scoring.score_job(_job(location="Austin, TX"), _profile(regions=regions))
         self.assertGreaterEqual(score, 0)
 
     def test_reasons_account_for_the_raw_score_and_score_is_clamped(self):
@@ -226,7 +226,7 @@ class ProfileNullHardeningTests(unittest.TestCase):
                       regions=[{"name": "Austin", "state_markers": ["tx"], "places": ["austin"], "bonus": 15}])),
         ]
         for job, profile in cases:
-            score, reasons = pipeline.score_job(job, profile)
+            score, reasons = scoring.score_job(job, profile)
             self.assertEqual(score, max(0, min(100, _reason_total(reasons))))
 
 
@@ -246,13 +246,13 @@ class CoverLetterIdentityTests(unittest.TestCase):
         return conn.execute("SELECT * FROM jobs").fetchone()
 
     def test_no_education_is_a_todo_not_engineering(self):
-        markup = pipeline.build_cover_letter_html({"name": "Test"}, self._job())
+        markup = artifacts.build_cover_letter_html({"name": "Test"}, self._job())
         self.assertNotIn("engineering", markup.lower())
         self.assertIn("[your degree and school -- add education to config/resume.json]", markup)
         self.assertNotIn("student at ,", markup)
 
     def test_degree_falls_back_to_profile(self):
-        markup = pipeline.build_cover_letter_html(
+        markup = artifacts.build_cover_letter_html(
             {"name": "Test"}, self._job(), {"degree": "B.A. Economics", "school": "Example College"}
         )
         self.assertIn("I am an Economics student at Example College", markup)
@@ -267,12 +267,12 @@ class CoverLetterIdentityTests(unittest.TestCase):
         ):
             with self.subTest(degree=degree):
                 resume = {"education": [{"school": "Example College", "degree": degree}]}
-                markup = pipeline.build_cover_letter_html(resume, self._job())
+                markup = artifacts.build_cover_letter_html(resume, self._job())
                 self.assertIn(f"I am {expected} at Example College", markup)
 
     def test_missing_school_drops_the_at_clause(self):
         resume = {"education": [{"degree": "B.S. Biology"}]}
-        markup = pipeline.build_cover_letter_html(resume, self._job())
+        markup = artifacts.build_cover_letter_html(resume, self._job())
         self.assertIn("I am a Biology student, and", markup)
         self.assertNotIn(" at ,", markup)
 

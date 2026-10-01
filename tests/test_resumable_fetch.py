@@ -18,7 +18,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pipeline
-from pipeline_core import http, paths
+from pipeline_core import http, paths, sources
 
 SOURCES = {
     "discovery_title_terms": ["intern"],
@@ -99,7 +99,7 @@ class ResumeFetchTests(unittest.TestCase):
                 raise outcome
             return outcome
 
-        with unittest.mock.patch.object(pipeline, "greenhouse_jobs", side_effect=fake), \
+        with unittest.mock.patch.object(sources, "greenhouse_jobs", side_effect=fake), \
                 unittest.mock.patch("sys.stdout", io.StringIO()), unittest.mock.patch("sys.stderr", io.StringIO()):
             failures = pipeline.fetch_all(self.conn, SOURCES, resume_since)
         return failures, fetched

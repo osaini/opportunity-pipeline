@@ -19,14 +19,13 @@ from pathlib import Path
 import pipeline
 from pipeline import (
     backup_sqlite,
-    degree_levels,
     discover_ats,
-    score_job,
     write_discovered_sources,
 )
 from pipeline_core.config import load_env_file, load_sources, source_key
 from pipeline_core.http import USER_AGENT
 from pipeline_core.paths import PROFILE_PATH, SOURCES_LOCAL_PATH, SOURCES_PATH
+from pipeline_core.scoring import degree_levels, score_job
 
 __all__ = [
     "PROFILE_PATH",

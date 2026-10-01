@@ -25,7 +25,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pipeline
-from pipeline_core import http, paths
+from pipeline_core import sources as core_sources, http, paths
 
 try:
     import realdata_guard
@@ -106,7 +106,7 @@ class FetchConcurrencyTests(unittest.TestCase):
 
     def run_fetch(self, config, fetcher, **kwargs):
         with unittest.mock.patch.dict(
-            pipeline._SOURCE_FETCHERS, {"greenhouse": fetcher, "lever": fetcher, "ashby": fetcher}
+            core_sources._SOURCE_FETCHERS, {"greenhouse": fetcher, "lever": fetcher, "ashby": fetcher}
         ), unittest.mock.patch("sys.stdout", io.StringIO()) as out, \
                 unittest.mock.patch("sys.stderr", io.StringIO()) as err:
             failures = pipeline.fetch_all(self.conn, config, **kwargs)
@@ -130,7 +130,7 @@ class FetchConcurrencyTests(unittest.TestCase):
         ])
 
         with fetcher.observing(), \
-                unittest.mock.patch.dict(pipeline._SOURCE_FETCHERS, {"workday": fetcher}), \
+                unittest.mock.patch.dict(core_sources._SOURCE_FETCHERS, {"workday": fetcher}), \
                 unittest.mock.patch("sys.stdout", io.StringIO()), \
                 unittest.mock.patch("sys.stderr", io.StringIO()):
             pipeline.fetch_all(self.conn, config, max_workers=3, max_per_host=4)

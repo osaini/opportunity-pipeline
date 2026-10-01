@@ -34,7 +34,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pipeline
-from pipeline_core import clock, text as core_text, http, paths
+from pipeline_core import clock, sources as core_sources, text as core_text, http, paths, scoring
 from pipeline_core.identity import normalized
 
 try:
@@ -223,12 +223,12 @@ def _reference_upsert_jobs(conn, source_key, source_name, records, seen=None):
 
 def _reference_score_all(conn, profile):
     jobs = conn.execute("SELECT * FROM jobs").fetchall()
-    reposts = pipeline.repost_flags(conn)
+    reposts = scoring.repost_flags(conn)
     for job in jobs:
         role_type = core_text.classify_role(job["title"], job["description"])
         score_input = dict(job)
         score_input["role_type"] = role_type
-        score, reasons = pipeline.score_job(score_input, profile)
+        score, reasons = scoring.score_job(score_input, profile)
         if job["id"] in reposts:
             listings, since = reposts[job["id"]]
             reasons.append(
@@ -493,7 +493,7 @@ class DeferredDedupeTests(TempDbCase):
         def fetcher(source, _terms):
             return list(batches[f"greenhouse:{source['token']}"])
 
-        with unittest.mock.patch.dict(pipeline._SOURCE_FETCHERS, {"greenhouse": fetcher}), \
+        with unittest.mock.patch.dict(core_sources._SOURCE_FETCHERS, {"greenhouse": fetcher}), \
                 unittest.mock.patch.object(http, "_HOST_LIMITER", http._HostRateLimiter(0.0)), \
                 unittest.mock.patch("sys.stdout", io.StringIO()), \
                 unittest.mock.patch("sys.stderr", io.StringIO()):
@@ -570,7 +570,7 @@ class DeferredDedupeTests(TempDbCase):
             "discovery_title_terms": ["intern"],
             "ats_sources": [{"kind": "greenhouse", "company": "G0", "token": "g0"}],
         }
-        with unittest.mock.patch.dict(pipeline._SOURCE_FETCHERS, {"greenhouse": failing}), \
+        with unittest.mock.patch.dict(core_sources._SOURCE_FETCHERS, {"greenhouse": failing}), \
                 unittest.mock.patch.object(http, "_HOST_LIMITER", http._HostRateLimiter(0.0)), \
                 unittest.mock.patch("sys.stdout", io.StringIO()), \
                 unittest.mock.patch("sys.stderr", io.StringIO()):
@@ -594,7 +594,7 @@ class DeferredDedupeTests(TempDbCase):
             return list(batches[key])
 
         stderr = io.StringIO()
-        with unittest.mock.patch.dict(pipeline._SOURCE_FETCHERS, {"greenhouse": fetcher}),                 unittest.mock.patch.object(http, "_HOST_LIMITER", http._HostRateLimiter(0.0)),                 unittest.mock.patch("sys.stdout", io.StringIO()),                 unittest.mock.patch("sys.stderr", stderr):
+        with unittest.mock.patch.dict(core_sources._SOURCE_FETCHERS, {"greenhouse": fetcher}),                 unittest.mock.patch.object(http, "_HOST_LIMITER", http._HostRateLimiter(0.0)),                 unittest.mock.patch("sys.stdout", io.StringIO()),                 unittest.mock.patch("sys.stderr", stderr):
             result = pipeline.fetch_all(
                 conn, config, resume_since=resume_since, max_workers=1, max_per_host=1
             )
@@ -796,7 +796,7 @@ class ScoreAllParityTests(TempDbCase):
         old, new = self.build("old.db"), self.build("new.db")
         _reference_score_all(old, profile)
         with unittest.mock.patch("sys.stdout", io.StringIO()):
-            count = pipeline.score_all(new, profile)
+            count = scoring.score_all(new, profile)
         self.assertEqual(count, new.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
         self.assertEqual(self.snapshot(old), self.snapshot(new))
 
@@ -804,10 +804,10 @@ class ScoreAllParityTests(TempDbCase):
         profile = self.profile()
         conn = self.build("new.db")
         with unittest.mock.patch("sys.stdout", io.StringIO()):
-            pipeline.score_all(conn, profile)
+            scoring.score_all(conn, profile)
             before = conn.total_changes
             snapshot = self.snapshot(conn)
-            pipeline.score_all(conn, profile)
+            scoring.score_all(conn, profile)
         self.assertEqual(conn.total_changes, before)
         self.assertEqual(self.snapshot(conn), snapshot)
 
@@ -815,14 +815,14 @@ class ScoreAllParityTests(TempDbCase):
         profile = self.profile()
         old, new = self.build("old.db"), self.build("new.db")
         with unittest.mock.patch("sys.stdout", io.StringIO()):
-            pipeline.score_all(new, profile)
+            scoring.score_all(new, profile)
         _reference_score_all(old, profile)
         for conn in (old, new):
             conn.execute("UPDATE jobs SET title='Software Engineering Intern' WHERE id='job0003'")
             conn.commit()
         _reference_score_all(old, profile)
         with unittest.mock.patch("sys.stdout", io.StringIO()):
-            pipeline.score_all(new, profile)
+            scoring.score_all(new, profile)
         self.assertEqual(self.snapshot(old), self.snapshot(new))
 
 

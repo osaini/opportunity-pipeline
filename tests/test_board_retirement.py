@@ -17,7 +17,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pipeline
-from pipeline_core import paths
+from pipeline_core import paths, sources
 
 SOURCE = {"kind": "greenhouse", "company": "Acme", "token": "acme"}
 KEY = "greenhouse:acme"
@@ -56,10 +56,10 @@ class BoardRetirementTests(unittest.TestCase):
         self.conn = pipeline.connect()
         self.addCleanup(self.conn.close)
 
-    def fetch(self, body, seen: datetime = NOW) -> pipeline.Listing:
+    def fetch(self, body, seen: datetime = NOW) -> sources.Listing:
         """One board fetch answering `body`, recorded the way fetch_all records it."""
-        with unittest.mock.patch.object(pipeline, "request_json", return_value=body):
-            records = pipeline.greenhouse_jobs(SOURCE, ["intern"])
+        with unittest.mock.patch.object(sources, "request_json", return_value=body):
+            records = sources.greenhouse_jobs(SOURCE, ["intern"])
         with contextlib.redirect_stdout(io.StringIO()):
             pipeline.upsert_jobs(self.conn, KEY, "Acme", records, iso(seen))
         self.conn.execute(
@@ -140,7 +140,7 @@ class BoardRetirementTests(unittest.TestCase):
     def test_fetch_all_records_how_many_postings_the_board_listed(self):
         config = {"discovery_title_terms": ["intern"], "ats_sources": [SOURCE]}
         body = {"jobs": [posting(1), posting(10, "Senior Engineer"), posting(11, "Recruiter")]}
-        with unittest.mock.patch.object(pipeline, "request_json", return_value=body), contextlib.redirect_stdout(
+        with unittest.mock.patch.object(sources, "request_json", return_value=body), contextlib.redirect_stdout(
             io.StringIO()
         ):
             pipeline.fetch_all(self.conn, config)
@@ -168,8 +168,8 @@ class WorkdayPagingTests(unittest.TestCase):
             self.page(["Software Intern"] * 20, 0, 20),
             self.page(["Firmware Intern"] * 5, 0, 40),
         ]
-        with unittest.mock.patch.object(pipeline, "request_json_post", side_effect=pages):
-            jobs = pipeline.workday_jobs(self.SOURCE, ["intern"])
+        with unittest.mock.patch.object(sources, "request_json_post", side_effect=pages):
+            jobs = sources.workday_jobs(self.SOURCE, ["intern"])
         self.assertEqual(len(jobs), 45)
         self.assertEqual(jobs.listed, 45)
         self.assertTrue(jobs.complete)
@@ -180,8 +180,8 @@ class WorkdayPagingTests(unittest.TestCase):
             self.page(["Director, Internal Audit"] * 20, 0, 20),
             self.page(["Sales Engineer"] * 20, 0, 40),
         ]
-        with unittest.mock.patch.object(pipeline, "request_json_post", side_effect=pages) as post:
-            jobs = pipeline.workday_jobs(self.SOURCE, ["intern"])
+        with unittest.mock.patch.object(sources, "request_json_post", side_effect=pages) as post:
+            jobs = sources.workday_jobs(self.SOURCE, ["intern"])
         self.assertEqual(post.call_count, 3)
         self.assertEqual(len(jobs), 20)
         self.assertFalse(jobs.complete)
