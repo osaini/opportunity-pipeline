@@ -105,7 +105,7 @@ from .agent_providers import CliAgentProvider, complete_text
 from .operations import JobDeferred, enqueue_job, recover_stale_jobs, run_next_job
 from .outreach import CALL_PREP_STATUSES, OutreachNotFoundError, _log, get_target, local_today
 from .outreach_drafting import (
-    DRAFT_FACT_FIELDS, INFERENCE_BASIS, RESEARCH_FIELDS, ProviderFactory, _entry_name, _field_basis,
+    DRAFT_FACT_FIELDS, IDENTIFIER_KEYS, INFERENCE_BASIS, RESEARCH_FIELDS, ProviderFactory, _ADDRESS, _entry_name, _field_basis,
     outreach_proof, resolve_provider,
 )
 from .preparation import confirmed_facts
@@ -199,8 +199,7 @@ _STATES = re.compile(
 )
 # Where a number in the notes may come from: what the student, the research, and the reply say. Not ids, links,
 # dates, the agent's list of gaps (it states nothing), or the research on file the model is not sent.
-_NOT_A_SOURCE = frozenset({"id", "source_urls", "sent_on", "logged_on", "research_gaps", "unverified_research", "status"})
-_ADDRESS = re.compile(r"\S+@\S+|https?://\S+")
+_NOT_A_SOURCE = IDENTIFIER_KEYS | {"sent_on", "logged_on", "research_gaps", "unverified_research", "status"}
 
 INSTRUCTIONS = """You write call-prep notes for one university student. A small company answered the student's cold email about an internship, and the student will talk to someone there soon.
 
@@ -560,7 +559,8 @@ def _unsupported_numbers(text: str, inputs: dict[str, Any]) -> list[str]:
     """Numbers in the notes that are no whole number in the inputs' own words.
 
     Whole numbers, not pieces of text: a 9 is not found in a 90 or a date.
-    Email drafts use outreach_drafting's check; call prep needs this stricter one.
+    Email drafts check whole numbers the same way (outreach_drafting); this one
+    skips the same identifier keys (outreach_drafting.IDENTIFIER_KEYS) and more, none of which are the student's own words.
     """
     allowed: set[str] = set()
     for piece in _strings(inputs):

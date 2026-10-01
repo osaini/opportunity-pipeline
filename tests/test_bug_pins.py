@@ -244,11 +244,11 @@ class LoneSurrogateRequestBodyTests(unittest.TestCase):
 
 class CliProviderErrorBoundaryTests(unittest.TestCase):
     def test_cli_provider_converts_subprocess_failures_to_runtime_error(self):
-        """BUG: long conversations embed the full transcript into argv; on
-        Windows a command line over ~32k characters makes subprocess.run
-        raise OSError [WinError 206], which escapes create() as a raw
-        OSError/500 instead of the provider boundary's honest RuntimeError
-        that the agent turn recorder can attribute."""
+        """Any OSError from launching the CLI (a missing binary, an over-long
+        command line, a refused spawn) must surface as the provider boundary's
+        honest RuntimeError that the agent turn recorder can attribute, not as
+        a raw OSError/500 out of create()."""
+
         from opportunity_app.agent_providers import CliAgentProvider
 
         provider = CliAgentProvider("claude-code", "subscription")

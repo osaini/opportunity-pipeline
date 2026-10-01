@@ -400,23 +400,30 @@ class CliAgentProvider:
 
     # -- CLI invocation ---------------------------------------------------
 
-    def _command(self, prompt: str) -> list[str]:
-        if self.provider_id == "claude-code":
-            return [self.binary, "-p", prompt, "--output-format", "text"]
-        return [self.binary, "exec", "--skip-git-repo-check", prompt]
+    def _command(self) -> list[str]:
+        """The sandboxed CLI invocation shared by every turn and by complete_text.
 
-    def _invoke(self, command: list[str], stdin: str | None = None) -> str:
+        The prompt is never part of it: it goes over stdin, the CLI gets no
+        tools or MCP servers (Codex: a read-only sandbox), and _invoke runs it
+        in a directory of its own outside the project, so text taken from the web cannot steer
+        it into local files or be re-parsed by a cmd.exe shim.
+        """
+        if self.provider_id == "claude-code":
+            return [self.binary, "-p", "--output-format", "text", "--tools", "", "--strict-mcp-config"]
+        return [self.binary, "exec", "--skip-git-repo-check", "--sandbox", "read-only", "-"]
+
+    def _invoke(self, command: list[str], stdin: str) -> str:
         try:
             if self._runner is not None:
-                completed = self._runner(command if stdin is None else [*command, stdin])
-            elif stdin is not None:
-                completed = subprocess.run(
-                    command, input=stdin, capture_output=True, text=True, encoding="utf-8",
-                    errors="replace", timeout=self.timeout, cwd=tempfile.gettempdir(),
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
+                completed = self._runner([*command, stdin])
             else:
-                completed = subprocess.run(command, capture_output=True, text=True, timeout=self.timeout)
+                # A directory of its own and empty, as the sibling CLI runners use, not the shared system temp.
+                with tempfile.TemporaryDirectory(prefix="agent-cli-", ignore_cleanup_errors=True) as workdir:
+                    completed = subprocess.run(
+                        command, input=stdin, capture_output=True, text=True, encoding="utf-8",
+                        errors="replace", timeout=self.timeout, cwd=workdir,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
         except (OSError, subprocess.SubprocessError) as exc:
             raise RuntimeError(f"{self.provider_id} CLI could not start: {exc}") from exc
         if getattr(completed, "returncode", 1) != 0:
@@ -473,7 +480,7 @@ class CliAgentProvider:
         raise ValueError(f"CLI reply was not a JSON decision: {raw[:200]}")
 
     def _decide(self, instructions: str, state: list[dict[str, str]], tools: list[ToolDefinition], max_output_tokens: int) -> ProviderReply:
-        output = self._invoke(self._command(self._prompt(instructions, state, tools)))
+        output = self._invoke(self._command(), stdin=self._prompt(instructions, state, tools))
         decision = self.extract_json(output)
         request_id = f"cli-{hashlib.sha256(output.encode()).hexdigest()[:12]}"
         if isinstance(decision.get("tool"), str):
@@ -503,11 +510,7 @@ class CliAgentProvider:
         directory, so text taken from the web cannot steer it into local files.
         """
         prompt = f"{instructions}\n\n{content}"
-        if self.provider_id == "claude-code":
-            command = [self.binary, "-p", "--output-format", "text", "--tools", "", "--strict-mcp-config"]
-        else:
-            command = [self.binary, "exec", "--skip-git-repo-check", "--sandbox", "read-only", "-"]
-        return self._invoke(command, stdin=prompt)
+        return self._invoke(self._command(), stdin=prompt)
 
     # -- AgentProvider protocol -------------------------------------------
 

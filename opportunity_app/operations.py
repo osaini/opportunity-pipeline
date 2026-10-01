@@ -224,7 +224,24 @@ ACCOUNT_QUERIES = {
     "apply_runs": "SELECT * FROM apply_runs WHERE user_id=?",
     "apply_sensitive_answers": "SELECT * FROM apply_sensitive_answers WHERE user_id=?",
     "apply_ats_labels": "SELECT * FROM apply_ats_labels WHERE user_id=?",
+    # Outreach scheduling, contact forms found, companies dismissed, and tag state.
+    "outreach_scheduled_sends": "SELECT * FROM outreach_scheduled_sends WHERE user_id=?",
+    "outreach_contact_forms": "SELECT * FROM outreach_contact_forms WHERE user_id=?",
+    "outreach_dismissed": "SELECT * FROM outreach_dismissed WHERE user_id=?",
+    "outreach_tag_state": "SELECT * FROM outreach_tag_state WHERE user_id=?",
+    # Gmail: the outreach threads the app labelled, and the sent-mail searches it ran (their queries name contacts).
+    "outreach_label_threads": "SELECT * FROM outreach_label_threads WHERE user_id=?",
+    "outreach_label_searches": "SELECT * FROM outreach_label_searches WHERE user_id=?",
+    # Left out on purpose, each with its reason in tests/test_account_coverage.py (EXPORT_EXCLUDED): user_credentials,
+    # user_api_tokens, oauth_states, recovery_challenges (secrets), automation_held (a waiting proposal's full link, token
+    # and all; migration 0038 keeps it out of the export), action_requests (response cache), organization_memberships.
 }
+
+
+# Tables that carry a user_id but, unlike every other, no ON DELETE CASCADE foreign key to users (0044 created them
+# without one), so deleting the users row leaves their rows behind. delete_account erases them itself.
+# tests/test_account_coverage.py fails if a table with a user_id and no cascade is not named here.
+ACCOUNT_EXPLICIT_DELETES = ("outreach_label_threads", "outreach_label_searches")
 
 
 def export_account(conn: sqlite3.Connection, *, user_id: str) -> dict[str, Any]:
@@ -290,6 +307,8 @@ def delete_account(
         # Employer views reference grants; erase those cached views before cascading the grants.
         conn.execute("DELETE FROM employer_candidates WHERE consent_grant_id IN (SELECT id FROM dossier_consent_grants WHERE user_id=?)", (user_id,))
         cursor = conn.execute("DELETE FROM users WHERE id=?", (user_id,))
+        for table in ACCOUNT_EXPLICIT_DELETES:
+            conn.execute(f"DELETE FROM {table} WHERE user_id=?", (user_id,))
         conn.execute("INSERT INTO account_deletion_log(id, user_id_hash, status, detail_json, created_at) VALUES(?, ?, 'completed', ?, ?)",
                      (f"deletion-{uuid4().hex}", digest, json.dumps({"database_rows_removed": bool(cursor.rowcount)}), timestamp))
     for root, stored_path in owned_files:

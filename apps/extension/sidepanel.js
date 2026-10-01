@@ -16,9 +16,15 @@
   let activeTabId = null;
   let activePageUrl = "";
   let selectedApplicationId = "";
+  // The tab the application was chosen in: a scan in any other tab is not for this application.
+  let contextTabId = null;
+  // Counts page changes and new candidate searches, so an answer that left before one and arrives after is dropped.
+  let pageSequence = 0;
   let applyContext = null;
   let scanResult = null;
   let sessionId = "";
+  // The application sessionId was made for; Mark as submitted refuses when it is not the one on screen.
+  let sessionApplicationId = "";
   let attachmentUrl = "";
 
   function node(tag, value, className) {
@@ -128,11 +134,28 @@
     return ({ exact_url: "Exact URL", canonical_url: "Canonical URL", same_host: "Same ATS host", recent_apply: "Recently opened" })[kind] || kind;
   }
 
+  // The chosen application, its loaded context and its scan go together. A new search for candidates, or a
+  // scan from another tab, drops all three, so a scan of one application is never left standing for the next
+  // choice. (A page change in the same tab drops only the scan view: see pageChanged.)
+  function clearSelection() {
+    selectedApplicationId = "";
+    contextTabId = null;
+    applyContext = null;
+    clearScan();
+    contextHost.hidden = true;
+  }
+
   async function findContext() {
+    clearSelection();
+    const sequence = ++pageSequence;
     const tab = await activeTab();
+    if (sequence !== pageSequence) return;
+    contextTabId = tab.id;
     status.textContent = "Matching this page to your pipeline…";
     const response = await api(`/api/v1/extension/application-candidates?page_url=${encodeURIComponent(tab.url)}`);
     const payload = await response.json();
+    // The page changed (or the student searched again) while the candidates were coming: they are for another page.
+    if (sequence !== pageSequence) return;
     candidatesHost.replaceChildren();
     if (!payload.items.length) {
       candidatesHost.append(node("p", "No matching applications. Add or open this opportunity in the tracker first."));
@@ -153,10 +176,42 @@
       : "Choose the application that belongs to this page.";
   }
 
+  // Everything tied to a scan: the scanned fields, the session that scan created, what the panel shows
+  // of it, and the "I submitted it" confirmation. A scan belongs to one application, so choosing another
+  // (or refreshing this one) starts over; Mark as submitted then needs a new scan and a new confirmation.
+  function clearScan() {
+    sessionId = "";
+    sessionApplicationId = "";
+    clearScanView();
+  }
+
+  // What the page showed of a scan: the fields, progress, document link and the confirmation. The session
+  // stays out of this on purpose: submitting usually moves the tab to a confirmation page, and the student
+  // then ticks the box again to confirm the application they scanned.
+  function clearScanView() {
+    scanResult = null;
+    fieldsHost.replaceChildren();
+    reviewForm.hidden = true;
+    documentsHost.hidden = true;
+    $("progress").hidden = true;
+    $("progress-copy").textContent = "";
+    $("download-fallback").hidden = true;
+    if (attachmentUrl) URL.revokeObjectURL(attachmentUrl);
+    attachmentUrl = "";
+    $("submitted-confirm").checked = false;
+    $("mark-submitted").disabled = true;
+  }
+
   async function selectContext(applicationId) {
     selectedApplicationId = applicationId;
+    applyContext = null;
+    clearScan();
+    contextHost.hidden = true;
     const response = await api(`/api/v1/extension/apply-context?application_id=${encodeURIComponent(applicationId)}`);
-    applyContext = await response.json();
+    const loaded = await response.json();
+    // The student chose another application while this one was loading; its answer is not theirs to see.
+    if (selectedApplicationId !== applicationId) return;
+    applyContext = loaded;
     const app = applyContext.application;
     const match = applyContext.match;
     $("match-card").replaceChildren(
@@ -165,8 +220,6 @@
       node("small", (match.explanation || []).map((part) => typeof part === "string" ? part : JSON.stringify(part)).join(" · ") || "No score explanation available.")
     );
     contextHost.hidden = false;
-    reviewForm.hidden = true;
-    documentsHost.hidden = true;
     status.textContent = "Context loaded from confirmed local facts. Review it, then scan this step.";
   }
 
@@ -272,24 +325,33 @@
       manual: fields.filter((item) => item.requires_review || !fieldValue(item)).length,
       required_unresolved: fields.filter((item) => item.required && !outcomes.get(item.key)?.filled).length
     };
-    const sessionPayload = { application_id: selectedApplicationId, page_url: activePageUrl, ats_type: scanResult.ats_type, fields: safe, status: stepStatus === "filled" ? "reviewed" : "draft" };
-    const stepKey = await stableId("step", `${activePageUrl}|${scanResult.ats_type}`);
+    // The student may choose another application, or the page may change (Submit usually navigates), while this sync is in
+    // flight; it finishes for the application and page it started on.
+    const applicationId = selectedApplicationId;
+    const session = sessionId;
+    const pageUrl = activePageUrl;
+    const atsType = scanResult.ats_type;
+    const sequence = pageSequence;
+    const sessionPayload = { application_id: applicationId, page_url: pageUrl, ats_type: atsType, fields: safe, status: stepStatus === "filled" ? "reviewed" : "draft" };
+    const stepKey = await stableId("step", `${pageUrl}|${atsType}`);
     try {
-      await api(`/api/v1/extension/sessions/${encodeURIComponent(sessionId)}`, { method: "PUT", body: JSON.stringify(sessionPayload) });
-      await api(`/api/v1/extension/sessions/${encodeURIComponent(sessionId)}/steps/${encodeURIComponent(stepKey)}`, {
-        method: "PUT", body: JSON.stringify({ page_url: activePageUrl, ats_type: scanResult.ats_type, fields: safe, summary, status: stepStatus })
+      await api(`/api/v1/extension/sessions/${encodeURIComponent(session)}`, { method: "PUT", body: JSON.stringify(sessionPayload) });
+      await api(`/api/v1/extension/sessions/${encodeURIComponent(session)}/steps/${encodeURIComponent(stepKey)}`, {
+        method: "PUT", body: JSON.stringify({ page_url: pageUrl, ats_type: atsType, fields: safe, summary, status: stepStatus })
       });
       await flushPendingMetadata();
     } catch (error) {
       const auth = await storedAuth();
       if (error.retryable || error instanceof TypeError) {
-        const pending = [...auth.pendingMetadata, { session_id: sessionId, step_key: stepKey, session: sessionPayload, step: { page_url: activePageUrl, ats_type: scanResult.ats_type, fields: safe, summary, status: stepStatus } }].slice(-20);
+        const pending = [...auth.pendingMetadata, { session_id: session, step_key: stepKey, session: sessionPayload, step: { page_url: pageUrl, ats_type: atsType, fields: safe, summary, status: stepStatus } }].slice(-20);
         await chrome.storage.local.set({ pendingMetadata: pending });
       }
       throw error;
     } finally {
-      $("progress").hidden = false;
-      $("progress-copy").textContent = `${summary.filled} filled · ${summary.failed} failed · ${summary.manual} manual · ${summary.required_unresolved} required unresolved`;
+      if (selectedApplicationId === applicationId && sequence === pageSequence) {
+        $("progress").hidden = false;
+        $("progress-copy").textContent = `${summary.filled} filled · ${summary.failed} failed · ${summary.manual} manual · ${summary.required_unresolved} required unresolved`;
+      }
     }
   }
 
@@ -309,21 +371,41 @@
   }
 
   async function scan() {
-    await activeTab();
+    const tab = await activeTab();
     if (!selectedApplicationId || !applyContext) throw new Error("Choose and confirm an application context first.");
+    if (tab.id !== contextTabId) {
+      // Another tab's page must never be filed under this application's session.
+      clearSelection();
+      candidatesHost.replaceChildren();
+      status.textContent = "This is a different tab from the one the application was chosen in. Find this page's application, choose it, then scan.";
+      return;
+    }
+    // The student can choose another application during any await below; the scan, its session and
+    // its fields then belong to the one they left, so nothing of it may reach the panel's state.
+    const applicationId = selectedApplicationId;
+    const context = applyContext;
+    const sequence = pageSequence;
+    // A page change during the scan makes its fields the old page's, which would be filed under the new page's URL.
+    const stillCurrent = () => selectedApplicationId === applicationId && applyContext === context && sequence === pageSequence;
     status.textContent = "Scanning visible controls…";
-    scanResult = await send({ type: "SCAN_FIELDS", profile: applyContext.confirmed_profile, answers: applyContext.answers, company: applyContext.application.company });
+    const scanned = await send({ type: "SCAN_FIELDS", profile: context.confirmed_profile, answers: context.answers, company: context.application.company });
+    if (!stillCurrent()) return;
     const auth = await storedAuth();
     const unsupportedCounts = { ...auth.unsupportedCounts };
-    for (const field of scanResult.fields.filter((item) => item.unsupported)) {
-      const key = `${scanResult.ats_type}:${field.reason || "unsupported control"}`;
+    for (const field of scanned.fields.filter((item) => item.unsupported)) {
+      const key = `${scanned.ats_type}:${field.reason || "unsupported control"}`;
       unsupportedCounts[key] = Math.min(1000000, Number(unsupportedCounts[key] || 0) + 1);
     }
     await chrome.storage.local.set({ unsupportedCounts });
-    sessionId = await stableId("extension", selectedApplicationId);
+    const id = await stableId("extension", applicationId);
+    if (!stillCurrent()) return;
+    scanResult = scanned;
+    sessionId = id;
+    sessionApplicationId = applicationId;
     renderFields();
     renderDocuments();
     await syncStep(scanResult.fields, null, "scanned");
+    if (!stillCurrent()) return;
     status.textContent = `${scanResult.fields.length} controls inventoried on ${scanResult.ats_type}. Nothing has been filled.`;
   }
 
@@ -331,24 +413,36 @@
     event.preventDefault();
     const checked = new Set([...fieldsHost.querySelectorAll("input:checked")].map((item) => item.dataset.key));
     const reviewed = scanResult.fields.map((field) => ({ ...field, approved: checked.has(field.key) }));
+    const applicationId = selectedApplicationId;
+    const sequence = pageSequence;
     const result = await send({ type: "FILL_REVIEWED_FIELDS", fields: reviewed });
     await syncStep(reviewed, result, "filled");
+    // A page change meanwhile already said what Mark as submitted confirms; leave that line in place.
+    if (selectedApplicationId !== applicationId || sequence !== pageSequence) return;
     const count = result.results.filter((item) => item.filled).length;
     status.textContent = `${count} reviewed fields filled. Verify the page; advance and submit manually.`;
   }
 
   async function attachDocument() {
+    const applicationId = selectedApplicationId;
+    const context = applyContext;
+    // Choosing another application while the file moves leaves this one's document with nothing to show.
+    const stillCurrent = () => selectedApplicationId === applicationId && applyContext === context;
     const artifact = (applyContext.documents || []).find((item) => item.artifact_id === documentSelect.value);
     if (!artifact) throw new Error("Choose an approved document.");
-    const response = await api(`/api/v1/extension/artifacts/${encodeURIComponent(artifact.artifact_id)}/file?application_id=${encodeURIComponent(selectedApplicationId)}`);
+    const response = await api(`/api/v1/extension/artifacts/${encodeURIComponent(artifact.artifact_id)}/file?application_id=${encodeURIComponent(applicationId)}`);
     const bytes = new Uint8Array(await response.arrayBuffer());
+    if (!stillCurrent()) return;
     if (bytes.byteLength !== artifact.byte_size || await digestHex(bytes) !== artifact.sha256.toLowerCase()) throw new Error("Document verification failed; no file was attached.");
+    if (!stillCurrent() || !scanResult) return;
     const field = scanResult.fields.find((item) => item.key === fileFieldSelect.value);
+    const scanned = scanResult;
     const responsePayload = await send({
       type: "ATTACH_REVIEWED_FILE", approved: true, field,
       artifact: { filename: artifact.filename, media_type: artifact.media_type, byte_size: artifact.byte_size, sha256: artifact.sha256 },
       data_base64: bytesToBase64(bytes)
     });
+    if (!stillCurrent() || scanResult !== scanned) return;
     const result = responsePayload.result;
     if (!result.filled) {
       if (attachmentUrl) URL.revokeObjectURL(attachmentUrl);
@@ -363,7 +457,7 @@
   }
 
   async function markSubmitted() {
-    if (!$("submitted-confirm").checked || !sessionId) throw new Error("Scan this application and confirm that you personally submitted it.");
+    if (!$("submitted-confirm").checked || !sessionId || sessionApplicationId !== selectedApplicationId) throw new Error("Scan this application and confirm that you personally submitted it.");
     const response = await api(`/api/v1/extension/sessions/${encodeURIComponent(sessionId)}/confirm-submitted`, { method: "POST", body: JSON.stringify({}) });
     const payload = await response.json();
     if (payload.inferred !== false || payload.stage !== "applied") throw new Error("The tracker did not confirm the explicit transition.");
@@ -374,7 +468,7 @@
   $("pair").addEventListener("click", () => pairDevice().catch((error) => { status.textContent = error.message; }));
   $("disconnect").addEventListener("click", async () => {
     await chrome.storage.local.remove(["deviceToken", "deviceId", "pendingMetadata"]);
-    selectedApplicationId = ""; applyContext = null; scanResult = null;
+    clearSelection();
     renderAuth(await storedAuth()); status.textContent = "Device credential removed from this browser.";
   });
   $("find-context").addEventListener("click", () => findContext().catch((error) => { status.textContent = error.message; }));
@@ -386,14 +480,34 @@
   $("mark-submitted").addEventListener("click", () => markSubmitted().catch((error) => { status.textContent = error.message; }));
   window.addEventListener("unload", () => { if (attachmentUrl) URL.revokeObjectURL(attachmentUrl); });
 
+  // The page in front of the student changed, in this tab or by switching tabs. The old page's scan and the
+  // "I submitted it" tick no longer describe what is on screen, so both go; the chosen application and its
+  // session stay, because submitting normally moves the tab to a confirmation page and the student then ticks
+  // the box again to confirm that application. The status line names which one the button would confirm.
+  function pageChanged(url) {
+    if (url) activePageUrl = url;
+    pageSequence += 1;
+    clearScanView();
+    candidatesHost.replaceChildren();
+    if (applyContext && sessionId) {
+      const app = applyContext.application;
+      status.textContent = `The page changed. Mark as submitted confirms ${app.company} — ${app.title}; tick the box again if you submitted it.`;
+    } else if (applyContext) {
+      const app = applyContext.application;
+      status.textContent = `The page changed. Scan this step to fill it for ${app.company} — ${app.title}.`;
+    } else {
+      status.textContent = "The page changed. Find this page's application, choose it, then scan before filling anything.";
+    }
+  }
+
+  // Chrome withholds changeInfo.url without host permission for the page, but still reports status "loading".
   chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-    if (tabId !== activeTabId || !changeInfo.url) return;
-    activePageUrl = changeInfo.url;
-    scanResult = null;
-    fieldsHost.replaceChildren();
-    reviewForm.hidden = true;
-    documentsHost.hidden = true;
-    status.textContent = "Application page changed. Scan the new step before filling anything.";
+    if (tabId !== activeTabId || !(changeInfo.url || changeInfo.status === "loading")) return;
+    pageChanged(changeInfo.url);
+  });
+  chrome.tabs.onActivated.addListener((activeInfo) => {
+    activeTabId = activeInfo.tabId;
+    pageChanged();
   });
 
   storedAuth().then((auth) => { renderAuth(auth); if (auth.deviceToken) flushPendingMetadata(); });
