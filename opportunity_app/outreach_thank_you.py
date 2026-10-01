@@ -111,6 +111,7 @@ from . import automation
 from .background import record_health_quietly, step_error
 from .inbox_classifiers import JEV_NOT_ASKED, MIN_CONFIDENCE
 from .outreach_config import resolve_provider, sender_account
+from .outreach_inbox import FULL_TEXT_LIMIT
 from .outreach import (
     REPLY_PATTERNS,
     OutreachNotFoundError,
@@ -169,8 +170,6 @@ DELAY_MINUTES = (40, 150)
 DETECTION_MARGIN = timedelta(minutes=10)
 MAX_WORDS = 70
 SIGN_OFF = "Best"
-# The whole of a reply is kept up to this long (outreach_inbox.FULL_TEXT_LIMIT); a longer one is not read whole.
-FULL_TEXT_LIMIT = 20_000
 WROTE_AGAIN = "They wrote again, so the thank-you was not sent. Read their reply."
 STUDENT_WROTE = "You wrote to them after their reply, so the thank-you was not sent."
 NOT_INTERESTED_STOP = "You marked the company not interested, so the thank-you was not sent."
