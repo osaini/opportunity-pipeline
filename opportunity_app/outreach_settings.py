@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from . import ROOT
-from .agent_providers import default_provider, provider_catalog
+from .agent_providers import catalog_snapshot, default_provider, provider_catalog
 from .outreach_linkedin import username_from
 from .outreach_gmail import attachment_path, attachment_problem
 from .resumes import DEFAULT_STORAGE, ResumeNotFoundError, list_resumes, resume_file_path
@@ -74,6 +74,11 @@ class OutreachSettings:
         self.resume_storage = resume_storage
 
     def view(self, conn: sqlite3.Connection, *, user_id: str) -> dict[str, Any]:
+        # The writer list, both Automatic reviewers and the default writer all read the provider catalog.
+        with catalog_snapshot():
+            return self._view(conn, user_id=user_id)
+
+    def _view(self, conn: sqlite3.Connection, *, user_id: str) -> dict[str, Any]:
         catalog = provider_catalog()
         drafts = [
             {"id": item["id"], "label": item["display_name"], "available": item["configured"], "hint": item["setup_hint"]}
