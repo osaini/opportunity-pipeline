@@ -135,7 +135,6 @@
     statTotal: document.getElementById("stat-total"),
     statTracked: document.getElementById("stat-tracked"),
     statScore: document.getElementById("stat-score"),
-    subnav: document.getElementById("subnav"),
     subnavTitle: document.getElementById("subnav-title"),
     subnavList: document.getElementById("subnav-list"),
     themeToggle: document.getElementById("theme-toggle"),
@@ -1219,10 +1218,6 @@
     showError(error.message);
   }
 
-  function setText(element, value, fallback = "Not provided") {
-    element.textContent = value || fallback;
-  }
-
   // One formatter per shape, built once: they run per card and per timeline
   // row. The locale is the browser's own, which does not change mid-session.
   // Each function below keeps its own answer for an empty or invalid value, and
@@ -2209,7 +2204,7 @@
         if (task.due_at) taskCopy.appendChild(element("small", "", `Due ${formatDate(task.due_at)}`));
         if (task.origin === "email") taskCopy.appendChild(element("small", "", "From an email"));
         label.append(checkbox, taskCopy);
-        const safeLink = typeof task.link === "string" && /^https?:\/\//i.test(task.link) ? task.link : "";
+        const safeLink = typeof task.link === "string" && HTTP_ADDRESS.test(task.link) ? task.link : "";
         if (safeLink) {
           // The assessment or scheduling page, kept only here in the app.
           const row = element("div", "tracker-task-row");
@@ -2463,6 +2458,14 @@
     host.replaceChildren(form);
   }
 
+  // Arriving from Urgent: bring what the row was about into view and onto the keyboard.
+  function revealRequested(node) {
+    node.setAttribute("tabindex", "-1");
+    node.classList.add("is-requested");
+    node.scrollIntoView({ block: "center" });
+    node.focus({ preventScroll: true });
+  }
+
   // Arriving from Urgent: bring the application the row was about into view.
   function focusRequestedApplication() {
     const id = state.applicationFocus;
@@ -2470,10 +2473,7 @@
     if (!id) return;
     const card = els.results.querySelector(`.application-card[data-application-id="${CSS.escape(id)}"]`);
     if (!card) return;
-    card.setAttribute("tabindex", "-1");
-    card.classList.add("is-requested");
-    card.scrollIntoView({ block: "center" });
-    card.focus({ preventScroll: true });
+    revealRequested(card);
   }
 
   const APPLICATION_STAGES = ["applying", "applied", "interview", "offer", "rejected", "withdrawn", "archived"];
@@ -6260,10 +6260,7 @@
     const card = els.results.querySelector('[data-requested="true"]');
     if (!card) return;
     delete card.dataset.requested;
-    card.setAttribute("tabindex", "-1");
-    card.classList.add("is-requested");
-    card.scrollIntoView({ block: "center" });
-    card.focus({ preventScroll: true });
+    revealRequested(card);
   }
 
   function outreachImportControls() {
@@ -9452,6 +9449,22 @@
     });
   }
 
+  // One dated group on Urgent or on Programs: a titled count over a list of
+  // rows. Each page passes its own element id and class name.
+  function groupSection({ id, className, label, items, noun, nouns, row }) {
+    const section = element("section", `urgent-group ${className}`);
+    const heading = element("h3", "urgent-group-title", label);
+    heading.id = id;
+    const count = element("span", "urgent-count", String(items.length));
+    count.setAttribute("aria-label", plural(items.length, noun, nouns));
+    heading.appendChild(count);
+    section.setAttribute("aria-labelledby", heading.id);
+    const list = element("ul", "urgent-list");
+    items.forEach((item) => list.appendChild(row(item)));
+    section.append(heading, list);
+    return section;
+  }
+
   function urgentWhen(item) {
     if (item.days_until < 0) return `${plural(-item.days_until, "day", "days")} overdue`;
     if (item.days_until === 0) return "Today";
@@ -9574,17 +9587,10 @@
     URGENT_GROUPS.forEach(([key, label, test]) => {
       const items = shown.filter(test);
       if (!items.length) return;
-      const section = element("section", `urgent-group is-${key}`);
-      const heading = element("h3", "urgent-group-title", label);
-      heading.id = `urgent-group-${key}`;
-      const count = element("span", "urgent-count", String(items.length));
-      count.setAttribute("aria-label", plural(items.length, "item", "items"));
-      heading.appendChild(count);
-      section.setAttribute("aria-labelledby", heading.id);
-      const list = element("ul", "urgent-list");
-      items.forEach((item) => list.appendChild(urgentRow(item, payload.items)));
-      section.append(heading, list);
-      els.results.appendChild(section);
+      els.results.appendChild(groupSection({
+        id: `urgent-group-${key}`, className: `is-${key}`, label, items, noun: "item", nouns: "items",
+        row: (item) => urgentRow(item, payload.items),
+      }));
     });
 
     const notes = [];
@@ -9849,17 +9855,10 @@
     PROGRAM_BUCKETS.forEach(([key, label]) => {
       const items = shown.filter((item) => item.bucket === key);
       if (!items.length) return;
-      const section = element("section", `urgent-group is-programs-${key}`);
-      const heading = element("h3", "urgent-group-title", label);
-      heading.id = `programs-group-${key}`;
-      const count = element("span", "urgent-count", String(items.length));
-      count.setAttribute("aria-label", plural(items.length, "program", "programs"));
-      heading.appendChild(count);
-      section.setAttribute("aria-labelledby", heading.id);
-      const list = element("ul", "urgent-list");
-      items.forEach((item) => list.appendChild(programRow(item)));
-      section.append(heading, list);
-      els.results.appendChild(section);
+      els.results.appendChild(groupSection({
+        id: `programs-group-${key}`, className: `is-programs-${key}`, label, items, noun: "program", nouns: "programs",
+        row: (item) => programRow(item),
+      }));
     });
     if (payload.skipped) {
       els.results.appendChild(element("p", "urgent-footnote",
@@ -9876,10 +9875,7 @@
     if (!id) return;
     const row = els.results.querySelector(`.program-row[data-program-id="${CSS.escape(id)}"]`);
     if (!row) return;
-    row.setAttribute("tabindex", "-1");
-    row.classList.add("is-requested");
-    row.scrollIntoView({ block: "center" });
-    row.focus({ preventScroll: true });
+    revealRequested(row);
   }
 
   // RFC 5545 text: escape, CRLF line ends, and fold at 75 octets without ever
@@ -10634,17 +10630,27 @@
     return form;
   }
 
+  // Only web addresses become links in the Apply panel (the page's own wording comes from the employer).
+  const HTTP_ADDRESS = /^https?:\/\//i;
+
+  function webAddresses(links) {
+    return (links || []).filter((address) => HTTP_ADDRESS.test(address));
+  }
+
+  // Each address as a link: the first after firstLead, the rest after sep.
+  function appendLinks(parent, addresses, firstLead, sep = ", ") {
+    addresses.forEach((address, index) => {
+      parent.append(index ? sep : firstLead);
+      parent.appendChild(externalLink(address, address));
+    });
+  }
+
   // The addresses a statement points to, as links the student can read before agreeing. Only web addresses become links.
   function applyLinkList(links) {
-    const safe = (links || []).filter((address) => /^https?:\/\//i.test(address));
+    const safe = webAddresses(links);
     if (!safe.length) return null;
     const line = element("p", "profile-help");
-    line.append("This statement links to ");
-    safe.forEach((address, index) => {
-      if (index) line.append(", ");
-      const link = externalLink(address, address);
-      line.appendChild(link);
-    });
+    appendLinks(line, safe, "This statement links to ");
     return line;
   }
 
@@ -10775,6 +10781,19 @@
     return form;
   }
 
+  // A page draws part of itself after it opens. Looks for what find() returns
+  // every `ms` for `tries` looks, and hands the first hit to onFound; gives up
+  // quietly after the last look. Scroll and focus stay the caller's business.
+  function whenPresent(find, onFound, { tries = 25, ms = 200 } = {}) {
+    let looks = 0;
+    const look = () => {
+      const found = find();
+      if (found) onFound(found);
+      else if ((looks += 1) < tries) setTimeout(look, ms);
+    };
+    setTimeout(look, ms);
+  }
+
   function applyProblemAction(problem, company, onSaved) {
     const action = problem.action || {};
     if (action.type === "answer") return applyAnswerForm(problem, company, onSaved);
@@ -10789,17 +10808,10 @@
         closeDetail();
         els.profileNav.click();
         // The page loads its form after it opens, so look for the box for a few seconds.
-        let tries = 0;
-        const look = () => {
-          const field = target ? document.querySelector(`.profile-form ${target}`) : null;
-          if (field) {
-            field.scrollIntoView({ block: "center" });
-            field.focus({ preventScroll: true });
-          } else if ((tries += 1) < 25) {
-            setTimeout(look, 200);
-          }
-        };
-        setTimeout(look, 200);
+        whenPresent(() => (target ? document.querySelector(`.profile-form ${target}`) : null), (field) => {
+          field.scrollIntoView({ block: "center" });
+          field.focus({ preventScroll: true });
+        });
       });
       return open;
     }
@@ -10812,18 +10824,11 @@
         closeDetail();
         els.prepareNav.click();
         // The page loads its sections after it opens, so look for the heading for a few seconds.
-        let tries = 0;
-        const look = () => {
-          const heading = [...document.querySelectorAll("h3")].find((node) => node.textContent === "Answer library");
-          if (heading) {
-            heading.tabIndex = -1;
-            heading.scrollIntoView({ block: "start" });
-            heading.focus({ preventScroll: true });
-          } else if ((tries += 1) < 25) {
-            setTimeout(look, 200);
-          }
-        };
-        setTimeout(look, 200);
+        whenPresent(() => [...document.querySelectorAll("h3")].find((node) => node.textContent === "Answer library"), (heading) => {
+          heading.tabIndex = -1;
+          heading.scrollIntoView({ block: "start" });
+          heading.focus({ preventScroll: true });
+        });
       });
       return open;
     }
@@ -10966,12 +10971,7 @@
           const words = field.source ? `from ${field.source.charAt(0).toLowerCase()}${field.source.slice(1)}` : (field.note || "left blank");
           const line = element("li", "", `${field.question}${field.required ? "" : " (optional)"}: ${words}`);
           // A ticked statement shows the address of the document it links to, so the student can see what is agreed to.
-          const links = (field.links || []).filter((address) => /^https?:\/\//i.test(address));
-          links.forEach((address, index) => {
-            line.append(index ? ", " : " · links to ");
-            const link = externalLink(address, address);
-            line.appendChild(link);
-          });
+          appendLinks(line, webAddresses(field.links), " · links to ");
           list.appendChild(line);
         });
         details.appendChild(list);
