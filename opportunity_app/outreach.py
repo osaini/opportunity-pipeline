@@ -447,24 +447,10 @@ def missing_location_message(target: dict[str, Any]) -> str:
     )
 
 
-_PROFILE_REGIONS_CACHE: dict[str, Any] = {"key": None, "regions": []}
-
-
 def _profile_regions() -> list[dict[str, Any]]:
-    """The target regions in config/profile.json, re-read when the file changes."""
-    try:
-        key = (str(PROFILE_PATH), PROFILE_PATH.stat().st_mtime_ns)
-    except OSError:
-        return []
-    if _PROFILE_REGIONS_CACHE["key"] != key:
-        try:
-            regions = json.loads(PROFILE_PATH.read_text(encoding="utf-8")).get("regions") or []
-        except (OSError, ValueError, AttributeError):
-            regions = []
-        _PROFILE_REGIONS_CACHE.update(
-            key=key, regions=[region for region in regions if isinstance(region, dict)]
-        )
-    return _PROFILE_REGIONS_CACHE["regions"]
+    """The target regions in config/profile.json (read through _owner_profile, so the file is stat'ed and cached once)."""
+    regions = _owner_profile().get("regions") or []
+    return [region for region in regions if isinstance(region, dict)]
 
 
 def user_regions(conn: sqlite3.Connection | None, user_id: str = LOCAL_USER_ID) -> list[dict[str, Any]]:
@@ -775,10 +761,7 @@ def _possible_replies(conn: sqlite3.Connection, user_id: str, target_id: str | N
         (user_id,),
     ).fetchall()} if rows else set()
     for row in rows:
-        try:
-            others = [str(other) for other in json.loads(row["candidates_json"] or "[]") if str(other)]
-        except (TypeError, ValueError):
-            others = []
+        others = _candidates(row["candidates_json"])
         owners = [str(row["target_id"]), *[other for other in others if other != row["target_id"]]]
         if target_id and target_id not in owners:
             continue
