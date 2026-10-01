@@ -16,8 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import pipeline
-from pipeline_core import paths, retention, sources, store
+from pipeline_core import fetch as core_fetch, paths, retention, sources, store
 
 SOURCE = {"kind": "greenhouse", "company": "Acme", "token": "acme"}
 KEY = "greenhouse:acme"
@@ -143,7 +142,7 @@ class BoardRetirementTests(unittest.TestCase):
         with unittest.mock.patch.object(sources, "request_json", return_value=body), contextlib.redirect_stdout(
             io.StringIO()
         ):
-            pipeline.fetch_all(self.conn, config)
+            core_fetch.fetch_all(self.conn, config)
         row = self.conn.execute("SELECT fetched_count, listed_count FROM fetch_runs").fetchone()
         self.assertEqual((row["fetched_count"], row["listed_count"]), (1, 3))
 

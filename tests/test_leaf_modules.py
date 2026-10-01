@@ -607,16 +607,16 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
     def test_imported_posting_ids_keep_linkedin_ids_except_for_the_manual_csv(self):
         import hashlib
 
-        import pipeline
+        from pipeline_core import importers
         from pipeline_core.text import canonical_url
 
         url = "https://www.linkedin.com/jobs/view/3912345678/?trackingId=abc"
         hashed = hashlib.sha256(canonical_url(url).encode("utf-8")).hexdigest()[:20]
-        self.assertEqual(pipeline.url_external_id(url, linkedin_ids=True), "3912345678")
-        self.assertEqual(pipeline.url_external_id(url, linkedin_ids=False), hashed)
+        self.assertEqual(importers.url_external_id(url, linkedin_ids=True), "3912345678")
+        self.assertEqual(importers.url_external_id(url, linkedin_ids=False), hashed)
         other = "https://boards.example.test/jobs/1"
         self.assertEqual(
-            pipeline.url_external_id(other, linkedin_ids=True), pipeline.url_external_id(other, linkedin_ids=False),
+            importers.url_external_id(other, linkedin_ids=True), importers.url_external_id(other, linkedin_ids=False),
         )
 
     def test_source_key_keeps_its_keyerror_that_system_status_relies_on(self):

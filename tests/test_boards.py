@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-import pipeline
+from pipeline_core import discovery
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
 from opportunity_app.boards import LOOKUP_TTL_SECONDS, BoardTracker
@@ -50,7 +50,7 @@ class TrackerCase(unittest.TestCase):
         self.sources = self.root / "sources.json"
         self.sources.write_text(json.dumps(CATALOG), encoding="utf-8")
         self.local = self.root / "sources.local.json"
-        probes = mock.patch.dict(pipeline.DISCOVERY_VENDORS, {"greenhouse": greenhouse, "ashby": ashby, "lever": lever})
+        probes = mock.patch.dict(discovery.DISCOVERY_VENDORS, {"greenhouse": greenhouse, "ashby": ashby, "lever": lever})
         probes.start()
         self.addCleanup(probes.stop)
         self.now = [0.0]

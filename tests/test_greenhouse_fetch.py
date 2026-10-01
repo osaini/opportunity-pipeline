@@ -16,7 +16,6 @@ from __future__ import annotations
 import unittest
 import unittest.mock
 
-import pipeline
 from pipeline_core import sources
 
 BASE = "https://boards-api.greenhouse.io/v1/boards/acme"

@@ -17,8 +17,7 @@ import urllib.request
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import pipeline
-from pipeline_core import http, paths, sources, store
+from pipeline_core import fetch as core_fetch, http, paths, sources, store
 
 SOURCES = {
     "discovery_title_terms": ["intern"],
@@ -101,7 +100,7 @@ class ResumeFetchTests(unittest.TestCase):
 
         with unittest.mock.patch.object(sources, "greenhouse_jobs", side_effect=fake), \
                 unittest.mock.patch("sys.stdout", io.StringIO()), unittest.mock.patch("sys.stderr", io.StringIO()):
-            failures = pipeline.fetch_all(self.conn, SOURCES, resume_since)
+            failures = core_fetch.fetch_all(self.conn, SOURCES, resume_since)
         return failures, fetched
 
     def test_counts_only_transient_failures(self):

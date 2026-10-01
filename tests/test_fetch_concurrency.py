@@ -24,8 +24,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import pipeline
-from pipeline_core import sources as core_sources, http, paths, store
+from pipeline_core import sources as core_sources, fetch, http, paths, store
 
 try:
     import realdata_guard
@@ -78,7 +77,7 @@ class InFlight:
         return []
 
     def observing(self):
-        real_wait = pipeline.futures_wait
+        real_wait = fetch.futures_wait
 
         def futures_wait(*args, **kwargs):
             with self._changed:
@@ -86,7 +85,7 @@ class InFlight:
                 self._changed.notify_all()
             return real_wait(*args, **kwargs)
 
-        return unittest.mock.patch.object(pipeline, "futures_wait", futures_wait)
+        return unittest.mock.patch.object(fetch, "futures_wait", futures_wait)
 
 
 class FetchConcurrencyTests(unittest.TestCase):
@@ -109,7 +108,7 @@ class FetchConcurrencyTests(unittest.TestCase):
             core_sources._SOURCE_FETCHERS, {"greenhouse": fetcher, "lever": fetcher, "ashby": fetcher}
         ), unittest.mock.patch("sys.stdout", io.StringIO()) as out, \
                 unittest.mock.patch("sys.stderr", io.StringIO()) as err:
-            failures = pipeline.fetch_all(self.conn, config, **kwargs)
+            failures = fetch.fetch_all(self.conn, config, **kwargs)
         return failures, out.getvalue(), err.getvalue()
 
     # --- ceilings -----------------------------------------------------------
@@ -133,7 +132,7 @@ class FetchConcurrencyTests(unittest.TestCase):
                 unittest.mock.patch.dict(core_sources._SOURCE_FETCHERS, {"workday": fetcher}), \
                 unittest.mock.patch("sys.stdout", io.StringIO()), \
                 unittest.mock.patch("sys.stderr", io.StringIO()):
-            pipeline.fetch_all(self.conn, config, max_workers=3, max_per_host=4)
+            fetch.fetch_all(self.conn, config, max_workers=3, max_per_host=4)
         self.assertLessEqual(fetcher.peak, 3, "more than max_workers requests were in flight")
         self.assertEqual(fetcher.peak, 3, "the scheduler never used its full worker allowance")
 
@@ -227,7 +226,7 @@ class FetchConcurrencyTests(unittest.TestCase):
                 raise sqlite3.OperationalError("simulated write failure")
             return real_upsert(conn, source_key, source_name, records, seen, **kwargs)
 
-        with unittest.mock.patch.object(pipeline, "upsert_jobs", flaky_upsert):
+        with unittest.mock.patch.object(fetch, "upsert_jobs", flaky_upsert):
             self.run_fetch(GREENHOUSE_8, lambda s, t: [], max_workers=4, max_per_host=4)
         rows = {r["source_key"]: r["outcome"] for r in
                 self.conn.execute("SELECT source_key, outcome FROM fetch_runs")}
@@ -275,7 +274,7 @@ class FetchConcurrencyTests(unittest.TestCase):
             "description": "d" * 400, "posted_at": None,
         }]
         config = sources(("greenhouse", "G0", {}))
-        with unittest.mock.patch.object(pipeline, "upsert_jobs", half_written):
+        with unittest.mock.patch.object(fetch, "upsert_jobs", half_written):
             self.run_fetch(config, lambda s, t: posting, max_workers=1, max_per_host=1)
         remaining = self.conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
         self.assertEqual(remaining, 0, "the partial batch was committed alongside the error row")
@@ -314,8 +313,8 @@ class FetchConcurrencyTests(unittest.TestCase):
             return real_upsert(conn, source_key, source_name, records, seen, **kwargs)
 
         with unittest.mock.patch.object(
-            pipeline, "now_iso", lambda: f"2026-09-20T00:00:{next(counter):02d}+00:00"
-        ), unittest.mock.patch.object(pipeline, "upsert_jobs", recording_upsert):
+            fetch, "now_iso", lambda: f"2026-09-20T00:00:{next(counter):02d}+00:00"
+        ), unittest.mock.patch.object(fetch, "upsert_jobs", recording_upsert):
             self.run_fetch(GREENHOUSE_8, fetcher, max_workers=4, max_per_host=4)
 
         self.assertEqual(len(stamps), 8)

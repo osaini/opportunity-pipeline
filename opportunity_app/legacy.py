@@ -16,8 +16,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pipeline import discover_ats, write_discovered_sources
 from pipeline_core.config import load_env_file, load_sources, source_key
+from pipeline_core.discovery import discover_ats, write_discovered_sources
 from pipeline_core.http import USER_AGENT
 from pipeline_core.paths import PROFILE_PATH, SOURCES_LOCAL_PATH, SOURCES_PATH
 from pipeline_core.retention import backup_sqlite

@@ -33,8 +33,7 @@ import unittest.mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import pipeline
-from pipeline_core import clock, sources as core_sources, text as core_text, http, paths, scoring, store
+from pipeline_core import clock, sources as core_sources, text as core_text, fetch, http, importers, paths, scoring, store
 from pipeline_core.identity import normalized
 
 try:
@@ -497,7 +496,7 @@ class DeferredDedupeTests(TempDbCase):
                 unittest.mock.patch.object(http, "_HOST_LIMITER", http._HostRateLimiter(0.0)), \
                 unittest.mock.patch("sys.stdout", io.StringIO()), \
                 unittest.mock.patch("sys.stderr", io.StringIO()):
-            return pipeline.fetch_all(conn, config, max_workers=1, max_per_host=1)
+            return fetch.fetch_all(conn, config, max_workers=1, max_per_host=1)
 
     def test_fetch_all_leaves_the_links_a_per_source_dedupe_would(self):
         total_links = 0
@@ -574,7 +573,7 @@ class DeferredDedupeTests(TempDbCase):
                 unittest.mock.patch.object(http, "_HOST_LIMITER", http._HostRateLimiter(0.0)), \
                 unittest.mock.patch("sys.stdout", io.StringIO()), \
                 unittest.mock.patch("sys.stderr", io.StringIO()):
-            pipeline.fetch_all(conn, config, max_workers=1, max_per_host=1)
+            fetch.fetch_all(conn, config, max_workers=1, max_per_host=1)
         self.assertEqual(links(conn), before)
 
     def run_fetch_ex(self, conn, batches, *, fetch_fails=(), resume_since=None):
@@ -595,7 +594,7 @@ class DeferredDedupeTests(TempDbCase):
 
         stderr = io.StringIO()
         with unittest.mock.patch.dict(core_sources._SOURCE_FETCHERS, {"greenhouse": fetcher}),                 unittest.mock.patch.object(http, "_HOST_LIMITER", http._HostRateLimiter(0.0)),                 unittest.mock.patch("sys.stdout", io.StringIO()),                 unittest.mock.patch("sys.stderr", stderr):
-            result = pipeline.fetch_all(
+            result = fetch.fetch_all(
                 conn, config, resume_since=resume_since, max_workers=1, max_per_host=1
             )
         return result, stderr.getvalue()
@@ -618,7 +617,7 @@ class DeferredDedupeTests(TempDbCase):
                 raise RuntimeError("boom after writing")
             return written
 
-        with unittest.mock.patch.object(pipeline, "upsert_jobs", failing_upsert):
+        with unittest.mock.patch.object(fetch, "upsert_jobs", failing_upsert):
             _result, stderr = self.run_fetch_ex(new, batches, fetch_fails=(fetch_fail,))
         self.assertIn("boom after writing", stderr)
         outcomes = dict(new.execute("SELECT source_key, outcome FROM fetch_runs").fetchall())
@@ -654,7 +653,7 @@ class DeferredDedupeTests(TempDbCase):
                 raise sqlite3.OperationalError("database is locked")
             return real_dedupe(conn)
 
-        with unittest.mock.patch.object(pipeline, "upsert_jobs", tracking_upsert), \
+        with unittest.mock.patch.object(fetch, "upsert_jobs", tracking_upsert), \
                 unittest.mock.patch.object(store, "deduplicate", flaky_dedupe):
             result, stderr = self.run_fetch_ex(new, batches)  # must not raise
         self.assertIn("database is locked", stderr)
@@ -685,7 +684,7 @@ class DeferredDedupeTests(TempDbCase):
                 raise sqlite3.OperationalError("database is locked")
             return real_dedupe(c)
 
-        with unittest.mock.patch.object(pipeline, "upsert_jobs", tracking_upsert), \
+        with unittest.mock.patch.object(fetch, "upsert_jobs", tracking_upsert), \
                 unittest.mock.patch.object(store, "deduplicate", flaky_dedupe):
             self.run_fetch_ex(conn, batches)
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM jobs WHERE source_key=?", (broken,)).fetchone()[0], 0)
@@ -702,7 +701,7 @@ class DeferredDedupeTests(TempDbCase):
         payload = json.loads((FIXTURES / "discovered_jobs_sample.json").read_text(encoding="utf-8"))
         records = payload["postings"] if isinstance(payload, dict) and "postings" in payload else payload
         # Repeat each posting under the other channels so there is something to link.
-        channels = sorted(pipeline.AGENT_CHANNELS)
+        channels = sorted(importers.AGENT_CHANNELS)
         spread = []
         for index, record in enumerate(records):
             for offset, channel in enumerate(channels[:3]):
@@ -712,16 +711,16 @@ class DeferredDedupeTests(TempDbCase):
             path.write_text(json.dumps(spread), encoding="utf-8")
             new, old = self.open_db("new.db"), self.open_db("old.db")
             with unittest.mock.patch("sys.stdout", io.StringIO()), unittest.mock.patch("sys.stderr", io.StringIO()):
-                with unittest.mock.patch.object(pipeline, "deduplicate", wraps=store.deduplicate) as spy:
-                    pipeline.import_discovered(new, path)
+                with unittest.mock.patch.object(importers, "deduplicate", wraps=store.deduplicate) as spy:
+                    importers.import_discovered(new, path)
                 self.assertEqual(spy.call_count, 1)
 
                 def eager(conn, source_key, source_name, batch, seen=None, **_ignored):
                     return _reference_upsert_jobs(conn, source_key, source_name, batch, seen)
 
                 # The old side runs the frozen upsert and the frozen link pass, so it shares no changed code with the new side.
-                with unittest.mock.patch.object(pipeline, "upsert_jobs", eager),                         unittest.mock.patch.object(pipeline, "deduplicate", _reference_deduplicate):
-                    pipeline.import_discovered(old, path)
+                with unittest.mock.patch.object(importers, "upsert_jobs", eager),                         unittest.mock.patch.object(importers, "deduplicate", _reference_deduplicate):
+                    importers.import_discovered(old, path)
         self.assertGreater(new.execute("SELECT COUNT(*) FROM jobs").fetchone()[0], 0)
         self.assertEqual(links(old), links(new))
 

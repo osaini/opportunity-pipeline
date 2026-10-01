@@ -23,7 +23,6 @@ import urllib.error
 import urllib.request
 import zlib
 
-import pipeline
 from pipeline_core import http
 
 try:

@@ -13,7 +13,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pipeline
-from pipeline_core import artifacts, clock, config as core_config, sources as core_sources, liveness, paths, retention, scoring, store, text
+from pipeline_core import artifacts, clock, config as core_config, sources as core_sources, discovery, importers, liveness, paths, retention, scoring, store, text
 from pipeline_core.regions import match_region, region_label
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -700,7 +700,7 @@ class PipelineTests(unittest.TestCase):
             db_path = Path(tmp) / "pipeline.db"
             with unittest.mock.patch.object(paths, "DB_PATH", db_path):
                 conn = store.connect()
-                count = pipeline.import_emails(conn, FIXTURES / "linkedin_emails_sample.json")
+                count = importers.import_emails(conn, FIXTURES / "linkedin_emails_sample.json")
                 self.assertEqual(count, 1)
                 row = conn.execute(
                     "SELECT source_key, external_id, posted_at, company, title FROM jobs"
@@ -716,7 +716,7 @@ class PipelineTests(unittest.TestCase):
             db_path = Path(tmp) / "pipeline.db"
             with unittest.mock.patch.object(paths, "DB_PATH", db_path):
                 conn = store.connect()
-                count = pipeline.import_discovered(
+                count = importers.import_discovered(
                     conn, FIXTURES / "discovered_jobs_sample.json"
                 )
                 # 7 records in, 4 skipped: unknown channel, badge-only title,
@@ -761,7 +761,7 @@ class PipelineTests(unittest.TestCase):
         score this posting.
         """
         blob = load_fixture("linkedin_job_detail.json")["sections"]["job_posting"]
-        parsed = pipeline.parse_linkedin_job_posting(blob)
+        parsed = importers.parse_linkedin_job_posting(blob)
 
         self.assertEqual(parsed["company"], "Neuralink")
         self.assertEqual(parsed["title"], "Mechanical Engineering Intern, Brain Interfaces")
@@ -786,12 +786,12 @@ class PipelineTests(unittest.TestCase):
         self.assertLess(len(description), len(blob) / 2)
 
     def test_parse_linkedin_job_posting_abstains_on_unrecognised_shape(self):
-        parsed = pipeline.parse_linkedin_job_posting("Some Company\n\nSome Title\n\nOn a Tuesday")
+        parsed = importers.parse_linkedin_job_posting("Some Company\n\nSome Title\n\nOn a Tuesday")
         # "On a Tuesday" is not a place, so location stays blank rather than
         # inheriting the out-of-region penalty on a bad guess.
         self.assertEqual(parsed["location"], "")
         self.assertEqual(parsed["description"], "")
-        self.assertEqual(pipeline.parse_linkedin_job_posting("")["company"], "")
+        self.assertEqual(importers.parse_linkedin_job_posting("")["company"], "")
 
     def test_import_discovered_derives_fields_from_raw_posting(self):
         with TemporaryDirectory() as tmp:
@@ -820,7 +820,7 @@ class PipelineTests(unittest.TestCase):
             with unittest.mock.patch.object(paths, "DB_PATH", db_path):
                 conn = store.connect()
                 with unittest.mock.patch.object(paths, "ROOT", Path(tmp)):
-                    count = pipeline.import_discovered(conn, payload)
+                    count = importers.import_discovered(conn, payload)
                 self.assertEqual(count, 2)
                 rows = {
                     row["external_id"]: row
@@ -853,7 +853,7 @@ class PipelineTests(unittest.TestCase):
             payload = Path(tmp) / "second.json"
             with unittest.mock.patch.object(paths, "DB_PATH", db_path):
                 conn = store.connect()
-                pipeline.import_discovered(conn, FIXTURES / "discovered_jobs_sample.json")
+                importers.import_discovered(conn, FIXTURES / "discovered_jobs_sample.json")
                 payload.write_text(
                     json.dumps(
                         [
@@ -868,7 +868,7 @@ class PipelineTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 with unittest.mock.patch.object(paths, "ROOT", Path(tmp)):
-                    pipeline.import_discovered(conn, payload)
+                    importers.import_discovered(conn, payload)
 
                 active = dict(
                     conn.execute("SELECT company, active FROM jobs").fetchall()
@@ -932,7 +932,7 @@ class PipelineTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 with unittest.mock.patch.object(paths, "ROOT", Path(tmp)):
-                    updated = pipeline.enrich_descriptions(conn, payload)
+                    updated = importers.enrich_descriptions(conn, payload)
                 self.assertEqual(updated, 1)
 
                 rows = {
@@ -950,7 +950,7 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(rows["Rich Co"]["description"], existing)
 
                 with unittest.mock.patch.object(paths, "ROOT", Path(tmp)):
-                    forced = pipeline.enrich_descriptions(conn, payload, force=True)
+                    forced = importers.enrich_descriptions(conn, payload, force=True)
                 self.assertEqual(forced, 2)
                 self.assertEqual(
                     conn.execute(
@@ -1056,7 +1056,7 @@ class PipelineTests(unittest.TestCase):
             payload = Path(tmp) / "discovered.json"
             with unittest.mock.patch.object(paths, "DB_PATH", Path(tmp) / "pipeline.db"):
                 conn = store.connect()
-                pipeline.import_discovered(conn, FIXTURES / "discovered_jobs_sample.json")
+                importers.import_discovered(conn, FIXTURES / "discovered_jobs_sample.json")
                 self.assertEqual(
                     conn.execute(
                         "SELECT COUNT(*) FROM jobs WHERE source_key='agent:exa' AND active=1"
@@ -1068,7 +1068,7 @@ class PipelineTests(unittest.TestCase):
                     json.dumps({"searched_channels": ["exa"], "postings": []}),
                     encoding="utf-8",
                 )
-                pipeline.import_discovered(conn, payload)
+                importers.import_discovered(conn, payload)
 
                 self.assertEqual(
                     conn.execute(
@@ -1121,7 +1121,7 @@ class PipelineTests(unittest.TestCase):
                     ),
                     encoding="utf-8",
                 )
-                pipeline.enrich_descriptions(conn, payload)
+                importers.enrich_descriptions(conn, payload)
 
                 row = conn.execute(
                     "SELECT location, duplicate_of, fingerprint FROM jobs WHERE id=?",
@@ -1167,7 +1167,7 @@ class PipelineTests(unittest.TestCase):
             )
             with unittest.mock.patch.object(paths, "DB_PATH", Path(tmp) / "pipeline.db"):
                 conn = store.connect()
-                self.assertEqual(pipeline.import_discovered(conn, payload), 1)
+                self.assertEqual(importers.import_discovered(conn, payload), 1)
                 conn.close()
 
     # --- repost flagging ----------------------------------------------------
@@ -1491,7 +1491,7 @@ class PipelineTests(unittest.TestCase):
     # --- ATS board discovery ------------------------------------------------
 
     def test_slug_candidates_are_ordered_and_url_safe(self):
-        candidates = pipeline.slug_candidates("Firefly Aerospace")
+        candidates = discovery.slug_candidates("Firefly Aerospace")
         self.assertEqual(candidates[0], "fireflyaerospace")
         self.assertIn("firefly-aerospace", candidates)
         # Ashby boards are case-sensitive, so the CamelCase form is tried too.
@@ -1499,14 +1499,14 @@ class PipelineTests(unittest.TestCase):
         # The bare first word is a last resort, not a first guess.
         self.assertEqual(candidates[-1], "firefly")
         for candidate in candidates:
-            self.assertRegex(candidate, pipeline.DISCOVERY_SLUG_RE.pattern)
+            self.assertRegex(candidate, discovery.DISCOVERY_SLUG_RE.pattern)
 
     def test_slug_candidates_strip_unsafe_characters(self):
-        self.assertEqual(pipeline.slug_candidates(""), [])
-        self.assertEqual(pipeline.slug_candidates("!!!"), [])
+        self.assertEqual(discovery.slug_candidates(""), [])
+        self.assertEqual(discovery.slug_candidates("!!!"), [])
         # Nothing that could alter the shape of the request URL survives.
-        for candidate in pipeline.slug_candidates("Acme/../Robotics?x=1"):
-            self.assertRegex(candidate, pipeline.DISCOVERY_SLUG_RE.pattern)
+        for candidate in discovery.slug_candidates("Acme/../Robotics?x=1"):
+            self.assertRegex(candidate, discovery.DISCOVERY_SLUG_RE.pattern)
 
     def test_discover_ats_flags_a_board_belonging_to_another_company(self):
         """The impostor case config/sources.json warns about, in miniature.
@@ -1522,8 +1522,8 @@ class PipelineTests(unittest.TestCase):
                 "field": "token",
             }
         )
-        with unittest.mock.patch.dict(pipeline.DISCOVERY_VENDORS, {"greenhouse": probe}):
-            results = pipeline.discover_ats(
+        with unittest.mock.patch.dict(discovery.DISCOVERY_VENDORS, {"greenhouse": probe}):
+            results = discovery.discover_ats(
                 ["Archer Aviation"], sources, ["intern"], vendors=["greenhouse"]
             )
         self.assertEqual(results[0]["status"], "resolved")
@@ -1538,8 +1538,8 @@ class PipelineTests(unittest.TestCase):
                 "field": "token",
             }
         )
-        with unittest.mock.patch.dict(pipeline.DISCOVERY_VENDORS, {"greenhouse": probe}):
-            results = pipeline.discover_ats(
+        with unittest.mock.patch.dict(discovery.DISCOVERY_VENDORS, {"greenhouse": probe}):
+            results = discovery.discover_ats(
                 ["Firefly Aerospace"], sources, ["intern"], vendors=["greenhouse"]
             )
         # A corporate suffix is not a different company.
@@ -1553,8 +1553,8 @@ class PipelineTests(unittest.TestCase):
         probe = unittest.mock.Mock(
             return_value={"board_name": None, "titles": ["Design Intern"], "field": "board"}
         )
-        with unittest.mock.patch.dict(pipeline.DISCOVERY_VENDORS, {"ashby": probe}):
-            results = pipeline.discover_ats(["Base Power"], sources, ["intern"], vendors=["ashby"])
+        with unittest.mock.patch.dict(discovery.DISCOVERY_VENDORS, {"ashby": probe}):
+            results = discovery.discover_ats(["Base Power"], sources, ["intern"], vendors=["ashby"])
         # These APIs expose no company name, so identity cannot be settled here.
         self.assertEqual(results[0]["identity"], "unverified")
 
@@ -1564,8 +1564,8 @@ class PipelineTests(unittest.TestCase):
             "discovery_title_terms": ["intern"],
         }
         probe = unittest.mock.Mock()
-        with unittest.mock.patch.dict(pipeline.DISCOVERY_VENDORS, {"greenhouse": probe}):
-            results = pipeline.discover_ats(["SpaceX"], sources, ["intern"], vendors=["greenhouse"])
+        with unittest.mock.patch.dict(discovery.DISCOVERY_VENDORS, {"greenhouse": probe}):
+            results = discovery.discover_ats(["SpaceX"], sources, ["intern"], vendors=["greenhouse"])
         self.assertEqual(results[0]["status"], "already-configured")
         probe.assert_not_called()
 
@@ -1574,8 +1574,8 @@ class PipelineTests(unittest.TestCase):
         empty = unittest.mock.Mock(
             return_value={"board_name": "Ghost Co", "titles": [], "field": "token"}
         )
-        with unittest.mock.patch.dict(pipeline.DISCOVERY_VENDORS, {"greenhouse": empty}):
-            results = pipeline.discover_ats(
+        with unittest.mock.patch.dict(discovery.DISCOVERY_VENDORS, {"greenhouse": empty}):
+            results = discovery.discover_ats(
                 ["Ghost Co"], {"ats_sources": []}, ["intern"], vendors=["greenhouse"]
             )
         self.assertEqual(results[0]["status"], "unresolved")
@@ -1590,9 +1590,9 @@ class PipelineTests(unittest.TestCase):
             }
         )
         writer = unittest.mock.Mock()
-        with unittest.mock.patch.dict(pipeline.DISCOVERY_VENDORS, {"greenhouse": probe}):
-            with unittest.mock.patch.object(pipeline, "write_discovered_sources", writer):
-                pipeline.report_discovery(["Acme Robotics"], sources, write=False)
+        with unittest.mock.patch.dict(discovery.DISCOVERY_VENDORS, {"greenhouse": probe}):
+            with unittest.mock.patch.object(discovery, "write_discovered_sources", writer):
+                discovery.report_discovery(["Acme Robotics"], sources, write=False)
         writer.assert_not_called()
 
     def test_report_discovery_write_excludes_unconfirmed_identities(self):
@@ -1605,9 +1605,9 @@ class PipelineTests(unittest.TestCase):
             }
         )
         writer = unittest.mock.Mock()
-        with unittest.mock.patch.dict(pipeline.DISCOVERY_VENDORS, {"greenhouse": probe}):
-            with unittest.mock.patch.object(pipeline, "write_discovered_sources", writer):
-                pipeline.report_discovery(["Archer Aviation"], sources, write=True)
+        with unittest.mock.patch.dict(discovery.DISCOVERY_VENDORS, {"greenhouse": probe}):
+            with unittest.mock.patch.object(discovery, "write_discovered_sources", writer):
+                discovery.report_discovery(["Archer Aviation"], sources, write=True)
         # A mismatched board name must never be written, even with --write.
         writer.assert_not_called()
 
@@ -1615,7 +1615,7 @@ class PipelineTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             local = Path(tmp) / "sources.local.json"
             with unittest.mock.patch.object(paths, "SOURCES_LOCAL_PATH", local):
-                written = pipeline.write_discovered_sources(
+                written = discovery.write_discovered_sources(
                     [{"kind": "ashby", "company": "Base Power", "board": "base-power"}]
                 )
             self.assertEqual(written, local)
@@ -1729,7 +1729,7 @@ class PipelineTests(unittest.TestCase):
                 "rejected_sources": {"note": "keep me"},
             }
             path.write_text(json.dumps(original, indent=2) + "\n", encoding="utf-8")
-            pipeline.write_discovered_sources(
+            discovery.write_discovered_sources(
                 [{"kind": "ashby", "company": "Base Power", "board": "base-power"}], path
             )
             written = json.loads(path.read_text(encoding="utf-8"))
