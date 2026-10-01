@@ -1277,7 +1277,7 @@ def record_error(conn: sqlite3.Connection, target_id: str, *, user_id: str, erro
 
 
 def text_model(provider_factory: Callable[[str, str], Any], provider: str | None, fallback: str) -> Judge:
-    """The model for the second read: the call prep writer (outreach_drafting.resolve_provider), or,
+    """The model for the second read: the call prep writer (outreach_config.resolve_provider), or,
     when that is the no-AI template, the research agent's own CLI, which research needs anyway.
 
     The second read is a separate call on the page's own passage, not a different model: when the

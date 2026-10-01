@@ -665,7 +665,7 @@ def web_interviewer(
 
 
 def model_writer(provider_factory: Callable[[str, str], Any], provider: str | None) -> Callable[[str, str], str] | None:
-    """The call prep writer (outreach_drafting.resolve_provider), or None when it is the no-AI template."""
+    """The call prep writer (outreach_config.resolve_provider), or None when it is the no-AI template."""
     provider_id, model = resolve_provider(provider, purpose="call_prep")
     if provider_id == "legacy":
         return None

@@ -1080,7 +1080,7 @@ CREATE TABLE IF NOT EXISTS application_submit_claims (
     application_id TEXT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     opportunity_id TEXT NOT NULL,
-    instance TEXT NOT NULL,           -- outreach_gmail.SERVER_INSTANCE of the holder
+    instance TEXT NOT NULL,           -- opportunity_app.SERVER_INSTANCE of the holder
     mode TEXT NOT NULL CHECK (mode IN ('one_click', 'handoff', 'unattended')),
     state TEXT NOT NULL CHECK (state IN
         ('claimed', 'clicking', 'submitted', 'unconfirmed', 'needs_you', 'failed', 'released')),
