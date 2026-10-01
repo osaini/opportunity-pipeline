@@ -143,29 +143,129 @@ sidepanelTests.moving_to_another_page_after_a_scan_cannot_mark_the_old_applicati
   assert.match(panel.$("status").textContent, /scan/i, "the panel tells the student to scan first");
 };
 
-sidepanelTests.moving_to_another_page_clears_the_chosen_application_and_everything_tied_to_its_scan = async () => {
+const armConfirmation = (panel) => {
+  panel.$("submitted-confirm").checked = true;
+  panel.$("submitted-confirm").dispatch("change");
+};
+
+const assertPageChangeDroppedOnlyTheScan = (panel) => {
+  assert.equal(panel.$("fields").children.length, 0, "app-a's proposed fields are gone");
+  assert.equal(panel.$("review-form").hidden, true);
+  assert.equal(panel.$("progress").hidden, true);
+  assert.equal(panel.$("submitted-confirm").checked, false, "the confirmation checkbox is unticked");
+  assert.equal(panel.$("mark-submitted").disabled, true, "Mark as submitted waits until the box is ticked again");
+  assert.equal(panel.$("context").hidden, false, "the chosen application's card stays");
+  assert.match(panel.$("match-card").textContent, /Acme Robotics/, "the card still names app-a");
+  assert.match(
+    panel.$("status").textContent,
+    /The page changed\. Mark as submitted confirms Acme Robotics — Software Intern; tick the box again if you submitted it\./,
+    "the status names the application Mark as submitted would confirm",
+  );
+};
+
+sidepanelTests.a_page_change_drops_the_scan_and_the_tick_but_keeps_the_application_it_names = async () => {
   const panel = await loadSidepanel({ applications });
   await panel.findApplications();
   await panel.chooseApplication("app-a");
   await panel.scan();
-  panel.$("submitted-confirm").checked = true;
-  panel.$("submitted-confirm").dispatch("change");
+  armConfirmation(panel);
   assert.equal(panel.$("mark-submitted").disabled, false, "set-up: the button was armed for app-a");
 
   await panel.navigate("https://jobs.example.com/apply/2");
 
-  assert.equal(panel.$("fields").children.length, 0, "app-a's proposed fields are gone");
-  assert.equal(panel.$("review-form").hidden, true);
-  assert.equal(panel.$("context").hidden, true, "the chosen application's card is gone: the student chooses again");
+  assertPageChangeDroppedOnlyTheScan(panel);
   assert.equal(panel.$("candidates").children.length, 0, "the old page's candidates are gone");
-  assert.equal(panel.$("submitted-confirm").checked, false, "the confirmation checkbox is reset");
-  assert.equal(panel.$("mark-submitted").disabled, true, "Mark as submitted needs a new scan and a new confirmation");
-  assert.match(panel.$("status").textContent, /choose/i, "the panel tells the student to choose the application again");
+};
 
-  // Scanning with nothing chosen is refused rather than reusing app-a.
-  const before = panel.requests.length;
+sidepanelTests.a_navigation_without_a_url_still_drops_the_scan_and_the_tick = async () => {
+  // Without host permission for the page Chrome reports only status: "loading".
+  const panel = await loadSidepanel({ applications });
+  await panel.findApplications();
+  await panel.chooseApplication("app-a");
   await panel.scan();
-  assert.equal(panel.requests.length, before, "no scan session was synced without a chosen application");
+  armConfirmation(panel);
+
+  await panel.navigate("https://jobs.example.com/apply/2", { statusOnly: true });
+
+  assertPageChangeDroppedOnlyTheScan(panel);
+};
+
+sidepanelTests.switching_tabs_drops_the_scan_and_the_tick_but_keeps_the_application_it_names = async () => {
+  const panel = await loadSidepanel({ applications });
+  await panel.findApplications();
+  await panel.chooseApplication("app-a");
+  await panel.scan();
+  armConfirmation(panel);
+
+  await panel.activateTab(8, "https://other.example.com/apply/9");
+
+  assertPageChangeDroppedOnlyTheScan(panel);
+};
+
+sidepanelTests.scanning_in_another_tab_than_the_one_the_application_was_chosen_in_clears_the_choice_and_refuses = async () => {
+  const panel = await loadSidepanel({ applications });
+  await panel.findApplications();
+  await panel.chooseApplication("app-a");
+  const before = panel.requests.length;
+
+  await panel.activateTab(8, "https://other.example.com/apply/9");
+  await panel.scan();
+
+  assert.deepEqual(
+    panel.requests.slice(before).filter((item) => item.method === "PUT"),
+    [],
+    "no session was written for app-a with another tab's page_url",
+  );
+  assert.equal(panel.$("context").hidden, true, "the choice is cleared");
+  assert.equal(panel.$("review-form").hidden, true);
+  assert.match(panel.$("status").textContent, /find/i, "the student is asked to find the application again");
+  await panel.forceMarkSubmitted();
+  assert.deepEqual(panel.confirmRequests(), [], "nothing can be confirmed from the cleared choice");
+};
+
+sidepanelTests.a_candidates_answer_that_arrives_after_the_page_changed_is_dropped = async () => {
+  const panel = await loadSidepanel({ applications });
+  panel.holdNextCandidates();
+  panel.startFinding();
+  await settle();
+  await panel.navigate("https://jobs.example.com/apply/2");
+  panel.releaseCandidates();
+  await settle();
+
+  assert.equal(panel.$("candidates").children.length, 0, "the old page's candidates were not listed for the new page");
+  assert.doesNotMatch(panel.$("status").textContent, /Choose the application|exact match/i);
+};
+
+sidepanelTests.submitting_then_landing_on_a_thanks_page_still_confirms_the_scanned_application = async () => {
+  // The normal path: most applications navigate to a confirmation page right after Submit.
+  const panel = await loadSidepanel({ applications });
+  await panel.findApplications();
+  await panel.chooseApplication("app-a");
+  await panel.scan();
+  const sessionA = sessionPath(panel, "app-a");
+  armConfirmation(panel);
+
+  await panel.navigate("https://jobs.example.com/apply/1/thanks");
+  assert.equal(panel.$("mark-submitted").disabled, true, "the page change unticked the box");
+  await panel.tickAndMarkSubmitted();
+
+  const confirms = panel.confirmRequests();
+  assert.equal(confirms.length, 1);
+  assert.equal(confirms[0].path, `${sessionA}/confirm-submitted`);
+};
+
+sidepanelTests.a_url_change_within_the_same_tab_keeps_a_multi_step_form_working = async () => {
+  const panel = await loadSidepanel({ applications });
+  await panel.findApplications();
+  await panel.chooseApplication("app-a");
+  await panel.scan();
+  await panel.navigate("https://jobs.example.com/apply/1/step-2");
+  await panel.scan();
+
+  const synced = panel.requests.filter((item) => item.method === "PUT" && item.body?.application_id);
+  assert.equal(synced.at(-1).body.application_id, "app-a");
+  assert.equal(synced.at(-1).body.page_url, "https://jobs.example.com/apply/1/step-2");
+  assert.equal(panel.$("review-form").hidden, false, "step 2 was scanned for the same application");
 };
 
 sidepanelTests.after_moving_to_another_page_choosing_and_scanning_confirms_the_new_session = async () => {

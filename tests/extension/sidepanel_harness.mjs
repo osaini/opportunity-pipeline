@@ -131,15 +131,23 @@ export async function loadSidepanel({ applications, slowContext = [], withDocume
   const store = { serverOrigin: "http://127.0.0.1:8765", deviceToken: "device-token", deviceId: "device-1", pendingMetadata: [], unsupportedCounts: {} };
   const requests = [];
   const held = new Map();
-  // The tab the panel is looking at; navigate() moves it and tells the panel, as Chrome would.
+  // The tab the panel is looking at; navigate() moves it and tells the panel, as Chrome would,
+  // and activateTab() makes another tab the active one.
   const tab = { id: 7, url: "https://jobs.example.com/apply/1" };
   const tabUpdateListeners = [];
+  const tabActivateListeners = [];
+  let holdCandidates = false;
+  let releaseCandidates = null;
   const json = (payload) => ({ ok: true, status: 200, json: async () => payload, arrayBuffer: async () => new ArrayBuffer(0) });
   const fetchStub = async (url, options = {}) => {
     const parsed = new URL(url);
     const method = options.method || "GET";
     requests.push({ method, path: parsed.pathname, search: parsed.search, body: options.body ? JSON.parse(options.body) : undefined });
     if (parsed.pathname === "/api/v1/extension/application-candidates") {
+      if (holdCandidates) {
+        holdCandidates = false;
+        await new Promise((resolve) => { releaseCandidates = resolve; });
+      }
       return json({
         preselected_application_id: null,
         items: applications.map((item) => ({ application_id: item.id, company: item.company, title: item.title, match_kind: "same_host", stage: "saved" })),
@@ -188,6 +196,7 @@ export async function loadSidepanel({ applications, slowContext = [], withDocume
         return { results: [] };
       },
       onUpdated: { addListener: (listener) => { tabUpdateListeners.push(listener); } },
+      onActivated: { addListener: (listener) => { tabActivateListeners.push(listener); } },
     },
     scripting: { executeScript: async () => {} },
   };
@@ -246,12 +255,26 @@ export async function loadSidepanel({ applications, slowContext = [], withDocume
       $("scan").click();
       await settle();
     },
-    // The student opens another page in the tab the panel is attached to.
-    async navigate(url) {
+    // The student opens another page in the tab the panel is attached to. Chrome withholds the url
+    // from the update when the extension has no host permission for the page, so { statusOnly: true }
+    // delivers only { status: "loading" }; the tab itself has moved either way.
+    async navigate(url, { statusOnly = false } = {}) {
       tab.url = url;
-      for (const listener of tabUpdateListeners) listener(tab.id, { url });
+      for (const listener of tabUpdateListeners) listener(tab.id, statusOnly ? { status: "loading" } : { url });
       await settle();
     },
+    // The student switches to another tab (a different id and page) in the same window.
+    async activateTab(id, url) {
+      tab.id = id;
+      tab.url = url;
+      for (const listener of tabActivateListeners) listener({ tabId: id, windowId: 1 });
+      await settle();
+    },
+    // The next application-candidates request waits for releaseCandidates().
+    holdNextCandidates: () => { holdCandidates = true; },
+    releaseCandidates: () => releaseCandidates?.(),
+    // Press Find without waiting for the candidates to arrive.
+    startFinding: () => $("find-context").click(),
     confirmRequests: () => requests.filter((item) => item.path.endsWith("/confirm-submitted")),
     // What a user does: tick the box, press the button. A disabled button cannot be pressed.
     async tickAndMarkSubmitted() {

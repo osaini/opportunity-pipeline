@@ -16,6 +16,10 @@
   let activeTabId = null;
   let activePageUrl = "";
   let selectedApplicationId = "";
+  // The tab the application was chosen in: a scan in any other tab is not for this application.
+  let contextTabId = null;
+  // Counts page changes and new candidate searches, so an answer that left before one and arrives after is dropped.
+  let pageSequence = 0;
   let applyContext = null;
   let scanResult = null;
   let sessionId = "";
@@ -130,11 +134,12 @@
     return ({ exact_url: "Exact URL", canonical_url: "Canonical URL", same_host: "Same ATS host", recent_apply: "Recently opened" })[kind] || kind;
   }
 
-  // The chosen application, its loaded context and its scan go together. Anything that changes what the
-  // student is looking at (another page, a new search for candidates) drops all three, so a scan of one
-  // application is never left standing for the next page's choice.
+  // The chosen application, its loaded context and its scan go together. A new search for candidates, or a
+  // scan from another tab, drops all three, so a scan of one application is never left standing for the next
+  // choice. (A page change in the same tab drops only the scan view: see pageChanged.)
   function clearSelection() {
     selectedApplicationId = "";
+    contextTabId = null;
     applyContext = null;
     clearScan();
     contextHost.hidden = true;
@@ -142,10 +147,15 @@
 
   async function findContext() {
     clearSelection();
+    const sequence = ++pageSequence;
     const tab = await activeTab();
+    if (sequence !== pageSequence) return;
+    contextTabId = tab.id;
     status.textContent = "Matching this page to your pipeline…";
     const response = await api(`/api/v1/extension/application-candidates?page_url=${encodeURIComponent(tab.url)}`);
     const payload = await response.json();
+    // The page changed (or the student searched again) while the candidates were coming: they are for another page.
+    if (sequence !== pageSequence) return;
     candidatesHost.replaceChildren();
     if (!payload.items.length) {
       candidatesHost.append(node("p", "No matching applications. Add or open this opportunity in the tracker first."));
@@ -170,9 +180,16 @@
   // of it, and the "I submitted it" confirmation. A scan belongs to one application, so choosing another
   // (or refreshing this one) starts over; Mark as submitted then needs a new scan and a new confirmation.
   function clearScan() {
-    scanResult = null;
     sessionId = "";
     sessionApplicationId = "";
+    clearScanView();
+  }
+
+  // What the page showed of a scan: the fields, progress, document link and the confirmation. The session
+  // stays out of this on purpose: submitting usually moves the tab to a confirmation page, and the student
+  // then ticks the box again to confirm the application they scanned.
+  function clearScanView() {
+    scanResult = null;
     fieldsHost.replaceChildren();
     reviewForm.hidden = true;
     documentsHost.hidden = true;
@@ -350,13 +367,22 @@
   }
 
   async function scan() {
-    await activeTab();
+    const tab = await activeTab();
     if (!selectedApplicationId || !applyContext) throw new Error("Choose and confirm an application context first.");
+    if (tab.id !== contextTabId) {
+      // Another tab's page must never be filed under this application's session.
+      clearSelection();
+      candidatesHost.replaceChildren();
+      status.textContent = "This is a different tab from the one the application was chosen in. Find this page's application, choose it, then scan.";
+      return;
+    }
     // The student can choose another application during any await below; the scan, its session and
     // its fields then belong to the one they left, so nothing of it may reach the panel's state.
     const applicationId = selectedApplicationId;
     const context = applyContext;
-    const stillCurrent = () => selectedApplicationId === applicationId && applyContext === context;
+    const sequence = pageSequence;
+    // A page change during the scan makes its fields the old page's, which would be filed under the new page's URL.
+    const stillCurrent = () => selectedApplicationId === applicationId && applyContext === context && sequence === pageSequence;
     status.textContent = "Scanning visible controls…";
     const scanned = await send({ type: "SCAN_FIELDS", profile: context.confirmed_profile, answers: context.answers, company: context.application.company });
     if (!stillCurrent()) return;
@@ -434,7 +460,7 @@
   $("pair").addEventListener("click", () => pairDevice().catch((error) => { status.textContent = error.message; }));
   $("disconnect").addEventListener("click", async () => {
     await chrome.storage.local.remove(["deviceToken", "deviceId", "pendingMetadata"]);
-    selectedApplicationId = ""; applyContext = null; clearScan();
+    clearSelection();
     renderAuth(await storedAuth()); status.textContent = "Device credential removed from this browser.";
   });
   $("find-context").addEventListener("click", () => findContext().catch((error) => { status.textContent = error.message; }));
@@ -446,13 +472,34 @@
   $("mark-submitted").addEventListener("click", () => markSubmitted().catch((error) => { status.textContent = error.message; }));
   window.addEventListener("unload", () => { if (attachmentUrl) URL.revokeObjectURL(attachmentUrl); });
 
-  chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-    if (tabId !== activeTabId || !changeInfo.url) return;
-    activePageUrl = changeInfo.url;
-    // The old scan, its submission session and the confirmation belong to the old page's application.
-    clearSelection();
+  // The page in front of the student changed, in this tab or by switching tabs. The old page's scan and the
+  // "I submitted it" tick no longer describe what is on screen, so both go; the chosen application and its
+  // session stay, because submitting normally moves the tab to a confirmation page and the student then ticks
+  // the box again to confirm that application. The status line names which one the button would confirm.
+  function pageChanged(url) {
+    if (url) activePageUrl = url;
+    pageSequence += 1;
+    clearScanView();
     candidatesHost.replaceChildren();
-    status.textContent = "Application page changed. Find this page's application, choose it, then scan before filling anything.";
+    if (applyContext && sessionId) {
+      const app = applyContext.application;
+      status.textContent = `The page changed. Mark as submitted confirms ${app.company} — ${app.title}; tick the box again if you submitted it.`;
+    } else if (applyContext) {
+      const app = applyContext.application;
+      status.textContent = `The page changed. Scan this step to fill it for ${app.company} — ${app.title}.`;
+    } else {
+      status.textContent = "The page changed. Find this page's application, choose it, then scan before filling anything.";
+    }
+  }
+
+  // Chrome withholds changeInfo.url without host permission for the page, but still reports status "loading".
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    if (tabId !== activeTabId || !(changeInfo.url || changeInfo.status === "loading")) return;
+    pageChanged(changeInfo.url);
+  });
+  chrome.tabs.onActivated.addListener((activeInfo) => {
+    activeTabId = activeInfo.tabId;
+    pageChanged();
   });
 
   storedAuth().then((auth) => { renderAuth(auth); if (auth.deviceToken) flushPendingMetadata(); });
