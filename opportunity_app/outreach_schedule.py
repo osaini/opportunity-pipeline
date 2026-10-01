@@ -48,7 +48,9 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from . import automation
-from .outreach import NOT_INTERESTED, DraftChangedError, UNSENT_STATUSES, city_state, log_event, get_target, heard_back
+from .outreach import (
+    NOT_INTERESTED, DraftChangedError, UNSENT_STATUSES, city_state, get_target, heard_back, log_event, withdraw_auto_approval,
+)
 from .outreach_gmail import (
     SENT_EVENT,
     THANK_YOU_KIND,
@@ -333,12 +335,8 @@ def _gate(
             if row["label"] == RESEND_LABEL:
                 # The app approved it for the new contact on its own; nothing stays approved that the student did not.
                 with conn:
-                    if conn.execute(
-                        "UPDATE outreach_targets SET draft_status='generated', updated_at=? WHERE id=? AND user_id=? AND draft_status='approved'",
-                        (utc_now(), target_id, user_id),
-                    ).rowcount:
-                        log_event(conn, target_id, user_id, "approval_withdrawn",
-                             detail="They may have answered the earlier email, so the automatic resend was not sent")
+                    withdraw_auto_approval(conn, target_id, user_id,
+                                           "They may have answered the earlier email, so the automatic resend was not sent")
             return "cancelled"
         return None
     stopped = _answered(conn, row, target, now)

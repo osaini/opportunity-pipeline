@@ -44,6 +44,7 @@ from . import apply_runs, automation, internal_automation, outreach_thank_you
 from .background import PollingWorker, discard_open_transaction, record_health_quietly, step_error
 from .outreach import (
     get_target, greeting_style, greets_contact, heard_back, latest_event_stamp, list_targets, log_event, without_greeting,
+    withdraw_auto_approval,
 )
 from .outreach_contacts import apply_choice, choose_contact, find_contacts, list_candidates
 from .outreach_forms import form_due
@@ -242,11 +243,7 @@ def resend_after_bounce(
     except Exception as exc:  # noqa: BLE001 - whatever stopped it, the student reviews the draft instead
         LOGGER.warning("The resend after a bounce was not queued: %s", exc)
         with conn:
-            if conn.execute(
-                "UPDATE outreach_targets SET draft_status='generated', updated_at=? WHERE id=? AND user_id=? AND draft_status='approved'",
-                (utc_now(), target_id, user_id),
-            ).rowcount:
-                log_event(conn, target_id, user_id, "approval_withdrawn", detail="The automatic resend could not be queued")
+            withdraw_auto_approval(conn, target_id, user_id, "The automatic resend could not be queued")
         return {"queued": False, "detail": f"Not resent automatically: {exc}. Review the draft, then send it again."[:500]}
     return {"queued": True, "detail": f"Sending it again now to {to} (Resend after a bounce is on)."}
 

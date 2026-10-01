@@ -815,6 +815,18 @@ def _event_time(conn: sqlite3.Connection, target_id: str) -> str:
     return now
 
 
+def withdraw_auto_approval(conn: sqlite3.Connection, target_id: str, user_id: str, detail: str) -> None:
+    """Put a draft the app approved on its own back to "generated", and say why in the history; nothing else changes.
+
+    Only an approved draft is touched. Run inside the caller's transaction (``with conn:``).
+    """
+    if conn.execute(
+        "UPDATE outreach_targets SET draft_status='generated', updated_at=? WHERE id=? AND user_id=? AND draft_status='approved'",
+        (utc_now(), target_id, user_id),
+    ).rowcount:
+        log_event(conn, target_id, user_id, "approval_withdrawn", detail=detail)
+
+
 def latest_event_stamp(conn: sqlite3.Connection, target_id: str, user_id: str, event_type: str) -> str | None:
     """The newest created_at of this target's events of one type, as stored (not parsed), or None.
 
