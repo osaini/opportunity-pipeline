@@ -18,10 +18,10 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, outreach_delivery, outreach_gmail, outreach_inbox
+from opportunity_app import STATIC_DIR, gmail_connection, outreach_delivery, outreach_inbox
 from opportunity_app.api import create_app
 from opportunity_app.mail_trust import Authentication
-from opportunity_app.schema import connect_product
+from opportunity_app.database import connect_product
 from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
@@ -109,7 +109,7 @@ def forget_gmail_backoff(test):
     """
     from opportunity_app import outreach_inbox
 
-    for state in (outreach_gmail._BACKOFF, outreach_gmail._HEALTH, outreach_inbox._RESUME, outreach_inbox._LAST_SWEEP):
+    for state in (gmail_connection._BACKOFF, gmail_connection._HEALTH, outreach_inbox._RESUME, outreach_inbox._LAST_SWEEP):
         state.clear()
         test.addCleanup(state.clear)
 

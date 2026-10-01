@@ -18,13 +18,12 @@ import urllib.request
 import zlib
 from typing import Any, Callable, Protocol
 
-from .apply_policy import schema_url
+from .apply_greenhouse import schema_url
 from .legacy import USER_AGENT
 
 TIMEOUT_SECONDS = 20
 # A listing is a few hundred kilobytes at most; anything larger is not one.
 MAX_BYTES = 4 * 1024 * 1024
-API_HOST = "boards-api.greenhouse.io"
 
 
 class SchemaUnavailable(Exception):

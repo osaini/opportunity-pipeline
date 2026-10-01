@@ -25,8 +25,13 @@ realdata_guard.install()
 
 PROFILE_REGIONS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "profile_regions.json"
 
-from opportunity_app import schema, timestamps
-from opportunity_app.schema import migrate_legacy_database
+from opportunity_app import bootstrap, database, legacy_sync, schema, timestamps
+from opportunity_app.legacy_sync import migrate_legacy_database
+
+# What create_app (and the worker and CLI entry points) do as a process starts: fill the automation, scheduler and callback
+# registries. A test that calls the ledger, the scheduler or a record's callbacks without building an app needs it too, and
+# every test that builds a fixture database comes through this module. Calling it again is harmless.
+bootstrap.register_all()
 
 LEGACY_SCHEMA = """
 CREATE TABLE jobs (
@@ -154,11 +159,12 @@ def fast_throwaway_databases():
     A test database is deleted with its temp directory, so surviving a crash is
     worth nothing there, and each migration commits (and so fsyncs) once: turning
     the fsync off cuts a full migration roughly fourfold. This patches
-    ``opportunity_app.schema.connect_product`` only for the duration of the block
+    ``connect_product`` where the builders look it up (``database`` for this module's own
+    calls, ``legacy_sync`` for the migration it runs) only for the duration of the block
     and only from test code; production connections keep SQLite's default
     ``synchronous=FULL``.
     """
-    real_connect = schema.connect_product
+    real_connect = database.connect_product
 
     def connect(*args, **kwargs):
         conn = real_connect(*args, **kwargs)
@@ -166,7 +172,7 @@ def fast_throwaway_databases():
             conn.execute("PRAGMA synchronous = OFF")
         return conn
 
-    with mock.patch.object(schema, "connect_product", connect):
+    with mock.patch.object(database, "connect_product", connect), mock.patch.object(legacy_sync, "connect_product", connect):
         yield
 
 
@@ -339,7 +345,7 @@ def migrated_empty_db(path: Path) -> None:
     """
     if _fresh_requested() or path.exists():
         with fast_throwaway_databases():
-            conn = schema.connect_product(path)
+            conn = database.connect_product(path)
             try:
                 schema.ensure_product_schema(conn)
             finally:
@@ -348,7 +354,7 @@ def migrated_empty_db(path: Path) -> None:
 
     def build(template: _Template) -> None:
         with fast_throwaway_databases():
-            conn = schema.connect_product(template.platform)
+            conn = database.connect_product(template.platform)
             try:
                 schema.ensure_product_schema(conn)
             finally:
@@ -366,7 +372,7 @@ def use_profile_regions(case, path: Path = PROFILE_REGIONS_FIXTURE) -> None:
     Outreach reads regions only from the student's config/profile.json, so an
     unpatched test would read whatever profile the machine running it has.
     """
-    patcher = mock.patch("opportunity_app.outreach.PROFILE_PATH", path)
+    patcher = mock.patch("opportunity_app.outreach_location.PROFILE_PATH", path)
     patcher.start()
     case.addCleanup(patcher.stop)
 

@@ -1,13 +1,13 @@
 """A suite-wide guard: no test may open the real database files under data/.
 
 AGENTS.md hard rule 1: never touch data/platform.db (real application history) or data/pipeline.db. Tests isolate themselves by
-patching `pipeline.DB_PATH` (about 30 sites) or by passing a temp path to create_app and connect_product. A refactor that moves
+patching `pipeline_core.paths.DB_PATH` (about 30 sites) or by passing a temp path to create_app and connect_product. A refactor that moves
 one of those globals, or a new test that forgets the patch, would quietly open the real file: sqlite creates and migrates a
 missing database and opens an existing one, and nothing fails.
 
 `install()` wraps `sqlite3.connect` for the whole test process so that opening any file inside a real data directory
 raises RealDataAccessError before the file is opened or created. Every module in the project opens SQLite through
-`sqlite3.connect`, so this sits below `pipeline.connect`, `schema.connect_product`, the read model and every helper.
+`sqlite3.connect`, so this sits below `pipeline_core.store.connect`, `database.connect_product`, the read model and every helper.
 
 It lives in test code: nothing under opportunity_app/, pipeline.py or pipeline_core/ knows about it, and outside a test process
 (nothing imports this file) production behaviour is untouched. It is installed from tests/conftest.py (pytest: the unit suite
@@ -125,7 +125,7 @@ def install():
         if database is not None and is_real_data_path(database, uri=bool(uri), dirs=dirs):
             raise RealDataAccessError(
                 f"a test tried to open a real data file ({database!r}); AGENTS.md hard rule 1. Point it at a temp copy "
-                "(tests/helpers_platform.build_and_migrate, or patch pipeline.DB_PATH) and never at data/*.db."
+                "(tests/helpers_platform.build_and_migrate, or patch pipeline_core.paths.DB_PATH) and never at data/*.db."
             )
         return real_connect(database, *args, **kwargs)
 

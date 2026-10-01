@@ -10,18 +10,14 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import outreach
-from opportunity_app.outreach import (
-    DEFAULT_GREETING,
-    create_target,
-    greeting_line,
-    greeting_style,
-    update_target,
-)
+from opportunity_app import outreach_location
+from opportunity_app.outreach import create_target, update_target
+from opportunity_app.outreach_greeting import DEFAULT_GREETING, greeting_line, greeting_style
 from opportunity_app.outreach_contacts import add_manual_contact
 from opportunity_app.outreach_drafting import _inputs, generate_draft
 from opportunity_app.profile import validate_profile_types
-from opportunity_app.schema import LOCAL_USER_ID, connect_product
+from opportunity_app.schema import LOCAL_USER_ID
+from opportunity_app.database import connect_product
 
 from helpers_platform import build_and_migrate
 
@@ -33,10 +29,10 @@ class GreetingStyleTests(unittest.TestCase):
         _, path = build_and_migrate(root)
         self.conn = connect_product(path)
         self.profile = root / "profile.json"
-        patcher = mock.patch.object(outreach, "PROFILE_PATH", self.profile)
+        patcher = mock.patch.object(outreach_location, "PROFILE_PATH", self.profile)
         patcher.start()
         self.addCleanup(patcher.stop)
-        outreach._PROFILE_DATA_CACHE.update(key=None, data={})
+        outreach_location._PROFILE_DATA_CACHE.update(key=None, data={})
 
     def tearDown(self):
         self.conn.close()
@@ -44,7 +40,7 @@ class GreetingStyleTests(unittest.TestCase):
 
     def owner_says(self, **style):
         self.profile.write_text(json.dumps({"name": "Test Student", **style}), encoding="utf-8")
-        outreach._PROFILE_DATA_CACHE.update(key=None, data={})
+        outreach_location._PROFILE_DATA_CACHE.update(key=None, data={})
 
     def test_without_a_preference_the_defaults_are_used(self):
         self.assertEqual(greeting_style(self.conn, LOCAL_USER_ID), DEFAULT_GREETING)

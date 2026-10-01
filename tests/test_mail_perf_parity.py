@@ -20,7 +20,7 @@ from opportunity_app.mail_message import host_of
 from opportunity_app import outreach_gmail_sends as sends
 from opportunity_app.outreach import DRAFT_KINDS, UNSENT_STATUSES, get_target
 from opportunity_app.outreach_gmail import DRAFT_EVENT, _already_sent, last_bounce
-from opportunity_app.schema import connect_product
+from opportunity_app.database import connect_product
 
 import helpers_platform
 from helpers_mail_perf import USER, populate_outreach
@@ -118,7 +118,7 @@ class PendingDraftsParityTests(unittest.TestCase):
         sends._LAST_LOOK.clear()
         self.addCleanup(sends._LAST_LOOK.clear)
         self.assertTrue(sends._pending(conn, USER, now))
-        with mock.patch.object(sends, "_connector", return_value={"status": "connected"}),                 mock.patch.object(sends, "_with_targets", side_effect=ValueError("bad date")):
+        with mock.patch.object(sends, "connector_row", return_value={"status": "connected"}),                 mock.patch.object(sends, "_with_targets", side_effect=ValueError("bad date")):
             with self.assertRaises(ValueError):
                 sends.capture_gmail_sends(conn, user_id=USER, client_factory=lambda: None, now=now)
         self.assertEqual(sends._LAST_LOOK, {}, "a look that fails is forgotten")

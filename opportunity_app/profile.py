@@ -67,7 +67,7 @@ COMPLETENESS_FIELDS = (
 )
 
 
-# Profile fields pipeline.score_job reads. With none set, every score is the
+# Profile fields pipeline_core.scoring.score_job reads. With none set, every score is the
 # unexplained base score, so the UI must say matches are not personalized yet.
 SCORING_FIELDS = (
     "preferred_role_types",
@@ -341,7 +341,7 @@ def validate_profile_types(profile: dict[str, Any]) -> None:
             if not isinstance(value, str):
                 errors.append(f"{field} must be text")
             elif field in {"greeting_word", "unnamed_greeting"}:
-                from .outreach import greeting_style_error
+                from .outreach_greeting import greeting_style_error
 
                 error = greeting_style_error(value if field == "greeting_word" else None, value if field == "unnamed_greeting" else None)
                 if error:

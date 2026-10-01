@@ -37,9 +37,9 @@ from pipeline_core.read_model import RULESET_VERSION
 from pipeline_core.visibility import capture_visible_sql
 
 from . import automation
-from .database import is_postgres_target
+from .database import is_postgres_target, connect_product
 from .profile_store import read_stored_profile
-from .schema import LOCAL_USER_ID, connect_product
+from .schema import LOCAL_USER_ID
 
 LOGGER = logging.getLogger(__name__)
 
@@ -259,3 +259,9 @@ def auto_passed_this_week(conn: sqlite3.Connection, user_id: str, *, now: dateti
             "reasons": evidence.get("reasons") or [], "applied_at": row["applied_at"],
         })
     return items
+
+
+def register() -> None:
+    """Tell the automation registry what auto_save and auto_pass need. Called once at startup (bootstrap.register_all)."""
+    for feature in THRESHOLDS:
+        automation.register_requirement(feature, lambda conn, user_id, feature=feature: requirement(conn, user_id, feature))

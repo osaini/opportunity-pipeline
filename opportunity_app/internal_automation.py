@@ -283,7 +283,7 @@ def automatic_archive(conn: sqlite3.Connection, application_id: str) -> dict[str
             and action["action_type"] == "application.stage"):
         return None
     # The daily sync can move an imported application back without a stage_changed
-    # event (schema._migrate_status), so the archive stands only while the stage is still archived.
+    # event (legacy_sync._migrate_status), so the archive stands only while the stage is still archived.
     stage = conn.execute("SELECT stage FROM applications WHERE id=?", (application_id,)).fetchone()
     if stage is None or stage["stage"] != "archived":
         return None
@@ -486,7 +486,7 @@ def auto_close(
     """
     from .outreach import NO_RESPONSE_AFTER_DAYS, get_target, heard_back, lifecycle_suggestion, local_today
     from .gmail_client import connection_state
-    from .outreach_gmail import _connector
+    from .gmail_connection import connector_row
     from .outreach_inbox import REPLY_WINDOW, watched_ids
     from .outreach_review import FRESH_LOOK_REASONS, fresh_look
 
@@ -508,7 +508,7 @@ def auto_close(
             checkable.append(item)
         else:
             results.append({"target_id": item["id"], "company": item["company"], "closed": False, "reason": not_searched})
-    connection = connection_state(_connector(conn, user_id))
+    connection = connection_state(connector_row(conn, user_id))
     if client_factory is None:
         gmail_problem = "Gmail is not set up, so replies could not be checked"
     elif connection != "connected":

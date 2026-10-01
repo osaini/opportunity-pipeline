@@ -42,14 +42,8 @@ from .gmail_client import (
 from .mail_message import MAILER_DAEMONS, decode_base64url, header_map
 from .outreach import AWAITING_REPLY, log_event, get_target
 from .outreach_versions import keep_current_draft
-from .outreach_gmail import (
-    BOUNCE_EVENT,
-    SENT_EVENT,
-    _connector,
-    _Gmail,
-    event_tie_order,
-    last_bounce,
-)
+from .outreach_gmail import BOUNCE_EVENT, SENT_EVENT, event_tie_order, last_bounce
+from .gmail_connection import connector_row, GmailClient
 from .timestamps import utc_now
 
 # Some recipients failed and the rest were reached (a bad guess with the shared
@@ -246,7 +240,7 @@ def headers_say_failure(message: dict[str, Any]) -> dict[str, Any] | None:
     return {"failed": failed, "reason": html.unescape(str(message.get("snippet") or subject))}
 
 
-def _raw(gmail: _Gmail, message_id: str) -> tuple[bytes, int] | None:
+def _raw(gmail: GmailClient, message_id: str) -> tuple[bytes, int] | None:
     """A message's full text and when Gmail received it (ms), or None when Gmail will not give it."""
     response = gmail.request("GET", f"/messages/{quote(message_id, safe='')}", params={"format": "raw"})
     if response.status_code == 403:
@@ -261,7 +255,7 @@ def _raw(gmail: _Gmail, message_id: str) -> tuple[bytes, int] | None:
         return None
 
 
-def _notice_in_thread(gmail: _Gmail, thread: dict[str, Any], message_id: str) -> dict[str, Any] | None:
+def _notice_in_thread(gmail: GmailClient, thread: dict[str, Any], message_id: str) -> dict[str, Any] | None:
     """A failure notice in a sent email's thread that arrived after it, read in full when Gmail allows."""
     messages = thread.get("messages") or []
     sent_at = next((int(item.get("internalDate") or 0) for item in messages if item.get("id") == message_id), 0)
@@ -347,7 +341,7 @@ def _unread(user_id: str, notice_ids: Iterable[str]) -> None:
             _READ_NOTICES.discard((user_id, notice_id))
 
 
-def _searched_notices(gmail: _Gmail, conn: sqlite3.Connection, user_id: str, watched: list[dict[str, Any]]) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+def _searched_notices(gmail: GmailClient, conn: sqlite3.Connection, user_id: str, watched: list[dict[str, Any]]) -> list[tuple[dict[str, Any], dict[str, Any]]]:
     """Failure notices outside the sent threads, each with the send it is about.
 
     Each notice is claimed in _READ_NOTICES before it is fetched, so two checks
@@ -412,7 +406,7 @@ def check_deliveries(
     due += [item for item in watched if item["target_id"] == force_target]
     if not due:
         return result
-    state = connection_state(_connector(conn, user_id))
+    state = connection_state(connector_row(conn, user_id))
     if state != "connected":
         _LOOKS.forget(user_id, due)
         return {**result, "state": state}
@@ -435,7 +429,7 @@ def check_deliveries(
 
     try:
         with client_factory() as client:
-            gmail = _Gmail(conn, client, user_id)
+            gmail = GmailClient(conn, client, user_id)
             for item in due:
                 detail = item["detail"]
                 response = gmail.request(

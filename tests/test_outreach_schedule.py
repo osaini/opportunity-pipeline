@@ -17,10 +17,11 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
-from opportunity_app import automation, outreach_gmail, outreach_schedule
+from opportunity_app import automation, gmail_connection, outreach_schedule
 from opportunity_app.outreach_automation import AutomationWorker, update_settings
 from opportunity_app.outreach_schedule import next_morning, recipient_zone, run_due_sends
-from opportunity_app.schema import connect_product, ensure_product_schema
+from opportunity_app.schema import ensure_product_schema
+from opportunity_app.database import connect_product
 from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
@@ -475,9 +476,9 @@ class ScheduledSendTests(unittest.TestCase):
         # The inbox check was told to wait 25 minutes: longer than two retries would span.
         hold = now + timedelta(minutes=25)
         forget_gmail_backoff(self)
-        outreach_gmail._BACKOFF[USER] = (hold, 5)
+        gmail_connection._BACKOFF[USER] = (hold, 5)
         clock = {"now": now}
-        with mock.patch.object(outreach_gmail, "_now", side_effect=lambda: clock["now"]):
+        with mock.patch.object(gmail_connection, "_now", side_effect=lambda: clock["now"]):
             self.assertEqual([item["state"] for item in run_due_sends(self.conn, client_factory=self.factory, now=now)], ["retrying"])
             waiting = self.target(second)["scheduled"]["initial"]
             stored = self.conn.execute("SELECT attempts FROM outreach_scheduled_sends WHERE target_id=?", (second["id"],)).fetchone()

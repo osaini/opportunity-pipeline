@@ -14,7 +14,7 @@ from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import actions as actions_module, automation, schema, timestamps
+from opportunity_app import actions as actions_module, automation, automation_handlers, automation_health, schema, timestamps
 from opportunity_app.operations import ACCOUNT_QUERIES, delete_account, export_account
 from opportunity_app.student_agent import decide_proposal
 from opportunity_app.actions import (
@@ -29,7 +29,8 @@ from opportunity_app.actions import (
 )
 from opportunity_app.automation import OFF_SHADOW_ON, AutomationGateError, Feature, Superseded
 from opportunity_app.outreach_automation import SETTINGS, settings, update_settings
-from opportunity_app.schema import connect_product, ensure_product_schema
+from opportunity_app.schema import ensure_product_schema
+from opportunity_app.database import connect_product, has_column
 from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
@@ -392,7 +393,7 @@ class PauseTests(AutomationCase):
         automation.set_paused(self.conn, USER, True)
 
         def banner():
-            [item] = [entry for entry in automation.health_summary(self.conn, USER)["banner"] if entry["key"] == "paused"]
+            [item] = [entry for entry in automation_health.health_summary(self.conn, USER)["banner"] if entry["key"] == "paused"]
             return item["text"]
 
         base = "Automation is paused. Nothing is sent and no switch acts on its own. Replies and bounces are still recorded."
@@ -419,7 +420,7 @@ class PauseTests(AutomationCase):
         self.claim("t-4", "sending", "send")  # still going: in flight, not unconfirmed
         with self.conn:
             self.conn.execute("UPDATE outreach_targets SET status='sent' WHERE id='t-1'")
-        listed = automation.health_summary(self.conn, USER)["unconfirmed"]
+        listed = automation_health.health_summary(self.conn, USER)["unconfirmed"]
         self.assertEqual([(item["target_id"], item["company"], item["kind"], item["action"]) for item in listed],
                          [("t-3", "Orbit", "initial", "form"), ("t-1", "Bovi", "follow_up", "send"), ("t-2", "Kiva", "initial", "form")],
                          "oldest first")
@@ -428,7 +429,7 @@ class PauseTests(AutomationCase):
             # "I sent it" on the form, and the company replied after the follow-up.
             self.conn.execute("UPDATE outreach_targets SET status='sent', sent_at=? WHERE id='t-2'", (utc_now(),))
             self.conn.execute("UPDATE outreach_targets SET status='replied' WHERE id='t-1'")
-        self.assertEqual([item["target_id"] for item in automation.health_summary(self.conn, USER)["unconfirmed"]], ["t-3"])
+        self.assertEqual([item["target_id"] for item in automation_health.health_summary(self.conn, USER)["unconfirmed"]], ["t-3"])
 
     def test_settings_are_checked_and_written_in_one_transaction(self):
         with self.assertRaises(AutomationGateError):
@@ -528,7 +529,7 @@ class PerformTests(AutomationCase):
     def test_a_pause_or_an_edit_cannot_land_between_its_reads_and_the_change(self):
         automation.set_mode(self.conn, USER, "test_switch", "on")
         patch, seen = self.meanwhile(
-            automation.ApplicationStage, "read",
+            automation_handlers.ApplicationStage, "read",
             ("edit", lambda other: update_application(other, "app-job-b", stage="offer", user_id=USER)["stage"]),
             ("pause", lambda other: automation.set_paused(other, USER, True)),
         )
@@ -858,7 +859,7 @@ class UndoTests(AutomationCase):
     def test_a_second_undo_while_the_first_is_under_way_is_refused_plainly(self):
         row = self.stage_action("app-job-b", stage="interview")
         patch, seen = self.meanwhile(
-            automation.ApplicationStage, "undo", ("undo", lambda other: automation.undo(other, row["id"], USER)["status"]),
+            automation_handlers.ApplicationStage, "undo", ("undo", lambda other: automation.undo(other, row["id"], USER)["status"]),
         )
         with patch:
             undone = automation.undo(self.conn, row["id"], USER)
@@ -950,7 +951,7 @@ class ApproveRejectTests(AutomationCase):
         row = self.act(action_type="application.task", subject_kind="application", subject_id="app-job-b",
                        after={"task": {"title": "Reply"}}, auto=False)
         patch, seen = self.meanwhile(
-            automation.ApplicationTask, "read", ("approve", lambda other: automation.approve(other, row["id"], USER)["status"]),
+            automation_handlers.ApplicationTask, "read", ("approve", lambda other: automation.approve(other, row["id"], USER)["status"]),
         )
         with patch:
             approved = automation.approve(self.conn, row["id"], USER)
@@ -963,7 +964,7 @@ class ApproveRejectTests(AutomationCase):
     def test_a_reject_while_approve_is_under_way_waits_and_then_finds_it_decided(self):
         row = self.propose()
         patch, seen = self.meanwhile(
-            automation.ApplicationStage, "read", ("reject", lambda other: automation.reject(other, row["id"], USER)["status"]),
+            automation_handlers.ApplicationStage, "read", ("reject", lambda other: automation.reject(other, row["id"], USER)["status"]),
         )
         with patch:
             approved = automation.approve(self.conn, row["id"], USER)
@@ -974,7 +975,7 @@ class ApproveRejectTests(AutomationCase):
 
     def test_an_approve_that_finds_the_action_decided_at_the_end_takes_its_change_back(self):
         row = self.propose()
-        real = automation.ApplicationStage.apply
+        real = automation_handlers.ApplicationStage.apply
 
         def apply(handler, conn, *args, **kwargs):
             result = real(handler, conn, *args, **kwargs)
@@ -982,7 +983,7 @@ class ApproveRejectTests(AutomationCase):
             conn.execute("UPDATE automation_actions SET status='rejected' WHERE id=?", (row["id"],))
             return result
 
-        with mock.patch.object(automation.ApplicationStage, "apply", apply), self.assertRaisesRegex(ValueError, "decided somewhere else"):
+        with mock.patch.object(automation_handlers.ApplicationStage, "apply", apply), self.assertRaisesRegex(ValueError, "decided somewhere else"):
             automation.approve(self.conn, row["id"], USER)
         self.assertEqual(self.stage("app-job-b")[0], "applied", "the change went back with the ledger write")
         self.assertEqual(automation.list_actions(self.conn, USER)[0]["status"], "proposed")
@@ -1080,14 +1081,14 @@ class NoticeTests(AutomationCase):
         self.assertEqual(len(notices), 2)
         self.assertEqual(automation.mark_notices_read(self.conn, USER, [notices[0]["id"]]), 1)
         self.assertEqual([n["id"] for n in automation.list_notices(self.conn, USER, unread_only=True)], [notices[1]["id"]])
-        self.assertEqual(automation.health_summary(self.conn, USER)["unread_notices"], 1)
+        self.assertEqual(automation_health.health_summary(self.conn, USER)["unread_notices"], 1)
 
     def test_mark_all_read_reaches_past_the_page_that_was_shown(self):
         for n in range(25):
             automation.notice(self.conn, USER, event_key=f"many:{n}", level="info", title=f"Notice {n}")
         self.assertEqual(len(automation.list_notices(self.conn, USER, unread_only=True)), 20, "a page shows 20")
         self.assertEqual(automation.mark_notices_read(self.conn, USER, all_unread=True), 25)
-        self.assertEqual(automation.health_summary(self.conn, USER)["unread_notices"], 0)
+        self.assertEqual(automation_health.health_summary(self.conn, USER)["unread_notices"], 0)
         self.assertEqual(automation.mark_notices_read(self.conn, USER, all_unread=True), 0)
         self.assertEqual(automation.mark_notices_read(self.conn, USER), 0, "no ids and not all: nothing")
 
@@ -1111,12 +1112,12 @@ class HealthTests(AutomationCase):
 
     def summary(self, now=T0, **env):
         with mock.patch.dict("os.environ", env):
-            return automation.health_summary(self.conn, USER, now=now)
+            return automation_health.health_summary(self.conn, USER, now=now)
 
     def test_record_health_keeps_the_last_success_and_the_last_error(self):
         automation.record_health(self.conn, USER, "inbox.replies", ok=True, detail={"read": 3})
         automation.record_health(self.conn, USER, "inbox.replies", ok=False, error="x" * 400)
-        [component] = automation.health_summary(self.conn, USER)["components"]
+        [component] = automation_health.health_summary(self.conn, USER)["components"]
         self.assertTrue(component["last_ok_at"] and component["last_error_at"])
         self.assertEqual(len(component["last_error"]), 300)
         self.assertEqual(component["detail"], {"read": 3}, "an error without detail keeps the last detail")
@@ -1196,10 +1197,10 @@ class HealthTests(AutomationCase):
             # The breaker's write is the first in a new tick, so its stamp is the clock's own value.
             timestamps._LAST_NOW = datetime.min.replace(tzinfo=timezone.utc)
             self.assertTrue(automation.undo(self.conn, rows[1]["id"], USER)["feature_paused"])
-            self.assertEqual(len(automation.health_summary(self.conn, USER)["breaker_off"]), 1)
+            self.assertEqual(len(automation_health.health_summary(self.conn, USER)["breaker_off"]), 1)
             automation.set_mode(self.conn, USER, "test_switch", "on")
             automation.set_mode(self.conn, USER, "test_switch", "off")
-            self.assertEqual(automation.health_summary(self.conn, USER)["breaker_off"], [], "off by the student's own choice")
+            self.assertEqual(automation_health.health_summary(self.conn, USER)["breaker_off"], [], "off by the student's own choice")
 
     def test_features_the_breaker_turned_off_are_listed_while_they_stay_off(self):
         automation.set_mode(self.conn, USER, "test_switch", "on")
@@ -1207,17 +1208,17 @@ class HealthTests(AutomationCase):
         automation.undo(self.conn, rows[0]["id"], USER)
         self.assertTrue(automation.undo(self.conn, rows[1]["id"], USER)["feature_paused"])
         automation.mark_notices_read(self.conn, USER, all_unread=True)
-        [item] = automation.health_summary(self.conn, USER)["breaker_off"]
+        [item] = automation_health.health_summary(self.conn, USER)["breaker_off"]
         self.assertEqual((item["feature"], item["label"]), ("test_switch", "Test switch"), "still listed once the notice is read")
         self.assertTrue(item["at"])
         automation.set_mode(self.conn, USER, "test_switch", "on")
-        self.assertEqual(automation.health_summary(self.conn, USER)["breaker_off"], [], "turned back on: no longer the breaker's")
+        self.assertEqual(automation_health.health_summary(self.conn, USER)["breaker_off"], [], "turned back on: no longer the breaker's")
         automation.set_mode(self.conn, USER, "test_switch", "off")
-        self.assertEqual(automation.health_summary(self.conn, USER)["breaker_off"], [], "off by the student's own choice")
+        self.assertEqual(automation_health.health_summary(self.conn, USER)["breaker_off"], [], "off by the student's own choice")
         with self.conn:
             self.conn.execute("UPDATE user_settings SET updated_at=? WHERE key='test_switch'", (item["at"],))
-        self.assertEqual(len(automation.health_summary(self.conn, USER)["breaker_off"]), 1, "the instrument: the same row counts again")
-        self.assertEqual(automation.health_summary(self.conn, USER, now=datetime.now(timezone.utc) + timedelta(days=31))["breaker_off"], [],
+        self.assertEqual(len(automation_health.health_summary(self.conn, USER)["breaker_off"]), 1, "the instrument: the same row counts again")
+        self.assertEqual(automation_health.health_summary(self.conn, USER, now=datetime.now(timezone.utc) + timedelta(days=31))["breaker_off"], [],
                          "only the last 30 days")
 
     def test_the_banner_order(self):
@@ -1230,7 +1231,7 @@ class HealthTests(AutomationCase):
         self.connector(backoff_until="2026-09-20T12:10:00+00:00")
         banner = self.summary()["banner"]
         self.assertEqual([item["key"] for item in banner], ["paused", "gmail_throttled"])
-        self.assertEqual(banner[0]["text"], automation.PAUSED_BANNER)
+        self.assertEqual(banner[0]["text"], automation_health.PAUSED_BANNER)
         self.assertEqual(banner[1]["text"], "Gmail asked the app to slow down. Checks resume after 7:10 AM.")
         automation.set_paused(self.conn, USER, False)
         self.connector(status="error")
@@ -1242,7 +1243,7 @@ class HealthTests(AutomationCase):
         self.act(subject_id="s1")
         self.act(subject_id="s2", auto=False)
         self.act(feature="test_shadow", subject_id="s3")
-        counts = automation.health_summary(self.conn, USER)["counts"]
+        counts = automation_health.health_summary(self.conn, USER)["counts"]
         self.assertEqual(counts, {"proposed": 1, "shadow_unreviewed": 1, "applied_last_24h": 1})
 
 
@@ -1307,7 +1308,7 @@ class MigrationTests(unittest.TestCase):
 
     def assert_migrated(self, conn, user_id):
         for table, column in NEW_COLUMNS:
-            self.assertTrue(schema._has_column(conn, table, column), f"{table}.{column}")
+            self.assertTrue(has_column(conn, table, column), f"{table}.{column}")
         for table in ("automation_actions", "automation_health", "automation_notices"):
             conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
         self.assertIn("0037_automation.sql", {row[0] for row in conn.execute("SELECT name FROM schema_migrations")})

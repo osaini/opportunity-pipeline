@@ -16,21 +16,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pipeline
-from pipeline import (
-    PROFILE_PATH,
-    SOURCES_LOCAL_PATH,
-    SOURCES_PATH,
-    USER_AGENT,
-    backup_sqlite,
-    degree_levels,
-    discover_ats,
-    load_env_file,
-    load_sources,
-    score_job,
-    source_key,
-    write_discovered_sources,
-)
+from pipeline_core.config import load_env_file, load_sources, source_key
+from pipeline_core.discovery import discover_ats, write_discovered_sources
+from pipeline_core.http import USER_AGENT
+from pipeline_core.paths import PROFILE_PATH, SOURCES_LOCAL_PATH, SOURCES_PATH
+from pipeline_core.retention import backup_sqlite
+from pipeline_core.scoring import degree_levels, score_job
+from pipeline_core.store import connect
 
 __all__ = [
     "PROFILE_PATH",
@@ -52,7 +44,7 @@ __all__ = [
 def create_database(path: Path) -> None:
     """Create the legacy pipeline database at ``path`` (schema included) and close it.
 
-    ``pipeline.connect`` takes the path, so nothing swaps the module-global
-    ``pipeline.DB_PATH`` and a concurrent reader of that global never sees it move.
+    ``store.connect`` takes the path, so nothing swaps the module-global
+    ``paths.DB_PATH`` and a concurrent reader of that global never sees it move.
     """
-    pipeline.connect(path).close()
+    connect(path).close()

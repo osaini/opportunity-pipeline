@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -741,3 +743,44 @@ def import_applications(
         )
         imported += 1
     return {"imported": imported, "skipped": len(errors), "errors": errors[:100]}
+
+
+# The columns of the application export. A CSV import reads the same names back.
+APPLICATION_EXPORT_FIELDS = [
+    "id", "opportunity_id", "company", "title", "stage", "notes",
+    "applied_at", "follow_up_at", "location", "region", "url", "created_at", "updated_at",
+]
+
+
+def export_applications_json(items: list[dict[str, Any]]) -> str:
+    return json.dumps(items, indent=2, sort_keys=True)
+
+
+def export_applications_csv(items: list[dict[str, Any]]) -> str:
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=APPLICATION_EXPORT_FIELDS, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(items)
+    return output.getvalue()
+
+
+def parse_application_import(data: bytes, filename: str) -> list[dict[str, Any]]:
+    """The application records in an uploaded CSV or JSON file; `filename` is already lowercased.
+
+    Raises UnicodeDecodeError, json.JSONDecodeError, csv.Error or ValueError for a file that is not one. The caller maps all
+    four, and whatever import_applications raises, to one 422.
+    """
+    text_data = data.decode("utf-8-sig")
+    if filename.endswith(".csv"):
+        records = [dict(row) for row in csv.DictReader(io.StringIO(text_data))]
+    else:
+        parsed = json.loads(text_data)
+        if isinstance(parsed, list):
+            records = parsed
+        elif isinstance(parsed, dict):
+            records = parsed.get("items", [])
+        else:
+            raise ValueError("Import must be a JSON list or object with an items list")
+    if not isinstance(records, list) or any(not isinstance(row, dict) for row in records):
+        raise ValueError("Import must contain a list of application objects")
+    return records

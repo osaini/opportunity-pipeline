@@ -17,11 +17,11 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, automation, inbox_watcher, outreach, outreach_gmail, outreach_inbox, outreach_labels, schema
+from opportunity_app import STATIC_DIR, automation, gmail_connection, inbox_watcher, outreach, outreach_gmail, outreach_inbox, outreach_label_name, outreach_labels, schema
 from opportunity_app.api import create_app
 from opportunity_app.inbox_watcher import InboxWatcher
 from opportunity_app.outreach_inbox import decide_possible_reply
-from opportunity_app.schema import connect_product
+from opportunity_app.database import connect_product, has_column
 from opportunity_app.settings_store import get_setting, put_setting
 from opportunity_app.timestamps import utc_now
 
@@ -215,17 +215,17 @@ class LabelCase(unittest.TestCase):
 
 class LabelNameTests(LabelCase):
     def test_the_default_is_opportunities_and_search_form_is_what_gmail_searches(self):
-        self.assertEqual((outreach_labels.DEFAULT_LABEL, outreach_labels.label_name(self.conn, USER)), (LABEL, LABEL))
+        self.assertEqual((outreach_label_name.DEFAULT_LABEL, outreach_label_name.label_name(self.conn, USER)), (LABEL, LABEL))
         self.assertEqual(outreach_labels.search_form("Job Search/2026  Fall"), "job-search-2026-fall")
         self.assertEqual(outreach_labels.search_form(""), "")
 
     def test_a_name_is_saved_cleaned_up_and_empty_means_off(self):
         self.assertEqual(outreach_labels.set_label_name(self.conn, USER, "  Job   Search / 2026 "), "Job Search / 2026")
-        self.assertEqual(outreach_labels.label_name(self.conn, USER), "Job Search / 2026")
+        self.assertEqual(outreach_label_name.label_name(self.conn, USER), "Job Search / 2026")
         self.assertEqual(outreach_labels.set_label_name(self.conn, USER, ""), "")
-        self.assertEqual(outreach_labels.label_name(self.conn, USER), "", "an empty name is kept: labelling is off")
+        self.assertEqual(outreach_label_name.label_name(self.conn, USER), "", "an empty name is kept: labelling is off")
         self.assertEqual(outreach_labels.set_label_name(self.conn, USER, None), LABEL)
-        self.assertEqual(outreach_labels.label_name(self.conn, USER), LABEL)
+        self.assertEqual(outreach_label_name.label_name(self.conn, USER), LABEL)
 
     def test_a_name_gmail_would_refuse_is_refused_in_a_sentence(self):
         for bad in ("x" * 101, "bad\x00name", "/leading", "trailing/", "a//b", "inbox", "Spam", "ALL MAIL", "drafts",
@@ -234,7 +234,7 @@ class LabelNameTests(LabelCase):
                 with self.assertRaises(ValueError) as caught:
                     outreach_labels.set_label_name(self.conn, USER, bad)
                 self.assertTrue(str(caught.exception).startswith("A Gmail label name") or "Gmail keeps the name" in str(caught.exception))
-        self.assertEqual(outreach_labels.label_name(self.conn, USER), LABEL, "nothing was saved")
+        self.assertEqual(outreach_label_name.label_name(self.conn, USER), LABEL, "nothing was saved")
         self.assertEqual(outreach_labels.set_label_name(self.conn, USER, "x" * 100), "x" * 100)
 
     def test_a_name_with_search_syntax_is_refused_naming_the_allowed_characters(self):
@@ -245,11 +245,11 @@ class LabelNameTests(LabelCase):
                     outreach_labels.set_label_name(self.conn, USER, bad)
                 self.assertEqual(str(caught.exception),
                                  "A Gmail label name can use only letters, digits, spaces, hyphens, underscores and slashes")
-        self.assertEqual(outreach_labels.label_name(self.conn, USER), LABEL, "nothing was saved")
+        self.assertEqual(outreach_label_name.label_name(self.conn, USER), LABEL, "nothing was saved")
         for good in ("Job Search/Replies", "outreach_replies", "Отклики", "2026-fall", "求人/返信"):
             with self.subTest(good):
                 self.assertEqual(outreach_labels.set_label_name(self.conn, USER, good), good)
-                self.assertEqual(outreach_labels.label_name(self.conn, USER), good)
+                self.assertEqual(outreach_label_name.label_name(self.conn, USER), good)
 
 
 class LabelPassTests(LabelCase):
@@ -378,7 +378,7 @@ class LabelPassTests(LabelCase):
 
     def test_a_held_back_gmail_is_not_asked(self):
         self.seeded(1)
-        outreach_gmail._BACKOFF[USER] = (datetime.now(timezone.utc) + timedelta(minutes=5), 1)
+        gmail_connection._BACKOFF[USER] = (datetime.now(timezone.utc) + timedelta(minutes=5), 1)
         self.assertEqual(self.run_pass(), {"state": "throttled"})
         self.assertEqual(self.gmail.requests, [])
 
@@ -828,7 +828,7 @@ class SweepTests(LabelCase):
         self.gmail.label_threads["m-thread-00"].append({"id": "m-thanks", "labelIds": ["SENT"]})
         self.gmail.inbox_replies.append("m-thanks")
         self.gmail.threads["m-thanks"] = "m-thread-00"
-        outreach_gmail._BACKOFF.clear()
+        gmail_connection._BACKOFF.clear()
         with self.conn:
             self.conn.execute("UPDATE connector_accounts SET backoff_until=NULL, last_error=''")
         result = self.run_pass(START + timedelta(minutes=10))
@@ -843,7 +843,7 @@ class StopTests(LabelCase):
         result = self.run_pass()
         self.assertEqual(result["state"], "throttled")
         self.assertEqual(len(self.modifies()), 1, "the rows behind it were not tried")
-        self.assertIsNotNone(outreach_gmail.backoff_until(USER))
+        self.assertIsNotNone(gmail_connection.backoff_until(USER))
         self.assertEqual([self.row(f"m-{number:02d}")["label_name"] for number in range(3)], ["", "", ""])
         self.assertEqual(self.run_pass(), {"state": "throttled"})
         self.assertEqual(len(self.modifies()), 1)
@@ -853,7 +853,7 @@ class StopTests(LabelCase):
 
         def refused_and_held():
             # Something else on this student's Gmail was told to slow down while this call was in flight.
-            outreach_gmail._BACKOFF[USER] = (datetime.now(timezone.utc) + timedelta(minutes=5), 1)
+            gmail_connection._BACKOFF[USER] = (datetime.now(timezone.utc) + timedelta(minutes=5), 1)
             return httpx.Response(400, json={"error": {"code": 400, "message": "Invalid value"}})
 
         self.gmail.modify_answers.append(refused_and_held)
@@ -870,7 +870,7 @@ class StopTests(LabelCase):
             real(labeller, response)
             if not calls:
                 calls.append(1)
-                outreach_gmail._BACKOFF[USER] = (datetime.now(timezone.utc) + timedelta(minutes=5), 1)
+                gmail_connection._BACKOFF[USER] = (datetime.now(timezone.utc) + timedelta(minutes=5), 1)
 
         with mock.patch.object(outreach_labels._Labeller, "_refuse", refuse_then_hold):
             self.assertEqual(self.run_pass()["state"], "throttled")
@@ -886,7 +886,7 @@ class StopTests(LabelCase):
             real(labeller, response)
             if not calls and "/threads/" in response.request.url.path:
                 calls.append(1)
-                outreach_gmail._BACKOFF[USER] = (datetime.now(timezone.utc) + timedelta(minutes=5), 1)
+                gmail_connection._BACKOFF[USER] = (datetime.now(timezone.utc) + timedelta(minutes=5), 1)
 
         with mock.patch.object(outreach_labels._Labeller, "_refuse", refuse_then_hold):
             self.assertEqual(self.run_pass()["state"], "throttled")
@@ -1976,14 +1976,14 @@ class MigrationTests(unittest.TestCase):
                     conn.execute("INSERT INTO schema_migrations(name, applied_at) VALUES(?, ?)", (migration.name, utc_now()))
                 conn.commit()
                 for table, column in (("outreach_inbox_messages", "label_name"), ("connector_accounts", "account_email")):
-                    self.assertFalse(schema._has_column(conn, table, column), "not there before 0043")
+                    self.assertFalse(has_column(conn, table, column), "not there before 0043")
                 # The crash: one column added, the rest (and the marker) not.
                 conn.execute("ALTER TABLE outreach_inbox_messages ADD COLUMN label_name TEXT NOT NULL DEFAULT ''")
                 conn.commit()
                 schema.ensure_product_schema(conn)
                 for table, column in (("outreach_inbox_messages", "label_name"), ("outreach_inbox_messages", "labeled_at"),
                                       ("outreach_inbox_messages", "label_note"), ("connector_accounts", "account_email")):
-                    self.assertTrue(schema._has_column(conn, table, column), f"{table}.{column}")
+                    self.assertTrue(has_column(conn, table, column), f"{table}.{column}")
                 self.assertIsNotNone(conn.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_outreach_inbox_messages_labels'").fetchone())
                 self.assertIsNotNone(conn.execute("SELECT 1 FROM schema_migrations WHERE name='0043_gmail_reply_labels.sql'").fetchone())

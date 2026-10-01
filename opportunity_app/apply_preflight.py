@@ -25,7 +25,7 @@ from typing import Any
 from pipeline_core.identity import employer_key
 from pipeline_core.visibility import capture_visible_sql
 
-from . import apply_policy, apply_runs, apply_sensitive, preparation
+from . import apply_classify, apply_greenhouse, apply_policy, apply_runs, apply_sensitive, preparation
 from .actions import OpportunityNotFoundError
 from .apply_schema_client import SchemaClient, SchemaUnavailable
 from .apply_checks import question_key
@@ -107,7 +107,7 @@ def _asks(conn: sqlite3.Connection, user_id: str, opportunity_id: str, ident: tu
     asks: list[dict[str, str]] = []
     while True:
         block = apply_runs.duplicate_block(
-            conn, user_id, opportunity_id=opportunity_id, ats=apply_policy.ATS_GREENHOUSE, job_ref=f"{token}/{job}",
+            conn, user_id, opportunity_id=opportunity_id, ats=apply_greenhouse.ATS_GREENHOUSE, job_ref=f"{token}/{job}",
             company=employer_key(company), acknowledged=acknowledged, now=now,
         )
         if block is None or block.kind != "ask":
@@ -139,7 +139,7 @@ def _action(entry: apply_policy.PlanField, facts: dict[str, Any]) -> dict[str, A
         if form:
             return form
     if kind in ("sensitive_never", "sensitive_not_allowed", "sensitive_missing", "sensitive_mismatch"):
-        return {"type": "manual", "category": entry.sensitive or "", "words": apply_policy.CATEGORY_WORDS.get(entry.sensitive or "", ""),
+        return {"type": "manual", "category": entry.sensitive or "", "words": apply_classify.CATEGORY_WORDS.get(entry.sensitive or "", ""),
                 # A category the student may switch on in Apply for me settings, so the view can say so.
                 "allowable": kind == "sensitive_not_allowed" and (entry.sensitive or "") in apply_sensitive.STORABLE}
     return {"type": "none"}
@@ -171,7 +171,7 @@ def _sensitive_form(entry: apply_policy.PlanField, kind: str) -> dict[str, Any] 
     it points to a document. The category, the wording and the options come from the form, never from the browser.
     """
     category = entry.sensitive or ""
-    statement = category in apply_sensitive.STATEMENT_CATEGORIES
+    statement = category in apply_classify.STATEMENT_CATEGORIES
     # A data-processing consent's statement is on the page only, not in Greenhouse's listing, so there is nothing yet to
     # store it under: it is left for the student, or added word for word in Apply agent settings.
     if entry.section == "data_compliance" or entry.text_cut:
@@ -183,12 +183,12 @@ def _sensitive_form(entry: apply_policy.PlanField, kind: str) -> dict[str, Any] 
             return None
     elif entry.control not in ("select", "multiselect", "text", "textarea", "checkbox"):
         return None
-    if statement and not apply_policy.statement_control(entry.control, entry.options):
+    if statement and not apply_classify.statement_control(entry.control, entry.options):
         # A statement is stored only as ticked, so a box or a Yes/No question can carry it and a text or list field cannot.
         return None
     return {
         "type": "sensitive", "control": entry.control, "options": options, "category": category,
-        "words": apply_policy.CATEGORY_WORDS.get(category, ""), "statement": entry.statement if statement or entry.control == "checkbox" else "", "links": list(entry.links),
+        "words": apply_classify.CATEGORY_WORDS.get(category, ""), "statement": entry.statement if statement or entry.control == "checkbox" else "", "links": list(entry.links),
         "decline_only": category in apply_sensitive.EEO_CATEGORIES,
         # A question that depends on its company, a mismatch (this form's own wording or address) and a statement that
         # points to a document or leans on text elsewhere are saved for this company only; the tick for any company is then
@@ -246,11 +246,11 @@ def _prepare(
         "checked_at": moment.isoformat(timespec="seconds"), "from_cache": False,
         "posting": {"title": "", "company": "", "url": "", "differs": False, "difference": ""},
     }
-    ident = apply_policy.identify(conn, opportunity_id)
+    ident = apply_greenhouse.identify(conn, opportunity_id)
     if ident is None:
         return result, None, None
     token, job = ident
-    result.update(ats=apply_policy.ATS_GREENHOUSE, board_token=token, job_id=job, canonical_url=apply_policy.canonical_url(token, job))
+    result.update(ats=apply_greenhouse.ATS_GREENHOUSE, board_token=token, job_id=job, canonical_url=apply_greenhouse.canonical_url(token, job))
     application = conn.execute("SELECT stage FROM applications WHERE opportunity_id=? AND user_id=?", (opportunity_id, user_id)).fetchone()
     if application is not None:
         result["application"] = {"exists": True, "stage": str(application["stage"])}
@@ -271,7 +271,7 @@ def _prepare(
     sources =apply_policy.sources_for(conn, user_id, opportunity_id, company=company, storage_root=resume_root)
     plan = apply_policy.build_plan(
         apply_policy.parse_schema(listing), None, sources, company, "check",
-        canonical_url=result["canonical_url"], adapter_version=apply_runs.ADAPTER_VERSION,
+        canonical_url=result["canonical_url"], adapter_version=apply_greenhouse.ADAPTER_VERSION,
     )
     return result, plan, sources
 
@@ -303,7 +303,7 @@ def _eligibility(
             "allowed": not blocked, "needs_tick": ticked and not blocked,
             "reason": "; ".join(part for part in ((block.message if block else ""), ask_reason if not blocked else "") if part),
         }
-    met, count, needed = apply_runs.gate(conn, user_id, apply_policy.ATS_GREENHOUSE)
+    met, count, needed = apply_runs.gate(conn, user_id, apply_greenhouse.ATS_GREENHOUSE)
     if result["status"] != "ready":
         rows["submit"].update(allowed=False, reason=result["message"])
     elif not met:

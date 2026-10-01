@@ -14,12 +14,12 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, outreach_delivery, outreach_gmail, outreach_gmail_sends, outreach_inbox
+from opportunity_app import STATIC_DIR, gmail_connection, outreach_delivery, outreach_gmail_sends, outreach_inbox
 from opportunity_app.api import create_app
 from opportunity_app.outreach_automation import update_settings
 from opportunity_app.outreach_gmail_sends import capture_gmail_sends
 from opportunity_app.outreach_schedule import run_due_sends
-from opportunity_app.schema import connect_product
+from opportunity_app.database import connect_product
 from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
@@ -246,7 +246,7 @@ class GmailSendsTests(unittest.TestCase):
         self.drafted_in_gmail()
         self.gmail.read_response = rate_limited
         self.assertEqual(capture_gmail_sends(self.conn, user_id=USER, client_factory=self.factory)["state"], "throttled")
-        outreach_gmail._BACKOFF.clear()  # Gmail's wait is over
+        gmail_connection._BACKOFF.clear()  # Gmail's wait is over
         with self.conn:
             self.conn.execute("UPDATE connector_accounts SET backoff_until=NULL")
         self.gmail.read_response = None

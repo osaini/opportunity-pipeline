@@ -99,7 +99,8 @@ class OutreachSettingsApiTests(unittest.TestCase):
     def test_the_linkedin_account_is_one_username_and_can_never_write_another_key(self):
         from contextlib import closing
 
-        from opportunity_app.schema import connect_product, ensure_product_schema
+        from opportunity_app.schema import ensure_product_schema
+        from opportunity_app.database import connect_product
 
         settings = OutreachSettings(env_path=self.env_path, attachment_dir=self.attachments, resume_storage=self.root / "resumes")
         with closing(connect_product(self.platform_path)) as conn, mock.patch.dict(os.environ, {"PIPELINE_LINKEDIN_ACCOUNT": ""}):

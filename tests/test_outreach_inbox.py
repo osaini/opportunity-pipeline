@@ -14,10 +14,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import httpx
 
-from opportunity_app import automation, inbox_watcher, mail_message, outreach_gmail, outreach_inbox
+from opportunity_app import automation, automation_health, gmail_connection, inbox_watcher, mail_message, outreach_inbox
 from opportunity_app.inbox_watcher import InboxWatcher
 from opportunity_app.mail_message import reply_text, strip_quoted
-from opportunity_app.schema import connect_product
+from opportunity_app.database import connect_product
 from opportunity_app.timestamps import utc_now
 
 from helpers_gmail import (
@@ -175,7 +175,7 @@ class ReplyCaptureTests(ReplyCaptureFixture, unittest.TestCase):
         # A Gmail server error is a passing fault: reads wait, as for a rate limit, and it is still not "nothing".
         self.gmail.thread_status = 503
         self.assertEqual(self.check()["state"], "throttled")
-        self.assertIsNotNone(outreach_gmail.backoff_until(USER))
+        self.assertIsNotNone(gmail_connection.backoff_until(USER))
 
     def test_every_page_of_results_is_read(self):
         target = self.sent_target()
@@ -964,8 +964,8 @@ class ReplyCaptureTests(ReplyCaptureFixture, unittest.TestCase):
         with closing(connect_product(self.platform_path)) as conn:
             conn.execute("UPDATE connector_accounts SET backoff_until=NULL, last_error='', last_ok_at=NULL")
             conn.commit()
-        outreach_gmail._BACKOFF.clear()
-        outreach_gmail._HEALTH.clear()
+        gmail_connection._BACKOFF.clear()
+        gmail_connection._HEALTH.clear()
         self.gmail.read_response = rate_limited
         outreach_inbox._LAST_CAPTURE.clear()
         real_connect = inbox_watcher.connect_product
@@ -975,9 +975,9 @@ class ReplyCaptureTests(ReplyCaptureFixture, unittest.TestCase):
             row = dict(conn.execute("SELECT * FROM connector_accounts WHERE provider='gmail_drafts'").fetchone())
             self.assertTrue(row["backoff_until"], "the hold survives a restart")
             self.assertEqual(row["last_error"], "Gmail asked the app to slow down (HTTP 403)")
-            self.assertEqual(automation.gmail_health(conn, USER)["state"], "throttled")
+            self.assertEqual(automation_health.gmail_health(conn, USER)["state"], "throttled")
         # Gmail answers again: the next pass records it, and the reply is captured.
-        outreach_gmail._BACKOFF.clear()
+        gmail_connection._BACKOFF.clear()
         with closing(connect_product(self.platform_path)) as conn:
             conn.execute("UPDATE connector_accounts SET backoff_until=NULL")
             conn.commit()

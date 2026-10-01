@@ -189,6 +189,11 @@ def setup_requirement(conn: sqlite3.Connection, user_id: str) -> str:
     return "None of the variants your profile lists has a confirmed résumé with its label yet. Label one with Use as a variant first"
 
 
+def register() -> None:
+    """Tell the automation registry what resume_variant_pick needs. Called once at startup (bootstrap.register_all)."""
+    automation.register_requirement("resume_variant_pick", lambda conn, user_id: setup_requirement(conn, user_id))
+
+
 def _posting(conn: sqlite3.Connection, opportunity_id: str, *, visible_to: str | None = None) -> Any:
     """The role's title and description. ``visible_to`` also requires the role be one that student may see."""
     if visible_to is None:

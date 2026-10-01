@@ -14,7 +14,7 @@ so they live in the student's gitignored ``config/call_prep.local.json``
     ]}
 
 - ``ask`` is the question; ``lead_in`` (optional) is said first, word for word.
-- ``research`` names the research sections (outreach_research.SECTIONS) to
+- ``research`` names the research sections (quote_check.SECTIONS) to
   have ready for it; call prep points to them, or says nothing was found.
 - ``blank`` (optional) is a line under DURING THE CALL to write the answer on.
 
@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from . import ROOT
-from .outreach_research import SECTION_IDS
+from .quote_check import SECTION_IDS
 
 QUESTIONS_PATH = ROOT / "config" / "call_prep.local.json"
 MAX_QUESTIONS = 8

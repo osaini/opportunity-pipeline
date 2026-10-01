@@ -1,21 +1,16 @@
-"""Production operations: durable jobs, retention, account portability, and encrypted backups."""
+"""Production operations: durable jobs, retention, and account portability (backups.py holds the encrypted backups)."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import sqlite3
-import subprocess
-import tempfile
-from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from .schema import connect_product
 from .timestamps import utc_now
-from .database import is_postgres_target
 
 
 class OperationsError(RuntimeError):
@@ -357,82 +352,64 @@ def run_retention(conn: sqlite3.Connection, *, now: datetime | None = None, appl
     return counts
 
 
-def encrypted_backup(source: Path, destination: Path, key: bytes) -> dict[str, Any]:
-    from cryptography.fernet import Fernet
+def service_overview(
+    conn: sqlite3.Connection, overview: dict[str, Any], metrics: dict[str, Any], traces: Any,
+) -> dict[str, Any]:
+    """Add this process's request metrics, queue state, alerts, SLO status and recent traces to the administrator `overview`.
 
-    source = source.resolve()
-    destination = destination.resolve()
-    if not source.is_file() or destination == source:
-        raise OperationsError("Backup source must be an existing SQLite file and destination must differ")
-    with tempfile.TemporaryDirectory() as directory:
-        temporary = Path(directory) / "snapshot.db"
-        source_conn = sqlite3.connect(source)
-        target_conn = None
-        try:
-            target_conn = sqlite3.connect(temporary)
-            source_conn.backup(target_conn)
-        finally:
-            if target_conn is not None:
-                target_conn.close()
-            source_conn.close()
-        plaintext = temporary.read_bytes()
-    ciphertext = Fernet(key).encrypt(plaintext)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_bytes(ciphertext)
-    return {"path": str(destination), "sha256": hashlib.sha256(ciphertext).hexdigest(), "encrypted": True}
+    `metrics` and `traces` are the running app's counters and its recent request traces (web/context.py's AppRuntime).
+    Returns `overview`, changed in place.
+    """
+    requests = int(metrics["requests"])
+    read_latencies = sorted(metrics["read_latency_ms"])
+    write_latencies = sorted(metrics["write_latency_ms"])
 
+    def p95(values: list[float]) -> float | None:
+        if not values:
+            return None
+        index = max(0, (len(values) * 95 + 99) // 100 - 1)
+        return round(float(values[index]), 3)
 
-def restore_backup(source: Path, destination: Path, key: bytes) -> dict[str, Any]:
-    from cryptography.fernet import Fernet, InvalidToken
-
-    source = source.resolve()
-    destination = destination.resolve()
-    if not source.is_file() or destination == source:
-        raise OperationsError("Restore source must exist and destination must differ")
-    try:
-        plaintext = Fernet(key).decrypt(source.read_bytes())
-    except InvalidToken as exc:
-        raise OperationsError("Backup key or payload is invalid") from exc
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_bytes(plaintext)
-    with closing(sqlite3.connect(destination)) as conn:
-        integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
-    if integrity != "ok":
-        destination.unlink(missing_ok=True)
-        raise OperationsError("Restored database failed integrity verification")
-    return {"path": str(destination), "integrity": integrity, "restored": True}
-
-
-def encrypted_database_backup(source: Path | str, destination: Path, key: bytes) -> dict[str, Any]:
-    if not is_postgres_target(source):
-        return encrypted_backup(Path(source), destination, key)
-    from cryptography.fernet import Fernet
-    destination = destination.resolve()
-    with tempfile.TemporaryDirectory() as directory:
-        dump = Path(directory) / "postgres.dump"
-        completed = subprocess.run(["pg_dump", "--format=custom", "--file", str(dump), str(source)], capture_output=True, text=True, timeout=900)
-        if completed.returncode:
-            raise OperationsError(f"pg_dump failed: {completed.stderr[-1000:]}")
-        ciphertext = Fernet(key).encrypt(dump.read_bytes())
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_bytes(ciphertext)
-    return {"path": str(destination), "sha256": hashlib.sha256(ciphertext).hexdigest(), "encrypted": True, "backend": "postgresql"}
-
-
-def restore_database_backup(source: Path, destination: Path | str, key: bytes) -> dict[str, Any]:
-    if not is_postgres_target(destination):
-        return restore_backup(source, Path(destination), key)
-    from cryptography.fernet import Fernet, InvalidToken
-    try:
-        plaintext = Fernet(key).decrypt(source.resolve().read_bytes())
-    except InvalidToken as exc:
-        raise OperationsError("Backup key or payload is invalid") from exc
-    with tempfile.TemporaryDirectory() as directory:
-        dump = Path(directory) / "postgres.dump"
-        dump.write_bytes(plaintext)
-        completed = subprocess.run(["pg_restore", "--clean", "--if-exists", "--no-owner", "--dbname", str(destination), str(dump)], capture_output=True, text=True, timeout=900)
-        if completed.returncode:
-            raise OperationsError(f"pg_restore failed: {completed.stderr[-1000:]}")
-    with closing(connect_product(str(destination), read_only=True)) as conn:
-        count = int(conn.execute("SELECT COUNT(*) FROM opportunities").fetchone()[0])
-    return {"target": "postgresql", "restored": True, "opportunity_count": count}
+    read_p95 = p95(read_latencies)
+    write_p95 = p95(write_latencies)
+    error_rate = round(int(metrics["errors"]) / requests, 4) if requests else 0.0
+    overview["service"] = {
+        "requests": requests,
+        "errors": int(metrics["errors"]),
+        "error_rate": error_rate,
+        "rate_limited": int(metrics["rate_limited"]),
+        "average_latency_ms": round(float(metrics["latency_ms_total"]) / requests, 3) if requests else 0,
+        "read_p95_ms": read_p95,
+        "write_p95_ms": write_p95,
+    }
+    queue = queue_status(conn)
+    overview["queue"] = queue
+    alerts = []
+    if error_rate > 0.02:
+        alerts.append({"key": "api_error_rate", "severity": "critical", "value": error_rate, "threshold": 0.02})
+    if read_p95 is not None and read_p95 > 750:
+        alerts.append({"key": "read_p95_ms", "severity": "warning", "value": read_p95, "threshold": 750})
+    if write_p95 is not None and write_p95 > 1_500:
+        alerts.append({"key": "write_p95_ms", "severity": "warning", "value": write_p95, "threshold": 1_500})
+    if queue["states"]["dead"]:
+        alerts.append({"key": "dead_letter_jobs", "severity": "critical", "value": queue["states"]["dead"], "threshold": 0})
+    if queue["backpressure"]:
+        alerts.append({"key": "queue_backpressure", "severity": "critical", "value": True, "threshold": False})
+    overview["slo"] = {
+        "availability_target": 0.995,
+        "read_p95_target_ms": 750,
+        "write_p95_target_ms": 1_500,
+        "queue_age_target_seconds": 600,
+        "status": "alerting" if alerts else "within_observed_thresholds",
+        "scope": "current process window; external durable telemetry required for monthly SLOs",
+    }
+    overview["alerts"] = alerts
+    overview["recent_traces"] = list(traces)[-50:]
+    overview["product_analytics"] = {
+        "application_events": int(conn.execute("SELECT COUNT(*) FROM application_events").fetchone()[0]),
+        "apply_sessions": int(conn.execute("SELECT COUNT(*) FROM application_form_sessions").fetchone()[0]),
+        "agent_turns": int(conn.execute("SELECT COUNT(*) FROM agent_turns").fetchone()[0]),
+        "active_dossier_shares": int(conn.execute("SELECT COUNT(*) FROM dossier_consent_grants WHERE status='active'").fetchone()[0]),
+        "contains_user_identifiers": False,
+    }
+    return overview

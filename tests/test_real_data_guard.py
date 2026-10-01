@@ -18,9 +18,10 @@ import realdata_guard
 
 realdata_guard.install()
 
-import pipeline
+from pipeline_core import paths, store
 from opportunity_app import DEFAULT_LEGACY_DB, DEFAULT_PLATFORM_DB
-from opportunity_app.schema import connect_product, ensure_product_schema
+from opportunity_app.schema import ensure_product_schema
+from opportunity_app.database import connect_product
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
@@ -98,9 +99,9 @@ class OpeningRealDataFailsLoudlyTests(unittest.TestCase):
         self.refuse(lambda: sqlite3.connect(DEFAULT_LEGACY_DB))
 
     def test_a_legacy_test_that_forgot_to_patch_db_path_is_caught(self):
-        # pipeline.DB_PATH is the one global about thirty tests patch. Unpatched, pipeline.connect() would open the real file.
-        with mock.patch.object(pipeline, "DB_PATH", DATA / "pipeline.db"):
-            self.refuse(pipeline.connect)
+        # paths.DB_PATH is the one global about thirty tests patch. Unpatched, store.connect() would open the real file.
+        with mock.patch.object(paths, "DB_PATH", DATA / "pipeline.db"):
+            self.refuse(store.connect)
 
     def test_code_that_catches_exceptions_cannot_swallow_it(self):
         def swallowing():

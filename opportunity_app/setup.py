@@ -156,7 +156,7 @@ class Paths:
 
 
 def read_env(path: Path) -> dict[str, str]:
-    """The .env as a dict. A repeated key keeps its last line (pipeline.load_env_file keeps the first)."""
+    """The .env as a dict. A repeated key keeps its last line (pipeline_core.config.load_env_file keeps the first)."""
     return dict(iter_env_pairs(path))
 
 
@@ -276,7 +276,7 @@ def enable_personal_data_hooks(root: Path) -> str:
 
 def _ensure_databases(paths: Paths) -> None:
     from .legacy import create_database
-    from .schema import migrate_legacy_database
+    from .legacy_sync import migrate_legacy_database
 
     create_database(paths.legacy_db)
     migrate_legacy_database(paths.legacy_db, paths.platform_db, paths.profile)
@@ -407,7 +407,7 @@ def validate_profile(profile: Any) -> dict[str, Any]:
             errors.append(f"available_terms entry {term!r} should look like 'summer 2027'")
     home = str(profile.get("break_location") or "").strip()
     if home:
-        from .outreach import student_home
+        from .outreach_location import student_home
 
         regions = [region for region in profile.get("regions") or [] if isinstance(region, dict)]
         if not student_home({"break_location": home}, regions):

@@ -11,9 +11,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
-from opportunity_app import api as api_module
 from opportunity_app.api import create_app
 from opportunity_app.document_pdf import markdown_to_html
+from opportunity_app.web import context as context_module
 
 from helpers_platform import build_and_migrate
 
@@ -92,7 +92,7 @@ class PdfRouteTests(unittest.TestCase):
             self.assertEqual(client.get("/api/v1/preparation/documents/missing/pdf", headers=self.headers).status_code, 404)
 
     def test_without_playwright_the_app_says_how_to_add_it(self):
-        with mock.patch.object(api_module, "pdf_renderer", return_value=None), self.client(None) as client:
+        with mock.patch.object(context_module, "pdf_renderer", return_value=None), self.client(None) as client:
             record = self.document(client)
             self.assertFalse(client.get("/api/v1/preparation/documents", headers=self.headers).json()["pdf_available"])
             response = client.get(f"/api/v1/preparation/documents/{record['id']}/pdf", headers=self.headers)

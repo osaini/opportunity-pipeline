@@ -13,7 +13,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from opportunity_app.worker import enqueue_due_schedules  # noqa: E402
-from opportunity_app.schema import connect_product  # noqa: E402
+from opportunity_app.database import connect_product  # noqa: E402
 
 from helpers_platform import build_and_migrate
 

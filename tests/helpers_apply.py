@@ -13,13 +13,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from opportunity_app import SERVER_INSTANCE, actions, apply_preflight, apply_runs, apply_sensitive, automation, preparation
+from opportunity_app import SERVER_INSTANCE, actions, apply_claims, apply_preflight, apply_runs, apply_sensitive, automation, preparation
 from opportunity_app.apply_checks import question_key
 from opportunity_app.apply_policy import SchemaField, Sources, build_plan
 from pipeline_core.identity import employer_key
 from opportunity_app.apply_sensitive import StoreRefused, add_entry
 from opportunity_app.profile import update_profile
-from opportunity_app.schema import connect_product
+from opportunity_app.database import connect_product
 from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
@@ -57,9 +57,9 @@ class ApplyCase(unittest.TestCase):
         self.addCleanup(self.conn.close)
         # Times are near the wall clock, as everything else in the database is, so a "day old" application is one.
         self.base = datetime.now(timezone.utc).replace(microsecond=0)
-        apply_runs.RUNNING.clear()
+        apply_claims.RUNNING.clear()
         apply_runs.RUNNING_RUNS.clear()
-        self.addCleanup(apply_runs.RUNNING.clear)
+        self.addCleanup(apply_claims.RUNNING.clear)
         self.addCleanup(apply_runs.RUNNING_RUNS.clear)
         env = mock.patch.dict(os.environ, {"PIPELINE_TIMEZONE": "UTC"})
         env.start()

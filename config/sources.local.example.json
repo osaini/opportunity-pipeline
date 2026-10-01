@@ -1,5 +1,5 @@
 {
-  "_note": "Copy to config/sources.local.json (gitignored) and edit. It layers on top of the shared catalog in config/sources.json; see merge_sources in pipeline.py for the rules. Only add a board after `pipeline.py discover-ats` has confirmed it -- never guess tokens.",
+  "_note": "Copy to config/sources.local.json (gitignored) and edit. It layers on top of the shared catalog in config/sources.json; see merge_sources in pipeline_core/config.py for the rules. Only add a board after `pipeline.py discover-ats` has confirmed it -- never guess tokens.",
   "include_base_catalog": true,
   "enabled_sources": [],
   "disabled_sources": [],

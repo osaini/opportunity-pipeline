@@ -11,14 +11,8 @@ finding bounces (outreach_delivery.py). Its gmail.modify scope is only for
 adding the student's label to outreach threads, sent mail and replies (outreach_labels.py); the
 app never uses it to remove a label, trash, archive or mark mail read.
 
-Rate limits. Gmail answering "slow down" (a 429, or a 403 naming a rate limit
-or quota) is not a broken connection, so it never asks the student to
-reconnect. Neither is a passing server error (500, 502, 503, 504), from the
-Gmail API or from Google's token endpoint. The student's reads are held back
-for a while (60 s, doubling up to 30 minutes, or Gmail's own Retry-After) and
-a read in that time raises GmailThrottled without asking Google; every caller
-treats it as "could not reach Gmail" and tries again later. A send or a draft
-is never held back: the student asked for it, and Gmail's answer decides.
+The authorized REST client, its rate limits and its health are in gmail_connection; the once-only claim ledger is in
+send_claims. This module is the outreach send workflow on top of both: drafts, sends, thank-yous and notices.
 """
 
 from __future__ import annotations
@@ -27,42 +21,32 @@ import base64
 import hashlib
 import html
 import json
-import logging
-import math
 import mimetypes
 import os
 import re
 import sqlite3
-import threading
-from dataclasses import dataclass
 from email.message import EmailMessage
-from email.utils import formataddr, parsedate_to_datetime
+from email.utils import formataddr
 from pathlib import Path
-from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Iterator
+from datetime import datetime
+from typing import Any
 from urllib.parse import quote
-from uuid import uuid4
 
 import httpx
-from cryptography.fernet import Fernet, InvalidToken
 
-from . import ROOT, SERVER_INSTANCE, automation
+from . import ROOT, automation, automation_health, outreach_callbacks
 from .connections import OAUTH_PROVIDERS
 from .gmail_client import (
-    GMAIL_API,
     MODIFY_SCOPE,
     PROVIDER,
-    SERVER_ERRORS,
     ClientFactory,
     GmailAuthError,
     GmailThrottled,
     can_read_mail,
-    connection_state,
     default_client_factory,
     granted_scopes,
-    is_throttle,
 )
+from .gmail_connection import GmailClient, connector_row
 from .mail_message import URL_TAIL
 from .outreach import (
     DRAFT_KINDS,
@@ -71,15 +55,22 @@ from .outreach import (
     log_event,
     get_target,
     latest_event_stamp,
-    missing_location_message,
     update_target,
 )
-from .database import is_unique_violation
+from .outreach_location import missing_location_message
 from .outreach_config import ATTACHMENT_ENV, gmail_web_url, sender_account
-from .timestamps import parse_app_instant, utc_now
+from .outreach_label_name import label_name
+from .send_claims import (
+    IN_PROGRESS,
+    SendConflictError,
+    claim_reason,
+    claimed_send,
+    send_claim_held,
+    send_claim_row,
+    settle_send_claim,
+)
+from .timestamps import utc_now
 from .user_time import user_timezone
-
-LOGGER = logging.getLogger(__name__)
 
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 DRAFT_EVENT = "gmail_draft_created"
@@ -115,25 +106,19 @@ def attachment_problem(path: Path | None) -> str:
     return ""
 
 
-def _connector(conn: sqlite3.Connection, user_id: str) -> sqlite3.Row | None:
-    return conn.execute("SELECT * FROM connector_accounts WHERE user_id=? AND provider=?", (user_id, PROVIDER)).fetchone()
-
-
 def gmail_drafts_status(conn: sqlite3.Connection, *, user_id: str, now: datetime | None = None) -> dict[str, Any]:
     """What the Outreach tab needs to offer Connect Gmail, Reconnect Gmail, or Create Gmail draft.
 
-    ``expiring_soon`` and ``likely_expires_at`` are automation.gmail_health's
+    ``expiring_soon`` and ``likely_expires_at`` are automation_health.gmail_health's
     estimate of when Google will ask for the grant again, so the tab can offer
     Reconnect Gmail before reply and bounce checks stop rather than after.
     """
     config = OAUTH_PROVIDERS[PROVIDER]
     configured = all(os.environ.get(name, "").strip() for name in (config["client_id_env"], config["client_secret_env"], "PIPELINE_CONNECTION_KEY"))
-    row = _connector(conn, user_id)
+    row = connector_row(conn, user_id)
     path = attachment_path()
     granted = granted_scopes(row["scopes_json"]) if row else []
-    health = automation.gmail_health(conn, user_id, now=now)
-    from .outreach_labels import label_name  # imported here: it imports this module
-
+    health = automation_health.gmail_health(conn, user_id, now=now)
     connected = bool(configured and row and row["status"] == "connected")
     account = sender_account()
     connected_as = str(row["account_email"] or "") if connected and "account_email" in row.keys() else ""
@@ -157,317 +142,6 @@ def gmail_drafts_status(conn: sqlite3.Connection, *, user_id: str, now: datetime
         "expiring_soon": bool(configured and health.get("expiring_soon")),
         "likely_expires_at": health.get("likely_expires_at"),
     }
-
-
-def _fernet() -> Fernet:
-    try:
-        return Fernet(os.environ.get("PIPELINE_CONNECTION_KEY", "").encode())
-    except Exception as exc:
-        raise GmailAuthError("PIPELINE_CONNECTION_KEY must be a valid Fernet key") from exc
-
-
-RENEW_REFUSED = "Google refused to renew the connection"
-# What connector_accounts.last_error says after a call that got no answer at
-# all. Like every last_error, never an address or a message's words.
-UNREACHABLE = "Gmail could not be reached"
-
-
-def _mark_error(conn: sqlite3.Connection, user_id: str) -> None:
-    """The connection needs the student to reconnect. Called only after a 401 or a refused renewal.
-
-    The health columns are written with the status, from memory, so a later
-    persist_gmail_health has nothing older to put back over RENEW_REFUSED.
-    """
-    _note_error(user_id, RENEW_REFUSED)
-    version, values = _unsaved(user_id, force=True)
-    with conn:
-        conn.execute(
-            "UPDATE connector_accounts SET status='error', updated_at=? WHERE user_id=? AND provider=?",
-            (utc_now(), user_id, PROVIDER),
-        )
-        conn.execute(_MIRROR_SQL, (*values, user_id, PROVIDER))
-    _saved(user_id, version, values)
-
-
-# --- Rate limits, and the connection's health ------------------------------------
-#
-# Memory is the source of truth within the process. _BACKOFF says, per student,
-# until when reads are held back and how many throttles came in a row (reset to
-# 0 by any success). _HEALTH says when a call last worked and why the last one
-# failed ('' once one works again).
-#
-# connector_accounts mirrors both (backoff_until, last_ok_at, last_error) for
-# the health panel, the banner, and the next start. A change is written at once
-# only when no transaction is open, so a health write never commits someone
-# else's half-done work. Otherwise it waits for persist_gmail_health, which the
-# inbox watcher calls between its steps, where nothing of its own is pending.
-# That second path is what makes the mirror work on PostgreSQL: psycopg opens a
-# transaction on the first statement, a read included, so in_transaction is True
-# after any query and the write at once almost never happens there.
-
-BACKOFF_FIRST = timedelta(seconds=60)
-BACKOFF_CAP = timedelta(minutes=30)
-# A read that works records last_ok_at at most this often, so polling does not write constantly.
-OK_WRITE_EVERY = timedelta(minutes=5)
-_NEVER = datetime(1970, 1, 1, tzinfo=timezone.utc)
-_BACKOFF: dict[str, tuple[datetime, int]] = {}
-_BACKOFF_LOCK = threading.Lock()
-
-
-@dataclass
-class _Health:
-    """What this process knows of one student's Gmail connection; ahead of the row while ``saved < changed``."""
-
-    ok_at: datetime | None = None
-    error: str = ""
-    # Bumped by every change the row should show; saved is the change it last showed.
-    changed: int = 0
-    saved: int = 0
-    # The last last_ok_at written, so a working read writes at most every OK_WRITE_EVERY.
-    ok_written: datetime | None = None
-
-
-_HEALTH: dict[str, _Health] = {}
-_MIRROR_SQL = (
-    "UPDATE connector_accounts SET backoff_until=?, last_ok_at=COALESCE(?, last_ok_at), last_error=? "
-    "WHERE user_id=? AND provider=?"
-)
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _in_transaction(conn: sqlite3.Connection) -> bool:
-    return bool(getattr(conn, "in_transaction", False))
-
-
-def backoff_until(user_id: str, *, now: datetime | None = None) -> datetime | None:
-    """Until when this student's Gmail reads are held back, or None when they are not."""
-    now = now or _now()
-    with _BACKOFF_LOCK:
-        until, _level = _BACKOFF.get(user_id, (_NEVER, 0))
-    return until if until > now else None
-
-
-def _retry_after(response: httpx.Response, now: datetime) -> timedelta | None:
-    """Gmail's Retry-After (seconds or a date), capped at BACKOFF_CAP, or None when it gave none that reads."""
-    value = response.headers.get("Retry-After", "").strip()
-    if not value:
-        return None
-    try:
-        seconds = float(value)
-    except ValueError:
-        try:
-            when = parsedate_to_datetime(value)
-        except (TypeError, ValueError, IndexError):
-            return None
-        if when is None:
-            return None
-        seconds = ((when if when.tzinfo else when.replace(tzinfo=timezone.utc)) - now).total_seconds()
-    if not math.isfinite(seconds):
-        return None
-    return timedelta(seconds=min(max(seconds, 0.0), BACKOFF_CAP.total_seconds()))
-
-
-def _note_error(user_id: str, why: str) -> None:
-    """Remember why the last Gmail call failed, for the row's last_error."""
-    with _BACKOFF_LOCK:
-        health = _HEALTH.setdefault(user_id, _Health())
-        health.error = why[:200]
-        health.changed += 1
-
-
-def _note_throttle(user_id: str, response: httpx.Response, now: datetime, why: str = "") -> datetime:
-    """Hold this student's reads back: Retry-After when Gmail gave one, else 60 s doubling per throttle in a row."""
-    with _BACKOFF_LOCK:
-        _until, level = _BACKOFF.get(user_id, (_NEVER, 0))
-        level += 1
-        wait = _retry_after(response, now)
-        if wait is None:
-            wait = min(BACKOFF_FIRST * (2 ** min(level - 1, 16)), BACKOFF_CAP)
-        until = now + wait
-        _BACKOFF[user_id] = (until, level)
-        health = _HEALTH.setdefault(user_id, _Health())
-        health.error = (why or f"Gmail asked the app to slow down (HTTP {response.status_code})")[:200]
-        health.changed += 1
-    return until
-
-
-def _unsaved(user_id: str, *, force: bool = False) -> tuple[int, tuple[Any, ...]]:
-    """What memory holds for the row: (version, (backoff_until, last_ok_at, last_error)).
-
-    Version 0 when the row already shows everything memory knows, unless ``force``.
-    """
-    now = _now()
-    with _BACKOFF_LOCK:
-        health = _HEALTH.setdefault(user_id, _Health())
-        if health.saved >= health.changed and not force:
-            return 0, ()
-        until, _level = _BACKOFF.get(user_id, (_NEVER, 0))
-        return health.changed, (
-            until.isoformat(timespec="seconds") if until > now else None,
-            health.ok_at.isoformat(timespec="microseconds") if health.ok_at else None,
-            health.error,
-        )
-
-
-def _saved(user_id: str, version: int, values: tuple[Any, ...]) -> None:
-    """The row now shows memory as of ``version``."""
-    with _BACKOFF_LOCK:
-        health = _HEALTH.setdefault(user_id, _Health())
-        health.saved = max(health.saved, version)
-        written = parse_app_instant(values[1]) if values else None
-        if written is not None and (health.ok_written is None or written > health.ok_written):
-            health.ok_written = written
-
-
-def persist_gmail_health(conn: sqlite3.Connection, user_id: str) -> bool:
-    """Write what memory knows of this student's Gmail connection to connector_accounts, in its own transaction.
-
-    Only for a caller at a point where nothing of its own is uncommitted: the
-    transaction this opens commits whatever is open on ``conn``. Writes nothing
-    when the row already shows it all. True when written; a failure is logged,
-    and the same change is written next time.
-    """
-    version, values = _unsaved(user_id)
-    if not version:
-        return False
-    try:
-        with conn:
-            conn.execute(_MIRROR_SQL, (*values, user_id, PROVIDER))
-    except Exception:  # noqa: BLE001 - a health record must never turn a Gmail answer into an error
-        LOGGER.warning("Could not record the Gmail connection's health", exc_info=True)
-        return False
-    _saved(user_id, version, values)
-    return True
-
-
-def _save_now(conn: sqlite3.Connection, user_id: str) -> bool:
-    """persist_gmail_health, only when no transaction is open on ``conn``. True when written."""
-    return False if _in_transaction(conn) else persist_gmail_health(conn, user_id)
-
-
-def _throttled(until: datetime, why: str = "Gmail asked the app to slow down") -> GmailThrottled:
-    return GmailThrottled(f"{why}; reads resume after {until.isoformat(timespec='seconds')}", until)
-
-
-def _refresh_access_token(conn: sqlite3.Connection, client: httpx.Client, fernet: Fernet, row: sqlite3.Row, user_id: str) -> str:
-    config = OAUTH_PROVIDERS[PROVIDER]
-    try:
-        refresh_token = fernet.decrypt(row["encrypted_refresh_token"].encode()).decode() if row["encrypted_refresh_token"] else ""
-    except InvalidToken as exc:
-        raise GmailAuthError("The stored Gmail connection cannot be decrypted; reconnect Gmail") from exc
-    if not refresh_token:
-        _mark_error(conn, user_id)
-        raise GmailAuthError("Google did not grant offline access; reconnect Gmail")
-    response = client.post(config["token"], data={
-        "grant_type": "refresh_token", "refresh_token": refresh_token,
-        "client_id": os.environ.get(config["client_id_env"], ""), "client_secret": os.environ.get(config["client_secret_env"], ""),
-    })
-    if response.status_code == 429 or response.status_code >= 500:
-        # Too many renewals is Google asking to wait, and a 5xx is its token
-        # service failing for a moment. Neither refuses the grant, so neither
-        # asks the student to reconnect: reads wait, as for a rate limit.
-        why = ("Google asked the app to wait before renewing the connection" if response.status_code == 429
-               else "Google could not renew the connection just now")
-        until = _note_throttle(user_id, response, _now(), f"{why} (HTTP {response.status_code})")
-        _save_now(conn, user_id)
-        raise _throttled(until, why)
-    access_token = response.json().get("access_token") if response.status_code == 200 else None
-    if not access_token:
-        _mark_error(conn, user_id)
-        raise GmailAuthError("Google refused to renew the Gmail connection; reconnect Gmail")
-    with conn:
-        conn.execute(
-            "UPDATE connector_accounts SET encrypted_access_token=?, updated_at=? WHERE user_id=? AND provider=?",
-            (fernet.encrypt(access_token.encode()).decode(), utc_now(), user_id, PROVIDER),
-        )
-    return str(access_token)
-
-
-class _Gmail:
-    """Authorized Gmail calls that renew the access token once on a 401, and that slow down when Gmail asks.
-
-    ``wait_out_backoff`` False lets reads through while the student's reads are
-    held back: the checks inside a send or draft the student asked for.
-    """
-
-    def __init__(self, conn: sqlite3.Connection, client: httpx.Client, user_id: str, *, wait_out_backoff: bool = True):
-        row = _connector(conn, user_id)
-        state = connection_state(row)
-        if state != "connected":
-            raise GmailAuthError("Connect Gmail before creating a draft" if state == "not_connected" else "Reconnect Gmail before creating a draft")
-        self.conn, self.client, self.user_id, self.row = conn, client, user_id, row
-        self.wait_out_backoff = wait_out_backoff
-        self.fernet = _fernet()
-        try:
-            self.token = self.fernet.decrypt(row["encrypted_access_token"].encode()).decode()
-        except InvalidToken as exc:
-            raise GmailAuthError("The stored Gmail connection cannot be decrypted; reconnect Gmail") from exc
-        columns = row.keys()
-        stored = row["backoff_until"] if "backoff_until" in columns else None
-        # Whether the row still carries a hold or an error that a success must clear.
-        self.row_flagged = bool(stored) or bool(row["last_error"] if "last_error" in columns else "")
-        until = parse_app_instant(stored)
-        if until is not None and until > _now():
-            with _BACKOFF_LOCK:
-                # After a restart memory is empty; a hold this process already knows about stands.
-                _BACKOFF.setdefault(user_id, (until, 1))
-
-    def _send(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        return self.client.request(method, f"{GMAIL_API}{path}", headers={"Authorization": f"Bearer {self.token}"}, **kwargs)
-
-    def request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        reading = method.upper() == "GET"
-        if reading and self.wait_out_backoff:
-            until = backoff_until(self.user_id)
-            if until is not None:
-                raise _throttled(until)
-        try:
-            response = self._send(method, path, **kwargs)
-            if response.status_code == 401:
-                self.token = _refresh_access_token(self.conn, self.client, self.fernet, self.row, self.user_id)
-                response = self._send(method, path, **kwargs)
-        except GmailThrottled:
-            raise  # a renewal Google asked to wait on, already noted
-        except httpx.TransportError:
-            _note_error(self.user_id, UNREACHABLE)
-            _save_now(self.conn, self.user_id)
-            raise
-        if response.status_code == 401:
-            _mark_error(self.conn, self.user_id)
-            raise GmailAuthError("Gmail rejected the connection; reconnect Gmail")
-        throttle = is_throttle(response)
-        if throttle or response.status_code in SERVER_ERRORS:
-            why = "Gmail asked the app to slow down" if throttle else "Gmail had a temporary problem"
-            until = _note_throttle(self.user_id, response, _now(), f"{why} (HTTP {response.status_code})")
-            if _save_now(self.conn, self.user_id):
-                self.row_flagged = True
-            if reading:
-                raise _throttled(until, why)
-            # A send or a draft: the caller's claim logic reads Gmail's answer as it always has
-            # (a refusal releases the claim; a 5xx leaves the email unconfirmed).
-            return response
-        if 200 <= response.status_code < 300:
-            self._note_ok()
-        return response
-
-    def _note_ok(self) -> None:
-        """A call worked: reads are no longer held back, and the connection's health says so (at most every 5 minutes)."""
-        now = _now()
-        with _BACKOFF_LOCK:
-            _until, level = _BACKOFF.get(self.user_id, (_NEVER, 0))
-            _BACKOFF[self.user_id] = (_NEVER, 0)
-            health = _HEALTH.setdefault(self.user_id, _Health())
-            # A hold or an error on the row, or a change not written yet, is cleared at once.
-            clearing = self.row_flagged or level > 0 or bool(health.error) or health.saved < health.changed
-            health.ok_at, health.error = now, ""
-            if not (clearing or health.ok_written is None or now - health.ok_written >= OK_WRITE_EVERY):
-                return
-            health.changed += 1
-        if _save_now(self.conn, self.user_id):
-            self.row_flagged = False
 
 
 def html_body(body: str) -> str:
@@ -579,7 +253,7 @@ class _Approved:
     def raw(self, account: str) -> str:
         return _mime(account, self.target["contact_email"], self.subject, self.body, self.path, cc=self.target["contact_cc"])
 
-    def live_draft(self, conn: sqlite3.Connection, gmail: _Gmail, user_id: str) -> dict[str, Any] | None:
+    def live_draft(self, conn: sqlite3.Connection, gmail: GmailClient, user_id: str) -> dict[str, Any] | None:
         """The Gmail draft already made of these exact words, if it is still in Drafts."""
         previous = _previous_draft(
             conn, self.target["id"], user_id, self.kind, self.fingerprint, self.attachment, self.attachment_sha256
@@ -589,7 +263,7 @@ class _Approved:
         return previous if _draft_still_there(gmail, previous["draft_id"]) else None
 
 
-def _require_account(gmail: _Gmail, account: str) -> None:
+def _require_account(gmail: GmailClient, account: str) -> None:
     if not account:
         return
     profile = gmail.request("GET", "/profile")
@@ -598,7 +272,7 @@ def _require_account(gmail: _Gmail, account: str) -> None:
         raise GmailAuthError(f"Gmail is connected as {connected_as or 'an unknown account'}, not {account}; reconnect with {account}")
 
 
-def _draft_still_there(gmail: _Gmail, draft_id: str) -> bool:
+def _draft_still_there(gmail: GmailClient, draft_id: str) -> bool:
     """Whether a recorded draft is still in Drafts. Gone means sent or deleted in Gmail.
 
     Any other answer is not read as gone: that would let a second copy be made
@@ -612,29 +286,8 @@ def _draft_still_there(gmail: _Gmail, draft_id: str) -> bool:
     raise RuntimeError(f"Could not check your Gmail drafts (HTTP {response.status_code}). Nothing was sent")
 
 
-# --- Each email goes out at most once -----------------------------------------
-#
-# A send or a draft first inserts a row in outreach_send_claims for its target
-# and kind; the primary key makes that the lock. The row is released only when
-# Gmail certainly did nothing, kept as 'sent' when Gmail confirmed the send, and
-# kept as 'unconfirmed' when Gmail may or may not have acted. An unconfirmed
-# row, like a draft that vanished from Drafts, asks the student to look in
-# Gmail before anything else is sent, since gmail.compose cannot read Sent.
+# --- Drafting and sending under a claim (send_claims.py holds the ledger) -----------
 
-# The server runs as one process, so a claim from another instance was left by
-# a process that has since died or been replaced. Its request may still have
-# been finishing its one Gmail call, hence the grace period before it counts as
-# stale. SERVER_INSTANCE is one id per process (opportunity_app/__init__.py), shared with Apply for me's claims.
-FOREIGN_CLAIM_GRACE = timedelta(minutes=5)
-IN_PROGRESS = "This email is already being sent or written to Gmail. Wait a moment, then reload"
-_SEND_UNCERTAIN = (
-    "Gmail may already have sent this email. Check your Gmail Sent folder: "
-    "if it went out, use \"I sent it\"; if not, press Send again."
-)
-_DRAFT_UNCERTAIN = (
-    "Gmail may have made a draft of this email that the app did not record. Check your Gmail Drafts and Sent "
-    "folders: delete any draft of it, or send it from Gmail and use \"I sent it\". If nothing went out, press Send again."
-)
 _DRAFT_VANISHED = (
     "A Gmail draft of this email is no longer in your Drafts, so it may have been sent from Gmail. "
     "Check your Sent folder: if it went out, use \"I sent it\"; if not, press Send again."
@@ -642,10 +295,6 @@ _DRAFT_VANISHED = (
 # Failures that certainly never reached Gmail, or that Gmail refused outright.
 # GmailThrottled is raised only where Gmail did nothing (a renewal it asked to wait on).
 _NOTHING_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, GmailAuthError, GmailThrottled)
-
-
-class SendConflictError(Exception):
-    """Another request holds this email, or a Gmail draft of it is still live."""
 
 
 class SendNeedsCheckError(Exception):
@@ -664,86 +313,10 @@ class SendUnconfirmedError(RuntimeError):
     """Gmail did not confirm a send it may have carried out."""
 
 
-def send_claim_row(conn: sqlite3.Connection, target_id: str, user_id: str, kind: str) -> sqlite3.Row | None:
-    return conn.execute(
-        "SELECT * FROM outreach_send_claims WHERE target_id=? AND user_id=? AND kind=?", (target_id, user_id, kind)
-    ).fetchone()
-
-
-def send_claim_held(row: sqlite3.Row) -> bool:
-    """Whether a request may still be working under this claim."""
-    if row["state"] not in {"drafting", "sending"}:
-        return False
-    if row["instance"] == SERVER_INSTANCE:
-        # A claim this process left behind (its request ended without being
-        # able to settle it) is as uncertain as one from a dead process.
-        return row["token"] in _RUNNING
-    age = datetime.now(timezone.utc) - datetime.fromisoformat(row["claimed_at"])
-    return age < FOREIGN_CLAIM_GRACE
-
-
 def _superseded(conn: sqlite3.Connection, row: sqlite3.Row, target_id: str, user_id: str) -> bool:
     """Whether a bounce came after this claim, so what it guarded went to an address that failed."""
     bounce = last_bounce(conn, target_id, user_id)
     return bounce is not None and datetime.fromisoformat(row["claimed_at"]) < bounce
-
-
-def _claim_reason(row: sqlite3.Row) -> str:
-    return _DRAFT_UNCERTAIN if row["action"] == "draft" else _SEND_UNCERTAIN
-
-
-# Tokens of the claims whose requests are running in this process.
-_RUNNING: set[str] = set()
-
-
-@contextmanager
-def claimed_send(
-    conn: sqlite3.Connection, target_id: str, user_id: str, kind: str, action: str,
-    revalidate: Callable[[], Any], *, stale_token: str = "",
-) -> Iterator[tuple[str, Any]]:
-    """Hold the claim for the body; the checks are re-run on a fresh read as it is taken.
-
-    The insert comes first so SQLite holds the write lock while the target is
-    re-read, and the checks raising rolls the claim back. The body settles the
-    claim; one it could not settle is treated as uncertain once the body ends.
-    """
-    token = uuid4().hex
-    _RUNNING.add(token)
-    try:
-        try:
-            with conn:
-                if stale_token and not conn.execute(
-                    "DELETE FROM outreach_send_claims WHERE target_id=? AND kind=? AND token=?", (target_id, kind, stale_token)
-                ).rowcount:
-                    raise SendConflictError(IN_PROGRESS)
-                conn.execute(
-                    """
-                    INSERT INTO outreach_send_claims(target_id, user_id, kind, token, state, action, instance, claimed_at)
-                    VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (target_id, user_id, kind, token, "sending" if action == "send" else "drafting", action, SERVER_INSTANCE, utc_now()),
-                )
-                result = revalidate()
-        except Exception as exc:
-            if is_unique_violation(exc):
-                raise SendConflictError(IN_PROGRESS) from exc
-            raise
-        yield token, result
-    finally:
-        _RUNNING.discard(token)
-
-
-def settle_send_claim(conn: sqlite3.Connection, target_id: str, kind: str, token: str, state: str | None) -> None:
-    """Move our own claim to ``state``, or drop it when ``state`` is None. Never raises."""
-    try:
-        with conn:
-            if state is None:
-                conn.execute("DELETE FROM outreach_send_claims WHERE target_id=? AND kind=? AND token=?", (target_id, kind, token))
-            else:
-                conn.execute("UPDATE outreach_send_claims SET state=? WHERE target_id=? AND kind=? AND token=?", (state, target_id, kind, token))
-    except Exception:
-        # Left as it was, the claim still blocks another send, which is the safe side.
-        pass
 
 
 def event_tie_order(conn: sqlite3.Connection, alias: str = "e") -> str:
@@ -849,7 +422,7 @@ def _approved_for(
 
 
 def _post_under_claim(
-    conn: sqlite3.Connection, gmail: _Gmail, target_id: str, kind: str, token: str,
+    conn: sqlite3.Connection, gmail: GmailClient, target_id: str, kind: str, token: str,
     path: str, payload: dict[str, Any], *, refused: str, uncertain: str,
 ) -> dict[str, Any]:
     """The one Gmail call that acts, with our claim settled by what Gmail may have done.
@@ -908,7 +481,7 @@ def create_gmail_draft(
         elif existing["state"] == "sent":
             raise ValueError("This email was already sent from Gmail")
         else:
-            raise SendConflictError(f"{_claim_reason(existing)} Until then no new draft is made.")
+            raise SendConflictError(f"{claim_reason(existing)} Until then no new draft is made.")
     account = sender_account()
     revalidate = lambda: _approved_for(conn, target_id, user_id, kind, sending=False)  # noqa: E731
     with claimed_send(conn, target_id, user_id, kind, "draft", revalidate, stale_token=stale_token) as (token, approved):
@@ -920,7 +493,7 @@ def create_gmail_draft(
         with client:
             try:
                 # The student asked for this draft, so its checks go to Gmail even while background reads wait.
-                gmail = _Gmail(conn, client, user_id, wait_out_backoff=False)
+                gmail = GmailClient(conn, client, user_id, wait_out_backoff=False)
                 _require_account(gmail, account)
                 previous = approved.live_draft(conn, gmail, user_id)
                 raw = None if previous else approved.raw(account)
@@ -992,13 +565,13 @@ def send_gmail_message(
         elif existing["state"] == "sent":
             raise ValueError("This email was already sent from Gmail")
         else:
-            reasons[f"claim:{stale_token}"] = _claim_reason(existing)
+            reasons[f"claim:{stale_token}"] = claim_reason(existing)
     account = sender_account()
 
     with client_factory() as client:
         # The student asked for this send (or scheduled it, and the scheduler's fresh look
         # waits out a slowdown first), so its checks go to Gmail even while background reads wait.
-        gmail = _Gmail(conn, client, user_id, wait_out_backoff=False)
+        gmail = GmailClient(conn, client, user_id, wait_out_backoff=False)
         # Everything read from Gmail is read before the claim, so the claim is
         # held only across the one call that sends.
         _require_account(gmail, account)
@@ -1103,12 +676,10 @@ def _thank_you_ready(
         "SELECT 1 FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=?", (target_id, user_id, THANK_YOU_SENT_EVENT),
     ).fetchone() is not None:
         raise ValueError("The thank-you was already sent")
-    from .outreach_thank_you import problem_now  # imported here: it imports this module
-
     # Read under the claim's write lock: a reply, or a send of the student's, logged since the last check
     # (while the reviewer ran, say) still stops it. The student's own Send it anyway is not stopped by the
     # company's status, only by their newer message or the student's.
-    stop = problem_now(conn, target_id, user_id, row, manual=states != ("transmitting",))
+    stop = outreach_callbacks.thank_you_problem_now(conn, target_id, user_id, row, manual=states != ("transmitting",))
     if stop is not None:
         raise ThankYouChanged(stop[1])
     return {**row, "target": target}
@@ -1178,7 +749,7 @@ def send_thank_you(
             raise SendNeedsCheckError(" ".join(dict.fromkeys(reasons.values())), check)
     account = sender_account()
     with client_factory() as client:
-        gmail = _Gmail(conn, client, user_id, wait_out_backoff=False)
+        gmail = GmailClient(conn, client, user_id, wait_out_backoff=False)
         _require_account(gmail, account)
 
         def revalidate() -> tuple[dict[str, Any], str]:
@@ -1252,7 +823,7 @@ def create_thank_you_draft(
         with client:
             try:
                 # The student asked for this draft, so its checks go to Gmail even while background reads wait.
-                gmail = _Gmail(conn, client, user_id, wait_out_backoff=False)
+                gmail = GmailClient(conn, client, user_id, wait_out_backoff=False)
                 _require_account(gmail, account)
                 raw = thank_you_mime(account, fresh)
             except BaseException:
@@ -1288,13 +859,13 @@ def gmail_notices(conn: sqlite3.Connection, user_id: str, *, now: datetime | Non
     Each is left once: the expiry notice once per grant, the reconnect notice
     once per time the connection broke. Returns the event keys of the notices
     that are new. automation.notice opens its own transaction, so this is never
-    called inside one. The expiry is an estimate (automation.gmail_health), and
+    called inside one. The expiry is an estimate (automation_health.gmail_health), and
     the notice says "likely". Once the estimated date has passed
     (``estimate_passed``) there is no date left to name: "before <that date>"
     would point the student at a time already behind them, so the notice says
     "soon" instead, as the banner does.
     """
-    health = automation.gmail_health(conn, user_id, now=now)
+    health = automation_health.gmail_health(conn, user_id, now=now)
     new = []
     if health["expiring_soon"]:
         if health.get("estimate_passed"):
@@ -1308,7 +879,7 @@ def gmail_notices(conn: sqlite3.Connection, user_id: str, *, now: datetime | Non
             conn, user_id, event_key=key, level="warning", title="Gmail will likely need reconnecting soon", body=body,
         ):
             new.append(key)
-    row = _connector(conn, user_id)
+    row = connector_row(conn, user_id)
     if row is not None and row["status"] == "error":
         key = f"gmail-expired:{row['updated_at']}"
         if automation.notice(

@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import apply_policy, apply_preflight, apply_sensitive
+from opportunity_app import apply_classify, apply_policy, apply_preflight, apply_sensitive
 from opportunity_app.apply_checks import question_key
 from opportunity_app.apply_policy import SchemaField
 from opportunity_app.apply_sensitive import StoreRefused, add_entry
@@ -459,7 +459,7 @@ class PlanFromTheStoreTests(StoreCase):
     def test_rows_8_and_9_a_box_is_ticked_only_on_an_exact_statement_for_this_company(self):
         box = F("q", PRIVACY, MULTI, options=(PRIVACY,))
         self.allow("acknowledgment")
-        self.add(category="acknowledgment", question=apply_policy.statement_of(box, "checkbox"), answer="checked", company="Example Robotics")
+        self.add(category="acknowledgment", question=apply_classify.statement_of(box, "checkbox"), answer="checked", company="Example Robotics")
         ready = self.plan(BASE + [box])
         self.assertEqual(ready.status, "ready")
         got = ready.get("q")
@@ -474,7 +474,7 @@ class PlanFromTheStoreTests(StoreCase):
         described = dict(name="q", label="Candidate Privacy Notice", required=True, type=MULTI, options=("I have read and agree to the notice",))
         box =apply_policy.SchemaField(**described, description=f'<p>Read it at <a href="{NOTICE_URL}">the notice</a>.</p>')
         self.allow("acknowledgment")
-        key_text = apply_policy.statement_of(box, "checkbox")
+        key_text = apply_classify.statement_of(box, "checkbox")
         self.assertIn("I have read and agree to the notice", key_text)
         self.add(category="acknowledgment", question=key_text, answer="checked", company="Example Robotics", links=[NOTICE_URL])
         got = self.plan(BASE + [box]).get("q")
@@ -487,7 +487,7 @@ class PlanFromTheStoreTests(StoreCase):
     def test_a_plain_certification_ticks_at_the_company_it_was_saved_for_and_at_no_other(self):
         box = F("q", ACCURATE, MULTI, options=(ACCURATE,))
         self.allow("acknowledgment")
-        statement = apply_policy.statement_of(box, "checkbox")
+        statement = apply_classify.statement_of(box, "checkbox")
         self.refused("never for any company", category="acknowledgment", question=statement, answer="checked")
         self.add(category="acknowledgment", question=statement, answer="checked", company=COMPANY)
         got = self.plan(BASE + [box], company=COMPANY).get("q")
@@ -670,15 +670,15 @@ class KeyAndCategoryRuleTests(StoreCase):
     def test_a_statement_saved_for_any_company_is_not_ticked_where_its_box_links_a_document(self):
         self.allow("acknowledgment")
         plain = self.box("Certification", ACCURATE)
-        self.add(category="acknowledgment", question=apply_policy.statement_of(plain, "checkbox"), answer="checked", company=COMPANY)
+        self.add(category="acknowledgment", question=apply_classify.statement_of(plain, "checkbox"), answer="checked", company=COMPANY)
         self.assertEqual(self.plan(BASE + [plain], company=COMPANY).get("q").value, True)
         self.assertEqual(self.plan(BASE + [plain], company=OTHER).get("q").value, None)
         linked = self.box("Certification", ACCURATE, '<p>Details at <a href="https://orbit.test/legal/attestation">this page</a>.</p>')
         # A row for the linked box's whole text, saved for any company where the same words linked nothing (a legacy row: the store now
         # refuses any-company for it, so it is put there by hand).
-        self.add(category="acknowledgment", question=apply_policy.statement_of(linked, "checkbox"), answer="checked", company=COMPANY)
+        self.add(category="acknowledgment", question=apply_classify.statement_of(linked, "checkbox"), answer="checked", company=COMPANY)
         with self.conn:
-            self.conn.execute("UPDATE apply_sensitive_answers SET company_key='' WHERE question_text=?", (apply_policy.statement_of(linked, "checkbox"),))
+            self.conn.execute("UPDATE apply_sensitive_answers SET company_key='' WHERE question_text=?", (apply_classify.statement_of(linked, "checkbox"),))
         got = self.plan(BASE + [linked], company=OTHER).get("q")
         self.assertEqual((got.problem_kind, got.source.kind, got.value), ("sensitive_missing", "none", None))
         self.assertTrue(apply_preflight._sensitive_form(got, "sensitive_missing")["company_only"])
@@ -686,8 +686,8 @@ class KeyAndCategoryRuleTests(StoreCase):
     def test_a_company_statement_is_ticked_only_when_the_forms_links_are_the_ones_it_was_saved_with(self):
         anchored = self.box("Candidate Privacy Notice", "I have read and agree to the notice", f'<p>Read it at <a href="{NOTICE_URL}">the notice</a>.</p>')
         bare = self.box("Candidate Privacy Notice", "I have read and agree to the notice", "<p>Read it at the notice.</p>")
-        text = apply_policy.statement_of(anchored, "checkbox")
-        self.assertEqual(question_key(text), question_key(apply_policy.statement_of(bare, "checkbox")))
+        text = apply_classify.statement_of(anchored, "checkbox")
+        self.assertEqual(question_key(text), question_key(apply_classify.statement_of(bare, "checkbox")))
         self.allow("acknowledgment")
         self.add(category="acknowledgment", question=text, answer="checked", company="Example Robotics", links=[NOTICE_URL])
         self.assertEqual(self.plan(BASE + [anchored]).get("q").source.links, (NOTICE_URL,))
@@ -707,10 +707,10 @@ class KeyAndCategoryRuleTests(StoreCase):
         for option in ("Yes, I agree to the above terms", "I acknowledge and agree to the terms", "By checking this box I agree to the statement above", "I agree"):
             with self.subTest(option=option):
                 one, two = self.box(heading, option, f"<p>{first}</p>"), self.box(heading, option, f"<p>{second}</p>")
-                self.assertTrue(apply_policy.statement_needs_company(one, "checkbox"))
-                self.assertIn(first, apply_policy.statement_of(one, "checkbox"))
-                self.assertNotEqual(apply_policy.statement_of(one, "checkbox"), apply_policy.statement_of(two, "checkbox"))
-                saved = self.add(category="acknowledgment", question=apply_policy.statement_of(one, "checkbox"), answer="checked", company="Example Robotics")
+                self.assertTrue(apply_classify.statement_needs_company(one, "checkbox"))
+                self.assertIn(first, apply_classify.statement_of(one, "checkbox"))
+                self.assertNotEqual(apply_classify.statement_of(one, "checkbox"), apply_classify.statement_of(two, "checkbox"))
+                saved = self.add(category="acknowledgment", question=apply_classify.statement_of(one, "checkbox"), answer="checked", company="Example Robotics")
                 self.assertEqual(self.plan(BASE + [one]).get("q").value, True)
                 self.assert_needs(BASE + [two], "sensitive_missing", "q")
                 self.assertTrue(apply_preflight._sensitive_form(self.plan(BASE + [two]).get("q"), "sensitive_missing")["company_only"])
@@ -722,7 +722,7 @@ class KeyAndCategoryRuleTests(StoreCase):
                 apply_sensitive.delete_entry(self.conn, USER, self.rows()[0]["id"])
         # A whole statement with nothing else on the box is still matched with its heading, and needs no one company.
         alone = self.box("Anything", ACCURATE)
-        self.assertEqual((apply_policy.statement_of(alone, "checkbox"), apply_policy.statement_needs_company(alone, "checkbox")), (f"Anything {ACCURATE}", False))
+        self.assertEqual((apply_classify.statement_of(alone, "checkbox"), apply_classify.statement_needs_company(alone, "checkbox")), (f"Anything {ACCURATE}", False))
 
     def test_a_statement_built_from_a_description_the_app_cut_is_left_for_the_student(self):
         listing = {"questions": [{"label": "Acknowledgment", "required": True, "description": "<p>" + "x" * 2300 + "</p>",
@@ -730,7 +730,7 @@ class KeyAndCategoryRuleTests(StoreCase):
         box = next(item for item in apply_policy.parse_schema(listing) if item.name == "question_1")
         self.assertTrue(box.description_cut)
         self.allow("acknowledgment")
-        self.add(category="acknowledgment", question=apply_policy.statement_of(box, "checkbox"), answer="checked", company="Example Robotics")
+        self.add(category="acknowledgment", question=apply_classify.statement_of(box, "checkbox"), answer="checked", company="Example Robotics")
         got = self.plan(BASE + [box]).get("question_1")
         self.assertEqual((got.problem_kind, got.value, got.source.kind, got.text_cut), ("sensitive_never", None, "none", True))
         self.assertIsNone(apply_preflight._sensitive_form(got, "sensitive_missing"))
@@ -803,9 +803,9 @@ class KeyAndCategoryRuleTests(StoreCase):
         option = "I understand and accept this condition of employment"
         self.allow("acknowledgment")
         relocation, arbitration = self.box("Relocation requirement", option), self.box("Mandatory arbitration", option)
-        self.assertTrue(apply_policy.statement_needs_company(relocation, "checkbox"))
-        self.assertIn("Relocation requirement", apply_policy.statement_of(relocation, "checkbox"))
-        self.add(category="acknowledgment", question=apply_policy.statement_of(relocation, "checkbox"), answer="checked", company="Example Robotics")
+        self.assertTrue(apply_classify.statement_needs_company(relocation, "checkbox"))
+        self.assertIn("Relocation requirement", apply_classify.statement_of(relocation, "checkbox"))
+        self.add(category="acknowledgment", question=apply_classify.statement_of(relocation, "checkbox"), answer="checked", company="Example Robotics")
         self.assertEqual(self.plan(BASE + [relocation]).get("q").value, True)
         self.assert_needs(BASE + [arbitration], "sensitive_missing", "q")
 
@@ -878,12 +878,12 @@ class LeftoverReviewTests(StoreCase):
 
     def test_a_long_generic_option_is_never_the_whole_statement(self):
         option = "I acknowledge and understand the information provided"
-        self.assertGreaterEqual(len(option.split()), apply_policy._SPECIFIC_STATEMENT_WORDS, "long enough that a word count would call it specific")
+        self.assertGreaterEqual(len(option.split()), apply_classify._SPECIFIC_STATEMENT_WORDS, "long enough that a word count would call it specific")
         relocation, arbitration = self.box("Relocation to Austin", option), self.box("Binding arbitration", option)
-        self.assertNotEqual(apply_policy.statement_of(relocation, "checkbox"), apply_policy.statement_of(arbitration, "checkbox"))
+        self.assertNotEqual(apply_classify.statement_of(relocation, "checkbox"), apply_classify.statement_of(arbitration, "checkbox"))
         self.allow("acknowledgment")
         # Nothing in it proves it names no document, so it is kept for the company it was saved for, on its heading and words.
-        self.add(category="acknowledgment", question=apply_policy.statement_of(relocation, "checkbox"), answer="checked", company=COMPANY)
+        self.add(category="acknowledgment", question=apply_classify.statement_of(relocation, "checkbox"), answer="checked", company=COMPANY)
         self.assertIs(self.plan(BASE + [relocation]).get("q").value, True, "the same heading and words, at that company")
         self.assert_needs(BASE + [relocation], "sensitive_missing", "q", company=OTHER)
         self.assert_needs(BASE + [arbitration], "sensitive_missing", "q")
@@ -1068,10 +1068,10 @@ class LeftoverReviewTests(StoreCase):
                       "Are you legally authorized to work in the US? Please also state your gender"):
             with self.subTest(label=label):
                 item = F("q", label, SINGLE, options=("Yes", "No"))
-                self.assertEqual(apply_policy.classify_item(item, "select"), "uncategorized")
-                self.assertTrue(apply_policy.eeo_words(label))
+                self.assertEqual(apply_classify.classify_item(item, "select"), "uncategorized")
+                self.assertTrue(apply_classify.eeo_words(label))
         plain = F("q", AUTH, SINGLE, options=("Yes", "No"))
-        self.assertEqual(apply_policy.classify_item(plain, "select"), "work_authorization")
+        self.assertEqual(apply_classify.classify_item(plain, "select"), "work_authorization")
 
 
 class StoreReaderScanTests(unittest.TestCase):
@@ -1120,8 +1120,8 @@ class StoreReaderScanTests(unittest.TestCase):
             self.assertNotIn("apply_sensitive", path.read_text(encoding="utf-8"), path.relative_to(REPO).as_posix())
 
     # The modules that may import the store, keyed like ALLOWED on the path from the repo root: the plan, the check, and the
-    # settings routes (still in api.py). A file or package at another path that imports it fails, however it is named.
-    IMPORTERS = ("opportunity_app/apply_policy", "opportunity_app/apply_preflight", "opportunity_app/api")
+    # settings routes (web/routers/apply_agent.py). A file or package at another path that imports it fails, however it is named.
+    IMPORTERS = ("opportunity_app/apply_policy", "opportunity_app/apply_preflight", "opportunity_app/web/routers/apply_agent")
 
     def test_only_the_plan_the_check_and_the_settings_routes_import_the_store(self):
         importers = {path.relative_to(REPO).as_posix() for path in self.package_modules()

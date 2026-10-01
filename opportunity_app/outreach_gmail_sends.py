@@ -40,16 +40,8 @@ from .gmail_client import (
 )
 from .mail_message import header_map, received_or_epoch
 from .outreach import DRAFT_KINDS, UNSENT_STATUSES, OutreachNotFoundError, log_event, get_target, update_target
-from .outreach_gmail import (
-    DRAFT_EVENT,
-    SENT_EVENT,
-    SENT_STATUS,
-    _already_sent,
-    _connector,
-    _Gmail,
-    event_tie_order,
-    last_bounces,
-)
+from .outreach_gmail import DRAFT_EVENT, SENT_EVENT, SENT_STATUS, _already_sent, event_tie_order, last_bounces
+from .gmail_connection import connector_row, GmailClient
 from .timestamps import utc_now
 from .user_time import user_timezone
 
@@ -155,7 +147,7 @@ def _with_targets(conn: sqlite3.Connection, user_id: str, items: list[dict[str, 
     return full
 
 
-def _get(gmail: _Gmail, path: str, **params: Any) -> dict[str, Any] | None:
+def _get(gmail: GmailClient, path: str, **params: Any) -> dict[str, Any] | None:
     """A Gmail read: the answer, or None when the thing is gone. Any other error is raised."""
     response = gmail.request("GET", path, params=params or None)
     if response.status_code == 404:
@@ -167,7 +159,7 @@ def _get(gmail: _Gmail, path: str, **params: Any) -> dict[str, Any] | None:
     return response.json()
 
 
-def _metadata(gmail: _Gmail, message_id: str) -> dict[str, Any] | None:
+def _metadata(gmail: GmailClient, message_id: str) -> dict[str, Any] | None:
     return _get(gmail, f"/messages/{quote(message_id, safe='')}",
                 format="metadata", metadataHeaders=list(_HEADERS))
 
@@ -186,7 +178,7 @@ def _same_subject(one: str, other: str) -> bool:
     return bool(one.strip()) and plain(one) == plain(other)
 
 
-def _find_sent(gmail: _Gmail, item: dict[str, Any], seen: dict[str, Any] | None = None) -> dict[str, Any] | None:
+def _find_sent(gmail: GmailClient, item: dict[str, Any], seen: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """The message the student sent from this draft, if Gmail has sent it.
 
     ``seen`` receives the draft's own message as read here ("own"), so _scheduled need not read it again.
@@ -214,7 +206,7 @@ def _find_sent(gmail: _Gmail, item: dict[str, Any], seen: dict[str, Any] | None 
     return None
 
 
-def _scheduled(gmail: _Gmail, item: dict[str, Any], seen: dict[str, Any] | None = None) -> bool:
+def _scheduled(gmail: GmailClient, item: dict[str, Any], seen: dict[str, Any] | None = None) -> bool:
     """Whether the draft is waiting in Gmail's Scheduled folder. False when Gmail cannot say.
 
     ``seen`` is what _find_sent read of the draft's own message a moment ago; it is read again only when absent.
@@ -294,7 +286,7 @@ def capture_gmail_sends(
     due = _LOOKS.take_due(user_id, _pending(conn, user_id, now), now)
     if not due:
         return result
-    state = connection_state(_connector(conn, user_id))
+    state = connection_state(connector_row(conn, user_id))
     if state != "connected":
         return {**result, "state": state}
     try:
@@ -304,7 +296,7 @@ def capture_gmail_sends(
         raise
     try:
         with client_factory() as client:
-            gmail = _Gmail(conn, client, user_id)
+            gmail = GmailClient(conn, client, user_id)
             for item in due:
                 detail = item["detail"]
                 try:

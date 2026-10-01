@@ -54,18 +54,19 @@ from pathlib import Path
 from . import DEFAULT_PLATFORM_DB
 from .agent_providers import build_provider
 from .daily_lock import TEMPFAIL_EXIT
-from .database import is_postgres_target
+from .database import is_postgres_target, connect_product
 from .legacy import load_env_file
 from .outreach import queue_follow_up_reminders
 from .outreach_config import RESEARCH_ENV, discovery_provider
-from .outreach_discovery import DEFAULT_SCOPES, MAX_PER_SCOPE, RUNNERS, SCOPES, DiscoveryBusy, run_discovery
+from .outreach_agents import RUNNERS
+from .outreach_discovery import DEFAULT_SCOPES, MAX_PER_SCOPE, SCOPES, DiscoveryBusy, run_discovery
 from .outreach_locate import BATCH_SIZE, locate_targets
 from .outreach_profile import SEC_USER_AGENT_ENV, enrich_targets, sec_fetcher
 from .outreach_recontact import recontact_targets
 from .outreach_research import available_agent, due_for_research, research_company, research_runner, text_model
 from .outreach_render import default_renderer
 from .outreach_smtp import default_verifier
-from .schema import LOCAL_USER_ID, connect_product, ensure_product_schema
+from .schema import LOCAL_USER_ID, ensure_product_schema
 from .web_fetch import default_fetcher
 
 
@@ -129,6 +130,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     load_env_file()
     args = build_parser().parse_args(argv)
+    from . import bootstrap  # imported here: --help should not load every workflow module
+
+    bootstrap.register_all()
     # connect_product takes a Path for SQLite and the URL itself for PostgreSQL.
     target = args.db if is_postgres_target(args.db) else Path(args.db)
     with closing(connect_product(target)) as conn:

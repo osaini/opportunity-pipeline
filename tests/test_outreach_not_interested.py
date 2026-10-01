@@ -15,7 +15,6 @@ from opportunity_app import STATIC_DIR, internal_automation, schema
 from opportunity_app.api import create_app
 from opportunity_app.outreach import (
     log_event,
-    company_key,
     create_target,
     existing_keys,
     get_target,
@@ -23,12 +22,13 @@ from opportunity_app.outreach import (
     queue_follow_up_reminders,
     update_target,
 )
+from opportunity_app.outreach_identity import company_key
 from opportunity_app.outreach_automation import draft_due
 from opportunity_app.outreach_call_prep import auto_queue_call_prep
 from opportunity_app.outreach_recontact import eligible_targets
 from opportunity_app.outreach_research import due_for_research
 from opportunity_app.outreach_thank_you import due as thank_you_due
-from opportunity_app.schema import connect_product
+from opportunity_app.database import connect_product
 from opportunity_app.urgent import urgent_queue
 
 from helpers_platform import build_and_migrate

@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, auto_triage, automation, internal_automation, migrate, outreach_inbox, resume_variants, schema
+from opportunity_app import STATIC_DIR, auto_triage, automation, automation_handlers, automation_health, internal_automation, migrate, outreach_inbox, resume_variants, schema
 from opportunity_app.actions import record_intent, update_application
 from opportunity_app.api import create_app
 from opportunity_app.automation import Superseded
@@ -30,7 +30,8 @@ from opportunity_app.outreach_delivery import record_bounce
 from opportunity_app.outreach_versions import draft_versions
 from opportunity_app.refresh import RefreshManager
 from opportunity_app.resumes import ResumeValidationError, confirm_variant, resume_record
-from opportunity_app.schema import connect_product, ensure_product_schema
+from opportunity_app.schema import ensure_product_schema
+from opportunity_app.database import connect_product, has_column
 from opportunity_app.timestamps import utc_now
 from opportunity_app.urgent import urgent_queue
 from opportunity_app.user_time import user_timezone
@@ -372,7 +373,7 @@ class ResumePickTests(Case):
                 (USER, self.software["file_id"], stamp, stamp),
             )
         # As if read before the student's pick committed (PostgreSQL takes no row lock on the role any more).
-        with mock.patch.object(automation.ResumePick, "read", return_value={"resume_pick": None}):
+        with mock.patch.object(automation_handlers.ResumePick, "read", return_value={"resume_pick": None}):
             self.assertIsNone(resume_variants.pick_after_save(self.conn, USER, "job-a"))
         self.assertEqual(automation.list_actions(self.conn, USER, feature="resume_variant_pick"), [])
         self.assertEqual((self.pick()["resume_file_id"], self.pick()["picked_by"]), (self.software["file_id"], "student"))
@@ -389,7 +390,7 @@ class ResumePickTests(Case):
                 return mock.Mock(fetchone=lambda: (1,) if "FROM opportunities" in sql else None)
 
         recorder = Recorder()
-        automation.ResumePick().read(recorder, USER, "job-a")
+        automation_handlers.ResumePick().read(recorder, USER, "job-a")
         on_role = [sql for sql in recorder.statements if "FROM opportunities" in sql]
         self.assertTrue(on_role)
         self.assertFalse(any("FOR UPDATE" in sql for sql in on_role), "a running sync holds every role's row until it commits")
@@ -685,7 +686,7 @@ class ArchiveTests(Case):
         self.on("archive_silent_applications")
         internal_automation.archive_silent_applications(self.conn, USER, force=True)
         self.assertTrue(internal_automation.automation_archived(self.conn, "app-job-b"))
-        # The sync resets an imported application's stage with no stage_changed event (schema._migrate_status).
+        # The sync resets an imported application's stage with no stage_changed event (legacy_sync._migrate_status).
         with self.conn:
             self.conn.execute("UPDATE applications SET stage='applied' WHERE id='app-job-b'")
         self.assertFalse(internal_automation.automation_archived(self.conn, "app-job-b"), "it sits at Applied, not archived")
@@ -1404,14 +1405,14 @@ class TriageTests(Case):
     def test_a_choice_the_student_makes_meanwhile_stands(self):
         self.on("auto_pass")
         self.add_opportunity("lo", score=10, description="Real text.")
-        real = automation.OpportunityIntent.apply
+        real = automation_handlers.OpportunityIntent.apply
 
         def student_first(handler, conn, *args, **kwargs):
             conn.execute("INSERT INTO opportunity_interactions(opportunity_id, user_id, action, created_at, source) "
                          "VALUES('lo', ?, 'saved', ?, 'user')", (USER, utc_now()))
             return real(handler, conn, *args, **kwargs)
 
-        with mock.patch.object(automation.OpportunityIntent, "apply", student_first):
+        with mock.patch.object(automation_handlers.OpportunityIntent, "apply", student_first):
             report = auto_triage.run_auto_triage(self.conn, user_id=USER)
         self.assertEqual(report["passed"], [])
         self.assertEqual(automation.list_actions(self.conn, USER, feature="auto_pass"), [])
@@ -1456,12 +1457,12 @@ class TriageTests(Case):
         self.on("auto_save")
         result = auto_triage.triage_after_sync(self.platform_path)
         self.assertEqual(result["saved"], [])
-        health = {row["component"]: row for row in automation.health_summary(self.conn, USER)["components"]}
+        health = {row["component"]: row for row in automation_health.health_summary(self.conn, USER)["components"]}
         self.assertIsNotNone(health["discovery.auto_triage"]["last_ok_at"])
         with mock.patch.object(auto_triage, "run_auto_triage", side_effect=RuntimeError("boom")), \
                 self.assertLogs("opportunity_app.auto_triage", level="ERROR"):
             self.assertIsNone(auto_triage.triage_after_sync(self.platform_path))
-        health = {row["component"]: row for row in automation.health_summary(self.conn, USER)["components"]}
+        health = {row["component"]: row for row in automation_health.health_summary(self.conn, USER)["components"]}
         self.assertEqual(health["discovery.auto_triage"]["last_error"], "boom")
         with self.assertLogs("opportunity_app.auto_triage", level="ERROR"):
             self.assertIsNone(auto_triage.triage_after_sync(self.root / "missing" / "nowhere.db"))
@@ -1532,7 +1533,7 @@ class MigrationTests(Case):
         with self.conn:
             self.conn.execute("DELETE FROM schema_migrations WHERE name='0039_internal_automation.sql'")
         ensure_product_schema(self.conn)
-        self.assertTrue(schema._has_column(self.conn, "resume_files", "variant_label"))
+        self.assertTrue(has_column(self.conn, "resume_files", "variant_label"))
         self.conn.execute("SELECT COUNT(*) FROM opportunity_resume_picks").fetchone()
         schema._apply_internal_automation(self.conn, (MIGRATIONS / "0039_internal_automation.sql").read_text(encoding="utf-8"))
         self.conn.commit()

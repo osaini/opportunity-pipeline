@@ -52,7 +52,7 @@ import httpx
 
 from pipeline_core.identity import normalized
 
-from . import automation, mail_message
+from . import automation, mail_message, outreach_callbacks
 from .inbox_classifiers import read_reply
 from .mail_message import (
     FULL_TEXT_LIMIT,
@@ -71,14 +71,8 @@ from .mail_message import (
     reply_text,
 )
 from .mail_trust import FREEMAIL, READ_CATEGORIES, authenticate, listed, sender_lists
-from .outreach import (
-    BOUNCED,
-    log_event,
-    get_target,
-    reply_reason,
-    suggest_reply_status,
-    update_target,
-)
+from .outreach import log_event, get_target, update_target
+from .outreach_replies import BOUNCED, reply_reason, suggest_reply_status
 from .gmail_client import (
     ClientFactory,
     GmailAuthError,
@@ -87,11 +81,8 @@ from .gmail_client import (
     connection_state,
 )
 from .outreach_delivery import headers_say_failure
-from .outreach_gmail import (
-    SENT_EVENT,
-    _connector,
-    _Gmail,
-)
+from .outreach_gmail import SENT_EVENT
+from .gmail_connection import connector_row, GmailClient
 from .outreach_config import sender_account
 from .outreach_identity import (
     company_words,
@@ -443,7 +434,7 @@ def _judge(
     message: EmailMessage, *, targets: list[dict[str, Any]], how: str, sender: str, display: str, account: str,
     labels: list[str], received_at: datetime, text: str, thread_id: str,
 ) -> tuple[str, str]:
-    """What a message found for a company is (REPLY, AUTOMATIC, POSSIBLE or IGNORED), and the reason code (outreach.REPLY_REASONS).
+    """What a message found for a company is (REPLY, AUTOMATIC, POSSIBLE or IGNORED), and the reason code (outreach_replies.REPLY_REASONS).
 
     Only plain machine mail is set aside. What is plainly someone at the
     company answering is a reply. Anything in between is a possible reply,
@@ -628,7 +619,7 @@ def _remember(
 # full_text is the whole message, quoted lines and anything typed between them included (a thank-you
 # after a decline reads it: outreach_thank_you); reply_to is its Reply-To address, when it has one;
 # headers are the KEPT_HEADERS as they arrived, and link_hosts the host of every link in it (hosts only;
-# None when they could not all be read), which outreach_thank_you.thank_you_blockers checks before anything
+# None when they could not all be read), which outreach_reply_senders.thank_you_blockers checks before anything
 # is sent on its own.
 REPLY_META = {"thread_id", "message_id", "subject", "from_name", "full_text", "reply_to", "headers", "link_hosts"}
 
@@ -702,7 +693,7 @@ def _record_reply(
     data = {
         "source": "gmail", "gmail_id": gmail_id, "from": sender, "received_at": received, "readings": readings,
         **{key: _meta_value(value) for key, value in (meta or {}).items() if key in REPLY_META},
-        # How it was matched to the company (outreach.REPLY_REASONS). A thank-you answers only a reply in the
+        # How it was matched to the company (outreach_replies.REPLY_REASONS). A thank-you answers only a reply in the
         # student's thread or from an address they wrote to (outreach_thank_you, R1).
         "via": via, "reason": reason,
     }
@@ -719,9 +710,7 @@ def _record_reply(
         if not any(_same_words(earlier, text) for earlier in logged):
             log_event(conn, target["id"], user_id, "reply_logged", detail=text, data=data)
             # They wrote again: a thank-you after their earlier decline that has not gone stops now.
-            from .outreach_thank_you import on_new_reply  # imported here: it imports this module's neighbours
-
-            on_new_reply(conn, target["id"], user_id)
+            outreach_callbacks.on_new_reply(conn, target["id"], user_id)
         if reason and claim is None:
             log_event(conn, target["id"], user_id, "reply_found",
                  detail=_found_words(reason, sender, {"addresses": addresses if addresses is not None else target.get("addresses")}))
@@ -871,7 +860,7 @@ def decide_possible_reply(
 MAX_PAGES = 10
 
 
-def _search(gmail: _Gmail, user_id: str, query: str, *, page_size: int = 100) -> tuple[list[dict[str, Any]], int, bool]:
+def _search(gmail: GmailClient, user_id: str, query: str, *, page_size: int = 100) -> tuple[list[dict[str, Any]], int, bool]:
     """What a search finds (Spam included), the status of a failed page (0 if none), and whether pages were left.
 
     The first page is always read, for what arrived since; when the pages ran
@@ -1023,7 +1012,7 @@ def capture_replies(
                 "UPDATE outreach_inbox_messages SET rules=? WHERE user_id=? AND kind=? AND rules < ?", (RULES, user_id, AUTOMATIC, RULES),
             )
         return result
-    state = connection_state(_connector(conn, user_id))
+    state = connection_state(connector_row(conn, user_id))
     if state != "connected":
         return {**result, "state": state}
     account = sender_account().casefold()
@@ -1031,7 +1020,7 @@ def capture_replies(
     budget = [READ_BUDGET]
     late: list[dict[str, Any]] = []
 
-    def read(gmail: _Gmail, gmail_id: str, thread_hint: str = "", *, by_name: bool = False, exempt: bool = False) -> bool:
+    def read(gmail: GmailClient, gmail_id: str, thread_hint: str = "", *, by_name: bool = False, exempt: bool = False) -> bool:
         """Read one message found for a company, once, and log, show, note or set it aside.
 
         False when it was not read (the budget ran out, or Gmail did not answer), so a later check reads it.
@@ -1152,7 +1141,7 @@ def capture_replies(
             on_reply(conn, target["id"], user_id)
         return True
 
-    def read_thread(gmail: _Gmail, thread_id: str) -> bool:
+    def read_thread(gmail: GmailClient, thread_id: str) -> bool:
         """Read one sent thread directly. False when it could not be read (then the check is not complete)."""
         response = gmail.request(
             "GET", f"/threads/{quote(thread_id, safe='')}",
@@ -1176,7 +1165,7 @@ def capture_replies(
             complete = read(gmail, str(message.get("id", "")), thread_id, exempt=True) and complete
         return complete
 
-    def look(gmail: _Gmail) -> None:
+    def look(gmail: GmailClient) -> None:
         """Every look of one check, in order. Raises GmailNeedsReadScope when Gmail refuses a read."""
         # The company an automatic send is about to go to: its threads and its mail, now, before anything else,
         # outside the budget, so the look before the send is complete for it.
@@ -1240,7 +1229,7 @@ def capture_replies(
             for reference in (listing(gmail, query)[0] if query else []):
                 read(gmail, str(reference.get("id", "")), str(reference.get("threadId") or ""), by_name=True)
 
-    def listing(gmail: _Gmail, query: str, *, page_size: int = 100) -> tuple[list[dict[str, Any]], bool]:
+    def listing(gmail: GmailClient, query: str, *, page_size: int = 100) -> tuple[list[dict[str, Any]], bool]:
         """A search's results, and whether it read them all. A failed one leaves the check not ok."""
         references, failed, more = _search(gmail, user_id, query, page_size=page_size)
         if failed == 403:
@@ -1253,7 +1242,7 @@ def capture_replies(
     outcome = result
     try:
         with client_factory() as client:
-            look(_Gmail(conn, client, user_id))
+            look(GmailClient(conn, client, user_id))
     except (GmailNeedsReadScope, GmailAuthError):
         outcome = {**result, "state": "needs_reconnect"}
     except GmailThrottled:

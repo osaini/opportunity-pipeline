@@ -57,7 +57,7 @@ from urllib.parse import quote
 import httpx
 
 from . import automation
-from .database import rollback_quietly
+from .database import rollback_quietly, has_column
 from .gmail_client import (
     MODIFY_SCOPE,
     PROVIDER,
@@ -75,23 +75,14 @@ from .mail_trust import FREEMAIL, registrable_domain
 from .outreach import UNSENT_STATUSES
 from .outreach_config import sender_account
 from .outreach_delivery import is_delivery_notice
-from .outreach_gmail import (
-    DRAFT_EVENT,
-    SENT_EVENT,
-    THANK_YOU_SENT_EVENT,
-    _connector,
-    _Gmail,
-    backoff_until,
-)
-from .schema import _has_column
+from .outreach_gmail import DRAFT_EVENT, SENT_EVENT, THANK_YOU_SENT_EVENT
+from .gmail_connection import connector_row, GmailClient, backoff_until
 from .settings_store import get_setting, put_setting
 from .timestamps import parse_app_instant, utc_now
+from .outreach_label_name import DEFAULT_LABEL, LABEL_SETTING, label_name
 
 LOGGER = logging.getLogger(__name__)
 
-DEFAULT_LABEL = "opportunities"
-# user_settings: no row means DEFAULT_LABEL, and '' means labelling is off.
-SETTING = "outreach_gmail_label"
 # user_settings, JSON {"label": name, "after": epoch seconds[, "recheck": thread id]}: the label the sweep is for, how
 # far back it has read, and, when a listing was too long for one pass, how far through the labelled threads it has
 # re-read since ('' = not yet started; the key is absent when no re-read is owed).
@@ -140,12 +131,6 @@ _IDS_LOCK = threading.Lock()
 # --- The label's name -------------------------------------------------------------------
 
 
-def label_name(conn: sqlite3.Connection, user_id: str) -> str:
-    """The name replies are labelled with; '' when the student turned labelling off."""
-    value = get_setting(conn, user_id, SETTING)
-    return DEFAULT_LABEL if value is None else value
-
-
 def search_form(name: str) -> str:
     """How Gmail's search writes a label name: lowercase, with spaces and slashes as dashes."""
     return re.sub(r"[ /]+", "-", name.lower())
@@ -161,7 +146,7 @@ def set_label_name(conn: sqlite3.Connection, user_id: str, value: str | None) ->
     before = label_name(conn, user_id)
     if value is None:
         with conn:
-            conn.execute("DELETE FROM user_settings WHERE user_id=? AND key=?", (user_id, SETTING))
+            conn.execute("DELETE FROM user_settings WHERE user_id=? AND key=?", (user_id, LABEL_SETTING))
             _search_again(conn, user_id, before, DEFAULT_LABEL)
         return DEFAULT_LABEL
     name = " ".join(value.split())
@@ -179,7 +164,7 @@ def set_label_name(conn: sqlite3.Connection, user_id: str, value: str | None) ->
             raise ValueError(f"Gmail keeps the name {name} for itself; choose another label name")
     with conn:
         # The shared monotonic clock (the old local stamp had no tie-break); nothing reads this setting's updated_at, so a strictly later stamp is harmless.
-        put_setting(conn, user_id, SETTING, name, utc_now())
+        put_setting(conn, user_id, LABEL_SETTING, name, utc_now())
         _search_again(conn, user_id, before, name)
     return name
 
@@ -234,7 +219,7 @@ def label_replies(
 
 
 def _run(conn: sqlite3.Connection, user_id: str, client_factory: ClientFactory, now: datetime) -> dict[str, Any]:
-    row = _connector(conn, user_id)
+    row = connector_row(conn, user_id)
     state = connection_state(row)
     if state != "connected":
         return {"state": state}
@@ -244,11 +229,11 @@ def _run(conn: sqlite3.Connection, user_id: str, client_factory: ClientFactory, 
     granted = granted_scopes(row["scopes_json"])
     _discard(conn)
     with ExitStack() as stack:
-        gmail: list[_Gmail] = []
+        gmail: list[GmailClient] = []
 
-        def connection() -> _Gmail:
+        def connection() -> GmailClient:
             if not gmail:
-                gmail.append(_Gmail(conn, stack.enter_context(client_factory()), user_id))
+                gmail.append(GmailClient(conn, stack.enter_context(client_factory()), user_id))
                 _discard(conn)  # the constructor's SELECT opens a transaction on PostgreSQL; no call is made inside one
             return gmail[0]
 
@@ -537,9 +522,9 @@ def label_backlog(conn: sqlite3.Connection, user_id: str, name: str, account: st
     """
     columns = ("label_name", "labeled_at", "label_note")
     if not (
-        all(_has_column(conn, "outreach_inbox_messages", column) for column in columns)
-        and all(_has_column(conn, "outreach_label_threads", column) for column in columns)
-        and _has_column(conn, "outreach_label_searches", "query")
+        all(has_column(conn, "outreach_inbox_messages", column) for column in columns)
+        and all(has_column(conn, "outreach_label_threads", column) for column in columns)
+        and has_column(conn, "outreach_label_searches", "query")
     ):
         return None
     waiting = conn.execute(
@@ -588,7 +573,7 @@ MISSING = object()
 class _Labeller:
     """One pass: the label's id, and how many threads it has asked Gmail about."""
 
-    def __init__(self, gmail: _Gmail, user_id: str, account: str, name: str):
+    def __init__(self, gmail: GmailClient, user_id: str, account: str, name: str):
         self.gmail, self.user_id, self.name, self.account = gmail, user_id, name, account
         self.key = (user_id, account.casefold(), name)
         self.threads = 0
@@ -723,7 +708,7 @@ def _invalid_label(response: httpx.Response) -> bool:
 
 
 def _label(
-    conn: sqlite3.Connection, gmail: _Gmail, user_id: str, account: str, name: str, pending: list[dict[str, Any]],
+    conn: sqlite3.Connection, gmail: GmailClient, user_id: str, account: str, name: str, pending: list[dict[str, Any]],
     now: datetime, marks: _Marks | None = None,
 ) -> dict[str, Any]:
     labeller = _Labeller(gmail, user_id, account, name)

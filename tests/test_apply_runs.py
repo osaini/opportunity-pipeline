@@ -18,12 +18,13 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import SERVER_INSTANCE, actions, apply_runs, automation, schema, urgent
+from opportunity_app import SERVER_INSTANCE, actions, apply_claims, apply_runs, automation, automation_health, schema, urgent
 from opportunity_app.apply_runs import ClaimHeldError, ClaimRefused
 from pipeline_core.identity import employer_key
 from opportunity_app.operations import ACCOUNT_QUERIES, delete_account, export_account, run_retention
 from opportunity_app.outreach_automation import AutomationWorker
-from opportunity_app.schema import connect_product, ensure_product_schema
+from opportunity_app.schema import ensure_product_schema
+from opportunity_app.database import connect_product
 from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
@@ -45,7 +46,7 @@ class ClaimTests(ApplyCase):
                          "the app started filling; the student did not open the posting")
         row = self.claim_row(claim["token"])
         self.assertEqual((row["state"], row["after_click"], row["instance"], row["stage_policy"]), ("claimed", 0, SERVER_INSTANCE, "record"))
-        self.assertIn(claim["token"], apply_runs.RUNNING, "held from before the insert, so no recovery pass calls it stale")
+        self.assertIn(claim["token"], apply_claims.RUNNING, "held from before the insert, so no recovery pass calls it stale")
 
     def test_the_stage_policy_is_fixed_when_the_claim_is_made(self):
         self.assertEqual(apply_runs.stage_policy_for("one_click"), "record")
@@ -63,7 +64,7 @@ class ClaimTests(ApplyCase):
         self.assertEqual(caught.exception.code, "spacing")
         self.assertIsNone(self.stage("job-1"), "looking, or being refused, never creates an application")
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM application_events WHERE event_type='apply_agent_started'").fetchone()[0], 0)
-        self.assertEqual(apply_runs.RUNNING, set(), "nothing is held for a claim that was never made")
+        self.assertEqual(apply_claims.RUNNING, set(), "nothing is held for a claim that was never made")
 
     def test_unattended_is_refused_while_automation_is_paused(self):
         automation.set_paused(self.conn, USER, True)
@@ -154,7 +155,7 @@ class ClaimTests(ApplyCase):
         self.assertEqual(other.exception.code, "job")
         self.assertIn("another saved copy of the role (Controls Intern)", str(other.exception))
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM application_submit_claims").fetchone()[0], 1)
-        self.assertEqual(len(apply_runs.RUNNING), 1, "only the claim that was made is held")
+        self.assertEqual(len(apply_claims.RUNNING), 1, "only the claim that was made is held")
 
     def test_starting_again_releases_an_attempt_that_sent_nothing_and_never_one_that_did(self):
         first = self.start("job-1", "handoff", now=self.at(1))
@@ -176,7 +177,7 @@ class ClaimTests(ApplyCase):
 
     def test_an_attempt_the_app_stopped_before_hand_over_does_not_block_the_next_start(self):
         first = self.start("job-1", "handoff", now=self.at(-10))
-        apply_runs.forget(first["token"])
+        apply_claims.forget(first["token"])
         apply_runs.recover_stale(self.conn, self.at())
         row = self.claim_row(first["token"])
         self.assertEqual((row["state"], row["after_click"]), ("failed", 0))
@@ -367,10 +368,10 @@ class HeartbeatAndRecovery(ApplyCase):
     def test_a_heartbeat_keeps_a_claim_from_another_process_held_until_it_goes_quiet(self):
         token = self.raw_claim(state="clicking", instance=FOREIGN, heartbeat_at=self.at(-1).isoformat(timespec="microseconds"), handed_over_at=self.at(-20).isoformat())
         row = self.claim_row(token)
-        self.assertTrue(apply_runs.claim_held(row, now=self.at()), "less than 2 minutes since its heartbeat")
-        self.assertFalse(apply_runs.claim_held(row, now=self.at(2)))
+        self.assertTrue(apply_claims.claim_held(row, now=self.at()), "less than 2 minutes since its heartbeat")
+        self.assertFalse(apply_claims.claim_held(row, now=self.at(2)))
         self.assertTrue(apply_runs.heartbeat(self.conn, token, now=self.at(2)))
-        self.assertTrue(apply_runs.claim_held(self.claim_row(token), now=self.at(3)))
+        self.assertTrue(apply_claims.claim_held(self.claim_row(token), now=self.at(3)))
         self.assertEqual(apply_runs.recover_stale(self.conn, self.at(3)), {"failed": 0, "unconfirmed": 0, "stage_retried": 0, "runs_failed": 0})
         self.assertEqual(self.claim_row(token)["state"], "clicking")
         settled = self.raw_claim(state="submitted", instance=FOREIGN)
@@ -378,11 +379,11 @@ class HeartbeatAndRecovery(ApplyCase):
 
     def test_a_claim_of_this_process_is_held_only_while_its_run_is_working(self):
         token = self.raw_claim(state="claimed", instance=SERVER_INSTANCE, heartbeat_at=self.at().isoformat(timespec="microseconds"))
-        self.assertFalse(apply_runs.claim_held(self.claim_row(token), now=self.at()), "not in RUNNING: it ended without settling")
-        apply_runs.RUNNING.add(token)
-        self.assertTrue(apply_runs.claim_held(self.claim_row(token), now=self.at(60 * 24)), "however long it has been")
-        apply_runs.forget(token)
-        self.assertFalse(apply_runs.claim_held(self.claim_row(token), now=self.at()))
+        self.assertFalse(apply_claims.claim_held(self.claim_row(token), now=self.at()), "not in RUNNING: it ended without settling")
+        apply_claims.RUNNING.add(token)
+        self.assertTrue(apply_claims.claim_held(self.claim_row(token), now=self.at(60 * 24)), "however long it has been")
+        apply_claims.forget(token)
+        self.assertFalse(apply_claims.claim_held(self.claim_row(token), now=self.at()))
 
     def test_a_finish_in_browser_claim_nineteen_minutes_old_with_a_fresh_heartbeat_is_held(self):
         token = self.raw_claim(state="clicking", instance=FOREIGN, handed_over_at=self.at(-19).isoformat(timespec="microseconds"),
@@ -475,7 +476,7 @@ class HeartbeatAndRecovery(ApplyCase):
         claim = self.start("job-1", "handoff", now=self.at(-10))
         run_id = self.make_run("handoff", opportunity_id="job-1", started=self.at(-10), claim_token=claim["token"])
         self.assertTrue(apply_runs.hand_over(self.conn, claim["token"], user_id=USER, now=self.at(-9)))
-        apply_runs.forget(claim["token"])
+        apply_claims.forget(claim["token"])
         apply_runs.recover_stale(self.conn, self.at())
         self.assertEqual(self.claim_row(claim["token"])["state"], "unconfirmed")
         self.assertEqual(apply_runs.get_run(self.conn, run_id, user_id=USER)["outcome"], "unconfirmed")
@@ -488,7 +489,7 @@ class HeartbeatAndRecovery(ApplyCase):
         claim = self.start("job-1", "handoff", now=self.at(-10), run_id=run_id)  # run first: the run's claim_token is still ''
         self.assertEqual(apply_runs.get_run(self.conn, run_id, user_id=USER)["claim_token"], "")
         self.assertTrue(apply_runs.hand_over(self.conn, claim["token"], user_id=USER, now=self.at(-9)))
-        apply_runs.forget(claim["token"])
+        apply_claims.forget(claim["token"])
         apply_runs.recover_stale(self.conn, self.at())
         self.assertEqual(self.claim_row(claim["token"])["state"], "unconfirmed")
         self.assertEqual(apply_runs.get_run(self.conn, run_id, user_id=USER)["outcome"], "unconfirmed")
@@ -499,7 +500,7 @@ class HeartbeatAndRecovery(ApplyCase):
     def test_a_submit_run_says_nothing_was_sent_only_when_its_claim_was_never_handed_over(self):
         before = self.start("job-1", "handoff", now=self.at(-10))
         run_before = self.make_run("handoff", opportunity_id="job-1", started=self.at(-10), claim_token=before["token"])
-        apply_runs.forget(before["token"])
+        apply_claims.forget(before["token"])
         apply_runs.recover_stale(self.conn, self.at())
         self.assertEqual(apply_runs.get_run(self.conn, run_before, user_id=USER)["outcome"], "failed")
         self.assertEqual(self.notice_bodies()["The app stopped during an Apply for me run"], "Nothing was sent.")
@@ -617,7 +618,7 @@ class SettleTests(ApplyCase):
         self.assertEqual(row["resolved_by"], "", "a stop for the student was not settled by the confirmation page")
         self.assertEqual(self.stage("job-1")[0], "applying")
         self.assertIn("Bluefin Robotics: your application needs you", self.notices())
-        self.assertEqual(apply_runs.RUNNING, set())
+        self.assertEqual(apply_claims.RUNNING, set())
 
     def test_only_a_seen_confirmation_page_is_recorded_as_settled_by_the_page(self):
         for number, (state, after_click, seen) in enumerate((("failed", False, False), ("unconfirmed", True, False), ("needs_you", True, False),
@@ -850,7 +851,7 @@ class ReaderTests(ApplyCase):
         self.raw_claim(state="claimed", mode="handoff")
         self.raw_claim(state="submitted", mode="one_click", handed_over_at=self.at(-2).isoformat(timespec="microseconds"))
         self.assertEqual(automation.in_flight(self.conn, USER), [], "not held: this process is not running it")
-        apply_runs.RUNNING.add(held)
+        apply_claims.RUNNING.add(held)
         items = automation.in_flight(self.conn, USER)
         self.assertEqual([(item["action"], item["source"], item["company"], item["kind"]) for item in items],
                          [("application", "apply_claim", BLUEFIN, "handoff")])
@@ -870,27 +871,27 @@ class ReaderTests(ApplyCase):
         self.assertEqual({item["company"] for item in items}, {BLUEFIN})
 
     def test_the_pause_text_reads_correctly_with_one_two_and_three_kinds(self):
-        base = automation.PAUSED_BANNER
+        base = automation_health.PAUSED_BANNER
         email = {"action": "send"}
         form = {"action": "form"}
         application = {"action": "application"}
-        self.assertEqual(automation.paused_text([application]), f"{base} 1 application was already being submitted and can't be stopped.")
-        self.assertEqual(automation.paused_text([application, application]), f"{base} 2 applications were already being submitted and can't be stopped.")
-        self.assertEqual(automation.paused_text([email, application]),
+        self.assertEqual(automation_health.paused_text([application]), f"{base} 1 application was already being submitted and can't be stopped.")
+        self.assertEqual(automation_health.paused_text([application, application]), f"{base} 2 applications were already being submitted and can't be stopped.")
+        self.assertEqual(automation_health.paused_text([email, application]),
                          f"{base} 1 email was already handed to Gmail and 1 application was already being submitted, and neither can be stopped.")
         self.assertEqual(
-            automation.paused_text([email, form, application]),
+            automation_health.paused_text([email, form, application]),
             f"{base} 1 email was already handed to Gmail, 1 contact form was already being sent, and 1 application was already being submitted, "
             "and none of them can be stopped.",
         )
-        self.assertEqual(automation.paused_text([]), base)
+        self.assertEqual(automation_health.paused_text([]), base)
 
     def test_pausing_reports_an_application_already_handed_over(self):
         held = self.raw_claim(state="clicking", instance=SERVER_INSTANCE, mode="handoff", handed_over_at=self.at(-1).isoformat(timespec="microseconds"))
-        apply_runs.RUNNING.add(held)
+        apply_claims.RUNNING.add(held)
         result = automation.set_paused(self.conn, USER, True)
         self.assertEqual([item["action"] for item in result["in_flight"]], ["application"])
-        summary = automation.health_summary(self.conn, USER)
+        summary = automation_health.health_summary(self.conn, USER)
         self.assertIn("1 application was already being submitted and can't be stopped.", summary["banner"][0]["text"])
 
     def test_the_urgent_kinds_exist_in_both_registries(self):
@@ -943,7 +944,7 @@ class WorkerStepTests(ApplyCase):
         report = self.worker().run_once()
         self.assertEqual(report["apply"]["recovered"], {USER: {"failed": 1, "unconfirmed": 0, "stage_retried": 0, "runs_failed": 0}})
         self.assertEqual(self.claim_row(token)["state"], "failed")
-        health = {row["component"]: row for row in automation.health_summary(self.conn, USER)["components"]}
+        health = {row["component"]: row for row in automation_health.health_summary(self.conn, USER)["components"]}
         self.assertIn("apply_agent.runner", health)
         self.assertEqual(health["apply_agent.runner"]["last_error"], "")
 
@@ -1014,7 +1015,7 @@ class WorkerStepTests(ApplyCase):
         apply_root = self.root / "apply"
         with mock.patch.object(apply_runs, "purge_evidence", side_effect=RuntimeError("the disk went away")):
             self.worker(apply_root).run_once()
-        health = {row["component"]: row for row in automation.health_summary(self.conn, USER)["components"]}
+        health = {row["component"]: row for row in automation_health.health_summary(self.conn, USER)["components"]}
         self.assertIn("the disk went away", health["apply_agent.retention"]["last_error"])
         self.worker(apply_root).run_once()
         row = self.conn.execute("SELECT last_ok_at, last_error_at FROM automation_health WHERE user_id=? AND component='apply_agent.retention'", (USER,)).fetchone()

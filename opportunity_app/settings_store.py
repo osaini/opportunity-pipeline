@@ -13,7 +13,7 @@ stay where they are, because they are not copies:
 - `automation.paused` reads with `FOR SHARE` on PostgreSQL.
 - `automation._write_pause` moves `updated_at` only when the value flips, and
   `automation.ensure_pause_row` inserts with `DO NOTHING`.
-- `auto_triage` and `automation.health_summary` read a value and its
+- `auto_triage` and `automation_health.health_summary` read a value and its
   `updated_at` in one statement.
 
 Standard library only; no connection is opened here.

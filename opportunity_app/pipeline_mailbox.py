@@ -12,7 +12,7 @@ which calls main() here:
 
 Nothing here writes. The database is opened read-only, the only POST is the
 token refresh (in memory, nothing stored), and every Gmail call is a GET. It
-does not use outreach_gmail._Gmail: that renews tokens into the database and
+does not use gmail_connection.GmailClient: that renews tokens into the database and
 records health there. Everything it prints is meant for the agent's
 conversation, so it prints no token, key or secret, and no value from .env
 except PIPELINE_OUTREACH_ACCOUNT.
@@ -34,7 +34,7 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from . import ROOT
 from .connections import OAUTH_PROVIDERS
-from .database import is_postgres_target
+from .database import is_postgres_target, connect_product
 from .gmail_client import (
     GMAIL_API,
     MODIFY_SCOPE,
@@ -48,7 +48,7 @@ from .gmail_client import (
     granted_scopes,
 )
 from .mail_message import decode_base64url
-from .schema import LOCAL_USER_ID, connect_product
+from .schema import LOCAL_USER_ID
 from .setup import read_env
 
 TEXT_CAP = 4000
@@ -244,7 +244,8 @@ def _whoami(session: _Session, conn, user: str, row: dict[str, Any], env: dict[s
     out(f"Permissions: {', '.join(_permissions(granted)) or 'none'} ({source})")
     try:
         # Imported here: the reader must still start on a checkout that predates reply labels.
-        from .outreach_labels import label_backlog, label_name, search_form
+        from .outreach_label_name import label_name
+        from .outreach_labels import label_backlog, search_form
 
         label = label_name(conn, user)
     except (ImportError, sqlite3.Error):

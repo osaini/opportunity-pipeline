@@ -20,7 +20,7 @@ from .visibility import capture_visible_sql
 
 # The ruleset every fit score is stored and read under. The SQL views in
 # migrations/0001, 0020 and 0021 bake the same string in, so changing it needs a
-# migration as well as this constant. It is not `schema.LEGACY_MIGRATION_KEY`
+# migration as well as this constant. It is not `legacy_sync.LEGACY_MIGRATION_KEY`
 # (a migration_runs key that happens to read the same) and
 # `auto_triage` also stamps it as a policy_version.
 RULESET_VERSION = "legacy-v1"

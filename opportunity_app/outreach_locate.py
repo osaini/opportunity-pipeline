@@ -18,16 +18,16 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from typing import Any, Callable
+from typing import Any
 
 from .contact_names import website_domain
-from .outreach import PAGE_CHECKED_BASES
+from .outreach_agents import Runner
+from .outreach_location import PAGE_CHECKED_BASES
 from .outreach_batch import answers_by_target
 from .web_fetch import SafeFetcher, public_web_url_error
-from .outreach_discovery import mentions_company
+from .outreach_identity import mentions_company
 from .outreach_profile import state_code, apply_location, format_location
 
-Runner = Callable[[str], str]
 
 BASIS = "web_search"
 # One CLI run researches this many companies. A larger batch is cheaper; a

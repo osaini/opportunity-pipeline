@@ -102,12 +102,15 @@ def dotted(*names: str) -> set[str]:
 LEAVES: dict[str, tuple[set[str], set[str]]] = {
     # Workstream T: time, database, settings, JSON, stored profile
     "opportunity_app/timestamps.py": (set(), set()),
-    # PostgreSQL support imports psycopg inside PostgresConnection, so SQLite-only installs never need it.
-    "opportunity_app/database.py": (set(), {"psycopg"}),
+    # PostgreSQL support imports psycopg inside PostgresConnection, so SQLite-only installs never need it. The connection
+    # factory's default paths are the package's own constants.
+    "opportunity_app/database.py": ({f"{PACKAGE}.DEFAULT_LEGACY_DB", f"{PACKAGE}.DEFAULT_PLATFORM_DB"}, {"psycopg"}),
     "opportunity_app/settings_store.py": (set(), set()),
     "opportunity_app/json_values.py": (set(), set()),
     "opportunity_app/profile_store.py": (dotted("json_values"), set()),
     "opportunity_app/user_time.py": (set(), set()),
+    # Keyword rules over an application email: pure text, split out of connections so the inbox workflow can use them.
+    "opportunity_app/monitored_classifier.py": (set(), set()),
     # Workstream I: identity and the legacy boundary
     "pipeline_core/identity.py": (set(), set()),
     "pipeline_core/regions.py": ({"pipeline_core.identity"}, set()),
@@ -130,6 +133,14 @@ LEAVES: dict[str, tuple[set[str], set[str]]] = {
     "opportunity_app/__init__.py": (set(), set()),
     # Storage over outreach, not a pure leaf: it may import only outreach and the clock.
     "opportunity_app/outreach_versions.py": (dotted("outreach", "timestamps"), set()),
+    # Split out of outreach.py. Replies is pure text rules; location and greeting read the student's profile (the owner's
+    # file, or another user's confirmed facts through preparation, which is imported where used).
+    "opportunity_app/outreach_replies.py": (set(), set()),
+    "opportunity_app/outreach_location.py": (dotted("legacy", "schema"), dotted("preparation")),
+    "opportunity_app/outreach_greeting.py": (dotted("outreach_identity", "outreach_location", "schema"), dotted("preparation")),
+    # Split out of outreach_gmail.py. The claim ledger needs only the process id, the unique-violation test and the clock, so
+    # the contact-form submitter and the thank-you recovery can hold claims without loading the Gmail REST client.
+    "opportunity_app/send_claims.py": ({f"{PACKAGE}.SERVER_INSTANCE", *dotted("database", "timestamps")}, set()),
 }
 
 # Leaves that load nothing late: no function-level import at all, not even of the standard library.
@@ -525,13 +536,13 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         self.assertIs(read_model.sort_key, identity.sort_key)
 
     def test_outreach_company_key_is_a_different_rule_and_stays_separate(self):
-        from opportunity_app import outreach
+        from opportunity_app import outreach_identity
         from pipeline_core.identity import employer_key, sort_key
 
         # NFKC, "&" becomes "and", a leading "The" and trailing legal words dropped, word order kept.
-        self.assertEqual(outreach.company_key("The Smith & Sons Holdings Group"), "smith and sons holdings group")
-        self.assertNotEqual(outreach.company_key("Robotics Acme"), employer_key("Robotics Acme"))
-        self.assertNotEqual(outreach.company_key("Acme Robotics Inc"), sort_key("Acme Robotics Inc"))
+        self.assertEqual(outreach_identity.company_key("The Smith & Sons Holdings Group"), "smith and sons holdings group")
+        self.assertNotEqual(outreach_identity.company_key("Robotics Acme"), employer_key("Robotics Acme"))
+        self.assertNotEqual(outreach_identity.company_key("Acme Robotics Inc"), sort_key("Acme Robotics Inc"))
 
     def test_normalized_text_reads_none_as_empty_but_not_zero_or_false(self):
         from pipeline_core.identity import normalized, normalized_text
@@ -552,14 +563,28 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=ROOT, check=True)
         self.assertEqual(done.stdout.strip(), "False")
 
-    def test_only_the_legacy_adapter_imports_pipeline(self):
+    def test_only_the_legacy_adapter_imports_the_legacy_pipeline(self):
+        # pipeline.py is split into these pipeline_core modules; the web app reaches them through opportunity_app/legacy.py.
+        # (identity, regions, env, visibility and read_model are shared leaves, not part of the legacy door.)
+        split = {
+            "paths", "clock", "config", "text", "http", "sources", "store", "liveness", "retention", "discovery", "fetch",
+            "importers", "scoring", "reports", "artifacts", "cli",
+        }
         offenders = []
         for path in sorted((ROOT / "opportunity_app").rglob("*.py")):
             if path.name == "legacy.py":
                 continue
-            if "pipeline" in all_imports(path):
-                offenders.append(path.name)
-        self.assertEqual(offenders, [], "web modules must import pipeline names through opportunity_app.legacy")
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
+                names = []
+                if isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and not node.level:
+                    names = [node.module or ""] + [f"{node.module}.{alias.name}" for alias in node.names]
+                for name in names:
+                    parts = name.split(".")
+                    if parts[0] == "pipeline" or (parts[0] == "pipeline_core" and len(parts) > 1 and parts[1] in split):
+                        offenders.append(f"{path.name}: {name}")
+        self.assertEqual(offenders, [], "web modules must import the legacy pipeline through opportunity_app.legacy")
 
     def test_the_regions_moved_to_pipeline_core_still_bucket_locations(self):
         from pipeline_core.regions import match_region, region_label
@@ -574,8 +599,8 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
     def test_env_lines_share_one_rule_and_differ_only_in_how_the_caller_treats_repeats(self):
         import os
 
-        import pipeline
         from opportunity_app import setup
+        from pipeline_core import config
         from pipeline_core.env import iter_env_pairs
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -589,12 +614,12 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
             )
             # setup.read_env keeps the last line of a repeated key and an empty key ...
             self.assertEqual(setup.read_env(path), {"A": "again", "B": "two", "": "orphan", "C": "'mixed\"", "D": ""})
-            # ... pipeline.load_env_file keeps the first and drops an empty key, and never overrides a real variable.
+            # ... config.load_env_file keeps the first and drops an empty key, and never overrides a real variable.
             names = ("A", "B", "C", "D")
             saved = {name: os.environ.pop(name, None) for name in names}
             try:
                 os.environ["B"] = "from the shell"
-                pipeline.load_env_file(path)
+                config.load_env_file(path)
                 self.assertEqual([os.environ.get(name) for name in names], ["one", "from the shell", "'mixed\"", ""])
                 self.assertNotIn("", os.environ)
             finally:
@@ -607,65 +632,66 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
     def test_imported_posting_ids_keep_linkedin_ids_except_for_the_manual_csv(self):
         import hashlib
 
-        import pipeline
+        from pipeline_core import importers
+        from pipeline_core.text import canonical_url
 
         url = "https://www.linkedin.com/jobs/view/3912345678/?trackingId=abc"
-        hashed = hashlib.sha256(pipeline.canonical_url(url).encode("utf-8")).hexdigest()[:20]
-        self.assertEqual(pipeline.url_external_id(url, linkedin_ids=True), "3912345678")
-        self.assertEqual(pipeline.url_external_id(url, linkedin_ids=False), hashed)
+        hashed = hashlib.sha256(canonical_url(url).encode("utf-8")).hexdigest()[:20]
+        self.assertEqual(importers.url_external_id(url, linkedin_ids=True), "3912345678")
+        self.assertEqual(importers.url_external_id(url, linkedin_ids=False), hashed)
         other = "https://boards.example.test/jobs/1"
         self.assertEqual(
-            pipeline.url_external_id(other, linkedin_ids=True), pipeline.url_external_id(other, linkedin_ids=False),
+            importers.url_external_id(other, linkedin_ids=True), importers.url_external_id(other, linkedin_ids=False),
         )
 
     def test_source_key_keeps_its_keyerror_that_system_status_relies_on(self):
-        import pipeline
+        from pipeline_core import config
 
-        self.assertEqual(pipeline.source_key({"kind": "greenhouse", "token": "acme"}), "greenhouse:acme")
-        self.assertEqual(pipeline.source_key({"kind": "workday", "tenant": "t", "site": "s"}), "workday:t:s")
+        self.assertEqual(config.source_key({"kind": "greenhouse", "token": "acme"}), "greenhouse:acme")
+        self.assertEqual(config.source_key({"kind": "workday", "tenant": "t", "site": "s"}), "workday:t:s")
         with self.assertRaises(KeyError):
-            pipeline.source_key({"token": "acme"})
+            config.source_key({"token": "acme"})
         # The merge key is the same string lowercased; its .get("kind", "") never helps, since source_identity needs kind too.
-        self.assertEqual(pipeline._source_merge_key({"kind": "Greenhouse", "token": "ACME"}), "greenhouse:acme")
+        self.assertEqual(config._source_merge_key({"kind": "Greenhouse", "token": "ACME"}), "greenhouse:acme")
         with self.assertRaises(KeyError):
-            pipeline._source_merge_key({"token": "acme"})
+            config._source_merge_key({"token": "acme"})
 
     def test_pipeline_connect_takes_a_path_and_defaults_to_the_module_path_read_at_call_time(self):
         import sqlite3
 
-        import pipeline
+        from pipeline_core import paths, store
 
         with tempfile.TemporaryDirectory() as tmp:
             explicit = Path(tmp) / "nested" / "explicit.db"
-            pipeline.connect(explicit).close()
+            store.connect(explicit).close()
             self.assertTrue(explicit.is_file())
             default = Path(tmp) / "default.db"
-            with mock.patch.object(pipeline, "DB_PATH", default):
-                pipeline.connect().close()
+            with mock.patch.object(paths, "DB_PATH", default):
+                store.connect().close()
             self.assertTrue(default.is_file())
             with closing(sqlite3.connect(explicit)) as conn:
                 tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertIn("jobs", tables)
 
     def test_legacy_create_database_does_not_move_the_global_db_path(self):
-        import pipeline
         from opportunity_app import legacy
+        from pipeline_core import paths
 
-        before = pipeline.DB_PATH
+        before = paths.DB_PATH
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "data" / "pipeline.db"
             legacy.create_database(target)
             self.assertTrue(target.is_file())
-        self.assertEqual(pipeline.DB_PATH, before)
+        self.assertEqual(paths.DB_PATH, before)
 
     def test_one_ruleset_version_constant_backs_every_fit_score_read_and_write(self):
-        from opportunity_app import schema
+        from opportunity_app import legacy_sync, schema
         from pipeline_core.read_model import RULESET_VERSION
 
         self.assertEqual(RULESET_VERSION, "legacy-v1")  # the SQL views in migrations/0001, 0020 and 0021 bake this in
         self.assertFalse(hasattr(schema, "RULESET_VERSION") and schema.RULESET_VERSION is not RULESET_VERSION)
         # The migration_runs key is a different concept that happens to read the same today.
-        self.assertEqual(schema.LEGACY_MIGRATION_KEY, "legacy-v1")
+        self.assertEqual(legacy_sync.LEGACY_MIGRATION_KEY, "legacy-v1")
         for relative in ("actions.py", "extension_apply.py", "profile.py"):
             with self.subTest(module=relative):
                 text = (ROOT / "opportunity_app" / relative).read_text(encoding="utf-8")
@@ -679,9 +705,10 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
 
     def test_the_job_types_the_api_accepts_are_the_job_types_the_worker_handles(self):
         from helpers_platform import build_and_migrate
-        from opportunity_app import api, worker
+        from opportunity_app import worker
+        from opportunity_app.web.models.admin import JobCreateRequest
 
-        accepted = set(get_args(api.JobCreateRequest.model_fields["job_type"].annotation))
+        accepted = set(get_args(JobCreateRequest.model_fields["job_type"].annotation))
         seen: dict[str, object] = {}
 
         def capture(conn, handlers, **kwargs):
@@ -939,22 +966,23 @@ class OutreachIdentityTests(unittest.TestCase):
         self.assertEqual(loaded & heavy, set())
 
     def test_the_mailbox_names_it_shares_live_in_a_leaf_that_the_senders_import_from(self):
-        for module in ("outreach_contacts.py", "outreach_forms.py", "outreach_thank_you.py", "outreach_identity.py"):
+        for module in ("outreach_contacts.py", "outreach_forms.py", "outreach_reply_senders.py", "outreach_identity.py"):
             with self.subTest(module=module):
                 self.assertIn(f"{PACKAGE}.contact_names", all_imports(APP / module))
 
-    def test_the_interviewer_and_research_take_identity_from_it_not_from_the_mail_reader(self):
-        for module in ("outreach_interviewer.py", "outreach_research.py"):
+    def test_the_interviewer_and_the_quote_check_take_identity_from_it_not_from_the_mail_reader(self):
+        for module in ("outreach_interviewer.py", "quote_check.py"):
             with self.subTest(module=module):
                 self.assertNotIn(f"{PACKAGE}.outreach_inbox", all_imports(APP / module))
                 self.assertIn(f"{PACKAGE}.outreach_identity", all_imports(APP / module))
+        self.assertNotIn(f"{PACKAGE}.outreach_inbox", all_imports(APP / "outreach_research.py"))
 
 
 # --- Workstream B: background workers, the AI CLI runner, outreach leaves ---------------------------------------------
 
 from opportunity_app import agent_providers, background, inbox_watcher, outreach_batch, outreach_config, outreach_review, web_fetch  # noqa: E402
 from opportunity_app.outreach import create_target, get_target, latest_event_stamp, log_event, withdraw_auto_approval  # noqa: E402
-from opportunity_app.schema import connect_product  # noqa: E402
+from opportunity_app.database import connect_product  # noqa: E402
 
 from helpers_platform import build_and_migrate  # noqa: E402
 

@@ -41,6 +41,7 @@ from __future__ import annotations
 import hashlib
 import re
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
@@ -50,21 +51,23 @@ import httpx
 from . import automation
 from .gmail_client import ClientFactory, GmailAuthError
 from .outreach import (
-    NOT_INTERESTED, DraftChangedError, UNSENT_STATUSES, city_state, get_target, heard_back, log_event, withdraw_auto_approval,
+    NOT_INTERESTED, DraftChangedError, OutreachNotFoundError, UNSENT_STATUSES, get_target, heard_back, log_event,
+    withdraw_auto_approval,
 )
+from .outreach_location import city_state
 from .outreach_gmail import (
     SENT_EVENT,
     THANK_YOU_KIND,
-    SendConflictError,
     SendNeedsCheckError,
     SendUnconfirmedError,
     ThankYouChanged,
     _approved_for,
-    backoff_until,
     gmail_drafts_status,
     send_gmail_message,
     send_thank_you,
 )
+from .send_claims import SendConflictError
+from .gmail_connection import backoff_until
 from .settings_store import setting_updated_at
 from .timestamps import utc_now
 from .user_time import at_wall_clock, to_local, user_timezone
@@ -118,6 +121,60 @@ _PAUSED = (
 )
 
 
+# --- Kinds with a workflow of their own -----------------------------------------------------------
+#
+# An ordinary email ('initial', 'follow_up') is settled, checked and handed over by this module alone. A thank-you after a
+# decline (THANK_YOU_KIND) has a record of its own (outreach_thank_yous) and rules of its own: a 9 to 5 window, checks
+# before it goes, a hand-over that can still stop it. Those live in outreach_thank_you, which imports this module, so
+# they are handed in at startup (outreach_thank_you.register, through bootstrap.register_all) as a KindHooks.
+
+
+class KindNotRegistered(RuntimeError):
+    """A scheduled send of a kind that has a workflow was reached before that workflow registered its hooks."""
+
+
+@dataclass(frozen=True)
+class KindHooks:
+    """What a kind of scheduled send does that an ordinary email does not.
+
+    Each takes the connection first, and runs inside the caller's transaction where this module's own step does.
+    ``settle(conn, target_id, user_id, state, note)`` records the outcome on the kind's own record;
+    ``gate(conn, row, *, client_factory, now, reviewer)`` is the checks after the look at Gmail (None to send, else the
+    outcome); ``in_window(moment, zone)`` says whether it may go at that moment in the recipient's zone;
+    ``hand_over_stop(conn, row, now)`` is the last look inside the hand-over transaction ((state, why) or None);
+    ``back_in_line(conn, target_id, user_id)`` undoes a hand-over that did not send; ``moved(conn, row, send_at, label)``
+    follows the row to its new time; ``handed_over(conn, row, stamp)`` marks the kind's record as with Gmail;
+    ``recover_stuck(conn, now, stuck_after)`` settles what a stopped app left behind and returns how many.
+    """
+
+    settle: Callable[[sqlite3.Connection, str, str, str, str], Any]
+    gate: Callable[..., str | None]
+    in_window: Callable[[datetime, Any], bool]
+    hand_over_stop: Callable[[sqlite3.Connection, sqlite3.Row, datetime], tuple[str, str] | None]
+    back_in_line: Callable[[sqlite3.Connection, str, str], None]
+    moved: Callable[[sqlite3.Connection, sqlite3.Row, datetime, str], None]
+    handed_over: Callable[[sqlite3.Connection, sqlite3.Row, str], None]
+    recover_stuck: Callable[[sqlite3.Connection, datetime, timedelta], int]
+
+
+# The kinds that cannot be handled without their hooks. Anything else is an ordinary email.
+HOOKED_KINDS = (THANK_YOU_KIND,)
+_KINDS: dict[str, KindHooks] = {}
+
+
+def register_kind(kind: str, hooks: KindHooks) -> None:
+    """Hand in the hooks for a kind of scheduled send (once, at startup)."""
+    _KINDS[kind] = hooks
+
+
+def _kind_hooks(kind: str) -> KindHooks | None:
+    """The hooks for ``kind``; None for an ordinary email. A kind that needs them and has none is an error, not an email."""
+    found = _KINDS.get(kind)
+    if found is None and kind in HOOKED_KINDS:
+        raise KindNotRegistered(f"Scheduled sends of kind {kind!r} need their hooks: call bootstrap.register_all() as the process starts")
+    return found
+
+
 # A state code at the end, with or without a comma or ZIP: "Denver CO", "Boston, MA 02110".
 _TRAILING_STATE = re.compile(r"^(?P<city>.*?)[,\s]+(?P<state>[A-Za-z]{2})(?:\s+\d{5}(?:-\d{4})?)?\s*$")
 
@@ -169,10 +226,8 @@ def schedule_send(
     conn: sqlite3.Connection, target_id: str, *, user_id: str, kind: str, fingerprint: str, now: datetime | None = None,
 ) -> dict[str, Any]:
     """Queue the approved draft the student confirmed. Every check Send makes is made now, and again at send time."""
-    from .outreach_automation import settings as automation_settings  # imported here: automation imports this module
-
     now = now or datetime.now(timezone.utc)
-    if not automation_settings(conn, user_id=user_id)["scheduled_sending"]:
+    if automation.mode(conn, user_id, "scheduled_sending") != "on":
         raise ValueError("Turn on Send on their weekday morning under Outreach settings first")
     approved = _ready_to_queue(conn, target_id, user_id=user_id, kind=kind, fingerprint=fingerprint)
     zone, basis = recipient_zone(conn, approved.target, user_id=user_id)
@@ -263,7 +318,7 @@ def finish_send(conn: sqlite3.Connection, row: sqlite3.Row, state: str, error: s
     """Settle a row the worker holds. A send that went out is recorded even if it was cancelled meanwhile.
 
     A thank-you after a decline (kind 'thank_you') is settled on its own row
-    too (outreach_thank_you.settle_in), which says why in its history and
+    too (its KindHooks.settle, outreach_thank_you.settle_in), which says why in its history and
     leaves a notice when it is held or failed. Only a thank-you can be
     'held': the check before sending stopped it for the student to decide,
     and its scheduled row is cancelled.
@@ -275,10 +330,9 @@ def finish_send(conn: sqlite3.Connection, row: sqlite3.Row, state: str, error: s
             ("cancelled" if state == "held" else state, error[:500], utc_now(), row["target_id"], row["kind"]),
         ).rowcount:
             return
-        if row["kind"] == THANK_YOU_KIND:
-            from .outreach_thank_you import settle_in  # imported here: it imports this module
-
-            settle_in(conn, row["target_id"], row["user_id"], state, error)
+        hooks = _kind_hooks(row["kind"])
+        if hooks is not None:
+            hooks.settle(conn, row["target_id"], row["user_id"], state, error)
             return
         if state == "failed":
             log_event(conn, row["target_id"], row["user_id"], "scheduled_send_failed", detail=error[:500])
@@ -322,10 +376,9 @@ def _gate(
             # them, without using up a try. Any other failed check still counts.
             return wait_for_gmail(conn, row, hold + GMAIL_HOLD_MARGIN)
         return hold_for_retry(conn, row, now, f"Could not check Gmail for replies or bounces first: {look['reason']}")
-    if row["kind"] == THANK_YOU_KIND:
-        from .outreach_thank_you import gate  # imported here: it imports this module
-
-        return gate(conn, row, client_factory=client_factory, now=now, reviewer=reviewer)
+    hooks = _kind_hooks(row["kind"])
+    if hooks is not None:
+        return hooks.gate(conn, row, client_factory=client_factory, now=now, reviewer=reviewer)
     target = get_target(conn, target_id, user_id=user_id)
     if row["kind"] != "follow_up":
         # A first email going out again (after a bounce) stops if anyone may have answered the earlier one.
@@ -456,10 +509,9 @@ def run_due_sends(
             hold_for_retry(conn, row, now, "The app stopped before sending this")
         else:
             finish_send(conn, row, "failed", "The app stopped while sending this. Check your Gmail Sent folder before sending it again")
-    from .outreach_thank_you import recover_stuck  # imported here: it imports this module
-
-    # A thank-you the student's Send it anyway left 'sending' when the app stopped.
-    recover_stuck(conn, now, STUCK_AFTER)
+    # A thank-you the student's Send it anyway left 'sending' when the app stopped (each kind with hooks settles its own).
+    for kind in HOOKED_KINDS:
+        _kind_hooks(kind).recover_stuck(conn, now, STUCK_AFTER)
     decisions: dict[str, Any] = {}
 
     def decisions_of(user_id: str) -> Any:
@@ -480,7 +532,8 @@ def run_due_sends(
         if now - datetime.fromisoformat(row["send_at"]) > LATE_AFTER:
             results.append({"target_id": row["target_id"], "kind": row["kind"], "state": _move_to_next_morning(conn, row, now)})
             continue
-        if row["kind"] == THANK_YOU_KIND and _after_hours(conn, row, now + (_clock() - started)):
+        hooks = _kind_hooks(row["kind"])
+        if hooks is not None and _after_hours(conn, row, now + (_clock() - started), hooks.in_window):
             results.append({"target_id": row["target_id"], "kind": row["kind"],
                             "state": _move_to_next_morning(conn, row, now, reason=AFTER_HOURS_NOTE)})
             continue
@@ -515,11 +568,8 @@ def _held_by_pause(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
         return False
 
 
-def _after_hours(conn: sqlite3.Connection, row: sqlite3.Row, moment: datetime) -> bool:
+def _after_hours(conn: sqlite3.Connection, row: sqlite3.Row, moment: datetime, in_window: Callable[[datetime, Any], bool]) -> bool:
     """Whether ``moment`` is outside a thank-you's window (9:00 to 17:00 on a weekday) in the recipient's zone."""
-    from .outreach import OutreachNotFoundError
-    from .outreach_thank_you import in_window  # imported here: it imports this module
-
     try:
         target = get_target(conn, row["target_id"], user_id=row["user_id"])
     except OutreachNotFoundError:
@@ -541,11 +591,9 @@ def _to_next_morning_in(conn: sqlite3.Connection, row: sqlite3.Row, now: datetim
     ).rowcount
     if moved:
         log_event(conn, row["target_id"], row["user_id"], "send_moved", detail=f"{reason}; now goes out {label}")
-        if row["kind"] == THANK_YOU_KIND:
-            conn.execute(
-                "UPDATE outreach_thank_yous SET send_at=?, label=?, updated_at=? WHERE target_id=? AND user_id=? AND state='scheduled'",
-                (send_at.isoformat(timespec="seconds"), label, utc_now(), row["target_id"], row["user_id"]),
-            )
+        hooks = _kind_hooks(row["kind"])
+        if hooks is not None:
+            hooks.moved(conn, row, send_at, label)
     return bool(moved)
 
 
@@ -572,7 +620,7 @@ def _hand_over(conn: sqlite3.Connection, row: sqlite3.Row, *, now: datetime | No
     mark. A paused row goes back in line as it was, without counting a try.
 
     A thank-you is checked once more in the same transaction
-    (outreach_thank_you.hand_over_stop): 'held' when its switch or Jev inbox
+    (its KindHooks.hand_over_stop, outreach_thank_you.hand_over_stop): 'held' when its switch or Jev inbox
     suggestions was turned off, 'cancelled' when they or the student wrote
     since, and 'moved' to their next weekday morning when the checks ran past
     its window. ``now`` is the pass's clock.
@@ -589,10 +637,9 @@ def _hand_over(conn: sqlite3.Connection, row: sqlite3.Row, *, now: datetime | No
         params = (row["target_id"], row["user_id"], row["target_id"], f'%"{row["target_id"]}"%')
     with conn:
         is_paused = automation.pause_guard(conn, row["user_id"])
-        if row["kind"] == THANK_YOU_KIND and not is_paused:
-            from .outreach_thank_you import hand_over_stop, settle_in  # imported here: it imports this module
-
-            stop = hand_over_stop(conn, row, now)
+        hooks = _kind_hooks(row["kind"])
+        if hooks is not None and not is_paused:
+            stop = hooks.hand_over_stop(conn, row, now)
             if stop is not None:
                 state, note = stop
                 if state == "later":
@@ -601,7 +648,7 @@ def _hand_over(conn: sqlite3.Connection, row: sqlite3.Row, *, now: datetime | No
                     "UPDATE outreach_scheduled_sends SET state='cancelled', error=?, updated_at=? WHERE target_id=? AND kind=? AND state='sending'",
                     (note[:500], stamp, row["target_id"], row["kind"]),
                 ).rowcount:
-                    settle_in(conn, row["target_id"], row["user_id"], state, note)
+                    hooks.settle(conn, row["target_id"], row["user_id"], state, note)
                     return state
                 return "cancelled"
         if conn.execute(
@@ -609,11 +656,8 @@ def _hand_over(conn: sqlite3.Connection, row: sqlite3.Row, *, now: datetime | No
             f"AND NOT EXISTS (SELECT 1 FROM user_settings WHERE user_id=? AND key='automation_paused' AND value='on'){unanswered}",
             (stamp, row["target_id"], row["kind"], row["user_id"], *params),
         ).rowcount:
-            if row["kind"] == THANK_YOU_KIND:
-                conn.execute(
-                    "UPDATE outreach_thank_yous SET state='transmitting', updated_at=? WHERE target_id=? AND user_id=? AND state='scheduled'",
-                    (stamp, row["target_id"], row["user_id"]),
-                )
+            if hooks is not None:
+                hooks.handed_over(conn, row, stamp)
             return "handed_over"
         if not _still_held(conn, row):
             return "cancelled"
@@ -678,8 +722,6 @@ def _send_one(
 
 def _send_thank_you(conn: sqlite3.Connection, row: sqlite3.Row, *, client_factory: ClientFactory, now: datetime) -> str:
     """Hand a thank-you to Gmail (outreach_gmail.send_thank_you) and settle its outcome as _send_one does an email's."""
-    from .outreach import OutreachNotFoundError
-
     try:
         send_thank_you(
             conn, row["target_id"], user_id=row["user_id"], fingerprint=row["fingerprint"], client_factory=client_factory,
@@ -706,10 +748,9 @@ def _send_thank_you(conn: sqlite3.Connection, row: sqlite3.Row, *, client_factor
 
 def _back_in_line(conn: sqlite3.Connection, row: sqlite3.Row) -> None:
     """A thank-you going back in line waits again as scheduled (it may have been handed over). Inside the caller's transaction."""
-    if row["kind"] == THANK_YOU_KIND:
-        from .outreach_thank_you import back_in_line  # imported here: it imports this module
-
-        back_in_line(conn, row["target_id"], row["user_id"])
+    hooks = _kind_hooks(row["kind"])
+    if hooks is not None:
+        hooks.back_in_line(conn, row["target_id"], row["user_id"])
 
 
 def wait_for_gmail(conn: sqlite3.Connection, row: sqlite3.Row, send_at: datetime) -> str:

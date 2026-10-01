@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR, automation, outreach_inbox
 from opportunity_app.api import create_app
-from opportunity_app.connections import classify_monitored_message
+from opportunity_app.monitored_classifier import classify_monitored_message
 from opportunity_app.inbox_classifiers import (
     MIN_CONFIDENCE,
     PAUSED_REASON,
@@ -29,9 +29,10 @@ from opportunity_app.inbox_classifiers import (
     enabled,
     set_enabled,
 )
-from opportunity_app.outreach import suggest_reply_status
+from opportunity_app.outreach_replies import suggest_reply_status
 from opportunity_app.inbox_watcher import InboxWatcher
-from opportunity_app.schema import LOCAL_USER_ID, connect_product
+from opportunity_app.schema import LOCAL_USER_ID
+from opportunity_app.database import connect_product
 from opportunity_app.typesafe_decisions import TypeSafeNotConfigured, TypeSafeResponseError
 
 from helpers_platform import build_and_migrate

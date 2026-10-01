@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import httpx
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, automation, outreach_forms
+from opportunity_app import STATIC_DIR, automation, automation_health, outreach_forms
 from opportunity_app.api import create_app
 from opportunity_app.outreach import create_target, get_target
 from opportunity_app.outreach_automation import AutomationWorker, draft_due, send_form, update_settings
@@ -30,7 +30,7 @@ from opportunity_app.outreach_forms import (
     plan_fill,
     submit_contact_form,
 )
-from opportunity_app.schema import connect_product
+from opportunity_app.database import connect_product
 from opportunity_app.timestamps import utc_now
 
 from browser_support import requires_chromium
@@ -492,7 +492,7 @@ class FormSendTests(unittest.TestCase):
                 (target["id"], USER, long_ago),
             )
             conn.commit()
-            self.assertEqual([item["target_id"] for item in automation.health_summary(conn, USER)["unconfirmed"]], [target["id"]])
+            self.assertEqual([item["target_id"] for item in automation_health.health_summary(conn, USER)["unconfirmed"]], [target["id"]])
         blocked = self.send(target)
         self.assertEqual(blocked.status_code, 428, "it may have gone: the student looks before it is sent again")
         self.assertEqual(self.submitter.calls, [])

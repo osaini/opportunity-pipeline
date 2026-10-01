@@ -21,13 +21,13 @@ import sqlite3
 from typing import Any, Callable
 
 from .agent_providers import AgentProvider, CliAgentProvider, complete_text
-from .outreach import (
-    AWAITING_REPLY, DEFAULT_GREETING, DRAFT_KINDS, DRAFT_META, cancel_schedules, log_event, draft_checks, get_target, greeting_line, greeting_style, home_terms, location_usable, mentions_home, near_home, student_home,
-    user_regions,
-)
+from .outreach import AWAITING_REPLY, DRAFT_KINDS, DRAFT_META, cancel_schedules, log_event, draft_checks, get_target
+from .outreach_greeting import DEFAULT_GREETING, greeting_line, greeting_style
+from .outreach_location import home_terms, location_usable, mentions_home, near_home, student_home, user_regions
 from .outreach_config import resolve_provider, sender_account
 from .outreach_versions import insert_version, keep_current_draft
 from .preparation import confirmed_facts
+from .quote_check import word_tokens
 from .timestamps import utc_now
 
 ProviderFactory = Callable[[str, str], AgentProvider]
@@ -184,7 +184,7 @@ def location_line(
     """The sentence saying the student lives near the company, or "" when none belongs.
 
     Every company where the student lives gets one: in their home region, or in
-    their home city when that is not one of their regions (outreach.student_home).
+    their home city when that is not one of their regions (outreach_location.student_home).
     When the school is in the same region, the line says year-round. An
     unrecognized location gets none rather than a guess. Neither does a location
     only the deep search reported, until the company's site or a filing states
@@ -399,14 +399,11 @@ def _number_keys(text: str) -> list[tuple[str, str]]:
     """Each number in the text as (its key, the key a draft needs to claim it).
 
     Whole numbers, as outreach_call_prep checks them, not pieces of text: the tokenizer
-    is the research module's, so 1,500 and 1500 are one number and a range such as
+    is the quote check's (quote_check.word_tokens), so 1,500 and 1500 are one number and a range such as
     2019-2023 is two. A number written as a percentage (45% or 45 percent) is claimed
     as a percentage, so it needs 45% in the inputs, not a headcount of 45.
     """
-    # Imported here: outreach_research pulls in outreach_discovery, which imports this module.
-    from . import outreach_research as research
-
-    tokens = research.word_tokens(text)
+    tokens = word_tokens(text)
     keys = []
     for index, token in enumerate(tokens):
         if token[0].isdigit():

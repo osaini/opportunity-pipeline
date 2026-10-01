@@ -27,7 +27,8 @@ from collections import defaultdict
 from opportunity_app.company_tags import capture_visible_sql, tag_facets, tag_facets_for_keys, tags_for_companies
 from opportunity_app.outreach import create_target, filtered_target_ids, get_target, list_targets
 from opportunity_app.outreach_recontact import eligible_targets, upgradeable
-from opportunity_app.schema import connect_product, migrate_legacy_database
+from opportunity_app.legacy_sync import migrate_legacy_database
+from opportunity_app.database import connect_product
 from opportunity_app.timestamps import utc_now
 from pipeline_core import OpportunityFilters, OpportunityRepository
 from pipeline_core.read_model import _decode_list, _nocase_key
@@ -187,7 +188,7 @@ class FilteredOutreachListParityTests(unittest.TestCase):
 
 def reference_location_region(text, regions):
     """location_region before its state patterns were compiled once: the same logic with re.search per call."""
-    from opportunity_app.outreach import US_STATES, _region_states
+    from opportunity_app.outreach_location import US_STATES, _region_states
     import re
 
     def mentions(lowered, term):
@@ -232,7 +233,7 @@ class LocationRegionParityTests(unittest.TestCase):
     ]
 
     def test_precompiled_state_patterns_give_the_same_region_for_every_text(self):
-        from opportunity_app.outreach import location_region
+        from opportunity_app.outreach_location import location_region
 
         for text in self.TEXTS:
             with self.subTest(text=text):

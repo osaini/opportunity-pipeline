@@ -18,12 +18,12 @@ from typing import Any, Callable
 
 from . import application_inbox, automation, outreach_labels
 from .background import PollingWorker, record_health_quietly, step_error
-from .database import rollback_quietly
+from .database import rollback_quietly, connect_product
 from .gmail_client import PROVIDER, ClientFactory
 from .outreach_delivery import check_deliveries
-from .outreach_gmail import _connector, gmail_notices, persist_gmail_health
+from .outreach_gmail import gmail_notices
+from .gmail_connection import connector_row, persist_gmail_health
 from .outreach_inbox import OnReply, capture_replies
-from .schema import connect_product
 from .timestamps import parse_app_instant, utc_now
 from .typesafe_decisions import DecisionClient
 from .user_time import user_timezone
@@ -50,7 +50,7 @@ CONNECTION = "inbox.connection"
 
 
 def _save_gmail_health(conn: sqlite3.Connection, user_id: str) -> None:
-    """Write the Gmail connection's health that memory holds (outreach_gmail.persist_gmail_health).
+    """Write the Gmail connection's health that memory holds (gmail_connection.persist_gmail_health).
 
     Called only between the watcher's steps, where nothing of the watcher's is
     pending: every step commits its own writes, and a step that failed was
@@ -212,7 +212,7 @@ class InboxWatcher(PollingWorker):
                     record_health_quietly(conn, user_id, component, ok=False, error=error, detail=detail)
             _save_gmail_health(conn, user_id)
         # A 401 during the checks can leave the connection broken (or the student may have disconnected meanwhile).
-        row = _connector(conn, user_id)
+        row = connector_row(conn, user_id)
         if row is None:
             return
         _record_connection(conn, user_id, row["status"], row["updated_at"])

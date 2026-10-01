@@ -19,7 +19,8 @@ from opportunity_app.outreach import create_target, get_target, list_targets
 from opportunity_app.outreach_contacts import apply_candidate, crawl_site, discover_candidates, find_contacts
 from opportunity_app.web_fetch import SafeFetcher
 from opportunity_app.outreach_discovery import DiscoveryBusy, DiscoveryManager, _RunLock, _scope_brief, run_discovery, scope_definitions, validate_proposals
-from opportunity_app.schema import connect_product, ensure_product_schema
+from opportunity_app.schema import ensure_product_schema
+from opportunity_app.database import connect_product
 
 from helpers_platform import build_and_migrate, use_profile_regions
 from helpers_outreach import LOCATE_PROMPT, company, only_for, proposals, safe_fetcher, scope_of, site_transport
@@ -341,7 +342,7 @@ class DiscoveryTests(unittest.TestCase):
         leaving the comma searched every page for "acme robotics," and rejected
         real companies with "no source mentions the company".
         """
-        from opportunity_app.outreach_discovery import mentions_company
+        from opportunity_app.outreach_identity import mentions_company
 
         page = "About Acme Robotics -- we build robots."
         for name in (
@@ -358,7 +359,7 @@ class DiscoveryTests(unittest.TestCase):
                 self.assertTrue(mentions_company(page, name, "acme.example"))
 
     def test_a_different_company_is_still_not_a_mention(self):
-        from opportunity_app.outreach_discovery import mentions_company
+        from opportunity_app.outreach_identity import mentions_company
 
         page = "About Acme Robotics -- we build robots."
         self.assertFalse(mentions_company(page, "Bovi Robotics, Inc.", "bovi.com"))
