@@ -110,14 +110,14 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
         "actions auth apply_checks apply_claims apply_classify apply_greenhouse apply_policy apply_sensitive apply_schema_client automation automation_health boards captures connections "
         "dossier employer market early_programs extension_apply mail_trust notifications purge ingestion profile resumes "
         "resume_variants preparation document_artifacts inbox_classifiers "
-        "outreach outreach_callbacks outreach_config outreach_identity outreach_label_name outreach_versions outreach_contacts outreach_linkedin outreach_batch "
+        "outreach outreach_callbacks outreach_config outreach_decline_reading outreach_identity outreach_label_name outreach_versions outreach_contacts outreach_linkedin outreach_batch outreach_thank_you_writing "
         "outreach_render"
     ),
     # L4 workflows. refresh is the manual refresh/purge workflow run in a background thread; api (L5) is its only importer.
     4: _app(
         "background application_inbox inbox_watcher internal_automation automation_handlers auto_triage apply_runs apply_preflight "
         "outreach_gmail outreach_gmail_sends outreach_delivery outreach_inbox outreach_labels outreach_schedule "
-        "outreach_thank_you outreach_automation outreach_recontact outreach_review outreach_call_prep "
+        "outreach_thank_you outreach_reply_senders outreach_automation outreach_recontact outreach_review outreach_call_prep "
         "outreach_call_questions outreach_forms outreach_discovery outreach_research outreach_drafting "
         "outreach_interviewer outreach_email_search outreach_locate outreach_profile outreach_settings "
         "refresh desktop_notify operations student_agent urgent"

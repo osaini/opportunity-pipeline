@@ -939,7 +939,7 @@ class OutreachIdentityTests(unittest.TestCase):
         self.assertEqual(loaded & heavy, set())
 
     def test_the_mailbox_names_it_shares_live_in_a_leaf_that_the_senders_import_from(self):
-        for module in ("outreach_contacts.py", "outreach_forms.py", "outreach_thank_you.py", "outreach_identity.py"):
+        for module in ("outreach_contacts.py", "outreach_forms.py", "outreach_reply_senders.py", "outreach_identity.py"):
             with self.subTest(module=module):
                 self.assertIn(f"{PACKAGE}.contact_names", all_imports(APP / module))
 

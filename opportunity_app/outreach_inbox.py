@@ -628,7 +628,7 @@ def _remember(
 # full_text is the whole message, quoted lines and anything typed between them included (a thank-you
 # after a decline reads it: outreach_thank_you); reply_to is its Reply-To address, when it has one;
 # headers are the KEPT_HEADERS as they arrived, and link_hosts the host of every link in it (hosts only;
-# None when they could not all be read), which outreach_thank_you.thank_you_blockers checks before anything
+# None when they could not all be read), which outreach_reply_senders.thank_you_blockers checks before anything
 # is sent on its own.
 REPLY_META = {"thread_id", "message_id", "subject", "from_name", "full_text", "reply_to", "headers", "link_hosts"}
 

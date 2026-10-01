@@ -23,26 +23,19 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, automation, automation_health, mail_message, outreach, outreach_delivery, outreach_inbox, outreach_thank_you
+from opportunity_app import (
+    STATIC_DIR, automation, automation_health, mail_message, outreach, outreach_decline_reading, outreach_delivery, outreach_inbox,
+    outreach_reply_senders, outreach_thank_you,
+)
 from opportunity_app.api import create_app
 from opportunity_app.outreach import greeting_line
 from opportunity_app.outreach_config import resolve_provider
 from opportunity_app.outreach_gmail import THANK_YOU_KIND, send_thank_you, thank_you_row
 from opportunity_app.outreach_schedule import run_due_sends
 from opportunity_app.outreach_settings import OutreachSettings
-from opportunity_app.outreach_thank_you import (
-    MAX_WORDS,
-    STUDENT_WROTE,
-    WROTE_AGAIN,
-    plan,
-    plan_send_at,
-    recipient_name,
-    stable_delay,
-    template,
-    thank_you_blockers,
-    validate,
-    write,
-)
+from opportunity_app.outreach_reply_senders import thank_you_blockers
+from opportunity_app.outreach_thank_you import STUDENT_WROTE, WROTE_AGAIN, plan, plan_send_at, stable_delay
+from opportunity_app.outreach_thank_you_writing import MAX_WORDS, recipient_name, template, validate, write
 from opportunity_app.schema import connect_product
 from opportunity_app.timestamps import utc_now
 from opportunity_app.typesafe_decisions import TypeSafeResponseError
@@ -1000,7 +993,7 @@ class ThankYouRulesTests(DeclineCase):
         with mock.patch.dict(os.environ, {"PIPELINE_OUTREACH_ACCOUNT": ""}):
             self.assertEqual(self.blockers(), ["account"], "with no sending address set up, nobody can be confirmed")
         self.assertEqual(
-            outreach_thank_you.blocker_note(["account"]),
+            outreach_reply_senders.blocker_note(["account"]),
             "Not thanked automatically: your sending address (PIPELINE_OUTREACH_ACCOUNT) is not set, so it could not be "
             "confirmed as addressed to you",
         )
@@ -1125,13 +1118,13 @@ class ThankYouRulesTests(DeclineCase):
                        "a@b.com, x:; junk", "x:; ,a@b.com", "x:;(c)", "undisclosed-recipients:;\t", "x: a@b.com, c@d.com; e@f.com",
                        'x: a@b.com; "q"', 'aa:"'):
             with self.subTest(loose=header):
-                self.assertTrue(outreach_thank_you._unreadable_address(header))
+                self.assertTrue(outreach_reply_senders._unreadable_address(header))
         # What every version reads: a group closed at a comma or the end, a mailbox and whatever follows it, no group at all.
         for header in ("undisclosed-recipients:;", f"Everyone: dana@acme.com, {ACCOUNT};", "x: ;  ", "x:(c);", "x: a@b.com; (c)",
                        "x:;, a@b.com", f"dana@acme.com; {ACCOUNT}", "a@b.com; x: c@d.com;;", "a@b.com: x;;",
                        "Dana: Lee <d@a.com>", f"Test Student <mailto:{ACCOUNT}>", f'"Student, Test" <{ACCOUNT}>, dana@acme.com'):
             with self.subTest(read=header):
-                self.assertFalse(outreach_thank_you._unreadable_address(header))
+                self.assertFalse(outreach_reply_senders._unreadable_address(header))
 
     def test_missing_or_unreadable_headers_fail_closed(self):
         self.assertEqual(self.blockers(drop=("headers",)), ["headers"], "a reply logged before headers were kept")
@@ -1186,7 +1179,7 @@ class ThankYouRulesTests(DeclineCase):
         enough = raw_reply(f"{DECLINE}\n\n" + " ".join(f"https://site{number}.com/" for number in range(mail_message.LINK_HOST_LIMIT)))
         self.assertEqual(len(mail_message.link_hosts_or_none(parsed(enough))), mail_message.LINK_HOST_LIMIT, "up to the limit, all kept")
         self.assertEqual(self.blockers(enough), [])
-        self.assertEqual(outreach_thank_you.blocker_note(["links"]), "Not thanked automatically: the links in it could not all be read")
+        self.assertEqual(outreach_reply_senders.blocker_note(["links"]), "Not thanked automatically: the links in it could not all be read")
         # From Gmail: kept as not readable, and never thanked.
         self.deliver(bogus.replace(b"<r-1@acme.com>", b"<links-1@acme.com>"), message_id="links-1", thread=self.thread)
         data = json.loads(self.conn.execute(
@@ -1684,14 +1677,14 @@ class StrictRulesTests(unittest.TestCase):
         ):
             with self.subTest(text=text):
                 self.assertEqual(outreach.suggest_reply_status(text)["status"], "declined", "the rules alone read each as a no")
-                self.assertTrue(outreach_thank_you.plain_decline_problem(text))
+                self.assertTrue(outreach_decline_reading.plain_decline_problem(text))
 
     def test_anything_the_list_does_not_know_is_more_than_no(self):
         for more in MORE_THAN_NO:
             text = f"Unfortunately we're not hiring interns right now. {more}"
             with self.subTest(text=text):
                 self.assertEqual(outreach.suggest_reply_status(text)["status"], "declined", "the rules alone read each as a no")
-                self.assertIn("says more than no", outreach_thank_you.plain_decline_problem(text, NAMES))
+                self.assertIn("says more than no", outreach_decline_reading.plain_decline_problem(text, NAMES))
         for text in (
             "We're not hiring interns yet.",
             "We're not hiring interns until summer.",
@@ -1708,7 +1701,7 @@ class StrictRulesTests(unittest.TestCase):
             f"{DECLINE}\n\nBest,\nDana\nJoin Our Team",
         ):
             with self.subTest(text=text):
-                self.assertIn("says more than no", outreach_thank_you.plain_decline_problem(text, NAMES))
+                self.assertIn("says more than no", outreach_decline_reading.plain_decline_problem(text, NAMES))
 
     def test_a_plain_no_with_a_greeting_pleasantries_and_a_signature_is_plain(self):
         for text in (
@@ -1724,13 +1717,13 @@ class StrictRulesTests(unittest.TestCase):
             "University Internships, Acme Robotics",
         ):
             with self.subTest(text=text):
-                self.assertEqual(outreach_thank_you.plain_decline_problem(text, NAMES), "")
+                self.assertEqual(outreach_decline_reading.plain_decline_problem(text, NAMES), "")
 
     def test_a_plain_no_is_plain(self):
-        self.assertEqual(outreach_thank_you.plain_decline_problem(DECLINE), "")
-        self.assertEqual(outreach_thank_you.plain_decline_problem("Thanks again for reaching out. We're not hiring interns this year."), "",
+        self.assertEqual(outreach_decline_reading.plain_decline_problem(DECLINE), "")
+        self.assertEqual(outreach_decline_reading.plain_decline_problem("Thanks again for reaching out. We're not hiring interns this year."), "",
                          "\"thanks again\" promises nothing")
-        self.assertIn("no plain no", outreach_thank_you.plain_decline_problem("Thanks for your note!"))
+        self.assertIn("no plain no", outreach_decline_reading.plain_decline_problem("Thanks for your note!"))
 
 
 class ReviewFindingContentTests(unittest.TestCase):
