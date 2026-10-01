@@ -353,6 +353,30 @@ class ReplyCaptureTests(ReplyCaptureFixture, unittest.TestCase):
         self.assertEqual((result["replies"], result["possible"], len(result["automatic"])), ([], [], 1))
         self.assertEqual(self.target(target)["status"], "sent")
 
+    def test_a_message_found_for_a_company_has_its_stored_row_read_once_before_it_is_judged(self):
+        """Read already? and judged by older rules? come from one lookup; a set-aside note re-reads the row only inside its write."""
+        self.sent_target()
+        self.arrive("reply-q", mail("Yes, let's talk."))
+        self.arrive("auto-q", mail("Out of office until Monday.", subject="Automatic reply: Robotics internship question",
+                                   headers="Auto-Submitted: auto-replied\n"))
+        lookups = []
+        with closing(connect_product(self.platform_path)) as conn:
+            conn.set_trace_callback(lookups.append)
+            outreach_inbox.capture_replies(conn, user_id=USER, client_factory=self.factory)
+
+        def asked(gmail_id, select):
+            return len([sql for sql in lookups if sql.startswith(select) and "FROM outreach_inbox_messages WHERE user_id=" in sql
+                        and f"gmail_id='{gmail_id}'" in sql])
+
+        for gmail_id in ("reply-q", "auto-q"):
+            # Once when it is first read, and once more when a second listing names it and finds it read already.
+            self.assertEqual(asked(gmail_id, "SELECT kind, rules FROM"), 2, gmail_id)
+            self.assertEqual(asked(gmail_id, "SELECT 1 FROM"), 0, f"{gmail_id}: judged-before is read off the stored row, not asked again")
+        self.assertEqual(asked("reply-q", "SELECT kind FROM"), 0)
+        self.assertEqual(asked("auto-q", "SELECT kind FROM"), 1, "inside the write that sets it aside")
+        self.assertEqual(self.inbox_row("reply-q")["kind"], "reply")
+        self.assertEqual(self.inbox_row("auto-q")["kind"], "automatic")
+
     def test_the_look_before_an_automatic_send_reads_the_companys_threads_now(self):
         target = self.sent_target()
         self.check()

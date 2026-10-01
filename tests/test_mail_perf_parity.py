@@ -15,7 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import mail_trust
+from opportunity_app import mail_trust, outreach_inbox
 from opportunity_app import outreach_gmail_sends as sends
 from opportunity_app.outreach import DRAFT_KINDS, UNSENT_STATUSES, get_target
 from opportunity_app.outreach_gmail import DRAFT_EVENT, _already_sent, last_bounce
@@ -360,7 +360,43 @@ class RefreshSuggestionsParityTests(unittest.TestCase):
                 self.assertEqual([row for row in employer_domain_rows(conn) if row[2] == "knownlabs.com"], before)
 
 
-MIGRATION_0048 = Path(__file__).resolve().parent.parent / "migrations" / "0048_mail_hot_path_indexes.sql"
+class SeenRowParityTests(unittest.TestCase):
+    """inbox-7: one read of a message's stored row answers both 'read already?' and 'judged by older rules?'."""
+
+    def reference(self, conn, gmail_id):
+        """REFERENCE: _seen, and the judged_before query read() ran after the message was fetched, as they were before inbox-7."""
+        row = conn.execute("SELECT kind, rules FROM outreach_inbox_messages WHERE user_id=? AND gmail_id=?", (USER, gmail_id)).fetchone()
+        seen = row is not None and not (row[0] in outreach_inbox.REJUDGED and int(row[1] or 0) < outreach_inbox.RULES)
+        judged_before = conn.execute(
+            "SELECT 1 FROM outreach_inbox_messages WHERE user_id=? AND gmail_id=? AND rules < ?", (USER, gmail_id, outreach_inbox.RULES),
+        ).fetchone() is not None
+        return seen, judged_before
+
+    def test_every_kind_and_rules_version_answers_as_the_two_queries_did(self):
+        conn, _ids = database(self, 1, 1, datetime.now(timezone.utc))
+        kinds = ("ignored", "automatic", "possible", "reply", "confirmed", "rejected")
+        stamp = "2026-09-20T10:00:00+00:00"
+        with conn:
+            for kind in kinds:
+                for rules in range(0, outreach_inbox.RULES + 2):
+                    conn.execute(
+                        "INSERT INTO outreach_inbox_messages(user_id, gmail_id, kind, recorded_at, rules) VALUES(?,?,?,?,?)",
+                        (USER, f"{kind}-{rules}", kind, stamp, rules),
+                    )
+        cases = [f"{kind}-{rules}" for kind in kinds for rules in range(0, outreach_inbox.RULES + 2)] + ["never-read"]
+        for gmail_id in cases:
+            with self.subTest(gmail_id=gmail_id):
+                seen, judged_before = self.reference(conn, gmail_id)
+                stored = outreach_inbox._stored(conn, USER, gmail_id)
+                self.assertEqual(outreach_inbox._settled(stored), seen)
+                self.assertEqual(outreach_inbox._seen(conn, USER, gmail_id), seen)
+                if not seen:  # read() goes on to judge only a message that is not settled
+                    self.assertEqual(stored is not None and int(stored[1] or 0) < outreach_inbox.RULES, judged_before)
+        self.assertTrue(any(self.reference(conn, case) == (False, True) for case in cases), "older rules' set-aside rows are covered")
+        self.assertTrue(any(self.reference(conn, case) == (False, False) for case in cases), "a message never read is covered")
+
+
+MIGRATION_0048 =Path(__file__).resolve().parent.parent / "migrations" / "0048_mail_hot_path_indexes.sql"
 
 
 class MailIndexMigrationTests(unittest.TestCase):
