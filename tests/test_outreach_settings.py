@@ -16,8 +16,7 @@ from opportunity_app.api import create_app
 from opportunity_app.outreach_gmail import attachment_path
 from opportunity_app.outreach_settings import OutreachSettings
 
-from helpers_platform import build_and_migrate
-import test_platform
+from helpers_platform import build_and_migrate, sample_docx
 
 ENV = "# Personal settings\nPIPELINE_WEB_TOKEN=keep-me\nPIPELINE_OUTREACH_PROVIDER=anthropic\n"
 
@@ -58,7 +57,7 @@ class OutreachSettingsApiTests(unittest.TestCase):
 
             uploaded = client.post(
                 "/api/v1/resumes", headers=headers,
-                files={"resume": ("Test Student Resume.docx", test_platform.PlatformTests.sample_docx(),
+                files={"resume": ("Test Student Resume.docx", sample_docx(),
                                   "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
             ).json()
             changed = client.put("/api/v1/outreach/settings", headers=headers, json={

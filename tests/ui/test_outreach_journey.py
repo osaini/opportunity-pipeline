@@ -14,66 +14,9 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from playwright.sync_api import expect
 
-from conftest import OWNER_TOKEN
 from outreach_fakes import COMPOSE_ACCOUNT
 from opportunity_app.schema import connect_product
-
-BEARER = {"Authorization": f"Bearer {OWNER_TOKEN}"}
-
-
-def seed_target(page, base_url, **overrides):
-    body = {
-        "company": "Bovi",
-        "channel": "Local accelerators",
-        "priority": "P1",
-        "website": "https://bovi.example",
-        "summary": "Dairy robotics for small farms",
-        "source_urls": ["https://bovi.example/"],
-        **overrides,
-    }
-    response = page.request.post(f"{base_url}/api/v1/outreach", headers=BEARER, data=body)
-    assert response.status == 201, response.text()
-    return response.json()
-
-
-def wait_for_results(page):
-    page.wait_for_function("() => document.getElementById('results')?.getAttribute('aria-busy') === 'false'")
-
-
-def open_tab(page, subtab):
-    """Pick an outreach subtab from the rail, e.g. "awaiting" or "deep-search"."""
-    button = page.locator(f'#subnav [data-subtab="{subtab}"]')
-    button.click()
-    expect(button).to_have_attribute("aria-current", "true")
-    wait_for_results(page)
-
-
-def open_outreach(page, subtab=None):
-    page.click("#outreach-nav")
-    expect(page.locator("#outreach-nav")).to_have_class("nav-item is-active")
-    wait_for_results(page)
-    if subtab:
-        open_tab(page, subtab)
-
-
-def row_for(page, company):
-    name = page.locator(".outreach-row-company", has_text=re.compile(f"^{re.escape(company)}$"))
-    return page.locator(".outreach-row", has=name)
-
-
-def card_for(page, company):
-    """The split view's pane for a company, picking its row in the list first."""
-    row = row_for(page, company)
-    if row.count() and row.get_attribute("aria-pressed") != "true":
-        row.click()
-    return page.locator(".outreach-pane", has=page.get_by_role("heading", name=company, exact=True))
-
-
-def open_details(card, tab=None):
-    """The pane's form area, switched to one of its tabs when named."""
-    if tab:
-        card.get_by_role("tab", name=tab, exact=True).click()
-    return card
+from ui_helpers import BEARER, assert_accessible, card_for, open_details, open_outreach, open_tab, row_for, seed_target
 
 
 def test_find_a_contact_draft_approve_and_hand_off_to_gmail(owner_page, base_url):
@@ -383,8 +326,6 @@ def test_editing_an_approved_draft_withdraws_the_approval(owner_page, base_url):
 
 
 def test_regenerate_with_comments_then_step_back_to_the_earlier_draft(owner_page, base_url):
-    from test_accessibility import _assert_accessible
-
     seed_target(owner_page, base_url, contact_email="jane@bovi.example", contact_name="Jane Doe")
     open_outreach(owner_page)
     details = open_details(card_for(owner_page, "Bovi"))
@@ -414,7 +355,7 @@ def test_regenerate_with_comments_then_step_back_to_the_earlier_draft(owner_page
     expect(history).to_contain_text("Asked for: Make it shorter.")
     expect(history.get_by_role("button", name="Use this draft")).to_be_hidden()
     expect(history.get_by_role("button", name="‹ Older")).to_be_focused()
-    _assert_accessible(owner_page, "the earlier drafts viewer")
+    assert_accessible(owner_page, "the earlier drafts viewer")
 
     owner_page.keyboard.press("Enter")
     history.get_by_role("button", name="Use this draft").click()
@@ -640,9 +581,7 @@ def test_find_people_reports_first_and_changes_only_the_ticked_contacts(owner_pa
     expect(guess).to_contain_text("Weak guess (not confirmed)")
     expect(guess.get_by_role("checkbox")).not_to_be_checked()
     expect(confirmed.get_by_role("checkbox")).to_be_checked()
-    from test_accessibility import _assert_accessible
-
-    _assert_accessible(owner_page, "the find people report")
+    assert_accessible(owner_page, "the find people report")
 
     # Nothing changed yet: the report only reports.
     target = owner_page.request.get(f"{base_url}/api/v1/outreach/{bovi['id']}", headers=BEARER).json()
@@ -673,14 +612,12 @@ def test_a_failed_load_does_not_keep_the_previous_views_counts(owner_page):
 
 
 def test_an_expanded_outreach_card_is_accessible(owner_page, base_url):
-    from test_accessibility import _assert_accessible
-
     _expanded_outreach_card(owner_page, base_url)
-    _assert_accessible(owner_page, "an expanded outreach card with contacts")
+    assert_accessible(owner_page, "an expanded outreach card with contacts")
     open_tab(owner_page, "deep-search")
-    _assert_accessible(owner_page, "the deep search panel")
+    assert_accessible(owner_page, "the deep search panel")
     open_tab(owner_page, "add")
-    _assert_accessible(owner_page, "the add, import, and export tools")
+    assert_accessible(owner_page, "the add, import, and export tools")
 
 
 def test_an_expanded_outreach_card_fits_a_phone(owner_page, base_url):

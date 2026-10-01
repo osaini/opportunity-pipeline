@@ -30,7 +30,10 @@ from opportunity_app.schema import connect_product, ensure_product_schema
 from opportunity_app.worker import WEB_APP_JOB_TYPES
 
 from helpers_platform import build_and_migrate
-from test_outreach_drafting import AUTH, USER, ScriptedProvider as DraftProvider, confirm_facts
+from helpers_source import js_function, python_modules, static_script_text
+from helpers_outreach import BLOCKED_FACT, BRIEF, PORT_FACT, STACK_FACT, store_brief
+from helpers_outreach import DRAFTING_AUTH as AUTH, USER, confirm_facts
+from helpers_outreach import DraftingScriptedProvider as DraftProvider
 
 REPLY = "Thanks for writing! Could we set up a call Thursday at 3pm? I'd like to hear about your drone work."
 EXPERIENCE = [
@@ -78,30 +81,6 @@ def prep_json(**overrides):
     }
     sections.update(overrides)
     return json.dumps(sections)
-
-
-PORT_FACT = {
-    "section": "technology", "text": "The arm finds the charge port with a stereo camera within 90 seconds",
-    "source_url": "https://news.example/chargebot-seed", "quote": "finds the charge port with a stereo camera", "person": "",
-    "checked": True, "note": "",
-}
-STACK_FACT = {
-    "section": "engineering", "text": "Motion planning in C++ on ROS 2", "source_url": "https://chargebot.example/careers",
-    "quote": "motion planning code in C++", "person": "", "checked": True, "note": "",
-}
-BLOCKED_FACT = {
-    "section": "traction", "text": "Raised a $4.5M seed round", "source_url": "https://news.example/blocked",
-    "quote": "a $4.5M seed round", "person": "", "checked": False, "note": "the site turned the check away (HTTP 403)",
-}
-BRIEF = {"facts": [PORT_FACT, STACK_FACT, BLOCKED_FACT], "gaps": ["which motors the arm uses"], "refused": [], "proposed": 3}
-
-
-def store_brief(conn, target_id, brief=BRIEF, at="2026-09-20T12:00:00+00:00", error=""):
-    conn.execute(
-        "UPDATE outreach_targets SET tech_brief_json=?, tech_brief_at=?, tech_brief_by='claude-code', tech_brief_error=? WHERE id=?",
-        (json.dumps(brief), at, error, target_id),
-    )
-    conn.commit()
 
 
 class CallPrepTests(unittest.TestCase):
@@ -1198,31 +1177,36 @@ class CallPrepApiTests(unittest.TestCase):
             self.assertEqual(client.get(f"/api/v1/outreach/{created['id']}", headers=AUTH).json()["tech_brief_job"]["state"], "succeeded")
 
     def test_the_pane_offers_call_prep(self):
-        script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        script = static_script_text()  # every shipped script, so the asserts follow code that moves between files
         self.assertIn("/call-prep`", script)
         self.assertIn('["prep", "Call prep"]', script)
-        self.assertIn("window.confirm(", script[script.index("function askForReply"):])
+        self.assertIn("window.confirm(", js_function(script, "askForReply"))
         self.assertIn("visibilitychange", script)
         self.assertIn("/research`", script)
         self.assertIn("function outreachTechBrief", script)
 
     def test_the_panes_say_what_is_happening_and_do_not_overstate_the_second_read(self):
-        script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        script = static_script_text()
+        # Each pane is cut out by function name, not by character offset, so moving the code or changing its length cannot shift a window.
         # Call prep researching inline shows as Researching, not as a live Research button.
-        tech = script[script.index("function outreachTechBrief"):]
-        self.assertIn("preppingFirst", tech[:2500])
-        self.assertIn("item.call_prep_job?.state", tech[:2500])
+        tech = js_function(script, "outreachTechBrief")
+        self.assertIn("preppingFirst", tech)
+        self.assertIn("item.call_prep_job?.state", tech)
         # The interviewer pane never shows a stored person after the student named someone else.
-        pane = script[script.index("function outreachInterviewer"):]
-        self.assertIn("(you named them); LinkedIn not read yet", pane[:3000])
-        self.assertIn("record = {};", pane[:3000], "the old profile link is dropped")
-        self.assertIn("linkedin.why", pane[:4500], "the reason comes from the record, not hardcoded copy")
+        pane = js_function(script, "outreachInterviewer")
+        self.assertIn("(you named them); LinkedIn not read yet", pane)
+        self.assertIn("record = {};", pane, "the old profile link is dropped")
+        self.assertIn("linkedin.why", pane, "the reason comes from the record, not hardcoded copy")
         self.assertNotIn("it never names the company", script)
         # A separate read of a passage is not a different model, so no copy says it is.
         self.assertNotIn("a second model confirm", script)
-        for name in ("outreach_research.py", "outreach_interviewer.py", "outreach_call_prep.py"):
-            text = (Path(outreach_call_prep.__file__).parent / name).read_text(encoding="utf-8").casefold()
-            self.assertNotIn("second model", text, name)
+        # The call-prep modules, whether each stays one file or becomes a package. Other outreach modules legitimately say
+        # "second model": the follow-up and thank-you reviews really are read by a different model.
+        names = ("outreach_research", "outreach_interviewer", "outreach_call_prep")
+        modules = {path: text for path, text in python_modules("*.py").items() if path.split("/")[0].removesuffix(".py") in names}
+        self.assertEqual({path.split("/")[0].removesuffix(".py") for path in modules}, set(names))
+        for name, text in modules.items():
+            self.assertNotIn("second model", text.casefold(), name)
         readme = (Path(outreach_call_prep.__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
         self.assertNotIn("second model confirms", readme)
         self.assertNotIn("a second model which did not write", readme)

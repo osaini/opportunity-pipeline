@@ -22,46 +22,18 @@ from opportunity_app.apply_policy import SchemaField
 from opportunity_app.apply_sensitive import StoreRefused, add_entry
 
 from apply_fake_ats import fixture_json
-import test_apply_policy as policy_tests
-import test_apply_runs as runs_tests
-from test_apply_policy import BASE, COMPANY, F, FACTS, KEY, LETTER_NONE, MULTI, OTHER, RESUME_OK, SINGLE, USER
+import helpers_apply as apply_helpers
+from helpers_apply import ACCURATE, BASE, COMPANY, F, FACTS, KEY, LETTER_NONE, MULTI, OTHER, RESUME_OK, SINGLE, USER, StoreCase
+# unittest and pytest run the module fixtures they find in the test module's namespace.
+from helpers_apply import setUpModule, tearDownModule  # noqa: F401
 
 REPO = Path(__file__).resolve().parent.parent
 AUTH = "Are you legally authorized to work in the United States?"
 SPONSOR = "Will you now or in the future require sponsorship for employment visa status?"
 PRIVACY = "I have read the Example Robotics privacy notice"
-ACCURATE = "I certify that the information I have provided is accurate"
 GENDER = "Gender"
 NOTICE_URL = "https://example-robotics.test/legal/privacy"
 DECLINE = "Decline To Self Identify"
-
-
-def setUpModule():
-    runs_tests.setUpModule()
-
-
-def tearDownModule():
-    runs_tests.tearDownModule()
-
-
-class StoreCase(runs_tests.ApplyCase):
-    """A throwaway database in which the student has switched the kinds of answer on that a test needs."""
-
-    def allow(self, *categories):
-        apply_sensitive.set_allowed_categories(self.conn, USER, categories)
-
-    def add(self, **kwargs):
-        kwargs.setdefault("consent", True)
-        return add_entry(self.conn, USER, **kwargs)
-
-    def rows(self):
-        return [dict(row) for row in self.conn.execute("SELECT * FROM apply_sensitive_answers ORDER BY created_at, id").fetchall()]
-
-    def refused(self, needle, **kwargs):
-        with self.assertRaises(StoreRefused) as caught:
-            self.add(**kwargs)
-        self.assertIn(needle, str(caught.exception))
-        return caught.exception
 
 
 class AllowedCategoryTests(StoreCase):
@@ -423,11 +395,11 @@ class PlanFromTheStoreTests(StoreCase):
         return src
 
     def plan(self, fields, mode="submit", company=COMPANY):
-        return policy_tests.plan(fields, self.sources(), mode, company=company)
+        return apply_helpers.plan(fields, self.sources(), mode, company=company)
 
     def assert_needs(self, fields, kind, key, company=COMPANY):
         submit, handoff = self.plan(fields, "submit", company), self.plan(fields, "handoff", company)
-        self.assertEqual(policy_tests.kinds(submit)[key], kind)
+        self.assertEqual(apply_helpers.kinds(submit)[key], kind)
         self.assertFalse(submit.ready)
         self.assertEqual((handoff.get(key).disposition, handoff.get(key).source.kind, handoff.get(key).value), ("left_for_you", "none", None))
         return submit
@@ -463,9 +435,9 @@ class PlanFromTheStoreTests(StoreCase):
         field = F("q", AUTH, SINGLE, options=("Yes", "No"))
         self.allow("work_authorization")
         src = self.sources()
-        src.answers = [policy_tests.answer(AUTH, "Yes")]
-        result = policy_tests.plan(BASE + [field], src, "submit")
-        self.assertEqual(policy_tests.kinds(result)["q"], "sensitive_missing")
+        src.answers = [apply_helpers.answer(AUTH, "Yes")]
+        result = apply_helpers.plan(BASE + [field], src, "submit")
+        self.assertEqual(apply_helpers.kinds(result)["q"], "sensitive_missing")
         self.assertIsNone(result.get("q").value)
 
     def test_the_stored_answer_must_be_one_of_this_forms_options_by_label(self):
@@ -1000,8 +972,8 @@ class LeftoverReviewTests(StoreCase):
         for label in ("What kind of visa do you have?", "What sort of visa do you hold?", "Your visa", "Visa (if applicable)"):
             with self.subTest(label=label):
                 # An answer the student saved as reusable at another company is not typed here.
-                rows = [policy_tests.answer(label, "F-1", company=OTHER, tags=["reusable"])]
-                got = policy_tests.plan(BASE + [F("q", label)], policy_tests.sources(answers=rows), "submit", company="Third Co").get("q")
+                rows = [apply_helpers.answer(label, "F-1", company=OTHER, tags=["reusable"])]
+                got = apply_helpers.plan(BASE + [F("q", label)], apply_helpers.sources(answers=rows), "submit", company="Third Co").get("q")
                 self.assertEqual((got.sensitive, got.source.kind, got.value), ("sponsorship", "none", None))
                 self.assertEqual(apply_preflight._action(got, {})["type"], "manual", "never the ordinary answer form with Use for any company")
 
@@ -1105,7 +1077,10 @@ class LeftoverReviewTests(StoreCase):
 class StoreReaderScanTests(unittest.TestCase):
     """12.7: only the policy, the runs, operations (export and deletion), the schema (its migration step) and the store's own module name the table."""
 
-    ALLOWED = {"apply_sensitive.py", "operations.py", "schema.py"}
+    # Allowed modules, as paths from the repo root without ".py". Each may be a single file or, after a split, a package of
+    # the same name (opportunity_app/schema/...), but only at this location: a same-named file elsewhere (scripts/schema.py,
+    # pipeline_core/operations.py) is not allowed, which the old basename check wrongly let through.
+    ALLOWED = ("opportunity_app/apply_sensitive", "opportunity_app/operations", "opportunity_app/schema")
 
     def sources(self):
         for folder in ("opportunity_app", "pipeline_core"):
@@ -1113,32 +1088,60 @@ class StoreReaderScanTests(unittest.TestCase):
         yield REPO / "pipeline.py"
         yield from (REPO / "scripts").rglob("*.py")
 
+    def allowed(self, path):
+        module = path.relative_to(REPO).as_posix()[:-3]
+        return any(module == name or module.startswith(name + "/") for name in self.ALLOWED)
+
     def test_no_other_source_file_names_the_table(self):
-        named = {path.name for path in self.sources() if "apply_sensitive_answers" in path.read_text(encoding="utf-8")}
+        named = [path for path in self.sources() if "apply_sensitive_answers" in path.read_text(encoding="utf-8")]
         self.assertTrue(named, "the scan found the files it should")
-        self.assertEqual(named - self.ALLOWED, set(), "a file that reads the store must be added here on purpose")
+        self.assertEqual([path.relative_to(REPO).as_posix() for path in named if not self.allowed(path)], [],
+                         "a file that reads the store must be added here on purpose")
+
+    def package_modules(self):
+        return [path for path in (REPO / "opportunity_app").rglob("*.py")]
+
+    def in_module(self, path, name):
+        """Whether `path` is the module `name` (repo-relative, no .py) or sits inside a package of that name."""
+        module = path.relative_to(REPO).as_posix()[:-3]
+        return module == name or module.startswith(name + "/")
 
     def test_employer_and_reporting_code_never_read_the_store_or_import_it(self):
-        reporting = [path for path in (REPO / "opportunity_app").rglob("*.py")
-                     if re.search(r"employer|report|metric|analytic|fairness|subgroup|export_pipeline|dossier|digest", path.name)]
-        self.assertIn("employer.py", {path.name for path in reporting})
+        # Matched against the repo-relative path, so a reporting module moved into a subpackage (opportunity_app/metrics/x.py,
+        # opportunity_app/reports/x.py) is still found, whatever its own file name.
+        pattern = r"employer|report|metric|analytic|fairness|subgroup|export_pipeline|dossier|digest"
+        reporting = [path for path in self.package_modules() if re.search(pattern, path.relative_to(REPO).as_posix())]
+        self.assertIn("opportunity_app/employer.py", {path.relative_to(REPO).as_posix() for path in reporting})
         for path in reporting:
             text = path.read_text(encoding="utf-8")
-            with self.subTest(file=path.name):
+            with self.subTest(file=path.relative_to(REPO).as_posix()):
                 self.assertNotRegex(text, r"apply_sensitive|apply_policy|sensitive_answers|stored_sensitive_answer")
         for path in [REPO / "pipeline.py"] + list((REPO / "pipeline_core").rglob("*.py")):
-            self.assertNotIn("apply_sensitive", path.read_text(encoding="utf-8"), path.name)
+            self.assertNotIn("apply_sensitive", path.read_text(encoding="utf-8"), path.relative_to(REPO).as_posix())
+
+    # The modules that may import the store, keyed like ALLOWED on the path from the repo root: the plan, the check, and the
+    # settings routes (still in api.py). A file or package at another path that imports it fails, however it is named.
+    IMPORTERS = ("opportunity_app/apply_policy", "opportunity_app/apply_preflight", "opportunity_app/api")
 
     def test_only_the_plan_the_check_and_the_settings_routes_import_the_store(self):
-        importers = {path.name for path in (REPO / "opportunity_app").rglob("*.py")
-                     if re.search(r"\bapply_sensitive\b", path.read_text(encoding="utf-8")) and path.name != "apply_sensitive.py"}
-        self.assertEqual(importers, {"apply_policy.py", "apply_preflight.py", "api.py"})
+        importers = {path.relative_to(REPO).as_posix() for path in self.package_modules()
+                     if re.search(r"\bapply_sensitive\b", path.read_text(encoding="utf-8"))
+                     and not self.in_module(path, "opportunity_app/apply_sensitive")}
+        self.assertTrue(importers, "the scan found the files it should")
+        self.assertEqual([item for item in sorted(importers)
+                          if not any(self.in_module(REPO / (item), name) for name in self.IMPORTERS)], [],
+                         "a module that imports the store must be added to IMPORTERS on purpose")
+        for name in self.IMPORTERS:
+            self.assertTrue(any(item == name + ".py" or item.startswith(name + "/") for item in importers), f"{name} no longer imports the store")
 
     def test_the_extension_and_the_saved_answer_library_code_never_touch_it(self):
-        for name in ("extension_apply.py", "preparation.py", "profile.py", "resume_variants.py"):
-            text = (REPO / "opportunity_app" / name).read_text(encoding="utf-8")
-            with self.subTest(file=name):
-                self.assertNotRegex(text, r"apply_sensitive|sensitive_answers|stored_sensitive_answer")
+        # Every module of these names, whether it stays one file or becomes a package (preparation/...).
+        for name in ("extension_apply", "preparation", "profile", "resume_variants"):
+            found = [path for path in self.package_modules() if self.in_module(path, f"opportunity_app/{name}")]
+            self.assertTrue(found, f"no module found for opportunity_app/{name}")
+            for path in found:
+                with self.subTest(file=path.relative_to(REPO).as_posix()):
+                    self.assertNotRegex(path.read_text(encoding="utf-8"), r"apply_sensitive|sensitive_answers|stored_sensitive_answer")
 
 
 if __name__ == "__main__":

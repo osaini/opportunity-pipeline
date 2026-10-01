@@ -16,8 +16,7 @@ from playwright.sync_api import expect
 
 from conftest import OWNER_TOKEN
 from outreach_fakes import COMPOSE_ACCOUNT
-from test_automation import gmail_listing
-from test_outreach_journey import open_outreach
+from ui_helpers import gmail_listing, open_outreach
 
 BEARER = {"Authorization": f"Bearer {OWNER_TOKEN}"}
 ROUTE = "**/api/v1/outreach/gmail-label"

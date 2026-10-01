@@ -47,9 +47,8 @@ from opportunity_app.schema import connect_product, utc_now
 from opportunity_app.typesafe_decisions import TypeSafeResponseError
 
 from helpers_platform import build_and_migrate
-from test_inbox_classifiers import FakeJev
-from test_outreach_gmail import ACCOUNT, SCOPES, FakeGmail, forget_gmail_backoff, rate_limited
-from test_outreach_inbox import mail, now_ms
+from helpers_outreach import FakeJev
+from helpers_gmail import ACCOUNT, SCOPES, FakeGmail, forget_gmail_backoff, mail, now_ms, rate_limited
 
 AUTH = {"Authorization": "Bearer thanks-owner"}
 USER = "local-user"

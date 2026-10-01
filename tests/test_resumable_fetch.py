@@ -26,6 +26,13 @@ SOURCES = {
     ],
 }
 
+try:
+    import realdata_guard
+except ImportError:  # imported as tests.<module>, with tests/ not on sys.path
+    from tests import realdata_guard
+# Guards this module's own run against opening data/*.db (AGENTS.md hard rule 1); see tests/realdata_guard.py.
+realdata_guard.install()
+
 
 class TransientErrorTests(unittest.TestCase):
     def test_connection_failures_timeouts_and_server_errors_are_transient(self):
@@ -61,7 +68,8 @@ class TransientErrorTests(unittest.TestCase):
 
     def test_http_json_raises_a_plain_error_for_a_404(self):
         not_found = urllib.error.HTTPError("https://x", 404, "Not Found", {}, io.BytesIO())
-        with unittest.mock.patch.object(pipeline.urllib.request, "urlopen", side_effect=not_found):
+        # request_json retries a 404 with a real randomised backoff (up to ~4.5 s); the sleep is not what is under test.
+        with unittest.mock.patch.object(pipeline.urllib.request, "urlopen", side_effect=not_found),                 unittest.mock.patch.object(pipeline.time, "sleep"):
             with self.assertRaises(RuntimeError) as caught:
                 pipeline.request_json("https://x")
         self.assertNotIsInstance(caught.exception, pipeline.TransientFetchError)

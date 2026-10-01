@@ -32,6 +32,13 @@ from opportunity_app.schema import (
 from opportunity_app.timestamps import canonical_utc
 from pipeline_core import OpportunityFilters, OpportunityRepository
 
+try:
+    import realdata_guard
+except ImportError:  # imported as tests.<module>, with tests/ not on sys.path
+    from tests import realdata_guard
+# Guards this module's own run against opening data/*.db (AGENTS.md hard rule 1); see tests/realdata_guard.py.
+realdata_guard.install()
+
 MIGRATIONS = Path(__file__).resolve().parent.parent / "migrations"
 
 
@@ -39,6 +46,7 @@ def schema_at_0019(path: Path) -> sqlite3.Connection:
     """A database as it stood before this migration, ready to be upgraded."""
 
     conn = connect_product(path)
+    conn.execute("PRAGMA synchronous = OFF")  # a throwaway file: skip the fsync each migration commit pays
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)"
     )

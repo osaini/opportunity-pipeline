@@ -14,7 +14,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
-from opportunity_app.agent_providers import ProviderReply
 from opportunity_app.api import create_app
 from opportunity_app.outreach import (
     DraftChangedError,
@@ -42,37 +41,8 @@ from opportunity_app.outreach_drafting import (
 from opportunity_app.schema import connect_product, ensure_product_schema, utc_now
 
 from helpers_platform import build_and_migrate, use_profile_regions
-
-AUTH = {"Authorization": "Bearer drafting-owner"}
-USER = "local-user"
-
-
-def confirm_facts(conn, **facts):
-    for field, value in facts.items():
-        conn.execute(
-            """
-            INSERT INTO profile_facts(user_id, field_path, value_json, source, confirmed, created_at, updated_at)
-            VALUES(?, ?, ?, 'user', 1, ?, ?)
-            ON CONFLICT(user_id, field_path) DO UPDATE SET value_json=excluded.value_json, confirmed=1
-            """,
-            (USER, field, json.dumps(value), utc_now(), utc_now()),
-        )
-    conn.commit()
-
-
-class ScriptedProvider:
-    """Returns queued replies and records every prompt it was given."""
-
-    name = "anthropic"
-    model = "test-model"
-
-    def __init__(self, replies):
-        self.replies = list(replies)
-        self.prompts = []
-
-    def create(self, *, instructions, messages, tools, max_output_tokens):
-        self.prompts.append(messages[-1]["content"])
-        return ProviderReply(text=self.replies.pop(0))
+from helpers_outreach import DRAFTING_AUTH as AUTH, USER, confirm_facts
+from helpers_outreach import DraftingScriptedProvider as ScriptedProvider
 
 
 def draft_json(subject, body, claims):

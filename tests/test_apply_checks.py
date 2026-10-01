@@ -7,8 +7,10 @@ observations these functions read are gathered correctly.
 
 import json
 import re
+import sys
 import unittest
 from dataclasses import dataclass, field
+from pathlib import Path
 from urllib.parse import quote
 
 from opportunity_app import apply_checks
@@ -36,6 +38,8 @@ from opportunity_app.apply_checks import (
     question_key,
     route_decision,
 )
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from helpers_apply import FakePlan, planned  # noqa: E402  (also installs tests/realdata_guard.py)
 
 TOKEN, JOB = "examplerobotics", "4000000001"
 SUBMIT_PATH = f"/{TOKEN}/jobs/{JOB}"
@@ -748,10 +752,6 @@ class RequiredCheckScriptTests(unittest.TestCase):
 
 # --- check_required (spec 6.10) ------------------------------------------------------------------
 
-def planned(key, question, value, *, required=True, disposition="fill", control="text", source="profile", **extra):
-    return {"key": key, "question": question, "value": value, "required": required, "disposition": disposition,
-            "control": control, "source": {"kind": source, "ref": "x"}, **extra}
-
 
 def item(key, question, value, *, kind="text", markers=("attr",), empty=None):
     empty = (not value) if empty is None else empty
@@ -760,12 +760,6 @@ def item(key, question, value, *, kind="text", markers=("attr",), empty=None):
 
 def control(key, value="", *, kind="text", checked=False, mirror=False, required=False):
     return {"key": key, "name": key, "id": key, "kind": kind, "value_text": value, "checked": checked, "mirror": mirror, "required": required}
-
-
-@dataclass
-class FakePlan:
-    fields: list = field(default_factory=list)
-    plan_hash: str = "hash-1"
 
 
 SCHEMA = [

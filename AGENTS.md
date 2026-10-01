@@ -179,6 +179,26 @@ browser while every API test passed. The CSRF middleware and the helper that
 defeats it were written in the same commit. When you are asked "is this covered?",
 answer with the row, not the test count.
 
+**Guards for refactors.** These tests exist so that moving code cannot silently
+weaken the suite; do not loosen them to make a move pass.
+
+- `tests/test_route_contract.py` pins the ordered route table and the OpenAPI
+  document (`tests/fixtures/route_table.json`, `openapi.json`). A pure refactor
+  must keep both identical. A deliberate API change regenerates them with
+  `UPDATE_SNAPSHOTS=1 py -3 -m unittest tests.test_route_contract` (not under `-n`).
+- `tests/test_entry_points.py` checks that every `python -m opportunity_app.<module>`,
+  `scripts/<file>` and `uvicorn opportunity_app.api:app` that launchers, scheduled
+  tasks, the Dockerfile, CI and the docs name still resolves and answers `--help`.
+- `tests/realdata_guard.py` makes any test that opens a file inside a real `data/`
+  directory (this checkout's or the main checkout's, whatever the file's suffix, so
+  dated backups too) fail with `RealDataAccessError`. `tests/conftest.py` installs it
+  for pytest, and every `tests/test_*.py` module installs it at import time so a
+  single-module `unittest` run is guarded too; `test_real_data_guard.py` enforces that.
+- Negative source-text guards read every file they could be hiding in, through
+  `tests/helpers_source.py` (all `static/*.js`, every `apply*` module at any depth, every
+  `apps/extension/**/*.js`, `pipeline.py` plus all of `pipeline_core/`). When you
+  add a guard that greps source, scan the directory, never one file.
+
 ## 5. Defect regression status
 
 The phase-verification pass on 2026-08-23 fixed the previously documented CSRF,

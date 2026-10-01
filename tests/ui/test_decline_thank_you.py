@@ -12,19 +12,16 @@ from __future__ import annotations
 import json
 import os
 import re
-from contextlib import closing
 from datetime import datetime, timedelta, timezone
-from unittest import mock
 
-import pytest
 from playwright.sync_api import expect
 
 import outreach_fakes
 from conftest import OWNER_TOKEN, wait_for_results
-from test_outreach_journey import card_for, open_outreach, seed_target
+from ui_helpers import assert_accessible, card_for, db, open_outreach, seed_target
 from opportunity_app import automation
 from opportunity_app.outreach_gmail import thank_you_fingerprint
-from opportunity_app.schema import connect_product, utc_now
+from opportunity_app.schema import utc_now
 
 BEARER = {"Authorization": f"Bearer {OWNER_TOKEN}"}
 USER = "local-user"
@@ -34,10 +31,6 @@ BODY = (
     "I appreciate it, and I wish you and the Acme Robotics team all the best.\n\nBest,\nTest Student"
 )
 SUBJECT = "Re: Robotics internship question"
-
-
-def db(live_server):
-    return closing(connect_product(live_server.live_path))
 
 
 def declined_company(page, base_url, live_server, company="Acme Robotics"):
@@ -279,15 +272,6 @@ def test_the_automation_panel_lists_the_switch_and_says_it_needs_jev(owner_page,
     expect(status).to_have_text("Send a thank-you when someone declines: on.")
 
 
-@pytest.fixture
-def restored_environment():
-    # The server runs in this process, so its settings are this process's environment.
-    with mock.patch.dict(os.environ, {}):
-        yield
-    if outreach_fakes.SETTINGS_ENV and outreach_fakes.SETTINGS_ENV.exists():
-        outreach_fakes.SETTINGS_ENV.unlink()
-
-
 def test_the_thank_you_writer_is_chosen_in_outreach_settings(owner_page, restored_environment):
     open_outreach(owner_page, "settings")
     panel = owner_page.locator("section.outreach-settings")
@@ -298,14 +282,10 @@ def test_the_thank_you_writer_is_chosen_in_outreach_settings(owner_page, restore
     expect(panel.locator(".form-status")).to_have_text("Thank-you writer saved.")
     assert os.environ["PIPELINE_OUTREACH_THANK_YOU_PROVIDER"] == "legacy"
     assert "PIPELINE_OUTREACH_THANK_YOU_PROVIDER=legacy" in outreach_fakes.SETTINGS_ENV.read_text(encoding="utf-8")
-    from test_accessibility import _assert_accessible
-
-    _assert_accessible(owner_page, "the outreach settings tab with the thank-you writer")
+    assert_accessible(owner_page, "the outreach settings tab with the thank-you writer")
 
 
 def test_thank_yous_on_the_cards_are_accessible_in_both_themes(owner_page, base_url, live_server):
-    from test_accessibility import _assert_accessible
-
     waiting = declined_company(owner_page, base_url, live_server)
     seed_thank_you(live_server, waiting["id"])
     held = declined_company(owner_page, base_url, live_server, company="Bovi")
@@ -315,10 +295,10 @@ def test_thank_yous_on_the_cards_are_accessible_in_both_themes(owner_page, base_
     box = thank_you_box(owner_page)
     box.locator("summary").click()
     expect(box.locator("pre")).to_be_visible()
-    _assert_accessible(owner_page, "a card with a waiting thank-you")
+    assert_accessible(owner_page, "a card with a waiting thank-you")
     held_box = thank_you_box(owner_page, "Bovi")
     held_box.locator("summary").click()
     expect(held_box).to_contain_text("Written by Anthropic.")
-    _assert_accessible(owner_page, "a card with a held thank-you")
+    assert_accessible(owner_page, "a card with a held thank-you")
     owner_page.evaluate("document.documentElement.dataset.theme = 'dark'")
-    _assert_accessible(owner_page, "a card with a held thank-you in dark mode")
+    assert_accessible(owner_page, "a card with a held thank-you in dark mode")

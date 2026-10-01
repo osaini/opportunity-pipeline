@@ -54,7 +54,7 @@ from opportunity_app.outreach_smtp import ACCEPTED, CATCH_ALL, REJECTED, UNKNOWN
 from opportunity_app.schema import connect_product, ensure_product_schema
 
 from helpers_platform import build_and_migrate
-from test_outreach_discovery import USER, company, only_for, proposals, safe_fetcher, site_transport
+from helpers_outreach import USER, company, only_for, proposals, safe_fetcher, site_transport
 
 
 def candidate(email="", *, name="", role="", method="pattern_guess", confidence="unverified",

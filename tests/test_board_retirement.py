@@ -22,6 +22,13 @@ SOURCE = {"kind": "greenhouse", "company": "Acme", "token": "acme"}
 KEY = "greenhouse:acme"
 NOW = datetime(2026, 9, 27, 12, tzinfo=timezone.utc)
 
+try:
+    import realdata_guard
+except ImportError:  # imported as tests.<module>, with tests/ not on sys.path
+    from tests import realdata_guard
+# Guards this module's own run against opening data/*.db (AGENTS.md hard rule 1); see tests/realdata_guard.py.
+realdata_guard.install()
+
 
 def posting(job_id: int, title: str = "Mechanical Engineering Intern") -> dict:
     return {

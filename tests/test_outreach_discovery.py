@@ -21,6 +21,7 @@ from opportunity_app.outreach_discovery import DiscoveryBusy, DiscoveryManager, 
 from opportunity_app.schema import connect_product, ensure_product_schema
 
 from helpers_platform import build_and_migrate, use_profile_regions
+from helpers_outreach import LOCATE_PROMPT, company, only_for, proposals, safe_fetcher, scope_of, site_transport
 
 USER = "local-user"
 
@@ -34,33 +35,6 @@ ACME = {
         "/private/people": "<h3>Secret Person</h3><p>CEO</p><p>secret.person@acme.com</p>",
     },
 }
-
-
-def site_transport(sites, *, mx=True, dead=()):
-    requested = []
-
-    def handler(request):
-        requested.append(str(request.url))
-        host = request.url.host.removeprefix("www.")
-        if host == "cloudflare-dns.com":
-            answer = [{"type": 15, "data": "10 mx.example."}] if mx else []
-            return httpx.Response(200, json={"Status": 0, "Answer": answer})
-        if str(request.url) in dead:
-            return httpx.Response(404)
-        pages = sites.get(host)
-        if pages is None:
-            return httpx.Response(404)
-        body = pages.get(request.url.path)
-        if body is None:
-            return httpx.Response(404)
-        kind = "text/plain" if request.url.path.endswith(".txt") else "text/html"
-        return httpx.Response(200, text=body, headers={"content-type": kind})
-
-    return httpx.MockTransport(handler), requested
-
-
-def safe_fetcher(client):
-    return SafeFetcher(client, resolve=lambda _host: ["93.184.216.34"])
 
 
 class ContactFindingTests(unittest.TestCase):
@@ -288,41 +262,6 @@ class ContactFindingTests(unittest.TestCase):
             crawl_site("http://legacy.test/team", fetcher=safe_fetcher(client), delay=0)
         for expected in ("http://legacy.test/robots.txt", "http://legacy.test/", "http://legacy.test/team"):
             self.assertIn(expected, requested)
-
-
-def proposals(*companies):
-    return "Here you go:\n" + json.dumps({"companies": list(companies)})
-
-
-# The second kind of prompt a deep search sends its runner: where a new company
-# it imported is based (outreach_locate.py).
-LOCATE_PROMPT = "finding where each of these companies is based"
-
-
-def scope_of(prompt):
-    """The one scope a deep search prompt asks about."""
-    return prompt.split("## What to look for\n- ", 1)[1].split(" (", 1)[0]
-
-
-def only_for(reply, scope="local-accelerators", locations=None):
-    """A runner that answers one scope's search with reply and finds nothing for the others."""
-    return lambda prompt: (locations or proposals()) if LOCATE_PROMPT in prompt else (
-        reply if scope_of(prompt) == scope else proposals()
-    )
-
-
-def company(name, website, **overrides):
-    return {
-        "company": name,
-        "website": website,
-        "scope": "local-accelerators",
-        "summary": f"{name} builds robots",
-        "fit_rationale": "Matches the student's robotics interest",
-        "activity_signal": "Raised a seed round (June 2026)",
-        "priority": "P1",
-        "source_urls": [f"{website}/about"],
-        **overrides,
-    }
 
 
 class DiscoveryTests(unittest.TestCase):

@@ -21,7 +21,7 @@ from opportunity_app.outreach_settings import COMPANY_RESEARCH_ENV, OutreachSett
 from opportunity_app.schema import connect_product, ensure_product_schema
 
 from helpers_platform import build_and_migrate
-from test_outreach_drafting import confirm_facts
+from helpers_outreach import confirm_facts
 
 USER = "local-user"
 

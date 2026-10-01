@@ -22,6 +22,13 @@ import zlib
 
 import pipeline
 
+try:
+    import realdata_guard
+except ImportError:  # imported as tests.<module>, with tests/ not on sys.path
+    from tests import realdata_guard
+# Guards this module's own run against opening data/*.db (AGENTS.md hard rule 1); see tests/realdata_guard.py.
+realdata_guard.install()
+
 
 class FakeHeaders(dict):
     """Enough of email.message.Message for the code under test."""

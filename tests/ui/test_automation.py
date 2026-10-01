@@ -16,8 +16,7 @@ import pytest
 from playwright.sync_api import expect
 
 from conftest import OWNER_TOKEN, wait_for_results
-from outreach_fakes import COMPOSE_ACCOUNT
-from test_outreach_journey import card_for, open_outreach, seed_target
+from ui_helpers import assert_accessible, card_for, gmail_listing, open_outreach, seed_target
 from opportunity_app import automation
 from opportunity_app.actions import add_application_task, update_application
 from opportunity_app.automation import OFF_SHADOW_ON, Feature
@@ -331,8 +330,6 @@ def test_the_timeline_says_who_made_each_change(owner_page, live_server, test_fe
 
 
 def test_a_busy_automation_section_is_accessible_in_both_themes(owner_page, live_server, test_features):
-    from test_accessibility import _assert_accessible
-
     perform(live_server, auto=False)
     perform(live_server, feature=SHADOWED.key, mode="shadow", after={"stage": "offer"}, summary="Would move Orbit Systems to offer")
     perform(live_server, after={"stage": "rejected"}, summary="Moved Orbit Systems to rejected")
@@ -347,9 +344,9 @@ def test_a_busy_automation_section_is_accessible_in_both_themes(owner_page, live
     open_profile(owner_page)
     expect(owner_page.locator("#automation-banner")).to_be_visible()
     expect(owner_page.locator(".automation-health")).to_contain_text("Gmail refused the saved sign-in")
-    _assert_accessible(owner_page, "the busy automation section")
+    assert_accessible(owner_page, "the busy automation section")
     owner_page.evaluate("document.documentElement.dataset.theme = 'dark'")
-    _assert_accessible(owner_page, "the busy automation section in dark mode")
+    assert_accessible(owner_page, "the busy automation section in dark mode")
 
 
 # --- Phase 0 review fixes ------------------------------------------------------------------
@@ -752,18 +749,6 @@ def test_a_proposal_approved_in_waiting_can_be_undone_in_recent_at_once(owner_pa
 # server has no Google client, so these patch the listing's gmail_drafts the
 # way tests/ui/test_outreach_journey.py does; the server side is covered by
 # tests/test_outreach_gmail.py and tests/test_outreach_schedule.py.
-
-def gmail_listing(page, **gmail):
-    connected = {"configured": True, "connected": True, "needs_reconnect": False, "bounce_check": False,
-                 "account": COMPOSE_ACCOUNT, "attachment": "", "attachment_problem": "", **gmail}
-
-    def listing(route):
-        response = route.fetch()
-        route.fulfill(response=response, json={**response.json(), "gmail_drafts": connected})
-
-    page.route(re.compile(r".*/api/v1/outreach(\?.*)?$"), listing)
-    # With read access the tab looks for bounces on load; there is no Gmail here to look in.
-    page.route("**/api/v1/outreach/inbox-check", lambda route: route.fulfill(json={}))
 
 
 def test_a_scheduled_send_reads_paused_while_automation_is_paused(owner_page, live_server, base_url):

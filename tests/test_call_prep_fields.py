@@ -20,8 +20,9 @@ from opportunity_app.outreach_research import research_due, web_researcher
 from opportunity_app.schema import connect_product, ensure_product_schema
 
 from helpers_platform import build_and_migrate
-from test_outreach_call_prep import BRIEF, store_brief
-from test_outreach_drafting import AUTH, USER, ScriptedProvider
+from helpers_source import static_script_text
+from helpers_outreach import BRIEF, DRAFTING_AUTH as AUTH, USER, store_brief
+from helpers_outreach import DraftingScriptedProvider as ScriptedProvider
 
 LINK = "https://www.linkedin.com/in/riley-park/"
 
@@ -140,8 +141,7 @@ class ResearchAvailabilityTests(ApiCase):
             self.assertEqual(client.post(f"/api/v1/outreach/{created['id']}/research", headers=AUTH).status_code, 202)
 
     def test_the_pane_says_why_research_is_off(self):
-        script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
-        self.assertIn("context.research?.reason", script)
+        self.assertIn("context.research?.reason", static_script_text())
 
 
 class StaleResearchTests(unittest.TestCase):
@@ -225,7 +225,7 @@ class StaleResearchTests(unittest.TestCase):
 
 class ReadingClaimLabelTests(unittest.TestCase):
     def test_the_claims_list_does_not_say_the_reading_ignores_the_research(self):
-        script = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+        script = static_script_text()
         claims = script[script.index("What these notes are based on"):]
         claims = claims[:claims.index("call_prep_generated_by) {")]
         # The reading is built only on checked research facts, so it is labelled as a read of the

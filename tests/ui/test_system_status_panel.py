@@ -7,6 +7,7 @@ from playwright.sync_api import expect
 
 import outreach_fakes
 from conftest import wait_for_results
+from ui_helpers import assert_accessible
 
 
 @pytest.fixture
@@ -45,9 +46,7 @@ def test_a_missing_schedule_and_a_dead_board_are_flagged_and_fixable(owner_page,
     expect(boards).to_contain_text("Orbit Boards")
     expect(boards).to_contain_text("HTTP 404 from api.lever.co")
 
-    from test_accessibility import _assert_accessible
-
-    _assert_accessible(owner_page, "the status panel with problems")
+    assert_accessible(owner_page, "the status panel with problems")
 
     panel.get_by_role("button", name="Schedule the outreach deep search").click()
     expect(panel.locator(".system-status-problems")).not_to_contain_text("not scheduled")

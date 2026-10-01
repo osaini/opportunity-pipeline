@@ -35,7 +35,8 @@ from opportunity_app.schema import LOCAL_USER_ID, connect_product
 from opportunity_app.typesafe_decisions import TypeSafeNotConfigured, TypeSafeResponseError
 
 from helpers_platform import build_and_migrate
-from test_outreach_inbox import ReplyCaptureTests, mail as inbox_mail
+from helpers_gmail import ReplyCaptureFixture, mail as inbox_mail
+from helpers_outreach import FakeJev
 
 AUTH = {"Authorization": "Bearer inbox-owner"}
 # The rules read this as declined; a reader sees the call it proposes.
@@ -51,35 +52,6 @@ permission to post messages to the group. A few more details on why you weren't 
  * You might have spelled or formatted the group name incorrectly.
  * The owner of the group may have removed this group.
 """
-
-
-class FakeJev:
-    """Answers every Choice with one label at one confidence, and counts calls."""
-
-    configured = True
-    model = "jev-1.13.0"
-
-    def __init__(self, label=None, confidence=0.93, error=None, answer=None):
-        self.label, self.confidence, self.error, self.answer = label, confidence, error, answer
-        self.calls = []
-
-    def evaluate(self, *, state, questions):
-        self.calls.append(state)
-        if self.error is not None:
-            raise self.error
-        (question_id, question), = questions.items()
-        if self.answer is not None:
-            return {"model": self.model, "answers": {question_id: self.answer}, "usage": {"input_tokens": 1, "output_tokens": 0}}
-        options = list(question["criteria"])
-        label = self.label or options[0]
-        return {
-            "model": self.model,
-            "answers": {question_id: {
-                "type": "choice", "choice": label, "confidence": self.confidence,
-                "probabilities": {option: (self.confidence if option == label else 0.0) for option in options},
-            }},
-            "usage": {"input_tokens": 1, "output_tokens": 0},
-        }
 
 
 class BounceNoticeTests(unittest.TestCase):
@@ -341,16 +313,8 @@ class InboxSuggestionApiTests(unittest.TestCase):
         self.assertEqual([row["key"] for row in exported["user_settings"]], ["jev_inbox_suggestions"])
 
 
-class PausedInboxWatcherTests(unittest.TestCase):
+class PausedInboxWatcherTests(ReplyCaptureFixture, unittest.TestCase):
     """The background inbox check still records a reply while paused, but never sends its text to Jev."""
-
-    setUp = ReplyCaptureTests.setUp
-    tearDown = ReplyCaptureTests.tearDown
-    connect = ReplyCaptureTests.connect
-    sent_target = ReplyCaptureTests.sent_target
-    arrive = ReplyCaptureTests.arrive
-    target = ReplyCaptureTests.target
-    replies = ReplyCaptureTests.replies
 
     def test_a_paused_watcher_records_the_reply_with_the_rules(self):
         target = self.sent_target()

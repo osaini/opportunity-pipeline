@@ -21,22 +21,16 @@ from opportunity_app.apply_checks import question_key
 from opportunity_app.apply_policy import SchemaField, classify_item, net_topics, never_storable, possibly_sensitive
 from opportunity_app.apply_sensitive import StoreRefused
 
-import test_apply_policy as policy_tests
-import test_apply_sensitive as sensitive_tests
-from test_apply_policy import BASE, COMPANY, F, MULTI, OTHER, SINGLE, USER, answer, kinds, plan, sources
+import helpers_apply as apply_helpers
+from helpers_apply import BASE, COMPANY, F, MULTI, OTHER, SINGLE, USER, answer, kinds, plan, sources
+# unittest and pytest run the module fixtures they find in the test module's namespace.
+from helpers_apply import setUpModule, tearDownModule  # noqa: F401
+from helpers_source import static_script_text
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "apply"
 FELONY = "Have you ever been convicted of a felony?"
 VISA = "Do you currently hold a visa?"
 YES_NO = ("Yes", "No")
-
-
-def setUpModule():
-    policy_tests.setUpModule()
-
-
-def tearDownModule():
-    policy_tests.tearDownModule()
 
 
 def net_vectors():
@@ -112,7 +106,7 @@ class OrdinaryQuestionsFillOnlyAtTheirOwnCompanyTests(unittest.TestCase):
 
     def test_profile_links_come_from_the_profile_whatever_stands_above_them(self):
         field = F("q", "LinkedIn profile", "input_text", parent=FELONY)
-        facts = copy.deepcopy(policy_tests.FACTS)
+        facts = copy.deepcopy(apply_helpers.FACTS)
         facts["contact"]["linkedin"] = "https://linkedin.example/in/sam"
         got = plan(BASE + [yes_no(FELONY, name="p", parent="Resume/CV"), field], sources(facts=facts)).get("q")
         self.assertEqual((got.source.kind, got.net_never), ("profile", ()))
@@ -316,21 +310,21 @@ class AgreementQuestionTests(unittest.TestCase):
     def test_only_an_exact_stored_statement_ticks_it(self):
         field = box("Code of Ethics", "I will comply with the Code of Ethics", parent="Resume/CV")
         statement = apply_policy.statement_of(field, "checkbox", "acknowledgment", plan(BASE + [field]).get("q").answer_key)
-        store = policy_tests.Store(policy_tests.entry("acknowledgment", statement, "checked", "checkbox", company_key=apply_policy.apply_sensitive.company_key(COMPANY)))
+        store = apply_helpers.Store(apply_helpers.entry("acknowledgment", statement, "checked", "checkbox", company_key=apply_policy.apply_sensitive.company_key(COMPANY)))
         got = plan(BASE + [field], sources(allowed=["acknowledgment"], store=store)).get("q")
         self.assertEqual((got.sensitive, got.source.kind, got.value), ("acknowledgment", "sensitive", True))
 
 
-class StorePlanCase(sensitive_tests.StoreCase):
+class StorePlanCase(apply_helpers.StoreCase):
     """A real store, and a plan built against it (the same helpers PlanFromTheStoreTests uses)."""
 
     def sources(self):
-        src = apply_policy.sources_for(self.conn, USER, "job-a", company=COMPANY, key=policy_tests.KEY)
-        src.facts, src.resume, src.cover_letter = copy.deepcopy(policy_tests.FACTS), dict(policy_tests.RESUME_OK), dict(policy_tests.LETTER_NONE)
+        src = apply_policy.sources_for(self.conn, USER, "job-a", company=COMPANY, key=apply_helpers.KEY)
+        src.facts, src.resume, src.cover_letter = copy.deepcopy(apply_helpers.FACTS), dict(apply_helpers.RESUME_OK), dict(apply_helpers.LETTER_NONE)
         return src
 
     def plan(self, fields, mode="submit", company=COMPANY):
-        return policy_tests.plan(fields, self.sources(), mode, company=company)
+        return apply_helpers.plan(fields, self.sources(), mode, company=company)
 
 
 class StatementCompanyRuleTests(StorePlanCase):
@@ -349,7 +343,7 @@ class StatementCompanyRuleTests(StorePlanCase):
                 category = "consent" if "consent" in statement else "acknowledgment"
                 self.refused("never for any company", category=category, question=statement, answer="checked")
                 field = box("Arbitration", statement)
-                got = self.plan(sensitive_tests.BASE + [field]).get("q")
+                got = self.plan(apply_helpers.BASE + [field]).get("q")
                 self.assertTrue(got.company_only, "no Use for any company")
                 self.assertTrue(apply_preflight._sensitive_form(got, "sensitive_missing")["company_only"])
         self.assertEqual(self.rows(), [])
@@ -362,20 +356,20 @@ class StatementCompanyRuleTests(StorePlanCase):
         with self.conn:
             self.conn.execute("UPDATE apply_sensitive_answers SET company_key=''")
         for company in (COMPANY, OTHER):
-            got = self.plan(sensitive_tests.BASE + [field], company=company).get("q")
+            got = self.plan(apply_helpers.BASE + [field], company=company).get("q")
             self.assertEqual((got.problem_kind, got.source.kind, got.value), ("sensitive_missing", "none", None), company)
 
     def test_even_a_plain_certification_that_the_students_answers_are_true_is_kept_for_one_company(self):
         self.allow("acknowledgment")
-        for statement in (sensitive_tests.ACCURATE, "I certify that all of this is true", f"Certification {sensitive_tests.ACCURATE}"):
+        for statement in (apply_helpers.ACCURATE, "I certify that all of this is true", f"Certification {apply_helpers.ACCURATE}"):
             with self.subTest(statement=statement):
                 self.assertFalse(apply_sensitive.cites_document(statement), "no document by the word test, and still one company only")
                 self.refused("never for any company", category="acknowledgment", question=statement, answer="checked")
-        saved = self.add(category="acknowledgment", question=sensitive_tests.ACCURATE, answer="checked", company=COMPANY)
+        saved = self.add(category="acknowledgment", question=apply_helpers.ACCURATE, answer="checked", company=COMPANY)
         self.assertFalse(saved["any_company"])
         # Any other word makes it something the app cannot prove is not a document.
-        self.assertTrue(apply_sensitive.cites_document(sensitive_tests.ACCURATE + " and I will follow the handbook"))
-        self.assertTrue(apply_sensitive.cites_document(sensitive_tests.ACCURATE + " and I agree to the arbitration rules"))
+        self.assertTrue(apply_sensitive.cites_document(apply_helpers.ACCURATE + " and I will follow the handbook"))
+        self.assertTrue(apply_sensitive.cites_document(apply_helpers.ACCURATE + " and I agree to the arbitration rules"))
         # A statement about the student (work authorization) is not read as a document by this rule: it is not an agreement.
         self.assertFalse(apply_sensitive.cites_document("I am authorized to work in the United States", names=False))
 
@@ -399,7 +393,7 @@ class DemographicClaimTests(StorePlanCase):
             with self.subTest(option=option):
                 field = box(heading, option)
                 self.assertEqual(classify_item(field, "checkbox"), "uncategorized", "read as a personal question, not the kind it claims")
-                got = self.plan(sensitive_tests.BASE + [field]).get("q")
+                got = self.plan(apply_helpers.BASE + [field]).get("q")
                 self.assertEqual((got.sensitive, got.problem_kind, got.source.kind), ("uncategorized", "sensitive_never", "none"))
                 self.assertEqual(apply_preflight._action(got, {})["type"], "manual", "no form")
                 statement = apply_policy.statement_of(field, "checkbox", category)
@@ -421,7 +415,7 @@ class DemographicClaimTests(StorePlanCase):
                 (USER, apply_policy.statement_of(field, "checkbox", "work_authorization"), question_key(apply_policy.statement_of(field, "checkbox", "work_authorization")),
                  __import__("hashlib").sha256(question_key(apply_policy.statement_of(field, "checkbox", "work_authorization")).encode()).hexdigest()),
             )
-        got = self.plan(sensitive_tests.BASE + [field], company=OTHER).get("q")
+        got = self.plan(apply_helpers.BASE + [field], company=OTHER).get("q")
         self.assertNotEqual(got.source.kind, "sensitive")
         self.assertNotEqual(got.value, True)
 
@@ -440,20 +434,20 @@ class DemographicClaimTests(StorePlanCase):
                 # A tick box is kept for one company: it is refused for any company and ticks only where it was saved.
                 self.refused("never for any company", category=category, question=statement, answer="checked", answer_kind="checkbox")
                 self.add(category=category, question=statement, answer="checked", answer_kind="checkbox", company=COMPANY)
-                self.assertEqual(self.plan(sensitive_tests.BASE + [field]).get("q").value, True)
-                self.assertIsNone(self.plan(sensitive_tests.BASE + [field], company=OTHER).get("q").value)
+                self.assertEqual(self.plan(apply_helpers.BASE + [field]).get("q").value, True)
+                self.assertIsNone(self.plan(apply_helpers.BASE + [field], company=OTHER).get("q").value)
         self.assertEqual(len(self.rows()), 4)
 
 
-class PreflightTests(policy_tests.PolicyCase):
+class PreflightTests(apply_helpers.PolicyCase):
     """What the what's-missing view offers, and what answer_missing refuses, for a question the net leaves to the student or keeps for one company."""
 
     def listing(self, *questions):
-        listing = copy.deepcopy(policy_tests.SIMPLE)
+        listing = copy.deepcopy(apply_helpers.SIMPLE)
         for index, (label, kind, values) in enumerate(questions, start=20):
             listing["questions"].append({"label": label, "required": True, "fields": [
                 {"name": f"question_{index}", "type": kind, "values": [{"label": value, "value": number} for number, value in enumerate(values)]}]})
-        self.client = policy_tests.StaticClient(listing)
+        self.client = apply_helpers.StaticClient(listing)
         self.role("gh-1")
         return [f"question_{index}" for index in range(20, 20 + len(questions))]
 
@@ -492,7 +486,7 @@ class PreflightTests(policy_tests.PolicyCase):
     def test_a_reusable_row_saved_some_other_way_still_does_not_travel(self):
         (key,) = self.listing(("Do you have unrestricted work rights in the United States?", SINGLE, YES_NO))
         from opportunity_app import preparation
-        preparation.save_answer(self.conn, "Do you have unrestricted work rights in the United States?", "Yes", policy_tests.runs_tests.BLUEFIN, ["reusable"], user_id=USER)
+        preparation.save_answer(self.conn, "Do you have unrestricted work rights in the United States?", "Yes", apply_helpers.BLUEFIN, ["reusable"], user_id=USER)
         other = self.role("gh-2", company=OTHER, job="4000000002")
         problems = {item["key"]: item for item in self.run_check(other)["problems"]}
         self.assertEqual(problems[key]["kind"], "missing_answer")
@@ -537,7 +531,7 @@ class NoCrossCompanyReuseTests(unittest.TestCase):
             self.assertEqual((got.source.kind, got.problem_kind, got.source.reusable), ("none", "missing_answer", False), tags)
 
     def test_profile_facts_are_unaffected_at_any_company(self):
-        facts = copy.deepcopy(policy_tests.FACTS)
+        facts = copy.deepcopy(apply_helpers.FACTS)
         facts["contact"]["linkedin"] = "https://linkedin.example/in/sam"
         link = F("q", "LinkedIn profile", "input_text", parent="Resume/CV")
         for company in (COMPANY, OTHER):
@@ -549,7 +543,8 @@ class NoCrossCompanyReuseTests(unittest.TestCase):
         field = F("q", "What excites you about robotics?", "textarea", parent="Resume/CV")
         action = apply_preflight._action(plan(BASE + [field]).get("q"), {})
         self.assertEqual(sorted(action), ["answer_key", "control", "options", "type"])
-        source = (Path(__file__).resolve().parent.parent / "opportunity_app" / "static" / "app.js").read_text(encoding="utf-8")
+        # Negative guards read every shipped script, so moving code out of app.js cannot turn them into no-ops.
+        source = static_script_text()
         # The what's-missing form has no tick and sends no reusable flag. (The sensitive form keeps its own "Use for any company", which
         # is offered only for a select's exact option label or an EEO decline.)
         self.assertFalse("reusable_allowed" in source)
@@ -681,7 +676,7 @@ class NoBoxOrAgreementFromTheLibraryTests(unittest.TestCase):
     def test_only_an_exact_stored_statement_ticks_a_box(self):
         field = box("Code of Ethics", "I will comply with the Code of Ethics", parent="Resume/CV")
         statement = apply_policy.statement_of(field, "checkbox", "acknowledgment", plan(BASE + [field]).get("q").answer_key)
-        store = policy_tests.Store(policy_tests.entry("acknowledgment", statement, "checked", "checkbox", company_key=apply_sensitive.company_key(COMPANY)))
+        store = apply_helpers.Store(apply_helpers.entry("acknowledgment", statement, "checked", "checkbox", company_key=apply_sensitive.company_key(COMPANY)))
         got = plan(BASE + [field], sources(allowed=["acknowledgment"], store=store)).get("q")
         self.assertEqual((got.sensitive, got.source.kind, got.value), ("acknowledgment", "sensitive", True))
         # A statement stored for another company, or one that is not word for word this one, ticks nothing.
@@ -694,7 +689,7 @@ class NoBoxOrAgreementFromTheLibraryTests(unittest.TestCase):
         # is one more box the student ticks; nothing is ticked on a guess.
         field = box("Code of Ethics", "I will adhere to the Code of Ethics at all times", parent="Resume/CV")
         statement = apply_policy.statement_of(field, "checkbox", "acknowledgment", plan(BASE + [field]).get("q").answer_key)
-        store = policy_tests.Store(policy_tests.entry("acknowledgment", statement, "checked", "checkbox", company_key=apply_sensitive.company_key(COMPANY)))
+        store = apply_helpers.Store(apply_helpers.entry("acknowledgment", statement, "checked", "checkbox", company_key=apply_sensitive.company_key(COMPANY)))
         got = plan(BASE + [field], sources(allowed=["acknowledgment"], store=store)).get("q")
         self.assertEqual((got.sensitive, got.source.kind, got.value, got.problem_kind), (None, "none", None, "sensitive_never"))
 
@@ -713,7 +708,7 @@ class StoredStatementsAndTickBoxesArePerCompanyTests(StorePlanCase):
         for category, statement in self.STATEMENTS:
             with self.subTest(statement=statement):
                 self.refused("never for any company", category=category, question=statement, answer="checked")
-                got = self.plan(sensitive_tests.BASE + [box("Statement", statement)]).get("q")
+                got = self.plan(apply_helpers.BASE + [box("Statement", statement)]).get("q")
                 self.assertTrue(got.company_only)
                 self.assertTrue(apply_preflight._sensitive_form(got, "sensitive_missing")["company_only"])
                 saved = self.add(category=category, question=apply_policy.statement_of(box("Statement", statement), "checkbox", category), answer="checked", company=COMPANY)
@@ -733,17 +728,17 @@ class StoredStatementsAndTickBoxesArePerCompanyTests(StorePlanCase):
                 field = box(heading, option)
                 statement = apply_policy.statement_of(field, "checkbox", category)
                 self.refused("never for any company", category=category, question=statement, answer="checked", answer_kind="checkbox")
-                got = self.plan(sensitive_tests.BASE + [field]).get("q")
+                got = self.plan(apply_helpers.BASE + [field]).get("q")
                 self.assertTrue(got.company_only)
                 self.assertTrue(apply_preflight._sensitive_form(got, "sensitive_missing")["company_only"])
                 self.add(category=category, question=statement, answer="checked", answer_kind="checkbox", company=COMPANY)
-                self.assertEqual(self.plan(sensitive_tests.BASE + [field]).get("q").value, True)
-                self.assertIsNone(self.plan(sensitive_tests.BASE + [field], company=OTHER).get("q").value)
+                self.assertEqual(self.plan(apply_helpers.BASE + [field]).get("q").value, True)
+                self.assertIsNone(self.plan(apply_helpers.BASE + [field], company=OTHER).get("q").value)
 
     def test_a_row_saved_for_any_company_by_another_route_is_used_at_no_company_for_a_tick_or_a_typed_answer(self):
         self.allow("work_authorization", "acknowledgment")
         for category, field in (("work_authorization", box("Work eligibility", "I am authorized to work in the United States")),
-                               ("acknowledgment", box("Certification", sensitive_tests.ACCURATE)),
+                               ("acknowledgment", box("Certification", apply_helpers.ACCURATE)),
                                ("work_authorization", F("q", "Are you authorized to work in the United States?", "input_text"))):
             with self.subTest(label=field.label):
                 kind = "text" if field.type == "input_text" else "checkbox"
@@ -753,7 +748,7 @@ class StoredStatementsAndTickBoxesArePerCompanyTests(StorePlanCase):
                 with self.conn:
                     self.conn.execute("UPDATE apply_sensitive_answers SET company_key=''")
                 for company in (COMPANY, OTHER):
-                    got = self.plan(sensitive_tests.BASE + [field], company=company).get("q")
+                    got = self.plan(apply_helpers.BASE + [field], company=company).get("q")
                     self.assertNotEqual(got.source.kind, "sensitive", company)
                 with self.conn:
                     self.conn.execute("DELETE FROM apply_sensitive_answers")
@@ -769,7 +764,7 @@ class StoredStatementsAndTickBoxesArePerCompanyTests(StorePlanCase):
                 self.assertTrue(self.add(category=category, question=question, answer=chosen)["any_company"])
                 field = F("q", question, SINGLE, options=options)
                 for company in (COMPANY, OTHER):
-                    got = self.plan(sensitive_tests.BASE + [field], company=company).get("q")
+                    got = self.plan(apply_helpers.BASE + [field], company=company).get("q")
                     self.assertEqual((got.value, got.source.kind, got.company_only), (chosen, "sensitive", False), company)
 
     def test_an_eeo_decline_is_still_kept_for_any_company(self):
@@ -777,7 +772,7 @@ class StoredStatementsAndTickBoxesArePerCompanyTests(StorePlanCase):
         self.assertTrue(self.add(category="eeo_gender", question="Gender", answer="Decline To Self Identify")["any_company"])
         gender = F("gender", "Gender", SINGLE, required=False, options=("Male", "Female", "Decline To Self Identify"), section="compliance")
         for company in (COMPANY, OTHER):
-            self.assertEqual(self.plan(sensitive_tests.BASE + [gender], company=company).get("gender").value, "Decline To Self Identify", company)
+            self.assertEqual(self.plan(apply_helpers.BASE + [gender], company=company).get("gender").value, "Decline To Self Identify", company)
 
 
 control_of = apply_policy.control_of
@@ -803,7 +798,7 @@ class TickableEntriesNeverCarryANeverStorableClaimTests(StorePlanCase):
             with self.subTest(option=option):
                 field = box("Eligibility", option)
                 self.assertEqual(classify_item(field, "checkbox"), "uncategorized")
-                got = self.plan(sensitive_tests.BASE + [field]).get("q")
+                got = self.plan(apply_helpers.BASE + [field]).get("q")
                 self.assertEqual((got.sensitive, got.problem_kind, got.source.kind), ("uncategorized", "sensitive_never", "none"))
                 statement = apply_policy.statement_of(field, "checkbox", category)
                 for company in ("", COMPANY):
@@ -817,7 +812,7 @@ class TickableEntriesNeverCarryANeverStorableClaimTests(StorePlanCase):
         question = "Are you authorized to work in the United States?"
         field = F("q", question, SINGLE, options=("Yes, and I am a protected veteran", "No"))
         self.assertEqual(classify_item(field, "select"), "uncategorized")
-        self.assertEqual(self.plan(sensitive_tests.BASE + [field]).get("q").problem_kind, "sensitive_never")
+        self.assertEqual(self.plan(apply_helpers.BASE + [field]).get("q").problem_kind, "sensitive_never")
         for company in ("", COMPANY):
             with self.assertRaises(StoreRefused):
                 self.add(category="work_authorization", question=question, answer="Yes, and I am a protected veteran", answer_kind="option", company=company)
@@ -832,11 +827,11 @@ class TickableEntriesNeverCarryANeverStorableClaimTests(StorePlanCase):
         ):
             with self.subTest(statement=statement):
                 field = box(heading, statement)
-                got = self.plan(sensitive_tests.BASE + [field]).get("q")
+                got = self.plan(apply_helpers.BASE + [field]).get("q")
                 self.assertEqual((got.sensitive, got.problem_kind), (category, "sensitive_missing"))
                 self.add(category=category, question=got.statement, answer="checked", company=COMPANY, from_form=True)
-                self.assertEqual(self.plan(sensitive_tests.BASE + [field]).get("q").value, True)
-                self.assertIsNone(self.plan(sensitive_tests.BASE + [field], company=OTHER).get("q").value)
+                self.assertEqual(self.plan(apply_helpers.BASE + [field]).get("q").value, True)
+                self.assertIsNone(self.plan(apply_helpers.BASE + [field], company=OTHER).get("q").value)
 
 
 class BroadNetVocabularyTests(unittest.TestCase):
@@ -1018,7 +1013,7 @@ class AChoiceThatAlsoAgreesIsKeptForOneCompanyTests(StorePlanCase):
         for category, question, options, chosen in self.CASES:
             with self.subTest(question=question):
                 self.refused("never for any company", category=category, question=question, answer=chosen)
-                got = self.plan(sensitive_tests.BASE + [F("q", question, SINGLE, options=options)]).get("q")
+                got = self.plan(apply_helpers.BASE + [F("q", question, SINGLE, options=options)]).get("q")
                 self.assertTrue(got.company_only)
                 self.assertTrue(self.add(category=category, question=question, answer=chosen, company=COMPANY)["company"])
 
@@ -1031,7 +1026,7 @@ class AChoiceThatAlsoAgreesIsKeptForOneCompanyTests(StorePlanCase):
                     self.conn.execute("UPDATE apply_sensitive_answers SET company_key=''")
                 field = F("q", question, SINGLE, options=options)
                 for company in (COMPANY, OTHER):
-                    self.assertNotEqual(self.plan(sensitive_tests.BASE + [field], company=company).get("q").source.kind, "sensitive", company)
+                    self.assertNotEqual(self.plan(apply_helpers.BASE + [field], company=company).get("q").source.kind, "sensitive", company)
                 with self.conn:
                     self.conn.execute("DELETE FROM apply_sensitive_answers")
 

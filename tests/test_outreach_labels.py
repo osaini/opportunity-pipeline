@@ -22,7 +22,7 @@ from opportunity_app.outreach_inbox import InboxWatcher, decide_possible_reply
 from opportunity_app.schema import connect_product, utc_now
 
 from helpers_platform import build_and_migrate
-from test_outreach_gmail import (
+from helpers_gmail import (
     ACCOUNT, LABEL_SCOPES, MODIFY, SCOPES, FakeGmail, failure_notice, forget_gmail_backoff, rate_limited,
 )
 

@@ -8,7 +8,6 @@ the database through ``apply_preflight.check`` (which writes nothing).
 import copy
 import json
 import os
-import sqlite3
 import sys
 import unittest
 from datetime import datetime, timezone
@@ -27,21 +26,38 @@ from opportunity_app.extension_apply import SENSITIVE_FIELD
 from opportunity_app.profile import update_profile
 from opportunity_app.schema import utc_now
 
-import test_apply_runs as runs_tests
+from helpers_source import apply_modules
+from helpers_apply import (
+    ApplyCase,
+    BLUEFIN,
+    BASE,
+    COMPANY,
+    F,
+    FACTS,
+    KEY,
+    LETTER_NONE,
+    LETTER_OK,
+    MULTI,
+    OTHER,
+    PolicyCase,
+    RESUME_OK,
+    ResumeCase,
+    SIMPLE,
+    SINGLE,
+    StaticClient,
+    Store,
+    answer,
+    entry,
+    kinds,
+    plan,
+    sources,
+)
+# unittest and pytest run the module fixtures they find in the test module's namespace.
+from helpers_apply import setUpModule, tearDownModule  # noqa: F401
 from apply_fake_ats import FakeApplyAgentFactory, FakeSchemaClient, fixture_json
 
 USER = "local-user"
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "apply"
-COMPANY = "Example Robotics"
-OTHER = "Orbit Systems"
-
-
-def setUpModule():
-    runs_tests.setUpModule()
-
-
-def tearDownModule():
-    runs_tests.tearDownModule()
 
 
 def vectors(name):
@@ -49,13 +65,6 @@ def vectors(name):
 
 
 # --- Fields, sources and a store, without a database ------------------------------------------------------
-
-def F(name, label, kind="input_text", *, required=True, options=(), section="custom", parent=""):
-    return SchemaField(name=name, label=label, required=required, type=kind, options=tuple(options), section=section, parent=parent)
-
-
-SINGLE = "multi_value_single_select"
-MULTI = "multi_value_multi_select"
 
 
 def vector_field(row):
@@ -65,59 +74,6 @@ def vector_field(row):
         name=row.get("field_name") or "question_1", label=row["question"], required=True, type=kind, options=tuple(row.get("options", ())),
         section=row.get("section") or "custom", parent=row.get("parent", ""), description=row.get("description", ""),
     )
-RESUME_OK = {"kind": "confirmed", "version_id": "v1", "label": "Your confirmed résumé", "original_name": "Sam Rivera Resume.pdf",
-             "sha256": "a" * 64, "problem_kind": "", "problem": ""}
-LETTER_NONE = {"problem_kind": "cover_letter_missing", "problem": "No cover letter is approved for this role. Draft one"}
-LETTER_OK = {"document_id": "doc-1", "version": 2, "content_sha256": "b" * 64, "problem_kind": "", "problem": ""}
-FACTS = {"name": "Sam Rivera", "contact": {"email": "sam.rivera@example.test", "phone": "555-0100"}}
-KEY = b"k" * 32
-
-BASE = [
-    F("first_name", "First Name", section="standard"),
-    F("last_name", "Last Name", section="standard"),
-    F("email", "Email", section="standard"),
-    F("resume", "Resume/CV", "input_file", section="standard"),
-]
-
-
-def answer(question, text, company=COMPANY, tags=(), answer_id=None):
-    return {"id": answer_id or f"a-{abs(hash((question, text, company))) % 10**6}", "question": question, "answer": text,
-            "company": company, "tags": list(tags), "updated_at": ""}
-
-
-class Store:
-    """The sensitive-answers store as spec 5.4 will hold it: exact key, category, company '' or this one."""
-
-    def __init__(self, *entries):
-        self.entries = entries
-
-    def __call__(self, *, category, question_key, company_key, mode, company_only=False):
-        for entry in self.entries:
-            if entry["category"] == category and entry["question_key"] == question_key and entry.get("company_key", "") in ("", company_key):
-                if company_only and not entry.get("company_key", ""):
-                    continue
-                return entry
-        return None
-
-
-def entry(category, question, text, kind="option", company_key="", entry_id="s1"):
-    return {"id": entry_id, "category": category, "question_key": question_key(question), "answer_kind": kind, "answer": text, "company_key": company_key}
-
-
-def sources(*, facts=None, answers=(), labels=None, allowed=(), store=None, resume=None, letter=None):
-    return Sources(
-        facts=copy.deepcopy(FACTS if facts is None else facts), answers=list(answers), ats_labels=dict(labels or {}),
-        sensitive_allowed=frozenset(allowed), sensitive_lookup=store or Store(), resume=resume or RESUME_OK,
-        cover_letter=letter or LETTER_NONE, mac_key=KEY,
-    )
-
-
-def plan(fields, src=None, mode="submit", company=COMPANY, **kwargs):
-    return build_plan(fields, kwargs.pop("scan", None), src or sources(), company, mode, **kwargs)
-
-
-def kinds(result):
-    return {problem.key: problem.kind for problem in result.problems}
 
 
 # ------------------------------------------------------------------------------------------------------------
@@ -296,7 +252,7 @@ class NameTests(unittest.TestCase):
         self.assertEqual(apply_policy.name_parts({"name": "Ana María de la Cruz", "name_parts": {"preferred": "Ana"}}), ("", "", "Ana"))
 
 
-class ProfileTests(runs_tests.ApplyCase):
+class ProfileTests(ApplyCase):
     def test_name_parts_are_saved_and_confirmed_like_any_profile_field(self):
         updated = update_profile(self.conn, {"name_parts": {"first": "Sam", "last": "Rivera", "preferred": "Sammy"}}, ["name_parts"], user_id=USER)
         self.assertEqual(updated["profile"]["name_parts"]["preferred"], "Sammy")
@@ -884,41 +840,6 @@ class TruthTablePlanRows(unittest.TestCase):
         self.assertEqual([item.key for item in result.fields if item.control == "hidden" or item.key.endswith("_text")], [])
 
 
-class ResumeCase(runs_tests.ApplyCase):
-    """The résumé to use, from the database (6.9)."""
-
-    def setUp(self):
-        super().setUp()
-        self.resumes = self.root / "resumes"
-        self.resumes.mkdir()
-        self.serial_file = 0
-
-    def add_resume(self, *, confirmed=True, label="", name="Resume.pdf", data=None, variant_at=None):
-        self.serial_file += 1
-        data = data if data is not None else f"%PDF-1.4 fictional {self.serial_file}".encode()
-        file_id, version_id = f"file-{self.serial_file}", f"ver-{self.serial_file}"
-        stored = f"{file_id}.pdf"
-        (self.resumes / stored).write_bytes(data)
-        stamp = variant_at or utc_now()
-        with self.conn:
-            self.conn.execute(
-                "INSERT INTO resume_files(id, user_id, original_name, media_type, byte_size, sha256, storage_path, created_at, variant_label) VALUES(?, ?, ?, 'application/pdf', ?, ?, ?, ?, ?)",
-                (file_id, USER, name, len(data), __import__("hashlib").sha256(data).hexdigest(), stored, stamp, label),
-            )
-            self.conn.execute(
-                "INSERT INTO resume_versions(id, resume_file_id, user_id, extracted_text, status, created_at, confirmed_at) VALUES(?, ?, ?, 'text', ?, ?, ?)",
-                (version_id, file_id, USER, "confirmed" if confirmed else "draft", stamp, stamp if confirmed else None),
-            )
-        return file_id, version_id
-
-    def pick(self, opportunity_id, file_id, by="student", status="picked"):
-        with self.conn:
-            self.conn.execute(
-                "INSERT INTO opportunity_resume_picks(user_id, opportunity_id, resume_file_id, picked_by, matched_json, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?)",
-                (USER, opportunity_id, file_id, by, json.dumps({"status": status, "matched": [], "reason": ""}), utc_now(), utc_now()),
-            )
-
-
 class ResumeForTests(ResumeCase):
     def test_row_31_with_no_pick_the_most_recently_confirmed_resume_is_used(self):
         self.opportunity("job-1")
@@ -985,7 +906,7 @@ class ResumeForTests(ResumeCase):
         self.assertEqual(apply_policy.cover_letter_for(self.conn, USER, "job-1")["problem_kind"], "cover_letter_draft", "a newer draft means the app asks")
 
 
-class IdentifyTests(runs_tests.ApplyCase):
+class IdentifyTests(ApplyCase):
     def role(self, opportunity_id, url, sources=()):
         self.opportunity(opportunity_id)
         with self.conn:
@@ -1029,71 +950,18 @@ class IdentifyTests(runs_tests.ApplyCase):
 
 class NothingIsGuessedTests(unittest.TestCase):
     def test_the_policy_has_no_label_regex_mapping_and_no_similarity_tier(self):
-        source = Path(apply_policy.__file__).read_text(encoding="utf-8")
         # The extension's label-pattern mappings are regexes over the label and its answer tier scores word overlap;
-        # the agent has an exact list of keys and equality of keys, and nothing else.
-        self.assertNotIn("mappings", source)
-        self.assertNotRegex(source, r"difflib|SequenceMatcher|overlap")
+        # the agent has an exact list of keys and equality of keys, and nothing else. Every apply module is scanned, not
+        # only apply_policy.py, so the policy moving into several files or a package cannot take this guard with it.
+        sources = apply_modules()
+        self.assertIn("apply_policy.py", sources)
+        for name, source in sources.items():
+            with self.subTest(module=name):
+                self.assertNotIn("mappings", source)
+                self.assertNotRegex(source, r"difflib|SequenceMatcher|overlap")
 
 
 # --- The truth table's rows that read the database -------------------------------------------------------------
-
-class StaticClient:
-    def __init__(self, listing):
-        self.listing = listing
-        self.calls = 0
-
-    def fetch(self, board_token, job_id):
-        self.calls += 1
-        return copy.deepcopy(self.listing)
-
-
-SIMPLE = {
-    "questions": [
-        {"label": "First Name", "required": True, "fields": [{"name": "first_name", "type": "input_text", "values": []}]},
-        {"label": "Last Name", "required": True, "fields": [{"name": "last_name", "type": "input_text", "values": []}]},
-        {"label": "Email", "required": True, "fields": [{"name": "email", "type": "input_text", "values": []}]},
-        {"label": "Resume/CV", "required": True, "fields": [{"name": "resume", "type": "input_file", "values": []}, {"name": "resume_text", "type": "textarea", "values": []}]},
-        {"label": "Why do you want to work at Bluefin Robotics?", "required": True, "fields": [{"name": "question_1", "type": "textarea", "values": []}]},
-        {"label": "Which team are you most interested in?", "required": True,
-         "fields": [{"name": "question_2", "type": SINGLE, "values": [{"label": "Perception", "value": 1}, {"label": "Controls", "value": 2}]}]},
-    ],
-    "location_questions": [], "compliance": [], "demographic_questions": None, "data_compliance": [],
-}
-JOB = "https://job-boards.greenhouse.io/bluefin/jobs/4000000001"
-
-
-class PolicyCase(ResumeCase):
-    """A Greenhouse role the student saved, a confirmed profile and résumé, and a listing served from memory."""
-
-    def setUp(self):
-        super().setUp()
-        # A fixed noon, so nothing here straddles a day boundary.
-        self.base = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
-        update_profile(self.conn, {"name_parts": {"first": "Sam", "last": "Rivera", "preferred": ""},
-                                   "contact": {"email": "sam.rivera@example.test", "phone": "555-0100"}}, ["name_parts", "contact"], user_id=USER)
-        self.add_resume(name="Sam Rivera Resume.pdf")
-        self.client = StaticClient(SIMPLE)
-
-    def role(self, opportunity_id="gh-1", company=runs_tests.BLUEFIN, job="4000000001", saved=True):
-        self.opportunity(opportunity_id, company)
-        with self.conn:
-            self.conn.execute("UPDATE opportunities SET url=? WHERE id=?", (f"https://job-boards.greenhouse.io/bluefin/jobs/{job}", opportunity_id))
-        if saved:
-            actions.record_intent(self.conn, opportunity_id, "saved", user_id=USER)
-        return opportunity_id
-
-    def answers_for(self, company=runs_tests.BLUEFIN):
-        preparation.save_answer(self.conn, "Why do you want to work at Bluefin Robotics?", "I build robot arms", company, [], user_id=USER)
-        preparation.save_answer(self.conn, "Which team are you most interested in?", "Controls", company, [], user_id=USER)
-
-    def run_check(self, opportunity_id="gh-1", **kwargs):
-        return apply_preflight.check(self.conn, USER, opportunity_id, client=kwargs.pop("client", self.client), cache=kwargs.pop("cache", None),
-                                     resume_root=self.resumes, now=kwargs.pop("now", self.at(0)), **kwargs)
-
-    def clean_rehearsals(self, count):
-        for index in range(count):
-            self.reviewed_rehearsal(f"Company {index}", index * 5)
 
 
 class TruthTableDatabaseRows(PolicyCase):
@@ -1125,7 +993,7 @@ class TruthTableDatabaseRows(PolicyCase):
         self.role()
         self.answers_for()
         self.clean_rehearsals(3)
-        self.raw_claim(state="submitted", handed_over_at=self.at(-12 * 24 * 60).isoformat(), company=runs_tests.BLUEFIN, board="bluefin")
+        self.raw_claim(state="submitted", handed_over_at=self.at(-12 * 24 * 60).isoformat(), company=BLUEFIN, board="bluefin")
         result = self.run_check()
         self.assertEqual(result["status"], "ready")
         for way in ("handoff", "submit"):
@@ -1206,7 +1074,7 @@ class TruthTableDatabaseRows(PolicyCase):
 
     def test_row_49_the_same_job_through_another_saved_copy_is_failed(self):
         self.role("gh-1")
-        self.raw_claim(state="submitted", handed_over_at=self.at(-3000).isoformat(), company=runs_tests.BLUEFIN, board="bluefin", job_ref="bluefin/4000000001")
+        self.raw_claim(state="submitted", handed_over_at=self.at(-3000).isoformat(), company=BLUEFIN, board="bluefin", job_ref="bluefin/4000000001")
         result = self.run_check("gh-1")
         self.assertEqual(result["status"], "failed")
         self.assertIn("already has an attempt from another saved copy of the role", result["message"])
@@ -1372,7 +1240,7 @@ class AnswerMissingTests(PolicyCase):
         self.assertEqual([item["key"] for item in done["check"]["problems"]], ["question_2"])
         self.answer("question_2", "controls")
         row = self.conn.execute("SELECT question, answer, company, tags_json FROM answer_library WHERE question LIKE 'Which team%'").fetchone()
-        self.assertEqual((row["question"], row["answer"], row["company"], row["tags_json"]), ("Which team are you most interested in?", "Controls", runs_tests.BLUEFIN, "[]"),
+        self.assertEqual((row["question"], row["answer"], row["company"], row["tags_json"]), ("Which team are you most interested in?", "Controls", BLUEFIN, "[]"),
                          "an id-free row for this company, with the option's own label")
         after = self.run_check()
         self.assertEqual((after["status"], after["problems"]), ("ready", []))
@@ -1462,7 +1330,7 @@ class AnswerMissingTests(PolicyCase):
         fresh = self.run_check()
         self.assertNotIn("conflicting_answers", [item["kind"] for item in fresh["problems"]])
         field = next(item for item in fresh["fields"] if item["key"] == "question_2")
-        self.assertEqual(field["source"], f"Saved answer for {runs_tests.BLUEFIN}")
+        self.assertEqual(field["source"], f"Saved answer for {BLUEFIN}")
         # An older reusable answer elsewhere is never a conflict: it is not used.
         self.answer("question_2", "Perception")
         self.assertNotIn("conflicting_answers", [item["kind"] for item in self.run_check()["problems"]])
@@ -1488,7 +1356,7 @@ class AnswerMissingTests(PolicyCase):
             self.answer("question_1", "x", opportunity_id="plain-1")
 
 
-class RequirementTests(runs_tests.ApplyCase):
+class RequirementTests(ApplyCase):
     def setUp(self):
         super().setUp()
         self.addCleanup(apply_runs.configure_agent_factory, apply_runs._AGENT_FACTORY)
@@ -1554,7 +1422,7 @@ class RequirementTests(runs_tests.ApplyCase):
         self.assertEqual(probe.available(), apply_runs.INSTALL_PLAYWRIGHT, "the last answer is kept for five minutes")
 
 
-class AtsLabelTests(runs_tests.ApplyCase):
+class AtsLabelTests(ApplyCase):
     def test_a_confirmed_option_label_is_saved_replaced_listed_and_deleted_per_student(self):
         saved = apply_runs.set_ats_label(self.conn, USER, "school", "  University of Example   - City ")
         self.assertEqual(saved["label"], "University of Example - City")
@@ -1592,7 +1460,7 @@ class SettingsValidationTests(unittest.TestCase):
         self.assertIn("apply_agent should be an object", " ".join(validate_profile({"apply_agent": 5})["errors"]))
 
 
-class SourceBoundaryTests(runs_tests.ApplyCase):
+class SourceBoundaryTests(ApplyCase):
     """The plan has one place to ask for a stored sensitive answer, and it answers nothing while the store is empty."""
 
     def test_the_lookup_returns_none_while_nothing_is_stored(self):
@@ -1604,9 +1472,14 @@ class SourceBoundaryTests(runs_tests.ApplyCase):
 
     def test_the_policy_never_reads_the_sensitive_table_by_name(self):
         # It asks apply_sensitive.lookup; the table is named there and nowhere in the plan or the check.
-        source = Path(apply_policy.__file__).read_text(encoding="utf-8")
-        self.assertNotIn("FROM apply_sensitive_answers", source)
-        self.assertNotRegex(Path(apply_preflight.__file__).read_text(encoding="utf-8"), r"apply_sensitive_answers")
+        # Every apply module but the store's own is scanned, so the plan or the check moving files cannot hide a read.
+        sources = apply_modules(exclude_store=True)
+        self.assertIn("apply_policy.py", sources)
+        self.assertIn("apply_preflight.py", sources)
+        for name, source in sources.items():
+            with self.subTest(module=name):
+                self.assertNotIn("FROM apply_sensitive_answers", source)
+                self.assertNotRegex(source, r"apply_sensitive_answers")
 
 
 if __name__ == "__main__":

@@ -31,7 +31,7 @@ from opportunity_app.outreach_delivery import record_bounce
 from opportunity_app.schema import connect_product
 
 from helpers_platform import build_and_migrate
-from test_outreach_discovery import safe_fetcher, site_transport
+from helpers_outreach import safe_fetcher, site_transport
 
 USER = "local-user"
 AUTH = {"Authorization": "Bearer automation-owner"}

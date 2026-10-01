@@ -20,7 +20,8 @@ from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app.schema import connect_product, ensure_product_schema, sort_key
+from helpers_platform import migrated_empty_db
+from opportunity_app.schema import connect_product, sort_key
 from pipeline_core import OpportunityFilters, OpportunityRepository
 
 OWNER = "local-user"
@@ -32,9 +33,10 @@ class ReadModelContractTests(unittest.TestCase):
     def setUp(self):
         temp = TemporaryDirectory()
         self.addCleanup(temp.cleanup)
-        self.conn = connect_product(Path(temp.name) / "platform.db")
+        path = Path(temp.name) / "platform.db"
+        migrated_empty_db(path)  # an empty database with every migration applied, copied from a template
+        self.conn = connect_product(path)
         self.addCleanup(self.conn.close)
-        ensure_product_schema(self.conn)
         for user in (OWNER, OTHER):
             self.conn.execute(
                 "INSERT OR IGNORE INTO users(id, email, display_name, role, created_at, updated_at) "

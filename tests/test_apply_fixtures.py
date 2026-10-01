@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import apply_fake_ats
 import browser_support
-import test_apply_checks
+from helpers_apply import FakePlan, planned
 from apply_fake_ats import (
     API_HOST,
     CONFIRMATION_PATH,
@@ -728,8 +728,6 @@ class RequiredCheckScriptBrowserTests(BrowserFixtureTestCase):
 
 
 def filled_plan():
-    planned = test_apply_checks.planned
-
     fields = [
         planned("first_name", "First Name", "Sam"),
         planned("last_name", "Last Name", "Rivera"),
@@ -744,7 +742,7 @@ def filled_plan():
         planned("question_4000000111", "Worked here", "No", control="radio"),
         planned("gdpr_consent_given", "Data", True, control="checkbox", source="sensitive"),
     ]
-    return test_apply_checks.FakePlan(fields)
+    return FakePlan(fields)
 
 
 class CheckRequiredBrowserTests(BrowserFixtureTestCase):

@@ -16,7 +16,7 @@ from opportunity_app.outreach_profile import apply_location
 from opportunity_app.schema import connect_product, ensure_product_schema
 
 from helpers_platform import build_and_migrate
-from test_outreach_discovery import safe_fetcher, site_transport
+from helpers_outreach import safe_fetcher, site_transport
 
 USER = "local-user"
 

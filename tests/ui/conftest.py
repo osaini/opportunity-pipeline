@@ -21,6 +21,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from unittest import mock
 
 import pytest
 import uvicorn
@@ -32,13 +33,10 @@ if str(REPO_ROOT) not in sys.path:
 if str(REPO_ROOT / "tests") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "tests"))
 
-from opportunity_app import STATIC_DIR  # noqa: E402
-from opportunity_app.api import create_app  # noqa: E402
+from helpers_platform import build_and_migrate_fresh  # noqa: E402
 
-from helpers_platform import build_and_migrate  # noqa: E402
-
-import outreach_fakes  # noqa: E402
-from apply_fake_ats import FakeApplyAgentFactory, FakeSchemaClient  # noqa: E402
+import outreach_fakes  # noqa: E402,F401  (the restored_environment fixture reads outreach_fakes.SETTINGS_ENV)
+from sandbox_app import build_sandbox_app  # noqa: E402
 
 OWNER_TOKEN = "ui-suite-owner-token"
 EMPLOYER_TOKEN = "ui-suite-employer-token"
@@ -136,45 +134,18 @@ class LiveServer:
 def live_server(tmp_path_factory: pytest.TempPathFactory):
     """Serve the real app over HTTP against a seeded temporary database."""
     root = tmp_path_factory.mktemp("ui-platform")
-    _, platform_path = build_and_migrate(root)
+    _, platform_path = build_and_migrate_fresh(root)
     pristine_path = root / "pristine.db"
     shutil.copyfile(platform_path, pristine_path)
-    # Approved outreach drafts open a Gmail compose link for this account. Set
-    # before the app loads .env, which never overrides a variable already set.
-    os.environ["PIPELINE_OUTREACH_COMPOSE"] = "gmail"
-    os.environ["PIPELINE_OUTREACH_ACCOUNT"] = outreach_fakes.COMPOSE_ACCOUNT
-
-    app = create_app(
-        db_path=platform_path,
-        access_token=OWNER_TOKEN,
+    # The wiring (offline fakes, temp storage, Apply for me on the fictional listing) is shared with scripts/serve_for_testing.py.
+    app = build_sandbox_app(
+        root,
+        platform_path,
+        owner_token=OWNER_TOKEN,
         employer_token=EMPLOYER_TOKEN,
         admin_token=ADMIN_TOKEN,
-        static_dir=STATIC_DIR,
-        # Uploads must land in the temp tree, never in the repo's data/ directory.
-        resume_storage=root / "resumes",
-        capture_storage=root / "captures",
-        interview_storage=root / "mock-interviews",
-        # The Programs tab reads a student's own list; this one is invented.
-        early_programs_file=REPO_ROOT / "tests" / "fixtures" / "early_programs.json",
-        # Every test shares 127.0.0.1, so the per-IP sliding window sees the whole
-        # suite as one client and starts returning 429 partway through. The limiter
-        # is covered by the API-level unittest suite; here it only adds flakiness.
-        rate_limit_per_minute=1_000_000,
-        # Outreach never reaches a model, a company website, or a web search here.
-        outreach_provider_factory=outreach_fakes.provider_factory,
-        outreach_draft_provider="anthropic",
-        outreach_contact_client_factory=outreach_fakes.contact_client,
-        outreach_contact_delay=0,
-        outreach_discovery_manager=outreach_fakes.discovery_manager(platform_path, root / "outreach-reports"),
-        outreach_recontact_manager=outreach_fakes.recontact_manager(platform_path),
-        system_status=outreach_fakes.system_status(root / "system-status"),
-        board_tracker=outreach_fakes.board_tracker(root / "boards"),
-        outreach_settings=outreach_fakes.outreach_settings(root),
-        typesafe_client_factory=outreach_fakes.FakeTypeSafeClient,
-        inbox_client_factory=outreach_fakes.FakeTypeSafeClient,
-        # Apply for me reads the fictional listing and has an agent that only says a window could open: no network, no browser.
-        apply_schema_client_factory=lambda: FakeSchemaClient(any_job=True),
-        apply_agent_factory=FakeApplyAgentFactory(),
+        fake_apply=True,
+        recovery_sandbox=False,
     )
     port = _free_port()
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
@@ -374,3 +345,31 @@ def owner_page(page, base_url: str, pristine_database):
     sign_in_as_owner(page)
     wait_for_results(page)
     return page
+
+
+@pytest.fixture
+def apply_ready(live_server: LiveServer, base_url: str, pristine_database):
+    """Apply for me seeded and switched on before the page loads, so the page reads the switch as on.
+
+    The Acme Robotics role becomes the fictional Greenhouse listing, with a name, an email and a confirmed resume for the student.
+    """
+    import httpx
+
+    from ui_helpers import prepare  # here, not at the top: ui_helpers imports this module
+
+    prepare(live_server)
+    response = httpx.put(
+        f"{base_url}/api/v1/automation/settings",
+        headers={"Authorization": f"Bearer {OWNER_TOKEN}"},
+        json={"modes": {"apply_agent": "on"}},
+    )
+    assert response.status_code == 200, response.text
+
+
+@pytest.fixture
+def restored_environment():
+    """The server runs in this process, so its settings are this process's environment: put them back afterwards."""
+    with mock.patch.dict(os.environ, {}):
+        yield
+    if outreach_fakes.SETTINGS_ENV and outreach_fakes.SETTINGS_ENV.exists():
+        outreach_fakes.SETTINGS_ENV.unlink()

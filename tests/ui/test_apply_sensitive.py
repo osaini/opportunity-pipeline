@@ -14,7 +14,7 @@ from axe_core_python.sync_playwright import Axe
 from playwright.sync_api import expect
 
 from conftest import wait_for_results
-from test_apply_for_me import AXE_OPTIONS, USER, apply_ready, confirm_posting, db, open_saved_role  # noqa: F401 (apply_ready is a fixture)
+from ui_helpers import AXE_OPTIONS, USER, confirm_posting, db, open_saved_role
 
 CONSENT = re.compile("only to fill in application forms")
 

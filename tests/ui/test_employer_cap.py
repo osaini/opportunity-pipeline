@@ -14,7 +14,7 @@ from playwright.sync_api import expect
 from conftest import sign_in_as_owner, wait_for_results
 from opportunity_app.schema import LOCAL_USER_ID, sort_key
 from pipeline_core import RANKED_VIEW_PER_COMPANY
-from test_accessibility import _assert_accessible
+from ui_helpers import assert_accessible
 
 COMPANY = "Capstone Dynamics"
 POSTINGS = RANKED_VIEW_PER_COMPANY + 2
@@ -67,7 +67,7 @@ def test_best_fit_shows_an_employers_top_postings_and_says_how_many_more(page, l
     expect(more).to_have_count(1)
     # On the employer's last shown card, not floating in the list.
     expect(_employer_cards(page).last.locator(".company-more")).to_have_count(1)
-    _assert_accessible(page, "discover with a capped employer")
+    assert_accessible(page, "discover with a capped employer")
 
 
 def test_more_opens_every_posting_from_that_employer_and_can_be_undone(page, live_server):
@@ -80,7 +80,7 @@ def test_more_opens_every_posting_from_that_employer_and_can_be_undone(page, liv
     expect(_employer_cards(page)).to_have_count(POSTINGS)
     expect(page.locator(".opportunity-card")).to_have_count(POSTINGS)
     expect(page.locator(".company-more")).to_have_count(0)
-    _assert_accessible(page, "discover filtered to one employer")
+    assert_accessible(page, "discover filtered to one employer")
 
     page.get_by_role("button", name="Show every employer").click()
     wait_for_results(page)

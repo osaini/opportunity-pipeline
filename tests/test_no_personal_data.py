@@ -26,6 +26,13 @@ FORBIDDEN_WORD_HASHES = {
 WORD = re.compile(r"[a-z0-9]+")
 BINARY_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".docx", ".woff", ".woff2", ".webm", ".zip"}
 
+try:
+    import realdata_guard
+except ImportError:  # imported as tests.<module>, with tests/ not on sys.path
+    from tests import realdata_guard
+# Guards this module's own run against opening data/*.db (AGENTS.md hard rule 1); see tests/realdata_guard.py.
+realdata_guard.install()
+
 
 def tracked_files() -> list[Path]:
     try:

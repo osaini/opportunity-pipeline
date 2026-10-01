@@ -20,6 +20,7 @@ from conftest import wait_for_results
 from opportunity_app import automation
 from opportunity_app.actions import record_intent
 from opportunity_app.schema import connect_product, utc_now
+from ui_helpers import assert_accessible
 
 USER = "local-user"
 FEATURE = "application_mail"
@@ -276,8 +277,6 @@ def test_an_email_deadline_shows_in_urgent_with_where_it_came_from(owner_page, l
 
 
 def test_the_job_email_parts_of_the_automation_section_are_accessible_in_both_themes(owner_page, live_server):
-    from test_accessibility import _assert_accessible
-
     with closing(connect_product(live_server.live_path)) as conn:
         switch(conn, "on")
         acme = acme_application(conn)
@@ -295,9 +294,9 @@ def test_the_job_email_parts_of_the_automation_section_are_accessible_in_both_th
     # Themed like the other selects on the page, not the browser's bare control.
     style = section.locator(".automation-picker").evaluate("el => [getComputedStyle(el).borderTopLeftRadius, getComputedStyle(el).fontSize]")
     assert style == ["10px", "12px"], style
-    _assert_accessible(owner_page, "the job-email parts of the automation section")
+    assert_accessible(owner_page, "the job-email parts of the automation section")
     owner_page.evaluate("document.documentElement.dataset.theme = 'dark'")
-    _assert_accessible(owner_page, "the job-email parts of the automation section in dark mode")
+    assert_accessible(owner_page, "the job-email parts of the automation section in dark mode")
 
 
 def test_an_application_chosen_in_waiting_survives_another_rows_decision(owner_page, live_server):

@@ -6,7 +6,6 @@ No browser and nothing that reaches a network: every company, board and posting 
 
 import json
 import os
-import shutil
 import sqlite3
 import sys
 import tempfile
@@ -27,138 +26,10 @@ from opportunity_app.outreach_gmail import SERVER_INSTANCE
 from opportunity_app.schema import connect_product, ensure_product_schema, utc_now
 
 from helpers_platform import build_and_migrate
+from helpers_apply import ApplyCase, BLUEFIN, USER, setUpModule, tearDownModule  # noqa: F401 (module fixtures: unittest and pytest find them here)
 
-USER = "local-user"
 MIGRATIONS = Path(__file__).resolve().parent.parent / "migrations"
-BLUEFIN = "Bluefin Robotics"
 FOREIGN = "another-server-process"
-
-
-_TEMPLATE_DIR = None
-_TEMPLATE_DB = None
-
-
-def setUpModule():
-    """Migrate one database for the whole module; every test starts from its own copy, which is much faster."""
-    global _TEMPLATE_DIR, _TEMPLATE_DB
-    _TEMPLATE_DIR = tempfile.TemporaryDirectory()
-    _, _TEMPLATE_DB = build_and_migrate(Path(_TEMPLATE_DIR.name))
-
-
-def tearDownModule():
-    _TEMPLATE_DIR.cleanup()
-
-
-class ApplyCase(unittest.TestCase):
-    """A throwaway database, a clock near the wall clock, and helpers for fictional postings and claims."""
-
-    def setUp(self):
-        self.tempdir = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tempdir.cleanup)
-        self.root = Path(self.tempdir.name)
-        self.path = self.root / "platform.db"
-        shutil.copyfile(_TEMPLATE_DB, self.path)
-        self.conn = connect_product(self.path)
-        self.addCleanup(self.conn.close)
-        # Times are near the wall clock, as everything else in the database is, so a "day old" application is one.
-        self.base = datetime.now(timezone.utc).replace(microsecond=0)
-        apply_runs.RUNNING.clear()
-        apply_runs.RUNNING_RUNS.clear()
-        self.addCleanup(apply_runs.RUNNING.clear)
-        self.addCleanup(apply_runs.RUNNING_RUNS.clear)
-        env = mock.patch.dict(os.environ, {"PIPELINE_TIMEZONE": "UTC"})
-        env.start()
-        self.addCleanup(env.stop)
-        self.companies = {}
-        self.serial = 0
-
-    # --- fictional postings and claims
-
-    def at(self, minutes=0, **kwargs):
-        return self.base + timedelta(minutes=minutes, **kwargs)
-
-    def opportunity(self, opportunity_id, company=BLUEFIN, title="Controls Intern"):
-        stamp = utc_now()
-        with self.conn:
-            self.conn.execute(
-                "INSERT INTO opportunities(id, company, title, url, first_seen_at, last_seen_at, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
-                (opportunity_id, company, title, f"https://boards.example.test/{opportunity_id}", stamp, stamp, stamp, stamp),
-            )
-        self.companies[opportunity_id] = company
-        return opportunity_id
-
-    def start(self, opportunity_id, mode="handoff", *, job=None, board="bluefin", now=None, **kwargs):
-        """apply_runs.claim for a fictional posting, opening the posting first when it is new."""
-        if opportunity_id not in self.companies:
-            self.opportunity(opportunity_id)
-        return apply_runs.claim(
-            self.conn, user_id=USER, opportunity_id=opportunity_id, mode=mode, ats="greenhouse", board_token=board,
-            job_ref=job or f"{board}/{opportunity_id}", company=company_key(self.companies[opportunity_id]), now=now, **kwargs,
-        )
-
-    def raw_claim(self, *, state="submitted", mode="one_click", handed_over_at=None, after_click=None, company=BLUEFIN, board="bluefin",
-                  instance=SERVER_INSTANCE, heartbeat_at=None, stage_policy="record", token=None, verification="", stage_recorded=0,
-                  updated_at=None, submitted_at=None, note="", job_ref=None, confirmed_at=None, detail=None):
-        """A claim row written directly, in whatever state a test needs, with a posting and an application of its own."""
-        self.serial += 1
-        opportunity_id = f"raw-{self.serial}"
-        self.opportunity(opportunity_id, company)
-        stamp = updated_at or utc_now()
-        token = token or f"tok-{self.serial}"
-        with self.conn:
-            self.conn.execute(
-                "INSERT INTO applications(id, opportunity_id, user_id, stage, created_at, updated_at) VALUES(?, ?, ?, 'applying', ?, ?)",
-                (f"app-{opportunity_id}", opportunity_id, USER, stamp, stamp),
-            )
-            self.conn.execute(
-                """
-                INSERT INTO application_submit_claims(token, application_id, user_id, opportunity_id, instance, mode, state, after_click, ats,
-                    board_token, job_ref, company_key, stage_policy, plan_hash, handed_over_at, heartbeat_at, verification, stage_recorded,
-                    submitted_at, note, confirmed_at, detail_json, created_at, updated_at)
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'greenhouse', ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (token, f"app-{opportunity_id}", USER, opportunity_id, instance, mode, state,
-                 1 if handed_over_at is not None and after_click is None else (after_click or 0), board,
-                 job_ref or f"{board}/{opportunity_id}", company_key(company), stage_policy, handed_over_at, heartbeat_at or stamp,
-                 verification, stage_recorded, submitted_at, note, confirmed_at, json.dumps(detail or {}), stamp, stamp),
-            )
-        return token
-
-    def claim_row(self, token):
-        return dict(self.conn.execute("SELECT * FROM application_submit_claims WHERE token=?", (token,)).fetchone())
-
-    def stage(self, opportunity_id):
-        row = self.conn.execute("SELECT stage, applied_at FROM applications WHERE opportunity_id=?", (opportunity_id,)).fetchone()
-        return None if row is None else (row["stage"], row["applied_at"])
-
-    def events(self, application_id):
-        return [row["event_type"] for row in self.conn.execute(
-            "SELECT event_type FROM application_events WHERE application_id=? ORDER BY id", (application_id,)).fetchall()]
-
-    def notices(self):
-        return [row["title"] for row in automation.list_notices(self.conn, USER, limit=50)]
-
-    def set_limits(self, **values):
-        profile = {"apply_agent": values}
-        with self.conn:
-            self.conn.execute(
-                "INSERT INTO profiles(user_id, profile_json, created_at, updated_at) VALUES(?, ?, ?, ?) "
-                "ON CONFLICT(user_id) DO UPDATE SET profile_json=excluded.profile_json",
-                (USER, json.dumps(profile), utc_now(), utc_now()),
-            )
-
-    def make_run(self, kind="rehearsal", *, company=BLUEFIN, opportunity_id="op-run", started=None, **kwargs):
-        return apply_runs.create_run(
-            self.conn, user_id=USER, opportunity_id=opportunity_id, kind=kind, started_by="student", ats="greenhouse", board_token="bluefin",
-            page_url="https://boards.example.test/bluefin/1", company=company_key(company), deadline_seconds=300,
-            now=started or self.at(), **kwargs,
-        )
-
-    def reviewed_rehearsal(self, company, minutes, *, verdict="right", clean=True, outcome="rehearsed"):
-        run_id = self.make_run(company=company, started=self.at(minutes))
-        apply_runs.finish_run(self.conn, run_id, outcome=outcome, clean=clean, now=self.at(minutes, seconds=30))
-        apply_runs.mark_review(self.conn, run_id, user_id=USER, verdict=verdict, now=self.at(minutes, seconds=40))
-        return run_id
 
 
 class ClaimTests(ApplyCase):

@@ -22,7 +22,7 @@ from opportunity_app.outreach_schedule import run_due_sends
 from opportunity_app.schema import connect_product, utc_now
 
 from helpers_platform import build_and_migrate
-from test_outreach_gmail import ACCOUNT, PDF, SCOPES, FakeGmail, delivery_report, forget_gmail_backoff, rate_limited
+from helpers_gmail import ACCOUNT, PDF, SCOPES, FakeGmail, delivery_report, forget_gmail_backoff, rate_limited
 
 AUTH = {"Authorization": "Bearer gmail-sends-owner"}
 USER = "local-user"

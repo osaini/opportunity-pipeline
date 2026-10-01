@@ -15,6 +15,13 @@ NODE = shutil.which("node")
 GMAIL = "mcp__claude_ai_Gmail__search_threads"
 START = 1_800_000_000_000
 
+try:
+    import realdata_guard
+except ImportError:  # imported as tests.<module>, with tests/ not on sys.path
+    from tests import realdata_guard
+# Guards this module's own run against opening data/*.db (AGENTS.md hard rule 1); see tests/realdata_guard.py.
+realdata_guard.install()
+
 
 @unittest.skipUnless(NODE, "node is not on PATH")
 class MailboxGuardTests(unittest.TestCase):
