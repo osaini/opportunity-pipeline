@@ -22,10 +22,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fastapi.testclient import TestClient
 
 import pipeline
-from helpers_platform import LEGACY_SCHEMA, build_profile
+from helpers_platform import LEGACY_SCHEMA, build_profile, migrate_cached
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
-from opportunity_app.schema import migrate_legacy_database
 from pipeline_core import RANKED_VIEW_PER_COMPANY
 
 
@@ -51,7 +50,7 @@ class EmployerCapApiTests(unittest.TestCase):
             conn.executescript(LEGACY_SCHEMA)
             conn.executemany("INSERT INTO jobs VALUES(" + ",".join("?" * 23) + ")", rows)
             conn.commit()
-        migrate_legacy_database(legacy, self.platform, build_profile(root))
+        migrate_cached(legacy, self.platform, build_profile(root))
         app = create_app(db_path=self.platform, access_token="cap-secret", static_dir=STATIC_DIR)
         self.client = TestClient(app)
         self.client.__enter__()
