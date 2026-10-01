@@ -1712,7 +1712,6 @@ def import_targets(
     if len(records) > 500:
         raise ValueError("Outreach imports are limited to 500 targets")
     names, domains = existing_keys(conn, user_id=user_id)
-    today = local_today(conn, user_id)
     imported, skipped, errors, created_ids = 0, 0, [], []
     for index, record in enumerate(records, start=1):
         record = {key: value for key, value in record.items() if key not in IMPORT_IGNORED_FIELDS}
@@ -1726,6 +1725,8 @@ def import_targets(
             continue
         try:
             internal_confidence = record.pop("_research_confidence", None)
+            # The day is read per row, as create_target did, so an import that runs past local midnight dates the later rows to the new day.
+            today = local_today(conn, user_id)
             # One INSERT and no read-back: only the new id is used, and "unverified" is written with the row.
             target_id = _create_target(
                 conn, record, user_id=user_id, today=today, origin=origin, discovery_run_id=discovery_run_id,

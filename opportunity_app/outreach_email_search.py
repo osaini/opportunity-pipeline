@@ -36,9 +36,9 @@ from .outreach_contacts import (
     _is_generic,
     _PageParser,
     _same_site,
+    fetch_site_robots,
     list_candidates,
     public_web_url_error,
-    site_robots,
     store_candidate,
     USER_AGENT,
 )
@@ -116,9 +116,13 @@ def hop_guard(fetcher: SafeFetcher) -> Callable[[str], str | None]:
             return "blocked host"
         parts = urlsplit(url)
         origin = f"{parts.scheme}://{parts.netloc}/"
-        if origin not in robots_by_origin:
-            robots_by_origin[origin] = site_robots(origin, fetcher)
-        if not robots_by_origin[origin].can_fetch(USER_AGENT, url):
+        robots = robots_by_origin.get(origin)
+        if robots is None:
+            # A failed or unusual answer is not remembered, so a later person's check asks the site again.
+            robots, settled = fetch_site_robots(origin, fetcher)
+            if settled:
+                robots_by_origin[origin] = robots
+        if not robots.can_fetch(USER_AGENT, url):
             return "robots"
         return None
 

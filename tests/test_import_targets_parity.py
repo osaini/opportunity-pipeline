@@ -11,6 +11,7 @@ import re
 import sys
 import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest import mock
 
@@ -170,6 +171,19 @@ class ImportParityTests(Case):
         self.assertEqual(sum(1 for text in statements if text.startswith("UPDATE outreach_targets")), 0)
         self.assertEqual(sum(1 for text in statements if text.strip().upper() == "COMMIT"), 1)
         self.assertEqual(sum(1 for text in statements if "outreach_draft_versions" in text), 0, "no get_target read-back")
+
+    def test_each_row_takes_the_day_when_it_is_written_so_a_midnight_crossing_import_matches_the_old_one(self):
+        days = [date(2026, 10, 1), date(2026, 10, 1), date(2026, 10, 2)]
+        batch = [{"company": f"Midnight Co {n}", "status": "sent"} for n in range(3)]
+        sent = {}
+        for name, run in (("old", old_import_targets), ("new", import_targets)):
+            conn = self.database()
+            with mock.patch.object(outreach, "local_today", side_effect=list(days)):
+                run(conn, json.loads(json.dumps(batch)), user_id=USER)
+            sent[name] = [tuple(row) for row in conn.execute(
+                "SELECT company, sent_at, follow_up_at FROM outreach_targets WHERE company LIKE 'Midnight Co %' ORDER BY company")]
+        self.assertEqual(sent["new"], sent["old"])
+        self.assertEqual([row[1] for row in sent["new"]], ["2026-10-01", "2026-10-01", "2026-10-02"])
 
     def test_create_target_still_returns_the_whole_target(self):
         conn = self.database()

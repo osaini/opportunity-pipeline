@@ -632,12 +632,23 @@ def _pattern_of(email: str, name: str) -> str | None:
     return None
 
 
-def site_robots(start: str, fetcher: SafeFetcher) -> RobotFileParser:
-    """The site's robots.txt rules; a missing or unreadable file allows everything."""
+def fetch_site_robots(start: str, fetcher: SafeFetcher) -> tuple[RobotFileParser, bool]:
+    """The site's robots.txt rules, and whether the answer is settled enough to reuse.
+
+    A missing or unreadable file allows everything. The flag is True for a file that was read (200) or is
+    plainly absent (404, 410), and False for a failed fetch or any other status, which a later try may answer
+    differently.
+    """
     robots = RobotFileParser()
     response = fetcher.fetch(urljoin(start, "/robots.txt"), same_host_only=True)
-    robots.parse(response.text.splitlines() if not response.error and response.status == 200 else [])
-    return robots
+    read = not response.error and response.status == 200
+    robots.parse(response.text.splitlines() if read else [])
+    return robots, read or (not response.error and response.status in (404, 410))
+
+
+def site_robots(start: str, fetcher: SafeFetcher) -> RobotFileParser:
+    """The site's robots.txt rules; a missing or unreadable file allows everything."""
+    return fetch_site_robots(start, fetcher)[0]
 
 
 def crawl_site(

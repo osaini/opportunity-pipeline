@@ -109,6 +109,41 @@ class RobotsOncePerBatchTests(Case):
         self.assertEqual((first["reason"], second["reason"]), ("", ""))
         self.assertEqual(len([url for url in requested if url.endswith("/robots.txt")]), 1)
 
+    def test_a_failed_robots_read_is_not_remembered_so_a_later_person_asks_again(self):
+        # robots.txt fails once (a 503), then comes back with a Disallow. Checked person by person, the second
+        # person is refused; a guard that remembered the failure as "allow everything" would let them through.
+        robots_calls = []
+
+        def handler(request):
+            if request.url.path == "/robots.txt":
+                robots_calls.append(1)
+                if len(robots_calls) == 1:
+                    return httpx.Response(503)
+                return httpx.Response(200, text="User-agent: *\nDisallow: /private\n", headers={"content-type": "text/plain"})
+            return httpx.Response(200, text="<p>Bob Poe, bob@acme.test</p>", headers={"content-type": "text/html"})
+
+        target = {"id": "t", "company": "Acme", "website": "https://acme.test"}
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            fetcher = safe_fetcher(client)
+            guard = hop_guard(fetcher)
+            self.assertIsNone(guard("https://news.test/private/x"))
+            self.assertEqual(guard("https://news.test/private/x"), "robots")
+            self.assertEqual(guard("https://news.test/private/x"), "robots")
+        self.assertEqual(len(robots_calls), 2, "the settled answer is reused")
+
+    def test_a_missing_robots_file_is_settled_and_read_once(self):
+        calls = []
+
+        def handler(request):
+            calls.append(request.url.path)
+            return httpx.Response(404)
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            guard = hop_guard(safe_fetcher(client))
+            for _ in range(3):
+                self.assertIsNone(guard("https://news.test/private/x"))
+        self.assertEqual(calls, ["/robots.txt"])
+
 
 if __name__ == "__main__":
     unittest.main()
