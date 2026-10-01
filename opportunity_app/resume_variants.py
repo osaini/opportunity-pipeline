@@ -34,6 +34,7 @@ from pipeline_core.visibility import capture_visible_sql
 from . import automation
 from .actions import OpportunityNotFoundError, _intent_state
 from .database import rollback_quietly
+from .profile_store import read_stored_profile
 from .timestamps import utc_now
 
 LOGGER = logging.getLogger(__name__)
@@ -52,16 +53,6 @@ class ResumePickError(ValueError):
 def label_key(label: Any) -> str:
     """How labels are compared: trimmed and case-insensitive."""
     return " ".join(str(label or "").split()).casefold()
-
-
-def _profile(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
-    """The stored profile, read without creating one (profile.get_profile would)."""
-    row = conn.execute("SELECT profile_json FROM profiles WHERE user_id=?", (user_id,)).fetchone()
-    try:
-        profile = json.loads(row[0] or "{}") if row else {}
-    except (TypeError, ValueError):
-        return {}
-    return profile if isinstance(profile, dict) else {}
 
 
 def configured_variants(profile: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
@@ -178,7 +169,7 @@ def variant_setup(conn: sqlite3.Connection, user_id: str) -> dict[str, list[str]
     ``usable``: those a confirmed résumé carries, which are the only ones ever picked.
     ``unlisted``: labels on confirmed résumés that the profile does not list, so they are never picked.
     """
-    variants, _default = configured_variants(_profile(conn, user_id))
+    variants, _default = configured_variants(read_stored_profile(conn, user_id))
     files = variant_files(conn, user_id)
     listed = {label_key(variant["label"]) for variant in variants}
     return {
@@ -221,7 +212,7 @@ def pick_variant(conn: sqlite3.Connection, user_id: str, opportunity_id: str, *,
     (OpportunityNotFoundError otherwise), as _posting does.
     """
     posting = _posting(conn, opportunity_id, visible_to=visible_to)
-    variants, default = configured_variants(_profile(conn, user_id))
+    variants, default = configured_variants(read_stored_profile(conn, user_id))
     files = variant_files(conn, user_id)
     usable = [variant for variant in variants if label_key(variant["label"]) in files]
     choice = choose_variant(posting["title"] or "", posting["description"] or "", usable, default)
@@ -355,7 +346,7 @@ def resume_options(conn: sqlite3.Connection, user_id: str) -> list[dict[str, Any
 def pick_view(conn: sqlite3.Connection, user_id: str, opportunity_id: str) -> dict[str, Any]:
     """Everything the role's page shows: the pick in force, what the words suggest, and what can be picked."""
     _posting(conn, opportunity_id, visible_to=user_id)
-    variants, default = configured_variants(_profile(conn, user_id))
+    variants, default = configured_variants(read_stored_profile(conn, user_id))
     return {
         "opportunity_id": opportunity_id,
         "configured": bool(variants),

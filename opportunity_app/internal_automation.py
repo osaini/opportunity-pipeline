@@ -50,6 +50,8 @@ from typing import Any, Callable
 
 from . import automation
 from .database import rollback_quietly
+from .json_values import json_dict
+from .profile_store import read_stored_profile
 from .settings_store import get_setting, put_setting
 from .timestamps import parse_app_instant, utc_now
 from .user_time import user_timezone
@@ -71,16 +73,6 @@ AUTO_CLOSE_BASIS = "lifecycle:no_reply_14d"
 # --- Per-student settings -------------------------------------------------------------------
 
 
-def _profile(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
-    """The stored profile, read without creating one (profile.get_profile would)."""
-    row = conn.execute("SELECT profile_json FROM profiles WHERE user_id=?", (user_id,)).fetchone()
-    try:
-        profile = json.loads(row[0] or "{}") if row else {}
-    except (TypeError, ValueError):
-        return {}
-    return profile if isinstance(profile, dict) else {}
-
-
 def _days(profile: dict[str, Any], key: str, default: int) -> int:
     value = profile.get(key)
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= MAX_DAYS:
@@ -90,12 +82,12 @@ def _days(profile: dict[str, Any], key: str, default: int) -> int:
 
 def follow_up_days(conn: sqlite3.Connection, user_id: str) -> int:
     """Days after applying with no reply before Urgent says so: the profile's application_follow_up_days, else 21."""
-    return _days(_profile(conn, user_id), "application_follow_up_days", DEFAULT_FOLLOW_UP_DAYS)
+    return _days(read_stored_profile(conn, user_id), "application_follow_up_days", DEFAULT_FOLLOW_UP_DAYS)
 
 
 def archive_days(conn: sqlite3.Connection, user_id: str) -> int:
     """Days after applying before a silent application is archived: archive_after_days, else 60."""
-    return _days(_profile(conn, user_id), "archive_after_days", DEFAULT_ARCHIVE_DAYS)
+    return _days(read_stored_profile(conn, user_id), "archive_after_days", DEFAULT_ARCHIVE_DAYS)
 
 
 # --- Application silence (Urgent rows) ----------------------------------------------------
@@ -249,14 +241,6 @@ def silence_rows(conn: sqlite3.Connection, user_id: str, *, now: datetime | None
 # --- Archive silent applications (Could) ---------------------------------------------------
 
 
-def _decoded(text: Any) -> dict[str, Any]:
-    try:
-        value = json.loads(text or "{}")
-    except (TypeError, ValueError):
-        return {}
-    return value if isinstance(value, dict) else {}
-
-
 def _silent_since_of(evidence: dict[str, Any]) -> str:
     """The calendar day (ISO) an archive counted the silence from: the company's last email, else the applied day."""
     return str(evidence.get("last_email_on") or evidence.get("applied_on") or "")
@@ -303,11 +287,11 @@ def automatic_archive(conn: sqlite3.Connection, application_id: str) -> dict[str
     stage = conn.execute("SELECT stage FROM applications WHERE id=?", (application_id,)).fetchone()
     if stage is None or stage["stage"] != "archived":
         return None
-    result = _decoded(action["after_json"]).get("_result")
+    result = json_dict(action["after_json"]).get("_result")
     return {
         "action_id": str(action["id"]), "archived_at": action["applied_at"],
-        "from_stage": _decoded(action["before_json"]).get("stage") or "applied",
-        "silent_since": _silent_since_of(_decoded(action["evidence_json"])),
+        "from_stage": json_dict(action["before_json"]).get("stage") or "applied",
+        "silent_since": _silent_since_of(json_dict(action["evidence_json"])),
         "reminder_cancelled_at": str(result.get("reminder_cancelled_at") or "") if isinstance(result, dict) else "",
     }
 
@@ -402,7 +386,7 @@ def _new_silence(conn: sqlite3.Connection, user_id: str, item: dict[str, Any]) -
     if latest["status"] == "undone":
         undone_at = parse_app_instant(latest["decided_at"])
         return anchor is not None and undone_at is not None and anchor > undone_at
-    counted_from = _silent_since_of(_decoded(latest["evidence_json"]))
+    counted_from = _silent_since_of(json_dict(latest["evidence_json"]))
     if counted_from:
         return str(item.get("since") or "") > counted_from
     made_at = parse_app_instant(latest["created_at"])

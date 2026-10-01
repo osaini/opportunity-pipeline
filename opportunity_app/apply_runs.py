@@ -52,7 +52,9 @@ from pipeline import identity_tokens, normalized
 
 from . import ROOT, actions, automation
 from .database import is_unique_violation
+from .json_values import json_as
 from .outreach_gmail import SERVER_INSTANCE
+from .profile_store import read_stored_profile
 from .settings_store import get_setting, put_setting, setting_updated_at
 from .timestamps import parse_app_instant, utc_now
 from .user_time import UserTimezone, user_timezone
@@ -160,14 +162,6 @@ def _iso(moment: datetime) -> str:
     return moment.astimezone(timezone.utc).isoformat(timespec="microseconds")
 
 
-def _loads(text: Any, default: Any) -> Any:
-    try:
-        value = json.loads(text or "")
-    except (TypeError, ValueError):
-        return default
-    return value if isinstance(value, type(default)) else default
-
-
 def _dumps(value: Any) -> str:
     return json.dumps(value, sort_keys=True)
 
@@ -186,14 +180,9 @@ def lock_user(conn: sqlite3.Connection, user_id: str) -> None:
     conn.execute("UPDATE users SET id=id WHERE id=?", (user_id,))
 
 
-def _profile(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
-    row = conn.execute("SELECT profile_json FROM profiles WHERE user_id=?", (user_id,)).fetchone()
-    return _loads(row[0] if row else "", {})
-
-
 def limits(conn: sqlite3.Connection, user_id: str) -> dict[str, int]:
     """This student's limits: the profile's apply_agent values where they are sound, else the defaults."""
-    stored = _profile(conn, user_id).get("apply_agent")
+    stored = read_stored_profile(conn, user_id).get("apply_agent")
     stored = stored if isinstance(stored, dict) else {}
     result = {}
     for key, default in DEFAULT_LIMITS.items():
@@ -652,7 +641,7 @@ def hand_over(conn: sqlite3.Connection, token: str, *, user_id: str, now: dateti
                     return False
             rehearsal = conn.execute(
                 "SELECT finished_at, started_at FROM apply_runs WHERE id=? AND user_id=?",
-                (_loads(row["detail_json"], {}).get("rehearsal_run_id", ""), user_id),
+                (json_as(row["detail_json"], {}).get("rehearsal_run_id", ""), user_id),
             ).fetchone()
             rehearsed = parse_app_instant(rehearsal["finished_at"] or rehearsal["started_at"]) if rehearsal is not None else None
             if rehearsed is None or moment - rehearsed >= CONFIRM_MAX_AGE:
@@ -700,7 +689,7 @@ def _settle_tx(
     if detail:
         sets.append("detail_json=?")
         current = conn.execute("SELECT detail_json FROM application_submit_claims WHERE token=?", (token,)).fetchone()
-        params.append(_dumps({**_loads(current[0] if current else "", {}), **detail}))
+        params.append(_dumps({**json_as(current[0] if current else "", {}), **detail}))
     if state == "submitted":
         submitted = submitted_at or stamp
         verification, until = _watch_fields(submitted, watch)
@@ -1331,7 +1320,7 @@ def purge_evidence(
     for row in conn.execute(
         f"SELECT id, screenshots_json FROM apply_runs WHERE started_at<? AND screenshots_json<>'[]' {scope}", (old, *args),
     ).fetchall():
-        shots = _loads(row["screenshots_json"], [])
+        shots = json_as(row["screenshots_json"], [])
         removed = 0
         for shot in shots:
             stored = str(shot.get("path") or "") if isinstance(shot, dict) else ""
@@ -1354,7 +1343,7 @@ def purge_evidence(
     for row in conn.execute(
         f"SELECT id, progress_json FROM apply_runs WHERE status='finished' AND started_at<? AND progress_json<>'[]' {scope}", (trim, *args),
     ).fetchall():
-        steps = _loads(row["progress_json"], [])
+        steps = json_as(row["progress_json"], [])
         if len(steps) > 1:
             with conn:
                 conn.execute("UPDATE apply_runs SET progress_json=? WHERE id=?", (_dumps(steps[-1:]), row["id"]))
@@ -1373,7 +1362,7 @@ def _remove_orphans(conn: sqlite3.Connection, root: Path, user_id: str | None, n
     working = {str(row[0]) for row in conn.execute("SELECT id FROM apply_runs WHERE status='running'").fetchall()}
     referenced: set[Path] = set()
     for row in conn.execute("SELECT screenshots_json FROM apply_runs WHERE screenshots_json<>'[]'").fetchall():
-        for shot in _loads(row["screenshots_json"], []):
+        for shot in json_as(row["screenshots_json"], []):
             stored = str(shot.get("path") or "") if isinstance(shot, dict) else ""
             if stored:
                 referenced.add(_screenshot_file(root, stored).resolve())

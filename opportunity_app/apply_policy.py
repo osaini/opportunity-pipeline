@@ -44,6 +44,7 @@ from pipeline import identity_tokens
 from . import apply_sensitive, preparation, resume_variants
 from .apply_checks import ALTERNATE_TEXT_FIELDS, BOARD_HOSTS, Problem, join, question_key
 from .extension_apply import SENSITIVE_FIELD, ExtensionApplyError, confirmed_resume_file
+from .json_values import json_as
 
 __all__ = [
     "ALLOWED_ATS_LABEL_FIELDS", "ATS_GREENHOUSE", "CATEGORY_WORDS", "NET_TOPICS", "NET_WORDS", "NEVER_STORABLE_TOPICS", "Plan", "PlanField", "SchemaField", "Source", "Sources",
@@ -951,14 +952,6 @@ def value_mac(key: bytes, value: Any) -> str:
     return hmac.new(key, _canonical_value(value).encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-def _loads(text: Any, default: Any) -> Any:
-    try:
-        value = json.loads(text or "")
-    except (TypeError, ValueError):
-        return default
-    return value if isinstance(value, type(default)) else default
-
-
 def _norm(text: Any) -> str:
     return " ".join(str(text if text is not None else "").split()).casefold()
 
@@ -1036,7 +1029,7 @@ def sources_for(
     """Gather everything a value may come from, reading only. Nothing here changes a row."""
     facts = preparation.confirmed_facts(conn, user_id)
     answers = [
-        {**dict(row), "tags": [str(tag) for tag in _loads(row["tags_json"], [])]}
+        {**dict(row), "tags": [str(tag) for tag in json_as(row["tags_json"], [])]}
         for row in conn.execute(
             "SELECT id, question, answer, company, tags_json, updated_at FROM answer_library WHERE user_id=? ORDER BY updated_at DESC, id", (user_id,),
         ).fetchall()

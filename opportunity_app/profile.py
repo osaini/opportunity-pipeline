@@ -10,6 +10,7 @@ from typing import Any
 
 from pipeline import score_job
 
+from .json_values import json_dict
 from .schema import LOCAL_USER_ID
 from .timestamps import utc_now
 
@@ -390,11 +391,7 @@ def _stored_profile(conn: sqlite3.Connection, *, user_id: str) -> dict[str, Any]
         if not conn.execute("SELECT id FROM users WHERE id=?", (user_id,)).fetchone():
             raise LookupError(user_id)
         return {}
-    try:
-        profile = json.loads(row[0] or "{}")
-    except (TypeError, ValueError):
-        return {}
-    return profile if isinstance(profile, dict) else {}
+    return json_dict(row[0])
 
 
 def _restore_file(path: Path, previous: bytes | None) -> None:

@@ -109,6 +109,7 @@ import httpx
 
 from . import automation
 from .database import rollback_quietly
+from .json_values import json_dict
 from .inbox_classifiers import JEV_NOT_ASKED, MIN_CONFIDENCE
 from .outreach import (
     REPLY_PATTERNS,
@@ -502,14 +503,6 @@ def _subject(subject: str, fallback: str) -> str:
 # --- Whether a company qualifies ---------------------------------------------------------
 
 
-def _data(text: Any) -> dict[str, Any]:
-    try:
-        value = json.loads(text or "{}")
-    except (TypeError, ValueError):
-        return {}
-    return value if isinstance(value, dict) else {}
-
-
 def replies(conn: sqlite3.Connection, target_id: str, user_id: str) -> list[dict[str, Any]]:
     """Every reply logged for the company, oldest first by when it arrived (Gmail's time; a pasted one, when it was logged).
 
@@ -521,7 +514,7 @@ def replies(conn: sqlite3.Connection, target_id: str, user_id: str) -> list[dict
         "SELECT id, detail, detail_json, created_at FROM outreach_events WHERE target_id=? AND user_id=? AND event_type='reply_logged'",
         (target_id, user_id),
     ).fetchall():
-        data = _data(row["detail_json"])
+        data = json_dict(row["detail_json"])
         at = parse_app_instant(data.get("received_at")) or parse_app_instant(row["created_at"])
         if at is None:
             continue
@@ -1108,7 +1101,7 @@ def thank_you_blockers(conn: sqlite3.Connection, target: dict[str, Any], reply: 
     failed: list[str] = []
     # R1: the thread, or the exact address.
     threads = {
-        str(_data(row["detail"]).get("thread_id") or "") for row in conn.execute(
+        str(json_dict(row["detail"]).get("thread_id") or "") for row in conn.execute(
             "SELECT detail FROM outreach_events WHERE target_id=? AND user_id=? AND event_type=?",
             (target["id"], target["user_id"], SENT_EVENT),
         ).fetchall()
@@ -1517,7 +1510,7 @@ def _followed_up(conn: sqlite3.Connection, target_id: str, user_id: str) -> bool
     ).fetchall():
         if row["event_type"] == "status" and row["to_status"] == "followed_up":
             return True
-        if row["event_type"] == SENT_EVENT and _data(row["detail"]).get("kind") == "follow_up":
+        if row["event_type"] == SENT_EVENT and json_dict(row["detail"]).get("kind") == "follow_up":
             return True
     return False
 

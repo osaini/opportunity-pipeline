@@ -58,6 +58,7 @@ import httpx
 
 from . import automation
 from .database import rollback_quietly
+from .json_values import json_dict
 from .settings_store import get_setting, put_setting
 from .mail_trust import FREEMAIL, registrable_domain
 from .outreach import UNSENT_STATUSES
@@ -309,7 +310,7 @@ def _record_sent_threads(conn: sqlite3.Connection, user_id: str, now: datetime) 
         "SELECT target_id, detail FROM outreach_events WHERE user_id=? AND event_type IN (?, ?) ORDER BY created_at, id",
         (user_id, SENT_EVENT, THANK_YOU_SENT_EVENT),
     ).fetchall():
-        thread_id = str(_json_dict(row["detail"]).get("thread_id") or "").strip()
+        thread_id = str(json_dict(row["detail"]).get("thread_id") or "").strip()
         if thread_id:
             found.setdefault(thread_id, str(row["target_id"]))
     if not found:
@@ -340,14 +341,6 @@ def _sent_rows(conn: sqlite3.Connection, user_id: str, name: str, limit: int) ->
         "ORDER BY found_at, thread_id LIMIT ?",
         (user_id, name, limit),
     ).fetchall()]
-
-
-def _json_dict(text: Any) -> dict[str, Any]:
-    try:
-        value = json.loads(text or "{}")
-    except (TypeError, ValueError):
-        return {}
-    return value if isinstance(value, dict) else {}
 
 
 def _addresses(*values: Any) -> list[str]:
@@ -428,7 +421,7 @@ def _outreach_marks(conn: sqlite3.Connection, user_id: str, own: set[str]) -> di
         mark = marks.get(str(row["target_id"]))
         if mark is None:
             continue
-        detail = _json_dict(row["detail"])
+        detail = json_dict(row["detail"])
         mark["found"] += [(address, False) for address in _addresses(detail.get("to"))]
         mark["found"] += [(address, True) for address in _addresses(detail.get("cc"))]
     shared = {host for address in own for host in (_host(address), registrable_domain(address) or "") if host}
