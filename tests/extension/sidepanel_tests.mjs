@@ -316,3 +316,44 @@ sidepanelTests.a_page_change_while_a_fill_syncs_still_records_the_fill_and_keeps
   assert.equal(filled[0].body.page_url, "https://jobs.example.com/apply/1", "against the page it was filled on");
   assert.match(panel.$("status").textContent, /The page changed/, "the status still names what Mark as submitted confirms");
 };
+
+const sessionWrites = (panel) => panel.requests.filter((item) => item.method === "PUT" && item.path.startsWith("/api/v1/extension/sessions/"));
+
+sidepanelTests.a_sync_the_tracker_could_not_take_is_queued_whole_and_sent_with_the_next_one = async () => {
+  const panel = await loadSidepanel({ applications });
+  await panel.findApplications();
+  await panel.chooseApplication("app-a");
+  panel.setSessionWriteStatus(503);
+  await panel.scan();
+  assert.equal(panel.store.pendingMetadata.length, 1, "a retryable failure queues the step");
+  const [queued] = panel.store.pendingMetadata;
+  assert.deepEqual(Object.keys(queued), ["session_id", "step_key", "session", "step"], "the queued shape is what installed copies already store");
+  assert.deepEqual(Object.keys(queued.session), ["application_id", "page_url", "ats_type", "fields", "status"]);
+  assert.deepEqual(Object.keys(queued.step), ["page_url", "ats_type", "fields", "summary", "status"]);
+  assert.equal(queued.session.application_id, "app-a");
+  assert.equal(queued.session.status, "draft");
+  assert.equal(queued.step.status, "scanned");
+  assert.equal(queued.session_id, sessionPath(panel, "app-a").split("/").at(-1));
+  assert.ok(queued.step_key.startsWith("step-"));
+  assert.ok(queued.session.fields.every((field) => !("proposed_value" in field)), "only outcome metadata is queued, never a value");
+
+  // The tracker is back: the next sync goes through and sends the queued step after its own.
+  panel.setSessionWriteStatus(200);
+  const before = sessionWrites(panel).length;
+  await panel.scan();
+  assert.equal(panel.store.pendingMetadata.length, 0, "the queue is empty once it was sent");
+  const sent = sessionWrites(panel).slice(before);
+  assert.equal(sent.length, 4, "the new step's two writes, then the queued step's two");
+  assert.equal(JSON.stringify(sent[2].body), JSON.stringify(queued.session));
+  assert.equal(sent[3].path, `/api/v1/extension/sessions/${queued.session_id}/steps/${queued.step_key}`);
+  assert.equal(JSON.stringify(sent[3].body), JSON.stringify(queued.step));
+};
+
+sidepanelTests.a_sync_the_tracker_refused_is_not_queued = async () => {
+  const panel = await loadSidepanel({ applications });
+  await panel.findApplications();
+  await panel.chooseApplication("app-a");
+  panel.setSessionWriteStatus(422);
+  await panel.scan();
+  assert.equal(panel.store.pendingMetadata.length, 0, "a refusal would never succeed on retry, so it is not kept");
+};

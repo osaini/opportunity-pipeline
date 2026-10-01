@@ -1902,10 +1902,18 @@ class PlatformTests(unittest.TestCase):
             self.assertEqual(client.get("/prepare").text, root.text)
             self.assertEqual(client.get("/agent").text, root.text)
             self.assertEqual(client.get("/outreach").text, root.text)
-            script = client.get("/assets/app.js")
-            self.assertEqual(script.status_code, 200)
-            self.assertIn("Save and confirm profile", script.text)
-            self.assertIn("Confirm selected facts", script.text)
+            # The page loads the app as several ordered scripts; the profile wording lives in one of them, so read them all.
+            script_paths = re.findall(r'<script src="(/assets/[^"?]+\.js)(?:\?[^"]*)?"[^>]*\bdefer\b', root.text)
+            self.assertIn("/assets/app.js", script_paths, "the boot script is still served at its old address")
+            self.assertEqual(script_paths[-1], "/assets/app.js", "the boot script loads last")
+            scripts = {}
+            for script_path in script_paths:
+                response = client.get(script_path)
+                self.assertEqual(response.status_code, 200, script_path)
+                scripts[script_path] = response.text
+            all_script_text = "\n".join(scripts.values())
+            self.assertIn("Save and confirm profile", all_script_text)
+            self.assertIn("Confirm selected facts", all_script_text)
             styles = client.get("/assets/styles.css")
             self.assertEqual(styles.status_code, 200)
             self.assertIn(".profile-form", styles.text)

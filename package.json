@@ -4,7 +4,7 @@
   "private": true,
   "description": "Node-side developer tooling only. The pipeline, the CLI, and the web application are pure Python; nothing here ships or is imported at runtime. This file exists so the Playwright MCP server resolves to a pinned version instead of re-downloading @latest on every editor launch.",
   "scripts": {
-    "check": "node --check opportunity_app/static/app.js && node --check opportunity_app/static/ops.js",
+    "check": "node scripts/check-js-syntax.mjs",
     "test:extension": "node tests/extension/run_tests.mjs",
     "test:extension:browser": "node tests/extension/browser/run_browser_tests.mjs"
   },

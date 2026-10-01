@@ -1,8 +1,8 @@
 # UI, UX, and bug-hunting pipeline
 
 The unittest suite under `tests/` exercises the API through `TestClient` and
-never opens a browser. CI checks `app.js` with `node --check`, which only proves
-it parses. Everything between "the JSON is correct" and "a person can use this"
+never opens a browser. CI checks every browser script with `node --check`, which only
+proves they parse. Everything between "the JSON is correct" and "a person can use this"
 was unverified. This pipeline covers that gap.
 
 It has four layers. The first three run in CI; the fourth is interactive.

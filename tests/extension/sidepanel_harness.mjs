@@ -138,6 +138,8 @@ export async function loadSidepanel({ applications, slowContext = [], withDocume
   const tabActivateListeners = [];
   let holdCandidates = false;
   let releaseCandidates = null;
+  // The status the tracker answers session and step writes with (503: down, 422: refused).
+  let sessionWriteStatus = 200;
   const json = (payload) => ({ ok: true, status: 200, json: async () => payload, arrayBuffer: async () => new ArrayBuffer(0) });
   const fetchStub = async (url, options = {}) => {
     const parsed = new URL(url);
@@ -167,6 +169,9 @@ export async function loadSidepanel({ applications, slowContext = [], withDocume
       return json(payload);
     }
     if (parsed.pathname.endsWith("/confirm-submitted")) return json({ inferred: false, stage: "applied" });
+    if (method === "PUT" && parsed.pathname.startsWith("/api/v1/extension/sessions/") && sessionWriteStatus !== 200) {
+      return { ok: false, status: sessionWriteStatus, json: async () => ({}) };
+    }
     return json({});
   };
   const chromeStub = {
@@ -228,6 +233,9 @@ export async function loadSidepanel({ applications, slowContext = [], withDocume
   return {
     $,
     requests,
+    // chrome.storage.local as the panel left it (pendingMetadata is the retry queue).
+    store,
+    setSessionWriteStatus: (status) => { sessionWriteStatus = status; },
     release: (id) => held.get(id)?.(),
     holdNextDigest: () => digests.holdNextDigest(),
     releaseDigest: () => digests.releaseDigest(),

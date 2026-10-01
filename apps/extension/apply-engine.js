@@ -179,6 +179,8 @@
       optionSignature(control).toLowerCase()].join("|"))}`;
   }
 
+  // Keeps apostrophes ("what's" is one word), unlike plainWords below: this is the saved-answer key, and
+  // Python's question_key must give the same text (tests/fixtures/apply/question_keys.json runs both).
   function normalizedQuestion(value) {
     return String(value).toLowerCase().replace(/[^a-z0-9']+/g, " ").trim();
   }
@@ -308,11 +310,15 @@
   const AGE_TAIL = "(?: years?)?(?: (?:of age|old|or older|or over|and older|and over))*";
   const AGE_18 = `\\b(?:(?:at least|over|above|older than) (?:the age of )?18${AGE_TAIL}|(?:the )?age of 18${AGE_TAIL}|18(?: years?)?(?: (?:of age|old|or older|or over|and older|and over))+|(?:are you|you are|must be) 18(?!\\d)${AGE_TAIL})`;
 
+  // Compiled once. The global one is only used with String.replace, which restarts it each call; the other is not global, so test() keeps no state.
+  const AGE_18_ALL = new RegExp(AGE_18, "g");
+  const AGE_18_ONCE = new RegExp(AGE_18);
+
   function netTopics(text) {
-    const words = String(text ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\beighteen\b/g, "18").replace(NET_BENIGN, " ");
-    const plain = words.replace(new RegExp(AGE_18, "g"), " ");
+    const words = plainWords(text).replace(/\beighteen\b/g, "18").replace(NET_BENIGN, " ");
+    const plain = words.replace(AGE_18_ALL, " ");
     const found = Object.keys(NET_PATTERNS).filter((topic) => NET_PATTERNS[topic].test(topic === "demographic" ? plain : words));
-    if (new RegExp(AGE_18).test(words)) found.push("adult");
+    if (AGE_18_ONCE.test(words)) found.push("adult");
     return found.sort();
   }
 
@@ -573,7 +579,7 @@
       const label = labelFor(control);
       const type = controlType(control);
       const rawText = rawQuestion(control);
-      const question = questionText(control);
+      const question = collapse(rawText.replace(TRAILING_REQUIRED, ""));
       const labelKey = labelKeyed(type, question, repeated.get(formScope(control)));
       const screened = screenText(control, question);
       // The question on its own too: a bare "Visa" heading is only recognisable when nothing else is around it.
