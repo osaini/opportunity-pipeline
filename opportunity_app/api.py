@@ -23,7 +23,6 @@ from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
 
 import httpx
-import uvicorn
 from fastapi import Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import FileResponse
 from fastapi.responses import HTMLResponse
@@ -5048,7 +5047,22 @@ def create_app(
     return app
 
 
-app = create_app()
+_DEFAULT_APP_LOCK = threading.Lock()
+
+
+def __getattr__(name: str) -> Any:
+    """Build the default app on first access to `app`, not at import.
+
+    `uvicorn opportunity_app.api:app` (the Dockerfile) resolves the attribute with getattr, which lands here.
+    Importing this module builds nothing and reads no .env; a server start through `main()` or
+    `launch.serve()` builds its own configured app exactly once.
+    """
+    if name == "app":
+        with _DEFAULT_APP_LOCK:
+            if "app" not in globals():
+                globals()["app"] = create_app()
+            return globals()["app"]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -5089,6 +5103,8 @@ def main() -> int:
     print(f"Access token: {configured_app.state.access_token}")
     print(f"Employer API token: {configured_app.state.employer_token}")
     print(f"Admin API token: {configured_app.state.admin_token}")
+    import uvicorn
+
     uvicorn.run(configured_app, host=args.host, port=args.port, log_level="info")
     return 0
 
