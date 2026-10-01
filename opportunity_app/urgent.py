@@ -481,10 +481,20 @@ def _outreach_rows(conn: sqlite3.Connection, user_id: str) -> list[dict[str, Any
         if row["follow_up_at"] and row["status"] == "sent" and str(row["id"]) not in waiting:
             rows.append({**base, "kind": "outreach_follow_up", "raw_date": row["follow_up_at"]})
     # Whatever the company's status: a reply may change it.
+    # The targets loaded above are the same rows (user's own, not set aside); only a closed one the first query
+    # left out is read, once, rather than one SELECT per company.
+    known = {str(row["id"]): row for row in targets}
+    left_out = [target_id for target_id in waiting if target_id not in known]
+    for start in range(0, len(left_out), 500):
+        chunk = left_out[start:start + 500]
+        for row in conn.execute(
+            "SELECT id, company, status FROM outreach_targets WHERE user_id=? AND not_interested_at IS NULL "
+            f"AND id IN ({', '.join('?' for _ in chunk)})",
+            (user_id, *chunk),
+        ).fetchall():
+            known[str(row["id"])] = row
     for target_id, received in waiting.items():
-        target = conn.execute(
-            "SELECT id, company, status FROM outreach_targets WHERE id=? AND user_id=? AND not_interested_at IS NULL", (target_id, user_id),
-        ).fetchone()
+        target = known.get(target_id)
         if target is not None:
             rows.append({
                 "record_id": str(target["id"]), "date_only": False, "title": target["company"], "company": target["company"],
