@@ -168,6 +168,7 @@ from .mail_message import (
 )
 from .outreach_config import sender_account
 from .outreach_gmail import _connector, _Gmail
+from .outreach_inbox import RULES, owned_sql
 from .settings_store import setting_updated_at
 from .timestamps import parse_app_instant, utc_now
 from .typesafe_decisions import DecisionClient
@@ -1340,8 +1341,6 @@ def _outreach_owns(conn: sqlite3.Connection, user_id: str, gmail_id: str) -> boo
     alone, is still this reader's to judge: a recruiter at a company the
     student also wrote to may be writing about the application.
     """
-    from .outreach_inbox import owned_sql  # imported here: outreach_inbox's watcher imports this module
-
     return conn.execute(
         f"SELECT 1 FROM outreach_inbox_messages WHERE user_id=? AND gmail_id=? AND target_id<>'' AND {owned_sql()}",
         (user_id, gmail_id),
@@ -1359,8 +1358,6 @@ def _reclaim(conn: sqlite3.Connection, user_id: str, *, expect: Any) -> int:
     'reclaimed': read late, so what it says is only ever proposed (decide).
     One transaction, with the sync row locked. Returns how many.
     """
-    from .outreach_inbox import RULES, owned_sql
-
     with conn:
         _pass_sync(conn, user_id, expect)
         ids = [str(row[0]) for row in conn.execute(

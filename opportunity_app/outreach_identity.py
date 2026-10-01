@@ -27,8 +27,8 @@ from pipeline_core.identity import identity_tokens, normalized
 
 from .mail_trust import FREEMAIL, not_an_employer, registrable_domain
 from .outreach import website_domain
+from .outreach_config import sender_account
 from .outreach_contacts import GENERIC_LOCAL_PARTS
-from .outreach_drafting import sender_account
 from .outreach_forms import NO_REPLY_SENDER
 
 

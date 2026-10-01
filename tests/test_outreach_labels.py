@@ -36,7 +36,7 @@ LABEL = "opportunities"
 START = datetime(2026, 9, 29, 15, 0, tzinfo=timezone.utc)
 # What a thread read asks Gmail for: the metadata format, and the headers that tell a delivery failure notice apart.
 THREAD_READ = ("metadata", ["from", "subject", "content-type", "x-failed-recipients"])
-# Every local part _is_delivery_notice skips by sender, as the sweep's -from:(...) lists them.
+# Every local part is_delivery_notice skips by sender, as the sweep's -from:(...) lists them.
 DAEMONS = "mail-daemon OR mailer-daemon OR mailerdaemon OR postmaster"
 INSUFFICIENT = {"error": {"code": 403, "message": "Request had insufficient authentication scopes.",
                           "errors": [{"reason": "insufficientPermissions", "domain": "global"}]}}
