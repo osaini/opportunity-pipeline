@@ -150,5 +150,17 @@ class MailMessageLeafTests(unittest.TestCase):
         self.assertEqual(mailbox_key("no address"), "no address")
 
 
+class OutreachIdentityTests(unittest.TestCase):
+    def test_company_identity_does_not_load_the_mail_readers(self):
+        heavy = {".outreach_inbox", ".application_inbox", ".outreach_labels", ".outreach_delivery", ".automation", ".api"}
+        self.assertEqual(imported_modules(APP / "outreach_identity.py") & heavy, set())
+
+    def test_the_interviewer_and_research_take_identity_from_it_not_from_the_mail_reader(self):
+        for module in ("outreach_interviewer.py", "outreach_research.py"):
+            with self.subTest(module=module):
+                self.assertNotIn(".outreach_inbox", imported_modules(APP / module))
+                self.assertIn(".outreach_identity", imported_modules(APP / module))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -61,9 +61,19 @@ from .mail_message import mailbox_key
 from .mail_trust import registrable_domain
 from .outreach import LEGAL_SUFFIXES, _log, get_target
 from .outreach_contacts import FetchResult, is_shared_inbox
-from .outreach_inbox import (
-    _alias, _company_words, _contact_domain, _domain, _institution, _is_own, _own_domains, _platform, _role_word,
-    _website_domain, _website_strength, is_person,
+from .outreach_identity import (
+    company_words,
+    contact_domain,
+    domain_of,
+    is_institution,
+    is_own,
+    is_person,
+    is_platform_host,
+    own_domains,
+    role_word,
+    site_domain,
+    university_alias,
+    website_strength,
 )
 from .outreach_linkedin import CMD_META, LinkedInClient, LinkedInUnavailable, username_from
 from .schema import utc_now
@@ -126,8 +136,8 @@ def _person_name(name: str, company: str) -> str:
     words = research._tokens(clean)
     if len(words) < 2 or " ".join(words) in research._company_names(company) or CMD_META.search(clean):
         return ""
-    ignore = set(_company_words(company).split())
-    if all(word in ignore or _role_word(word) for word in words) or words[-1] in _ROLE_NAME_ENDINGS:
+    ignore = set(company_words(company).split())
+    if all(word in ignore or role_word(word) for word in words) or words[-1] in _ROLE_NAME_ENDINGS:
         return ""
     return clean
 
@@ -166,23 +176,23 @@ def company_domains(target: dict[str, Any]) -> tuple[dict[str, bool], set[str]]:
     stands for nobody at the university, and a contact stands for their own
     domain only when it shares the website's name.
     """
-    own = _own_domains()
+    own = own_domains()
     company = target["company"]
-    site = _website_domain(target.get("website") or "", own, company)
-    domains: dict[str, bool] = {site: _website_strength(target.get("website") or "", site, company)} if site else {}
+    site = site_domain(target.get("website") or "", own, company)
+    domains: dict[str, bool] = {site: website_strength(target.get("website") or "", site, company)} if site else {}
     try:
         mail_domains = target.get("mail_domains") or json.loads(target.get("mail_domains_json") or "[]")
     except (TypeError, ValueError):
         mail_domains = []
     for other in (str(item).casefold() for item in mail_domains):
-        if other and "." in other and not _institution(other) and not _is_own(other, own):
+        if other and "." in other and not is_institution(other) and not is_own(other, own):
             domains[other] = True
     written: set[str] = set()
     for field in ("contact_email", "contact_cc"):
         address = str(target.get(field) or "").strip().casefold()
         if "@" not in address:
             continue
-        domain, strong = _contact_domain(address, site, own, company)
+        domain, strong = contact_domain(address, site, own, company)
         if field == "contact_email":
             written.add(mailbox_key(address))
             if domain:
@@ -192,7 +202,7 @@ def company_domains(target: dict[str, Any]) -> tuple[dict[str, bool], set[str]]:
         # at another company is never named as its interviewer.
         if domain and site:
             domains[domain] = domains.get(domain, False) or strong
-        host = _domain(address)
+        host = domain_of(address)
         if any(host == known or host.endswith(f".{known}") for known in domains):
             written.add(mailbox_key(address))
     return domains, written
@@ -204,20 +214,20 @@ def _at_company(sender: str, domains: dict[str, bool], written: set[str]) -> boo
     A university-wide domain (stateu.edu) counts only for the addresses written
     to, never for everyone at the university; a department's own host does.
     """
-    if mailbox_key(sender) in written or (_alias(sender) and _alias(sender) in {_alias(address) for address in written}):
+    if mailbox_key(sender) in written or (university_alias(sender) and university_alias(sender) in {university_alias(address) for address in written}):
         return True
-    host = _domain(sender)
+    host = domain_of(sender)
     for own, strong in domains.items():
         if host == own or host.endswith(f".{own}"):
-            if strong or not _institution(own) or own != (registrable_domain(own) or own):
+            if strong or not is_institution(own) or own != (registrable_domain(own) or own):
                 return True
     return False
 
 
 def _elsewhere(sender: str, at_company: bool) -> bool:
     """Whether a person-shaped sender the inbox tied to this company is at a domain it does not know."""
-    host = _domain(sender)
-    return not at_company and bool(host) and not _institution(host) and not _platform(host) and not _is_own(host, _own_domains())
+    host = domain_of(sender)
+    return not at_company and bool(host) and not is_institution(host) and not is_platform_host(host) and not is_own(host, own_domains())
 
 
 def _mailbox(

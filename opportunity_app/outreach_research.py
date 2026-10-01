@@ -84,6 +84,7 @@ from .outreach import LEGAL_SUFFIXES, OutreachNotFoundError, _log, company_key, 
 from .outreach_contacts import FetchResult, SafeFetcher, _PageParser, public_web_url_error
 from .outreach_discovery import RUNNERS, UNVERIFIABLE_STATUSES
 from .outreach_email_search import BLOCKED_HOSTS
+from .outreach_identity import is_institution, is_platform_host, names_host
 from .preparation import confirmed_facts
 from .schema import utc_now
 
@@ -765,11 +766,9 @@ def _site_scope(website: str, company: str) -> tuple[str, str]:
     A university lab's page (uni.edu/bovi-lab), a page on a platform
     (sites.google.com/view/acme, github.com/acme), or any path on a host the
     company's name is not in stands for that path only, never every page on the
-    host. The rules are the inbox's (outreach_inbox._website_domain).
+    host. The rules are the inbox's (outreach_identity.site_domain).
     """
     from .mail_trust import FREEMAIL, registrable_domain
-    from .outreach_inbox import _institution, _names_host, _platform
-
     host = website_domain(website)
     if not host or "." not in host or host in FREEMAIL:
         return "", ""
@@ -778,11 +777,11 @@ def _site_scope(website: str, company: str) -> tuple[str, str]:
         path = urlsplit(text if "//" in text else f"https://{text}").path.rstrip("/").lower()
     except ValueError:
         path = ""
-    if _names_host(company, host):
+    if names_host(company, host):
         return host, ""
     if path:
         return host, path
-    if (_platform(host) or _institution(host)) and host == (registrable_domain(host) or host):
+    if (is_platform_host(host) or is_institution(host)) and host == (registrable_domain(host) or host):
         return "", ""
     return host, ""
 

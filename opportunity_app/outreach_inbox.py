@@ -45,7 +45,6 @@ import logging
 import re
 import sqlite3
 import threading
-import unicodedata
 from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from email import policy
@@ -53,11 +52,11 @@ from email.message import EmailMessage
 from email.utils import getaddresses, parseaddr
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
 
 import httpx
 
-from pipeline import identity_tokens, normalized
+from pipeline import normalized
 
 from . import automation, mail_message, outreach_labels
 from .inbox_classifiers import read_reply
@@ -77,7 +76,7 @@ from .mail_message import (
     mailbox_key,
     reply_text,
 )
-from .mail_trust import FREEMAIL, READ_CATEGORIES, authenticate, listed, not_an_employer, registrable_domain, sender_lists
+from .mail_trust import FREEMAIL, READ_CATEGORIES, authenticate, listed, sender_lists
 from .outreach import (
     BOUNCED,
     _log,
@@ -85,9 +84,7 @@ from .outreach import (
     reply_reason,
     suggest_reply_status,
     update_target,
-    website_domain,
 )
-from .outreach_contacts import GENERIC_LOCAL_PARTS
 from .outreach_delivery import _headers_say_failure, check_deliveries
 from .outreach_gmail import (
     PROVIDER,
@@ -101,11 +98,25 @@ from .outreach_gmail import (
     persist_gmail_health,
 )
 from .outreach_drafting import sender_account
+from .outreach_identity import (
+    company_words,
+    contact_domain,
+    domain_of,
+    is_distinctive,
+    is_institution,
+    is_machine_local,
+    is_own,
+    is_person,
+    name_matches_address,
+    own_domains,
+    site_domain,
+    university_alias,
+    website_strength,
+)
 from .outreach_forms import (
     ACKNOWLEDGEMENT,
     ACKNOWLEDGEMENT_WINDOW_MINUTES,
     ALWAYS_AUTOMATIC,
-    NO_REPLY_SENDER,
     SUBMITTED_EVENT as FORM_SUBMITTED,
     UNCONFIRMED_EVENT as FORM_UNCONFIRMED,
     is_acknowledgement,
@@ -134,33 +145,6 @@ REJUDGE_BUDGET = 25
 THREAD_FALLBACK = 20
 # A search's from:(...) list is kept under this length; a longer one is split.
 QUERY_LENGTH = 1_500
-# Senders that are a machine rather than a person or a shared inbox.
-_MACHINE_SENDER = re.compile(
-    r"^(no-?reply|do-?not-?reply|donotreply|notifications?|notify|alerts?|mailer|bounces?|news(letters?)?|"
-    r"marketing|updates?|digest|calendar(-notification)?|invitations?|billing|invoices?|receipts?|"
-    r"system|robot|bot|automated|auto|wordpress|forms?)([+._-]|$)|(no-?reply|noreply|donotreply)",
-    re.IGNORECASE,
-)
-# The first part of a website host that names a section, not the company (careers.acme.com is acme.com).
-_SECTION_LABELS = {"www", "careers", "jobs", "about", "en", "home", "go", "get", "app", "blog", "team", "info", "corp", "company"}
-# Hosts where a website is one tenant of many (a LinkedIn page, a Google Site,
-# a store builder, an applicant system): anyone at the host is not the company.
-# A company's own big domain (microsoft.com) is never here.
-PLATFORM_HOSTS = {
-    "sites.google.com", "linkedin.com", "facebook.com", "instagram.com", "x.com", "twitter.com", "youtube.com",
-    "tiktok.com", "medium.com", "substack.com", "github.io", "gitlab.io", "notion.site", "notion.so", "wixsite.com",
-    "squarespace.com", "wordpress.com", "weebly.com", "godaddysites.com", "myshopify.com", "carrd.co", "linktr.ee",
-    "crunchbase.com", "angel.co", "wellfound.com", "ycombinator.com", "producthunt.com", "webflow.io", "framer.website",
-    "framer.ai", "canva.site", "hs-sites.com", "hubspotpagebuilder.com", "about.me", "bit.ly", "atlassian.net",
-    "teamtailor.com", "personio.de", "personio.com", "rippling.com", "dover.com", "gem.com", "pinpointhq.com",
-    "jazz.co", "applytojob.com", "eightfold.ai", "oraclecloud.com", "csod.com", "zohorecruit.com", "workable.com",
-    "recruitee.com", "breezy.hr", "bamboohr.com", "jobvite.com", "ashbyhq.com", "lever.co", "greenhouse.io",
-    "github.com", "gitlab.com", "bitbucket.org", "huggingface.co", "kaggle.com", "discord.com", "discord.gg",
-    "slack.com", "meetup.com", "eventbrite.com", "devpost.com", "behance.net", "dribbble.com", "angellist.com",
-}
-# Registrable domains that stand for a whole university or government: never "anyone at the domain".
-_INSTITUTION = re.compile(r"(^|\.)(edu|gov|mil)$|(^|\.)(ac|edu|gov|mil|govt|gob|gouv)\.[a-z]{2}$")
-
 _LAST_CAPTURE: dict[str, datetime] = {}
 _CAPTURE_LOCK = threading.Lock()
 # Where a search that ran out of pages stopped, to go on from there next time; and
@@ -206,62 +190,6 @@ def _delivery_kind(message: EmailMessage, sender: str) -> str:
     return ""
 
 
-def _machine(local: str) -> bool:
-    return bool(_MACHINE_SENDER.search(local)) or bool(NO_REPLY_SENDER.search(f"{local}@"))
-
-
-# Words that make an address a team's or a function's (recruitment@, hiring-team@, bovi.careers@): a part of the
-# address that starts with a long one, or is exactly a short one (so hrishi@ and stafford@ stay people).
-_ROLE_PREFIX = re.compile(
-    r"recruit|hiring|talent|career|campus|universit|internship|student|people|communit|research|admission|feedback|"
-    r"educat|sponsor|welcome|onboard|partner|investor|founder|contact|inquir|enquir|support|operations|marketing",
-    re.IGNORECASE,
-)
-_ROLE_EXACT = {
-    "jobs", "job", "team", "help", "info", "hello", "hi", "sales", "admin", "ops", "hr", "staff", "group", "lab", "labs",
-    "press", "media", "store", "shop", "event", "events", "office", "intern", "interns", "people", "careers", "billing",
-}
-
-
-def _role_word(token: str) -> bool:
-    return token in _ROLE_EXACT or bool(_ROLE_PREFIX.match(token))
-
-
-def is_person(address: str, company: str = "") -> bool:
-    """Whether an address looks like one person's (dana@, d.reyes@), not a shared inbox (careers@, recruitment@), a
-    company-named one (bovi@ for Bovi), or a machine (noreply@)."""
-    local = str(address or "").split("@", 1)[0].casefold().split("+", 1)[0]
-    if not local or local in GENERIC_LOCAL_PARTS or _machine(local):
-        return False
-    tokens = [token for token in re.split(r"[._\-]+", local) if token]
-    if any(_role_word(token) for token in tokens):
-        return False
-    stem = _letters(_domain(address).split(".")[0]) if "@" in str(address) else ""
-    names = set(_company_words(company).split()) if company else set()
-    return not ((stem and _letters(local) == stem) or (names and set(tokens) <= names))
-
-
-def _letters(text: str) -> str:
-    return re.sub(r"[^a-z]", "", unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().casefold())
-
-
-def name_matches_address(display: str, address: str, company: str = "") -> bool:
-    """Whether the From name and address are one person's: Dana Reyes as dana@, d.reyes@, dreyes@ or reyes.d@.
-
-    Words of the company's name or a role ("Bovi Careers") are not a person's name, and one must remain.
-    """
-    ignore = set(_company_words(company).split()) if company else set()
-    words = [_letters(word) for word in re.split(r"[\s,.'\-]+", display) if _letters(word)]
-    words = [word for word in words if word not in ignore and not _role_word(word)]
-    local = _letters(str(address).split("@", 1)[0].split("+", 1)[0])
-    if not words or not local:
-        return False
-    if local in words or any(len(word) >= 3 and word in local for word in words):
-        return True
-    first, last = words[0], words[-1]
-    return len(words) >= 2 and local in {first[0] + last, first + last[0], last + first[0], "".join(word[0] for word in words)}
-
-
 def _link_hosts(message: EmailMessage) -> set[str]:
     return {host for host in (host_of(url) for url in URL.findall(body_text(message, whole=False))) if host}
 
@@ -269,7 +197,7 @@ def _link_hosts(message: EmailMessage) -> set[str]:
 def _job_mail(message: EmailMessage, sender: str) -> bool:
     """Whether a job system had a hand in it: its sender, return path or signer is an applicant, assessment or scheduling
     system, or it links to an applicant or assessment system (a LinkedIn or Calendly link in a signature does not count)."""
-    hosts = {_domain(sender), *(_domain(address) for address in mail_message.addresses(message, "Return-Path"))}
+    hosts = {domain_of(sender), *(domain_of(address) for address in mail_message.addresses(message, "Return-Path"))}
     for result in str(message.get("Authentication-Results", "")).split(";"):
         signer = re.search(r"header\.(?:d|i)=@?([^\s;]+)", result)
         if signer:
@@ -289,126 +217,8 @@ _SALES_HOSTS = (
 def _sales_tool(message: EmailMessage) -> bool:
     if any(str(name).casefold().startswith("x-hubspot") for name in message.keys()):
         return True
-    hosts = _link_hosts(message) | {_domain(address) for address in mail_message.addresses(message, "Return-Path")}
+    hosts = _link_hosts(message) | {domain_of(address) for address in mail_message.addresses(message, "Return-Path")}
     return any(marker in host for host in hosts for marker in _SALES_HOSTS)
-
-
-# --- Who each company is ------------------------------------------------------------
-
-
-def _domain(address: str) -> str:
-    return address.rsplit("@", 1)[-1].casefold().strip().rstrip(".>") if "@" in address else ""
-
-
-def _platform(host: str) -> bool:
-    return any(host == shared or host.endswith(f".{shared}") for shared in PLATFORM_HOSTS) or not_an_employer(host)
-
-
-def _institution(host: str) -> bool:
-    return bool(_INSTITUTION.search(registrable_domain(host) or host))
-
-
-def _own_domains() -> set[str]:
-    """The student's own sending domain and its registrable domain: their school's or employer's mail is never a company's."""
-    domain = _domain(sender_account())
-    return {item for item in (domain, registrable_domain(domain) or "") if item}
-
-
-def _is_own(host: str, own: set[str]) -> bool:
-    return bool(own) and (host in own or (registrable_domain(host) or host) in own or any(host.endswith(f".{item}") for item in own))
-
-
-def _names_host(company: str, host: str) -> bool:
-    """Whether a company's name carries a host's name: Rippling for rippling.com, never Acme for linkedin.com."""
-    stem = re.sub(r"[^a-z0-9]", "", (registrable_domain(host) or host).split(".")[0])
-    words = [re.sub(r"[^a-z0-9]", "", word) for word in str(company or "").casefold().split()]
-    return len(stem) >= 3 and (stem in words or stem == "".join(words))
-
-
-def _website_strength(url: str, host: str, company: str) -> bool:
-    """Whether a website's domain is as good as proof: its root, or a page on a host its name carries (not uwaterloo.ca/bovi-lab)."""
-    text = str(url or "").strip()
-    try:
-        path = urlsplit(text if "//" in text else f"https://{text}").path
-    except ValueError:
-        return False
-    return path in {"", "/"} or _names_host(company, host) or len([part for part in path.split("/") if part]) == 1 and not _INSTITUTION.search(host)
-
-
-def _website_domain(url: str, own: set[str], company: str = "") -> str:
-    """The domain a company's website stands for, or '' when it says nothing (a page on a platform, a university, the student's own).
-
-    A platform's own site (www.rippling.com for Rippling) is its company's
-    domain; a page on it (linkedin.com/company/acme, sites.google.com/view/acme,
-    acme.wixsite.com) is not.
-    """
-    host = website_domain(url)
-    if not host or "." not in host or host in FREEMAIL or _institution(host) or _is_own(host, own):
-        return ""
-    if _platform(host) and not _names_host(company, host):
-        text = str(url or "").strip()
-        try:
-            path = urlsplit(text if "//" in text else f"https://{text}").path
-        except ValueError:
-            path = "/x"
-        if host != (registrable_domain(host) or host) or path not in {"", "/"}:
-            return ""
-    labels = host.split(".")
-    # careers.acme.com is acme.com: one label naming a section of the site is dropped, no more.
-    if len(labels) > 2 and labels[0] in _SECTION_LABELS:
-        rest = ".".join(labels[1:])
-        if registrable_domain(host) is None or registrable_domain(rest) == registrable_domain(host):
-            host = rest
-    return host
-
-
-def _stem(domain: str) -> str:
-    return (registrable_domain(domain) or domain).split(".")[0]
-
-
-_STEM_SUFFIXES = {"", "inc", "hq", "co", "corp", "labs", "lab", "ai", "io", "tech", "group", "global", "us", "usa", "mail", "team", "app", "hq"}
-
-
-def _contact_domain(address: str, site: str, own: set[str], company: str = "") -> tuple[str, bool]:
-    """The domain of a contact's address as a company domain, and whether it is as good as the website's.
-
-    Only when it shares the website's name (bovirobotics.us for
-    bovirobotics.com), or there is no website: a contact at an ISP, a VC, an
-    agency or a platform stands for nobody else there. A contact at a
-    university stands for their own department's host (cs.stateu.edu, never
-    stateu.edu), and only weakly: what comes from there is at most a possible reply.
-    """
-    domain = _domain(address)
-    if not domain or domain in FREEMAIL or (registrable_domain(domain) or domain) in FREEMAIL or _is_own(domain, own):
-        return "", False
-    if site and (domain == site or domain.endswith(f".{site}")):
-        return domain, True
-    if _institution(domain):
-        return (domain, False) if not site else ("", False)
-    if _platform(domain):
-        # A platform's own people (jane@rippling.com for Rippling, with no website on file) are its company's.
-        return (domain, False) if not site and _names_host(company, domain) and domain == (registrable_domain(domain) or domain) \
-            else ("", False)
-    if site:
-        stem, theirs = _stem(site), _stem(domain)
-        # The same name, or the name and a corporate word (bovirobotics.us, bovirobotics-inc.com), never another company's.
-        rest = re.sub(r"[^a-z0-9]", "", theirs[len(stem):]) if theirs.startswith(stem) else None
-        return (domain, True) if len(stem) >= 4 and rest in _STEM_SUFFIXES else ("", False)
-    return domain, False
-
-
-def _alias(address: str) -> str:
-    """At a university, one person's mailboxes on its hosts (jkim@stateu.edu, jkim@cs.stateu.edu) as one; else ''."""
-    domain = _domain(address)
-    if not domain or not _institution(domain):
-        return ""
-    return f"{address.split('@', 1)[0].casefold().split('+', 1)[0]}@{registrable_domain(domain) or domain}"
-
-
-def _company_words(company: str) -> str:
-    """A company's name as it is written in mail, without its legal suffix: 'Bovi Robotics, Inc.' is 'bovi robotics'."""
-    tokens = identity_tokens(company)
-    return " ".join(word for word in normalized(company).split() if word in tokens)
 
 
 def _stamp(value: Any) -> datetime | None:
@@ -417,12 +227,6 @@ def _stamp(value: Any) -> datetime | None:
     except (TypeError, ValueError):
         return None
     return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
-
-
-def _distinctive(company: str) -> bool:
-    """Whether a company's name is specific enough to search mail for: two words, or one of six letters or more."""
-    words = _company_words(company).split()
-    return len(words) >= 2 or any(len(word) >= 6 for word in words)
 
 
 def _watched(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict[str, Any]]:
@@ -473,7 +277,7 @@ def _watched(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict
         if _stamp(event["created_at"]):
             marked.setdefault(event["target_id"], []).append(_stamp(event["created_at"]))
     account = mailbox_key(sender_account())
-    own = _own_domains()
+    own = own_domains()
     watched = []
     for row in rows:
         own_sends = sends.get(row["id"], [])
@@ -506,21 +310,21 @@ def _watched(conn: sqlite3.Connection, user_id: str, now: datetime) -> list[dict
         # Anyone at the company's own domains may answer, whatever address the contact uses:
         # its website's, another its own site shows it mailing from (persona.ai, personainc.ai),
         # and a contact's that shares the website's name (a site on .com, mail on .us).
-        site = _website_domain(row["website"] or "", own, row["company"])
-        domains: dict[str, bool] = {site: _website_strength(row["website"] or "", site, row["company"])} if site else {}
+        site = site_domain(row["website"] or "", own, row["company"])
+        domains: dict[str, bool] = {site: website_strength(row["website"] or "", site, row["company"])} if site else {}
         try:
             mail_domains = [str(other).casefold() for other in json.loads(row["mail_domains_json"] or "[]")]
         except (TypeError, ValueError):
             mail_domains = []
         for other in mail_domains:
-            if other and other not in FREEMAIL and not _institution(other) and not _is_own(other, own):
+            if other and other not in FREEMAIL and not is_institution(other) and not is_own(other, own):
                 domains[other] = True
-        aliases = {_alias(address) for address in addresses} - {""}
+        aliases = {university_alias(address) for address in addresses} - {""}
         company = {address for address in addresses if address in primary or any(
-            _domain(address) == own_domain or _domain(address).endswith(f".{own_domain}") for own_domain in domains)}
+            domain_of(address) == own_domain or domain_of(address).endswith(f".{own_domain}") for own_domain in domains)}
         outsiders = {mailbox_key(address) for address in addresses - company}
         for field in ("contact_email", "contact_cc"):
-            domain, strong = _contact_domain(str(row[field] or ""), site, own, row["company"])
+            domain, strong = contact_domain(str(row[field] or ""), site, own, row["company"])
             if domain:
                 domains[domain] = domains.get(domain, False) or strong
         via_form = row["id"] in forms
@@ -560,7 +364,7 @@ def _at_domain(domain: str, target: dict[str, Any]) -> bool | None:
 
 
 def _at_company(sender: str, target: dict[str, Any]) -> bool:
-    return mailbox_key(sender) in target["mailboxes"] or _at_domain(_domain(sender), target) is not None
+    return mailbox_key(sender) in target["mailboxes"] or _at_domain(domain_of(sender), target) is not None
 
 
 def _owner(
@@ -579,8 +383,8 @@ def _owner(
             if thread_id in target["threads"]:
                 return [target], "thread"
     by_latest = sorted(watched, key=lambda target: target["last"], reverse=True)
-    mailbox, domain = mailbox_key(sender), _domain(sender)
-    names = {mailbox, _alias(sender)} - {""}
+    mailbox, domain = mailbox_key(sender), domain_of(sender)
+    names = {mailbox, university_alias(sender)} - {""}
     for how, matches in (
         ("address", [target for target in by_latest if names & target["mailboxes"]]),
         ("domain", [target for target in by_latest if domain and _at_domain(domain, target) is not None]),
@@ -591,7 +395,7 @@ def _owner(
     # Relayed: an applicant system or LinkedIn writes for someone whose Reply-To is at the company.
     others = {mailbox_key(address) for address in mail_message.addresses(message, "Reply-To", "Sender")} - {mailbox}
     matches = [target for target in by_latest if others & target["mailboxes"]
-               or any(_at_domain(_domain(other), target) is not None for other in others)]
+               or any(_at_domain(domain_of(other), target) is not None for other in others)]
     return (matches, "reply_to") if matches else ([], "")
 
 
@@ -603,11 +407,11 @@ def _named(watched: list[dict[str, Any]], message: EmailMessage, text: str) -> l
     found = []
     for target in sorted(watched, key=lambda item: item["last"], reverse=True):
         own = target["subject"].casefold()
-        name = _company_words(target["company"])
+        name = company_words(target["company"])
         single = len(name.split()) == 1
         written = str(target["company"]).split(",")[0].strip()
         named = f" {name} " in words and (not single or bool(re.search(rf"\b{re.escape(written)}\b", f"{message.get('Subject', '')} {text}")))
-        if (own and own not in shared and own in subject) or (_distinctive(target["company"]) and named):
+        if (own and own not in shared and own in subject) or (is_distinctive(target["company"]) and named):
             found.append(target)
     return found
 
@@ -689,11 +493,11 @@ def _judge(
             if generated:
                 # A person's address, but a system sent it (a help desk, an out-of-office in another language): shown.
                 return POSSIBLE, "auto_generated"
-            if not own_person and _machine(local):
+            if not own_person and is_machine_local(local):
                 return POSSIBLE, "automated_sender"
             return REPLY, "thread"
         automated = is_automatic(message) or (
-            not person and (_machine(local) or listed(_domain(sender), tuple(sender_lists())) or not is_person(sender))
+            not person and (is_machine_local(local) or listed(domain_of(sender), tuple(sender_lists())) or not is_person(sender))
             and _acknowledged(target, sender, subject, text, received_at)
         )
         return (AUTOMATIC, "acknowledgement") if automated else (POSSIBLE, "thread_outsider")
@@ -717,7 +521,7 @@ def _judge(
     verified = authenticate(message).ok
     if "SPAM" in labels and how != "address" and not verified:
         # A person at the company's own domain whose mail Gmail doubted is still shown; the rest in Spam is not.
-        if not (person and how == "domain" and _at_domain(_domain(sender), target)):
+        if not (person and how == "domain" and _at_domain(domain_of(sender), target)):
             return IGNORED, "spam_unverified"
     kind, reason = _judge_match(message, targets=targets, how=how, sender=sender, display=display, account=account,
                                 person=person, verified=verified)
@@ -754,7 +558,7 @@ def _judge_match(
     local = sender.split("@", 1)[0]
     if _job_mail(message, sender):
         return POSSIBLE, "job_mail"
-    if _machine(local):
+    if is_machine_local(local):
         # An automated sender at the company is shown when it answers something or follows a contact form
         # (an interview invitation from no-reply@ their applicant system is job mail, above); account mail
         # from a big company's no-reply@ (a security code) is set aside.
@@ -764,7 +568,7 @@ def _judge_match(
         return POSSIBLE, "shared_address"
     if _sales_tool(message):
         return POSSIBLE, "mailing_tool"
-    if not _at_domain(_domain(sender), targets[0]):
+    if not _at_domain(domain_of(sender), targets[0]):
         return POSSIBLE, "weak_domain"
     if not verified:
         return POSSIBLE, "not_verified"
@@ -1145,7 +949,7 @@ def _name_query(chunk: list[dict[str, Any]], watched: list[dict[str, Any]], now:
     plain = lambda text: " ".join(text.replace('"', " ").split())
     terms = [f'subject:"{plain(target["subject"])}"' for target in chunk
              if len(target["subject"]) >= 8 and target["subject"].casefold() not in shared]
-    terms += [f'"{_company_words(target["company"])}"' for target in chunk if _distinctive(target["company"])]
+    terms += [f'"{company_words(target["company"])}"' for target in chunk if is_distinctive(target["company"])]
     terms = sorted(set(terms))
     return f"{{{' '.join(terms)}}} {_window(chunk, now)}" if terms else ""
 
