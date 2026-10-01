@@ -38,6 +38,7 @@ import sqlite3
 from typing import Any, Callable
 
 from . import automation
+from .settings_store import get_setting, put_setting
 from .timestamps import utc_now
 from .typesafe_decisions import DecisionClient, TypeSafeClient, TypeSafeError
 
@@ -102,21 +103,12 @@ EMAIL_QUESTION = {
 
 
 def enabled(conn: sqlite3.Connection, *, user_id: str) -> bool:
-    row = conn.execute(
-        "SELECT value FROM user_settings WHERE user_id=? AND key=?", (user_id, SETTING_KEY),
-    ).fetchone()
-    return bool(row) and row[0] == "on"
+    return get_setting(conn, user_id, SETTING_KEY) == "on"
 
 
 def set_enabled(conn: sqlite3.Connection, value: bool, *, user_id: str) -> bool:
     with conn:
-        conn.execute(
-            """
-            INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, ?, ?, ?)
-            ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-            """,
-            (user_id, SETTING_KEY, "on" if value else "off", utc_now()),
-        )
+        put_setting(conn, user_id, SETTING_KEY, "on" if value else "off", utc_now())
     return value
 
 

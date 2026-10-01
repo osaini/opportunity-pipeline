@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from opportunity_app import automation
 from opportunity_app.schema import connect_product
+from opportunity_app.settings_store import get_setting, put_setting
 from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
@@ -33,7 +34,7 @@ def reference_payload(conn, now):
         features.append({
             "key": feature.key, "label": feature.label, "description": feature.description, "group": feature.group,
             "risk": feature.risk, "modes": list(feature.modes), "mode": current[feature.key],
-            "shadow_since": automation._setting(conn, USER, f"{feature.key}.shadow_since") if feature.shadow_capable else None,
+            "shadow_since": get_setting(conn, USER, f"{feature.key}.shadow_since") if feature.shadow_capable else None,
             "can_turn_on": allowed, "can_turn_on_reason": reason,
             "requirement": automation.requirement(conn, USER, feature.key),
         })
@@ -50,7 +51,7 @@ class SettingsPayloadParityTests(unittest.TestCase):
 
     def put(self, key, value):
         with self.conn:
-            automation._put_setting(self.conn, USER, key, value, utc_now())
+            put_setting(self.conn, USER, key, value, utc_now())
 
     def test_the_payload_is_what_the_public_gates_say_in_every_mix_of_modes(self):
         keys = list(automation.FEATURES)

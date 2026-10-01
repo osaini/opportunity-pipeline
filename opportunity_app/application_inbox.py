@@ -158,6 +158,7 @@ from .extension_apply import _canonical_url
 from .inbox_classifiers import classify_email
 from .outreach_drafting import sender_account
 from .outreach_gmail import ClientFactory, GmailAuthError, GmailThrottled, _connector, _Gmail
+from .settings_store import setting_updated_at
 from .timestamps import parse_app_instant, utc_now
 from .typesafe_decisions import DecisionClient
 from .user_time import user_timezone
@@ -1541,10 +1542,7 @@ def _start(conn: sqlite3.Connection, gmail: _Gmail, user_id: str, now: datetime)
     """
     history_id = _profile_history(gmail)
     until = datetime.now(timezone.utc) + BACKFILL_UNTIL_MARGIN
-    setting = conn.execute(
-        "SELECT updated_at FROM user_settings WHERE user_id=? AND key=?", (user_id, FEATURE),
-    ).fetchone()
-    turned_on = parse_app_instant(setting["updated_at"]) if setting else None
+    turned_on = parse_app_instant(setting_updated_at(conn, user_id, FEATURE))
     enabled = min(turned_on, now) if turned_on is not None else now
     query = backfill_query(conn, user_id, enabled, until)
     enabled_text = enabled.isoformat(timespec="seconds")

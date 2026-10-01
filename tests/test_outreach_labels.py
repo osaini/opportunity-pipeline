@@ -21,6 +21,7 @@ from opportunity_app import STATIC_DIR, automation, outreach, outreach_gmail, ou
 from opportunity_app.api import create_app
 from opportunity_app.outreach_inbox import InboxWatcher, decide_possible_reply
 from opportunity_app.schema import connect_product
+from opportunity_app.settings_store import get_setting, put_setting
 from opportunity_app.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
@@ -167,7 +168,7 @@ class LabelCase(unittest.TestCase):
         return [call for call in self.gmail.batch_modifies]
 
     def setting(self, key):
-        value = automation._setting(self.conn, USER, key)
+        value = get_setting(self.conn, USER, key)
         self.conn.rollback()
         return value
 
@@ -208,7 +209,7 @@ class LabelCase(unittest.TestCase):
 
     def pause(self):
         with self.conn:
-            automation._put_setting(self.conn, USER, automation.PAUSED_KEY, "on", utc_now())
+            put_setting(self.conn, USER, automation.PAUSED_KEY, "on", utc_now())
 
 
 class LabelNameTests(LabelCase):

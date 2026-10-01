@@ -58,6 +58,7 @@ import httpx
 
 from . import automation
 from .database import rollback_quietly
+from .settings_store import get_setting, put_setting
 from .mail_trust import FREEMAIL, registrable_domain
 from .outreach import UNSENT_STATUSES
 from .outreach_delivery import _DAEMONS, _is_delivery_notice
@@ -134,7 +135,7 @@ _IDS_LOCK = threading.Lock()
 
 def label_name(conn: sqlite3.Connection, user_id: str) -> str:
     """The name replies are labelled with; '' when the student turned labelling off."""
-    value = automation._setting(conn, user_id, SETTING)
+    value = get_setting(conn, user_id, SETTING)
     return DEFAULT_LABEL if value is None else value
 
 
@@ -170,7 +171,7 @@ def set_label_name(conn: sqlite3.Connection, user_id: str, value: str | None) ->
         if name.upper() in _SYSTEM_NAMES or name.upper().startswith("CATEGORY_"):
             raise ValueError(f"Gmail keeps the name {name} for itself; choose another label name")
     with conn:
-        automation._put_setting(conn, user_id, SETTING, name, utc_now())
+        put_setting(conn, user_id, SETTING, name, utc_now())
         _search_again(conn, user_id, before, name)
     return name
 
@@ -884,7 +885,7 @@ def _thread_of(labeller: _Labeller, gmail_id: str) -> str:
 def _kept(conn: sqlite3.Connection, user_id: str, name: str) -> dict[str, Any] | None:
     """The sweep's stored start for this label, or None when there is none for it (missing, unreadable, another label's)."""
     try:
-        kept = json.loads(automation._setting(conn, user_id, SWEEP_SETTING) or "{}")
+        kept = json.loads(get_setting(conn, user_id, SWEEP_SETTING) or "{}")
     except ValueError:
         return None
     if not isinstance(kept, dict) or kept.get("label") != name or not isinstance(kept.get("after"), (int, float)):
@@ -1067,4 +1068,4 @@ def _keep_watermark(
     if recheck is not None:
         value["recheck"] = recheck
     with conn:
-        automation._put_setting(conn, user_id, SWEEP_SETTING, json.dumps(value), now.isoformat(timespec="microseconds"))
+        put_setting(conn, user_id, SWEEP_SETTING, json.dumps(value), now.isoformat(timespec="microseconds"))

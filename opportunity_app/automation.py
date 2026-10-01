@@ -67,6 +67,7 @@ from uuid import uuid4
 from . import actions
 from .database import is_unique_violation
 from .schema import PAUSE_NEVER_CHANGED
+from .settings_store import get_setting, put_setting
 from .timestamps import parse_app_instant, utc_now
 from .user_time import user_timezone
 
@@ -313,22 +314,6 @@ def _stamp(now: datetime | None) -> str:
     return utc_now() if now is None else _now(now).isoformat(timespec="microseconds")
 
 
-def _setting(conn: sqlite3.Connection, user_id: str, key: str) -> str | None:
-    row = conn.execute("SELECT value FROM user_settings WHERE user_id=? AND key=?", (user_id, key)).fetchone()
-    return None if row is None else str(row[0])
-
-
-def _put_setting(conn: sqlite3.Connection, user_id: str, key: str, value: str, stamp: str) -> None:
-    """Upsert one setting. Opens no transaction: the caller owns it."""
-    conn.execute(
-        """
-        INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, ?, ?, ?)
-        ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-        """,
-        (user_id, key, value, stamp),
-    )
-
-
 def modes(conn: sqlite3.Connection, user_id: str, keys: tuple[str, ...] | list[str] | None = None) -> dict[str, str]:
     """The mode of each feature in one read. A missing row, or a value the feature does not take, is off."""
     wanted = [_feature(key) for key in (keys if keys is not None else FEATURES)]
@@ -347,7 +332,7 @@ def mode(conn: sqlite3.Connection, user_id: str, key: str) -> str:
 
 
 def paused(conn: sqlite3.Connection, user_id: str) -> bool:
-    return _setting(conn, user_id, PAUSED_KEY) == "on"
+    return get_setting(conn, user_id, PAUSED_KEY) == "on"
 
 
 def is_enabled(conn: sqlite3.Connection, user_id: str, key: str) -> bool:
@@ -370,7 +355,7 @@ def on_since(conn: sqlite3.Connection, user_id: str, key: str) -> str | None:
     """When the switch was last turned on, while it is on; None when it is not on."""
     if mode(conn, user_id, key) != "on":
         return None
-    return _setting(conn, user_id, f"{key}.on_since")
+    return get_setting(conn, user_id, f"{key}.on_since")
 
 
 def is_shadow(conn: sqlite3.Connection, user_id: str, key: str) -> bool:
@@ -401,7 +386,7 @@ def _can_turn_on(
         return False, missing
     if not feature.shadow_capable:
         return True, ""
-    since_text = _setting(conn, user_id, f"{key}.shadow_since")
+    since_text = get_setting(conn, user_id, f"{key}.shadow_since")
     since = parse_app_instant(since_text)
     if current != "shadow" or since is None:
         return False, f"Run it in shadow first: it needs {SHADOW_HOURS} hours and {SHADOW_MIN_ROWS} reviewed actions there"
@@ -449,13 +434,13 @@ def _plan_modes(
 def _write_modes(conn: sqlite3.Connection, user_id: str, plans: list[tuple[str, str, str]], stamp: str) -> None:
     """Write planned changes. Opens no transaction: the caller owns it."""
     for key, value, current in plans:
-        _put_setting(conn, user_id, key, value, stamp)
+        put_setting(conn, user_id, key, value, stamp)
         # The shadow clock starts when shadow starts, not on every save.
         if value == "shadow" and current != "shadow":
-            _put_setting(conn, user_id, f"{key}.shadow_since", stamp, stamp)
+            put_setting(conn, user_id, f"{key}.shadow_since", stamp, stamp)
         # Likewise when it was last turned on (auto_triage acts only on roles first seen since).
         if value == "on" and current != "on":
-            _put_setting(conn, user_id, f"{key}.on_since", stamp, stamp)
+            put_setting(conn, user_id, f"{key}.on_since", stamp, stamp)
 
 
 def _set_modes(conn: sqlite3.Connection, user_id: str, changes: dict[str, str], *, now: datetime | None = None) -> None:
@@ -495,7 +480,7 @@ def apply_settings(
         _write_modes(conn, user_id, plans, stamp)
     return {
         # ``paused`` is the request here, so the stored value is read directly.
-        "paused": _setting(conn, user_id, PAUSED_KEY) == "on",
+        "paused": get_setting(conn, user_id, PAUSED_KEY) == "on",
         "in_flight": in_flight(conn, user_id) if paused is not None else None,
     }
 
@@ -678,7 +663,7 @@ def settings_payload(conn: sqlite3.Connection, user_id: str, *, now: datetime | 
         features.append({
             "key": feature.key, "label": feature.label, "description": feature.description, "group": feature.group,
             "risk": feature.risk, "modes": list(feature.modes), "mode": current[feature.key],
-            "shadow_since": _setting(conn, user_id, f"{feature.key}.shadow_since") if feature.shadow_capable else None,
+            "shadow_since": get_setting(conn, user_id, f"{feature.key}.shadow_since") if feature.shadow_capable else None,
             "can_turn_on": allowed, "can_turn_on_reason": reason,
             # What it still needs to act, whatever its mode: a switch left on can lose a requirement later.
             "requirement": missing,
@@ -1954,7 +1939,7 @@ def _trip_breaker(conn: sqlite3.Connection, user_id: str, feature: str, action_i
     taken_back = sum(taken.values())
     if taken_back < BREAKER_LIMIT:
         return None
-    _put_setting(conn, user_id, feature, "off", timestamp)
+    put_setting(conn, user_id, feature, "off", timestamp)
     what = (f"{taken_back} of its last {len(taken)} actions" if grouping is None
             else f"changes from {taken_back} of its last {len(taken)} {grouping[1]}s")
     notice = {

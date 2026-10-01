@@ -98,6 +98,7 @@ from .outreach_forms import (
     is_acknowledgement,
 )
 from .schema import connect_product
+from .settings_store import get_setting, put_setting
 from .timestamps import parse_app_instant, utc_now
 from .typesafe_decisions import DecisionClient
 from .user_time import user_timezone
@@ -1490,9 +1491,9 @@ def _sweep_start(conn: sqlite3.Connection, user_id: str, watched: list[dict[str,
     with _MEMORY_LOCK:
         last = _LAST_SWEEP.get(user_id)
     if last is None:
-        row = conn.execute("SELECT value FROM user_settings WHERE user_id=? AND key=?", (user_id, SWEEP_SETTING)).fetchone()
+        stored = get_setting(conn, user_id, SWEEP_SETTING)
         try:
-            mark = json.loads(row[0]) if row else {}
+            mark = json.loads(stored) if stored is not None else {}
         except (TypeError, ValueError):
             mark = {}
         last = parse_app_instant(mark.get("at")) if isinstance(mark, dict) and mark.get("rules") == RULES else None
@@ -1505,10 +1506,8 @@ def _swept(conn: sqlite3.Connection, user_id: str, now: datetime) -> None:
     with _MEMORY_LOCK:
         _LAST_SWEEP[user_id] = now
     with conn:
-        conn.execute(
-            "INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, ?, ?, ?) "
-            "ON CONFLICT(user_id, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
-            (user_id, SWEEP_SETTING, json.dumps({"at": now.isoformat(timespec="seconds"), "rules": RULES}), utc_now()),
+        put_setting(
+            conn, user_id, SWEEP_SETTING, json.dumps({"at": now.isoformat(timespec="seconds"), "rules": RULES}), utc_now(),
         )
 
 

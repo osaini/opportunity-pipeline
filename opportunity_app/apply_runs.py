@@ -53,6 +53,7 @@ from pipeline import identity_tokens, normalized
 from . import ROOT, actions, automation
 from .database import is_unique_violation
 from .outreach_gmail import SERVER_INSTANCE
+from .settings_store import get_setting, put_setting, setting_updated_at
 from .timestamps import parse_app_instant, utc_now
 from .user_time import UserTimezone, user_timezone
 
@@ -646,10 +647,7 @@ def hand_over(conn: sqlite3.Connection, token: str, *, user_id: str, now: dateti
             if confirmed is None:
                 return False
             if paused:
-                paused_at = conn.execute(
-                    "SELECT updated_at FROM user_settings WHERE user_id=? AND key=?", (user_id, automation.PAUSED_KEY),
-                ).fetchone()
-                changed = parse_app_instant(paused_at[0]) if paused_at else None
+                changed = parse_app_instant(setting_updated_at(conn, user_id, automation.PAUSED_KEY))
                 if changed is None or changed > confirmed:
                     return False
             rehearsal = conn.execute(
@@ -1067,8 +1065,7 @@ def record_result(
 
 
 def gate_reset_at(conn: sqlite3.Connection, user_id: str, ats: str) -> str:
-    row = conn.execute("SELECT value FROM user_settings WHERE user_id=? AND key=?", (user_id, f"{GATE_RESET_KEY}:{ats}")).fetchone()
-    return str(row[0]) if row else ""
+    return get_setting(conn, user_id, f"{GATE_RESET_KEY}:{ats}") or ""
 
 
 def gate(conn: sqlite3.Connection, user_id: str, ats: str, *, adapter_version: str = ADAPTER_VERSION) -> tuple[bool, int, int]:
@@ -1114,7 +1111,7 @@ def mark_review(
             (user_id, ats, reset, BREAKER_WINDOW),
         ).fetchall()
         if sum(1 for item in recent if item["review"] == "wrong") >= BREAKER_LIMIT:
-            automation._put_setting(conn, user_id, f"{GATE_RESET_KEY}:{ats}", stamp, stamp)
+            put_setting(conn, user_id, f"{GATE_RESET_KEY}:{ats}", stamp, stamp)
             tripped = True
             needed = limits(conn, user_id)["rehearsals_before_submit"]
             automation._insert_notice(
@@ -1260,7 +1257,7 @@ def run_worker_step(conn: sqlite3.Connection, *, apply_root: Path | None = None,
                     continue
                 purge_evidence(conn, now=now, apply_root=apply_root, user_id=user_id)
                 with conn:
-                    automation._put_setting(conn, user_id, PURGE_LAST_RUN_KEY, _iso(_at(now)), _stamp(now))
+                    put_setting(conn, user_id, PURGE_LAST_RUN_KEY, _iso(_at(now)), _stamp(now))
                 report["purged"].append(user_id)
                 _record_runner(conn, user_id, ok=True, component=RETENTION_COMPONENT)
             except Exception as exc:  # noqa: BLE001
@@ -1289,8 +1286,7 @@ def _record_runner(
 
 
 def _purged_today(conn: sqlite3.Connection, user_id: str, moment: datetime) -> bool:
-    row = conn.execute("SELECT value FROM user_settings WHERE user_id=? AND key=?", (user_id, PURGE_LAST_RUN_KEY)).fetchone()
-    last = parse_app_instant(row[0]) if row else None
+    last = parse_app_instant(get_setting(conn, user_id, PURGE_LAST_RUN_KEY))
     if last is None:
         return False
     zone = user_timezone(conn, user_id)

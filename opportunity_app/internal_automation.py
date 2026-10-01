@@ -50,6 +50,7 @@ from typing import Any, Callable
 
 from . import automation
 from .database import rollback_quietly
+from .settings_store import get_setting, put_setting
 from .timestamps import parse_app_instant, utc_now
 from .user_time import user_timezone
 
@@ -371,8 +372,7 @@ def archive_due(conn: sqlite3.Connection, user_id: str, *, now: datetime | None 
 
 
 def _archive_ran_recently(conn: sqlite3.Connection, user_id: str, now: datetime) -> bool:
-    row = conn.execute("SELECT value FROM user_settings WHERE user_id=? AND key=?", (user_id, ARCHIVE_LAST_RUN_KEY)).fetchone()
-    last = parse_app_instant(row[0]) if row else None
+    last = parse_app_instant(get_setting(conn, user_id, ARCHIVE_LAST_RUN_KEY))
     return last is not None and now - last < ARCHIVE_EVERY
 
 
@@ -450,7 +450,7 @@ def archive_silent_applications(conn: sqlite3.Connection, user_id: str, *, now: 
         if made is not None and row is not None and made["action_id"] == row["id"]:
             archived.append({"application_id": item["id"], "action_id": row["id"]})
     with conn:
-        automation._put_setting(conn, user_id, ARCHIVE_LAST_RUN_KEY, now.isoformat(timespec="seconds"), utc_now())
+        put_setting(conn, user_id, ARCHIVE_LAST_RUN_KEY, now.isoformat(timespec="seconds"), utc_now())
     return archived
 
 

@@ -38,6 +38,7 @@ from xml.sax.saxutils import escape
 from . import automation
 from .connections import ensure_preferences
 from .notifications import in_quiet_hours
+from .settings_store import setting_updated_at
 from .user_time import user_timezone
 
 LOGGER = logging.getLogger(__name__)
@@ -159,8 +160,8 @@ def _switched_on_at(conn: sqlite3.Connection, user_id: str) -> datetime | None:
     """
     if automation.mode(conn, user_id, SWITCH) != "on":
         return None
-    row = conn.execute("SELECT updated_at FROM user_settings WHERE user_id=? AND key=?", (user_id, SWITCH)).fetchone()
-    return _parse(row[0]) if row else None
+    stamp = setting_updated_at(conn, user_id, SWITCH)
+    return _parse(stamp) if stamp is not None else None
 
 
 def deliver_desktop_notices(conn: sqlite3.Connection, *, notifier: Notifier | None = None, now: datetime | None = None) -> int:

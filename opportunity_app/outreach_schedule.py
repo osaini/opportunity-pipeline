@@ -64,6 +64,7 @@ from .outreach_gmail import (
     send_gmail_message,
     send_thank_you,
 )
+from .settings_store import setting_updated_at
 from .timestamps import utc_now
 from .user_time import at_wall_clock, to_local, user_timezone
 
@@ -512,11 +513,9 @@ def run_due_sends(
 
 def _held_by_pause(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
     """Whether the student's pause changed after this send was due, so it was held rather than missed."""
-    found = conn.execute(
-        "SELECT updated_at FROM user_settings WHERE user_id=? AND key='automation_paused'", (row["user_id"],),
-    ).fetchone()
+    paused_at = setting_updated_at(conn, row["user_id"], "automation_paused")
     try:
-        return bool(found) and datetime.fromisoformat(found[0]) > datetime.fromisoformat(row["send_at"])
+        return paused_at is not None and datetime.fromisoformat(paused_at) > datetime.fromisoformat(row["send_at"])
     except (TypeError, ValueError):
         return False
 
