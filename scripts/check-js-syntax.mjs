@@ -1,7 +1,8 @@
 // Runs `node --check` on every JavaScript file the project ships or tests with
-// a plain Node script: the web app's static scripts, the browser extension, and
-// the extension's Node tests. New files are covered by directory, so a file
-// added later cannot be left out of the syntax check.
+// a plain Node script: the web app's static scripts, the browser extension, the
+// extension's Node tests, the repo's Node scripts, and the Claude Code hooks.
+// New files are covered by directory, so a file added later cannot be left out
+// of the syntax check.
 // Usage: node scripts/check-js-syntax.mjs
 import { readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -13,6 +14,8 @@ const TREES = [
   { dir: "opportunity_app/static", extensions: [".js"], recursive: false },
   { dir: "apps/extension", extensions: [".js"], recursive: true },
   { dir: "tests/extension", extensions: [".mjs"], recursive: true },
+  { dir: "scripts", extensions: [".mjs"], recursive: false },
+  { dir: ".claude/hooks", extensions: [".mjs"], recursive: false },
 ];
 
 function collect(dir, extensions, recursive) {
