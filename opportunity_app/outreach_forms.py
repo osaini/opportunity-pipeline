@@ -48,7 +48,7 @@ from . import ROOT, automation
 from .outreach import (
     UNSENT_STATUSES,
     DraftChangedError,
-    _log,
+    log_event,
     get_target,
     missing_location_message,
     update_target,
@@ -348,16 +348,16 @@ def record_contact_form(
             (target_id, user_id, form["page_url"], json.dumps(form["fields"]), form["captcha"], int(form["accepts_file"]), timestamp, timestamp),
         )
         if existing is None:
-            _log(conn, target_id, user_id, "contact_form_found", detail=form["page_url"])
+            log_event(conn, target_id, user_id, "contact_form_found", detail=form["page_url"])
     return form
 
 
 def set_contact_form(conn: sqlite3.Connection, target_id: str, page_url: str, *, user_id: str) -> dict[str, Any]:
     """The student names the page with the company's contact form themselves."""
-    from .outreach import _validate_web_url
+    from .outreach import validate_web_url
 
     page_url = page_url.strip()
-    _validate_web_url(page_url, "Contact form page")
+    validate_web_url(page_url, "Contact form page")
     target = get_target(conn, target_id, user_id=user_id)
     form = target["contact_form"]
     if form and form["state"] in {"submitted", "unconfirmed"}:
@@ -373,7 +373,7 @@ def set_contact_form(conn: sqlite3.Connection, target_id: str, page_url: str, *,
             """,
             (target_id, user_id, page_url, timestamp, timestamp),
         )
-        _log(conn, target_id, user_id, "contact_form_set", detail=page_url)
+        log_event(conn, target_id, user_id, "contact_form_set", detail=page_url)
     return get_target(conn, target_id, user_id=user_id)
 
 
@@ -1338,7 +1338,7 @@ def submit_contact_form(
                     ("found" if held else outcome, result.get("note", "")[:500], timestamp, timestamp, target_id, user_id),
                 )
                 event = {"submitted": SUBMITTED_EVENT, "unconfirmed": UNCONFIRMED_EVENT}.get(outcome, NOT_SENT_EVENT)
-                _log(conn, target_id, user_id, event, detail=json.dumps(detail, sort_keys=True))
+                log_event(conn, target_id, user_id, event, detail=json.dumps(detail, sort_keys=True))
         except BaseException:
             _settle_claim(conn, target_id, "initial", token, "sent" if outcome == "submitted" else "unconfirmed")
             raise

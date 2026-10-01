@@ -1098,9 +1098,9 @@ class OutreachStatus:
     def apply(
         self, conn: sqlite3.Connection, user_id: str, subject_id: str, after: dict[str, Any], *, source: str, timestamp: str,
     ) -> dict[str, Any]:
-        from .outreach import _update_target_tx
+        from .outreach import update_target_tx
 
-        written = _update_target_tx(
+        written = update_target_tx(
             conn, subject_id, {"status": after["status"]}, user_id=user_id, status_detail="Changed automatically",
         )
         previous = written["previous"]
@@ -1113,7 +1113,7 @@ class OutreachStatus:
         self, conn: sqlite3.Connection, user_id: str, subject_id: str, before: dict[str, Any], after: dict[str, Any],
         *, source: str, timestamp: str,
     ) -> dict[str, Any] | None:
-        from .outreach import _log
+        from .outreach import log_event
 
         row = conn.execute(
             f"SELECT status, follow_up_at FROM outreach_targets WHERE id=? AND user_id=?{_for_update(conn)}", (subject_id, user_id),
@@ -1129,7 +1129,7 @@ class OutreachStatus:
             f"UPDATE outreach_targets SET status=?, follow_up_at=?, updated_at=? WHERE id=? AND user_id=? AND status=? AND {_same(conn, 'follow_up_at')}",
             (before["status"], follow_up_at, timestamp, subject_id, user_id, after["status"], row["follow_up_at"]),
         )
-        _log(conn, subject_id, user_id, "status", from_status=after["status"], to_status=before["status"], detail="Undone by you")
+        log_event(conn, subject_id, user_id, "status", from_status=after["status"], to_status=before["status"], detail="Undone by you")
         notes = []
         if not restore_date and result.get("follow_up_at_before") != row["follow_up_at"]:
             notes.append("The follow-up date was changed since, so it was left as it is.")
@@ -1172,10 +1172,10 @@ class OutreachFollowUpDraft:
 
     @staticmethod
     def _fingerprint(row: Any) -> str:
-        from .outreach import _draft_fingerprint
+        from .outreach import compute_draft_fingerprint
 
         # The same inputs outreach._record fingerprints the follow-up with.
-        return _draft_fingerprint(
+        return compute_draft_fingerprint(
             "follow_up", row["follow_up_subject"] or "", row["follow_up_body"] or "", row["contact_email"] or "",
             row["follow_up_claims_json"] or "[]", row["follow_up_generated_by"] or "", row["contact_cc"] or "",
         )
@@ -1218,7 +1218,7 @@ class OutreachFollowUpDraft:
         self, conn: sqlite3.Connection, user_id: str, subject_id: str, before: dict[str, Any], after: dict[str, Any],
         *, source: str, timestamp: str,
     ) -> dict[str, Any]:
-        from .outreach import _log
+        from .outreach import log_event
 
         result = after.get("_result") or {}
         row = self._row(conn, user_id, subject_id)
@@ -1238,7 +1238,7 @@ class OutreachFollowUpDraft:
             """,
             (timestamp, subject_id, user_id),
         )
-        _log(conn, subject_id, user_id, "follow_up_discarded",
+        log_event(conn, subject_id, user_id, "follow_up_discarded",
              detail="The automatic follow-up draft was undone. It stays in the follow-up history.")
         return {"undo_note": "The draft stays in the follow-up's history if you want it back."}
 

@@ -22,7 +22,7 @@ from typing import Any, Callable
 
 from .agent_providers import AgentProvider, CliAgentProvider, complete_text
 from .outreach import (
-    AWAITING_REPLY, DEFAULT_GREETING, DRAFT_KINDS, DRAFT_META, _cancel_schedules, _log, draft_checks, get_target, greeting_line, greeting_style, home_terms, location_usable, mentions_home, near_home, student_home,
+    AWAITING_REPLY, DEFAULT_GREETING, DRAFT_KINDS, DRAFT_META, cancel_schedules, log_event, draft_checks, get_target, greeting_line, greeting_style, home_terms, location_usable, mentions_home, near_home, student_home,
     user_regions,
 )
 from .outreach_config import resolve_provider, sender_account
@@ -706,9 +706,9 @@ def save_draft_tx(conn: sqlite3.Connection, target_id: str, *, user_id: str, pre
         [*assignments.values(), timestamp, target_id, user_id],
     )
     if prepared["target_draft_status"] == "approved":
-        _log(conn, target_id, user_id, "approval_withdrawn", detail=f"The {kind.replace('_', '-')} draft was regenerated")
-        _cancel_schedules(conn, target_id, user_id, [kind], "The draft was regenerated after you scheduled it")
-    _log(conn, target_id, user_id, "draft_generated" if kind == "initial" else "follow_up_generated", detail=generated_by)
+        log_event(conn, target_id, user_id, "approval_withdrawn", detail=f"The {kind.replace('_', '-')} draft was regenerated")
+        cancel_schedules(conn, target_id, user_id, [kind], "The draft was regenerated after you scheduled it")
+    log_event(conn, target_id, user_id, "draft_generated" if kind == "initial" else "follow_up_generated", detail=generated_by)
     if assignments.get("status"):
-        _log(conn, target_id, user_id, "status", from_status=prepared["target_status"], to_status="drafted")
+        log_event(conn, target_id, user_id, "status", from_status=prepared["target_status"], to_status="drafted")
     return version_id

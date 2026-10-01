@@ -103,7 +103,7 @@ from .outreach_interviewer import (
 )
 from .agent_providers import CliAgentProvider, complete_text
 from .operations import JobDeferred, enqueue_job, recover_stale_jobs, run_next_job
-from .outreach import CALL_PREP_STATUSES, OutreachNotFoundError, _log, get_target, local_today
+from .outreach import CALL_PREP_STATUSES, OutreachNotFoundError, log_event, get_target, local_today
 from .outreach_drafting import (
     DRAFT_FACT_FIELDS, IDENTIFIER_KEYS, INFERENCE_BASIS, RESEARCH_FIELDS, ProviderFactory, _ADDRESS, _entry_name, _field_basis,
     outreach_proof,
@@ -944,7 +944,7 @@ def generate_call_prep(
             return get_target(conn, target_id, user_id=user_id)
         if current and current != text:
             # Kept whole so hand-written notes survive a regeneration.
-            _log(conn, target_id, user_id, "call_prep_replaced", detail=current)
+            log_event(conn, target_id, user_id, "call_prep_replaced", detail=current)
         conn.execute(
             """
             UPDATE outreach_targets
@@ -953,7 +953,7 @@ def generate_call_prep(
             """,
             (text, json.dumps(claims, ensure_ascii=False), generated_by, timestamp, timestamp, target_id, user_id),
         )
-        _log(conn, target_id, user_id, "call_prep_generated", detail=generated_by)
+        log_event(conn, target_id, user_id, "call_prep_generated", detail=generated_by)
     return get_target(conn, target_id, user_id=user_id)
 
 
@@ -1001,7 +1001,7 @@ def queue_call_prep(
                     "UPDATE job_queue SET payload_json=?, next_attempt_at=?, updated_at=? WHERE id=? AND state IN ('queued', 'retry')",
                     (json.dumps(payload), utc_now(), utc_now(), target["call_prep_job_id"]),
                 ).rowcount:
-                    _log(conn, target_id, user_id, "call_prep_queued", detail=reason)
+                    log_event(conn, target_id, user_id, "call_prep_queued", detail=reason)
         return get_target(conn, target_id, user_id=user_id)
     queued = enqueue_job(
         conn, JOB_TYPE, payload, f"call-prep:{target_id}:{uuid4().hex}", max_attempts=MAX_ATTEMPTS,
@@ -1011,7 +1011,7 @@ def queue_call_prep(
             "UPDATE outreach_targets SET call_prep_job_id=?, updated_at=? WHERE id=? AND user_id=?",
             (queued["id"], utc_now(), target_id, user_id),
         )
-        _log(conn, target_id, user_id, "call_prep_queued", detail=reason)
+        log_event(conn, target_id, user_id, "call_prep_queued", detail=reason)
     return get_target(conn, target_id, user_id=user_id)
 
 

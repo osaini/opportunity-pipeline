@@ -27,7 +27,7 @@ from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from .agent_providers import CliAgentProvider
-from .outreach import _log, website_domain
+from .outreach import log_event, website_domain
 from .outreach_contacts import (
     EMAIL_PATTERN,
     _email_on_domain,
@@ -224,7 +224,7 @@ def search_batch(
         with conn:
             for item in kept:
                 store_candidate(conn, target["id"], user_id, item, timestamp)
-            _log(conn, target["id"], user_id, "email_search",
+            log_event(conn, target["id"], user_id, "email_search",
                  detail=f"{len(kept)} of {len(checked)} proposed addresses printed on their pages"[:2_000])
         results.append({
             "target_id": target["id"], "company": target["company"],

@@ -667,7 +667,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
         with self.conn:
             self.conn.execute("UPDATE outreach_targets SET status='replied', sent_at='2026-09-20', contact_email='greg@bovi.example', "
                               "location='Austin, TX' WHERE id='t-1'")
-            outreach._log(self.conn, "t-1", AUTOMATION_USER, "reply_logged", detail="We're not hiring right now.",
+            outreach.log_event(self.conn, "t-1", AUTOMATION_USER, "reply_logged", detail="We're not hiring right now.",
                           data={"source": "gmail", "gmail_id": "g-1", "readings": {"rules": {"status": "declined"}}})
         stored = self.conn.execute("SELECT detail_json FROM outreach_events WHERE target_id='t-1' AND event_type='reply_logged'").fetchone()
         self.conn.commit()

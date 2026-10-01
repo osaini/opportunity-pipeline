@@ -60,7 +60,7 @@ from .inbox_classifiers import read_reply
 from .mail_trust import FREEMAIL, READ_CATEGORIES, authenticate, host_of, listed, not_an_employer, registrable_domain, sender_lists
 from .outreach import (
     BOUNCED,
-    _log,
+    log_event,
     get_target,
     reply_reason,
     suggest_reply_status,
@@ -1245,13 +1245,13 @@ def _record_reply(
             "SELECT detail FROM outreach_events WHERE target_id=? AND user_id=? AND event_type='reply_logged'", (target["id"], user_id),
         ).fetchall()]
         if not any(_same_words(earlier, text) for earlier in logged):
-            _log(conn, target["id"], user_id, "reply_logged", detail=text, data=data)
+            log_event(conn, target["id"], user_id, "reply_logged", detail=text, data=data)
             # They wrote again: a thank-you after their earlier decline that has not gone stops now.
             from .outreach_thank_you import on_new_reply  # imported here: it imports this module's neighbours
 
             on_new_reply(conn, target["id"], user_id)
         if reason and claim is None:
-            _log(conn, target["id"], user_id, "reply_found",
+            log_event(conn, target["id"], user_id, "reply_found",
                  detail=_found_words(reason, sender, {"addresses": addresses if addresses is not None else target.get("addresses")}))
         if notify:
             # Said outside the page too (and on the desktop when the student turned that on). Never an address or words.
@@ -1300,7 +1300,7 @@ def _record_possible(
         ):
             return None
         for owner in targets:
-            _log(conn, owner["id"], user_id, "possible_reply",
+            log_event(conn, owner["id"], user_id, "possible_reply",
                  detail=f"{sender}: “{subject or '(no subject)'}”. Not counted as a reply until you say, "
                         f"because {reply_reason(reason, sender)}.")
         if notify:
@@ -1366,7 +1366,7 @@ def decide_possible_reply(
         def confirm() -> bool:
             if not settle(REPLY):
                 return False
-            _log(conn, target_id, user_id, "possible_reply_confirmed",
+            log_event(conn, target_id, user_id, "possible_reply_confirmed",
                  detail=f"{sender}: “{row['subject'] or '(no subject)'}”. You said it is their reply.")
             return True
 
@@ -1388,7 +1388,7 @@ def decide_possible_reply(
         with conn:
             if not settle(DISMISSED):
                 raise PossibleReplySettled("You already said whether this email is a reply")
-            _log(conn, target_id, user_id, "possible_reply_dismissed",
+            log_event(conn, target_id, user_id, "possible_reply_dismissed",
                  detail=f"{sender}: “{row['subject'] or '(no subject)'}”. You said it is not a reply.")
     return get_target(conn, target_id, user_id=user_id, include_events=True)
 
@@ -1652,7 +1652,7 @@ def capture_replies(
                 if not _remember(conn, user_id, gmail_id, target["id"], kind, sender, received, **facts):
                     return True
                 if kind == AUTOMATIC and not (noted and noted[0] == AUTOMATIC):
-                    _log(conn, target["id"], user_id, "auto_reply", detail=f"{sender}: {' '.join(text.split())[:300]}")
+                    log_event(conn, target["id"], user_id, "auto_reply", detail=f"{sender}: {' '.join(text.split())[:300]}")
                     result["automatic"].append({"target_id": target["id"], "company": target["company"], "from": sender})
             return True
         if not text:

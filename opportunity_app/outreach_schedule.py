@@ -8,7 +8,7 @@ AutomationWorker's background thread.
 
 The student stays in charge of every email: only a draft they approved and
 scheduled is sent, and only the words they scheduled. Editing the draft or
-changing the recipient cancels the schedule (outreach._cancel_schedules), as
+changing the recipient cancels the schedule (outreach.cancel_schedules), as
 does Send now or Cancel. Anything that stops the send is shown on the card.
 
 One email is queued without the student's click: a first email that bounced,
@@ -48,7 +48,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from . import automation
-from .outreach import NOT_INTERESTED, DraftChangedError, UNSENT_STATUSES, _city_state, _log, get_target, heard_back
+from .outreach import NOT_INTERESTED, DraftChangedError, UNSENT_STATUSES, city_state, log_event, get_target, heard_back
 from .outreach_gmail import (
     SENT_EVENT,
     THANK_YOU_KIND,
@@ -123,7 +123,7 @@ _TRAILING_STATE = re.compile(r"^(?P<city>.*?)[,\s]+(?P<state>[A-Za-z]{2})(?:\s+\
 def _place(location: str) -> tuple[str, str]:
     """(city, state code) from a location as students type it; the state is "" when none is named."""
     text = re.sub(r"\s+\d{5}(?:-\d{4})?\s*$", "", location.strip())
-    city, state = _city_state(text)
+    city, state = city_state(text)
     if state:
         return city, state
     match = _TRAILING_STATE.match(text)
@@ -234,7 +234,7 @@ def _queue(
             """,
             (target_id, user_id, kind, fingerprint, send_at.isoformat(timespec="seconds"), zone_key, label, stamp, stamp),
         )
-        _log(conn, target_id, user_id, "send_scheduled", detail=detail)
+        log_event(conn, target_id, user_id, "send_scheduled", detail=detail)
 
 
 def cancel_send(conn: sqlite3.Connection, target_id: str, *, user_id: str, kind: str, reason: str = "You cancelled it") -> bool:
@@ -253,7 +253,7 @@ def cancel_send(conn: sqlite3.Connection, target_id: str, *, user_id: str, kind:
             (reason, utc_now(), target_id, user_id, kind),
         ).rowcount
         if cancelled:
-            _log(conn, target_id, user_id, "send_cancelled", detail=reason)
+            log_event(conn, target_id, user_id, "send_cancelled", detail=reason)
     return bool(cancelled)
 
 
@@ -279,9 +279,9 @@ def _finish(conn: sqlite3.Connection, row: sqlite3.Row, state: str, error: str =
             settle_in(conn, row["target_id"], row["user_id"], state, error)
             return
         if state == "failed":
-            _log(conn, row["target_id"], row["user_id"], "scheduled_send_failed", detail=error[:500])
+            log_event(conn, row["target_id"], row["user_id"], "scheduled_send_failed", detail=error[:500])
         elif state == "cancelled":
-            _log(conn, row["target_id"], row["user_id"], "send_cancelled", detail=error[:500])
+            log_event(conn, row["target_id"], row["user_id"], "send_cancelled", detail=error[:500])
 
 
 Reviewer = Callable[[], tuple[str, Callable[[str], str]]]
@@ -337,7 +337,7 @@ def _gate(
                         "UPDATE outreach_targets SET draft_status='generated', updated_at=? WHERE id=? AND user_id=? AND draft_status='approved'",
                         (utc_now(), target_id, user_id),
                     ).rowcount:
-                        _log(conn, target_id, user_id, "approval_withdrawn",
+                        log_event(conn, target_id, user_id, "approval_withdrawn",
                              detail="They may have answered the earlier email, so the automatic resend was not sent")
             return "cancelled"
         return None
@@ -361,7 +361,7 @@ def _gate(
         _finish(conn, row, "failed", f"The follow-up reviewer could not run: {exc}. Nothing was sent"[:500])
         return "failed"
     with conn:
-        _log(conn, target_id, user_id, "follow_up_reviewed", detail=(
+        log_event(conn, target_id, user_id, "follow_up_reviewed", detail=(
             f"Passed by {name}" if verdict["send"] else f"Held by {name}: " + "; ".join(verdict["problems"])
         )[:1_000])
     if verdict["send"]:
@@ -379,7 +379,7 @@ def _gate(
                 (send_at.isoformat(timespec="seconds"), label, f"Held until they are back ({verdict['away_until'].isoformat()})",
                  utc_now(), target_id, row["kind"]),
             ).rowcount:
-                _log(conn, target_id, user_id, "follow_up_held", detail=f"They are away; the follow-up now goes out {label}")
+                log_event(conn, target_id, user_id, "follow_up_held", detail=f"They are away; the follow-up now goes out {label}")
         return "held"
     _finish(conn, row, "failed", "The reviewer held this follow-up: " + "; ".join(verdict["problems"]))
     return "failed"
@@ -418,7 +418,7 @@ def _answered(conn: sqlite3.Connection, row: sqlite3.Row, target: dict[str, Any]
              f"Held: {target['company']} may have replied. Say whether it is a reply on the company's card",
              utc_now(), row["target_id"], row["kind"]),
         ).rowcount:
-            _log(conn, row["target_id"], row["user_id"], "follow_up_held",
+            log_event(conn, row["target_id"], row["user_id"], "follow_up_held",
                  detail=f"An email from them may be a reply; the follow-up waits for you, and is looked at again {label}")
     return "held"
 
@@ -546,7 +546,7 @@ def _to_next_morning_in(conn: sqlite3.Connection, row: sqlite3.Row, now: datetim
         (send_at.isoformat(timespec="seconds"), label, reason, utc_now(), row["target_id"], row["kind"], *states),
     ).rowcount
     if moved:
-        _log(conn, row["target_id"], row["user_id"], "send_moved", detail=f"{reason}; now goes out {label}")
+        log_event(conn, row["target_id"], row["user_id"], "send_moved", detail=f"{reason}; now goes out {label}")
         if row["kind"] == THANK_YOU_KIND:
             conn.execute(
                 "UPDATE outreach_thank_yous SET send_at=?, label=?, updated_at=? WHERE target_id=? AND user_id=? AND state='scheduled'",

@@ -39,7 +39,7 @@ from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
 
-from .outreach import LOCATION_BASES, US_STATES, _log, company_key, get_target, local_today, website_domain
+from .outreach import LOCATION_BASES, US_STATES, log_event, company_key, get_target, local_today, website_domain
 from .outreach_contacts import _page_priority, _PageParser, crawl_site
 from .web_fetch import USER_AGENT, SafeFetcher, same_site, site_robots
 from .outreach_render import PlaywrightRenderer
@@ -321,12 +321,12 @@ def apply_location(
             if cursor.rowcount == 0:
                 continue
             if outcome == "confirmed":
-                _log(conn, target_id, user_id, "location_confirmed",
+                log_event(conn, target_id, user_id, "location_confirmed",
                      detail=f"{BASIS_LABELS[basis].capitalize()} agrees: {location} ({source_url})")
             elif outcome == "recorded":
                 replaced = f"; replaced {current} from {BASIS_LABELS.get(current_basis, 'an unknown source')}" if current and not same else ""
                 how = "the only place the company's site names" if inferred else BASIS_LABELS[basis]
-                _log(conn, target_id, user_id, "location_recorded", detail=f"{location} from {how} ({source_url}){replaced}")
+                log_event(conn, target_id, user_id, "location_recorded", detail=f"{location} from {how} ({source_url}){replaced}")
         return outcome
     # Another writer keeps winning. Dropping this result is safe; overwriting
     # whatever landed on a stale decision is not.
@@ -345,7 +345,7 @@ def record_site_location(conn: sqlite3.Connection, target_id: str, *, user_id: s
     if not found["location"]:
         if found.get("ambiguous"):
             with conn:
-                _log(conn, target_id, user_id, "location_ambiguous",
+                log_event(conn, target_id, user_id, "location_ambiguous",
                      detail="The company's site names several places: " + "; ".join(found["ambiguous"]))
         return {**found, **size, "outcome": "ambiguous" if found.get("ambiguous") else "none"}
     outcome = apply_location(
@@ -576,7 +576,7 @@ def record_form_d(conn: sqlite3.Connection, target_id: str, *, user_id: str, for
             (json.dumps(result, ensure_ascii=False), utc_now(), target_id, user_id),
         )
         if result["status"] in {"found", "mismatch", "ambiguous"} and (target.get("sec_form_d") or {}).get("url") != result.get("url"):
-            _log(conn, target_id, user_id, "sec_form_d", detail=_form_d_summary(result))
+            log_event(conn, target_id, user_id, "sec_form_d", detail=_form_d_summary(result))
     return {"status": result["status"], "outcome": outcome, "location": result.get("location", ""), "url": result.get("url", "")}
 
 

@@ -27,7 +27,7 @@ from uuid import uuid4
 
 import httpx
 
-from .outreach import _EMAIL, MANUAL_CONTACT_ROUTE, _log, get_target, update_target, website_domain
+from .outreach import EMAIL_ADDRESS, MANUAL_CONTACT_ROUTE, log_event, get_target, update_target, website_domain
 from .schema import utc_now
 from .web_fetch import USER_AGENT, SafeFetcher, public_web_url_error, same_site, site_robots
 
@@ -715,7 +715,7 @@ def find_contacts(
             (None if result["mail_domain_ok"] is None else int(result["mail_domain_ok"]),
              json.dumps(company_mail_domains(result["pages"], result["domain"])), timestamp, target_id, user_id),
         )
-        _log(conn, target_id, user_id, "contacts_searched",
+        log_event(conn, target_id, user_id, "contacts_searched",
              detail=f"{len(result['candidates'])} candidates from {len(result['pages_checked'])} pages"
              + (" (rendered in a browser)" if result["rendered"] else ""))
     from .outreach_forms import record_contact_form
@@ -825,7 +825,7 @@ def apply_candidate(
     # the greeting in the student's own style (outreach._readdress_drafts).
     update_target(conn, target_id, changes, user_id=user_id, before_write=before_write)
     with conn:
-        _log(conn, target_id, user_id, "contact_applied",
+        log_event(conn, target_id, user_id, "contact_applied",
              detail=f"{row['email']} ({row['confidence']}, {row['method'].replace('_', ' ')})" + (f", cc {cc}" if cc else ""))
     return get_target(conn, target_id, user_id=user_id)
 
@@ -848,7 +848,7 @@ def add_manual_contact(
     """
     get_target(conn, target_id, user_id=user_id)
     email, name, role, evidence_url = email.strip(), " ".join(name.split()), " ".join(role.split()), evidence_url.strip()
-    if not _EMAIL.match(email):
+    if not EMAIL_ADDRESS.match(email):
         raise ValueError("That does not look like an email address")
     if evidence_url and public_web_url_error(evidence_url):
         raise ValueError("Where you found it must be a public http(s) URL")

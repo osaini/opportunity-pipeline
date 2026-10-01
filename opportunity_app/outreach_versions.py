@@ -11,7 +11,7 @@ import sqlite3
 from typing import Any
 from uuid import uuid4
 
-from .outreach import DRAFT_KINDS, DRAFT_META, _cancel_schedules, _log, get_target
+from .outreach import DRAFT_KINDS, DRAFT_META, cancel_schedules, log_event, get_target
 from .schema import utc_now
 
 
@@ -121,10 +121,10 @@ def restore_draft_version(conn: sqlite3.Connection, target_id: str, version_id: 
             [*assignments.values(), timestamp, target_id, user_id],
         )
         if target[status_field] == "approved":
-            _log(conn, target_id, user_id, "approval_withdrawn", detail=f"An earlier {label} was restored")
-            _cancel_schedules(conn, target_id, user_id, [kind], f"An earlier {label} was restored after you scheduled it")
-        _log(conn, target_id, user_id, "draft_restored" if kind == "initial" else "follow_up_restored",
+            log_event(conn, target_id, user_id, "approval_withdrawn", detail=f"An earlier {label} was restored")
+            cancel_schedules(conn, target_id, user_id, [kind], f"An earlier {label} was restored after you scheduled it")
+        log_event(conn, target_id, user_id, "draft_restored" if kind == "initial" else "follow_up_restored",
              detail=f"Restored the {label} from {version['created_at']}")
         if assignments.get("status"):
-            _log(conn, target_id, user_id, "status", from_status=target["status"], to_status="drafted")
+            log_event(conn, target_id, user_id, "status", from_status=target["status"], to_status="drafted")
     return get_target(conn, target_id, user_id=user_id)

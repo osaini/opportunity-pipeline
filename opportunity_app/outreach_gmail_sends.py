@@ -29,7 +29,7 @@ from uuid import uuid4
 import httpx
 
 from . import SERVER_INSTANCE
-from .outreach import DRAFT_KINDS, UNSENT_STATUSES, OutreachNotFoundError, _log, get_target, update_target
+from .outreach import DRAFT_KINDS, UNSENT_STATUSES, OutreachNotFoundError, log_event, get_target, update_target
 from .outreach_gmail import (
     DRAFT_EVENT,
     SENT_EVENT,
@@ -270,7 +270,7 @@ def _record_sent(conn: sqlite3.Connection, item: dict[str, Any], message: dict[s
             """,
             (target_id, user_id, kind, uuid4().hex, SERVER_INSTANCE, stamp),
         )
-        _log(conn, target_id, user_id, SENT_EVENT, detail=json.dumps(record, sort_keys=True))
+        log_event(conn, target_id, user_id, SENT_EVENT, detail=json.dumps(record, sort_keys=True))
     from .outreach_schedule import cancel_send  # imported here: scheduling imports the Gmail send path
 
     cancel_send(conn, target_id, user_id=user_id, kind=kind, reason="You sent it from Gmail instead")
@@ -335,7 +335,7 @@ def capture_gmail_sends(
                     target_id = item["target"]["id"]
                     if _scheduled(gmail, item, seen) and not _scheduled_noted(conn, target_id, user_id, str(detail["draft_id"])):
                         with conn:
-                            _log(conn, target_id, user_id, SCHEDULED_EVENT, detail=json.dumps(
+                            log_event(conn, target_id, user_id, SCHEDULED_EVENT, detail=json.dumps(
                                 {"draft_id": str(detail["draft_id"]), "kind": detail["kind"]}, sort_keys=True,
                             ))
                         result["scheduled"].append({"target_id": target_id, "company": item["target"]["company"]})

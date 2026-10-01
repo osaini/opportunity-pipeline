@@ -58,7 +58,7 @@ from typing import Any, Callable
 from . import outreach_research as research
 from .agent_providers import CliAgentProvider, complete_text
 from .mail_trust import registrable_domain
-from .outreach import LEGAL_SUFFIXES, _log, get_target
+from .outreach import LEGAL_SUFFIXES, log_event, get_target
 from .outreach_config import resolve_provider
 from .outreach_contacts import is_shared_inbox
 from .web_fetch import FetchResult
@@ -643,13 +643,13 @@ def read_interviewer(
         now = conn.execute("SELECT company, website FROM outreach_targets WHERE id=? AND user_id=?", (target_id, user_id)).fetchone()
         if now is not None and research.company_changed(target, now[0], now[1]):
             # Renamed while LinkedIn was read: the profile was matched to the old company, so it is not kept.
-            _log(conn, target_id, user_id, "interviewer_read", detail="The company changed during the look-up, so it was not kept")
+            log_event(conn, target_id, user_id, "interviewer_read", detail="The company changed during the look-up, so it was not kept")
             return get_target(conn, target_id, user_id=user_id)
         conn.execute(
             "UPDATE outreach_targets SET interviewer_json=?, interviewer_at=?, interviewer_error=?, updated_at=? WHERE id=? AND user_id=?",
             (json.dumps(record, ensure_ascii=False), utc_now(), error, utc_now(), target_id, user_id),
         )
-        _log(conn, target_id, user_id, "interviewer_read", detail=error or f"{record['name']}: {len(record['notes'])} notes from LinkedIn")
+        log_event(conn, target_id, user_id, "interviewer_read", detail=error or f"{record['name']}: {len(record['notes'])} notes from LinkedIn")
     return get_target(conn, target_id, user_id=user_id)
 
 

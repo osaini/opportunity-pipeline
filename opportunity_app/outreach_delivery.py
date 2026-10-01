@@ -31,7 +31,7 @@ from urllib.parse import quote
 
 import httpx
 
-from .outreach import AWAITING_REPLY, _log, get_target
+from .outreach import AWAITING_REPLY, log_event, get_target
 from .outreach_versions import keep_current_draft
 from .outreach_gmail import (
     BOUNCE_EVENT,
@@ -157,8 +157,8 @@ def record_bounce(
             [*assignments.values(), timestamp, target_id, user_id],
         )
         if reverted:
-            _log(conn, target_id, user_id, "status", from_status=target["status"], to_status="drafted")
-        _log(conn, target_id, user_id, BOUNCE_EVENT if whole else PARTIAL_BOUNCE_EVENT, detail=json.dumps(detail, sort_keys=True))
+            log_event(conn, target_id, user_id, "status", from_status=target["status"], to_status="drafted")
+        log_event(conn, target_id, user_id, BOUNCE_EVENT if whole else PARTIAL_BOUNCE_EVENT, detail=json.dumps(detail, sort_keys=True))
     return get_target(conn, target_id, user_id=user_id)
 
 

@@ -42,7 +42,7 @@ import httpx
 
 from . import apply_runs, automation, internal_automation, outreach_thank_you
 from .background import PollingWorker, discard_open_transaction, record_health_quietly, step_error
-from .outreach import _log, get_target, greeting_style, greets_contact, heard_back, list_targets, without_greeting
+from .outreach import log_event, get_target, greeting_style, greets_contact, heard_back, list_targets, without_greeting
 from .outreach_contacts import apply_choice, choose_contact, find_contacts, list_candidates
 from .outreach_forms import form_due
 from .outreach_gmail import last_bounce
@@ -171,7 +171,7 @@ def recover_contact(
     else:
         detail = f"Found no other address on the company's site. Add one by hand, or try Find people.{note}"
     with conn:
-        _log(conn, target_id, user_id, RECOVERY_EVENT, detail=detail)
+        log_event(conn, target_id, user_id, RECOVERY_EVENT, detail=detail)
     return {
         "target_id": target_id, "company": target["company"], "to": choice["to"]["email"] if choice else None, "detail": detail,
         "resent": bool(resend and resend["queued"]),
@@ -237,7 +237,7 @@ def resend_after_bounce(
         send_soon(conn, target_id, user_id=user_id, fingerprint=approved["draft_fingerprint"],
                   detail=f"The email to {to} goes out again now, after the bounce")
         with conn:
-            _log(conn, target_id, user_id, RESEND_EVENT, detail=(
+            log_event(conn, target_id, user_id, RESEND_EVENT, detail=(
                 f"Approved again automatically for {to}: only the greeting changed from the email you approved"
             ))
     except Exception as exc:  # noqa: BLE001 - whatever stopped it, the student reviews the draft instead
@@ -247,7 +247,7 @@ def resend_after_bounce(
                 "UPDATE outreach_targets SET draft_status='generated', updated_at=? WHERE id=? AND user_id=? AND draft_status='approved'",
                 (utc_now(), target_id, user_id),
             ).rowcount:
-                _log(conn, target_id, user_id, "approval_withdrawn", detail="The automatic resend could not be queued")
+                log_event(conn, target_id, user_id, "approval_withdrawn", detail="The automatic resend could not be queued")
         return {"queued": False, "detail": f"Not resent automatically: {exc}. Review the draft, then send it again."[:500]}
     return {"queued": True, "detail": f"Sending it again now to {to} (Resend after a bounce is on)."}
 
@@ -295,7 +295,7 @@ def auto_draft(
         return {"target_id": target_id, "drafted": False, "paused": True, "error": str(exc)}
     except (ValueError, RuntimeError) as exc:
         with conn:
-            _log(conn, target_id, user_id, AUTO_DRAFT_FAILED, detail=f"{exc}"[:500])
+            log_event(conn, target_id, user_id, AUTO_DRAFT_FAILED, detail=f"{exc}"[:500])
         return {"target_id": target_id, "drafted": False, "error": str(exc)[:500]}
     return {"target_id": target_id, "company": target["company"], "drafted": True}
 

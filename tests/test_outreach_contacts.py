@@ -29,7 +29,7 @@ import httpcore
 import httpx
 
 from opportunity_app import schema
-from opportunity_app.outreach import DraftChangedError, _draft_fingerprint, approve_draft, create_target, get_target, update_target
+from opportunity_app.outreach import DraftChangedError, compute_draft_fingerprint, approve_draft, create_target, get_target, update_target
 from opportunity_app.outreach_contacts import (
     add_manual_contact,
     apply_candidate,
@@ -599,7 +599,7 @@ class StoredContactTests(DatabaseCase):
         fields = ["initial", "S", "B", "jane@acme.test", "[]", item["draft_generated_by"]]
         old_formula = hashlib.sha256(json.dumps(fields, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
         self.assertEqual(item["draft_fingerprint"], old_formula)
-        self.assertNotEqual(_draft_fingerprint(*fields[:6], "hello@acme.test"), old_formula)
+        self.assertNotEqual(compute_draft_fingerprint(*fields[:6], "hello@acme.test"), old_formula)
 
     def test_a_cc_must_look_like_an_address(self):
         target = create_target(self.conn, {"company": "Acme"}, user_id=USER)

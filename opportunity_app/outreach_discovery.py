@@ -46,7 +46,7 @@ from .agent_providers import CODEX_READ_ONLY, CliAgentProvider, cli_binary, fail
 from .background import SingleFlightManager
 from .outreach import (
     OUTREACH_PRIORITIES,
-    _log,
+    log_event,
     company_key,
     existing_keys,
     get_target,
@@ -801,7 +801,7 @@ def _write_draft(
             outcome["errors"].append(f"draft: {exc}")
     if outcome["errors"]:
         with conn:
-            _log(conn, target_id, user_id, "discovery_follow_through", detail="; ".join(outcome["errors"])[:2_000])
+            log_event(conn, target_id, user_id, "discovery_follow_through", detail="; ".join(outcome["errors"])[:2_000])
 
 
 class DiscoveryManager(SingleFlightManager):

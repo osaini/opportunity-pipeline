@@ -650,7 +650,7 @@ def auto_follow_up_draft(
     pause or the switch turned off during the model call saves nothing and
     is not a failure: it is tried again on resume.
     """
-    from .outreach import _log
+    from .outreach import log_event
     from .outreach_drafting import compose_draft
 
     target_id = target["id"]
@@ -660,7 +660,7 @@ def auto_follow_up_draft(
         )
     except (ValueError, RuntimeError, LookupError) as exc:
         with conn:
-            _log(conn, target_id, user_id, AUTO_FOLLOW_UP_DRAFT_FAILED, detail=f"{exc}"[:500])
+            log_event(conn, target_id, user_id, AUTO_FOLLOW_UP_DRAFT_FAILED, detail=f"{exc}"[:500])
         return {"target_id": target_id, "drafted": False, "error": str(exc)[:500]}
     try:
         row = automation.perform(

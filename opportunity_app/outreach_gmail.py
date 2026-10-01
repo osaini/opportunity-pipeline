@@ -54,7 +54,7 @@ from .outreach import (
     UNSENT_STATUSES,
     DraftChangedError,
     _is_unique_violation,
-    _log,
+    log_event,
     get_target,
     missing_location_message,
     update_target,
@@ -980,7 +980,7 @@ def create_gmail_draft(
                     "thread_id": str(created["message"].get("threadId", "")),
                 }
                 with conn:
-                    _log(conn, target_id, user_id, DRAFT_EVENT, detail=json.dumps(detail, sort_keys=True))
+                    log_event(conn, target_id, user_id, DRAFT_EVENT, detail=json.dumps(detail, sort_keys=True))
                     conn.execute("DELETE FROM outreach_send_claims WHERE target_id=? AND kind=? AND token=?", (target_id, kind, token))
             except BaseException:
                 # The draft exists but is not recorded, so the next send asks first.
@@ -1072,7 +1072,7 @@ def send_gmail_message(
                 }
                 with conn:
                     conn.execute("UPDATE outreach_send_claims SET state='sent' WHERE target_id=? AND kind=? AND token=?", (target_id, kind, token))
-                    _log(conn, target_id, user_id, SENT_EVENT, detail=json.dumps(detail, sort_keys=True))
+                    log_event(conn, target_id, user_id, SENT_EVENT, detail=json.dumps(detail, sort_keys=True))
             except BaseException:
                 _settle_claim(conn, target_id, kind, token, "sent")
                 raise
@@ -1237,7 +1237,7 @@ def send_thank_you(
                 with conn:
                     conn.execute("UPDATE outreach_send_claims SET state='sent' WHERE target_id=? AND kind=? AND token=?",
                                  (target_id, THANK_YOU_KIND, token))
-                    _log(conn, target_id, user_id, THANK_YOU_SENT_EVENT, detail=json.dumps(detail, sort_keys=True))
+                    log_event(conn, target_id, user_id, THANK_YOU_SENT_EVENT, detail=json.dumps(detail, sort_keys=True))
                     conn.execute(
                         "UPDATE outreach_thank_yous SET state='sent', note='', updated_at=? WHERE target_id=? AND user_id=?",
                         (stamp, target_id, user_id),
@@ -1305,7 +1305,7 @@ def create_thank_you_draft(
                     "thread_id": str(message.get("threadId", "") or fresh["thread_id"]),
                 }
                 with conn:
-                    _log(conn, target_id, user_id, THANK_YOU_DRAFT_EVENT, detail=json.dumps(detail, sort_keys=True))
+                    log_event(conn, target_id, user_id, THANK_YOU_DRAFT_EVENT, detail=json.dumps(detail, sort_keys=True))
                     conn.execute("DELETE FROM outreach_send_claims WHERE target_id=? AND kind=? AND token=?", (target_id, THANK_YOU_KIND, token))
             except BaseException:
                 # The draft exists but is not recorded, so the next send asks first.

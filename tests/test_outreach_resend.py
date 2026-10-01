@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR, outreach_delivery, outreach_inbox
 from opportunity_app.api import create_app
-from opportunity_app.outreach import _log, create_target, get_target
+from opportunity_app.outreach import log_event, create_target, get_target
 from opportunity_app.outreach_automation import AutomationWorker, RESEND_EVENT, recover_contact, recovery_due, resend_refusal, update_settings
 from opportunity_app.outreach_delivery import record_bounce
 from opportunity_app.outreach_schedule import RESEND_LABEL, run_due_sends
@@ -268,7 +268,7 @@ class ResendAfterBounceTests(unittest.TestCase):
         target = self.queued_resend()
         # Pasted by the student, or found by the background watcher, while it waited in line.
         with self.conn:
-            _log(self.conn, target["id"], USER, "reply_logged", detail="Greg moved on; Dana will get back to you.")
+            log_event(self.conn, target["id"], USER, "reply_logged", detail="Greg moved on; Dana will get back to you.")
         self.assertEqual([item["state"] for item in run_due_sends(self.conn, client_factory=self.factory)], ["cancelled"])
         self.cancelled_as_answered(target)
 

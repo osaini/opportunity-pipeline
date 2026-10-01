@@ -174,7 +174,7 @@ LEGAL_SUFFIXES = {
     "inc", "incorporated", "corp", "corporation", "co", "company", "llc", "ltd", "limited", "plc",
     "pbc", "lp", "llp", "gmbh", "ag", "sa", "bv", "pty",
 }
-_EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+EMAIL_ADDRESS = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 def _clean_date(value: Any, field: str) -> str | None:
@@ -203,11 +203,11 @@ def _clean_urls(value: Any) -> list[str]:
         raise ValueError("source_urls must be a list of URLs")
     urls = [item for item in items if item]
     for url in urls:
-        _validate_web_url(url, "Source URL")
+        validate_web_url(url, "Source URL")
     return urls[:50]
 
 
-def _validate_web_url(value: str, field: str) -> None:
+def validate_web_url(value: str, field: str) -> None:
     if public_web_url_error(value):
         raise ValueError(f"{field} must be a public http(s) URL without credentials")
 
@@ -215,7 +215,7 @@ def _validate_web_url(value: str, field: str) -> None:
 def _validate_linkedin_profile(value: str, field: str) -> None:
     """A link to one person's LinkedIn profile (linkedin.com/in/name), with or without https://."""
     text = value if "//" in value else f"https://{value}"
-    _validate_web_url(text, field)
+    validate_web_url(text, field)
     parsed = urlsplit(text)
     host = (parsed.hostname or "").lower()
     if not (host == "linkedin.com" or host.endswith(".linkedin.com")) or not re.match(r"^/in/[^/]+", parsed.path):
@@ -235,13 +235,13 @@ def _normalize(payload: dict[str, Any], *, partial: bool) -> dict[str, Any]:
         raise ValueError("Company is required")
     if "company" in values and not values["company"]:
         raise ValueError("Company is required")
-    if values.get("contact_email") and not _EMAIL.match(values["contact_email"]):
+    if values.get("contact_email") and not EMAIL_ADDRESS.match(values["contact_email"]):
         raise ValueError("Contact email does not look like an email address")
-    if values.get("contact_cc") and not _EMAIL.match(values["contact_cc"]):
+    if values.get("contact_cc") and not EMAIL_ADDRESS.match(values["contact_cc"]):
         raise ValueError("Cc does not look like an email address")
     for field in ("website", "contact_linkedin", "contact_evidence_url"):
         if values.get(field):
-            _validate_web_url(values[field], field)
+            validate_web_url(values[field], field)
     if values.get("interviewer_linkedin"):
         _validate_linkedin_profile(values["interviewer_linkedin"], "interviewer_linkedin")
     for field, allowed in (("priority", OUTREACH_PRIORITIES), ("status", OUTREACH_STATUSES), ("contact_confidence", CONTACT_CONFIDENCE)):
@@ -357,7 +357,7 @@ def region_phrase(name: str, regions: list[dict[str, Any]] | None = None) -> str
     return f"the {name}" if name.endswith(" Area") else name
 
 
-def _city_state(text: str) -> tuple[str, str]:
+def city_state(text: str) -> tuple[str, str]:
     """("seattle", "WA") from "Seattle, WA" or "Seattle, Washington"; the state is "" when none is named."""
     parts = [part.strip() for part in str(text or "").split(",")]
     city = " ".join(parts[0].casefold().split()) if parts else ""
@@ -386,7 +386,7 @@ def student_home(facts: dict[str, Any], regions: list[dict[str, Any]] | None = N
             "region": region, "city": "", "state": "", "phrase": region_phrase(region, regions),
             "year_round": region == location_region(str(facts.get("school") or ""), regions),
         }
-    city, state = _city_state(raw)
+    city, state = city_state(raw)
     if not city or not state:
         return {}
     return {"region": "", "city": city, "state": state, "phrase": raw.split(",")[0].strip(), "year_round": False}
@@ -398,7 +398,7 @@ def near_home(location: str, home: dict[str, Any], regions: list[dict[str, Any]]
         return False
     if home["region"]:
         return location_region(location, regions) == home["region"]
-    return _city_state(location) == (home["city"], home["state"])
+    return city_state(location) == (home["city"], home["state"])
 
 
 def home_terms(home: dict[str, Any]) -> list[str]:
@@ -552,7 +552,7 @@ def local_today(conn: sqlite3.Connection, user_id: str, now: datetime | None = N
     return user_timezone(conn, user_id).today(now)
 
 
-def _draft_fingerprint(
+def compute_draft_fingerprint(
     kind: str, subject: str, body: str, contact_email: str, claims_json: str, generated_by: str, contact_cc: str = "",
 ) -> str:
     fields = [kind, subject, body, contact_email, claims_json, generated_by]
@@ -631,11 +631,11 @@ def _record(
         item["draft_claims"] = _confirmed_claims(item["draft_claims"])
         item["follow_up_claims"] = _confirmed_claims(item["follow_up_claims"])
         item["call_prep_claims"] = _confirmed_claims(item["call_prep_claims"])
-    item["draft_fingerprint"] = _draft_fingerprint(
+    item["draft_fingerprint"] = compute_draft_fingerprint(
         "initial", item.get("email_subject", ""), item.get("email_body", ""), item.get("contact_email", ""),
         draft_claims_json, item.get("draft_generated_by", ""), item.get("contact_cc", ""),
     )
-    item["follow_up_fingerprint"] = _draft_fingerprint(
+    item["follow_up_fingerprint"] = compute_draft_fingerprint(
         "follow_up", item.get("follow_up_subject", ""), item.get("follow_up_body", ""), item.get("contact_email", ""),
         follow_up_claims_json, item.get("follow_up_generated_by", ""), item.get("contact_cc", ""),
     )
@@ -815,7 +815,7 @@ def _event_time(conn: sqlite3.Connection, target_id: str) -> str:
     return now
 
 
-def _log(
+def log_event(
     conn: sqlite3.Connection, target_id: str, user_id: str, event_type: str, *, from_status: str | None = None,
     to_status: str | None = None, detail: str = "", data: dict[str, Any] | None = None,
 ) -> None:
@@ -944,7 +944,7 @@ def _thank_yous(conn: sqlite3.Connection, user_id: str, target_id: str | None = 
     return found
 
 
-def _cancel_schedules(conn: sqlite3.Connection, target_id: str, user_id: str, kinds: list[str], reason: str) -> None:
+def cancel_schedules(conn: sqlite3.Connection, target_id: str, user_id: str, kinds: list[str], reason: str) -> None:
     """Stop a scheduled send whose approved draft no longer stands. Runs inside the caller's transaction."""
     for kind in kinds:
         if conn.execute(
@@ -952,7 +952,7 @@ def _cancel_schedules(conn: sqlite3.Connection, target_id: str, user_id: str, ki
             "WHERE target_id=? AND user_id=? AND kind=? AND state='scheduled'",
             (reason, utc_now(), target_id, user_id, kind),
         ).rowcount:
-            _log(conn, target_id, user_id, "send_cancelled", detail=reason)
+            log_event(conn, target_id, user_id, "send_cancelled", detail=reason)
 
 
 def _stop_sends_not_interested(conn: sqlite3.Connection, target_id: str, user_id: str) -> None:
@@ -970,7 +970,7 @@ def _stop_sends_not_interested(conn: sqlite3.Connection, target_id: str, user_id
             "WHERE target_id=? AND user_id=? AND kind=? AND state IN ('scheduled', 'sending', 'failed')",
             (f"{NOT_INTERESTED}, so it was not sent", utc_now(), target_id, user_id, kind),
         ).rowcount:
-            _log(conn, target_id, user_id, "send_cancelled", detail=f"{NOT_INTERESTED}, so it was not sent")
+            log_event(conn, target_id, user_id, "send_cancelled", detail=f"{NOT_INTERESTED}, so it was not sent")
     on_not_interested(conn, target_id, user_id)
 
 
@@ -1400,11 +1400,11 @@ def _create_target(
                 f"INSERT INTO outreach_targets({', '.join(columns)}) VALUES({', '.join('?' * len(columns))})",
                 [target_id, user_id, *values.values(), timestamp, timestamp],
             )
-            _log(conn, target_id, user_id, "created", to_status=values["status"])
+            log_event(conn, target_id, user_id, "created", to_status=values["status"])
             # The provenance the import could not honour still has to be
             # answerable later, so the refused claim is recorded verbatim.
             if values.get("location") and origin == "import":
-                _log(conn, target_id, user_id, "location_import_claim", detail=_claim_detail(payload))
+                log_event(conn, target_id, user_id, "location_import_claim", detail=_claim_detail(payload))
             # Adding a company back by hand undoes an earlier deletion.
             conn.execute(
                 "DELETE FROM outreach_dismissed WHERE user_id=? AND company_key=?",
@@ -1533,13 +1533,13 @@ def _write_target_update(
     if confirming and cursor.rowcount == 0:
         raise _ConfirmRaced()
     if "status" in values and values["status"] != previous["status"]:
-        _log(conn, target_id, user_id, "status", from_status=previous["status"], to_status=values["status"], detail=status_detail)
+        log_event(conn, target_id, user_id, "status", from_status=previous["status"], to_status=values["status"], detail=status_detail)
     if "not_interested_at" in values:
         if values["not_interested_at"]:
-            _log(conn, target_id, user_id, "not_interested", detail=NOT_INTERESTED)
+            log_event(conn, target_id, user_id, "not_interested", detail=NOT_INTERESTED)
             _stop_sends_not_interested(conn, target_id, user_id)
         else:
-            _log(conn, target_id, user_id, "interested_again", detail="You moved the company back into your outreach")
+            log_event(conn, target_id, user_id, "interested_again", detail="You moved the company back into your outreach")
     if plan["research_reset"]:
         # Research and interviewer notes checked against the old company are dropped, not
         # printed as checked facts about the new one; call prep researches again.
@@ -1549,37 +1549,37 @@ def _write_target_update(
             "interviewer_tried_at=NULL WHERE id=? AND user_id=?",
             (target_id, user_id),
         )
-        _log(conn, target_id, user_id, "research_cleared", detail=f"{plan['research_reset']}, so the web research and interviewer notes on file were cleared")
+        log_event(conn, target_id, user_id, "research_cleared", detail=f"{plan['research_reset']}, so the web research and interviewer notes on file were cleared")
     if confirming:
-        _log(conn, target_id, user_id, "location_confirmed", detail=f"You confirmed {previous['location']}")
+        log_event(conn, target_id, user_id, "location_confirmed", detail=f"You confirmed {previous['location']}")
     if plan["typed_location"] and values["location"]:
         # Its own event type, not the "location_recorded" a source
         # establishing a location writes: telling the student's word
         # apart from a source's is the whole point of this record.
-        _log(conn, target_id, user_id, "location_entered", detail=f"You entered {values['location']}")
+        log_event(conn, target_id, user_id, "location_entered", detail=f"You entered {values['location']}")
     readdressed, withdrawn = plan["readdressed"], plan["withdrawn"]
     swapped = {kind for kind, _old, _new in readdressed}
     if "initial" not in swapped and (("email_subject" in values and values["email_subject"] != previous["email_subject"]) or (
         "email_body" in values and values["email_body"] != previous["email_body"]
     )):
-        _log(conn, target_id, user_id, "draft_edited")
+        log_event(conn, target_id, user_id, "draft_edited")
     if "follow_up" not in swapped and (("follow_up_subject" in values and values["follow_up_subject"] != previous["follow_up_subject"]) or (
         "follow_up_body" in values and values["follow_up_body"] != previous["follow_up_body"]
     )):
-        _log(conn, target_id, user_id, "follow_up_edited")
+        log_event(conn, target_id, user_id, "follow_up_edited")
     for kind, old_line, new_line in readdressed:
         label = "Draft" if kind == "initial" else "Follow-up"
-        _log(conn, target_id, user_id, "greeting_updated", detail=f'{label}: "{old_line}" is now "{new_line}" for the new contact')
+        log_event(conn, target_id, user_id, "greeting_updated", detail=f'{label}: "{old_line}" is now "{new_line}" for the new contact')
     for kind in withdrawn:
-        _log(conn, target_id, user_id, "approval_withdrawn", detail=f"The {kind.replace('_', '-')} draft changed after approval")
-    _cancel_schedules(conn, target_id, user_id, withdrawn, "The draft or its recipient changed after you scheduled it")
+        log_event(conn, target_id, user_id, "approval_withdrawn", detail=f"The {kind.replace('_', '-')} draft changed after approval")
+    cancel_schedules(conn, target_id, user_id, withdrawn, "The draft or its recipient changed after you scheduled it")
     # Marked sent by hand: the scheduled copy must not go out as well.
     sent_kind = {"sent": "initial", "followed_up": "follow_up"}.get(values.get("status", ""))
     if sent_kind and values["status"] != previous["status"]:
-        _cancel_schedules(conn, target_id, user_id, [sent_kind], "You marked it sent")
+        cancel_schedules(conn, target_id, user_id, [sent_kind], "You marked it sent")
 
 
-def _update_target_tx(
+def update_target_tx(
     conn: sqlite3.Connection, target_id: str, payload: dict[str, Any], *, user_id: str, today: date | None = None,
     status_detail: str = "",
 ) -> dict[str, Any]:
@@ -1822,7 +1822,7 @@ def approve_draft(
     if not snapshot:
         raise OutreachNotFoundError(target_id)
     values = tuple(snapshot[index] for index in range(6))
-    expected = _draft_fingerprint(kind, *values)
+    expected = compute_draft_fingerprint(kind, *values)
     if fingerprint != expected:
         raise DraftChangedError("This draft changed since you opened it. Reload and review it again.")
     if not target[body_field] or not target[subject_field]:
@@ -1867,10 +1867,10 @@ def approve_draft(
         if not cursor.rowcount:
             raise DraftChangedError("This draft changed since you opened it. Reload and review it again.")
         detail = "; ".join(warnings) if warnings else ""
-        _log(conn, target_id, user_id, "draft_approved" if kind == "initial" else "follow_up_approved",
+        log_event(conn, target_id, user_id, "draft_approved" if kind == "initial" else "follow_up_approved",
              detail=f"Accepted warnings: {detail}" if detail else "")
         if assignments.get("status"):
-            _log(conn, target_id, user_id, "status", from_status=target["status"], to_status="drafted")
+            log_event(conn, target_id, user_id, "status", from_status=target["status"], to_status="drafted")
     return get_target(conn, target_id, user_id=user_id)
 
 
@@ -1883,7 +1883,7 @@ def confirm_research(conn: sqlite3.Connection, target_id: str, *, user_id: str) 
             "UPDATE outreach_targets SET research_confidence='confirmed', updated_at=? WHERE id=? AND user_id=?",
             (utc_now(), target_id, user_id),
         )
-        _log(conn, target_id, user_id, "research_confirmed")
+        log_event(conn, target_id, user_id, "research_confirmed")
     return get_target(conn, target_id, user_id=user_id)
 
 
@@ -1960,7 +1960,7 @@ def log_reply(
     plain = lambda text: " ".join(str(text or "").split()).casefold()[:300]
     with conn:
         # A pasted reply has no Gmail thread, so nothing automatic ever answers it.
-        _log(conn, target_id, user_id, "reply_logged", detail=body, data={"source": "pasted", "readings": readings})
+        log_event(conn, target_id, user_id, "reply_logged", detail=body, data={"source": "pasted", "readings": readings})
         # They wrote again: a thank-you after their earlier decline that has not gone stops now.
         from .outreach_thank_you import on_new_reply  # imported here: it imports this module
 

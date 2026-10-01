@@ -80,7 +80,7 @@ from uuid import uuid4
 
 from .agent_providers import CliAgentProvider, cli_available, cli_binary, complete_text
 from .operations import enqueue_job
-from .outreach import LEGAL_SUFFIXES, OutreachNotFoundError, _log, company_key, get_target, website_domain
+from .outreach import LEGAL_SUFFIXES, OutreachNotFoundError, log_event, company_key, get_target, website_domain
 from .outreach_config import COMPANY_RESEARCH_ENV, RESEARCH_ENV, resolve_provider
 from .outreach_contacts import _PageParser
 from .outreach_discovery import RUNNERS, UNVERIFIABLE_STATUSES
@@ -1234,7 +1234,7 @@ def research_company(
                 "UPDATE outreach_targets SET tech_brief_error=?, updated_at=? WHERE id=? AND user_id=?",
                 ("The company or its website changed while it was being researched, so that research was not kept.", timestamp, target_id, user_id),
             )
-            _log(conn, target_id, user_id, "tech_brief_failed", detail="The company changed during research")
+            log_event(conn, target_id, user_id, "tech_brief_failed", detail="The company changed during research")
             return get_target(conn, target_id, user_id=user_id)
         earlier = json.loads(row[0] or "{}")
         new_checked, old_checked = len(_checked_facts(brief)), len(_checked_facts(earlier))
@@ -1249,7 +1249,7 @@ def research_company(
                     timestamp, target_id, user_id,
                 ),
             )
-            _log(conn, target_id, user_id, "tech_brief_failed", detail=f"Kept none: {summary}")
+            log_event(conn, target_id, user_id, "tech_brief_failed", detail=f"Kept none: {summary}")
             return get_target(conn, target_id, user_id=user_id)
         if note:
             brief["note"] = note
@@ -1261,7 +1261,7 @@ def research_company(
             """,
             (json.dumps(brief, ensure_ascii=False), timestamp, agent, timestamp, target_id, user_id),
         )
-        _log(conn, target_id, user_id, "tech_brief_written", detail=summary)
+        log_event(conn, target_id, user_id, "tech_brief_written", detail=summary)
     return get_target(conn, target_id, user_id=user_id)
 
 
@@ -1273,7 +1273,7 @@ def record_error(conn: sqlite3.Connection, target_id: str, *, user_id: str, erro
             "UPDATE outreach_targets SET tech_brief_error=?, updated_at=? WHERE id=? AND user_id=?",
             (message, utc_now(), target_id, user_id),
         )
-        _log(conn, target_id, user_id, "tech_brief_failed", detail=message[:500])
+        log_event(conn, target_id, user_id, "tech_brief_failed", detail=message[:500])
 
 
 def text_model(provider_factory: Callable[[str, str], Any], provider: str | None, fallback: str) -> Judge:
@@ -1369,7 +1369,7 @@ def queue_research(conn: sqlite3.Connection, target_id: str, *, user_id: str, re
             (queued["id"], utc_now(), target_id, user_id),
         ).rowcount
         if claimed:
-            _log(conn, target_id, user_id, "tech_brief_queued", detail=reason)
+            log_event(conn, target_id, user_id, "tech_brief_queued", detail=reason)
         else:
             conn.execute("UPDATE job_queue SET state='cancelled', updated_at=? WHERE id=?", (utc_now(), queued["id"]))
     return get_target(conn, target_id, user_id=user_id)

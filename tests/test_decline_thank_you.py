@@ -868,7 +868,7 @@ class ThankYouRulesTests(DeclineCase):
         # And if a reply-capture change ever logs it, the rules still refuse it.
         record = self.record(raw, thread="t-desk", received=datetime.now(timezone.utc) + timedelta(minutes=5))
         with self.conn:
-            outreach._log(self.conn, desk["id"], USER, "reply_logged", detail=record["text"], data=record["data"])
+            outreach.log_event(self.conn, desk["id"], USER, "reply_logged", detail=record["text"], data=record["data"])
             self.conn.execute("UPDATE outreach_targets SET status='replied' WHERE id=?", (desk["id"],))
         self.assert_not_thanked(desk["id"], "Not thanked automatically: sent by an automated system", "(failed: R4, R6)")
 
@@ -2011,7 +2011,7 @@ class ReviewFindingGateTests(DeclineCase):
         data = {"source": "gmail", "gmail_id": gmail_id, "from": "dana@acme.com", "received_at": received.isoformat(timespec="seconds"),
                 "thread_id": "t-decline", "message_id": f"<{gmail_id}@acme.com>", "full_text": text, "readings": {}}
         with closing(connect_product(self.platform_path)) as other, other:
-            outreach._log(other, target_id, USER, "reply_logged", detail=text, data=data)
+            outreach.log_event(other, target_id, USER, "reply_logged", detail=text, data=data)
 
     def raw_send(self, target_id, thread):
         """An email of the student's, logged from another connection just after their reply arrived."""

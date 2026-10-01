@@ -114,7 +114,7 @@ from .outreach_config import resolve_provider, sender_account
 from .outreach import (
     REPLY_PATTERNS,
     OutreachNotFoundError,
-    _log,
+    log_event,
     company_key,
     contact_first_name,
     get_target,
@@ -1374,7 +1374,7 @@ def plan(
             )
             if row is None or row.get("status") != "applied" or row.get("created_at") != row.get("applied_at"):
                 return {"target_id": target_id, "planned": False, "reason": "it already has its one thank-you"}
-            _log(conn, target_id, user_id, SCHEDULED_EVENT, detail=f"A thank-you to {to_email} goes out {label}")
+            log_event(conn, target_id, user_id, SCHEDULED_EVENT, detail=f"A thank-you to {to_email} goes out {label}")
             automation.perform_in(
                 conn, user_id=user_id, feature=FEATURE, action_type="outreach.status", subject_kind="outreach_target",
                 subject_id=target_id, after={"status": "declined", "only_from": "replied"},
@@ -1473,7 +1473,7 @@ def settle_in(conn: sqlite3.Connection, target_id: str, user_id: str, state: str
         return False
     event = {"cancelled": CANCELLED_EVENT, "held": HELD_EVENT, "failed": FAILED_EVENT}.get(state)
     if event:
-        _log(conn, target_id, user_id, event, detail=note[:1_000])
+        log_event(conn, target_id, user_id, event, detail=note[:1_000])
     if state in {"held", "failed"}:
         row = conn.execute("SELECT company FROM outreach_targets WHERE id=? AND user_id=?", (target_id, user_id)).fetchone()
         company = spoken_company(row["company"]) if row is not None else "a company"
@@ -1747,7 +1747,7 @@ def gate(
         _finish(conn, row, "held", f"The reviewer could not run: {exc}"[:500])
         return "held"
     with conn:
-        _log(conn, target_id, user_id, REVIEWED_EVENT, detail=(
+        log_event(conn, target_id, user_id, REVIEWED_EVENT, detail=(
             f"Passed by {name}" if verdict["send"] else f"Held by {name}: " + "; ".join(verdict["problems"])
         )[:1_000])
     if not verdict["send"]:
@@ -1883,7 +1883,7 @@ def _close(conn: sqlite3.Connection, target_id: str, user_id: str, reason: str) 
         (reason[:500], utc_now(), target_id, user_id, *OPEN_STATES),
     ).rowcount
     if moved:
-        _log(conn, target_id, user_id, CANCELLED_EVENT, detail=reason[:1_000])
+        log_event(conn, target_id, user_id, CANCELLED_EVENT, detail=reason[:1_000])
     return bool(moved)
 
 
