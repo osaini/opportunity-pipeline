@@ -316,6 +316,23 @@
     }));
   }
 
+  // One synced step as it is sent and as it is queued in chrome.storage when the tracker is offline. The queued
+  // shape {session_id, step_key, session, step} is stored by installed copies, so it must not change.
+  async function stepRecord({ applicationId, session, pageUrl, atsType, safe, summary, stepStatus }) {
+    return {
+      session_id: session,
+      step_key: await stableId("step", `${pageUrl}|${atsType}`),
+      session: { application_id: applicationId, page_url: pageUrl, ats_type: atsType, fields: safe, status: stepStatus === "filled" ? "reviewed" : "draft" },
+      step: { page_url: pageUrl, ats_type: atsType, fields: safe, summary, status: stepStatus }
+    };
+  }
+
+  async function putRecord(record) {
+    const sessionPath = `/api/v1/extension/sessions/${encodeURIComponent(record.session_id)}`;
+    await api(sessionPath, { method: "PUT", body: JSON.stringify(record.session) });
+    await api(`${sessionPath}/steps/${encodeURIComponent(record.step_key)}`, { method: "PUT", body: JSON.stringify(record.step) });
+  }
+
   async function syncStep(fields, result, stepStatus) {
     const outcomes = new Map((result?.results || []).map((item) => [item.key, item]));
     const safe = safeFields(fields, outcomes);
@@ -328,22 +345,15 @@
     // The student may choose another application, or the page may change (Submit usually navigates), while this sync is in
     // flight; it finishes for the application and page it started on.
     const applicationId = selectedApplicationId;
-    const session = sessionId;
-    const pageUrl = activePageUrl;
-    const atsType = scanResult.ats_type;
     const sequence = pageSequence;
-    const sessionPayload = { application_id: applicationId, page_url: pageUrl, ats_type: atsType, fields: safe, status: stepStatus === "filled" ? "reviewed" : "draft" };
-    const stepKey = await stableId("step", `${pageUrl}|${atsType}`);
+    const record = await stepRecord({ applicationId, session: sessionId, pageUrl: activePageUrl, atsType: scanResult.ats_type, safe, summary, stepStatus });
     try {
-      await api(`/api/v1/extension/sessions/${encodeURIComponent(session)}`, { method: "PUT", body: JSON.stringify(sessionPayload) });
-      await api(`/api/v1/extension/sessions/${encodeURIComponent(session)}/steps/${encodeURIComponent(stepKey)}`, {
-        method: "PUT", body: JSON.stringify({ page_url: pageUrl, ats_type: atsType, fields: safe, summary, status: stepStatus })
-      });
+      await putRecord(record);
       await flushPendingMetadata();
     } catch (error) {
       const auth = await storedAuth();
       if (error.retryable || error instanceof TypeError) {
-        const pending = [...auth.pendingMetadata, { session_id: session, step_key: stepKey, session: sessionPayload, step: { page_url: pageUrl, ats_type: atsType, fields: safe, summary, status: stepStatus } }].slice(-20);
+        const pending = [...auth.pendingMetadata, record].slice(-20);
         await chrome.storage.local.set({ pendingMetadata: pending });
       }
       throw error;
@@ -361,8 +371,7 @@
     const remaining = [];
     for (const item of auth.pendingMetadata) {
       try {
-        await api(`/api/v1/extension/sessions/${encodeURIComponent(item.session_id)}`, { method: "PUT", body: JSON.stringify(item.session) });
-        await api(`/api/v1/extension/sessions/${encodeURIComponent(item.session_id)}/steps/${encodeURIComponent(item.step_key)}`, { method: "PUT", body: JSON.stringify(item.step) });
+        await putRecord(item);
       } catch (error) {
         if (error.retryable || error instanceof TypeError) remaining.push(item);
       }
@@ -465,19 +474,22 @@
     $("mark-submitted").disabled = true;
   }
 
-  $("pair").addEventListener("click", () => pairDevice().catch((error) => { status.textContent = error.message; }));
+  // A listener whose failure is shown in the status line instead of left as an unhandled rejection.
+  const guarded = (handler) => (...args) => handler(...args).catch((error) => { status.textContent = error.message; });
+
+  $("pair").addEventListener("click", guarded(pairDevice));
   $("disconnect").addEventListener("click", async () => {
     await chrome.storage.local.remove(["deviceToken", "deviceId", "pendingMetadata"]);
     clearSelection();
     renderAuth(await storedAuth()); status.textContent = "Device credential removed from this browser.";
   });
-  $("find-context").addEventListener("click", () => findContext().catch((error) => { status.textContent = error.message; }));
-  $("scan").addEventListener("click", () => scan().catch((error) => { status.textContent = error.message; }));
-  $("refresh").addEventListener("click", () => selectedApplicationId && selectContext(selectedApplicationId).catch((error) => { status.textContent = error.message; }));
-  reviewForm.addEventListener("submit", (event) => fillReviewed(event).catch((error) => { status.textContent = error.message; }));
-  $("attach").addEventListener("click", () => attachDocument().catch((error) => { status.textContent = error.message; }));
+  $("find-context").addEventListener("click", guarded(findContext));
+  $("scan").addEventListener("click", guarded(scan));
+  $("refresh").addEventListener("click", guarded(async () => { if (selectedApplicationId) await selectContext(selectedApplicationId); }));
+  reviewForm.addEventListener("submit", guarded(fillReviewed));
+  $("attach").addEventListener("click", guarded(attachDocument));
   $("submitted-confirm").addEventListener("change", () => { $("mark-submitted").disabled = !$("submitted-confirm").checked; });
-  $("mark-submitted").addEventListener("click", () => markSubmitted().catch((error) => { status.textContent = error.message; }));
+  $("mark-submitted").addEventListener("click", guarded(markSubmitted));
   window.addEventListener("unload", () => { if (attachmentUrl) URL.revokeObjectURL(attachmentUrl); });
 
   // The page in front of the student changed, in this tab or by switching tabs. The old page's scan and the
