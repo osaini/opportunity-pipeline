@@ -115,7 +115,7 @@ def source_health(
     legacy_path: Path, sources_path: Path = SOURCES_CONFIG, *, now: datetime | None = None,
 ) -> dict[str, Any]:
     """The latest fetch of every enabled board, failing and stale ones first."""
-    from .legacy import load_sources, source_key
+    from .opportunities.legacy import load_sources, source_key
 
     now = now or datetime.now(timezone.utc)
     try:

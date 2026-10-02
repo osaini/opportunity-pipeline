@@ -28,14 +28,14 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable
 
-from . import DEFAULT_LEGACY_DB, DEFAULT_PROFILE, ROOT
-from .auto_triage import triage_after_sync
-from .core.daily_lock import TEMPFAIL_EXIT, DailyRunMutex
+from .. import DEFAULT_LEGACY_DB, DEFAULT_PROFILE, ROOT
+from ..auto_triage import triage_after_sync
+from ..core.daily_lock import TEMPFAIL_EXIT, DailyRunMutex
 from .legacy import load_sources
 from .purge import purge_expired_opportunities
 from .legacy_sync import migrate_legacy_database
-from .core.database import connect_product
-from .core.timestamps import utc_now
+from ..core.database import connect_product
+from ..core.timestamps import utc_now
 
 PIPELINE_CLI = ROOT / "pipeline.py"
 SOURCES_CONFIG = ROOT / "config" / "sources.json"

@@ -24,7 +24,7 @@ from opportunity_app.actions import add_application_task, application_analytics
 from opportunity_app.api import create_app
 from opportunity_app.accounts.operations import delete_account, export_account
 from opportunity_app.outreach import local_today
-from opportunity_app.purge import purge_expired_opportunities
+from opportunity_app.opportunities.purge import purge_expired_opportunities
 from opportunity_app.core.schema import LOCAL_USER_ID
 from opportunity_app.core.database import connect_product
 from opportunity_app.student.agent import decide_proposal

@@ -55,7 +55,7 @@ from . import DEFAULT_PLATFORM_DB
 from .integrations.agent_providers import build_provider
 from .core.daily_lock import TEMPFAIL_EXIT
 from .core.database import is_postgres_target, connect_product
-from .legacy import load_env_file
+from .opportunities.legacy import load_env_file
 from .outreach import queue_follow_up_reminders
 from .outreach_config import RESEARCH_ENV, discovery_provider
 from .outreach_agents import RUNNERS

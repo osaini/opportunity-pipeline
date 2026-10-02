@@ -34,14 +34,14 @@ from .. import APPLY_ROOT, DEFAULT_PLATFORM_DB, DEFAULT_PROFILE, STATIC_DIR
 from .. import apply_preflight, apply_runs
 from ..integrations.agent_providers import AgentProvider, build_provider
 from ..apply_schema_client import SchemaClient, default_schema_client_factory
-from ..boards import BoardTracker
-from ..captures import DEFAULT_CAPTURE_STORAGE
+from ..opportunities.boards import BoardTracker
+from ..opportunities.captures import DEFAULT_CAPTURE_STORAGE
 from ..core.database import is_postgres_target
 from ..integrations.pdf import pdf_renderer
-from ..early_programs import DEFAULT_EARLY_PROGRAMS
+from ..opportunities.early_programs import DEFAULT_EARLY_PROGRAMS
 from ..mail.classifiers import build_client as build_inbox_client, client_for as inbox_client_for
 from ..inbox_watcher import InboxWatcher
-from ..legacy import load_env_file
+from ..opportunities.legacy import load_env_file
 from ..outreach_automation import AutomationWorker
 from ..outreach_call_prep import CallPrepWorker, auto_queue_call_prep
 from ..outreach_discovery import DiscoveryManager
@@ -53,7 +53,7 @@ from ..outreach_research import web_researcher
 from ..outreach_settings import OutreachSettings
 from ..integrations.smtp_probe import default_verifier as default_smtp_verifier
 from ..student.preparation import DEFAULT_MOCK_AUDIO_STORAGE
-from ..refresh import RefreshManager
+from ..opportunities.refresh import RefreshManager
 from ..student.resumes import DEFAULT_STORAGE
 from ..system_status import SystemStatus
 from ..integrations.typesafe_decisions import DecisionClient, build_client as build_typesafe_client

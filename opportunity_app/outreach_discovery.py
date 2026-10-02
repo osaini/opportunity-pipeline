@@ -40,7 +40,7 @@ import httpx
 from . import ROOT
 from .integrations.agent_providers import CliAgentProvider
 from .background import SingleFlightManager
-from .legacy import SOURCES_LOCAL_PATH
+from .opportunities.legacy import SOURCES_LOCAL_PATH
 from .outreach import OUTREACH_PRIORITIES, log_event, existing_keys, get_target, import_targets, local_today
 from .outreach_identity import company_key
 from .outreach_location import location_usable

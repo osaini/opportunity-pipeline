@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
-from opportunity_app.early_programs import early_programs, load_programs, set_program_status
+from opportunity_app.opportunities.early_programs import early_programs, load_programs, set_program_status
 from opportunity_app.accounts.operations import export_account
 from opportunity_app.core.schema import LOCAL_USER_ID
 from opportunity_app.core.database import connect_product

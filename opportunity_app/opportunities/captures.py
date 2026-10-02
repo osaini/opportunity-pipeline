@@ -23,13 +23,13 @@ from uuid import uuid4
 from pipeline_core.identity import sort_key
 from pipeline_core.read_model import RULESET_VERSION
 
-from . import ROOT
-from .actions import log_application_event
-from .core.company_tags import regenerate_company_tags
-from .opportunity_metadata import extract_opportunity_metadata
-from .student.resumes import ResumeValidationError, detect_media_type, extract_pdf, scan_resume_file
-from .core.storage_paths import confined_path
-from .core.timestamps import utc_now
+from .. import ROOT
+from ..actions import log_application_event
+from ..core.company_tags import regenerate_company_tags
+from ..opportunity_metadata import extract_opportunity_metadata
+from ..student.resumes import ResumeValidationError, detect_media_type, extract_pdf, scan_resume_file
+from ..core.storage_paths import confined_path
+from ..core.timestamps import utc_now
 
 
 DEFAULT_CAPTURE_STORAGE = ROOT / "data" / "captures"

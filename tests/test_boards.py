@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from pipeline_core import discovery
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
-from opportunity_app.boards import LOOKUP_TTL_SECONDS, BoardTracker
+from opportunity_app.opportunities.boards import LOOKUP_TTL_SECONDS, BoardTracker
 
 from helpers_platform import build_and_migrate
 

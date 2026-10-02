@@ -19,9 +19,9 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
-from . import ROOT
+from .. import ROOT
 from .legacy import load_sources
-from .core.timestamps import utc_now
+from ..core.timestamps import utc_now
 
 PIPELINE_CLI = ROOT / "pipeline.py"
 DEFAULT_DISCOVERED_PATH = ROOT / "data" / "discovered_jobs.json"

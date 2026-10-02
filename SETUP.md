@@ -261,7 +261,7 @@ exists, the tab shows an empty state pointing here.
    ```
 
    Only `id`, `name`, `host`, `url`, and `evidence` are required. The full
-   format is in `opportunity_app/early_programs.py`.
+   format is in `opportunity_app/opportunities/early_programs.py`.
 5. **Check it:**
 
    ```bash

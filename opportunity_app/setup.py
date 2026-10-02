@@ -275,8 +275,8 @@ def enable_personal_data_hooks(root: Path) -> str:
 
 
 def _ensure_databases(paths: Paths) -> None:
-    from .legacy import create_database
-    from .legacy_sync import migrate_legacy_database
+    from .opportunities.legacy import create_database
+    from .opportunities.legacy_sync import migrate_legacy_database
 
     create_database(paths.legacy_db)
     migrate_legacy_database(paths.legacy_db, paths.platform_db, paths.profile)
@@ -417,7 +417,7 @@ def validate_profile(profile: Any) -> dict[str, Any]:
             )
     degree = profile.get("degree")
     if isinstance(degree, str) and degree.strip():
-        from .legacy import degree_levels
+        from .opportunities.legacy import degree_levels
 
         if not degree_levels(degree):
             warnings.append(
@@ -457,7 +457,7 @@ def status(paths: Paths) -> dict[str, Any]:
 
     sources_report: dict[str, Any] = {"overlay_exists": paths.overlay.exists()}
     try:
-        from .legacy import load_sources
+        from .opportunities.legacy import load_sources
 
         merged = load_sources(paths.root / "config" / "sources.json", paths.overlay)
         enabled = [source for source in merged["ats_sources"] if source.get("enabled", True)]
@@ -505,7 +505,7 @@ def _next_steps(paths: Paths, env: dict[str, str], profile: dict[str, Any]) -> l
 
 def programs_report(paths: Paths) -> dict[str, Any]:
     """Check config/early_programs.local.json, the list behind the Programs tab."""
-    from .early_programs import load_programs
+    from .opportunities.early_programs import load_programs
 
     loaded = load_programs(paths.programs)
     return {

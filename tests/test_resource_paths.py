@@ -29,7 +29,7 @@ FILE_RELATIVE_ALLOWED = ("opportunity_app/__init__.py", "opportunity_app/mail/tr
 
 class ResolvedPathTests(unittest.TestCase):
     def test_ingestion_paths_point_at_the_repository(self):
-        from opportunity_app import ingestion
+        from opportunity_app.opportunities import ingestion
 
         self.assertEqual(ingestion.PIPELINE_CLI, ROOT / "pipeline.py")
         self.assertTrue(ingestion.PIPELINE_CLI.is_file(), "ingestion runs this file as a subprocess")

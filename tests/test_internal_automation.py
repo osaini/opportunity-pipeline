@@ -30,7 +30,7 @@ from opportunity_app.outreach import (
 from opportunity_app.outreach_automation import AutomationWorker
 from opportunity_app.outreach_delivery import record_bounce
 from opportunity_app.outreach_versions import draft_versions
-from opportunity_app.refresh import RefreshManager
+from opportunity_app.opportunities.refresh import RefreshManager
 from opportunity_app.student.resumes import ResumeValidationError, confirm_variant, resume_record
 from opportunity_app.core.schema import ensure_product_schema
 from opportunity_app.core.database import connect_product, has_column
@@ -1493,7 +1493,7 @@ class TriageTests(Case):
     def test_the_web_refresh_sync_step_triages(self):
         manager = RefreshManager(self.platform_path, legacy_path=self.legacy_path, profile_path=self.root / "profile.json",
                                  runner=lambda arguments, on_line: 0)
-        with mock.patch("opportunity_app.refresh.triage_after_sync", return_value={"saved": [1], "passed": []}) as triage:
+        with mock.patch("opportunity_app.opportunities.refresh.triage_after_sync", return_value={"saved": [1], "passed": []}) as triage:
             manager._state = {"state": "running", "steps": [{"key": "sync"}]}
             manager._sync()
         triage.assert_called_once_with(self.platform_path)

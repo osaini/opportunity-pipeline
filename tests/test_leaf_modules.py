@@ -139,7 +139,7 @@ LEAVES: dict[str, tuple[set[str], set[str]]] = {
     # Split out of outreach.py. Replies is pure text rules; location and greeting read the student's profile (the owner's
     # file, or another user's confirmed facts through preparation, which is imported where used).
     "opportunity_app/outreach_replies.py": (set(), set()),
-    "opportunity_app/outreach_location.py": (dotted("legacy", "core.schema"), dotted("student.preparation")),
+    "opportunity_app/outreach_location.py": (dotted("opportunities.legacy", "core.schema"), dotted("student.preparation")),
     "opportunity_app/outreach_greeting.py": (dotted("outreach_identity", "outreach_location", "core.schema"), dotted("student.preparation")),
     # Split out of outreach_gmail.py. The claim ledger needs only the process id, the unique-violation test and the clock, so
     # the contact-form submitter and the thank-you recovery can hold claims without loading the Gmail REST client.
@@ -514,7 +514,7 @@ class LogApplicationEventTests(unittest.TestCase):
 # --- Workstream I: identity and the legacy boundary ---------------------------------------------------------------------
 
 class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
-    """Workstream I: pipeline_core/identity.py, opportunity_app/legacy.py and the constants collapsed into one place."""
+    """Workstream I: pipeline_core/identity.py, opportunity_app/opportunities/legacy.py and the constants collapsed into one place."""
 
     def test_employer_key_output_is_pinned_because_apply_stores_persist_it(self):
         from pipeline_core.identity import employer_key
@@ -596,7 +596,7 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         self.assertEqual(done.stdout.strip(), "False")
 
     def test_only_the_legacy_adapter_imports_the_legacy_pipeline(self):
-        # pipeline.py is split into these pipeline_core modules; the web app reaches them through opportunity_app/legacy.py.
+        # pipeline.py is split into these pipeline_core modules; the web app reaches them through opportunity_app/opportunities/legacy.py.
         # (identity, regions, env, visibility and read_model are shared leaves, not part of the legacy door.)
         split = {
             "paths", "clock", "config", "text", "http", "sources", "store", "liveness", "retention", "discovery", "fetch",
@@ -604,7 +604,7 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         }
         offenders = []
         for path in sorted((ROOT / "opportunity_app").rglob("*.py")):
-            if path.relative_to(ROOT).as_posix() == "opportunity_app/legacy.py":
+            if path.relative_to(ROOT).as_posix() == "opportunity_app/opportunities/legacy.py":
                 continue
             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
                 names = []
@@ -616,7 +616,7 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
                     parts = name.split(".")
                     if parts[0] == "pipeline" or (parts[0] == "pipeline_core" and len(parts) > 1 and parts[1] in split):
                         offenders.append(f"{path.relative_to(ROOT).as_posix()}: {name}")
-        self.assertEqual(offenders, [], "web modules must import the legacy pipeline through opportunity_app.legacy")
+        self.assertEqual(offenders, [], "web modules must import the legacy pipeline through opportunity_app.opportunities.legacy")
 
     def test_the_regions_moved_to_pipeline_core_still_bucket_locations(self):
         from pipeline_core.regions import match_region, region_label
@@ -706,7 +706,7 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
             self.assertIn("jobs", tables)
 
     def test_legacy_create_database_does_not_move_the_global_db_path(self):
-        from opportunity_app import legacy
+        from opportunity_app.opportunities import legacy
         from pipeline_core import paths
 
         before = paths.DB_PATH
@@ -717,7 +717,7 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         self.assertEqual(paths.DB_PATH, before)
 
     def test_one_ruleset_version_constant_backs_every_fit_score_read_and_write(self):
-        from opportunity_app import legacy_sync
+        from opportunity_app.opportunities import legacy_sync
         from opportunity_app.core import schema
         from pipeline_core.read_model import RULESET_VERSION
 
@@ -766,7 +766,7 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
                     self.assertIsNone(confined_path(root, name))
 
     def test_each_store_still_raises_its_own_error_for_a_name_outside_its_folder(self):
-        from opportunity_app import captures
+        from opportunity_app.opportunities import captures
         from opportunity_app.student import preparation, resumes
 
         with tempfile.TemporaryDirectory() as tmp:

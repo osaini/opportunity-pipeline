@@ -25,7 +25,7 @@ from opportunity_app.actions import record_intent, update_application
 from opportunity_app.api import create_app
 from opportunity_app.automation import Feature
 from opportunity_app.core.schema import MIGRATIONS_DIR, ensure_product_schema
-from opportunity_app.legacy_sync import migrate_legacy_database
+from opportunity_app.opportunities.legacy_sync import migrate_legacy_database
 from opportunity_app.core.database import connect_product, has_column
 from opportunity_app.core.timestamps import utc_now
 from pipeline_core import OpportunityFilters, OpportunityRepository

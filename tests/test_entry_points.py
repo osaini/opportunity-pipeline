@@ -217,7 +217,7 @@ class EntryPointsRunTests(unittest.TestCase):
     def test_pipeline_py_is_only_the_entry_point_and_re_exports_nothing(self):
         # The legacy pipeline lives in pipeline_core/. pipeline.py stays where `python pipeline.py ...` and the scheduled tasks
         # run it, but it must not grow back into a facade: a name re-exported here is a second place a test could patch
-        # without the code that looks the name up noticing, and the web app's one door is opportunity_app/legacy.py.
+        # without the code that looks the name up noticing, and the web app's one door is opportunity_app/opportunities/legacy.py.
         source = (ROOT / "pipeline.py").read_text(encoding="utf-8")
         tree = ast.parse(source, filename="pipeline.py")
         imports = [(node.module, [alias.name for alias in node.names]) for node in tree.body if isinstance(node, ast.ImportFrom)]
@@ -225,6 +225,22 @@ class EntryPointsRunTests(unittest.TestCase):
         others = [node for node in tree.body if not isinstance(node, (ast.ImportFrom, ast.Expr, ast.If))]
         self.assertEqual(others, [], "pipeline.py defines or imports more than the entry point")
         self.assertTrue(main_guard_calls_main(source))
+
+    def test_purge_is_a_thin_command_over_the_opportunities_implementation(self):
+        # `python -m opportunity_app.purge` is what the daily run calls, so that module stays at its path, but the code lives in
+        # opportunities/purge.py. The command imports main and nothing else, so a test that patches a name on the top-level
+        # module (which would never reach the implementation) fails loudly instead of passing without biting.
+        source = (ROOT / "opportunity_app" / "purge.py").read_text(encoding="utf-8")
+        tree = ast.parse(source, filename="opportunity_app/purge.py")
+        imports = [(node.level, node.module, [alias.name for alias in node.names]) for node in tree.body if isinstance(node, ast.ImportFrom)]
+        self.assertEqual(imports, [(1, "opportunities.purge", ["main"])])
+        others = [node for node in tree.body if not isinstance(node, (ast.ImportFrom, ast.Expr, ast.If))]
+        self.assertEqual(others, [], "the purge command defines or imports more than main")
+        self.assertTrue(main_guard_calls_main(source))
+        command = importlib.import_module("opportunity_app.purge")
+        implementation = importlib.import_module("opportunity_app.opportunities.purge")
+        self.assertIs(command.main, implementation.main)
+        self.assertEqual([name for name in vars(command) if not name.startswith("__")], ["main"])
 
     def test_the_sandbox_server_still_finds_the_test_helpers_it_imports(self):
         # scripts/serve_for_testing.py imports helpers out of tests/ and tests/ui/ by bare module name; moving one silently breaks

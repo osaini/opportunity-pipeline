@@ -38,9 +38,9 @@ what puts a module there.
       schedule workflows, automation handlers, apply runs, discovery and research, and the background worker base.
   L5  entry points: the FastAPI app (api and opportunity_app.web), the launcher, the worker, and every CLI that is run as
       `python -m opportunity_app.X`.
-      One exception: purge. It has a `__main__` guard (the daily run calls `python -m opportunity_app.purge`), but its
-      logic is a domain operation (expire records) and main() is a thin wrapper, so it stays in L3 where refresh (L4),
-      the manual refresh workflow, can import it at the top of the file. Do not move it up without moving refresh up too.
+      purge is two modules: the top-level opportunity_app.purge is the L5 command (it only imports main, so the daily run's
+      `python -m opportunity_app.purge` keeps working), and opportunities.purge holds the domain operation (expire
+      records) in L3, where refresh (L4), the manual refresh workflow, imports it at the top of the file.
 
 One deviation from the proposal in the refactor audit (critic.md): it put integrations ABOVE domain (L3) and workflows
 at L4. Today's top-level graph forbids that. outreach.py (domain) imports web_fetch and typesafe_decisions, outreach_config
@@ -98,20 +98,20 @@ LAYER_NAMES = {
 LAYER_MEMBERS: dict[int, frozenset[str]] = {
     # L0 stdlib leaves. `opportunity_app` and `pipeline_core` are the package __init__ modules (constants and re-exports).
     0: (
-        _app(". accounts student mail core integrations core.timestamps core.user_time core.database core.json_values mail.message opportunity_metadata core.storage_paths contact_names core.daily_lock core.hooks mail.monitored_classifier outreach_replies")
+        _app(". opportunities accounts student mail core integrations core.timestamps core.user_time core.database core.json_values mail.message opportunity_metadata core.storage_paths contact_names core.daily_lock core.hooks mail.monitored_classifier outreach_replies")
         | _core(". env identity visibility regions read_model paths clock text http config sources scoring artifacts store liveness retention importers discovery fetch reports cli")
         | frozenset({"pipeline"})
     ),
     # L1 storage. company_tags is here because schema.py imports it; legacy is the one adapter onto pipeline.py; legacy_sync
     # writes the product database from the legacy one, so it sits beside schema, which it imports one way.
-    1: _app("core.schema legacy_sync core.settings_store core.profile_store core.company_tags legacy"),
+    1: _app("core.schema opportunities.legacy_sync core.settings_store core.profile_store core.company_tags opportunities.legacy"),
     # L2 integrations. Leaves: none of them imports another first-party module.
     2: _app("integrations.agent_providers integrations.web_fetch integrations.gmail_client integrations.typesafe_decisions integrations.smtp_probe integrations.pdf"),
     # L3 domain.
     3: _app(
         "actions apply_sessions accounts.auth apply_checks apply_claims apply_classify apply_greenhouse apply_policy apply_sensitive apply_schema_client "
-        "automation automation_health boards captures mail.connections accounts.dossier accounts.employer market early_programs extension_apply mail.trust "
-        "notifications purge ingestion student.profile student.resumes student.resume_variants student.preparation student.artifacts mail.classifiers mail.gmail_connection "
+        "automation automation_health opportunities.boards opportunities.captures mail.connections accounts.dossier accounts.employer opportunities.market opportunities.early_programs extension_apply mail.trust "
+        "notifications opportunities.purge opportunities.ingestion student.profile student.resumes student.resume_variants student.preparation student.artifacts mail.classifiers mail.gmail_connection "
         "send_claims outreach outreach_agents outreach_callbacks outreach_config outreach_decline_reading outreach_identity outreach_label_name "
         "outreach_location outreach_greeting outreach_versions outreach_contacts outreach_linkedin outreach_batch "
         "outreach_thank_you_writing outreach_render"
@@ -123,12 +123,12 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
         "outreach_thank_you outreach_reply_senders outreach_automation outreach_recontact outreach_review outreach_call_prep "
         "outreach_call_questions outreach_forms outreach_discovery outreach_research quote_check outreach_drafting "
         "outreach_interviewer outreach_email_search outreach_locate outreach_profile outreach_settings "
-        "refresh desktop_notify accounts.operations accounts.backups student.agent urgent monitored_events"
+        "opportunities.refresh desktop_notify accounts.operations accounts.backups student.agent urgent monitored_events"
     ),
     # L5 entry points. opportunity_app.web is the FastAPI app behind api: the composition root (app), the per-app context, the
     # dependencies, middleware and asset handling, the request models, and one router module per feature.
     5: (
-        _app("api bootstrap launch worker daily system_status migrate ops_cli outreach_cli pipeline_mailbox setup")
+        _app("api bootstrap launch worker daily system_status migrate ops_cli outreach_cli pipeline_mailbox setup purge")
         | _mods("opportunity_app.web", ". app context dependencies errors middleware assets payloads overrides")
         | _mods(
             "opportunity_app.web.models",

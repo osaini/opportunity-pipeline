@@ -25,7 +25,7 @@ from opportunity_app.integrations.web_fetch import SafeFetcher
 from opportunity_app.outreach_discovery import DiscoveryManager
 from opportunity_app.outreach_recontact import RecontactManager
 from opportunity_app.system_status import SystemStatus
-from opportunity_app.boards import BoardTracker
+from opportunity_app.opportunities.boards import BoardTracker
 from opportunity_app.outreach_settings import OutreachSettings
 
 COMPOSE_ACCOUNT = "student@school.example"

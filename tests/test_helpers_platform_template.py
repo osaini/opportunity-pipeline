@@ -198,7 +198,7 @@ class TemplateCopyTests(unittest.TestCase):
 
     def test_the_migration_a_build_runs_opens_its_target_without_the_fsync_too(self):
         """legacy_sync.migrate_legacy_database looks connect_product up in its own namespace, so the patch must reach it there."""
-        from opportunity_app import legacy_sync
+        from opportunity_app.opportunities import legacy_sync
 
         class Stop(Exception):
             pass

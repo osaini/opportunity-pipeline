@@ -15,7 +15,7 @@ from opportunity_app.api import create_app
 from opportunity_app.core.company_tags import RULES_FINGERPRINT, classify_company, ensure_company_tags_current, normalize_tag
 from opportunity_app.accounts.operations import export_account
 from opportunity_app.core.schema import LOCAL_USER_ID, ensure_product_schema
-from opportunity_app.legacy_sync import migrate_legacy_database
+from opportunity_app.opportunities.legacy_sync import migrate_legacy_database
 from opportunity_app.core.database import connect_product
 
 from helpers_platform import build_and_migrate, build_profile

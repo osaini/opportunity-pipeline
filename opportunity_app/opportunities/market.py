@@ -10,8 +10,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
-from .student.profile import get_profile
-from .core.timestamps import utc_now
+from ..student.profile import get_profile
+from ..core.timestamps import utc_now
 
 
 class MarketNotFoundError(LookupError):

@@ -13,7 +13,7 @@ import sqlite3
 from functools import lru_cache
 from typing import Any
 
-from .legacy import PROFILE_PATH
+from .opportunities.legacy import PROFILE_PATH
 from .core.schema import LOCAL_USER_ID
 
 
