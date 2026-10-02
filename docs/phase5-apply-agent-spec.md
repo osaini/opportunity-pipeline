@@ -21,7 +21,10 @@
   `applications/extension.py`, `mail/trust.py`, `student/resume_variants.py`, `outreach/forms.py`,
   `outreach/gmail.py`, `outreach/render.py`, `student/artifacts.py`, `core/user_time.py`); `apply_runs` is also a
   table name. File:line citations of `api.py` and `app.js` are as of the base commit and no longer match the
-  split files. The README manual is now `docs/guide/`, so citations of README sections name the heading.
+  split files. The README manual is now `docs/guide/`, so citations of README sections name the heading. The
+  migration this plan calls 0044 was numbered 0045 when it was built (`migrations/0045_apply_agent.sql`), and
+  `apply_agent.py`, `test_apply_watch.py`, `test_apply_agent_browser.py` and `scripts/apply_shape_check.py` are
+  planned files that M5a and M5b have not built.
 - **Relation to PLAN.md:** this document expands PLAN.md "Phase 5: Apply agent pilot"
   (PLAN.md:1099-1255). PLAN.md is the student's automation roadmap and is kept outside the
   repository, so its line references are to that file. Where the two differ, this document wins. Appendix A lists every
