@@ -113,6 +113,17 @@ class DraftingTests(unittest.TestCase):
         self.assertNotIn("regions", prompt["student"], "only facts meant for an email reach the model")
         self.assertEqual(prompt["sender_address"], "student@example.edu")
 
+    def test_a_draft_greeting_an_invented_name_in_the_students_own_word_is_refused(self):
+        # compose_draft must hand the student's greeting style to validate_draft, or "Howdy Dana," for a contact with
+        # no name passes because only the common opening words are read.
+        nameless = create_target(self.conn, {"company": "Nameless", "contact_email": "info@nameless.example"}, user_id=USER)
+        invented = draft_json("Hello", GOOD_BODY.replace("Hi Greg,", "Howdy Dana,"), GOOD_CLAIMS)
+        provider = ScriptedProvider([invented, invented])
+        with mock.patch("opportunity_app.outreach.drafting.greeting_style", return_value={"word": "Howdy", "unnamed": "{company} team"}):
+            with self.assertRaises(DraftRejected) as caught:
+                generate_draft(self.conn, nameless["id"], user_id=USER, provider_factory=lambda *_: provider, provider="anthropic")
+        self.assertIn("the contact has no name", str(caught.exception))
+
     def test_an_invented_fact_is_retried_and_then_refused(self):
         invented = draft_json(
             "Hello", "Hi Greg,\n\nI led a team of 12 engineers at SpaceX.\n\nTest Student",
