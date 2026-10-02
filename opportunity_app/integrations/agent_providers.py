@@ -206,6 +206,7 @@ CODEX_OFF_FEATURES = (
 CODEX_CODE_MODE = "code_mode_host"
 # The process environment every Codex call without web search gets: no environment, so no apply_patch for any model.
 CODEX_EXEC_SERVER_ENV = "CODEX_EXEC_SERVER_URL"
+CODEX_EXEC_SERVER_PREFIX = "CODEX_EXEC_SERVER_"
 CODEX_NO_ENVIRONMENT = {CODEX_EXEC_SERVER_ENV: "none"}
 _ENV_UNCHECKED = object()
 _CODEX_SWITCHES = ("--skip-git-repo-check", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--strict-config")
@@ -332,7 +333,7 @@ def codex_process_env(command: list[str], base: dict[str, str] | None = None) ->
     if not _is_codex(command) or _is_web_research([str(item) for item in command[1:]]):
         return None
     inherited = os.environ if base is None else base
-    env = {key: value for key, value in inherited.items() if not key.upper().startswith("CODEX_EXEC_SERVER_")}
+    env = {key: value for key, value in inherited.items() if not key.upper().startswith(CODEX_EXEC_SERVER_PREFIX)}
     return {**env, **CODEX_NO_ENVIRONMENT}
 
 
@@ -405,7 +406,8 @@ def require_codex_isolation(command: list[str], env: Any = _ENV_UNCHECKED, cwd: 
     """Raise CodexNotIsolated, before anything starts, when a Codex command lacks any part of codex_command's isolation.
 
     ``env`` is the environment the process will start with (None: the inherited one). When it is given, a call without web
-    search must carry CODEX_NO_ENVIRONMENT in it, the part of the isolation that is not on argv (see codex_process_env).
+    search must carry CODEX_NO_ENVIRONMENT in it, the part of the isolation that is not on argv (see codex_process_env),
+    and no other CODEX_EXEC_SERVER_* variable (the NOISE ones point Codex at a remote environment whatever the URL says).
     run_headless always passes it; the check run before an injected runner does not know it and leaves it out.
     ``cwd`` is the directory the call runs in: an --output-last-message file must resolve to a place inside it.
     Commands for other programs pass untouched.
@@ -433,6 +435,9 @@ def require_codex_isolation(command: list[str], env: Any = _ENV_UNCHECKED, cwd: 
     if env is not _ENV_UNCHECKED and not _is_web_research(args):
         if (env or {}).get(CODEX_EXEC_SERVER_ENV) != CODEX_NO_ENVIRONMENT[CODEX_EXEC_SERVER_ENV]:
             problems.append(f"{CODEX_EXEC_SERVER_ENV}=none is missing from its environment, so apply_patch would be listed for some models")
+        # The NOISE rendezvous variables (CODEX_EXEC_SERVER_NOISE_*) make Codex use a remote environment whatever the URL says.
+        problems += [f"{key} is set in its environment, which can give Codex a remote environment despite {CODEX_EXEC_SERVER_ENV}=none"
+                     for key in (env or {}) if str(key).upper().startswith(CODEX_EXEC_SERVER_PREFIX) and key != CODEX_EXEC_SERVER_ENV]
     if problems:
         raise CodexNotIsolated(
             "Codex was not started because its command is not isolated: " + "; ".join(problems) + ". "

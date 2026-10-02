@@ -458,6 +458,19 @@ class EveryNonResearchCodexCallRunsWithoutAnEnvironmentTests(unittest.TestCase):
         self.assertIn("agents.enabled=false", str(raised.exception))
         agent_providers.require_codex_isolation(command, env=NO_ENVIRONMENT)
 
+    def test_the_guard_refuses_any_other_exec_server_variable_in_the_environment(self):
+        """CODEX_EXEC_SERVER_URL=none gives the turn no environment, but the NOISE rendezvous variables make Codex use a
+        remote environment whatever the URL says. codex_process_env strips them; the guard must not accept an env that has one."""
+        command = agent_providers.codex_command("codex")
+        for key in ("CODEX_EXEC_SERVER_NOISE_REGISTRY_URL", "CODEX_EXEC_SERVER_NOISE_RENDEZVOUS_ID", "codex_exec_server_x", "CODEX_EXEC_SERVER_"):
+            with self.subTest(key=key), self.assertRaises(agent_providers.CodexNotIsolated) as raised:
+                agent_providers.require_codex_isolation(command, env={**NO_ENVIRONMENT, key: "x"})
+            self.assertIn(key, str(raised.exception))
+        agent_providers.require_codex_isolation(command, env={**NO_ENVIRONMENT, "CODEX_HOME": "somewhere", "CODEX_EXEC_SERVERS": "ok"})
+        with mock.patch.dict("os.environ", {ALLOW_CODEX_ENV: "1"}):
+            agent_providers.require_codex_isolation(agent_providers.codex_command("codex", web_search=True), env={"CODEX_EXEC_SERVER_NOISE_X": "x"})
+
+
 
 class AnOutputFileMustStayInsideTheCallsDirectoryTests(unittest.TestCase):
     """Codex writes --output-last-message itself, outside its sandbox, so where it points decides what the call can overwrite."""
