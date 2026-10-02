@@ -27,7 +27,7 @@ from .location import home_terms, location_usable, mentions_home, near_home, stu
 from .config import resolve_provider, sender_account
 from .versions import insert_version, keep_current_draft
 from ..student.preparation import confirmed_facts
-from .number_check import ADDRESS_PATTERN, blank_addresses, input_hosts, number_keys as _number_keys, supported_numbers as _supported_numbers
+from .number_check import blank_addresses, input_hosts, number_keys as _number_keys, supported_numbers as _supported_numbers
 from ..core.timestamps import utc_now
 
 ProviderFactory = Callable[[str, str], AgentProvider]
@@ -335,9 +335,10 @@ def _primary_entries(inputs: dict[str, Any]) -> list[Any]:
 def _states_a_lead_result(body: str, inputs: dict[str, Any]) -> bool:
     """Whether the body gives a number from the primary experience, not one that only belongs to the company."""
     research = {**inputs["company_research"], **inputs["unverified_research"]}
-    lead_numbers = _supported_numbers(_input_text(_primary_entries(inputs))) - _supported_numbers(_input_text(research))
+    own_hosts = input_hosts(inputs)
+    lead_numbers = _supported_numbers(_input_text(_primary_entries(inputs), own_hosts)) - _supported_numbers(_input_text(research, own_hosts))
     # Blank links the same way _unsupported_numbers does, so the student's own bare link (jdoe2.me) is not a stated result.
-    return any(needed in lead_numbers for _, needed in _number_keys(blank_addresses(body, input_hosts(inputs))))
+    return any(needed in lead_numbers for _, needed in _number_keys(blank_addresses(body, own_hosts)))
 
 
 def _other_entries_named(body: str, inputs: dict[str, Any]) -> list[str]:
@@ -364,25 +365,25 @@ IDENTIFIER_KEYS = frozenset({"id", "source_urls"})
 _NOT_A_FACT = IDENTIFIER_KEYS | {"max_words"}
 
 
-def _input_text(value: Any):
-    """Every piece of the inputs' own words a number may come from, with addresses taken out."""
+def _input_text(value: Any, own_hosts: re.Pattern[str] | None = None):
+    """Every piece of the inputs' own words a number may come from, with addresses and the inputs' own links taken out."""
     if isinstance(value, str):
-        yield ADDRESS_PATTERN.sub(" ", value)
+        yield blank_addresses(value, own_hosts)
     elif isinstance(value, dict):
         for key, item in value.items():
             if key not in _NOT_A_FACT:
-                yield from _input_text(item)
+                yield from _input_text(item, own_hosts)
     elif isinstance(value, (list, tuple)):
         for item in value:
-            yield from _input_text(item)
+            yield from _input_text(item, own_hosts)
     elif isinstance(value, (int, float)) and not isinstance(value, bool):
         yield str(value)
 
 
 def _unsupported_numbers(text: str, inputs: dict[str, Any], *more: str) -> list[str]:
     """Numbers in the draft's text (the body, and the subject when given as ``more``) that are no whole number in the inputs' own words (see _number_keys)."""
-    allowed = _supported_numbers(_input_text(inputs))
     own_hosts = input_hosts(inputs)
+    allowed = _supported_numbers(_input_text(inputs, own_hosts))
     found = []
     for piece in (text, *more):
         for key, needed in _number_keys(blank_addresses(piece, own_hosts)):

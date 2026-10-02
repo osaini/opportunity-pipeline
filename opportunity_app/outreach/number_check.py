@@ -75,10 +75,45 @@ def _strings(value: Any):
             yield from _strings(item)
 
 
+# An input field that holds a link whatever its shape: links, a url, a website, a source, a profile (linkedin,
+# github, portfolio). Its values are links even without a scheme (jdoe2.me, acme360.net/careers), on any TLD.
+_LINK_KEY = re.compile(r"(?:^|_)(?:links?|urls?|websites?|sites?|sources?|homepage|portfolio|linkedin|github)(?:$|_)", re.IGNORECASE)
+_BARE_HOST = re.compile(r"(?:www\.)?((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})(?![\w-])", re.IGNORECASE)
+
+
+def _link_values(value: Any):
+    """The strings an inputs structure holds in its link fields (a link field's own string, or the strings of its list)."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if _LINK_KEY.search(str(key)):
+                items = item if isinstance(item, (list, tuple)) else [item]
+                for entry in items:
+                    if isinstance(entry, str):
+                        yield entry
+                    else:
+                        yield from _link_values(entry)
+            else:
+                yield from _link_values(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _link_values(item)
+
+
+def _link_host(text: str) -> str | None:
+    """The host of one link-field value written with or without its scheme, or None when it is not link-shaped."""
+    text = re.sub(r"^[a-z][a-z0-9+.-]*://", "", text.strip(), flags=re.IGNORECASE)
+    text = text.rpartition("@")[2] if "@" in text.partition("/")[0] else text
+    match = _BARE_HOST.match(text.lstrip("/"))
+    return match.group(1).lower() if match else None
+
+
 def input_hosts(inputs: Any) -> re.Pattern[str] | None:
-    """A pattern for the hosts the inputs link to with a scheme (a profile link, the company's website, a source),
-    so the same site written without its scheme in a draft is still recognised as that link, whatever its TLD."""
+    """A pattern for the hosts the inputs link to (a profile link, the company's website, a source), so the same site
+    written without its scheme, in a draft or in the inputs themselves, is still recognised as that link, whatever
+    its TLD. A host comes from a link with a scheme anywhere in the inputs, or from the value of an explicit link
+    field (links, url, website, source...) with or without one. Dotted prose in any other field is not a link."""
     hosts = {match.group(1).lower() for text in _strings(inputs) for match in _SCHEME_HOST.finditer(text)}
+    hosts |= {host for text in _link_values(inputs) for token in re.split(r"[\s,;]+", text) if (host := _link_host(token))}
     if not hosts:
         return None
     names = "|".join(re.escape(host) for host in sorted(hosts, key=len, reverse=True))

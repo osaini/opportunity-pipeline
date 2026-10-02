@@ -485,6 +485,16 @@ class CallPrepTests(unittest.TestCase):
         self.assertEqual(outreach_call_prep._unsupported_numbers("Their site: acme360.com, linkedin.com/in/t-512.", inputs), [])
         self.assertEqual(outreach_call_prep._unsupported_numbers("A 3.5 GPA, U.S. only, Ph.D. track, 9 seconds.", inputs), ["3.5", "9"])
 
+    def test_a_bare_link_in_an_explicit_link_field_is_not_a_source_of_numbers_and_naming_it_is_not_a_claim(self):
+        inputs = {
+            "technical_research": [{"id": "f1", "section": "technology", "text": "The arm plugs in within 90 seconds"}],
+            "student_links": ["jdoe2.me"],
+            "company_research": {"website": "acme360.net/careers"},
+        }
+        self.assertEqual(outreach_call_prep._unsupported_numbers("They shipped 360 robots and 2 arms, 90 seconds.", inputs), ["360", "2"])
+        self.assertEqual(outreach_call_prep._unsupported_numbers("Their site is acme360.net/careers and mine jdoe2.me/work-2024.", inputs), [])
+        self.assertEqual(outreach_call_prep._unsupported_numbers("They reached 40k.users.", inputs), ["40"])
+
     def test_a_number_run_into_a_lowercase_word_after_a_full_stop_is_still_checked(self):
         # Call prep shares the draft's address pattern: "40k.users" is a missing space, not a host.
         self.assertEqual(outreach_call_prep._unsupported_numbers("They reached 40k.users and cut latency 1.5x.overall.", {}), ["40", "1.5"])

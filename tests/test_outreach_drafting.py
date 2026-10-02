@@ -901,6 +901,24 @@ class UnsupportedNumbersTests(unittest.TestCase):
         # Only the hosts the inputs give: another digit host on the same TLD still counts, and the figure still must be supported.
         self.assertEqual(_unsupported_numbers("Also jdoe3.me and 7k.me", inputs), ["3", "7"])
 
+    def test_a_bare_link_in_the_inputs_does_not_license_its_digits(self):
+        # Explicit link fields (the student's links, the company website) hold links whatever their TLD, so the
+        # digits in "jdoe2.me" or "acme360.net/careers" are not numbers the student earned.
+        inputs = self.inputs(name="Test Student")
+        inputs["links"] = ["jdoe2.me"]
+        inputs["company_research"] = {"website": "acme360.net/careers"}
+        self.assertEqual(_unsupported_numbers("I shipped 360 robots and 2 prototypes.", inputs), ["360", "2"])
+
+    def test_a_draft_naming_the_same_bare_link_is_not_flagged_and_dotted_prose_still_is(self):
+        inputs = self.inputs(name="Test Student")
+        inputs["links"] = ["jdoe2.me", "https://github.com/t/arm-2024"]
+        inputs["company_research"] = {"website": "acme360.net/careers"}
+        self.assertEqual(_unsupported_numbers("My work is at jdoe2.me/work-2024 and yours at www.acme360.net.", inputs), [])
+        self.assertEqual(_unsupported_numbers("They reached 40k.users fast.", inputs), ["40"])
+        # Dotted prose in a field that is not a link is not a link: its digits are the inputs' own words, so they support the draft.
+        inputs["company_research"] = {"summary": "They reached 40k.users"}
+        self.assertEqual(_unsupported_numbers("They reached 40k users", inputs), [])
+
     def test_decimals_abbreviations_and_versions_are_not_taken_for_hosts(self):
         inputs = self.inputs(experience=[{"title": "Held a 3.5 GPA as a U.S. student, e.g. on v2.0 of the Ph.D. tool"}])
         # Each stays a number the draft must support: if 3.5 or v2.0 were stripped as a host, 7 and 2.5 would hide too.

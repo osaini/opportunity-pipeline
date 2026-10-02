@@ -106,7 +106,7 @@ from ..integrations.agent_providers import CliAgentProvider, complete_text
 from ..accounts.operations import JobDeferred, enqueue_job, recover_stale_jobs, run_next_job
 from .targets import CALL_PREP_STATUSES, OutreachNotFoundError, log_event, get_target, local_today
 from .drafting import (
-    DRAFT_FACT_FIELDS, IDENTIFIER_KEYS, INFERENCE_BASIS, RESEARCH_FIELDS, ProviderFactory, ADDRESS_PATTERN, entry_name, field_basis,
+    DRAFT_FACT_FIELDS, IDENTIFIER_KEYS, INFERENCE_BASIS, RESEARCH_FIELDS, ProviderFactory, entry_name, field_basis,
     outreach_proof,
 )
 from .config import resolve_provider
@@ -546,17 +546,17 @@ def _validate_talking_points(entries: list[Any], inputs: dict[str, Any]) -> tupl
     return kept, problems
 
 
-def _strings(value: Any):
-    """Every piece of text in the inputs a number may come from."""
+def _strings(value: Any, own_hosts: re.Pattern[str] | None = None):
+    """Every piece of text in the inputs a number may come from, with addresses and the inputs' own links taken out."""
     if isinstance(value, str):
-        yield ADDRESS_PATTERN.sub(" ", value)
+        yield blank_addresses(value, own_hosts)
     elif isinstance(value, dict):
         for key, item in value.items():
             if key not in _NOT_A_SOURCE:
-                yield from _strings(item)
+                yield from _strings(item, own_hosts)
     elif isinstance(value, (list, tuple)):
         for item in value:
-            yield from _strings(item)
+            yield from _strings(item, own_hosts)
 
 
 def _unsupported_numbers(text: str, inputs: dict[str, Any]) -> list[str]:
@@ -567,9 +567,10 @@ def _unsupported_numbers(text: str, inputs: dict[str, Any]) -> list[str]:
     skips the same identifier keys (outreach_drafting.IDENTIFIER_KEYS) and more, none of which are the student's own words.
     """
     allowed: set[str] = set()
-    for piece in _strings(inputs):
+    own_hosts = input_hosts(inputs)
+    for piece in _strings(inputs, own_hosts):
         allowed |= quote_check.number_tokens(quote_check.word_tokens(piece))
-    found = [token for token in quote_check.word_tokens(blank_addresses(text, input_hosts(inputs))) if token[0].isdigit() and token not in allowed]
+    found = [token for token in quote_check.word_tokens(blank_addresses(text, own_hosts)) if token[0].isdigit() and token not in allowed]
     return list(dict.fromkeys(found))
 
 
