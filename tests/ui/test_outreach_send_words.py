@@ -79,11 +79,36 @@ def test_the_page_names_the_switch_even_before_gmail_is_connected(owner_page, li
     expect(status).to_contain_text("contact form")
 
 
-def test_without_any_switch_the_page_still_says_nothing_sends_on_its_own(owner_page, base_url):
-    """The reassurance stays when it is true."""
+def test_without_any_switch_the_page_says_nothing_sends_on_its_own_and_what_your_own_click_does(owner_page, base_url):
+    """The reassurance stays when it is true: with Gmail off and no switch on, an approved contact form can still
+    be sent by the student's own click, so "from here" would be false."""
     seed_drafted(owner_page, base_url)
     open_outreach(owner_page)
-    expect(owner_page.locator("#page-status")).to_contain_text("Nothing sends from here")
+    status = owner_page.locator("#page-status")
+    expect(status).to_contain_text("Nothing sends on its own")
+    expect(status).not_to_contain_text("Nothing sends from here")
+    expect(status).to_contain_text("open in your own email, where you press Send")
+    expect(status).to_contain_text("a contact form goes out only when you press Send through contact form and confirm")
+
+
+def test_with_gmail_and_no_switch_the_page_says_what_your_own_click_does_for_email_and_forms(owner_page, base_url):
+    seed_drafted(owner_page, base_url)
+    gmail_listing(owner_page)
+    open_outreach(owner_page)
+    status = owner_page.locator("#page-status")
+    expect(status).to_contain_text("Nothing sends on its own")
+    expect(status).to_contain_text("send from your Gmail only when you press Send and confirm the recipient")
+    expect(status).to_contain_text("a contact form only when you press Send through contact form and confirm")
+    owner_page.unroute_all(behavior="ignoreErrors")
+
+
+def test_with_contact_form_sending_on_the_page_does_not_also_say_a_form_needs_your_click(owner_page, live_server, base_url):
+    seed_drafted(owner_page, base_url)
+    switch_on(live_server, "form_submission")
+    open_outreach(owner_page)
+    status = owner_page.locator("#page-status")
+    expect(status).to_contain_text("sending through contact forms")
+    expect(status).not_to_contain_text("a contact form goes out only when you press")
 
 
 @pytest.mark.parametrize("key,words", [("bounce_auto_resend", "after a bounce"), ("decline_thank_you", "thank-you")])
@@ -177,9 +202,9 @@ def test_turning_a_sending_switch_on_in_settings_updates_the_page_status(owner_p
     open_outreach(owner_page)
     open_tab(owner_page, "settings")
     status = owner_page.locator("#page-status")
-    expect(status).to_contain_text("Nothing sends from here")
+    expect(status).to_contain_text("Nothing sends on its own")
     owner_page.locator("#settings-automation-form_submission").check()
     expect(status).not_to_contain_text("Nothing sends")
     expect(status).to_contain_text("contact forms")
     owner_page.locator("#settings-automation-form_submission").uncheck()
-    expect(status).to_contain_text("Nothing sends from here")
+    expect(status).to_contain_text("Nothing sends on its own")

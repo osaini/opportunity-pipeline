@@ -636,14 +636,18 @@
   }
 
   // The Outreach page's status line. It holds whether or not automation is paused, so it never claims a pause.
+  // What the student's own click does is part of every version: an approved email goes from their Gmail (or opens in
+  // their own email), and an approved contact form goes out through Send through contact form, which needs no Gmail
+  // and no switch. The form clause is left out when sending through contact forms is on, which already says it.
   function outreachSendStatus(gmail, automation) {
     const automatic = automaticSendWords(automation, Object.keys(AUTOMATIC_SENDS), gmail);
-    if (!automatic) {
-      return gmail?.connected
-        ? "Approved drafts send from your Gmail only when you press Send and confirm the recipient"
-        : "Nothing sends from here; approved drafts open in your own email";
-    }
-    return `${automatic.running.replace(/\.$/, "")}, while automation is running. Anything else sends only when you press Send${gmail?.connected ? " and confirm the recipient" : " in your own email"}.`;
+    const email = gmail?.connected
+      ? "approved emails send from your Gmail only when you press Send and confirm the recipient"
+      : "approved emails open in your own email, where you press Send";
+    const byClick = "only when you press Send through contact form and confirm";
+    const form = automation?.form_submission ? "" : gmail?.connected ? `, and a contact form ${byClick}` : `; a contact form goes out ${byClick}`;
+    if (!automatic) return `Nothing sends on its own. ${email.charAt(0).toUpperCase()}${email.slice(1)}${form}.`;
+    return `${automatic.running.replace(/\.$/, "")}, while automation is running. Anything else goes out only by your own click: ${email}${form}.`;
   }
 
   // When a scheduled send goes, in words. The worker holds every send while
