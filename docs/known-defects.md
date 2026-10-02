@@ -1,6 +1,6 @@
 # Known defects
 
-This file lists defects found during the 2026-09/10 refactor audit and its phase reviews. Each one was checked against the code at `be33c50` (main after PR #64). On 2026-10-02, after the package move (PRs #65 and #66), every path and line below was re-pointed at the current tree, and each cited line was opened to confirm it still holds the code the entry names. The move changed no behaviour, so the entries still describe what the code does. None of the entries below is fixed. The owner approved fixing the six serious bugs first, and PR #60 fixed those: the email-draft number check, the student-agent CLI chat sandbox, Gmail label tables missed by account erase and export, asset versioning outside `static_dir`, pollers that kept running after sign-out, and an extension scan that carried over to another application. Two entries below (the Codex sandbox and the labelling worker) were found in review of those fixes and left for the owner to decide. The owner then approved fixing this file's six high-severity entries; they were fixed on 2026-10-02 and removed, and two narrower high-severity gaps those fixes left are listed in their place.
+This file lists defects found during the 2026-09/10 refactor audit and its phase reviews. Each one was checked against the code at `be33c50` (main after PR #64). On 2026-10-02, after the package move (PRs #65 and #66), every path and line below was re-pointed at the current tree, and each cited line was opened to confirm it still holds the code the entry names. The move changed no behaviour, so the entries still describe what the code does. None of the entries below is fixed. The owner approved fixing the six serious bugs first, and PR #60 fixed those: the email-draft number check, the student-agent CLI chat sandbox, Gmail label tables missed by account erase and export, asset versioning outside `static_dir`, pollers that kept running after sign-out, and an extension scan that carried over to another application. Two entries below (the Codex sandbox and the labelling worker) were found in review of those fixes and left for the owner to decide. The owner then approved fixing this file's six high-severity entries; they were fixed on 2026-10-02 and removed, and one narrower high-severity gap those fixes left is listed in their place.
 
 Severity rules:
 
@@ -18,23 +18,23 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Mail, Gmail and inboxes | 1 | 4 | 6 | 11 |
+| Mail, Gmail and inboxes | 0 | 4 | 6 | 10 |
 | Outreach drafting, research, forms and CLI | 0 | 4 | 2 | 6 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
 | Web API, auth and storage | 0 | 4 | 1 | 5 |
 | Scoring, scheduling and configuration | 1 | 1 | 4 | 6 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 3 | 3 |
-| **Total** | **2** | **22** | **21** | **45** |
+| **Total** | **1** | **22** | **21** | **44** |
 
 ## Start here: the high-severity entries
 
 The audit's six high-severity defects were fixed on 2026-10-02 (branch `osaini/fix-high-defects`): the Outreach page's
 send wording, HTML-only job and sequence mail counted as replies, unsupported numbers in decline thank-yous, numbers
-run into a lowercase word in drafts, the student's own greeting word, and the repost FLAG on profile save. Two narrower
-high-severity gaps remain:
+run into a lowercase word in drafts, the student's own greeting word, and the repost FLAG on profile save. The gap that
+listed an Outlook-quoted sequence bump with a trailing tracking pixel as a confirmed reply no longer exists: the
+sales-tool check reads every link, quoted ones included (`all_link_hosts`). One narrower high-severity gap remains:
 
-- [An Outlook-quoted sequence bump whose tracking pixel follows the quote is still read as a confirmed reply](#an-outlook-quoted-sequence-bump-whose-tracking-pixel-follows-the-quote-is-still-read-as-a-confirmed-reply)
 - [The repost FLAG disappears the day after the daily purge removes the retired twin](#the-repost-flag-disappears-the-day-after-the-daily-purge-removes-the-retired-twin)
 
 The two entries flagged for an owner decision are
@@ -111,13 +111,6 @@ and [the labelling worker](#the-gmail-labelling-worker-can-write-label-rows-for-
 - **Regression suite:** `node tests/extension/run_tests.mjs` (a permissions stub that rejects without a gesture, plus a stored pending queue); confirm once in real Chrome
 
 ## Mail, Gmail and inboxes
-
-### An Outlook-quoted sequence bump whose tracking pixel follows the quote is still read as a confirmed reply
-- **Severity:** high, source integrity (narrow case left after the HTML-only link fix of 2026-10-02)
-- **Where:** `opportunity_app/mail/message.py:456` `_without_quoted_markup()`
-- **What happens:** HTML-only mail now has its link hosts read from `href` and `src`, with the quoted email cut out first, so job-system and sales-sequence mail becomes a possible reply instead of a confirmed one. For Gmail quotes the cut removes only the `<blockquote>`. For Outlook it removes everything after the `divRplyFwdMsg`/`appendonsend` marker, so a pixel-only sales-sequence bump (step 2+, quoting step 1, with the tool's 1x1 open-tracking pixel appended after the quoted block) loses its pixel host and is still logged as a confirmed reply that moves the company to Replied.
-- **Suggested fix:** after the Outlook cut, still scan the trailing 1x1 `<img>` `src` hosts that follow the quoted block, or bound the cut to the quoted container the way the blockquote removal does.
-- **Regression suite:** tests/test_outreach_inbox.py (the HTML-only link-host tests)
 
 ### Application inbox: a "Last, First" From name empties the sender, so the email is skipped
 - **Severity:** medium, wrong state and missed mail (notes 25)
