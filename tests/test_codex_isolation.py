@@ -67,6 +67,7 @@ def assert_isolated(test, command, *, web):
     overrides = values_after(args, "-c")
     test.assertIn("mcp_servers={}", overrides)
     test.assertIn("shell_environment_policy.inherit=none", overrides)
+    test.assertIn("agents.enabled=false", overrides, "--disable multi_agent alone leaves spawn_agent for catalog models that select v1 or v2")
     test.assertEqual([item for item in overrides if item.startswith("web_search")], ["web_search=live" if web else "web_search=disabled"])
     off = set(values_after(args, "--disable"))
     test.assertTrue(ALWAYS_OFF <= off, f"not turned off: {sorted(ALWAYS_OFF - off)}")
@@ -436,12 +437,26 @@ class EveryNonResearchCodexCallRunsWithoutAnEnvironmentTests(unittest.TestCase):
             self.assertEqual((env or {}).get("CODEX_EXEC_SERVER_URL"), "none")
 
     def test_no_subagent_tool_is_left_to_switch_models(self):
-        """multi_agent is turned off in every call, so there is no spawn_agent for the model to start another model with
+        """multi_agent is turned off, and agents.enabled=false set, in every call, so there is no spawn_agent for the model to start another model with
         (confirmed by asking Codex 0.157.0 and 0.159.2 to list their tools), and a sub-agent would inherit the same environment."""
         self.assertIn("multi_agent", agent_providers.CODEX_OFF_FEATURES)
         self.assertIn("multi_agent", values_after(agent_providers.codex_command("codex"), "--disable"))
         self.assertIn("multi_agent", values_after(agent_providers.codex_command("codex", web_search=True), "--disable"))
 
+    def test_agents_are_switched_off_by_setting_too_because_the_feature_flag_does_not_reach_every_model(self):
+        """Config::multi_agent_version_for_model prefers the model catalog's multi_agent_version (v1 or v2: gpt-6*, gpt-6.1-sol,
+        gpt-5.6-*) unless agents.enabled=false, so --disable multi_agent leaves spawn_agent listed for those models."""
+        for web in (False, True):
+            with self.subTest(web=web):
+                self.assertIn("agents.enabled=false", values_after(agent_providers.codex_command("codex", web_search=web), "-c"))
+        command = agent_providers.codex_command("codex")
+        without = [item for index, item in enumerate(command)
+                   if item != "agents.enabled=false" and not (item == "-c" and command[index + 1] == "agents.enabled=false")]
+        self.assertNotIn("agents.enabled=false", without)
+        with self.assertRaises(agent_providers.CodexNotIsolated) as raised:
+            agent_providers.require_codex_isolation(without, env=NO_ENVIRONMENT)
+        self.assertIn("agents.enabled=false", str(raised.exception))
+        agent_providers.require_codex_isolation(command, env=NO_ENVIRONMENT)
 
 
 class AnOutputFileMustStayInsideTheCallsDirectoryTests(unittest.TestCase):

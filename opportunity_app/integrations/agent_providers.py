@@ -173,6 +173,10 @@ CLAUDE_NO_TOOLS = ["-p", "--output-format", "text", "--tools", "", "--strict-mcp
 #   -c mcp_servers={}                      no MCP server, whatever else configures one
 #   --sandbox read-only                    the second layer: nothing the model runs can write
 #   --disable shell_tool, unified_exec     no command-running tool
+#   -c agents.enabled=false                no spawn_agent for any model. --disable multi_agent alone is not enough: for a model
+#                                          whose catalog entry carries multi_agent_version v1 or v2 (gpt-6*, gpt-6.1-sol,
+#                                          gpt-5.6-*) Config::multi_agent_version_for_model prefers the catalog value unless
+#                                          agents.enabled=false (or MultiAgentV2 overrides it)
 #   --disable code_mode_host               "code mode" fails closed for the models whose catalog entry selects it
 #                                          (code_mode_only: the GPT-5.6 and GPT-6 families). It is what carries the web tool and
 #                                          the clock, and, for those models, apply_patch
@@ -183,7 +187,9 @@ CLAUDE_NO_TOOLS = ["-p", "--output-format", "text", "--tools", "", "--strict-mcp
 #   --ephemeral                            no session files are left in CODEX_HOME
 #   --strict-config, --disable <name>      an unknown setting or feature is an error, so a Codex that does not know one of
 #                                          these refuses to start rather than starting with a tool the app meant to turn off
-# Not closed: nothing the model can reach. multi_agent is off, so there is no spawn_agent to start another model with.
+# Not closed: nothing the model can reach. multi_agent is off and agents.enabled=false, so there is no spawn_agent to start
+# another model with (asked to list its tools, gpt-6.1-sol on 0.159.2 and gpt-6-sol on 0.157.0 named no spawn_agent, and both
+# versions accept the setting under --strict-config).
 # What still lists: request_user_input and multi_tool_use.parallel, which read no file (both versions, gpt-5.5).
 #
 # Why the environment and not a setting for apply_patch: in Codex 0.157.0 and 0.159.2 (core/src/tools/spec_plan.rs) the
@@ -205,7 +211,7 @@ _ENV_UNCHECKED = object()
 _CODEX_SWITCHES = ("--skip-git-repo-check", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--strict-config")
 # Values carry no quotes: a quote on argv does not survive a cmd.exe shim (codex.cmd), and Codex reads a value that is
 # not valid TOML as a plain string.
-_CODEX_OVERRIDES = ("mcp_servers={}", "shell_environment_policy.inherit=none")
+_CODEX_OVERRIDES = ("mcp_servers={}", "shell_environment_policy.inherit=none", "agents.enabled=false")
 _CODEX_WEB_SEARCH = "web_search="
 _CODEX_EFFORT = "model_reasoning_effort="
 # The student's .env opt-in for the one Codex call that carries a web tool (see codex_command). outreach.config re-exports it.
