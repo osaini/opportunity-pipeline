@@ -17,7 +17,7 @@ from helpers_platform import build_and_migrate
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
 from opportunity_app.core.database import connect_product
-from opportunity_app.document_artifacts import _render_pdf
+from opportunity_app.student.artifacts import _render_pdf
 from pypdf import PdfReader
 
 

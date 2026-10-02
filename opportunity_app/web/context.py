@@ -52,9 +52,9 @@ from ..outreach_render import default_renderer
 from ..outreach_research import web_researcher
 from ..outreach_settings import OutreachSettings
 from ..integrations.smtp_probe import default_verifier as default_smtp_verifier
-from ..preparation import DEFAULT_MOCK_AUDIO_STORAGE
+from ..student.preparation import DEFAULT_MOCK_AUDIO_STORAGE
 from ..refresh import RefreshManager
-from ..resumes import DEFAULT_STORAGE
+from ..student.resumes import DEFAULT_STORAGE
 from ..system_status import SystemStatus
 from ..integrations.typesafe_decisions import DecisionClient, build_client as build_typesafe_client
 from ..integrations.web_fetch import SafeFetcher, default_fetcher as default_contact_fetcher

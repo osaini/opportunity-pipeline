@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 
 from ..overrides import shared_router
 from ...actions import ApplicationNotFoundError
-from ...document_artifacts import backfill_approved_artifacts
+from ...student.artifacts import backfill_approved_artifacts
 from ...extension_apply import (
     ExtensionApplyError,
     ExtensionAuthError,
@@ -27,7 +27,7 @@ from ...extension_apply import (
     sync_session as sync_extension_session,
     sync_step as sync_extension_step,
 )
-from ...preparation import save_answer
+from ...student.preparation import save_answer
 from ...core.database import connect_product
 from ... import apply_classify
 from ..context import AppContext

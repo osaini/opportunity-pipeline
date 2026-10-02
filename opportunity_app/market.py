@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
-from .profile import get_profile
+from .student.profile import get_profile
 from .core.timestamps import utc_now
 
 

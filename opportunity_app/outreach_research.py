@@ -82,7 +82,7 @@ from .outreach import CALL_PREP_STATUSES, OutreachNotFoundError, log_event, get_
 from .outreach_agents import RUNNERS, Runner
 from .outreach_identity import company_key
 from .outreach_config import COMPANY_RESEARCH_ENV, RESEARCH_ENV, resolve_provider
-from .preparation import confirmed_facts
+from .student.preparation import confirmed_facts
 from .quote_check import SECTION_IDS, Judge, check_brief
 from .core.timestamps import parse_app_instant, utc_now
 from .integrations.web_fetch import SafeFetcher

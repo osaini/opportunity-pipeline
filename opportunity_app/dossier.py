@@ -11,7 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from .auth import hash_secret
-from .profile import is_answered
+from .student.profile import is_answered
 from .core.timestamps import utc_now
 
 

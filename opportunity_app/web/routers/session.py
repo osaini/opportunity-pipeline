@@ -25,7 +25,7 @@ from ...auth import (
     request_recovery,
     revoke_user_token,
 )
-from ...profile import get_profile
+from ...student.profile import get_profile
 from ...core.database import connect_product, is_postgres_target
 from ...core.schema import LOCAL_USER_ID
 from ...notifications import build_provider as build_notification_provider

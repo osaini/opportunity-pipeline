@@ -10,11 +10,11 @@ from typing import Any
 
 from pipeline_core.read_model import RULESET_VERSION
 
-from .core.json_values import json_dict
-from .legacy import score_job
-from .core.profile_store import read_stored_profile
-from .core.schema import LOCAL_USER_ID
-from .core.timestamps import utc_now
+from ..core.json_values import json_dict
+from ..legacy import score_job
+from ..core.profile_store import read_stored_profile
+from ..core.schema import LOCAL_USER_ID
+from ..core.timestamps import utc_now
 
 
 ALLOWED_PROFILE_FIELDS = {
@@ -341,7 +341,7 @@ def validate_profile_types(profile: dict[str, Any]) -> None:
             if not isinstance(value, str):
                 errors.append(f"{field} must be text")
             elif field in {"greeting_word", "unnamed_greeting"}:
-                from .outreach_greeting import greeting_style_error
+                from ..outreach_greeting import greeting_style_error
 
                 error = greeting_style_error(value if field == "greeting_word" else None, value if field == "unnamed_greeting" else None)
                 if error:

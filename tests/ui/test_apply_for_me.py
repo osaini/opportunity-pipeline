@@ -121,7 +121,7 @@ def test_the_profile_button_for_a_missing_name_lands_on_the_first_name_box(apply
 
 
 def test_the_profile_keeps_the_email_and_phone_an_application_is_filled_with(owner_page, live_server):
-    from opportunity_app.profile import update_profile
+    from opportunity_app.student.profile import update_profile
 
     with db(live_server) as conn:
         update_profile(conn, {"contact": {"linkedin": "https://example.test/in/sam"}}, ["contact"], user_id=USER)
@@ -154,7 +154,7 @@ def test_no_missing_answer_offers_use_for_any_company(apply_ready, owner_page):
 
 
 def test_two_saved_answers_that_disagree_offer_a_way_to_the_answer_library(apply_ready, owner_page, live_server):
-    from opportunity_app import preparation
+    from opportunity_app.student import preparation
 
     with db(live_server) as conn:
         for answer in ("Controls", "Perception"):

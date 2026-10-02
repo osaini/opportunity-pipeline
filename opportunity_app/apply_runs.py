@@ -1437,7 +1437,8 @@ def setup_requirement(conn: sqlite3.Connection, user_id: str) -> str:
     with no display), no first and last name for applications, no confirmed email, no confirmed résumé. The confirmation-email checks (D12)
     belong to a one-click submit, not to the switch.
     """
-    from . import apply_policy, preparation
+    from . import apply_policy
+    from .student import preparation
 
     if _AGENT_FACTORY is None:
         return NOT_HERE

@@ -3384,8 +3384,8 @@ process id (memory note restart-web-dashboard).
   - `opportunity_app/actions.py`: `ensure_application_tx`, factored out of `_record_intent_tx`;
   - `opportunity_app/extension_apply.py`: `confirmed_resume_file`, factored out of
     `artifact_path`;
-  - `opportunity_app/document_artifacts.py`: `content_sha256` and re-render on mismatch (M7);
-  - `opportunity_app/profile.py`: `name_parts` in `ALLOWED_PROFILE_FIELDS` and
+  - `opportunity_app/student/artifacts.py`: `content_sha256` and re-render on mismatch (M7);
+  - `opportunity_app/student/profile.py`: `name_parts` in `ALLOWED_PROFILE_FIELDS` and
     `validate_profile_types`;
   - `opportunity_app/application_inbox.py`: set `sender_verified` when recording a message;
   - the Gmail connect callback (with `outreach_gmail.py`): record `account_email`;

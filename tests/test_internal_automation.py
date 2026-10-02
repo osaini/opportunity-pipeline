@@ -17,17 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import (
-    STATIC_DIR,
-    auto_triage,
-    automation,
-    automation_handlers,
-    automation_health,
-    internal_automation,
-    migrate,
-    outreach_inbox,
-    resume_variants,
-)
+from opportunity_app import STATIC_DIR, auto_triage, automation, automation_handlers, automation_health, internal_automation, migrate, outreach_inbox
+from opportunity_app.student import resume_variants
 from opportunity_app.core import schema
 from opportunity_app.actions import record_intent, update_application
 from opportunity_app.api import create_app
@@ -40,7 +31,7 @@ from opportunity_app.outreach_automation import AutomationWorker
 from opportunity_app.outreach_delivery import record_bounce
 from opportunity_app.outreach_versions import draft_versions
 from opportunity_app.refresh import RefreshManager
-from opportunity_app.resumes import ResumeValidationError, confirm_variant, resume_record
+from opportunity_app.student.resumes import ResumeValidationError, confirm_variant, resume_record
 from opportunity_app.core.schema import ensure_product_schema
 from opportunity_app.core.database import connect_product, has_column
 from opportunity_app.core.timestamps import utc_now
@@ -436,7 +427,7 @@ class ResumePickTests(Case):
         self.on("resume_variant_pick")
         record_intent(self.conn, "job-a", "undo", user_id=USER)
         with mock.patch.object(resume_variants, "pick_variant", side_effect=RuntimeError("boom")), \
-                self.assertLogs("opportunity_app.resume_variants", level="ERROR"):
+                self.assertLogs("opportunity_app.student.resume_variants", level="ERROR"):
             response = record_intent(self.conn, "job-a", "saved", user_id=USER)
         self.assertFalse(response["unchanged"])
         self.assertEqual(self.intent("job-a"), "saved")

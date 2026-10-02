@@ -9,8 +9,8 @@ from fastapi import Depends, File, HTTPException, Response, UploadFile, status
 from fastapi.responses import FileResponse
 
 from ..overrides import shared_router
-from ... import resume_variants
-from ...resumes import (
+from ...student import resume_variants
+from ...student.resumes import (
     MAX_RESUME_BYTES,
     ResumeNotFoundError,
     ResumeValidationError,

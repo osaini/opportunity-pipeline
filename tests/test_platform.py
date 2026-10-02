@@ -26,7 +26,7 @@ from opportunity_app.api import create_app
 from opportunity_app.integrations.agent_providers import ProviderReply, ToolCall
 from opportunity_app.captures import parse_html_draft
 from opportunity_app.mail.connections import queue_notification
-from opportunity_app.profile import get_profile, update_profile
+from opportunity_app.student.profile import get_profile, update_profile
 from opportunity_app.core.schema import LOCAL_USER_ID
 from opportunity_app.legacy_sync import migrate_legacy_database
 from opportunity_app.core.database import connect_product, _postgres_schema, _postgres_sql
@@ -473,7 +473,7 @@ class PlatformTests(unittest.TestCase):
             self.assertEqual(grant["status"], "revoked")
 
     def test_agent_deadline_answers_exclude_deadlines_that_already_passed(self):
-        from opportunity_app import student_agent
+        from opportunity_app.student import agent as student_agent
 
         self.migrate_fixture()
         with closing(connect_product(self.platform_path)) as conn:

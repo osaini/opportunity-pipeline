@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from pipeline_core import OpportunityFilters, OpportunityRepository, capture_visible_sql
 
-from .actions import (
+from ..actions import (
     APPLICATION_STAGES,
     ApplicationNotFoundError,
     OpportunityNotFoundError,
@@ -22,11 +22,11 @@ from .actions import (
     record_intent,
     update_application,
 )
-from .integrations.agent_providers import AgentProvider, ToolCall, ToolDefinition, build_provider, configured_provider
+from ..integrations.agent_providers import AgentProvider, ToolCall, ToolDefinition, build_provider, configured_provider
 from .preparation import PreparationNotFoundError, create_document
 from .profile import get_profile
-from .core.timestamps import utc_now
-from .core.user_time import user_timezone
+from ..core.timestamps import utc_now
+from ..core.user_time import user_timezone
 
 
 class AgentNotFoundError(LookupError):

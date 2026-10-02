@@ -49,7 +49,7 @@ from .outreach_config import (
 from .outreach_linkedin import username_from
 from .outreach_gmail import attachment_path, attachment_problem
 from .outreach_review import review_choice
-from .resumes import DEFAULT_STORAGE, ResumeNotFoundError, list_resumes, resume_file_path
+from .student.resumes import DEFAULT_STORAGE, ResumeNotFoundError, list_resumes, resume_file_path
 
 # Writers that fall back to the first-email setting when left empty.
 FOLLOWING_DRAFTS = {"follow_up_provider": FOLLOW_UP_ENV, "call_prep_provider": CALL_PREP_ENV, "thank_you_provider": THANK_YOU_ENV}

@@ -119,7 +119,7 @@ from .outreach import OutreachNotFoundError, log_event, get_target
 from .outreach_greeting import contact_first_name, greeting_line, greeting_style, spoken_company
 from .outreach_forms import SUBMITTED_EVENT as FORM_SUBMITTED, UNCONFIRMED_EVENT as FORM_UNCONFIRMED
 from .outreach_replies import suggest_reply_status
-from .preparation import confirmed_facts
+from .student.preparation import confirmed_facts
 from .integrations.gmail_client import GmailAuthError, GmailThrottled
 from .outreach_decline_reading import plain_decline_problem, readings_words
 from .outreach_gmail import (

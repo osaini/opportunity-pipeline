@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import Depends, HTTPException, status
 
 from ..overrides import shared_router
-from ...student_agent import (
+from ...student.agent import (
     AgentNotFoundError,
     activity_feed,
     cancel_thread,

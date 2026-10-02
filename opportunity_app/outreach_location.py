@@ -174,7 +174,7 @@ def mentions_home(body: str, terms: list[str]) -> bool:
 
 
 def user_home(conn: sqlite3.Connection, user_id: str, regions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    from .preparation import confirmed_facts
+    from .student.preparation import confirmed_facts
 
     return student_home(confirmed_facts(conn, user_id), user_regions(conn, user_id) if regions is None else regions)
 
@@ -217,7 +217,7 @@ def user_regions(conn: sqlite3.Connection | None, user_id: str = LOCAL_USER_ID) 
     """
     if conn is None or user_id == LOCAL_USER_ID:
         return _profile_regions()
-    from .preparation import confirmed_facts
+    from .student.preparation import confirmed_facts
 
     regions = confirmed_facts(conn, user_id).get("regions") or []
     return [region for region in regions if isinstance(region, dict)] if isinstance(regions, list) else []

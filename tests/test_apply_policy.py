@@ -16,13 +16,14 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import actions, apply_checks, apply_classify, apply_policy, apply_preflight, apply_runs, preparation
+from opportunity_app import actions, apply_checks, apply_classify, apply_policy, apply_preflight, apply_runs
+from opportunity_app.student import preparation
 from opportunity_app.apply_checks import question_key
 from opportunity_app.apply_classify import classify_sensitive, context_dependent, needs_label_key, without_enumeration
 from opportunity_app.apply_greenhouse import identify
 from opportunity_app.apply_policy import SchemaField, Sources, build_plan, parse_schema, plan_hash, resume_for
 from opportunity_app.extension_apply import SENSITIVE_FIELD
-from opportunity_app.profile import update_profile
+from opportunity_app.student.profile import update_profile
 from opportunity_app.core.timestamps import utc_now
 
 from helpers_source import apply_modules

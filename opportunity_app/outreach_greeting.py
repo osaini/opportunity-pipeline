@@ -62,7 +62,7 @@ def greeting_style(conn: sqlite3.Connection | None, user_id: str = LOCAL_USER_ID
     if conn is None or user_id == LOCAL_USER_ID:
         source = owner_profile()
     else:
-        from .preparation import confirmed_facts
+        from .student.preparation import confirmed_facts
 
         source = confirmed_facts(conn, user_id)
     word = source.get("greeting_word")

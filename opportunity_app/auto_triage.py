@@ -190,7 +190,7 @@ def run_auto_triage(conn: sqlite3.Connection, *, user_id: str, now: datetime | N
         if row is not None and row.get("status") == "applied":
             report[choice].append({"opportunity_id": item["id"], "action_id": row["id"], "score": score})
             if choice == "saved":
-                from .resume_variants import safe_pick_after_save
+                from .student.resume_variants import safe_pick_after_save
 
                 # A role auto_save saved gets its résumé variant too, like one the student saved.
                 safe_pick_after_save(conn, user_id, item["id"])

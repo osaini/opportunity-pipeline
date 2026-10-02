@@ -24,7 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, student_agent, urgent
+from opportunity_app import STATIC_DIR, urgent
+from opportunity_app.student import agent as student_agent
 from opportunity_app.integrations.agent_providers import ToolCall
 from opportunity_app.api import create_app
 from opportunity_app.auth import issue_user_token

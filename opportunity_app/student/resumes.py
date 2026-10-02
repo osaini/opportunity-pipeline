@@ -14,10 +14,10 @@ from uuid import uuid4
 from xml.etree import ElementTree
 
 
-from . import ROOT
+from .. import ROOT
 from .profile import is_answered, update_profile
-from .core.storage_paths import confined_path
-from .core.timestamps import utc_now
+from ..core.storage_paths import confined_path
+from ..core.timestamps import utc_now
 
 
 DEFAULT_STORAGE = ROOT / "data" / "resumes"

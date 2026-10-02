@@ -110,7 +110,7 @@ from .outreach_drafting import (
     outreach_proof,
 )
 from .outreach_config import resolve_provider
-from .preparation import confirmed_facts
+from .student.preparation import confirmed_facts
 from .core.database import connect_product
 from .core.timestamps import utc_now
 

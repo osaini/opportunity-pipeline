@@ -24,7 +24,7 @@ from fastapi.testclient import TestClient
 from opportunity_app import STATIC_DIR, apply_runs, apply_schema_client, apply_sensitive, automation
 from opportunity_app.api import create_app
 from opportunity_app.apply_schema_client import GreenhouseSchemaClient, SchemaUnavailable
-from opportunity_app.profile import update_profile
+from opportunity_app.student.profile import update_profile
 from opportunity_app.core.database import connect_product
 from opportunity_app.core.timestamps import utc_now
 

@@ -26,7 +26,7 @@ from .outreach_greeting import DEFAULT_GREETING, greeting_line, greeting_style
 from .outreach_location import home_terms, location_usable, mentions_home, near_home, student_home, user_regions
 from .outreach_config import resolve_provider, sender_account
 from .outreach_versions import insert_version, keep_current_draft
-from .preparation import confirmed_facts
+from .student.preparation import confirmed_facts
 from .quote_check import word_tokens
 from .core.timestamps import utc_now
 

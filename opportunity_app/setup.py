@@ -361,7 +361,7 @@ def _validate_automation_settings(profile: dict[str, Any], errors: list[str], wa
 def _validate_apply_agent_settings(profile: dict[str, Any], errors: list[str], warnings: list[str]) -> None:
     """The per-student Apply for me settings: how the name is written on an application, and the limits."""
     from .apply_runs import DEFAULT_LIMITS, LIMIT_MAXIMUM
-    from .profile import name_parts_errors
+    from .student.profile import name_parts_errors
 
     parts = profile.get("name_parts")
     if parts is not None:
@@ -428,7 +428,7 @@ def validate_profile(profile: Any) -> dict[str, Any]:
         warnings.append("requires_sponsorship and work_authorized_us are both true; confirm with the student")
     _validate_automation_settings(profile, errors, warnings)
     _validate_apply_agent_settings(profile, errors, warnings)
-    from .profile import COMPLETENESS_FIELDS, is_answered
+    from .student.profile import COMPLETENESS_FIELDS, is_answered
 
     missing = [field for field in COMPLETENESS_FIELDS if not is_answered(profile.get(field))]
     return {"ok": not errors, "errors": errors, "warnings": warnings, "missing": missing}

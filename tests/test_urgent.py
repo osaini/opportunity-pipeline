@@ -27,7 +27,7 @@ from opportunity_app.outreach import local_today
 from opportunity_app.purge import purge_expired_opportunities
 from opportunity_app.core.schema import LOCAL_USER_ID
 from opportunity_app.core.database import connect_product
-from opportunity_app.student_agent import decide_proposal
+from opportunity_app.student.agent import decide_proposal
 from opportunity_app.core.user_time import SYSTEM_LOCAL, UserTimezone, user_timezone
 from pipeline_core import OpportunityFilters, OpportunityRepository
 from helpers_platform import build_and_migrate
@@ -668,7 +668,7 @@ class DeadlineApiTests(unittest.TestCase):
         self.assertEqual(bad.status_code, 422)
 
     def test_the_agent_reports_entered_deadlines_as_the_students_own(self):
-        from opportunity_app import student_agent
+        from opportunity_app.student import agent as student_agent
 
         with closing(connect_product(self.platform_path)) as conn:
             conn.execute("UPDATE opportunities SET deadline_at='2026-09-20T00:00:00+00:00' WHERE id='job-b'")

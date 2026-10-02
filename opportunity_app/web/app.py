@@ -25,8 +25,8 @@ from .. import DEFAULT_PLATFORM_DB, STATIC_DIR
 from .. import bootstrap
 from ..apply_runs import recover_stale as recover_stale_applications
 from ..captures import DEFAULT_CAPTURE_STORAGE
-from ..preparation import DEFAULT_MOCK_AUDIO_STORAGE
-from ..resumes import DEFAULT_STORAGE
+from ..student.preparation import DEFAULT_MOCK_AUDIO_STORAGE
+from ..student.resumes import DEFAULT_STORAGE
 from ..core.database import connect_product
 from ..core.schema import ensure_product_schema
 from .context import AppOptions, build_context

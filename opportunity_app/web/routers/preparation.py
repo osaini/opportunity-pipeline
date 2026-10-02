@@ -9,8 +9,8 @@ from fastapi import Depends, File, Form, HTTPException, Query, Response, UploadF
 from fastapi.responses import FileResponse
 
 from ..overrides import shared_router
-from ...document_artifacts import delete_document, delete_document_artifact, ensure_document_artifact
-from ...preparation import (
+from ...student.artifacts import delete_document, delete_document_artifact, ensure_document_artifact
+from ...student.preparation import (
     MAX_MOCK_AUDIO_BYTES,
     PreparationNotFoundError,
     answer_mock_question,

@@ -487,7 +487,7 @@ class PreflightTests(apply_helpers.PolicyCase):
 
     def test_a_reusable_row_saved_some_other_way_still_does_not_travel(self):
         (key,) = self.listing(("Do you have unrestricted work rights in the United States?", SINGLE, YES_NO))
-        from opportunity_app import preparation
+        from opportunity_app.student import preparation
         preparation.save_answer(self.conn, "Do you have unrestricted work rights in the United States?", "Yes", apply_helpers.BLUEFIN, ["reusable"], user_id=USER)
         other = self.role("gh-2", company=OTHER, job="4000000002")
         problems = {item["key"]: item for item in self.run_check(other)["problems"]}

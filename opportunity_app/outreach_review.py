@@ -40,7 +40,7 @@ from .outreach import get_target
 from .outreach_delivery import check_deliveries
 from .outreach_inbox import OnReply, capture_replies
 from .integrations.gmail_client import ClientFactory, GmailThrottled
-from .preparation import confirmed_facts
+from .student.preparation import confirmed_facts
 from .integrations.typesafe_decisions import DecisionClient
 
 REVIEW_TIMEOUT_SECONDS = 240

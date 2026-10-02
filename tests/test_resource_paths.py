@@ -37,7 +37,7 @@ class ResolvedPathTests(unittest.TestCase):
         self.assertEqual(ingestion.SOURCES_CONFIG, ROOT / "config" / "sources.json")
 
     def test_mock_interview_audio_stays_under_the_ignored_data_folder(self):
-        from opportunity_app import preparation
+        from opportunity_app.student import preparation
 
         self.assertEqual(preparation.DEFAULT_MOCK_AUDIO_STORAGE, ROOT / "data" / "private" / "mock-interviews")
 

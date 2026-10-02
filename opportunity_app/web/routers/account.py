@@ -9,7 +9,7 @@ from typing import Annotated, Any
 from fastapi import Depends, HTTPException, Header, Response, status
 
 from ..overrides import shared_router
-from ...profile import get_profile, update_profile
+from ...student.profile import get_profile, update_profile
 from ...operations import delete_account, export_account
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection

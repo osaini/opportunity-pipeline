@@ -60,7 +60,7 @@ from .send_claims import (
     settle_send_claim,
 )
 from .outreach_render import request_allowed
-from .preparation import confirmed_facts
+from .student.preparation import confirmed_facts
 from .core.timestamps import utc_now
 from .integrations.web_fetch import USER_AGENT, Resolver, close_browser, resolve_host, same_site, site_robots
 

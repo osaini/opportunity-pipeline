@@ -139,8 +139,8 @@ LEAVES: dict[str, tuple[set[str], set[str]]] = {
     # Split out of outreach.py. Replies is pure text rules; location and greeting read the student's profile (the owner's
     # file, or another user's confirmed facts through preparation, which is imported where used).
     "opportunity_app/outreach_replies.py": (set(), set()),
-    "opportunity_app/outreach_location.py": (dotted("legacy", "core.schema"), dotted("preparation")),
-    "opportunity_app/outreach_greeting.py": (dotted("outreach_identity", "outreach_location", "core.schema"), dotted("preparation")),
+    "opportunity_app/outreach_location.py": (dotted("legacy", "core.schema"), dotted("student.preparation")),
+    "opportunity_app/outreach_greeting.py": (dotted("outreach_identity", "outreach_location", "core.schema"), dotted("student.preparation")),
     # Split out of outreach_gmail.py. The claim ledger needs only the process id, the unique-violation test and the clock, so
     # the contact-form submitter and the thank-you recovery can hold claims without loading the Gmail REST client.
     "opportunity_app/send_claims.py": ({f"{PACKAGE}.SERVER_INSTANCE", *dotted("core.database", "core.timestamps")}, set()),
@@ -725,7 +725,7 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         self.assertFalse(hasattr(schema, "RULESET_VERSION") and schema.RULESET_VERSION is not RULESET_VERSION)
         # The migration_runs key is a different concept that happens to read the same today.
         self.assertEqual(legacy_sync.LEGACY_MIGRATION_KEY, "legacy-v1")
-        for relative in ("actions.py", "extension_apply.py", "profile.py"):
+        for relative in ("actions.py", "extension_apply.py", "student/profile.py"):
             with self.subTest(module=relative):
                 text = (ROOT / "opportunity_app" / relative).read_text(encoding="utf-8")
                 self.assertNotIn("legacy-v1", text)
@@ -766,7 +766,8 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
                     self.assertIsNone(confined_path(root, name))
 
     def test_each_store_still_raises_its_own_error_for_a_name_outside_its_folder(self):
-        from opportunity_app import captures, preparation, resumes
+        from opportunity_app import captures
+        from opportunity_app.student import preparation, resumes
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

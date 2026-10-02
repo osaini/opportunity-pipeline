@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from opportunity_app import ROOT
 from opportunity_app.captures import CaptureValidationError, _scan_image
-from opportunity_app.resumes import ResumeValidationError, extract_pdf, extract_pdf_links
+from opportunity_app.student.resumes import ResumeValidationError, extract_pdf, extract_pdf_links
 
 from helpers_platform import sample_docx  # noqa: F401  (installs the real-data guard for a single-module run)
 
@@ -31,7 +31,7 @@ def modules_after_importing(*names):
 
 class LazyImportTests(unittest.TestCase):
     def test_resumes_and_captures_import_without_pypdf_or_pillow(self):
-        self.assertEqual(modules_after_importing("opportunity_app.resumes", "opportunity_app.captures"), [])
+        self.assertEqual(modules_after_importing("opportunity_app.student.resumes", "opportunity_app.captures"), [])
 
     def test_the_api_imports_without_them_too(self):
         self.assertEqual(modules_after_importing("opportunity_app.api"), [])

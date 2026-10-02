@@ -9,7 +9,7 @@ from fastapi import Depends, HTTPException, Header, Query, Response, status
 
 from pipeline_core import MAX_PER_COMPANY, OpportunityFilters, OpportunityRepository
 from ..overrides import shared_router
-from ... import resume_variants
+from ...student import resume_variants
 from ...actions import OpportunityNotFoundError, record_intent
 from ...core.company_tags import CompanyNotFoundError, decorate_with_tags, set_company_tag, tag_facets_for_keys
 from ...urgent import (
@@ -20,7 +20,7 @@ from ...urgent import (
     user_deadlines_for,
     visible_opportunity,
 )
-from ...profile import is_personalized
+from ...student.profile import is_personalized
 from ...core.profile_store import read_stored_profile
 from ...integrations.typesafe_decisions import (
     TypeSafeError,

@@ -39,7 +39,8 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from pipeline_core.identity import employer_key, identity_tokens, normalized_text
 
-from . import apply_sensitive, preparation, resume_variants
+from . import apply_sensitive
+from .student import preparation, resume_variants
 from .apply_checks import ALTERNATE_TEXT_FIELDS, Problem, join, question_key
 from .apply_classify import (
     CATEGORY_TOPIC,
