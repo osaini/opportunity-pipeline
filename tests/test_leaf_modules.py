@@ -1156,7 +1156,7 @@ class WorkstreamBCliRunnerTests(unittest.TestCase):
         self.assertIs(result, done)
         run.assert_called_once_with(
             ["claude", "-p"], input="the prompt", capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=12.5, cwd="somewhere", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            timeout=12.5, cwd="somewhere", env=None, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
 
     def test_run_headless_lets_a_timeout_and_a_missing_binary_propagate(self):
@@ -1172,7 +1172,8 @@ class WorkstreamBCliRunnerTests(unittest.TestCase):
 
     def test_every_headless_call_uses_the_shared_no_tools_and_read_only_flags(self):
         self.assertEqual(agent_providers.CLAUDE_NO_TOOLS, ["-p", "--output-format", "text", "--tools", "", "--strict-mcp-config"])
-        self.assertEqual(agent_providers.CODEX_READ_ONLY, ["exec", "--skip-git-repo-check", "--sandbox", "read-only"])
+        # The Codex flags are written out and checked in tests/test_codex_isolation.py.
+        self.assertEqual(agent_providers.codex_command("codex")[:4], ["codex", "exec", "--sandbox", "read-only"])
         seen = []
 
         def fake(command, prompt, **kwargs):
@@ -1192,7 +1193,8 @@ class WorkstreamBCliRunnerTests(unittest.TestCase):
         claude = agent_providers.CliAgentProvider("claude-code", "m")
         codex = agent_providers.CliAgentProvider("codex-cli", "m")
         self.assertEqual(claude._command()[1:], agent_providers.CLAUDE_NO_TOOLS)
-        self.assertEqual(codex._command()[1:], [*agent_providers.CODEX_READ_ONLY, "-"])
+        codex.binary = "codex"
+        self.assertEqual(codex._command(), agent_providers.codex_command("codex"))
 
     def test_the_binary_name_and_availability_are_public(self):
         with mock.patch.dict("os.environ", {"PIPELINE_CODEX_BIN": "/opt/codex"}):

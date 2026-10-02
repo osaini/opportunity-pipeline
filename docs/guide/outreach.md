@@ -81,7 +81,8 @@ PIPELINE_OUTREACH_FOLLOW_UP_PROVIDER=      # optional follow-up writer; empty = 
 PIPELINE_OUTREACH_CALL_PREP_PROVIDER=      # optional call prep writer; empty = same as first emails
 PIPELINE_OUTREACH_THANK_YOU_PROVIDER=      # optional writer of the thank-you after a decline; empty = same as first emails
 PIPELINE_OUTREACH_REVIEW_PROVIDER=         # optional reviewer of follow-ups and thank-yous; empty = automatic
-PIPELINE_OUTREACH_DISCOVERY_PROVIDER=claude-code  # or codex-cli: deep search, locating, Find people
+PIPELINE_OUTREACH_DISCOVERY_PROVIDER=claude-code  # or codex-cli: deep search, locating, Find people (codex-cli needs the next line)
+PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX=    # 1 lets Codex read the web for those and for company research; blank = Claude Code does them
 PIPELINE_OUTREACH_COMPANY_RESEARCH_PROVIDER=      # optional company research agent; empty = same as above
 PIPELINE_OUTREACH_ATTACHMENT=data/outreach-attachments/resume.pdf  # attached to Gmail drafts
 PIPELINE_SEC_USER_AGENT="Your Name you@example.com"  # enables SEC Form D lookups

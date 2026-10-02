@@ -15,6 +15,20 @@ and tests/ui) and by every tests/test_*.py module, directly or through helpers_p
 single-module run (`python -m unittest tests.test_pipeline`) is covered too. tests/test_real_data_guard.py fails when a module
 is added without one of those imports. Installing twice is harmless.
 
+`sqlite3.connect` is not the only way into data/: the deep search's lock file, its reports, the logs and dated backups are plain
+files. The same install therefore adds one audit hook (sys.addaudithook, cheap: one dict lookup for every event it does not
+care about) that refuses every write there, before the call is made, with the same RealDataAccessError: an open that can
+create or change a file (write, append, create, truncate or read-write), mkdir, remove, rmdir, rename and os.truncate. A plain
+read is refused only for a database-like name (platform.db, its -wal/-shm files, platform.db.pre-0047-backup, *.sqlite), so a
+raw read_bytes() or a copy of a real database fails too, while the tracked files in data/ (the sample jobs CSV) stay readable.
+A path is compared both as spelled and with links resolved, so a data/ that is a symlink or junction is guarded either way. A test that needs a folder of reports points its code at a temp directory (patch
+discovery.REPORT_DIR and the like), as it already does for the database. An audit hook cannot be removed, so uninstall() only
+turns it off.
+
+The same install also gives the process an empty CODEX_HOME and no Codex model or effort variable (isolate_codex_config), so no
+test reads the developer's own ~/.codex/config.toml. It is here because every test module already imports this file one way or
+another, which is what makes it hold for a single-module `unittest` run too.
+
 The exception derives from BaseException on purpose: code under test that wraps a database open in `except Exception` or
 `except sqlite3.Error` to degrade gracefully must not be able to hide an open of the real file.
 
@@ -24,9 +38,13 @@ arguments.
 Nothing here is named test*, so pytest never collects it.
 """
 
+import atexit
 import os
 import re
+import shutil
 import sqlite3
+import sys
+import tempfile
 import urllib.parse
 from pathlib import Path
 
@@ -109,20 +127,144 @@ def is_real_data_path(database, *, uri=False, dirs=None):
     return False
 
 
+# Audit events that name a path, and which of their arguments are paths.
+_WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+_PATH_EVENTS = {"open": (0,), "os.mkdir": (0,), "os.remove": (0,), "os.rmdir": (0,), "os.rename": (0, 1), "os.truncate": (0,)}
+# Where each event carries the dir_fd a relative path is resolved against (shutil.rmtree on Linux and macOS removes a tree
+# that way: os.rmdir("data", dir_fd=<its parent>)), by the index of the path argument.
+_DIR_FD_ARGS = {"os.mkdir": {0: 2}, "os.remove": {0: 1}, "os.rmdir": {0: 1}, "os.rename": {0: 2, 1: 3}}
+# A read-only open of one of these names is refused too: a database, its journal files, or a dated backup of one.
+_DATABASE_NAME = re.compile(r"\.(?:db|sqlite3?)(?:$|[-.])", re.IGNORECASE)
+_audit = {"hooked": False, "on": False, "prefixes": ()}
+# Directories guarded in addition to the real ones, for this guard's own tests only (see guard_extra_dir).
+_extra_dirs = []
+
+
+def _inside_prefixes(value, prefixes):
+    """Whether a path argument of an audit event (a str, bytes or path object; a file descriptor or None names no path) is in one."""
+    if not isinstance(value, (str, bytes, os.PathLike)):
+        return False
+    try:
+        spelled = os.fsdecode(value)
+        texts = {os.path.normcase(os.path.abspath(spelled)), os.path.normcase(os.path.realpath(spelled))}
+    except (OSError, ValueError, TypeError):
+        return False
+    return any(text == prefix or text.startswith(prefix + os.sep) for text in texts for prefix in prefixes)
+
+
+def _prefixes(dirs):
+    spellings = (spelling for directory in dirs for spelling in (os.path.abspath(str(directory)), os.path.realpath(str(directory))))
+    return tuple(dict.fromkeys(os.path.normcase(spelling) for spelling in spellings))
+
+
+def _fd_directory(fd):
+    """The directory an open directory descriptor names, or None where this platform cannot say."""
+    try:
+        if sys.platform.startswith("linux"):
+            return os.readlink(f"/proc/self/fd/{fd}")
+        if sys.platform == "darwin":
+            import fcntl
+
+            return os.fsdecode(fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024)).rstrip(b"\0"))
+    except (OSError, ValueError, AttributeError):
+        pass
+    return None
+
+
+def _event_path(event, args, index):
+    """The path argument at `index`, joined to its dir_fd's directory when it is relative to one; None when it cannot be told."""
+    value = args[index]
+    fd_index = _DIR_FD_ARGS.get(event, {}).get(index)
+    fd = args[fd_index] if fd_index is not None and fd_index < len(args) else None
+    if not isinstance(fd, int) or not isinstance(value, (str, bytes, os.PathLike)):
+        return value
+    try:
+        text = os.fsdecode(value)
+    except (TypeError, ValueError):
+        return None
+    if os.path.isabs(text):
+        return text
+    directory = _fd_directory(fd)
+    return None if directory is None else os.path.join(directory, text)
+
+
+def _names_database(value):
+    if not isinstance(value, (str, bytes, os.PathLike)):
+        return False
+    try:
+        return bool(_DATABASE_NAME.search(os.path.basename(os.fsdecode(value))))
+    except (TypeError, ValueError):
+        return False
+
+
+def audit_refuses(event, args, dirs=None):
+    """Whether this audit event is a write to a file or folder inside a real data directory, or a read of a database there.
+
+    See the module docstring.
+    """
+    indexes = _PATH_EVENTS.get(event)
+    if indexes is None:
+        return False
+    if event == "open":  # (path, mode, flags): a read-only open is let through unless it names a database
+        path, mode, flags = (tuple(args) + (None, None, None))[:3]
+        writes = (isinstance(mode, str) and any(char in mode for char in "wax+")) or (isinstance(flags, int) and flags & _WRITE_FLAGS)
+        if not writes and not _names_database(path):
+            return False
+    prefixes = _audit["prefixes"] if dirs is None else _prefixes(dirs)
+    return any(index < len(args) and _inside_prefixes(_event_path(event, args, index), prefixes) for index in indexes)
+
+
+def _audit_hook(event, args):
+    if _audit["on"] and audit_refuses(event, args):
+        raise RealDataAccessError(
+            f"a test tried to use a file in a real data directory ({event} {args[0]!r}); AGENTS.md hard rule 1. Point the code "
+            "under test at a temp directory (patch discovery.REPORT_DIR and the like) and never at data/."
+        )
+
+
+def _install_audit_hook(dirs):
+    _audit["prefixes"] = _prefixes(dirs)
+    _audit["on"] = True
+    if not _audit["hooked"]:
+        _audit["hooked"] = True
+        sys.addaudithook(_audit_hook)
+
+
 _GUARD_NAME = "guarded_connect"
+_CODEX_ENV = {"PIPELINE_CODEX_MODEL": "", "PIPELINE_CODEX_REASONING_EFFORT": ""}
+_codex_home = None
+
+
+def isolate_codex_config():
+    """Point CODEX_HOME at an empty temp directory and clear the two Codex setting variables, for the whole process.
+
+    codex_model_settings() reads the student's model and reasoning effort from PIPELINE_CODEX_MODEL and
+    PIPELINE_CODEX_REASONING_EFFORT, and otherwise from $CODEX_HOME/config.toml (~/.codex/config.toml by default). A test that
+    builds a Codex command would then pick up the developer's own model, and its expected argv would differ from machine to
+    machine. With an empty CODEX_HOME there is no file to read, so a test sets the variables itself when it wants a model.
+    A test that does so with mock.patch.dict restores these values, not the developer's. Idempotent.
+    """
+    global _codex_home
+    if _codex_home is None:
+        _codex_home = tempfile.mkdtemp(prefix="codex-home-for-tests-")
+        atexit.register(shutil.rmtree, _codex_home, ignore_errors=True)
+    os.environ["CODEX_HOME"] = _codex_home
+    os.environ.update(_CODEX_ENV)
 
 
 def install():
-    """Wrap sqlite3.connect once for this process. Idempotent."""
+    """Wrap sqlite3.connect and add the file audit hook once for this process, and isolate the Codex settings. Idempotent."""
+    isolate_codex_config()
+    dirs = real_data_dirs()
+    _install_audit_hook(dirs)
     if getattr(sqlite3.connect, "__name__", "") == _GUARD_NAME:
         return
-    dirs = real_data_dirs()
     real_connect = sqlite3.connect
 
     def guarded_connect(database=None, *args, **kwargs):
         # `uri` is the eighth positional parameter of the old signature and keyword-only after that.
         uri = kwargs.get("uri", args[6] if len(args) > 6 else False)
-        if database is not None and is_real_data_path(database, uri=bool(uri), dirs=dirs):
+        if database is not None and is_real_data_path(database, uri=bool(uri), dirs=(*dirs, *_extra_dirs)):
             raise RealDataAccessError(
                 f"a test tried to open a real data file ({database!r}); AGENTS.md hard rule 1. Point it at a temp copy "
                 "(tests/helpers_platform.build_and_migrate, or patch pipeline_core.paths.DB_PATH) and never at data/*.db."
@@ -134,8 +276,36 @@ def install():
     sqlite3.connect = guarded_connect
 
 
+def guard_extra_dir(directory, *, audit=True):
+    """Guard `directory` as if it were a real data directory, and return the function that stops guarding it again.
+
+    For this guard's own tests: they must prove that opening a file under a guarded data/ is refused without ever making a
+    filesystem call into the real data/. They create a temp directory (before this call: the audit hook refuses a mkdir inside
+    it afterwards), guard that one and probe inside it. The real directories stay guarded.
+
+    The sqlite wrapper always guards it. With `audit=True` (the default) the audit hook does too, so a write or mkdir there is
+    refused, an mkdir of the directory itself included even when it exists. A test that needs code to get past its own
+    `path.parent.mkdir(parents=True, exist_ok=True)` to reach the sqlite wrapper passes `audit=False`. Call the returned
+    function before removing the directory, or an audited directory's removal is refused.
+    """
+    resolved = Path(directory).resolve()
+    prefix = os.path.normcase(os.path.abspath(str(resolved)))
+    _extra_dirs.append(resolved)
+    before = _audit["prefixes"]
+    if audit:
+        _audit["prefixes"] = tuple(dict.fromkeys((*before, prefix)))
+
+    def stop():
+        if resolved in _extra_dirs:
+            _extra_dirs.remove(resolved)
+        _audit["prefixes"] = tuple(item for item in _audit["prefixes"] if item != prefix or item in before)
+
+    return stop
+
+
 def uninstall():
-    """Restore sqlite3.connect (used only by this guard's own tests)."""
+    """Restore sqlite3.connect and turn the audit hook off (used only by this guard's own tests)."""
+    _audit["on"] = False
     current = sqlite3.connect
     if getattr(current, "__name__", "") == _GUARD_NAME:
         sqlite3.connect = current.__wrapped__

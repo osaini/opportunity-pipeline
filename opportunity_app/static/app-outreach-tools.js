@@ -90,9 +90,16 @@
           return;
         }
         const result = discovery.active?.result;
+        // Claude Code ran in place of the Codex the student chose: the finished search says so, from its result or, only when
+        // the newest stored run is this search's own (it started after this search did), from that run. A search that failed
+        // before its run was stored (another search held the lock, say) must not borrow an older run's note.
+        const latestRun = discovery.runs?.[0];
+        const startedAt = Date.parse(discovery.active?.started_at || "");
+        const ownRun = latestRun && Number.isFinite(startedAt) && Date.parse(latestRun.started_at || "") >= startedAt - 1000;
+        const note = result?.agent_note || (ownRun ? latestRun.agent_note : "") || "";
         announce(discovery.active?.state === "failed"
-          ? `The deep search failed: ${discovery.active.error}`
-          : `Deep search finished${result ? `: ${plural(result.imported, "new company", "new companies")} added` : ""}.`);
+          ? `The deep search failed: ${discovery.active.error}${note ? ` ${note}` : ""}`
+          : `Deep search finished${result ? `: ${plural(result.imported, "new company", "new companies")} added` : ""}.${note ? ` ${note}` : ""}`);
         // Watching the search: show what it found rather than the finished panel.
         if (result?.imported && state.subtabs.outreach === "deep-search") state.subtabs.outreach = "from-search";
         if (!state.loading) await loadOutreach();
@@ -126,6 +133,8 @@
         chip(`${latest.rejected.length} rejected`, latest.rejected.length ? "is-soon" : "")
       );
       body.appendChild(facts);
+      // Stored with the run, so a search the scheduled task ran shows it too: Claude Code ran instead of the Codex chosen.
+      if (latest.agent_note) body.appendChild(element("p", "outreach-note outreach-agent-note", latest.agent_note));
       if (latest.error) body.appendChild(element("p", "form-error", latest.error));
       if (latest.rejected.length) {
         const rejected = element("details", "outreach-rejected");
@@ -197,7 +206,7 @@
         }
         if (active?.state === "failed") announce(`The contact search failed: ${active.error}`);
         else if (active?.mode === "apply") announce(`Updated ${plural(active.result?.upgraded || 0, "contact", "contacts")}.`);
-        else announce(`Contact search finished: ${plural(active?.result?.upgraded || 0, "person", "people")} found.`);
+        else announce(`Contact search finished: ${plural(active?.result?.upgraded || 0, "person", "people")} found.${active?.result?.agent_note ? ` ${active.result.agent_note}` : ""}`);
         if (!state.loading) await loadOutreach();
       } catch (error) {
         if (state.sessionEpoch === epoch) showError(error.message);
@@ -464,7 +473,8 @@
     }
 
     function providerOption(option, current) {
-      return optionElement(option.id, option.available ? option.label : `${option.label} (not set up)`, option.id === current);
+      // An unavailable option says why when the server knows (Codex is installed but lacks the .env opt-in), else "not set up".
+      return optionElement(option.id, option.available ? option.label : `${option.label} (${option.reason || "not set up"})`, option.id === current);
     }
 
     const drafts = settings.draft_provider;
@@ -548,14 +558,31 @@
     const [researchField, researchSelect] = selectField("settings-research-agent", "Who does the web research",
       "Used by the deep search, placing companies, Find people, and searching other sites for addresses. It runs the CLI signed in on this computer.");
     research.options.forEach((option) => researchSelect.appendChild(providerOption(option, research.value)));
-    researchSelect.addEventListener("change", () => save({ research_agent: researchSelect.value }, "Research agent"));
+    // An agent that is installed but not allowed to read the web (Codex without its .env opt-in) says why.
+    const researchHint = element("p", "profile-help");
+    const showResearchHint = (hintElement, agent, select) => {
+      const chosen = agent.options.find((option) => option.id === select.value);
+      hintElement.textContent = chosen && !chosen.available ? chosen.hint : "";
+    };
+    showResearchHint(researchHint, research, researchSelect);
+    researchField.appendChild(researchHint);
+    researchSelect.addEventListener("change", () => {
+      showResearchHint(researchHint, research, researchSelect);
+      save({ research_agent: researchSelect.value }, "Research agent");
+    });
 
     const companyResearch = settings.company_research_agent;
     const [companyResearchField, companyResearchSelect] = selectField("settings-company-research-agent", "Who researches a company for call prep",
       "Reads a company's site, job posts, patents, papers, and news for what they build and how; a fact is kept only when its quote is found on the page it cites. Runs when a company replies, or when you press Research this company.");
     companyResearchSelect.appendChild(optionElement("", "Same as the web research above", !companyResearch.value));
     companyResearch.options.forEach((option) => companyResearchSelect.appendChild(providerOption(option, companyResearch.value)));
-    companyResearchSelect.addEventListener("change", () => save({ company_research_agent: companyResearchSelect.value }, "Company research agent"));
+    const companyResearchHint = element("p", "profile-help");
+    showResearchHint(companyResearchHint, companyResearch, companyResearchSelect);
+    companyResearchField.appendChild(companyResearchHint);
+    companyResearchSelect.addEventListener("change", () => {
+      showResearchHint(companyResearchHint, companyResearch, companyResearchSelect);
+      save({ company_research_agent: companyResearchSelect.value }, "Company research agent");
+    });
 
     // The one LinkedIn account call prep may read interviewers' profiles as.
     const linkedinField = element("div", "settings-field");
@@ -608,6 +635,8 @@
     const found = result.results.filter((entry) => entry.to);
     const missed = result.results.filter((entry) => !entry.to);
     wrap.appendChild(element("p", "", `Checked ${plural(result.checked, "company", "companies")}; found a person at ${plural(found.length, "company", "companies")}.`));
+    // Claude Code ran the email search in place of the Codex the student chose.
+    if (result.agent_note) wrap.appendChild(element("p", "outreach-note outreach-agent-note", result.agent_note));
     if (found.length) {
       const form = element("fieldset", "outreach-recontact-list");
       form.appendChild(element("legend", "", "Tick the contacts to use"));

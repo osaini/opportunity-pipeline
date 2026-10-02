@@ -1,6 +1,6 @@
 # Known defects
 
-This file lists defects found during the 2026-09/10 refactor audit and its phase reviews. Each one was checked against the code at `be33c50` (main after PR #64). On 2026-10-02, after the package move (PRs #65 and #66), every path and line below was re-pointed at the current tree, and each cited line was opened to confirm it still holds the code the entry names. The move changed no behaviour, so the entries still describe what the code does. None of the entries below is fixed. The owner approved fixing the six serious bugs first, and PR #60 fixed those: the email-draft number check, the student-agent CLI chat sandbox, Gmail label tables missed by account erase and export, asset versioning outside `static_dir`, pollers that kept running after sign-out, and an extension scan that carried over to another application. Two entries below (the Codex sandbox and the labelling worker) were found in review of those fixes and left for the owner to decide. The owner then approved fixing this file's six high-severity entries; they were fixed on 2026-10-02 and removed, and two narrower high-severity gaps those fixes left are listed in their place.
+This file lists defects found during the 2026-09/10 refactor audit and its phase reviews. Each one was checked against the code at `be33c50` (main after PR #64). On 2026-10-02, after the package move (PRs #65 and #66), every path and line below was re-pointed at the current tree, and each cited line was opened to confirm it still holds the code the entry names. The move changed no behaviour, so the entries still describe what the code does. None of the entries below is fixed. The owner approved fixing the six serious bugs first, and PR #60 fixed those: the email-draft number check, the student-agent CLI chat sandbox, Gmail label tables missed by account erase and export, asset versioning outside `static_dir`, pollers that kept running after sign-out, and an extension scan that carried over to another application. One entry below (the labelling worker) was found in review of those fixes and left for the owner to decide. The other one found there, the Codex sandbox, was fixed on 2026-10-02 and removed; the narrower gap it left is listed in its place. The owner then approved fixing this file's six high-severity entries; they were fixed on 2026-10-02 and removed, and one narrower high-severity gap those fixes left is listed in their place.
 
 Severity rules:
 
@@ -18,28 +18,27 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Mail, Gmail and inboxes | 1 | 4 | 6 | 11 |
+| Mail, Gmail and inboxes | 0 | 4 | 6 | 10 |
 | Outreach drafting, research, forms and CLI | 0 | 4 | 2 | 6 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
 | Web API, auth and storage | 0 | 4 | 1 | 5 |
 | Scoring, scheduling and configuration | 1 | 1 | 4 | 6 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 3 | 3 |
-| **Total** | **2** | **22** | **21** | **45** |
+| **Total** | **1** | **22** | **21** | **44** |
 
 ## Start here: the high-severity entries
 
 The audit's six high-severity defects were fixed on 2026-10-02 (branch `osaini/fix-high-defects`): the Outreach page's
 send wording, HTML-only job and sequence mail counted as replies, unsupported numbers in decline thank-yous, numbers
-run into a lowercase word in drafts, the student's own greeting word, and the repost FLAG on profile save. Two narrower
-high-severity gaps remain:
+run into a lowercase word in drafts, the student's own greeting word, and the repost FLAG on profile save. The gap that
+listed an Outlook-quoted sequence bump with a trailing tracking pixel as a confirmed reply no longer exists: the
+sales-tool check reads every link, quoted ones included (`all_link_hosts`). One narrower high-severity gap remains:
 
-- [An Outlook-quoted sequence bump whose tracking pixel follows the quote is still read as a confirmed reply](#an-outlook-quoted-sequence-bump-whose-tracking-pixel-follows-the-quote-is-still-read-as-a-confirmed-reply)
 - [The repost FLAG disappears the day after the daily purge removes the retired twin](#the-repost-flag-disappears-the-day-after-the-daily-purge-removes-the-retired-twin)
 
-The two entries flagged for an owner decision are
-[the Codex sandbox](#codex-cli-calls-rely-on---sandbox-read-only-which-does-not-turn-off-codexs-own-tools-or-the-users-mcp-servers)
-and [the labelling worker](#the-gmail-labelling-worker-can-write-label-rows-for-an-account-that-was-just-deleted).
+The entry flagged for an owner decision is
+[the labelling worker](#the-gmail-labelling-worker-can-write-label-rows-for-an-account-that-was-just-deleted).
 
 ---
 
@@ -111,13 +110,6 @@ and [the labelling worker](#the-gmail-labelling-worker-can-write-label-rows-for-
 - **Regression suite:** `node tests/extension/run_tests.mjs` (a permissions stub that rejects without a gesture, plus a stored pending queue); confirm once in real Chrome
 
 ## Mail, Gmail and inboxes
-
-### An Outlook-quoted sequence bump whose tracking pixel follows the quote is still read as a confirmed reply
-- **Severity:** high, source integrity (narrow case left after the HTML-only link fix of 2026-10-02)
-- **Where:** `opportunity_app/mail/message.py:456` `_without_quoted_markup()`
-- **What happens:** HTML-only mail now has its link hosts read from `href` and `src`, with the quoted email cut out first, so job-system and sales-sequence mail becomes a possible reply instead of a confirmed one. For Gmail quotes the cut removes only the `<blockquote>`. For Outlook it removes everything after the `divRplyFwdMsg`/`appendonsend` marker, so a pixel-only sales-sequence bump (step 2+, quoting step 1, with the tool's 1x1 open-tracking pixel appended after the quoted block) loses its pixel host and is still logged as a confirmed reply that moves the company to Replied.
-- **Suggested fix:** after the Outlook cut, still scan the trailing 1x1 `<img>` `src` hosts that follow the quoted block, or bound the cut to the quoted container the way the blockquote removal does.
-- **Regression suite:** tests/test_outreach_inbox.py (the HTML-only link-host tests)
 
 ### Application inbox: a "Last, First" From name empties the sender, so the email is skipped
 - **Severity:** medium, wrong state and missed mail (notes 25)
@@ -235,12 +227,12 @@ and [the labelling worker](#the-gmail-labelling-worker-can-write-label-rows-for-
 
 ## Agents and notifications
 
-### Codex CLI calls rely on --sandbox read-only, which does not turn off Codex's own tools or the user's MCP servers
-- **Severity:** medium, privacy; flagged for an owner decision (notes 180)
-- **Where:** `opportunity_app/integrations/agent_providers.py:163` `CODEX_READ_ONLY`, used in `CliAgentProvider._command()` `:472`; `opportunity_app/outreach/review.py:155`
-- **What happens:** The Claude path runs with no tools (`--tools "" --strict-mcp-config`). The Codex path keeps its shell tool, which can read any file the user can, such as `.env`, `data/platform.db` and `~/.ssh`. MCP servers from `~/.codex/config.toml` run outside the sandbox. Chat history, fetched pages and drafts are attacker-influenced and can steer it. The docstring overstates the isolation.
-- **Suggested fix:** Override the user config per call (`-c mcp_servers={}`, turn off shell and web search, or use an empty `CODEX_HOME`), and keep the sandbox as a second layer. Otherwise record the owner's acceptance and fix the docstring.
-- **Regression suite:** tests/ unittest (argv contract test for the Codex command, like the existing CLAUDE_NO_TOOLS checks)
+### Codex web research, once the student opts in, still reaches apply_patch through code mode
+- **Severity:** medium, privacy (only with the opt-in: it is reachable only when `PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX` is set; found fixing the Codex sandbox entry)
+- **Where:** `opportunity_app/outreach/agents.py` `codex_runner`; `opportunity_app/integrations/agent_providers.py` `codex_command(web_search=True)`
+- **What happens:** Codex's web tool is carried by code mode (`--disable code_mode_host` removes it), and code mode also exposes `apply_patch`. With `PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX=1` the research call keeps code mode on, so a page the agent reads could steer it into patch attempts. The read-only sandbox blocks the write, but the failure message tells the model whether the patch's context lines matched a local file, a one-bit-per-try test of file contents. Shell, MCP servers, plugins and file writes stay off, and without the opt-in the call is refused. Every Codex call that carries no web search runs with code mode off and no environment (`CODEX_EXEC_SERVER_URL=none` on the process, set by `run_headless`), which is what keeps `apply_patch` away from models such as gpt-5.5 whose catalog entry lists it as a direct tool whatever `code_mode_host` says (Codex 0.157.0 and 0.159.2: asked to list its tools, the model named only `request_user_input` and `multi_tool_use.parallel`). `multi_agent` and `multi_agent_v2` are off and `agents.enabled=false` is set in every call, so there is no `spawn_agent` and no sub-agent to switch models (`--disable multi_agent` alone leaves `spawn_agent` listed for models whose catalog entry carries `multi_agent_version` v1 or v2, such as gpt-6.1-sol; asked to list its tools with both settings, gpt-6.1-sol on 0.159.2 and gpt-6-sol on 0.157.0 named no `spawn_agent`; `agents.enabled=false` alone does not close it either, because Codex's `multi_agent_version_override` returns v2 when the `multi_agent_v2` feature is on before it checks `agents.enabled`, so `--disable multi_agent_v2` is passed too and accepted under `--strict-config` in both versions). Not tried: whether the research call could keep its web tool with the empty environment too; if it can, the opt-in path can go.
+- **Suggested fix:** Drop the opt-in path when a Codex release lets web search run without code mode (`standalone_web_search` is still under development in 0.159.2), or when the research call is shown to keep its web tool with no environment (untested); until then the opt-in is the owner's acceptance.
+- **Regression suite:** tests/ unittest (`test_codex_isolation`: the web command is the only one with web search and code mode on, and it is refused without the opt-in)
 
 ### Desktop pop-ups skip waiting notices after a same-value re-save of the switch
 - **Severity:** low (notes 76)

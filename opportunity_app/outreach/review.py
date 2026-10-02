@@ -35,7 +35,7 @@ import httpx
 from ..integrations import agent_providers
 from .agents import Runner
 from .config import REVIEW_ENV, resolve_provider
-from ..integrations.agent_providers import CLAUDE_NO_TOOLS, CODEX_READ_ONLY, cli_binary, failure_detail, run_headless
+from ..integrations.agent_providers import CLAUDE_NO_TOOLS, cli_binary, codex_command, codex_failure_detail, failure_detail, run_headless
 from .targets import get_target
 from .delivery import check_deliveries
 from .inbox import OnReply, capture_replies
@@ -110,6 +110,14 @@ AUTOMATIC_ORDER = ("codex-cli", "claude-code", "openai", "anthropic")
 
 
 def review_choice(purpose: str = "follow_up") -> tuple[str, str]:
+    """The provider that reviews an automatic email, and a note: a compromise, or a Codex setting that was left out."""
+    provider, note = _review_choice(purpose)
+    if provider == "codex-cli":
+        note = "; ".join(part for part in (note, *agent_providers.codex_setting_notes()) if part)
+    return provider, note
+
+
+def _review_choice(purpose: str) -> tuple[str, str]:
     """The provider that reviews an automatic email, and a note when it is a compromise.
 
     The student's pick when it is set up; otherwise a set-up provider from a
@@ -151,13 +159,13 @@ def review_runner(purpose: str = "follow_up") -> tuple[str, Runner]:
         with tempfile.TemporaryDirectory(prefix="outreach-review-") as workdir:
             answer = Path(workdir) / "answer.txt"
             if provider == "codex-cli":
-                # Read-only sandbox, and the final message alone from its own file.
-                command = [cli_binary("codex-cli"), *CODEX_READ_ONLY, "--output-last-message", str(answer), "-"]
+                # No tools, MCP servers or web, and the final message alone from its own file.
+                command = codex_command(cli_binary("codex-cli"), extra=("--output-last-message", str(answer)))
             else:
                 command = [cli_binary("claude-code"), *CLAUDE_NO_TOOLS]
             completed = run_headless(command, prompt, timeout=REVIEW_TIMEOUT_SECONDS, cwd=workdir)
             if completed.returncode != 0:
-                detail = failure_detail(completed)
+                detail = (codex_failure_detail if provider == "codex-cli" else failure_detail)(completed)
                 raise RuntimeError(f"{provider} exited {completed.returncode}: {detail[-300:] or 'no output'}")
             return answer.read_text(encoding="utf-8") if answer.exists() else completed.stdout
 

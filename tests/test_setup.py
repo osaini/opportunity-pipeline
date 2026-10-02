@@ -53,6 +53,45 @@ class SetupTests(unittest.TestCase):
         with closing(sqlite3.connect(self.paths.platform_db)) as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM users WHERE id='local-user'").fetchone()[0], 1)
 
+    def test_init_warns_when_only_codex_is_installed_and_the_web_opt_in_is_not_set(self):
+        with mock.patch.object(setup, "detect_agent_cli", return_value="codex-cli"):
+            report = setup.init(self.paths)
+        self.assertTrue(any("PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX" in warning for warning in report["warnings"]), report["warnings"])
+        setup.set_env_values(self.paths.env, {"PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX": "1"}, overwrite=True)
+        with mock.patch.object(setup, "detect_agent_cli", return_value="codex-cli"):
+            self.assertFalse(any("ALLOW_CODEX" in warning for warning in setup.init(self.paths)["warnings"]))
+        with mock.patch.object(setup, "detect_agent_cli", return_value="claude-code"):
+            setup.set_env_values(self.paths.env, {"PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX": ""}, overwrite=True)
+            self.assertFalse(any("ALLOW_CODEX" in warning for warning in setup.init(self.paths)["warnings"]))
+
+    def test_init_warns_for_a_value_that_is_not_an_opt_in_the_way_the_app_reads_it(self):
+        """Any non-empty value used to silence the warning, yet the app opts in only for 1, true, yes or on: '0' is not one."""
+        for value, warns in (("0", True), ("no", True), ("off", True), ("false", True), ("1", False), ("true", False), ("YES", False), ("on", False)):
+            with self.subTest(value=value):
+                setup.set_env_values(self.paths.env, {"PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX": value}, overwrite=True)
+                with mock.patch.object(setup, "detect_agent_cli", return_value="codex-cli"):
+                    report = setup.init(self.paths)
+                self.assertEqual(any("ALLOW_CODEX" in warning for warning in report["warnings"]), warns, report["warnings"])
+
+    def test_init_records_claude_code_for_research_when_both_agents_are_installed(self):
+        """Claude Code can be limited to web search and Codex cannot, so Codex is only recorded when it is the only one."""
+        both = {"claude": True, "codex": True}
+        for installed, recorded, warns in (
+            (both, "claude-code", False), ({"claude": False, "codex": True}, "codex-cli", True), ({"claude": False, "codex": False}, None, False),
+        ):
+            with self.subTest(installed=installed):
+                tidy = Path(tempfile.mkdtemp())
+                self.addCleanup(shutil.rmtree, tidy, True)
+                (tidy / "config").mkdir()
+                for name in (".env.example", "config/profile.example.json", "config/sources.json"):
+                    shutil.copyfile(REPO / name, tidy / name)
+                paths = setup.Paths(tidy)
+                with mock.patch.object(setup, "cli_available", lambda binary: installed["claude" if "claude" in binary.lower() else "codex"]),                         mock.patch.dict("os.environ", {"PIPELINE_CLAUDE_BIN": "", "PIPELINE_CODEX_BIN": ""}):
+                    report = setup.init(paths)
+                self.assertEqual(report["agent_cli"], recorded)
+                self.assertEqual(setup.read_env(paths.env).get("PIPELINE_OUTREACH_DISCOVERY_PROVIDER", "") or None, recorded)
+                self.assertEqual(any("PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX" in warning for warning in report["warnings"]), warns)
+
     def test_init_is_idempotent_and_never_overwrites_what_the_student_set(self):
         setup.init(self.paths)
         first = setup.read_env(self.paths.env)

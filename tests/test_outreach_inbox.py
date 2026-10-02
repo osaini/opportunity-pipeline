@@ -886,6 +886,88 @@ class ReplyCaptureTests(ReplyCaptureFixture, unittest.TestCase):
     )
     ATS_LINK = '<p>Unfortunately we will not move forward.</p><p><a href="https://boards.greenhouse.io/bovi/jobs/1">View</a></p>'
 
+    # Outlook and OWA quote the original under divRplyFwdMsg/appendonsend with no <blockquote>; a sequence tool's
+    # pixel is appended after the quoted block, where the job-system check (which cuts everything after the marker)
+    # never looks. Only the sales-tool check, which reads every link, can see it.
+    OUTLOOK_BUMP_PIXEL = (
+        '<div>Hi Sam, just bumping this to the top of your inbox.</div>'
+        '<div id="appendonsend"></div><hr style="display:inline-block;width:98%" tabindex="-1">'
+        '<div id="divRplyFwdMsg" dir="ltr"><font face="Calibri"><b>From:</b> Sam Lee &lt;sam@school.example&gt;<br>'
+        '<b>Sent:</b> Monday, September 22, 2026 9:00 AM<br><b>Subject:</b> Quick question</font><div>&nbsp;</div></div>'
+        '<div>Would a quick call work? <a href="https://boards.greenhouse.io/bovi/jobs/1">role</a></div>'
+        '<img src="https://t.hubspotemail.net/e2t/to/abc" width="1" height="1">'
+    )
+    OUTLOOK_GENUINE_REPLY = (
+        '<div>Happy to chat Tuesday.</div>'
+        '<div id="appendonsend"></div><hr style="display:inline-block;width:98%" tabindex="-1">'
+        '<div id="divRplyFwdMsg" dir="ltr"><font face="Calibri"><b>From:</b> Sam Lee &lt;sam@school.example&gt;<br>'
+        '<b>Sent:</b> Monday, September 22, 2026 9:00 AM<br><b>Subject:</b> Quick question</font><div>&nbsp;</div></div>'
+        '<div>Would a quick call work? <a href="https://boards.greenhouse.io/bovi/jobs/1">role</a> '
+        '<a href="https://t.hubspotlinks.com/Ctc/abc">book</a></div>'
+    )
+
+    def assert_outlook_bump_is_possible(self, sender):
+        target = self.sent_target()
+        self.arrive("seq-outlook", html_mail(self.OUTLOOK_BUMP_PIXEL, sender=sender, subject="Re: Quick question"))
+        result = self.check()
+        self.assertEqual(result["replies"], [])
+        self.assertEqual([item["reason"] for item in result["possible"]], ["mailing_tool"])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_an_outlook_quoted_bump_with_a_pixel_after_the_quote_from_someone_at_the_company_is_seen(self):
+        self.assert_outlook_bump_is_possible("Mike Chen <mike.chen@bovi.example>")
+
+    def test_an_outlook_quoted_bump_with_a_pixel_after_the_quote_from_the_address_written_to_is_seen(self):
+        self.assert_outlook_bump_is_possible("Greg Lee <greg@bovi.example>")
+
+    def test_an_outlook_quoted_bump_with_a_pixel_after_the_quote_in_a_watched_thread_is_seen(self):
+        target = self.sent_target()
+        self.arrive_in_thread("seq-outlook-thread", html_mail(self.OUTLOOK_BUMP_PIXEL, subject="Re: Quick question"))
+        result = self.check()
+        self.assertEqual(result["replies"], [])
+        self.assertEqual([item["reason"] for item in result["possible"]], ["mailing_tool"])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_an_outlook_quoted_bump_is_job_mail_for_no_one_because_of_the_students_quoted_link(self):
+        # The quoted step links an applicant system; that is the quote's link, not the sender's.
+        hosts = outreach_inbox._link_hosts(BytesParser(policy=policy.default).parsebytes(html_mail(self.OUTLOOK_BUMP_PIXEL)))
+        self.assertNotIn("boards.greenhouse.io", hosts)
+
+    def test_every_link_is_read_past_outlooks_reply_marker_for_the_sales_tool_check(self):
+        def parsed(markup):
+            return BytesParser(policy=policy.default).parsebytes(html_mail(markup))
+
+        quote = '<div id="divRplyFwdMsg"><b>From:</b> Sam</div><a href="https://boards.greenhouse.io/b">q</a>'
+        pixel = '<TABLE><TR><TD><IMG SRC=https://t.hubspotemail.net/e2t/to/abc WIDTH=1 HEIGHT=1></TD></TR></TABLE>'
+        message = parsed(f"<p>Bumping this.</p>{quote}{pixel}")
+        self.assertEqual(mail_message.all_link_hosts(message), {"boards.greenhouse.io", "t.hubspotemail.net"})
+        self.assertEqual(outreach_inbox._link_hosts(message), set(), "the job-system check still cuts the quote and all after it")
+        self.assertTrue(outreach_inbox._sales_tool(message))
+        self.assertFalse(outreach_inbox._job_mail(message, "mike.chen@bovi.example"))
+
+    def assert_genuine_outlook_reply_is_confirmed(self, sender):
+        # No tool host anywhere, and an applicant-system link only inside the quoted step: a person answering.
+        markup = self.OUTLOOK_GENUINE_REPLY.replace('<a href="https://t.hubspotlinks.com/Ctc/abc">book</a>', "")
+        target = self.sent_target()
+        self.arrive("out-genuine", html_mail(markup, sender=sender, subject="Re: Quick question"))
+        result = self.check()
+        self.assertEqual([item["target_id"] for item in result["replies"]], [target["id"]])
+        self.assertEqual(result["possible"], [])
+
+    def test_a_genuine_outlook_reply_from_someone_at_the_company_is_still_a_reply(self):
+        self.assert_genuine_outlook_reply_is_confirmed("Mike Chen <mike.chen@bovi.example>")
+
+    def test_a_genuine_outlook_reply_from_the_address_written_to_is_still_a_reply(self):
+        self.assert_genuine_outlook_reply_is_confirmed("Greg Lee <greg@bovi.example>")
+
+    def test_a_genuine_outlook_reply_in_a_watched_thread_is_still_a_reply(self):
+        markup = self.OUTLOOK_GENUINE_REPLY.replace('<a href="https://t.hubspotlinks.com/Ctc/abc">book</a>', "")
+        target = self.sent_target()
+        self.arrive_in_thread("out-genuine-thread", html_mail(markup, subject="Re: Quick question"))
+        result = self.check()
+        self.assertEqual([item["target_id"] for item in result["replies"]], [target["id"]])
+        self.assertEqual(result["possible"], [])
+
     def test_an_html_only_sales_pixel_from_the_address_written_to_is_only_a_possible_reply(self):
         target = self.sent_target()
         self.arrive("seq-exact", html_mail(self.SALES_PIXEL, subject="Quick question"))

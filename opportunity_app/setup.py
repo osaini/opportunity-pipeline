@@ -30,7 +30,8 @@ from typing import Any
 from pipeline_core.env import iter_env_pairs
 
 from . import ROOT
-from .integrations.agent_providers import CLI_CONFIG, cli_available, cli_binary
+from .integrations.agent_providers import CLI_CONFIG, cli_available, cli_binary, opt_in_value_is_on
+from .outreach.config import ALLOW_CODEX_ENV
 
 MIN_PYTHON = (3, 11)
 GENERATED_SECRETS = {
@@ -197,6 +198,11 @@ def set_env_values(path: Path, updates: dict[str, str], *, overwrite: bool = Fal
 
 
 def detect_agent_cli() -> str:
+    """The research agent to record: Claude Code when installed, else Codex CLI, else "".
+
+    The order matters (CLI_CONFIG lists Claude Code first): Codex cannot be limited to web search, so it does the deep
+    search only after the student's opt-in (see init, which says so when Codex is all there is).
+    """
     for provider in CLI_CONFIG:
         if cli_available(cli_binary(provider)):
             return provider
@@ -228,6 +234,13 @@ def init(paths: Paths, *, migrate: bool = True) -> dict[str, Any]:
         paths.env.chmod(0o600)
     report["generated_secrets"] = sorted(generated)
     report["agent_cli"] = agent or None
+    # The same reading the app gives the setting (codex_web_opted_in): '0' or 'no' in .env is not an opt-in.
+    if agent == "codex-cli" and not opt_in_value_is_on(existing.get(ALLOW_CODEX_ENV)):
+        report["warnings"].append(
+            "Only Codex CLI is installed here. Codex cannot be limited to web search, so the deep search and company "
+            f"research refuse to use it until you set {ALLOW_CODEX_ENV}=1 in .env (or install Claude Code). Ask the "
+            "student; see SETUP.md. Everything else Codex does here, such as drafts and reviews, works without it."
+        )
 
     if paths.profile.exists():
         report["kept"].append("config/profile.json")

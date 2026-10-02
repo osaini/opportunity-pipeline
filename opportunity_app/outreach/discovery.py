@@ -46,7 +46,7 @@ from .identity import company_key
 from .location import location_usable
 from .contact_names import website_domain
 from .contacts import apply_choice, choose_contact, find_contacts, list_candidates
-from .agents import Runner, discovery_runner
+from .agents import Runner, agent_runner
 from .drafting import generate_draft, outreach_proof
 from .email_search import needs_a_person, search_emails
 from .identity import mentions_company
@@ -426,7 +426,7 @@ def run_discovery(
     max_targets: int = MAX_PER_SCOPE,
     dry_run: bool = False,
     trigger: str = "manual",
-    report_dir: Path = REPORT_DIR,
+    report_dir: Path | None = None,
     lock_path: Path | None = None,
     provider_factory: Callable[[str, str], Any] | None = None,
     draft_provider: str | None = None,
@@ -438,8 +438,12 @@ def run_discovery(
     verifier: Any = None,
     today: date | None = None,
     now: datetime | None = None,
+    agent_note: str = "",
 ) -> dict[str, Any]:
     """Run one search per scope and import what passes the checks. max_targets is per scope.
+
+    agent_note says why the runner is not the agent the student chose (agents.resolve_discovery_agent). It is stored with
+    the run, so the deep search panel shows it for a search the web app started and for one the scheduled task ran.
 
     locate_runner, when given, searches the web for the new companies their own
     sites and EDGAR did not place (outreach/locate.py). email_runner, when given,
@@ -447,6 +451,8 @@ def run_discovery(
     site gave no confirmed one (outreach/email_search.py), before any draft is
     written. verifier puts guessed addresses to the mail server (integrations/smtp_probe.py).
     """
+    # Resolved per call, not bound at definition time, so tests (and callers that pass nothing) follow REPORT_DIR.
+    report_dir = REPORT_DIR if report_dir is None else report_dir
     scopes = [scope for scope in (scopes or DEFAULT_SCOPES) if scope in SCOPES]
     if not scopes:
         raise ValueError(f"Choose at least one scope: {', '.join(SCOPES)}")
@@ -466,8 +472,8 @@ def run_discovery(
         if not dry_run:
             with conn:
                 conn.execute(
-                    "INSERT INTO outreach_discovery_runs(id, user_id, run_trigger, status, scopes_json, started_at) VALUES(?, ?, ?, 'running', ?, ?)",
-                    (run_id, user_id, trigger, json.dumps(scopes), utc_now()),
+                    "INSERT INTO outreach_discovery_runs(id, user_id, run_trigger, status, scopes_json, started_at, agent_note) VALUES(?, ?, ?, 'running', ?, ?, ?)",
+                    (run_id, user_id, trigger, json.dumps(scopes), utc_now(), agent_note[:1_000]),
                 )
         try:
             summary = _run(
@@ -748,7 +754,7 @@ class DiscoveryManager(SingleFlightManager):
         locate: bool = True,
         client_factory: Callable[[], SafeFetcher] = default_fetcher,
         provider_factory: Callable[[str, str], Any] | None = None,
-        report_dir: Path = REPORT_DIR,
+        report_dir: Path | None = None,
         contact_delay: float = 1.0,
         form_d_fetcher_factory: Callable[[], SafeFetcher | None] = sec_fetcher,
         renderer_factory: Callable[[], PlaywrightRenderer | None] = default_renderer,
@@ -766,21 +772,21 @@ class DiscoveryManager(SingleFlightManager):
         self._locate = locate
         self._client_factory = client_factory
         self._provider_factory = provider_factory
-        self._report_dir = report_dir
+        self._report_dir = REPORT_DIR if report_dir is None else report_dir
         self._contact_delay = contact_delay
         super().__init__()
 
     def start(self, *, user_id: str, scopes: list[str] | None = None) -> dict[str, Any]:
         def run() -> dict[str, Any]:
-            runner = self._runner or discovery_runner()
+            runner, note = (self._runner, "") if self._runner is not None else agent_runner()
             with ExitStack() as stack:
                 conn = stack.enter_context(closing(connect_product(self.platform_target)))
                 fetcher = stack.enter_context(self._client_factory())
                 form_d = self._form_d_fetcher_factory()
                 renderer = self._renderer_factory()
                 verifier = self._verifier_factory()
-                return run_discovery(
-                    conn, user_id=user_id, runner=runner, fetcher=fetcher, scopes=scopes,
+                result = run_discovery(
+                    conn, user_id=user_id, runner=runner, fetcher=fetcher, scopes=scopes, agent_note=note,
                     report_dir=self._report_dir, provider_factory=self._provider_factory, draft_provider=self._draft_provider,
                     contact_delay=self._contact_delay,
                     form_d_fetcher=stack.enter_context(form_d) if form_d is not None else None,
@@ -789,5 +795,7 @@ class DiscoveryManager(SingleFlightManager):
                     email_runner=runner if self._email_search else None,
                     verifier=stack.enter_context(verifier) if verifier is not None else None,
                 )
+            # When Codex was chosen but not allowed to read the web, Claude Code ran the search: say so in the result.
+            return {**result, "agent_note": note} if note else result
 
         return self._launch("outreach-discovery", run)

@@ -36,6 +36,7 @@ from typing import Any
 from .. import ROOT
 from ..integrations.agent_providers import catalog_snapshot, default_provider, provider_catalog
 from .config import (
+    ALLOW_CODEX_ENV,
     ATTACHMENT_ENV,
     CALL_PREP_ENV,
     COMPANY_RESEARCH_ENV,
@@ -45,6 +46,7 @@ from .config import (
     RESEARCH_ENV,
     REVIEW_ENV,
     THANK_YOU_ENV,
+    codex_web_allowed,
 )
 from .linkedin import username_from
 from .gmail import attachment_path, attachment_problem
@@ -54,6 +56,8 @@ from ..student.resumes import DEFAULT_STORAGE, ResumeNotFoundError, list_resumes
 # Writers that fall back to the first-email setting when left empty.
 FOLLOWING_DRAFTS = {"follow_up_provider": FOLLOW_UP_ENV, "call_prep_provider": CALL_PREP_ENV, "thank_you_provider": THANK_YOU_ENV}
 RESEARCH_AGENTS = ("claude-code", "codex-cli")
+# What the research pickers show beside an installed Codex that may not read the web yet, in place of "not set up".
+CODEX_NEEDS_OPT_IN = "needs the .env opt-in"
 LEGACY_OPTION = {
     "id": "legacy", "label": "Grounded template (no AI)", "available": True,
     "hint": "Fills a fixed template from your confirmed facts; nothing is sent to a model.",
@@ -81,13 +85,23 @@ class OutreachSettings:
         with catalog_snapshot():
             return self._view(conn, user_id=user_id)
 
+    @staticmethod
+    def _research_option(option: dict[str, Any]) -> dict[str, Any]:
+        """Codex reads the web only after the .env opt-in (agents.codex_runner); until then, say so rather than offer it."""
+        if option["id"] == "codex-cli" and option["available"] and not codex_web_allowed():
+            return {**option, "available": False, "reason": CODEX_NEEDS_OPT_IN, "hint": (
+                f"Codex cannot be limited to web search, so it reads the web only when {ALLOW_CODEX_ENV}=1 is set in .env. "
+                "Until then Claude Code does this research when it is installed."
+            )}
+        return option
+
     def _view(self, conn: sqlite3.Connection, *, user_id: str) -> dict[str, Any]:
         catalog = provider_catalog()
         drafts = [
             {"id": item["id"], "label": item["display_name"], "available": item["configured"], "hint": item["setup_hint"]}
             for item in catalog
         ] + [LEGACY_OPTION]
-        research = [option for option in drafts if option["id"] in RESEARCH_AGENTS]
+        research = [self._research_option(option) for option in drafts if option["id"] in RESEARCH_AGENTS]
         attached = attachment_path()
 
         def automatic(purpose: str) -> dict[str, str]:

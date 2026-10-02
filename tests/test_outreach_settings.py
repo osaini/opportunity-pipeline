@@ -46,6 +46,37 @@ class OutreachSettingsApiTests(unittest.TestCase):
         )
         return TestClient(app)
 
+    def test_the_settings_view_marks_codex_unavailable_for_research_until_the_opt_in_is_set(self):
+        """Codex is installed here, yet the research pickers do not offer it as ready: it reads the web only after the
+        .env opt-in, and the view says why. Drafts, which need no web, still offer it."""
+        catalog = [{"id": "codex-cli", "display_name": "Codex", "model": "m", "configured": True, "setup_hint": ""}]
+        settings = OutreachSettings(env_path=self.env_path, attachment_dir=self.attachments, resume_storage=self.root / "resumes")
+        headers = {"Authorization": "Bearer settings-owner"}
+
+        def view(opt_in):
+            with mock.patch.dict(os.environ, {"PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX": opt_in}),                     mock.patch("opportunity_app.outreach.settings.provider_catalog", return_value=catalog),                     self.client(settings) as client:
+                return client.get("/api/v1/outreach/settings", headers=headers).json()
+
+        def codex(options):
+            return next(option for option in options if option["id"] == "codex-cli")
+
+        blocked = view("")
+        for field in ("research_agent", "company_research_agent"):
+            with self.subTest(field=field):
+                option = codex(blocked[field]["options"])
+                self.assertFalse(option["available"])
+                self.assertIn("PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX", option["hint"])
+                self.assertIn("Claude Code", option["hint"])
+                # The picker labels the option with this, not with "not set up": Codex is installed, it only lacks the opt-in.
+                self.assertEqual(option["reason"], "needs the .env opt-in")
+        self.assertTrue(codex(blocked["draft_provider"]["options"])["available"])
+        self.assertNotIn("reason", codex(blocked["draft_provider"]["options"]))
+        allowed = view("1")
+        for field in ("research_agent", "company_research_agent"):
+            with self.subTest(field=field, opted_in=True):
+                self.assertTrue(codex(allowed[field]["options"])["available"])
+                self.assertNotIn("reason", codex(allowed[field]["options"]))
+
     def test_changes_reach_env_and_take_effect_at_once(self):
         settings = OutreachSettings(env_path=self.env_path, attachment_dir=self.attachments, resume_storage=self.root / "resumes")
         headers = {"Authorization": "Bearer settings-owner"}

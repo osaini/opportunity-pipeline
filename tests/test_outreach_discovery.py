@@ -18,7 +18,7 @@ from opportunity_app.api import create_app
 from opportunity_app.outreach.targets import create_target, get_target, list_targets
 from opportunity_app.outreach.contacts import apply_candidate, crawl_site, discover_candidates, find_contacts
 from opportunity_app.integrations.web_fetch import SafeFetcher
-from opportunity_app.outreach.discovery import DiscoveryBusy, DiscoveryManager, _RunLock, _scope_brief, run_discovery, scope_definitions, validate_proposals
+from opportunity_app.outreach.discovery import DiscoveryBusy, DiscoveryManager, _RunLock, _scope_brief, last_runs, run_discovery, scope_definitions, validate_proposals
 from opportunity_app.core.schema import ensure_product_schema
 from opportunity_app.core.database import connect_product
 
@@ -302,6 +302,30 @@ class DiscoveryTests(unittest.TestCase):
                 self.conn, user_id=USER, runner=runner, fetcher=safe_fetcher(client), report_dir=self.root / "reports",
                 contact_delay=0, today=today, **kwargs,
             )
+
+    def test_a_run_with_no_fallback_has_an_empty_note_and_a_failed_run_keeps_its_note(self):
+        note = "Claude Code ran this search."
+
+        def broken(prompt):
+            raise RuntimeError("the agent crashed")
+
+        self.run_with(proposals())
+        with self.assertRaises(RuntimeError):
+            self.run_with(proposals(), runner=broken, agent_note=note)
+        rows = self.conn.execute("SELECT status, agent_note FROM outreach_discovery_runs ORDER BY started_at").fetchall()
+        self.assertEqual([tuple(row) for row in rows], [("succeeded", ""), ("failed", note)])
+
+    def test_the_note_column_is_added_once_and_repairs_a_database_that_lacks_it(self):
+        from opportunity_app.core import schema
+
+        migration = schema.MIGRATIONS_DIR / "0049_outreach_discovery_agent_note.sql"
+        self.assertIn("0049_outreach_discovery_agent_note.sql", {row[0] for row in self.conn.execute("SELECT name FROM schema_migrations")})
+        sql = migration.read_text(encoding="utf-8")
+        schema._apply_outreach_discovery_agent_note(self.conn, sql)  # a second run changes nothing
+        with self.conn:
+            self.conn.execute("ALTER TABLE outreach_discovery_runs DROP COLUMN agent_note")
+        schema._apply_outreach_discovery_agent_note(self.conn, sql)
+        self.assertIn("agent_note", {row[1] for row in self.conn.execute("PRAGMA table_info(outreach_discovery_runs)")})
 
     def test_only_verified_new_companies_are_imported(self):
         result = self.run_with(proposals(
@@ -594,21 +618,104 @@ class CommandLineTests(unittest.TestCase):
                 exit_code = outreach_cli.main(["--db", str(platform_path), "locate", "--provider", "claude-code"])
         self.assertEqual(exit_code, 0)
 
+    def test_the_cli_stores_the_fallback_note_with_the_run_the_scheduled_task_makes(self):
+        from opportunity_app import outreach_cli
+
+        note = "Codex cannot be limited to web search, so Claude Code ran this search."
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, platform_path = build_and_migrate(root)
+            transport, _ = site_transport({"acme.com": {**ACME["acme.com"], "/about": "<p>About Acme</p>"}})
+            runner = only_for(proposals(company("Acme", "https://acme.com")))
+            with (
+                mock.patch("opportunity_app.outreach_cli.resolve_discovery_agent", lambda chosen: ("claude-code", note)),
+                mock.patch.dict("opportunity_app.outreach_cli.RUNNERS", {"claude-code": runner}),
+                mock.patch("opportunity_app.outreach_cli.default_fetcher", lambda: safe_fetcher(httpx.Client(transport=transport))),
+                mock.patch("opportunity_app.outreach_cli.sec_fetcher", lambda: None),
+                mock.patch("opportunity_app.outreach_cli.default_renderer", lambda: None),
+                mock.patch("opportunity_app.outreach_cli.default_verifier", lambda: None),
+                mock.patch("opportunity_app.outreach.discovery.REPORT_DIR", root / "reports"),
+                # No real model CLI: drafting the imported company must not start claude or codex.
+                mock.patch("opportunity_app.outreach_cli.build_provider", side_effect=RuntimeError("no model CLI in tests")),
+                mock.patch("sys.stderr"),
+            ):
+                exit_code = outreach_cli.main([
+                    "--db", str(platform_path), "discover", "--scopes", "local-accelerators", "--provider", "codex-cli",
+                    "--no-locate", "--no-email-search", "--trigger", "scheduled",
+                ])
+            conn = connect_product(platform_path)
+            try:
+                runs = last_runs(conn, user_id=USER)
+            finally:
+                conn.close()
+            # The report (and its lock) went to the patched folder, not the checkout's data/.
+            reported_here = any((root / "reports").glob("outreach-discovered-*.json"))
+        self.assertEqual(exit_code, 0)
+        self.assertEqual([run["agent_note"] for run in runs], [note])
+        self.assertTrue(reported_here)
+
     def test_a_busy_lock_reports_a_temporary_failure(self):
         from opportunity_app import outreach_cli
-        from opportunity_app.outreach.discovery import REPORT_DIR, _RunLock
+        from opportunity_app.outreach.discovery import _RunLock
 
         with tempfile.TemporaryDirectory() as tmp:
             _, platform_path = build_and_migrate(Path(tmp))
-            try:
-                lock = _RunLock(REPORT_DIR / "outreach-discovery.lock").__enter__()
-            except DiscoveryBusy:
-                self.skipTest("a real deep search holds the lock right now")
-            try:
-                exit_code = outreach_cli.main(["--db", str(platform_path), "discover", "--dry-run"])
-            finally:
-                lock.__exit__()
+            # The lock lives in REPORT_DIR, which is the checkout's real data/ by default: both the lock taken here and the
+            # one the command line asks for go to this folder, so a real deep search is neither blocked nor released.
+            reports = Path(tmp) / "reports"
+            with mock.patch("opportunity_app.outreach.discovery.REPORT_DIR", reports):
+                lock = _RunLock(reports / "outreach-discovery.lock").__enter__()
+                try:
+                    exit_code = outreach_cli.main(["--db", str(platform_path), "discover", "--dry-run"])
+                finally:
+                    lock.__exit__()
+            self.assertEqual(list(reports.iterdir()), [], "the lock was released and nothing else was written")
         self.assertEqual(exit_code, outreach_cli.TEMPFAIL_EXIT)
+
+
+class DiscoveryFallbackNoteTests(unittest.TestCase):
+    def test_a_search_that_ran_on_claude_code_instead_of_codex_says_so_in_its_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, platform_path = build_and_migrate(root)
+            transport, _ = site_transport({"acme.com": {**ACME["acme.com"], "/about": "<p>About Acme</p>"}})
+            manager = DiscoveryManager(
+                platform_path,
+                client_factory=lambda: safe_fetcher(httpx.Client(transport=transport)),
+                report_dir=root / "reports", contact_delay=0,
+                form_d_fetcher_factory=lambda: None, renderer_factory=lambda: None,
+            )
+            note = "Codex cannot be limited to web search, so Claude Code ran this search."
+            runner = only_for(proposals(company("Acme", "https://acme.com")))
+            with mock.patch("opportunity_app.outreach.discovery.agent_runner", lambda: (runner, note)):
+                manager.start(user_id=USER, scopes=["local-accelerators"])
+                manager.wait(30)
+            status = manager.status()
+        self.assertEqual(status["state"], "succeeded", status)
+        self.assertEqual(status["result"]["agent_note"], note)
+
+    def test_the_note_is_kept_with_the_run_so_a_later_page_load_still_shows_it(self):
+        note = "Codex cannot be limited to web search, so Claude Code ran this search."
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, platform_path = build_and_migrate(root)
+            transport, _ = site_transport({"acme.com": {**ACME["acme.com"], "/about": "<p>About Acme</p>"}})
+            manager = DiscoveryManager(
+                platform_path,
+                client_factory=lambda: safe_fetcher(httpx.Client(transport=transport)),
+                report_dir=root / "reports", contact_delay=0,
+                form_d_fetcher_factory=lambda: None, renderer_factory=lambda: None,
+            )
+            runner = only_for(proposals(company("Acme", "https://acme.com")))
+            with mock.patch("opportunity_app.outreach.discovery.agent_runner", lambda: (runner, note)):
+                manager.start(user_id=USER, scopes=["local-accelerators"])
+                manager.wait(30)
+            conn = connect_product(platform_path)
+            try:
+                runs = last_runs(conn, user_id=USER)
+            finally:
+                conn.close()
+        self.assertEqual([run["agent_note"] for run in runs], [note])
 
 
 class DiscoveryApiTests(unittest.TestCase):
@@ -640,9 +747,36 @@ class DiscoveryApiTests(unittest.TestCase):
                 listing = client.get("/api/v1/outreach", headers=headers).json()
                 self.assertEqual(listing["discovery"]["active"]["state"], "succeeded", listing["discovery"]["active"])
                 self.assertEqual(listing["discovery"]["runs"][0]["imported"], 1)
+                self.assertEqual(listing["discovery"]["runs"][0]["agent_note"], "", "a search that ran as chosen has no note")
                 self.assertEqual(listing["summary"]["new_from_search"], 1)
                 bad_scope = client.post("/api/v1/outreach/discovery", headers=headers, json={"scopes": ["biotech"]})
                 self.assertEqual(bad_scope.status_code, 422)
+
+    def test_the_run_list_carries_the_note_when_claude_code_ran_instead_of_codex(self):
+        note = "Codex cannot be limited to web search, so Claude Code ran this search."
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, platform_path = build_and_migrate(root)
+            transport, _ = site_transport({"acme.com": {**ACME["acme.com"], "/about": "<p>About Acme</p>"}})
+            manager = DiscoveryManager(
+                platform_path,
+                client_factory=lambda: safe_fetcher(httpx.Client(transport=transport)),
+                report_dir=root / "reports", contact_delay=0,
+                form_d_fetcher_factory=lambda: None, renderer_factory=lambda: None,
+            )
+            app = create_app(
+                db_path=platform_path, access_token="discovery-owner", static_dir=STATIC_DIR,
+                resume_storage=root / "resumes", capture_storage=root / "captures", interview_storage=root / "interviews",
+                outreach_discovery_manager=manager,
+            )
+            headers = {"Authorization": "Bearer discovery-owner"}
+            runner = only_for(proposals(company("Acme", "https://acme.com")))
+            with TestClient(app) as client, mock.patch("opportunity_app.outreach.discovery.agent_runner", lambda: (runner, note)):
+                client.post("/api/v1/outreach/discovery", headers=headers, json={"scopes": ["local-accelerators"]})
+                manager.wait(30)
+                # A fresh manager (the app restarted, or the task ran in the CLI) still shows the note from the stored run.
+                listing = client.get("/api/v1/outreach/discovery", headers=headers).json()
+        self.assertEqual(listing["runs"][0]["agent_note"], note)
 
 
 if __name__ == "__main__":
