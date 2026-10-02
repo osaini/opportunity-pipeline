@@ -36,10 +36,10 @@ from typing import Any
 from pipeline_core.read_model import RULESET_VERSION
 from pipeline_core.visibility import capture_visible_sql
 
-from . import automation
-from .core.database import is_postgres_target, connect_product
-from .core.profile_store import read_stored_profile
-from .core.schema import LOCAL_USER_ID
+from . import ledger as automation
+from ..core.database import is_postgres_target, connect_product
+from ..core.profile_store import read_stored_profile
+from ..core.schema import LOCAL_USER_ID
 
 LOGGER = logging.getLogger(__name__)
 
@@ -190,7 +190,7 @@ def run_auto_triage(conn: sqlite3.Connection, *, user_id: str, now: datetime | N
         if row is not None and row.get("status") == "applied":
             report[choice].append({"opportunity_id": item["id"], "action_id": row["id"], "score": score})
             if choice == "saved":
-                from .student.resume_variants import safe_pick_after_save
+                from ..student.resume_variants import safe_pick_after_save
 
                 # A role auto_save saved gets its résumé variant too, like one the student saved.
                 safe_pick_after_save(conn, user_id, item["id"])

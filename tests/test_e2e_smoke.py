@@ -174,7 +174,7 @@ class EndToEndSmokeTests(unittest.TestCase):
                 {"subject": "Weekly application digest"}, user_id=user_id,
             )
             enqueue_job(conn, "notification_digest", {}, "e2e-digest")
-            with mock.patch("opportunity_app.notifications.build_provider", return_value=provider):
+            with mock.patch("opportunity_app.automation.notifications.build_provider", return_value=provider):
                 record = run_next_job(conn, {
                     "notification_digest": lambda payload: _digest(conn, payload),
                 })
@@ -191,7 +191,7 @@ class EndToEndSmokeTests(unittest.TestCase):
 
 
 def _digest(conn, payload):
-    from opportunity_app.notifications import run_notification_digest
+    from opportunity_app.automation.notifications import run_notification_digest
 
     # Quiet hours resolve through user_time.user_timezone; pin its fallback so
     # RUN_AT (12:00 UTC) is daytime on every machine.

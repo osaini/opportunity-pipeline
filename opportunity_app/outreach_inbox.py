@@ -52,7 +52,8 @@ import httpx
 
 from pipeline_core.identity import normalized
 
-from . import automation, outreach_callbacks
+from .automation import ledger as automation
+from . import outreach_callbacks
 from .mail import message as mail_message
 from .mail.classifiers import read_reply
 from .mail.message import (

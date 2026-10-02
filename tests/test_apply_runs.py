@@ -18,7 +18,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import SERVER_INSTANCE, automation, automation_health
+from opportunity_app import SERVER_INSTANCE
+from opportunity_app.automation import ledger as automation, health as automation_health
 from opportunity_app.apply import claims as apply_claims, runs as apply_runs
 from opportunity_app.applications import actions, urgent
 from opportunity_app.core import schema

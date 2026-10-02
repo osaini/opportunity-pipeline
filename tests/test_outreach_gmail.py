@@ -20,7 +20,8 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import SERVER_INSTANCE, STATIC_DIR, automation, automation_health, outreach_delivery, outreach_gmail
+from opportunity_app import SERVER_INSTANCE, STATIC_DIR, outreach_delivery, outreach_gmail
+from opportunity_app.automation import ledger as automation, health as automation_health
 from opportunity_app.mail import gmail_connection
 from opportunity_app.integrations import gmail_client
 from opportunity_app.api import create_app

@@ -20,7 +20,7 @@ from ...accounts.employer import (
     verify_organization,
 )
 from ...accounts.operations import OperationsError, enqueue_job, retry_dead_job, run_retention, service_overview
-from ...notifications import connector_health
+from ...automation.notifications import connector_health
 from ..context import AppContext
 from ..dependencies import admin_connection, get_ctx
 from ..models.admin import (

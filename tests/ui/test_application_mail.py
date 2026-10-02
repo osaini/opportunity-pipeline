@@ -17,7 +17,7 @@ import pytest
 from playwright.sync_api import expect
 
 from conftest import wait_for_results
-from opportunity_app import automation
+from opportunity_app.automation import ledger as automation
 from opportunity_app.applications.actions import record_intent
 from opportunity_app.core.database import connect_product
 from opportunity_app.core.timestamps import utc_now

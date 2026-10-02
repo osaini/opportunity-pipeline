@@ -16,18 +16,19 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable
 
-from .applications import inbox as application_inbox
-from . import automation, outreach_labels
+from ..applications import inbox as application_inbox
+from . import ledger as automation
+from .. import outreach_labels
 from .background import PollingWorker, record_health_quietly, step_error
-from .core.database import rollback_quietly, connect_product
-from .integrations.gmail_client import PROVIDER, ClientFactory
-from .outreach_delivery import check_deliveries
-from .outreach_gmail import gmail_notices
-from .mail.gmail_connection import connector_row, persist_gmail_health
-from .outreach_inbox import OnReply, capture_replies
-from .core.timestamps import parse_app_instant, utc_now
-from .integrations.typesafe_decisions import DecisionClient
-from .core.user_time import user_timezone
+from ..core.database import rollback_quietly, connect_product
+from ..integrations.gmail_client import PROVIDER, ClientFactory
+from ..outreach_delivery import check_deliveries
+from ..outreach_gmail import gmail_notices
+from ..mail.gmail_connection import connector_row, persist_gmail_health
+from ..outreach_inbox import OnReply, capture_replies
+from ..core.timestamps import parse_app_instant, utc_now
+from ..integrations.typesafe_decisions import DecisionClient
+from ..core.user_time import user_timezone
 
 LOGGER = logging.getLogger(__name__)
 
@@ -163,7 +164,7 @@ class InboxWatcher(PollingWorker):
     def _check(self, conn: sqlite3.Connection, user_id: str) -> None:
         # Looked up on every pass, not bound at import: a test patches outreach_gmail_sends.capture_gmail_sends, and
         # importing it here also keeps the scheduler out of the watcher's import.
-        from .outreach_gmail_sends import capture_gmail_sends
+        from ..outreach_gmail_sends import capture_gmail_sends
 
         factory = self._client_factory
         steps: list[tuple[str, Callable[[], dict[str, Any]]]] = [

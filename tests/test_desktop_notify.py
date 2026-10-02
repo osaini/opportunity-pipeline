@@ -13,7 +13,7 @@ from xml.sax.saxutils import unescape
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import automation, desktop_notify
+from opportunity_app.automation import ledger as automation, desktop_notify
 from opportunity_app.mail.connections import update_preferences
 from opportunity_app.outreach_automation import AutomationWorker
 from opportunity_app.core.schema import LOCAL_USER_ID

@@ -15,7 +15,7 @@ import pytest
 from playwright.sync_api import expect
 
 from conftest import OWNER_TOKEN, native_selects, wait_for_results
-from opportunity_app import auto_triage, automation
+from opportunity_app.automation import triage as auto_triage, ledger as automation
 from opportunity_app.core.timestamps import utc_now
 from opportunity_app.core.user_time import user_timezone
 from ui_helpers import assert_accessible, db

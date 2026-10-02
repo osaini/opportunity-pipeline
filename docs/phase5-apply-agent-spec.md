@@ -3379,7 +3379,7 @@ process id (memory note restart-web-dashboard).
 
 - **Extension:** `apps/extension/content.js`, `apps/extension/sidepanel.js` (:82, :212).
 - **App code:**
-  - `opportunity_app/automation.py`: FEATURES, REQUIREMENTS, `in_flight`, `unconfirmed`,
+  - `opportunity_app/automation/ledger.py`: FEATURES, REQUIREMENTS, `in_flight`, `unconfirmed`,
     `paused_text`;
   - `opportunity_app/applications/actions.py`: `ensure_application_tx`, factored out of `_record_intent_tx`;
   - `opportunity_app/applications/extension.py`: `confirmed_resume_file`, factored out of

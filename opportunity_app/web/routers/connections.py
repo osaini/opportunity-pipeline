@@ -13,7 +13,7 @@ from typing import Annotated, Any, Literal
 from fastapi import Depends, HTTPException, Header, Request, status
 
 from ..overrides import shared_router
-from ... import automation as automation_core
+from ...automation import ledger as automation_core
 from ...applications.actions import ApplicationNotFoundError
 from ...accounts.auth import constant_time_equal
 from ...mail.connections import (

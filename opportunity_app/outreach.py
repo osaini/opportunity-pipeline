@@ -23,7 +23,8 @@ from typing import Any, Callable
 from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
-from . import automation, outreach_callbacks
+from .automation import ledger as automation
+from . import outreach_callbacks
 from .core.database import is_unique_violation
 from .mail.classifiers import read_reply
 from .contact_names import website_domain

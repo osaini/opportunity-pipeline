@@ -18,7 +18,7 @@ from pathlib import Path
 from . import APPLY_ROOT, DEFAULT_PLATFORM_DB
 from .core.database import is_postgres_target, connect_product
 from .opportunities.ingestion import make_stage_handler
-from .notifications import connector_health, run_notification_digest, send_due_reminders
+from .automation.notifications import connector_health, run_notification_digest, send_due_reminders
 from .outreach import queue_follow_up_reminders
 from .accounts.operations import enqueue_job, recover_stale_jobs, run_next_job, run_retention
 

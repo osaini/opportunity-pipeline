@@ -40,7 +40,7 @@ from ..core.database import is_postgres_target
 from ..integrations.pdf import pdf_renderer
 from ..opportunities.early_programs import DEFAULT_EARLY_PROGRAMS
 from ..mail.classifiers import build_client as build_inbox_client, client_for as inbox_client_for
-from ..inbox_watcher import InboxWatcher
+from ..automation.inbox_watcher import InboxWatcher
 from ..opportunities.legacy import load_env_file
 from ..outreach_automation import AutomationWorker
 from ..outreach_call_prep import CallPrepWorker, auto_queue_call_prep

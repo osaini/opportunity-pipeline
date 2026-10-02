@@ -13,7 +13,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from opportunity_app import SERVER_INSTANCE, automation
+from opportunity_app import SERVER_INSTANCE
+from opportunity_app.automation import ledger as automation
 from opportunity_app.apply import claims as apply_claims, preflight as apply_preflight, runs as apply_runs, sensitive as apply_sensitive
 from opportunity_app.applications import actions
 from opportunity_app.student import preparation

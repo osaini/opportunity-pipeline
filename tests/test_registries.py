@@ -107,7 +107,8 @@ class EntryPointTests(unittest.TestCase):
                 self.assertTrue(self.calls_register_all(module, function), f"{module}.{function} must call bootstrap.register_all()")
 
     def test_the_daily_triage_step_can_hand_a_change_to_the_ledger_after_registering(self):
-        from opportunity_app import automation, migrate
+        from opportunity_app.automation import ledger as automation
+        from opportunity_app import migrate
 
         with mock.patch.dict(automation.HANDLERS, clear=True), mock.patch.object(bootstrap, "_registered", False):
             with mock.patch.object(migrate, "build_parser") as parser, mock.patch.object(migrate, "migrate_legacy_database") as sync, \

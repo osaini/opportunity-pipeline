@@ -23,8 +23,8 @@ import sqlite3
 import threading
 from typing import Any, Callable
 
-from .mail.message import strip_queries
-from .core.timestamps import utc_now
+from ..mail.message import strip_queries
+from ..core.timestamps import utc_now
 
 LOGGER = logging.getLogger(__name__)
 
@@ -148,7 +148,7 @@ def record_health_quietly(
     conn: sqlite3.Connection, user_id: str, component: str, *, ok: bool, error: str = "", detail: dict[str, Any] | None = None,
 ) -> None:
     """automation.record_health, which opens its own transaction; a failure to record is logged, never raised."""
-    from . import automation
+    from . import ledger as automation
 
     try:
         automation.record_health(conn, user_id, component, ok=ok, error=error, detail=detail)

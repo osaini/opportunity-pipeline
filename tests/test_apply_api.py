@@ -21,7 +21,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, automation
+from opportunity_app import STATIC_DIR
+from opportunity_app.automation import ledger as automation
 from opportunity_app.apply import runs as apply_runs, schema_client as apply_schema_client, sensitive as apply_sensitive
 from opportunity_app.api import create_app
 from opportunity_app.apply.schema_client import GreenhouseSchemaClient, SchemaUnavailable

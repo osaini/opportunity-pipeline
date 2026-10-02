@@ -56,7 +56,7 @@ from urllib.parse import quote
 
 import httpx
 
-from . import automation
+from .automation import ledger as automation
 from .core.database import rollback_quietly, has_column
 from .integrations.gmail_client import (
     MODIFY_SCOPE,

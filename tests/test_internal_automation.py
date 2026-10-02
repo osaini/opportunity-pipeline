@@ -17,12 +17,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, auto_triage, automation, automation_handlers, automation_health, internal_automation, migrate, outreach_inbox
+from opportunity_app import STATIC_DIR, migrate, outreach_inbox
+from opportunity_app.automation import (
+    triage as auto_triage,
+    ledger as automation,
+    handlers as automation_handlers,
+    health as automation_health,
+    internal as internal_automation,
+)
 from opportunity_app.student import resume_variants
 from opportunity_app.core import schema
 from opportunity_app.applications.actions import record_intent, update_application
 from opportunity_app.api import create_app
-from opportunity_app.automation import Superseded
+from opportunity_app.automation.ledger import Superseded
 from opportunity_app.applications.extension import apply_context
 from opportunity_app.outreach import (
     create_target, delete_target, get_target, lifecycle_suggestion, list_targets, log_reply, update_target,
@@ -1462,11 +1469,11 @@ class TriageTests(Case):
         health = {row["component"]: row for row in automation_health.health_summary(self.conn, USER)["components"]}
         self.assertIsNotNone(health["discovery.auto_triage"]["last_ok_at"])
         with mock.patch.object(auto_triage, "run_auto_triage", side_effect=RuntimeError("boom")), \
-                self.assertLogs("opportunity_app.auto_triage", level="ERROR"):
+                self.assertLogs("opportunity_app.automation.triage", level="ERROR"):
             self.assertIsNone(auto_triage.triage_after_sync(self.platform_path))
         health = {row["component"]: row for row in automation_health.health_summary(self.conn, USER)["components"]}
         self.assertEqual(health["discovery.auto_triage"]["last_error"], "boom")
-        with self.assertLogs("opportunity_app.auto_triage", level="ERROR"):
+        with self.assertLogs("opportunity_app.automation.triage", level="ERROR"):
             self.assertIsNone(auto_triage.triage_after_sync(self.root / "missing" / "nowhere.db"))
 
     def test_the_daily_platform_sync_triages(self):
@@ -1485,7 +1492,7 @@ class TriageTests(Case):
         argv = ["migrate", "--source", str(self.legacy_path), "--target", str(self.platform_path),
                 "--profile", str(self.root / "profile.json")]
         with mock.patch("sys.argv", argv), redirect_stdout(io.StringIO()) as out, \
-                self.assertNoLogs("opportunity_app.auto_triage", level="ERROR"):
+                self.assertNoLogs("opportunity_app.automation.triage", level="ERROR"):
             migrate.main()
         self.assertEqual(self.intent("job-new"), "saved")
         self.assertIn("Automatically saved 1", out.getvalue())

@@ -25,8 +25,6 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import (
     STATIC_DIR,
-    automation,
-    automation_health,
     outreach,
     outreach_decline_reading,
     outreach_delivery,
@@ -37,6 +35,7 @@ from opportunity_app import (
     outreach_reply_senders,
     outreach_thank_you,
 )
+from opportunity_app.automation import ledger as automation, health as automation_health
 from opportunity_app.mail import message as mail_message
 from opportunity_app.api import create_app
 from opportunity_app.outreach_greeting import greeting_line

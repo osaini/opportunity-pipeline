@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from . import DEFAULT_LEGACY_DB, DEFAULT_PLATFORM_DB, DEFAULT_PROFILE
-from .auto_triage import triage_after_sync
+from .automation.triage import triage_after_sync
 from .opportunities.legacy_sync import migrate_legacy_database, result_dict
 
 

@@ -50,9 +50,10 @@ from uuid import uuid4
 
 from pipeline_core.identity import normalized
 
-from .. import SERVER_INSTANCE, automation
+from .. import SERVER_INSTANCE
+from ..automation import ledger as automation
 from ..applications import actions
-from ..background import step_error
+from ..automation.background import step_error
 from ..core.database import is_unique_violation
 from ..core.json_values import json_as
 from ..core.profile_store import read_stored_profile

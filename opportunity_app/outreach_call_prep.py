@@ -94,10 +94,10 @@ from typing import Any, Callable
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from . import automation
+from .automation import ledger as automation
 from . import outreach_research as research
 from . import quote_check
-from .background import PollingWorker
+from .automation.background import PollingWorker
 from .outreach_call_questions import standing_questions
 from .outreach_interviewer import (
     TOPICS as INTERVIEWER_TOPICS, who_key, find_interviewer, interviewer_due, interviewer_of,

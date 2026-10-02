@@ -25,7 +25,7 @@ from contextlib import ExitStack, closing
 from pathlib import Path
 from typing import Any, Callable
 
-from .background import SingleFlightManager
+from .automation.background import SingleFlightManager
 from .outreach import get_target
 from .outreach_agents import discovery_runner
 from .outreach_agents import Runner

@@ -11,7 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, internal_automation
+from opportunity_app import STATIC_DIR
+from opportunity_app.automation import internal as internal_automation
 from opportunity_app.core import schema
 from opportunity_app.api import create_app
 from opportunity_app.outreach import (

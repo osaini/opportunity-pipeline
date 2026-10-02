@@ -16,7 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import httpx
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, automation, automation_health, outreach_forms
+from opportunity_app import STATIC_DIR, outreach_forms
+from opportunity_app.automation import ledger as automation, health as automation_health
 from opportunity_app.api import create_app
 from opportunity_app.outreach import create_target, get_target
 from opportunity_app.outreach_automation import AutomationWorker, draft_due, send_form, update_settings

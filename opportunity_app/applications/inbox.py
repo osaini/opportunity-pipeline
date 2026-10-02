@@ -146,7 +146,7 @@ from uuid import uuid4
 
 import httpx
 
-from .. import automation, internal_automation
+from ..automation import ledger as automation, internal as internal_automation
 from ..mail import trust as mail_trust
 from .actions import log_application_event
 from .mail_rules import (

@@ -15,7 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import ROOT, STATIC_DIR, automation
+from opportunity_app import ROOT, STATIC_DIR
+from opportunity_app.automation import ledger as automation
 from opportunity_app.api import create_app
 from opportunity_app.outreach import confirm_research, create_target, get_target, log_reply, update_target
 from opportunity_app.accounts.operations import enqueue_job, run_next_job

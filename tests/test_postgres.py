@@ -19,12 +19,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, automation, automation_health, outreach_schedule
+from opportunity_app import STATIC_DIR, outreach_schedule
+from opportunity_app.automation import ledger as automation, health as automation_health
 from opportunity_app.apply import claims as apply_claims, runs as apply_runs
 from opportunity_app.core import schema
 from opportunity_app.applications.actions import record_intent, update_application
 from opportunity_app.api import create_app
-from opportunity_app.automation import Feature
+from opportunity_app.automation.ledger import Feature
 from opportunity_app.core.schema import MIGRATIONS_DIR, ensure_product_schema
 from opportunity_app.opportunities.legacy_sync import migrate_legacy_database
 from opportunity_app.core.database import connect_product, has_column
@@ -454,7 +455,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
 
     def test_a_job_email_reopens_only_the_automatic_archive(self):
         from opportunity_app.applications import inbox as application_inbox
-        from opportunity_app import internal_automation
+        from opportunity_app.automation import internal as internal_automation
 
         with self.conn:
             for key in ("application_mail", "archive_silent_applications"):
@@ -499,7 +500,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
     def test_a_job_email_restarts_the_silence_and_an_undone_archive_stays_undone(self):
         from datetime import datetime, timedelta, timezone
 
-        from opportunity_app import internal_automation
+        from opportunity_app.automation import internal as internal_automation
 
         now = datetime.now(timezone.utc).replace(microsecond=0)
         with self.conn:

@@ -34,7 +34,8 @@ from urllib.parse import quote
 
 import httpx
 
-from . import ROOT, automation, automation_health, outreach_callbacks
+from . import ROOT, outreach_callbacks
+from .automation import ledger as automation, health as automation_health
 from .mail.connections import OAUTH_PROVIDERS
 from .integrations.gmail_client import (
     MODIFY_SCOPE,

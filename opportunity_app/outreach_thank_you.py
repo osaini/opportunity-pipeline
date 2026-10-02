@@ -109,8 +109,9 @@ from urllib.parse import quote
 
 import httpx
 
-from . import automation, outreach_callbacks, outreach_review
-from .background import record_health_quietly, step_error
+from .automation import ledger as automation
+from . import outreach_callbacks, outreach_review
+from .automation.background import record_health_quietly, step_error
 from .core.database import is_unique_violation, rollback_quietly
 from .mail.classifiers import MIN_CONFIDENCE
 from .core.json_values import json_dict

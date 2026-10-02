@@ -25,7 +25,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from pipeline_core.identity import identity_tokens, normalized
 
-from .. import internal_automation
+from ..automation import internal as internal_automation
 from ..mail import trust as mail_trust
 from ..mail.monitored_classifier import classify_monitored_message
 from .extension import split_canonical_url

@@ -13,7 +13,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import automation, automation_handlers, bootstrap
+from opportunity_app.automation import ledger as automation, handlers as automation_handlers
+from opportunity_app import bootstrap
 from opportunity_app.api import create_app
 from opportunity_app.applications.actions import record_intent
 from opportunity_app.core.database import connect_product

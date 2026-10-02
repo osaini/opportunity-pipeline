@@ -35,11 +35,11 @@ from pathlib import Path
 from typing import Callable
 from xml.sax.saxutils import escape
 
-from . import automation
-from .mail.connections import ensure_preferences
+from . import ledger as automation
+from ..mail.connections import ensure_preferences
 from .notifications import in_quiet_hours
-from .core.settings_store import setting_updated_at
-from .core.user_time import user_timezone
+from ..core.settings_store import setting_updated_at
+from ..core.user_time import user_timezone
 
 LOGGER = logging.getLogger(__name__)
 

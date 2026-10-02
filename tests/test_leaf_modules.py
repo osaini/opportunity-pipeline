@@ -125,7 +125,7 @@ LEAVES: dict[str, tuple[set[str], set[str]]] = {
     # Workstream B: workers, the AI CLI runner, outreach leaves
     # Not a pure leaf: automation (record_health) is imported where used, so importing background loads neither it
     # nor the mail reader. mail_message and timestamps are stdlib-only leaves.
-    "opportunity_app/background.py": (dotted("mail.message", "core.timestamps"), dotted("automation")),
+    "opportunity_app/automation/background.py": (dotted("mail.message", "core.timestamps"), dotted("automation.ledger")),
     "opportunity_app/integrations/web_fetch.py": ({"httpx", "httpcore"}, set()),
     "opportunity_app/outreach_config.py": (dotted("integrations.agent_providers"), set()),
     "opportunity_app/contact_names.py": (set(), set()),
@@ -981,7 +981,7 @@ class GmailClientLeafTests(unittest.TestCase):
 
 class OutreachIdentityTests(unittest.TestCase):
     def test_company_identity_does_not_load_the_mail_readers(self):
-        heavy = dotted("outreach_inbox", "applications.inbox", "outreach_labels", "outreach_delivery", "automation", "api")
+        heavy = dotted("outreach_inbox", "applications.inbox", "outreach_labels", "outreach_delivery", "automation.ledger", "api")
         self.assertEqual(all_imports(APP / "outreach_identity.py") & heavy, set())
 
     def test_importing_it_in_a_fresh_process_loads_no_sender_gmail_or_automation(self):
@@ -995,7 +995,7 @@ class OutreachIdentityTests(unittest.TestCase):
         loaded = set(ast.literal_eval(done.stdout.strip().splitlines()[-1]))
         heavy = dotted(
             "outreach", "outreach_contacts", "outreach_forms", "outreach_gmail", "outreach_inbox", "applications.inbox",
-            "outreach_labels", "outreach_delivery", "automation", "core.schema", "integrations.gmail_client", "mail.connections", "api",
+            "outreach_labels", "outreach_delivery", "automation.ledger", "core.schema", "integrations.gmail_client", "mail.connections", "api",
         ) | {"cryptography", "httpx"}
         self.assertEqual(loaded & heavy, set())
 
@@ -1015,7 +1015,8 @@ class OutreachIdentityTests(unittest.TestCase):
 # --- Workstream B: background workers, the AI CLI runner, outreach leaves ---------------------------------------------
 
 from opportunity_app.integrations import agent_providers, web_fetch
-from opportunity_app import background, inbox_watcher, outreach_batch, outreach_config, outreach_review  # noqa: E402
+from opportunity_app.automation import background, inbox_watcher
+from opportunity_app import outreach_batch, outreach_config, outreach_review  # noqa: E402
 from opportunity_app.outreach import create_target, get_target, latest_event_stamp, log_event, withdraw_auto_approval  # noqa: E402
 from opportunity_app.core.database import connect_product  # noqa: E402
 

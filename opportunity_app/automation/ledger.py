@@ -67,12 +67,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Protocol
 from uuid import uuid4
 
-from .apply.claims import claim_held
-from .core.database import is_unique_violation
-from .outreach_config import sender_account
-from .core.schema import PAUSE_NEVER_CHANGED
-from .core.settings_store import get_setting, put_setting
-from .core.timestamps import parse_app_instant, utc_now
+from ..apply.claims import claim_held
+from ..core.database import is_unique_violation
+from ..outreach_config import sender_account
+from ..core.schema import PAUSE_NEVER_CHANGED
+from ..core.settings_store import get_setting, put_setting
+from ..core.timestamps import parse_app_instant, utc_now
 
 OFF_ON = ("off", "on")
 OFF_SHADOW_ON = ("off", "shadow", "on")

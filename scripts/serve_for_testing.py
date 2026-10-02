@@ -127,7 +127,7 @@ def main() -> int:
         recovery_sandbox=True,
     )
     if fake_apply:
-        from opportunity_app import automation
+        from opportunity_app.automation import ledger as automation
         from opportunity_app.core.schema import LOCAL_USER_ID
 
         conn = sqlite3.connect(platform_path)

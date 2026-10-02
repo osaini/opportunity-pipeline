@@ -37,7 +37,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any, Callable
 
-from .. import automation
+from ..automation import ledger as automation
 from ..core.settings_store import get_setting, put_setting
 from ..core.timestamps import utc_now
 from ..integrations.typesafe_decisions import DecisionClient, TypeSafeClient, TypeSafeError

@@ -9,9 +9,9 @@ from fastapi import Depends, HTTPException, Query, status
 
 from ..overrides import shared_router
 from ...applications import inbox as application_inbox
-from ... import automation as automation_core
-from ... import automation_health
-from ... import auto_triage
+from ...automation import ledger as automation_core
+from ...automation import health as automation_health
+from ...automation import triage as auto_triage
 from ...mail import trust as mail_trust
 from ...applications.actions import ApplicationNotFoundError
 from ...mail.classifiers import client_for as inbox_client_for

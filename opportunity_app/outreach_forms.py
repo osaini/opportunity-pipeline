@@ -45,7 +45,8 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urljoin
 
-from . import ROOT, automation
+from . import ROOT
+from .automation import ledger as automation
 from .contact_names import NO_REPLY_SENDER, website_domain
 from .outreach import UNSENT_STATUSES, DraftChangedError, list_targets, log_event, get_target, update_target, validate_web_url
 from .outreach_location import missing_location_message

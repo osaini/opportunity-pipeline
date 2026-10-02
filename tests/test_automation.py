@@ -15,7 +15,7 @@ from uuid import uuid4
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from opportunity_app.applications import actions as actions_module
-from opportunity_app import automation, automation_handlers, automation_health
+from opportunity_app.automation import ledger as automation, handlers as automation_handlers, health as automation_health
 from opportunity_app.core import schema, timestamps
 from opportunity_app.accounts.operations import ACCOUNT_QUERIES, delete_account, export_account
 from opportunity_app.student.agent import decide_proposal
@@ -29,7 +29,7 @@ from opportunity_app.applications.actions import (
     record_intent_tx,
     update_application_tx,
 )
-from opportunity_app.automation import OFF_SHADOW_ON, AutomationGateError, Feature, Superseded
+from opportunity_app.automation.ledger import OFF_SHADOW_ON, AutomationGateError, Feature, Superseded
 from opportunity_app.outreach_automation import SETTINGS, settings, update_settings
 from opportunity_app.core.schema import ensure_product_schema
 from opportunity_app.core.database import connect_product, has_column

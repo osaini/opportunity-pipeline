@@ -1142,7 +1142,7 @@ class TruthTableHandOverRows(PolicyCase):
         self.assertFalse(apply_runs.hand_over(self.conn, token, user_id=USER, now=self.at(15)))
 
     def test_rows_46_and_47_the_newer_of_a_pause_and_the_confirm_wins(self):
-        from opportunity_app import automation
+        from opportunity_app.automation import ledger as automation
 
         rehearsal = self.rehearsal(-10)
         token = self.claim("one_click", "job-1", confirmed_at=self.at(-5).isoformat(timespec="microseconds"), rehearsal_run_id=rehearsal)
@@ -1152,7 +1152,7 @@ class TruthTableHandOverRows(PolicyCase):
         self.assertTrue(apply_runs.hand_over(self.conn, later, user_id=USER, now=self.at(1)), "47: paused before the confirm")
 
     def test_row_48_unattended_is_refused_while_paused(self):
-        from opportunity_app import automation
+        from opportunity_app.automation import ledger as automation
 
         token = self.claim("unattended", "job-1")
         automation.set_paused(self.conn, USER, True)
@@ -1409,7 +1409,7 @@ class RequirementTests(ApplyCase):
             apply_runs.setup_requirement(self.conn, USER)
 
     def test_the_switch_is_registered_off_and_on_only_with_no_shadow_and_cannot_turn_on_until_the_requirement_is_met(self):
-        from opportunity_app import automation
+        from opportunity_app.automation import ledger as automation
 
         feature = automation.FEATURES["apply_agent"]
         self.assertEqual((feature.label, feature.group, feature.risk, feature.modes), ("Apply for me", "applications", "external", automation.OFF_ON))

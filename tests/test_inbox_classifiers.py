@@ -16,7 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, automation, outreach_inbox
+from opportunity_app import STATIC_DIR, outreach_inbox
+from opportunity_app.automation import ledger as automation
 from opportunity_app.api import create_app
 from opportunity_app.mail.monitored_classifier import classify_monitored_message
 from opportunity_app.mail.classifiers import (
@@ -30,7 +31,7 @@ from opportunity_app.mail.classifiers import (
     set_enabled,
 )
 from opportunity_app.outreach_replies import suggest_reply_status
-from opportunity_app.inbox_watcher import InboxWatcher
+from opportunity_app.automation.inbox_watcher import InboxWatcher
 from opportunity_app.core.schema import LOCAL_USER_ID
 from opportunity_app.core.database import connect_product
 from opportunity_app.integrations.typesafe_decisions import TypeSafeNotConfigured, TypeSafeResponseError

@@ -21,7 +21,8 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, automation, automation_health, inbox_watcher, internal_automation
+from opportunity_app import STATIC_DIR
+from opportunity_app.automation import ledger as automation, health as automation_health, inbox_watcher, internal as internal_automation
 from opportunity_app.applications import inbox as application_inbox, mail_rules as application_mail_rules
 from opportunity_app.mail import gmail_connection, trust as mail_trust
 from opportunity_app.applications.actions import record_intent, update_application
@@ -981,7 +982,7 @@ class OutreachPossibleReplyRecordTests(MailCase):
 
 class WatcherTests(MailCase):
     def test_the_watcher_runs_it_as_a_fifth_step_only_when_it_is_not_off(self):
-        from opportunity_app.inbox_watcher import InboxWatcher
+        from opportunity_app.automation.inbox_watcher import InboxWatcher
 
         watcher = InboxWatcher(self.platform_path, client_factory=self.factory, decisions_for=lambda conn, user_id: None)
         with mock.patch.object(application_inbox, "run_pass", return_value={"state": "ok", "detail": {"read": 0}}) as step:

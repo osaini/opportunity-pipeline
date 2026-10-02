@@ -41,8 +41,9 @@ from typing import Any, Callable
 import httpx
 
 from .apply import runs as apply_runs
-from . import automation, internal_automation, outreach_thank_you
-from .background import PollingWorker, record_health_quietly, step_error
+from .automation import ledger as automation, internal as internal_automation
+from . import outreach_thank_you
+from .automation.background import PollingWorker, record_health_quietly, step_error
 from .core.database import rollback_quietly, connect_product
 from .outreach import approve_draft, get_target, heard_back, latest_event_stamp, list_targets, log_event, withdraw_auto_approval
 from .outreach_greeting import greeting_style, greets_contact, without_greeting
@@ -413,7 +414,7 @@ class AutomationWorker(PollingWorker):
             errors: dict[str, str] = {}
             desktop_users = self._users_with(conn, ("desktop_notifications",))
             try:
-                from .desktop_notify import deliver_desktop_notices  # imported here: only the worker shows pop-ups
+                from .automation.desktop_notify import deliver_desktop_notices  # imported here: only the worker shows pop-ups
 
                 deliver_desktop_notices(conn)
             except Exception as exc:  # noqa: BLE001 - a pop-up never holds up a send

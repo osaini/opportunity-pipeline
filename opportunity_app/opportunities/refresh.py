@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .. import DEFAULT_LEGACY_DB, DEFAULT_PROFILE, ROOT
-from ..auto_triage import triage_after_sync
+from ..automation.triage import triage_after_sync
 from ..core.daily_lock import TEMPFAIL_EXIT, DailyRunMutex
 from .legacy import load_sources
 from .purge import purge_expired_opportunities

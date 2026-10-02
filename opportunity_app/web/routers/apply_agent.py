@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import Depends, HTTPException, Response, status
 
 from ..overrides import shared_router
-from ... import automation as automation_core
+from ...automation import ledger as automation_core
 from ...applications.actions import OpportunityNotFoundError
 from ...apply import (
     classify as apply_classify,

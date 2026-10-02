@@ -25,7 +25,7 @@ from ...accounts.employer import (
     propose_interview,
     requisition_record,
 )
-from ...notifications import build_provider as build_notification_provider
+from ...automation.notifications import build_provider as build_notification_provider
 from ..dependencies import employer_connection
 from ..models.employer import (
     CandidateDecisionRequest,
