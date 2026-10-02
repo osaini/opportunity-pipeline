@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from opportunity_app.agent_providers import (
+from opportunity_app.integrations.agent_providers import (
     AnthropicProvider,
     CliAgentProvider,
     OpenAIProvider,
@@ -143,7 +143,7 @@ class CliAgentProviderTests(unittest.TestCase):
     def test_continue_with_appends_tool_results_to_transcript(self):
         payload = json.dumps({"answer": "done"})
         provider, calls = self._provider(payload)
-        from opportunity_app.agent_providers import ProviderReply, ToolCall
+        from opportunity_app.integrations.agent_providers import ProviderReply, ToolCall
 
         prior = ProviderReply(text="", tool_calls=[ToolCall(id="call-1", name="lookup", arguments={})], state=[{"role": "user", "content": "hi"}])
         reply = provider.continue_with(
@@ -211,12 +211,12 @@ class CliAgentProviderSubprocessTests(unittest.TestCase):
             # Run the stand-in CLI with the exact kwargs the provider chose.
             return real_run([sys.executable, "-c", _FAKE_CLI], **kwargs)
 
-        from opportunity_app.agent_providers import ProviderReply, ToolCall
+        from opportunity_app.integrations.agent_providers import ProviderReply, ToolCall
 
         provider = CliAgentProvider(provider_id, "subscription")
         provider.binary = provider_id
         prior = ProviderReply(text="", tool_calls=[ToolCall(id="c1", name="lookup", arguments={})], state=[{"role": "user", "content": "hi"}])
-        with mock.patch("opportunity_app.agent_providers.subprocess.run", fake_run):
+        with mock.patch("opportunity_app.integrations.agent_providers.subprocess.run", fake_run):
             reply = provider.continue_with(
                 prior, [(prior.tool_calls[0], SCRAPED)], instructions="Be careful.", tools=[], max_output_tokens=50,
             )

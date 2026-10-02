@@ -9,10 +9,10 @@ from fastapi import Depends, HTTPException, Header, Query, Response, status
 
 from pipeline_core import MAX_PER_COMPANY, OpportunityFilters, OpportunityRepository
 from ..overrides import shared_router
-from ... import resume_variants
-from ...actions import OpportunityNotFoundError, record_intent
-from ...company_tags import CompanyNotFoundError, decorate_with_tags, set_company_tag, tag_facets_for_keys
-from ...urgent import (
+from ...student import resume_variants
+from ...applications.actions import OpportunityNotFoundError, record_intent
+from ...core.company_tags import CompanyNotFoundError, decorate_with_tags, set_company_tag, tag_facets_for_keys
+from ...applications.urgent import (
     DeadlineNotFoundError,
     clear_user_deadline,
     set_user_deadline,
@@ -20,9 +20,9 @@ from ...urgent import (
     user_deadlines_for,
     visible_opportunity,
 )
-from ...profile import is_personalized
-from ...profile_store import read_stored_profile
-from ...typesafe_decisions import (
+from ...student.profile import is_personalized
+from ...core.profile_store import read_stored_profile
+from ...integrations.typesafe_decisions import (
     TypeSafeError,
     TypeSafeNotConfigured,
     review_opportunity as review_opportunity_with_typesafe,

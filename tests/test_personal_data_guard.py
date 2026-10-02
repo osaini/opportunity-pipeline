@@ -124,7 +124,7 @@ class NeedleTests(unittest.TestCase):
 
     def test_a_diff_reports_situation_terms_by_the_file_they_land_in(self):
         diff = "\n".join([
-            "+++ b/opportunity_app/early_programs.py",
+            "+++ b/opportunity_app/opportunities/early_programs.py",
             "@@ -0,0 +4,1 @@",
             "+LABEL = 'QIT Kitelab'",
             "+++ b/tests/test_early_programs.py",
@@ -133,7 +133,7 @@ class NeedleTests(unittest.TestCase):
         ])
         hits = guard.scan_diff(diff, self.needles)
         self.assertEqual([(hit.where, hit.kind) for hit in hits],
-                         [("opportunity_app/early_programs.py:4", "your situation in shipped code")])
+                         [("opportunity_app/opportunities/early_programs.py:4", "your situation in shipped code")])
 
     def test_reports_mask_the_value(self):
         hit = guard.scan_text("robin.quill@student.example.edu", "f:1", self.needles)[0]

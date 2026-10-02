@@ -21,7 +21,7 @@ from tempfile import TemporaryDirectory
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from helpers_platform import migrated_empty_db
-from opportunity_app.database import connect_product
+from opportunity_app.core.database import connect_product
 from pipeline_core.identity import sort_key
 from pipeline_core import OpportunityFilters, OpportunityRepository
 

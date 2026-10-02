@@ -11,9 +11,9 @@ remain explicit open gates rather than being inferred from scaffolding.
 | Phase | Implementation evidence | Verification evidence | Result |
 |---|---|---|---|
 | 0 — Legacy modularization | `pipeline.py`, `pipeline_core/`, locked dependencies, CI | 105 legacy tests; CLI/core parity tests | Pass |
-| 1 — API, PostgreSQL, auth, shell | `api.py`, `auth.py`, `database.py`, migrations, worker, SPA | platform, auth, PostgreSQL CI contract, tenancy and browser suites | Pass; PostgreSQL contract is CI-only when no local server exists |
-| 2 — Profile and resume | `profile.py`, `resumes.py`, private storage and deterministic document scanner | parsing/confirmation, hostile upload, version/delete, per-user score tests | Pass |
-| 3 — Opportunity deck | tenant-scoped `read_model.py`, `actions.py`, responsive card/list UI and offline outbox | scoring/filter/action API tests plus browser student journey | Pass |
+| 1 — API, PostgreSQL, auth, shell | `api.py`, `accounts/auth.py`, `core/database.py`, migrations, worker, SPA | platform, auth, PostgreSQL CI contract, tenancy and browser suites | Pass; PostgreSQL contract is CI-only when no local server exists |
+| 2 — Profile and resume | `student/profile.py`, `student/resumes.py`, private storage and deterministic document scanner | parsing/confirmation, hostile upload, version/delete, per-user score tests | Pass |
+| 3 — Opportunity deck | tenant-scoped `read_model.py`, `applications/actions.py`, responsive card/list UI and offline outbox | scoring/filter/action API tests plus browser student journey | Pass |
 | 4 — Tracker | applications, immutable events, tasks, contacts, reminders, captures, import/export and board/list UI | tracker/capture/notification tests and browser views | Pass |
 | 5 — Preparation | grounded/versioned documents, answer library, interview rubric, TTS, speech transcription, private audio recording | preparation regression plus browser/Node validation | Pass after 2026-08-23 recording implementation |
 | 6 — Student agent | tool-backed durable threads, model adapters, budgets, audited proposals and approval boundary | deterministic/model-provider, prompt-injection and error-boundary tests | Pass |

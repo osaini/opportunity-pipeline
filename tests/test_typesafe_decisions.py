@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
-from opportunity_app.typesafe_decisions import (
+from opportunity_app.integrations.typesafe_decisions import (
     TypeSafeClient,
     TypeSafeNotConfigured,
     TypeSafeResponseError,
@@ -256,7 +256,7 @@ class TypeSafeApiTests(unittest.TestCase):
 
     def test_review_does_not_provision_a_missing_profile(self):
         from contextlib import closing
-        from opportunity_app.database import connect_product
+        from opportunity_app.core.database import connect_product
 
         with closing(connect_product(self.platform_path)) as conn:
             conn.execute("DELETE FROM profile_facts WHERE user_id='local-user'")

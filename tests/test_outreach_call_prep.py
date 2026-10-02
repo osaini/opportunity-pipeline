@@ -15,19 +15,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, automation
+from opportunity_app import ROOT, STATIC_DIR
+from opportunity_app.automation import ledger as automation
 from opportunity_app.api import create_app
-from opportunity_app.outreach import confirm_research, create_target, get_target, log_reply, update_target
-from opportunity_app.operations import enqueue_job, run_next_job
-from opportunity_app.outreach_call_prep import (
+from opportunity_app.outreach.targets import confirm_research, create_target, get_target, log_reply, update_target
+from opportunity_app.accounts.operations import enqueue_job, run_next_job
+from opportunity_app.outreach.call_prep import (
     DURING_CALL, JOB_TYPE, JOB_TYPES, PAUSED_WAIT, CallPrepRejected, CallPrepWorker, ReplyRequired, auto_queue_call_prep,
     generate_call_prep, is_automatic, queue_call_prep,
 )
-from opportunity_app import outreach_call_prep, outreach_call_questions
-from opportunity_app.agent_providers import ProviderReply
-from opportunity_app.outreach_research import queue_research
-from opportunity_app.schema import ensure_product_schema
-from opportunity_app.database import connect_product
+from opportunity_app.outreach import call_prep as outreach_call_prep, call_questions as outreach_call_questions
+from opportunity_app.integrations.agent_providers import ProviderReply
+from opportunity_app.outreach.research import queue_research
+from opportunity_app.core.schema import ensure_product_schema
+from opportunity_app.core.database import connect_product
 from opportunity_app.worker import WEB_APP_JOB_TYPES
 
 from helpers_platform import build_and_migrate
@@ -1213,12 +1214,16 @@ class CallPrepApiTests(unittest.TestCase):
         self.assertNotIn("a second model confirm", script)
         # The call-prep modules, whether each stays one file or becomes a package. Other outreach modules legitimately say
         # "second model": the follow-up and thank-you reviews really are read by a different model.
-        names = ("outreach_research", "outreach_interviewer", "outreach_call_prep")
-        modules = {path: text for path, text in python_modules("*.py").items() if path.split("/")[0].removesuffix(".py") in names}
-        self.assertEqual({path.split("/")[0].removesuffix(".py") for path in modules}, set(names))
+        names = ("outreach/research", "outreach/interviewer", "outreach/call_prep")
+
+        def module_of(path):
+            return next((name for name in names if path.removesuffix(".py") == name or path.startswith(name + "/")), None)
+
+        modules = {path: text for path, text in python_modules("*.py").items() if module_of(path)}
+        self.assertEqual({module_of(path) for path in modules}, set(names))
         for name, text in modules.items():
             self.assertNotIn("second model", text.casefold(), name)
-        readme = (Path(outreach_call_prep.__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertNotIn("second model confirms", readme)
         self.assertNotIn("a second model which did not write", readme)
 

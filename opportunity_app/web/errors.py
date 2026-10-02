@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from fastapi import HTTPException, status
 
-from ..outreach_gmail import SendNeedsCheckError
+from ..outreach.gmail import SendNeedsCheckError
 
 
 def outreach_not_found() -> HTTPException:

@@ -15,9 +15,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import httpx
 
-from opportunity_app.outreach import create_target
-from opportunity_app.outreach_email_search import check_person, hop_guard, search_emails
-from opportunity_app.database import connect_product
+from opportunity_app.outreach.targets import create_target
+from opportunity_app.outreach.email_search import check_person, hop_guard, search_emails
+from opportunity_app.core.database import connect_product
 
 from helpers_outreach import USER, safe_fetcher, site_transport
 from helpers_platform import build_and_migrate

@@ -16,10 +16,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, automation, outreach_inbox
+from opportunity_app import STATIC_DIR
+from opportunity_app.outreach import inbox as outreach_inbox
+from opportunity_app.automation import ledger as automation
 from opportunity_app.api import create_app
-from opportunity_app.monitored_classifier import classify_monitored_message
-from opportunity_app.inbox_classifiers import (
+from opportunity_app.mail.monitored_classifier import classify_monitored_message
+from opportunity_app.mail.classifiers import (
     MIN_CONFIDENCE,
     PAUSED_REASON,
     build_client,
@@ -29,11 +31,11 @@ from opportunity_app.inbox_classifiers import (
     enabled,
     set_enabled,
 )
-from opportunity_app.outreach_replies import suggest_reply_status
-from opportunity_app.inbox_watcher import InboxWatcher
-from opportunity_app.schema import LOCAL_USER_ID
-from opportunity_app.database import connect_product
-from opportunity_app.typesafe_decisions import TypeSafeNotConfigured, TypeSafeResponseError
+from opportunity_app.outreach.replies import suggest_reply_status
+from opportunity_app.automation.inbox_watcher import InboxWatcher
+from opportunity_app.core.schema import LOCAL_USER_ID
+from opportunity_app.core.database import connect_product
+from opportunity_app.integrations.typesafe_decisions import TypeSafeNotConfigured, TypeSafeResponseError
 
 from helpers_platform import build_and_migrate
 from helpers_gmail import ReplyCaptureFixture, mail as inbox_mail
@@ -308,7 +310,7 @@ class InboxSuggestionApiTests(unittest.TestCase):
     def test_the_setting_is_exported_with_the_account(self):
         self.client.put("/api/v1/typesafe/inbox-suggestions", headers=AUTH, json={"enabled": True})
         with closing(connect_product(self.platform_path)) as conn:
-            from opportunity_app.operations import export_account
+            from opportunity_app.accounts.operations import export_account
 
             exported = export_account(conn, user_id=LOCAL_USER_ID)
         self.assertEqual([row["key"] for row in exported["user_settings"]], ["jev_inbox_suggestions"])

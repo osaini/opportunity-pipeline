@@ -21,9 +21,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
-from opportunity_app import profile as profile_module
+from opportunity_app.student import profile as profile_module
 from opportunity_app.api import create_app
-from opportunity_app.schema import LOCAL_USER_ID
+from opportunity_app.core.schema import LOCAL_USER_ID
 
 from helpers_platform import build_and_migrate
 

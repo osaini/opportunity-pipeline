@@ -13,8 +13,8 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
-from opportunity_app.outreach_gmail import attachment_path
-from opportunity_app.outreach_settings import OutreachSettings
+from opportunity_app.outreach.gmail import attachment_path
+from opportunity_app.outreach.settings import OutreachSettings
 
 from helpers_platform import build_and_migrate, sample_docx
 
@@ -99,8 +99,8 @@ class OutreachSettingsApiTests(unittest.TestCase):
     def test_the_linkedin_account_is_one_username_and_can_never_write_another_key(self):
         from contextlib import closing
 
-        from opportunity_app.schema import ensure_product_schema
-        from opportunity_app.database import connect_product
+        from opportunity_app.core.schema import ensure_product_schema
+        from opportunity_app.core.database import connect_product
 
         settings = OutreachSettings(env_path=self.env_path, attachment_dir=self.attachments, resume_storage=self.root / "resumes")
         with closing(connect_product(self.platform_path)) as conn, mock.patch.dict(os.environ, {"PIPELINE_LINKEDIN_ACCOUNT": ""}):

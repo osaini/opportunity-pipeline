@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import ROOT
-from .daily_lock import TEMPFAIL_EXIT, DailyRunMutex
+from .core.daily_lock import TEMPFAIL_EXIT, DailyRunMutex
 
 DATA_DIR = ROOT / "data"
 STATE_PATH = DATA_DIR / "daily-run.json"

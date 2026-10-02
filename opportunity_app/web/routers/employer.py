@@ -8,8 +8,8 @@ from typing import Any
 from fastapi import Depends, HTTPException, status
 
 from ..overrides import shared_router
-from ...dossier import DossierNotFoundError
-from ...employer import (
+from ...accounts.dossier import DossierNotFoundError
+from ...accounts.employer import (
     EmployerNotFoundError,
     add_candidate_from_share,
     approve_candidate_message,
@@ -25,7 +25,7 @@ from ...employer import (
     propose_interview,
     requisition_record,
 )
-from ...notifications import build_provider as build_notification_provider
+from ...automation.notifications import build_provider as build_notification_provider
 from ..dependencies import employer_connection
 from ..models.employer import (
     CandidateDecisionRequest,

@@ -17,12 +17,14 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
-from opportunity_app import automation, gmail_connection, outreach_schedule
-from opportunity_app.outreach_automation import AutomationWorker, update_settings
-from opportunity_app.outreach_schedule import next_morning, recipient_zone, run_due_sends
-from opportunity_app.schema import ensure_product_schema
-from opportunity_app.database import connect_product
-from opportunity_app.timestamps import utc_now
+from opportunity_app.automation import ledger as automation
+from opportunity_app.outreach import schedule as outreach_schedule
+from opportunity_app.mail import gmail_connection
+from opportunity_app.outreach.automation import AutomationWorker, update_settings
+from opportunity_app.outreach.schedule import next_morning, recipient_zone, run_due_sends
+from opportunity_app.core.schema import ensure_product_schema
+from opportunity_app.core.database import connect_product
+from opportunity_app.core.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 from helpers_gmail import ACCOUNT, PDF, SCOPES, FakeGmail, forget_gmail_backoff
@@ -495,7 +497,7 @@ class ScheduledSendTests(unittest.TestCase):
         self.connect()
         target = self.approved()
         self.schedule(target)
-        with mock.patch("opportunity_app.outreach_review.fresh_look", return_value={"ok": False, "reason": "Gmail could not be reached"}):
+        with mock.patch("opportunity_app.outreach.review.fresh_look", return_value={"ok": False, "reason": "Gmail could not be reached"}):
             self.assertEqual([item["state"] for item in self.due(target)], ["retrying"])
         self.assertEqual(tuple(self.stored())[:2], ("scheduled", 1))
 

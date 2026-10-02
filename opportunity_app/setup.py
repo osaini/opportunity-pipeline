@@ -30,7 +30,7 @@ from typing import Any
 from pipeline_core.env import iter_env_pairs
 
 from . import ROOT
-from .agent_providers import CLI_CONFIG, cli_available, cli_binary
+from .integrations.agent_providers import CLI_CONFIG, cli_available, cli_binary
 
 MIN_PYTHON = (3, 11)
 GENERATED_SECRETS = {
@@ -275,8 +275,8 @@ def enable_personal_data_hooks(root: Path) -> str:
 
 
 def _ensure_databases(paths: Paths) -> None:
-    from .legacy import create_database
-    from .legacy_sync import migrate_legacy_database
+    from .opportunities.legacy import create_database
+    from .opportunities.legacy_sync import migrate_legacy_database
 
     create_database(paths.legacy_db)
     migrate_legacy_database(paths.legacy_db, paths.platform_db, paths.profile)
@@ -360,8 +360,8 @@ def _validate_automation_settings(profile: dict[str, Any], errors: list[str], wa
 
 def _validate_apply_agent_settings(profile: dict[str, Any], errors: list[str], warnings: list[str]) -> None:
     """The per-student Apply for me settings: how the name is written on an application, and the limits."""
-    from .apply_runs import DEFAULT_LIMITS, LIMIT_MAXIMUM
-    from .profile import name_parts_errors
+    from .apply.runs import DEFAULT_LIMITS, LIMIT_MAXIMUM
+    from .student.profile import name_parts_errors
 
     parts = profile.get("name_parts")
     if parts is not None:
@@ -407,7 +407,7 @@ def validate_profile(profile: Any) -> dict[str, Any]:
             errors.append(f"available_terms entry {term!r} should look like 'summer 2027'")
     home = str(profile.get("break_location") or "").strip()
     if home:
-        from .outreach_location import student_home
+        from .outreach.location import student_home
 
         regions = [region for region in profile.get("regions") or [] if isinstance(region, dict)]
         if not student_home({"break_location": home}, regions):
@@ -417,7 +417,7 @@ def validate_profile(profile: Any) -> dict[str, Any]:
             )
     degree = profile.get("degree")
     if isinstance(degree, str) and degree.strip():
-        from .legacy import degree_levels
+        from .opportunities.legacy import degree_levels
 
         if not degree_levels(degree):
             warnings.append(
@@ -428,7 +428,7 @@ def validate_profile(profile: Any) -> dict[str, Any]:
         warnings.append("requires_sponsorship and work_authorized_us are both true; confirm with the student")
     _validate_automation_settings(profile, errors, warnings)
     _validate_apply_agent_settings(profile, errors, warnings)
-    from .profile import COMPLETENESS_FIELDS, is_answered
+    from .student.profile import COMPLETENESS_FIELDS, is_answered
 
     missing = [field for field in COMPLETENESS_FIELDS if not is_answered(profile.get(field))]
     return {"ok": not errors, "errors": errors, "warnings": warnings, "missing": missing}
@@ -457,7 +457,7 @@ def status(paths: Paths) -> dict[str, Any]:
 
     sources_report: dict[str, Any] = {"overlay_exists": paths.overlay.exists()}
     try:
-        from .legacy import load_sources
+        from .opportunities.legacy import load_sources
 
         merged = load_sources(paths.root / "config" / "sources.json", paths.overlay)
         enabled = [source for source in merged["ats_sources"] if source.get("enabled", True)]
@@ -505,7 +505,7 @@ def _next_steps(paths: Paths, env: dict[str, str], profile: dict[str, Any]) -> l
 
 def programs_report(paths: Paths) -> dict[str, Any]:
     """Check config/early_programs.local.json, the list behind the Programs tab."""
-    from .early_programs import load_programs
+    from .opportunities.early_programs import load_programs
 
     loaded = load_programs(paths.programs)
     return {

@@ -11,7 +11,7 @@
 - **Base:** origin/main `5d95aa9` (Phases 0 to 2 merged and deployed). Line numbers below were
   taken from that commit and were refreshed against ac2398d on 2026-09-29. Revision 2 re-checked the ones the review questioned: sidepanel.js:82
   (injection list) and :212 (answer save; the call starts at :210) are right; the contact-form
-  factory wiring is api.py:1063-1064; `discover_ats` lives in pipeline.py:2277, not boards.py.
+  factory wiring is api.py:1063-1064; `discover_ats` lives in pipeline.py:2277, not opportunities/boards.py.
 - **Relation to PLAN.md:** this document expands PLAN.md "Phase 5: Apply agent pilot"
   (PLAN.md:1099-1255). PLAN.md is the student's automation roadmap and is kept outside the
   repository, so its line references are to that file. Where the two differ, this document wins. Appendix A lists every
@@ -353,7 +353,7 @@ the profile.
 - docs/assisted-apply.md step 3: "Sensitive or consequential fields remain manual."
 - docs/THREAT_MODEL.md:17: "Demographic attributes are deliberately not collected" (options C to
   E with EEO sub-choice (ii); (i) stores no demographic value). docs/PRIVACY_ACCESSIBILITY.md:7
-  and employer.py's `not_measurable_without_explicit_consented_demographic_data` are written to
+  and accounts/employer.py's `not_measurable_without_explicit_consented_demographic_data` are written to
   start using consented demographic data once it exists. The consent text therefore limits use
   to filling application forms, and a test proves the employer and reporting code never read the
   store (12.7).
@@ -371,7 +371,7 @@ together with D1 A, if one-click is wanted. In every option:
 ### D6. Pause and a confirmed submit
 
 The code's precedent is that the student's own Send through a form is never stopped by pause
-(outreach_forms.py:33-34, automation.py:12-15). PLAN.md decision 6 says pause holds even sends
+(outreach/forms.py:33-34, automation/ledger.py:12-15). PLAN.md decision 6 says pause holds even sends
 the student scheduled (PLAN.md:1304), and "Pause means nothing leaves".
 
 - **A.** Pause stops everything, including a one-click submit the student confirmed and a
@@ -410,7 +410,7 @@ Screenshots of filled forms contain personal data. They are stored under
 `data/private/apply/` (section 11).
 
 - Retention options: **30 days / 90 days / 180 days** (the mail-evidence default,
-  application_inbox.py:109), or **until the application closes plus 30 days**.
+  applications/inbox.py:109), or **until the application closes plus 30 days**.
 - Masking options. A mask covers the whole field: its label, the control, the value shown next to
   it (react-select shows the chosen value in a separate element) and any error text.
   - **(i)** mask the fields filled from sensitive answers;
@@ -423,7 +423,7 @@ loopback app. Deletion runs on its own once a day (11).
 ### D9. Consent and acknowledgment checkboxes
 
 There are two rules in the code today. The contact-form submitter ticks required consent boxes
-(outreach_forms.py:393). The extension refuses anything that says consent (content.js:7).
+(outreach/forms.py:393). The extension refuses anything that says consent (content.js:7).
 
 - **A.** Never tick them. In Finish in browser they are left for the student; in one-click they
   are Needs you.
@@ -464,8 +464,8 @@ and only when that version is approved. A newer draft, or two approved candidate
 asks rather than choosing (6.9). An optional cover-letter field with nothing approved is left
 empty in every option.
 
-**Recommendation: B.** It uses the existing template drafter (preparation.py:98-116) and needs
-the student's approval (preparation.py:251). The agent never attaches an unapproved or outdated
+**Recommendation: B.** It uses the existing template drafter (student/preparation.py:98-116) and needs
+the student's approval (student/preparation.py:251). The agent never attaches an unapproved or outdated
 document.
 
 ### D12. Must the confirmation-email watch be available?
@@ -473,7 +473,7 @@ document.
 The watch needs two things:
 
 - "Update applications from job emails" (`application_mail`) in shadow or on. Shadow still reads
-  and records messages (application_inbox.py:1165, 1707).
+  and records messages (applications/inbox.py:1165, 1707).
 - The email typed into the application must be the Gmail account the app reads. The app does not
   store that address today; revision 2 records it when Gmail is connected (5.1). A connection
   made before this phase needs one reconnect.
@@ -508,7 +508,7 @@ an "I'm not a robot" checkbox (reCAPTCHA, hCaptcha or Turnstile).
   comes to the front before hand-over, the student ticks it, and the run then continues; nothing
   has been sent until then.
 - **B.** Click the checkbox, and only the checkbox, as the contact-form sender does
-  (outreach_forms.py:1047-1076). A picture challenge still goes to the student.
+  (outreach/forms.py:1047-1076). A picture challenge still goes to the student.
 
 **Recommendation: A.** Ticking "I'm not a robot" in the student's name is in the same family as
 reading the security code (D10), and B would be inherited from contact forms rather than decided
@@ -525,18 +525,18 @@ for applications.
         |  REST: session cookie + CSRF. Consent and submit                |
         |  routes refuse bearer tokens (4.6).                             v
         v                                                  application_mail_messages
- api.py  /api/v1/apply-agent/*  ---->  apply_runs.py  <----------------'
+ api.py  /api/v1/apply-agent/*  ---->  apply/runs.py  <----------------'
                                         |  claims, runs, watch, caps, gate, recovery
                                         |  RUNNER: one run at a time, in a child process
                                         |  with a deadline (4.6)
                                         v
-       schema client (injected) -->  apply_policy.py   (pure: schema -> plan -> eligibility)
+       schema client (injected) -->  apply/policy.py   (pure: schema -> plan -> eligibility)
        Greenhouse Job Board API         |
-       (GET, no key; fake in tests)     |       apply_checks.py (pure: outcome, join,
+       (GET, no key; fake in tests)     |       apply/checks.py (pure: outcome, join,
                                         v        required check; stdlib only)
                                    apply_agent.py  (Playwright; modelled on FormSubmitter)
                                         |   GreenhouseAdapter (Python, deterministic)
-                                        |   REQUIRED_CHECK_SCRIPT (from apply_checks.py)
+                                        |   REQUIRED_CHECK_SCRIPT (from apply/checks.py)
                                         |   frame.evaluate(adapters.js + field-engine.js + apply-engine.js)
                                         v
                                    Chromium (headed, fresh context, request guard)
@@ -547,10 +547,10 @@ for applications.
 New files:
 
 - `apps/extension/apply-engine.js`
-- `opportunity_app/apply_checks.py` (stdlib only; created in M3)
-- `opportunity_app/apply_policy.py`
+- `opportunity_app/apply/checks.py` (stdlib only; created in M3)
+- `opportunity_app/apply/policy.py`
 - `opportunity_app/apply_agent.py`
-- `opportunity_app/apply_runs.py`
+- `opportunity_app/apply/runs.py`
 - `migrations/0044_apply_agent.sql`
 - tests and fixtures (section 12)
 
@@ -625,7 +625,7 @@ reads today:
 - `widget`: `native`, `react_select`, `file_group` or `location`.
 - `visible_css`: computed style is not `display:none`, `visibility:hidden` or `opacity:0`, and
   the bounding box is at least 2 by 2 px on screen. This is the same test as the contact-form
-  extractor (outreach_forms.py:664-671). It is reported, not used to filter, so the extension's
+  extractor (outreach/forms.py:664-671). It is reported, not used to filter, so the extension's
   field list does not change.
 - `name` and `id`, as raw strings, for joining with the Greenhouse schema (6.5).
 - With `options.tag === true`, which only the agent passes, each scanned control gets a
@@ -662,7 +662,7 @@ forms." true.
 
 ### 4.3 `opportunity_app/apply_agent.py`: the browser driver
 
-`ApplyAgent` is modelled on `outreach_forms.FormSubmitter` (outreach_forms.py:784-1155). It is a
+`ApplyAgent` is modelled on `outreach_forms.FormSubmitter` (outreach/forms.py:784-1155). It is a
 context manager used on one thread, and it never raises out of `run()`. The outcome always says
 whether anything could have left the page.
 
@@ -702,8 +702,8 @@ class ApplyAgent:
   (5.2 rule 4).
 - `cancelled()` is polled between steps and inside wait loops until hand-over (6.13).
 
-**Launch.** Chromium is bundled with Playwright (no `channel`), as in outreach_forms.py:836-844,
-but **headed**: `headless=False`. FormSubmitter defaults to headless (outreach_forms.py:787,
+**Launch.** Chromium is bundled with Playwright (no `channel`), as in outreach/forms.py:836-844,
+but **headed**: `headless=False`. FormSubmitter defaults to headless (outreach/forms.py:787,
 842); the agent does not. The context is created with:
 
 - `service_workers="block"`, `accept_downloads=False`, `permissions=[]` (so the geolocation
@@ -742,7 +742,7 @@ Rules for every mode, in this order:
    `boards.greenhouse.io`. Anything else is aborted, and the run ends `needs_you` with "This
    posting sends applicants to {host}". Never `my.greenhouse.io`.
 2. **WebSockets are refused**, and each refusal is recorded (host only).
-3. **Public addresses only**, through `outreach_render.request_allowed` (outreach_render.py:33-44),
+3. **Public addresses only**, through `outreach_render.request_allowed` (outreach/render.py:33-44),
    so loopback is refused. `route_hook` replaces this rule in tests, as FormSubmitter's does.
 4. **Value guard, on every host, Greenhouse included.** A request whose URL, headers or body
    contain a planned value of 4 or more characters (raw, URL-encoded or case-folded, checked in
@@ -755,7 +755,7 @@ Rules by mode and phase:
 
 | Mode and phase | Allowed | Aborted and recorded |
 | --- | --- | --- |
-| `lookup`, `rehearse`, before the first input | GET, HEAD, OPTIONS. | Every other method, CAPTCHA endpoints included (no exception, unlike outreach_forms.py:772-775). |
+| `lookup`, `rehearse`, before the first input | GET, HEAD, OPTIONS. | Every other method, CAPTCHA endpoints included (no exception, unlike outreach/forms.py:772-775). |
 | `lookup`, `rehearse`, after the first input | GETs to the lookup endpoint of the field being typed, and static assets. | Every other request, on any host: any other GET (document, XHR, fetch, beacon, other), and every other method. |
 | `submit`, `handoff` before hand-over | GET, HEAD, OPTIONS (subject to rule 4). Non-GET only to a CAPTCHA endpoint (subject to rule 4, so its body may carry no planned value). | Every other non-GET, on any host, including every upload. So nothing that could carry the application can leave before hand-over, whatever a page script does (a `requestSubmit`, an Enter key in a typeahead, a lead-capture script). |
 | `handoff`: the student's first POST to `submitPath` on `boards.greenhouse.io` | The route handler asks the parent process for the hand-over (5.2 rule 3, 6.13) and calls `route.continue_()` only on a committed True reply. | The POST, on a False reply, an error, or no reply within 10 s. |
@@ -779,7 +779,7 @@ What this lets the preview claim, and nothing more, is in 10.4.
 - `ENGINE_SOURCE` is the concatenated text of `adapters.js`, `field-engine.js` and
   `apply-engine.js`, read once from `apps/extension/` at import time.
 - `evaluate` is not subject to the page's Content Security Policy. The contact-form submitter
-  relies on the same property for `EXTRACT_SCRIPT` (outreach_forms.py:1033-1045). A script tag
+  relies on the same property for `EXTRACT_SCRIPT` (outreach/forms.py:1033-1045). A script tag
   can be blocked by CSP.
 - The engine runs in the page's own JavaScript world, so the page can see it and could tamper
   with it. The engine's output is therefore **advisory**. Every value the agent relies on is read
@@ -808,7 +808,7 @@ Trusted events avoid the question.
 - `select_open` or `select_option`, inside a planned react-select's own field container;
 - `submit`, the adapter's submit control, in submit mode only, after `hand_over()` returned True;
 - `captcha_checkbox`, **only if the student chose D14 B**, in submit mode only, and only inside a
-  frame matching `CAPTCHA_WIDGETS` (outreach_forms.py:776-781).
+  frame matching `CAPTCHA_WIDGETS` (outreach/forms.py:776-781).
 
 Any other purpose raises. The adapter also keeps a denylist of controls that are never clicked,
 even by accident; a test pins it:
@@ -863,7 +863,7 @@ Deterministic code only. Page text never chooses an action (docs/THREAT_MODEL.md
    `/{token}/jobs/{digits}`, or `/embed/job_app?for={token}&token={digits}`. A token parsed from a
    URL wins.
 2. Otherwise it looks for an `opportunity_sources` row whose `source_key` matches the pattern
-   `'greenhouse:%'`, **passed as a query parameter**, as pipeline.py:1928 and schema.py:770 do.
+   `'greenhouse:%'`, **passed as a query parameter**, as pipeline.py:1928 and core/schema.py:770 do.
    (A literal `%` in the SQL breaks on PostgreSQL, where `PostgresConnection` turns `?` into
    `%s`.) The token is the part after `greenhouse:`, and the job id is `external_id`
    (pipeline.py:827-857). The source key is `kind:(id or token)` (pipeline.py:2127-2139), so a
@@ -885,7 +885,7 @@ it. The rehearsal gate (9.2) counts only rehearsals made with the current versio
 - Until then, a legacy page is detected and returns `needs_you` with "This is Greenhouse's older
   form, which the app does not fill yet".
 
-### 4.5 `opportunity_app/apply_policy.py`: plan and eligibility (pure)
+### 4.5 `opportunity_app/apply/policy.py`: plan and eligibility (pure)
 
 No browser and no network. Every function takes plain data and returns plain data, so the truth
 table in 7.5 is tested without Playwright.
@@ -900,11 +900,11 @@ table in 7.5 is tested without Playwright.
   tested with a shared vector file (12.3).
 - `sources_for(conn, user_id, opportunity_id) -> Sources` gathers everything a value may come
   from:
-  - confirmed facts, via `preparation.confirmed_facts` (preparation.py:33-40), including the new
+  - confirmed facts, via `preparation.confirmed_facts` (student/preparation.py:33-40), including the new
     `name_parts` field (7.1). This is not `extension_apply._confirmed_profile`, which skips the
     `is_answered` filter;
   - **all** saved answers, with their company and tags, not the 200 most recent that
-    `_safe_answers` reads (extension_apply.py:301-320);
+    `_safe_answers` reads (applications/extension.py:301-320);
   - the student's ATS option labels (5.5);
   - sensitive answers (5.4), only when the student chose D5 B to E;
   - the résumé to use (`resume_for`, 6.9);
@@ -917,7 +917,7 @@ table in 7.5 is tested without Playwright.
   (7.3).
 - `plan_hash(plan, canonical_url)` (6.6).
 
-### 4.6 `opportunity_app/apply_runs.py`: claims, runs, watch, and the service layer
+### 4.6 `opportunity_app/apply/runs.py`: claims, runs, watch, and the service layer
 
 This module owns all database writes:
 
@@ -998,7 +998,7 @@ guards:
 A submit also needs a **single-use confirm nonce**, issued only with the plan preview, bound to
 that rehearsal's `plan_hash`, and consumed in the claim transaction (5.3).
 
-### 4.7 `opportunity_app/apply_checks.py`: the decisions, as pure functions
+### 4.7 `opportunity_app/apply/checks.py`: the decisions, as pure functions
 
 Standard library only, created in M3 so the default unittest suite (which has no Playwright)
 covers every integrity-critical decision. Browser tests then only prove that the observations are
@@ -1023,7 +1023,7 @@ gathered correctly.
   is in `opportunity_app/`. Playwright stays optional (requirements-optional.txt), and
   `tests/test_dependency_boundary.py` is unchanged.
 - The extension keeps its no-submit guarantee and `final_submit_available: false`
-  (content.js:241-242, extension_apply.py:518, api.py:3984).
+  (content.js:241-242, applications/extension.py:518, api.py:3984).
 - `extension_apply.apply_context` keeps excluding sensitive answers. A new test asserts it never
   returns an `apply_sensitive_answers` entry (12.7).
 - Loopback only. The server binds 127.0.0.1 as before. The agent's browser can reach only public
@@ -1047,16 +1047,16 @@ The migration:
 
 - creates four tables and their indexes (`CREATE TABLE IF NOT EXISTS`);
 - adds three columns to existing tables, through a guarded Python step
-  `schema._apply_apply_agent` registered in `_MIGRATION_STEPS` (schema.py:387-396), each column
+  `schema._apply_apply_agent` registered in `_MIGRATION_STEPS` (core/schema.py:387-396), each column
   added only if missing, as 0038 does, so a crash before the migration is marked cannot make the
   next start fail on a duplicate column:
   - `connector_accounts.account_email TEXT NOT NULL DEFAULT ''`: the Gmail address, recorded from
     Gmail's `/profile` at OAuth connect and reconnect (D12). connector_accounts stores no address
     today (migrations/0001:362-374); the only sources are the optional
-    `PIPELINE_OUTREACH_ACCOUNT` and a live `/profile` call (outreach_gmail.py:612-617), which a
+    `PIPELINE_OUTREACH_ACCOUNT` and a live `/profile` call (outreach/gmail.py:612-617), which a
     settings render cannot make;
   - `application_mail_messages.sender_verified INTEGER NOT NULL DEFAULT 0`: 1 when
-    `mail_trust.authenticate` (mail_trust.py:239) vouched for the sender. The Phase 1 reader sets
+    `mail_trust.authenticate` (mail/trust.py:239) vouched for the sender. The Phase 1 reader sets
     it when it records the row. The watch trusts only verified rows (6.16);
   - `generated_document_artifacts.content_sha256 TEXT NOT NULL DEFAULT ''`: the SHA-256 of the
     approved text the PDF was rendered from, so a stale PDF is never attached (6.9).
@@ -1167,11 +1167,11 @@ afterwards. They are kept separate, as PLAN.md:1213-1215 requires.
    `UPDATE application_submit_claims SET state='released', resolved_by='student', updated_at=?
    WHERE user_id=? AND (application_id=? OR (ats=? AND job_ref=?)) AND after_click=0 AND state IN
    ('failed','needs_you')`, then inserts the new row. This is the `stale_token` pattern in
-   outreach_gmail.py:720-753, without the delete. An attempt with `after_click=1` is never
+   outreach/gmail.py:720-753, without the delete. An attempt with `after_click=1` is never
    released this way (rule 6).
 3. **Hand-over** happens just before the click (submit), or inside the route handler that sees
    the student's POST (handoff). It is one transaction:
-   - the lock (rule 0), then `pause_guard` (automation.py:481-496);
+   - the lock (rule 0), then `pause_guard` (automation/ledger.py:481-496);
    - it returns False when:
      - `cancel_requested=1`;
      - `unattended`, and automation is paused;
@@ -1182,7 +1182,7 @@ afterwards. They are kept separate, as PLAN.md:1213-1215 requires.
    - then `UPDATE application_submit_claims SET state='clicking', after_click=1,
      handed_over_at=?, heartbeat_at=?, updated_at=? WHERE token=? AND state='claimed'`;
    - it returns True only if exactly one row changed. It is the `hand_over` pattern at
-     outreach_forms.py:1299-1314.
+     outreach/forms.py:1299-1314.
    - `handoff` is not refused by a pause: the student's own press of Submit in the window is the
      confirm (D6 B). Under D6 A it is refused like the others.
 4. **Heartbeat.** At least every 30 s, from every wait loop (fill, CAPTCHA box, handoff, security
@@ -1299,7 +1299,7 @@ anywhere. If it is lost, old runs can no longer be compared, which only means "r
 The preview in the UI looks the values up again from `ref` when it is shown. If a value's MAC no
 longer matches, the preview says "this answer changed since the rehearsal" and the plan must be
 rehearsed again. The same design choice keeps the extension's session records value-free
-(extension_apply.py:34-46).
+(applications/extension.py:34-46).
 
 **"Rehearsal records"** are `apply_runs` rows with `kind='rehearsal'`. `kind='lookup'` is the
 option lookup for a typeahead (5.5).
@@ -1353,9 +1353,9 @@ statements are often longer.
   "I acknowledge receipt", or that links to a document, must carry a `company_key`; the API
   refuses `''`. Its links are stored and shown in the plan preview (D9 B).
 - **Read only by `apply_policy.sources_for`, server-side.** `extension_apply.apply_context`,
-  `/api/v1/extension/*`, `/api/v1/preparation/answers`, `employer.py` and every report or
-  aggregate never read it. A source test enforces that only `apply_policy.py`, `apply_runs.py`,
-  `operations.py` (export and deletion) and the settings routes name the table (12.7).
+  `/api/v1/extension/*`, `/api/v1/preparation/answers`, `accounts/employer.py` and every report or
+  aggregate never read it. A source test enforces that only `apply/policy.py`, `apply/runs.py`,
+  `accounts/operations.py` (export and deletion) and the settings routes name the table (12.7).
 - **Matching is exact:** `question_key` equality, and `company_key` either '' or equal to this
   company. For `acknowledgment` and `consent`, the key is the full statement text, so any change
   in wording is a miss.
@@ -1369,11 +1369,11 @@ they can never be stored.
 
 **As built in M4s (2026-09-30), where it differs from the text above:**
 
-- The service is `opportunity_app/apply_sensitive.py` (`add_entry`, `delete_entry`, `list_entries`, `lookup`,
+- The service is `opportunity_app/apply/sensitive.py` (`add_entry`, `delete_entry`, `list_entries`, `lookup`,
   `allowed_categories`, `set_allowed_categories`). It is the only file that names the table besides
-  `operations.py` (export and deletion); `apply_policy.stored_sensitive_answer` is now a one-line call to
-  `lookup`. The 12.7 allowlist reads: `apply_sensitive.py` and `operations.py`, plus a check that only
-  `apply_policy.py`, `apply_preflight.py` and `api.py` import the module.
+  `accounts/operations.py` (export and deletion); `apply_policy.stored_sensitive_answer` is now a one-line call to
+  `lookup`. The 12.7 allowlist reads: `apply/sensitive.py` and `accounts/operations.py`, plus a check that only
+  `apply/policy.py`, `apply/preflight.py` and `api.py` import the module.
 - **`apply_eeo_store_values` is not built.** The student chose D5 C (i), so the service refuses every EEO value
   that is not a decline, on a whole-label match against a fixed list, whatever a route or a future caller passes.
   Sub-choice (ii) would need its own decision and a THREAT_MODEL.md:17 rewrite.
@@ -1419,7 +1419,7 @@ CREATE TABLE IF NOT EXISTS apply_ats_labels (
 ```
 
 These labels live in their own table, not in `profile_facts`. `preparation.confirmed_facts`
-returns every confirmed fact as a flat map (preparation.py:33-40), and other features such as
+returns every confirmed fact as a flat map (student/preparation.py:33-40), and other features such as
 the résumé renderer read that map. ATS-specific labels must not leak into them.
 
 **How a label is found.** The schema carries no options for Pelias locations or the school
@@ -1439,11 +1439,11 @@ count toward the daily rehearsal limit (9.1).
 
 ### 5.6 Settings, features, and the code that reads claims
 
-**Features** go in `automation.FEATURES` (automation.py:150-213):
+**Features** go in `automation.FEATURES` (automation/ledger.py:150-213):
 
 - `Feature("apply_agent", "Apply for me", "Fill a Greenhouse application from your confirmed facts and saved answers, show you the result, and send it only when you press Submit", "applications", "external")`
   - Its mode is `OFF_ON`, and there is no shadow, because each submission needs the student.
-  - It gets a `REQUIREMENTS` entry (automation.py:260-265), `apply_runs.setup_requirement`. That
+  - It gets a `REQUIREMENTS` entry (automation/ledger.py:260-265), `apply_runs.setup_requirement`. That
     returns the first of these sentences that applies:
     - the agent factory's `available()` probe says Playwright or Chromium is missing ("Install
       Playwright and Chromium: python -m playwright install chromium");
@@ -1463,7 +1463,7 @@ count toward the daily rehearsal limit (9.1).
       instead of gating the switch, and Finish in browser works without them (its card then says
       the app isn't checking for a confirmation email).
   - These are all database or environment reads; none makes a network call, because
-    requirements run on every settings render (automation.py:611-622).
+    requirements run on every settings render (automation/ledger.py:611-622).
 - `auto_apply`, for unattended mode, is **not registered until M8** (D2).
 
 **Per-student limits** default in code, can be overridden in the student's profile, and are
@@ -1489,10 +1489,10 @@ The student's D3 and D4 answers become these defaults.
 | `apply_ats_disabled:<ats>` | set by the 8.8 threshold; cleared only by the student |
 
 **Screenshot retention:** `PIPELINE_APPLY_EVIDENCE_DAYS`, default 90 (D8), following
-`PIPELINE_MAIL_EVIDENCE_DAYS` (application_inbox.py:2181-2186).
+`PIPELINE_MAIL_EVIDENCE_DAYS` (applications/inbox.py:2181-2186).
 
 **The worker step.** `AutomationWorker.run_once` today works only for students with an outreach or
-internal switch on (outreach_automation.py:386-458, `_users_with`). It gains an apply step that
+internal switch on (outreach/automation.py:386-458, `_users_with`). It gains an apply step that
 does not depend on switches:
 
 - for every student returned by `apply_runs.students_to_watch(conn)` (a query: a claim in
@@ -1505,31 +1505,31 @@ does not depend on switches:
 
 **Existing readers that must learn about the new claims:**
 
-- `automation.in_flight` (automation.py:530-572): add each `clicking` claim that is held (5.2
+- `automation.in_flight` (automation/ledger.py:530-572): add each `clicking` claim that is held (5.2
   rule 7: running here, or heartbeat under 2 minutes old), with `action: "application"`,
   `source: "apply_claim"`, and the company. Not by claim age: a handoff claim can legitimately be
   20 minutes old at hand-over.
-- `automation.unconfirmed` (automation.py:575-608): add `unconfirmed` claims, `clicking` claims
+- `automation.unconfirmed` (automation/ledger.py:575-608): add `unconfirmed` claims, `clicking` claims
   that are not held, and `after_click=1` claims in `needs_you` or `failed`.
-- `automation.paused_text` (automation.py:2158-2171): generalize its grammar from exactly two
+- `automation.paused_text` (automation/ledger.py:2158-2171): generalize its grammar from exactly two
   categories to any number ("1 email was already handed to Gmail, 1 contact form was already
   being sent, and 1 application was already being submitted, and none of them can be stopped").
 - `app.js`: `unconfirmedSentence` (app.js:7417) and the in-flight and Health rendering (around
   app.js:7561) learn `action: "application"`.
-- `urgent.py`: add one kind for claims that need the student (`unconfirmed`, `needs_you`) and one
-  for `no_email_24h`. Each kind must be added to **both** `DATE_SOURCE_LABELS` (urgent.py:48) and
-  `KIND_PRIORITY` (urgent.py:68), or the aggregator raises KeyError (PLAN.md:74-75).
+- `applications/urgent.py`: add one kind for claims that need the student (`unconfirmed`, `needs_you`) and one
+  for `no_email_24h`. Each kind must be added to **both** `DATE_SOURCE_LABELS` (applications/urgent.py:48) and
+  `KIND_PRIORITY` (applications/urgent.py:68), or the aggregator raises KeyError (PLAN.md:74-75).
 
 ### 5.7 Export and deletion
 
-- **Account export** (operations.py):
+- **Account export** (accounts/operations.py):
   - include `apply_runs`, value-free. `export_account` redacts only columns named `storage_path`
-    or ending in `_path` (operations.py:235-238), so `screenshots_json` is special-cased: every
+    or ending in `_path` (accounts/operations.py:235-238), so `screenshots_json` is special-cased: every
     `path` inside it becomes `[private-file-reference-redacted]`;
   - include `application_submit_claims`, `apply_sensitive_answers` and `apply_ats_labels`, which
     are the student's own data;
   - never include the HMAC key (5.3).
-- **Account deletion.** `operations.delete_account` (operations.py:245-275) takes a list of
+- **Account deletion.** `operations.delete_account` (accounts/operations.py:245-275) takes a list of
   storage roots and has three callers: api.py:3207, tests/test_automation.py:1267 and
   tests/test_urgent.py:492. It gains an optional keyword argument `apply_root: Path | None =
   None`. When given, it removes `data/private/apply/<user folder>/` in full (section 11) before
@@ -1554,9 +1554,9 @@ panel never waits on Greenhouse.
 2. The adapter identifies the posting (4.4). If it does not, the UI shows "Apply for me works with
    Greenhouse postings only, for now" and there is no run.
 3. **The application, if any.** Look up `applications` by `(opportunity_id, user_id)`, read-only,
-   the way `import_applications` does (actions.py:729-736). An application row may already exist
-   from the posting's Apply link (`apply_opened`, actions.py:131), a capture (captures.py:337) or an
-   import (schema.py:681); any existing row is used. None is created here (6.1 creates one for
+   the way `import_applications` does (applications/actions.py:729-736). An application row may already exist
+   from the posting's Apply link (`apply_opened`, applications/actions.py:131), a capture (opportunities/captures.py:337) or an
+   import (core/schema.py:681); any existing row is used. None is created here (6.1 creates one for
    submit and handoff only).
 4. **Stage and duplicate checks.** "Ask" means a tick the student must give on the start of a
    submit or Finish in browser run (10.3); lookups and rehearsals are never stopped by an ask.
@@ -1565,7 +1565,7 @@ panel never waits on Greenhouse.
    - An `application_confirmation` in `application_mail_messages` for this application:
      **failed**, "Greenhouse already confirmed an application from you on {date}".
    - An `application_form_sessions` row for this application with status `completed` (the
-     extension's confirm-submitted, extension_apply.py:593-632): **failed**, "You marked this
+     extension's confirm-submitted, applications/extension.py:593-632): **failed**, "You marked this
      application submitted on {date}".
    - A claim for this application or for this Greenhouse job (`job_ref`) that is `claimed`,
      `clicking`, `submitted` or `unconfirmed`, or `needs_you`/`failed` with `after_click=1`:
@@ -1609,7 +1609,7 @@ One transaction, in this order:
 1. the lock (5.2 rule 0);
 2. **the application row, if missing.** `actions.ensure_application_tx(conn, opportunity_id,
    user_id, event_type="apply_agent_started", detail={mode, run_id})`, a small helper factored
-   out of `_record_intent_tx`'s `apply_opened` branch (actions.py:127-152). It inserts the
+   out of `_record_intent_tx`'s `apply_opened` branch (applications/actions.py:127-152). It inserts the
    `applying` row if missing (`ON CONFLICT(opportunity_id, user_id) DO NOTHING`) and writes an
    `application_events` row `apply_agent_started`. It writes no `opportunity_interactions` row:
    that table's `action` CHECK allows only five actions (migrations/0001:141), and "the app
@@ -1629,7 +1629,7 @@ The runner starts the child process (4.6), which starts the browser (4.3).
 
 - A status of 400 or above is **failed**, "Greenhouse answered HTTP {status}".
 - Otherwise wait for `networkidle`, up to 8 s. A busy page is read as it stands, as in
-  outreach_forms.py:892-896.
+  outreach/forms.py:892-896.
 - Keep the served HTML for `loader_paths`. For submit and handoff runs, no `submitPath` or no
   `confirmationPath` is **needs_you**, "The app couldn't find where this form sends applications,
   so it won't submit it. Apply from the posting instead." Without the submit path the app could not
@@ -1726,13 +1726,13 @@ fills it compare like with like (6.10 item 6).
 
 ### 6.7 Fill
 
-The order follows FormSubmitter (outreach_forms.py:919-947): choices first, because a choice can
+The order follows FormSubmitter (outreach/forms.py:919-947): choices first, because a choice can
 redraw the form.
 
 1. react-selects and location, via `adapter.fill_react_select` / `fill_location`;
 2. radios and checkboxes, via `_tick`;
 3. text inputs and textareas, via `_type`, then `dispatch_event("change")` and `blur()`, as in
-   outreach_forms.py:958-962.
+   outreach/forms.py:958-962.
 
 Only `fill` fields are touched. For a `deferred` field the rehearsal checks, without choosing
 anything, that the page offers what the plan would give: `read_options` must show exactly one
@@ -1752,7 +1752,7 @@ you".
 Read through Playwright, not the engine:
 
 - text: `input_value()`, compared with `outreach_forms.formatting_problem`
-  (outreach_forms.py:1157), which allows only the CRLF difference;
+  (outreach/forms.py:1157), which allows only the CRLF difference;
 - react-select: the single-value text, which must equal the planned option label after
   normalization (the engine's `normalized`, field-engine.js);
 - native select: the selected option's label;
@@ -1765,15 +1765,15 @@ words and never the value.
 
 **Which résumé** (`apply_policy.resume_for`):
 
-1. **The pick in force**, from `resume_variants.stored_pick` (resume_variants.py:293-320): the
+1. **The pick in force**, from `resume_variants.stored_pick` (student/resume_variants.py:293-320): the
    student's own pick, or an automatic pick with status `picked`. The file used is the most recent
    **confirmed** version of that résumé file. (`stored_pick`'s `version_id` is the newest version
-   of any status; `artifact_path` accepts only confirmed ones, extension_apply.py:656-664.) No
+   of any status; `artifact_path` accepts only confirmed ones, applications/extension.py:656-664.) No
    confirmed version is a problem: "The résumé picked for this role has no confirmed version".
 2. **An automatic pick with status `unsure`**: a problem that opens the résumé chooser (10.3).
 3. **No pick at all** (resume_variant_pick is off, the student has no variants, or the status is
    `no_variants`), which is the common case: the most recently confirmed résumé, the rule
-   `resume_check` already uses (resume_variants.py:430-440). The preview shows it as "Your
+   `resume_check` already uses (student/resume_variants.py:430-440). The preview shows it as "Your
    confirmed résumé".
 4. No confirmed résumé at all: the feature cannot be turned on (5.6).
 
@@ -1788,7 +1788,7 @@ the file exists and that its SHA-256 matches `resume_files.sha256`, and reports 
 The agent reads the bytes and checks the SHA-256 again before attaching.
 
 **Attaching.** `set_input_files` with a path would upload the storage file name
-(`resume-file-<uuid>.pdf`, resumes.py:437-440). The agent attaches a payload instead:
+(`resume-file-<uuid>.pdf`, student/resumes.py:437-440). The agent attaches a payload instead:
 `set_input_files({"name": original_name, "mimeType": media_type, "buffer": data})`, so the
 employer receives the name the student sees.
 
@@ -1805,7 +1805,7 @@ employer receives the name the student sees.
   discard it".
 - Before attaching, `document_artifacts.ensure_document_artifact` re-renders when the stored
   artifact's `content_sha256` (5.1) differs from the SHA-256 of the approved text. Today it returns
-  any existing file (document_artifacts.py:105-108), and the API deletes the old PDF only after
+  any existing file (student/artifacts.py:105-108), and the API deletes the old PDF only after
   an edit has committed (api.py:3409-3410), so a failed delete could leave a stale PDF.
 - The document id, version and content SHA-256 are in the plan hash, and the preview shows the
   letter's text.
@@ -1829,7 +1829,7 @@ the planned file's bytes, and 6.10 would check the result.
 
 ### 6.10 The independent pre-submit check
 
-`REQUIRED_CHECK_SCRIPT` is a separate JavaScript string in `apply_checks.py`. It deliberately
+`REQUIRED_CHECK_SCRIPT` is a separate JavaScript string in `apply/checks.py`. It deliberately
 shares no code or selectors with `apply-engine.js`, so a bug in the scanner cannot hide itself.
 It walks `form#application-form` (legacy: `#application_form`) and returns one item for every
 field container that is required by **any** of:
@@ -1862,7 +1862,7 @@ wrong value there and listed as left for you. Items whose key is `deferred`, `le
    A required field holding a value the plan did not set is always a failure. This catches
    autofill, and page scripts that fill fields.
 5. No visible `[aria-invalid="true"]` control and no visible field error text. A native `:invalid`
-   check runs as in outreach_forms.py:987-996.
+   check runs as in outreach/forms.py:987-996.
 6. Submit runs only: the live plan's `plan_hash` equals the confirmed one. Otherwise the result is
    "The form or your answers changed since you confirmed. Look at the new plan".
 
@@ -1871,7 +1871,7 @@ Then take the **filled screenshot**, masked per D8, and record its SHA-256.
 ### 6.11 CAPTCHA widgets
 
 If a visible checkbox widget (reCAPTCHA anchor, hCaptcha checkbox, Turnstile) is present, as in
-`CAPTCHA_WIDGETS` (outreach_forms.py:776-781):
+`CAPTCHA_WIDGETS` (outreach/forms.py:776-781):
 
 - **Rehearsal:** record "The form shows a CAPTCHA checkbox", and do not touch it.
 - **Handoff:** left for the student.
@@ -1880,7 +1880,7 @@ If a visible checkbox widget (reCAPTCHA anchor, hCaptcha checkbox, Turnstile) is
   The agent waits up to `person_s` for the widget's token, heartbeating. No token is
   **needs_you**, `after_click=0`.
 - **Submit, D14 B:** `_click(..., "captcha_checkbox")`, then wait up to `captcha_s` for a token, as
-  `_pass_captcha` does (outreach_forms.py:1047-1076).
+  `_pass_captcha` does (outreach/forms.py:1047-1076).
 - A picture challenge, in any mode, is never touched by the agent: in submit mode it is handled
   like D14 A.
 
@@ -1917,7 +1917,7 @@ runs because:
    with its status, and every main-frame navigation.
 4. `_click(adapter.submit_control(frame), "submit")`.
 
-From step 4 on, any exception gives **unconfirmed**, as in outreach_forms.py:1017-1023.
+From step 4 on, any exception gives **unconfirmed**, as in outreach/forms.py:1017-1023.
 
 **Handoff mode (Finish in browser, M5b):**
 
@@ -1966,7 +1966,7 @@ suite, without a browser (12.3).
 ### 6.15 Record the result
 
 1. Take the final screenshot (masked) if hand-over happened or the outcome is `needs_you`, as in
-   outreach_forms.py:1024-1027.
+   outreach/forms.py:1024-1027.
 2. In one transaction:
    - settle the claim (5.2 rule 5) with the state, note, `submitted_at`, `after_click` and
      `resolved_by`;
@@ -1983,7 +1983,7 @@ suite, without a browser (12.3).
      (the lock), re-read the stage, and only if it is still `applying` call
      `_update_application_tx(stage='applied', applied_at=submitted_at,
      source='apply_agent:confirmation_page')`. `_update_application_tx` re-reads the row under the
-     lock but does not compare it with anything (actions.py:567-625), so the caller must: a stage
+     lock but does not compare it with anything (applications/actions.py:567-625), so the caller must: a stage
      the student changed meanwhile wins. Then set `stage_recorded=1`. This is a student action,
      because they confirmed. It is not a ledger action, so pause does not block it once the
      submission has happened.
@@ -1995,22 +1995,22 @@ suite, without a browser (12.3).
      after={"stage": "applied", "only_from": "applying", "applied_at": submitted_at},
      evidence={...claim, run, screenshot hash...}, summary="Applied to {title} at {company}
      (Greenhouse showed its confirmation page)", basis="confirmation_page", confidence=None,
-     idempotency_key=f"apply:{token}", auto=True)` (automation.py:1452-1585).
-     `ApplicationStage.effective` honours `only_from` (automation.py:740-749).
+     idempotency_key=f"apply:{token}", auto=True)` (automation/ledger.py:1452-1585).
+     `ApplicationStage.effective` honours `only_from` (automation/ledger.py:740-749).
      - `perform` returns None while paused. The submission has already happened, so the claim
        keeps `stage_recorded=0`, and `recover_stale` retries with the same idempotency key after
        the student resumes. This is the Phase 1 `awaiting_resume` pattern
-       (application_inbox.py:111-114).
+       (applications/inbox.py:111-114).
      - The card says "Submitted. Applied will be recorded when you resume automation".
 4. Write a notice through `automation.notice`, with no field values and no links (as in
-   application_inbox.py:108). For example: "Greenhouse showed its confirmation page for your
+   applications/inbox.py:108). For example: "Greenhouse showed its confirmation page for your
    application to {title} at {company}", or "{company}: your application needs you".
 5. Close the browser, unless a wait is running.
 
 ### 6.16 The 24-hour confirmation watch
 
 `apply_runs.watch(conn, user_id, now)` runs on every AutomationWorker pass, every 60 s
-(outreach_automation.py:333+), for every student `students_to_watch` returns (5.6). It is a
+(outreach/automation.py:333+), for every student `students_to_watch` returns (5.6). It is a
 database query only.
 
 **Which claims it looks at:**
@@ -2028,7 +2028,7 @@ database query only.
 - `kind = 'application_confirmation'`;
 - `state IN ('done', 'awaiting_resume')`;
 - `matched_by IN ('job_id', 'company_title')`: not `company_single`, which Phase 1 accepts for a
-  confirmation (application_inbox.py:1036) but which means only "the one open application at this
+  confirmation (applications/inbox.py:1036) but which means only "the one open application at this
   company";
 - `sender_verified = 1` (5.1), PLAN.md decision 11's "authenticated sender plus a strong match";
 - `received_at >= handed_over_at - 5 minutes`;
@@ -2068,7 +2068,7 @@ never suggests applying again, which could send a duplicate.
 **Why read the mail table rather than the ledger.** After an agent submission with
 `stage_policy='record'`, the application is already `applied` with `applied_at = submitted_at`.
 Phase 1's confirmation handling then plans `stage_change(current)`, and `_next_applied_at` keeps
-the earlier time (actions.py:544-566). So the email changes nothing, and no ledger row is
+the earlier time (applications/actions.py:544-566). So the email changes nothing, and no ledger row is
 written. The corroboration can only be read from `application_mail_messages`.
 
 ---
@@ -2164,7 +2164,7 @@ the reusable ones). The problem's action opens the answer library, where the stu
     profile".
 
   `name_parts` is a new profile field, `{first, last, preferred}`, added to `ALLOWED_PROFILE_FIELDS`
-  and `validate_profile_types` (profile.py:16-48, :409-411), to the profile UI as "Name for
+  and `validate_profile_types` (student/profile.py:16-48, :409-411), to the profile UI as "Name for
   applications", and to a SETUP.md step. Today the profile has only one `name` text field, and
   `update_profile` refuses any other key. Splitting a longer name is a guess. content.js:43-44
   splits by whitespace for the extension, where a person reviews every field; the agent does not.
@@ -2240,7 +2240,7 @@ the normalized question, case-insensitively, in this order:
    its category is the most restrictive of the option matches and the question's own. Options that include "Decline to self-identify" or "I don't wish to answer"
    make the field `"uncategorized"`, unless step 2 already mapped it to an EEO category by name.
 5. **Superset check.** Anything the extension's `SENSITIVE` regex (content.js:6, repeated in
-   extension_apply.py:24-29) matches, and steps 1 to 4 leave as None, is `"uncategorized"`. For
+   applications/extension.py:24-29) matches, and steps 1 to 4 leave as None, is `"uncategorized"`. For
    example "Do you have authorization to work in the US?" matches the extension's
    `authori[sz](?:ed|ation)` and is caught by step 3's `authori[sz]ation to work`; anything like it
    that no row places can never be answered, but is never treated as ordinary either. A test runs
@@ -2571,7 +2571,7 @@ defers those.
 **Breaker for one-click.** If 2 of the student's last 5 reviewed runs on an ATS are marked
 `wrong`, whether rehearsals or submits, the breaker writes `apply_gate_reset_at:<ats> = now`. The
 gate then needs `needed` new clean rehearsals, and a notice says why. This mirrors the automation
-breaker (automation.py:30, BREAKER_LIMIT 2 of BREAKER_WINDOW 5), applied to the student's reviews,
+breaker (automation/ledger.py:30, BREAKER_LIMIT 2 of BREAKER_WINDOW 5), applied to the student's reviews,
 because one-click actions are not ledger actions.
 
 ### 9.3 The stages the student sees
@@ -2613,7 +2613,7 @@ pause came after the confirm. It shows a submit that was already handed over as 
 - **Shadow.** The worker runs a full rehearsal (browser, GET only) and records a ledger row with
   status `shadow` through `perform` (subject: the opportunity; `after`: the stage change it would
   make; evidence: the run id and plan hash). `can_turn_on` then applies unchanged: 48 hours, at
-  least 5 shadow rows, all reviewed, none wrong (automation.py:367-406).
+  least 5 shadow rows, all reviewed, none wrong (automation/ledger.py:367-406).
 - **On.** The worker submits (6.13) with the pause honored at hand-over, and records the stage
   through `perform` (6.15, `stage_policy='ledger'`).
   - Undo reverts only the tracker. The UI must say so: "Undo changes your tracker only. The
@@ -2772,7 +2772,7 @@ the timeline. Each timeline entry says who acted: "you confirmed", "you submitte
   - `<user folder>` is the first 16 hex characters of SHA-256(user_id), so deleting an account
     removes one folder.
   - They are **not** in `output/apply/` as PLAN.md said. `data/private/` is the precedent for
-    personal evidence (`outreach_forms.SCREENSHOT_DIR`, outreach_forms.py:76), and everything
+    personal evidence (`outreach_forms.SCREENSHOT_DIR`, outreach/forms.py:76), and everything
     under `data/` is gitignored (AGENTS.md rule 2).
 - **Masking** (D8): `page.screenshot(mask=...)` over the whole container of each field D8 names
   (4.3). It is on for every screenshot, including the ones only the student sees.
@@ -2792,7 +2792,7 @@ the timeline. Each timeline entry says who acted: "you confirmed", "you submitte
 - **Value-free records.** Values are not stored in any of these places:
   - runs, claims and events (plans keep an HMAC per value, 5.3, not a plain hash);
   - logs;
-  - notices (as application_inbox.py:108);
+  - notices (as applications/inbox.py:108);
   - `refused_json` and `requests_json`, which hold method, host, path and status only, never a
     query string or body.
 
@@ -3150,15 +3150,15 @@ except one the student hook caused.
 - `apply_context` never returns store entries (above).
 - `apply-engine.js` and `content.js` have no click or submit calls (above).
 - **A static scan of `apply_agent.py`**, including its JavaScript string constants and
-  `REQUIRED_CHECK_SCRIPT` in `apply_checks.py`, asserts that:
+  `REQUIRED_CHECK_SCRIPT` in `apply/checks.py`, asserts that:
   - every `.click(`, `.check(`, `.set_checked(`, `.select_option(`, `.fill(`, `.press(`,
     `.tap(`, `.dispatch_event(`, `keyboard.`, `mouse.` and `set_input_files(` sits inside one of
     the five mutation helpers (4.3);
   - no `press("Enter")` or `keyboard.press` exists at all;
   - no `requestSubmit`, `.submit(`, `new MouseEvent` or `new PointerEvent` appears in any string.
 - `default_apply_agent_factory` never sets `route_hook`, `student_hook` or `headless`.
-- Only `apply_policy.py`, `apply_runs.py`, `operations.py` and the settings routes in `api.py`
-  name `apply_sensitive_answers`; `employer.py` and the report code never do.
+- Only `apply/policy.py`, `apply/runs.py`, `accounts/operations.py` and the settings routes in `api.py`
+  name `apply_sensitive_answers`; `accounts/employer.py` and the report code never do.
 
 ### 12.8 CI (Playwright is optional)
 
@@ -3236,7 +3236,7 @@ except one the student hook caused.
 - **R11. An abandoned Finish in browser leaves an `applying` row**, just as clicking Apply does
   today. Opening the section and rehearsing no longer create one (6.0). Phase 1 can move any
   `applying` row to applied on a confirmation matched at `company_single`
-  (application_inbox.py:1036); that behaviour predates this phase and is not changed here.
+  (applications/inbox.py:1036); that behaviour predates this phase and is not changed here.
   **Open:** whether to remove the row when the student stops a first-ever Finish in browser for
   that role before hand-over.
 - **R12. The email must be the Gmail account the app reads** (D12). If the student applies with a
@@ -3283,9 +3283,9 @@ M4s is built only if D5 is B to E.
 | --- | --- | --- | --- |
 | M0 | Decisions | The student answers D1 to D14; this file is updated with the answers. No code. | Answers recorded here. |
 | M1 | Shared engine | `apply-engine.js` split with DOM guards; thin `content.js`; new scan outputs incl. `required_any` (4.2); `matchAnswer` compares the clean question first; `input[role=combobox]` becomes `custom_select`; side panel saves `field.question` (sidepanel.js:212) and injects 4 files (sidepanel.js:82); `SENSITIVE` extended (7.3 step 6); stub, loader, MV3 and CI lists updated; static guards moved and extended. | 12.5 green; the extension fills exactly as before on its fixtures, apart from the three listed behavior changes. |
-| M2 | Data layer | Migration 0044 (four tables, partial unique indexes, the guarded Python step for three columns); `apply_runs.py` claims, locks, retry, heartbeat, `recover_stale`, limits, rehearsal limit, gate (no browser); the worker step; `in_flight`/`unconfirmed`/`paused_text`/Urgent and app.js reader additions; retention on the worker and deletion hooks; export. | 12.9 M2 tests green. |
-| M3 | Pure checks, fixtures and CI | `apply_checks.py` (`REQUIRED_CHECK_SCRIPT`, `decide_outcome`, `join`, `check_required`, `clean_rehearsal`); Greenhouse fixtures (12.1); FakeGreenhouse and `FakeSchemaClient` (12.2); `tests/browser_support.py`; the `browser-python` CI job, required, running the existing contact-form browser tests. | The new job is green and fails if browser tests skip; `test_apply_checks` green. |
-| M4 | Policy and read-only check | `apply_policy.py` (schema parsing, plan, classifier, company rule, `resume_for`, truth table); the schema client factory; the read-only check route; `name_parts` in the profile and its SETUP step; Apply agent settings (ATS labels, limits); the `apply_agent` feature (OFF_ON) with its requirement; the Gmail address recorded at connect; the UI "what's missing" view (10.3) for text, select and name answers; `PIPELINE_SANDBOX_FAKE_APPLY`. Still no browser. | Truth table green; the check writes nothing; for any saved Greenhouse role the student can see what is missing and answer the text and select questions. |
+| M2 | Data layer | Migration 0044 (four tables, partial unique indexes, the guarded Python step for three columns); `apply/runs.py` claims, locks, retry, heartbeat, `recover_stale`, limits, rehearsal limit, gate (no browser); the worker step; `in_flight`/`unconfirmed`/`paused_text`/Urgent and app.js reader additions; retention on the worker and deletion hooks; export. | 12.9 M2 tests green. |
+| M3 | Pure checks, fixtures and CI | `apply/checks.py` (`REQUIRED_CHECK_SCRIPT`, `decide_outcome`, `join`, `check_required`, `clean_rehearsal`); Greenhouse fixtures (12.1); FakeGreenhouse and `FakeSchemaClient` (12.2); `tests/browser_support.py`; the `browser-python` CI job, required, running the existing contact-form browser tests. | The new job is green and fails if browser tests skip; `test_apply_checks` green. |
+| M4 | Policy and read-only check | `apply/policy.py` (schema parsing, plan, classifier, company rule, `resume_for`, truth table); the schema client factory; the read-only check route; `name_parts` in the profile and its SETUP step; Apply agent settings (ATS labels, limits); the `apply_agent` feature (OFF_ON) with its requirement; the Gmail address recorded at connect; the UI "what's missing" view (10.3) for text, select and name answers; `PIPELINE_SANDBOX_FAKE_APPLY`. Still no browser. | Truth table green; the check writes nothing; for any saved Greenhouse role the student can see what is missing and answer the text and select questions. |
 | M4s | Sensitive store (only if D5 is B to E) | `apply_sensitive_answers` with consent scope, the EEO opt-in, company-specific statements; its settings UI and Needs you form; the doc changes in the same PR: assisted-apply.md step 3, THREAT_MODEL.md:17, PRIVACY_ACCESSIBILITY.md:7. | 12.9 M4s tests green; the docs say what the store does. |
 | M5a | Rehearsal engine | `apply_agent.py` in lookup and rehearse modes; the child-process runner with deadlines and the watchdog; the start, run and lookup API; Look up options in the UI; `GREENHOUSE_LOOKUP_ENDPOINTS` and `CAPTCHA_ENDPOINTS` confirmed on a live board. | 12.9 M5a tests green. |
 | M5b | Finish in browser and the watch | Handoff mode with hand-over in the route handler; the plan preview with screenshots and review marks; handoff recording with `stage_policy` (`ask` under D1 B); `watch()` with its badges, notices, Urgent kind and paused state; per-ATS statistics; the assisted-apply.md section and the THREAT_MODEL Apply agent row; SETUP.md step (Playwright install, Linux display, VPN off, "your name on every application", name for applications, limits, retention). | 12.9 M5b tests green. |
@@ -3311,7 +3311,7 @@ process id (memory note restart-web-dashboard).
 ## Appendix A. Differences from PLAN.md Phase 5, and why
 
 1. **Screenshots go in `data/private/apply/`, not `output/apply/`** (PLAN.md:1130). That follows
-   the personal-evidence precedent (outreach_forms.py:76), with automatic retention and deletion
+   the personal-evidence precedent (outreach/forms.py:76), with automatic retention and deletion
    added.
 2. **The stage is recorded through `automation.perform` only for unattended runs, not
    `automation.act`** (PLAN.md:1233). There is no `automation.act`. A one-click submit is the
@@ -3366,8 +3366,8 @@ process id (memory note restart-web-dashboard).
 **New:**
 
 - `apps/extension/apply-engine.js`
-- `opportunity_app/apply_checks.py`, `opportunity_app/apply_policy.py`,
-  `opportunity_app/apply_agent.py`, `opportunity_app/apply_runs.py`
+- `opportunity_app/apply/checks.py`, `opportunity_app/apply/policy.py`,
+  `opportunity_app/apply_agent.py`, `opportunity_app/apply/runs.py`
 - `migrations/0044_apply_agent.sql`
 - tests: `tests/test_apply_checks.py`, `tests/test_apply_policy.py`, `tests/test_apply_runs.py`,
   `tests/test_apply_watch.py`, `tests/test_apply_api.py`, `tests/test_apply_agent_browser.py`,
@@ -3379,22 +3379,22 @@ process id (memory note restart-web-dashboard).
 
 - **Extension:** `apps/extension/content.js`, `apps/extension/sidepanel.js` (:82, :212).
 - **App code:**
-  - `opportunity_app/automation.py`: FEATURES, REQUIREMENTS, `in_flight`, `unconfirmed`,
+  - `opportunity_app/automation/ledger.py`: FEATURES, REQUIREMENTS, `in_flight`, `unconfirmed`,
     `paused_text`;
-  - `opportunity_app/actions.py`: `ensure_application_tx`, factored out of `_record_intent_tx`;
-  - `opportunity_app/extension_apply.py`: `confirmed_resume_file`, factored out of
+  - `opportunity_app/applications/actions.py`: `ensure_application_tx`, factored out of `_record_intent_tx`;
+  - `opportunity_app/applications/extension.py`: `confirmed_resume_file`, factored out of
     `artifact_path`;
-  - `opportunity_app/document_artifacts.py`: `content_sha256` and re-render on mismatch (M7);
-  - `opportunity_app/profile.py`: `name_parts` in `ALLOWED_PROFILE_FIELDS` and
+  - `opportunity_app/student/artifacts.py`: `content_sha256` and re-render on mismatch (M7);
+  - `opportunity_app/student/profile.py`: `name_parts` in `ALLOWED_PROFILE_FIELDS` and
     `validate_profile_types`;
-  - `opportunity_app/application_inbox.py`: set `sender_verified` when recording a message;
-  - the Gmail connect callback (with `outreach_gmail.py`): record `account_email`;
-  - `opportunity_app/schema.py`: `_apply_apply_agent` in `_MIGRATION_STEPS`;
-  - `opportunity_app/operations.py`: `run_retention`, `delete_account(apply_root=...)`, export;
-  - `opportunity_app/urgent.py`;
+  - `opportunity_app/applications/inbox.py`: set `sender_verified` when recording a message;
+  - the Gmail connect callback (with `outreach/gmail.py`): record `account_email`;
+  - `opportunity_app/core/schema.py`: `_apply_apply_agent` in `_MIGRATION_STEPS`;
+  - `opportunity_app/accounts/operations.py`: `run_retention`, `delete_account(apply_root=...)`, export;
+  - `opportunity_app/applications/urgent.py`;
   - `opportunity_app/api.py`: routes, `require_browser_session`, the factory wiring next to
     api.py:1063-1064, and the deletion caller at :3207;
-  - `opportunity_app/outreach_automation.py`: the apply worker step;
+  - `opportunity_app/outreach/automation.py`: the apply worker step;
   - `opportunity_app/static/app.js`, `styles.css`.
 - **Scripts:** `scripts/serve_for_testing.py` (the fake apply flag).
 - **Tests:** `tests/extension/run_tests.mjs`, `tests/extension/dom_stub.mjs`,
@@ -3417,4 +3417,4 @@ process id (memory note restart-web-dashboard).
 - `apps/extension/manifest.json` (still "Never submits forms.");
 - `apps/extension/README.md`'s no-submit statements;
 - `extension_apply.apply_context`'s sensitive-answer exclusion;
-- `employer.py` (a test proves it never reads the sensitive store).
+- `accounts/employer.py` (a test proves it never reads the sensitive store).

@@ -1,7 +1,7 @@
 """Does the second read catch wrong facts and keep true ones? Fake pages, a real model.
 
-The research check (opportunity_app/quote_check.py, run by
-opportunity_app/outreach_research.py) keeps a fact only
+The research check (opportunity_app/outreach/quote_check.py, run by
+opportunity_app/outreach/research.py) keeps a fact only
 when its words are on the page and a second model, reading the page's own
 passage, confirms the fact says what the page says. Word checks alone kept
 failing on meaning: another person's bio pinned on a founder, a "not" dropped,
@@ -23,9 +23,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 from test_outreach_research import TARGET, fetcher_for, reply
-from opportunity_app import outreach_research as research
-from opportunity_app import quote_check
-from opportunity_app.agent_providers import build_provider
+from opportunity_app.outreach import research
+from opportunity_app.outreach import quote_check
+from opportunity_app.integrations.agent_providers import build_provider
 
 TEAM = ("<html><body><h1>Chargebot team</h1><h3>Dana Ortiz</h3><p>Co-founder and CTO</p>"
         "<p>Dana previously built motion planning software at Tesla for the Model Y line.</p>"

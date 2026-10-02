@@ -9,20 +9,20 @@ from typing import Any
 from fastapi import Depends, HTTPException, status
 
 from ..overrides import shared_router
-from ...inbox_classifiers import client_for as inbox_client_for
-from ...outreach import (
+from ...mail.classifiers import client_for as inbox_client_for
+from ...outreach.targets import (
     OutreachNotFoundError,
     confirm_research as confirm_outreach_research,
     get_target as get_outreach_target,
     log_reply as log_outreach_reply,
 )
-from ...outreach_contacts import (
+from ...outreach.contacts import (
     add_manual_contact as add_manual_outreach_contact,
     apply_candidate as apply_outreach_candidate,
     find_contacts as find_outreach_contacts,
     list_candidates as list_outreach_candidates,
 )
-from ...outreach_call_prep import auto_queue_call_prep
+from ...outreach.call_prep import auto_queue_call_prep
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection
 from ..errors import outreach_not_found

@@ -82,7 +82,7 @@ class TemplateCopyTests(unittest.TestCase):
             self.assertEqual(rows, [("legacy-v1", str(legacy_path.resolve()))])
 
     def test_the_profile_file_is_older_than_the_stored_profile_as_on_a_real_run(self):
-        """legacy_sync.py lets a profile.json newer than profiles.updated_at overwrite the database profile, so a copy must not
+        """opportunities/legacy_sync.py lets a profile.json newer than profiles.updated_at overwrite the database profile, so a copy must not
         hand out a profile.json that is newer than its stored stamp.
 
         A real migration stamps updated_at from Python's clock right after profile.json was written, and on Windows the
@@ -185,7 +185,7 @@ class TemplateCopyTests(unittest.TestCase):
 
     def test_production_connections_keep_the_default_durability(self):
         """Only builds inside fast_throwaway_databases() skip the fsync."""
-        from opportunity_app import database
+        from opportunity_app.core import database
 
         with closing(database.connect_product(self.root / "prod.db")) as conn:
             self.assertEqual(conn.execute("PRAGMA synchronous").fetchone()[0], 2, "FULL")
@@ -198,7 +198,7 @@ class TemplateCopyTests(unittest.TestCase):
 
     def test_the_migration_a_build_runs_opens_its_target_without_the_fsync_too(self):
         """legacy_sync.migrate_legacy_database looks connect_product up in its own namespace, so the patch must reach it there."""
-        from opportunity_app import legacy_sync
+        from opportunity_app.opportunities import legacy_sync
 
         class Stop(Exception):
             pass

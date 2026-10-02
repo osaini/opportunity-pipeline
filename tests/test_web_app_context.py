@@ -274,7 +274,7 @@ class BuildingTheAppRegistersTheAutomationModulesTests(unittest.TestCase):
 
     def test_a_fresh_interpreter_that_imports_only_the_api_registers_nothing_until_create_app_runs(self):
         code = (
-            "import json, sys; sys.path.insert(0, %r); import opportunity_app.api; from opportunity_app import automation; "
+            "import json, sys; sys.path.insert(0, %r); import opportunity_app.api; from opportunity_app.automation import ledger as automation; "
             "print('REPORT' + json.dumps({'handlers': sorted(automation.HANDLERS)}))" % str(ROOT)
         )
         done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=ROOT, timeout=300)
@@ -286,7 +286,7 @@ class BuildingTheAppRegistersTheAutomationModulesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             code = (
                 "import json, sys; sys.path.insert(0, %r); from pathlib import Path; from opportunity_app.api import create_app; "
-                "from opportunity_app import automation; root = Path(%r); "
+                "from opportunity_app.automation import ledger as automation; root = Path(%r); "
                 "create_app(db_path=root / 'platform.db', access_token='probe-token', resume_storage=root / 'resumes', "
                 "capture_storage=root / 'captures', interview_storage=root / 'audio', apply_storage=root / 'apply', "
                 "start_call_prep_worker=False, start_inbox_watcher=False, start_automation_worker=False); "

@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import Depends, File, HTTPException, UploadFile, status
 
 from ..overrides import shared_router
-from ...captures import (
+from ...opportunities.captures import (
     MAX_CAPTURE_BYTES,
     CaptureNotFoundError,
     CaptureValidationError,

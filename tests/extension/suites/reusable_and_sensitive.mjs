@@ -47,7 +47,7 @@ tests.question_keys_match_the_shared_parity_vectors = () => {
 };
 
 tests.follow_up_and_context_rules_match_the_shared_vectors = () => {
-  // apply_policy.needs_label_key and context_dependent repeat these two rules for the agent's plan.
+  // apply.policy.needs_label_key and context_dependent repeat these two rules for the agent's plan.
   const { vectors } = loadApplyFixture("context_keys.json");
   const ext = loadContentScript(pageOf({ tag: "input", type: "text", id: "q", label: "Q" }), { contentScript: false });
   assert.ok(vectors.length >= 50);
@@ -59,7 +59,7 @@ tests.follow_up_and_context_rules_match_the_shared_vectors = () => {
 };
 
 tests.the_broad_net_matches_the_shared_vectors = () => {
-  // apply_policy.net_topics, possibly_sensitive and never_storable repeat these three rules for the agent's plan.
+  // apply.policy.net_topics, possibly_sensitive and never_storable repeat these three rules for the agent's plan.
   const { vectors } = loadApplyFixture("broad_net.json");
   const ext = loadContentScript(pageOf({ tag: "input", type: "text", id: "q", label: "Q" }), { contentScript: false });
   assert.ok(vectors.length >= 120);

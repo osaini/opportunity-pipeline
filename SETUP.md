@@ -261,7 +261,7 @@ exists, the tab shows an empty state pointing here.
    ```
 
    Only `id`, `name`, `host`, `url`, and `evidence` are required. The full
-   format is in `opportunity_app/early_programs.py`.
+   format is in `opportunity_app/opportunities/early_programs.py`.
 5. **Check it:**
 
    ```bash
@@ -638,7 +638,7 @@ Anything from your own work you'd lead with?"* Copy
 their questions in their words: `ask` is the question, `lead_in` (optional) is
 what they say first, `research` names the research to have ready for it
 (`customers`, `product`, `growth`, `hiring`, `engineering`, and the other
-sections in `opportunity_app/quote_check.py`), and `blank` is a line to
+sections in `opportunity_app/outreach/quote_check.py`), and `blank` is a line to
 write the answer on. The file is gitignored. Without it, call prep asks four
 plain questions with no lead-ins.
 

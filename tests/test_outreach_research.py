@@ -14,14 +14,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import httpx
 
-from opportunity_app import outreach_research as research
-from opportunity_app import quote_check
-from opportunity_app.outreach import create_target, get_target
-from opportunity_app.web_fetch import SafeFetcher
-from opportunity_app.outreach_config import COMPANY_RESEARCH_ENV, RESEARCH_ENV
-from opportunity_app.outreach_settings import OutreachSettings
-from opportunity_app.schema import ensure_product_schema
-from opportunity_app.database import connect_product
+from opportunity_app.outreach import research
+from opportunity_app.outreach import quote_check
+from opportunity_app.outreach.targets import create_target, get_target
+from opportunity_app.integrations.web_fetch import SafeFetcher
+from opportunity_app.outreach.config import COMPANY_RESEARCH_ENV, RESEARCH_ENV
+from opportunity_app.outreach.settings import OutreachSettings
+from opportunity_app.core.schema import ensure_product_schema
+from opportunity_app.core.database import connect_product
 
 from helpers_platform import build_and_migrate
 from helpers_outreach import confirm_facts
@@ -245,7 +245,7 @@ class CheckBriefTests(unittest.TestCase):
         self.assertIn("Chargebot raises seed round", shown["top"], "the page's title comes too")
 
     def test_the_passage_always_holds_the_quotes_own_paragraph_and_a_nearby_dateline(self):
-        from opportunity_app.web_fetch import FetchResult
+        from opportunity_app.integrations.web_fetch import FetchResult
 
         history = "<p>" + "Background paragraph about the company history. " * 60 + "</p>"
         page = quote_check.ResearchPage(FetchResult("https://news.example/release", 200,
@@ -393,7 +393,7 @@ class CheckBriefTests(unittest.TestCase):
         self.assertEqual(self.refused(self.check(hidden)), {hidden["text"]: "its source does not name the company"})
 
     def test_the_shared_company_check_never_matches_an_empty_domain(self):
-        from opportunity_app.outreach_identity import mentions_company
+        from opportunity_app.outreach.identity import mentions_company
 
         self.assertFalse(mentions_company(OTHER_COMPANY, "Chargebot", ""))
         self.assertTrue(mentions_company(PRESS, "Chargebot, Inc.", ""))
@@ -997,7 +997,7 @@ class ResearchStorageTests(unittest.TestCase):
         self.assertEqual(get_target(self.conn, self.target["id"], user_id=USER)["tech_brief_job_id"], first["tech_brief_job_id"])
 
     def test_research_still_running_when_the_company_is_renamed_writes_nothing_onto_it(self):
-        from opportunity_app.outreach import update_target
+        from opportunity_app.outreach.targets import update_target
 
         def runner(prompt):
             update_target(self.conn, self.target["id"], {"company": "Different Motors", "website": "https://different.example"}, user_id=USER)

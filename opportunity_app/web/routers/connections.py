@@ -13,10 +13,10 @@ from typing import Annotated, Any, Literal
 from fastapi import Depends, HTTPException, Header, Request, status
 
 from ..overrides import shared_router
-from ... import automation as automation_core
-from ...actions import ApplicationNotFoundError
-from ...auth import constant_time_equal
-from ...connections import (
+from ...automation import ledger as automation_core
+from ...applications.actions import ApplicationNotFoundError
+from ...accounts.auth import constant_time_equal
+from ...mail.connections import (
     ConnectionNotFoundError,
     connector_owner,
     begin_oauth,
@@ -33,11 +33,11 @@ from ...connections import (
     request_phone_verification,
     update_preferences,
 )
-from ...database import connect_product
-from ...monitored_events import decide_monitored_event
-from ...timestamps import utc_now
-from ...inbox_classifiers import client_for as inbox_client_for
-from ...outreach_config import sender_account
+from ...core.database import connect_product
+from ...applications.monitored_events import decide_monitored_event
+from ...core.timestamps import utc_now
+from ...mail.classifiers import client_for as inbox_client_for
+from ...outreach.config import sender_account
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection
 from ..models.connections import (

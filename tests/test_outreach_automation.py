@@ -13,10 +13,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import httpx
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, automation, outreach_drafting
+from opportunity_app import STATIC_DIR
+from opportunity_app.outreach import drafting as outreach_drafting
+from opportunity_app.automation import ledger as automation
 from opportunity_app.api import create_app
-from opportunity_app.outreach import create_target, get_target, update_target
-from opportunity_app.outreach_automation import (
+from opportunity_app.outreach.targets import create_target, get_target, update_target
+from opportunity_app.outreach.automation import (
     AUTO_DRAFT_FAILED,
     WORKER_COMPONENT,
     AutomationWorker,
@@ -27,8 +29,8 @@ from opportunity_app.outreach_automation import (
     settings,
     update_settings,
 )
-from opportunity_app.outreach_delivery import record_bounce
-from opportunity_app.database import connect_product
+from opportunity_app.outreach.delivery import record_bounce
+from opportunity_app.core.database import connect_product
 
 from helpers_platform import build_and_migrate
 from helpers_outreach import safe_fetcher, site_transport
@@ -313,9 +315,9 @@ class WorkerHealthTests(unittest.TestCase):
     def test_a_step_that_raises_is_recorded_without_addresses_and_the_pass_goes_on(self):
         update_settings(self.conn, {"bounce_recovery": True}, user_id=USER)
         worker = AutomationWorker(self.platform_path, fetcher_factory=lambda: None)
-        with mock.patch("opportunity_app.outreach_automation.recovery_due",
+        with mock.patch("opportunity_app.outreach.automation.recovery_due",
                         side_effect=RuntimeError("could not search again for dana@bovi.test")), \
-                self.assertLogs("opportunity_app.outreach_automation", "ERROR"):
+                self.assertLogs("opportunity_app.outreach.automation", "ERROR"):
             self.assertEqual(worker.run_once(), {"sent": [], "recovered": [], "drafted": [], "forms": []}, "the pass returns")
         row = self.worker_health()[USER]
         self.assertEqual(row["last_error"], "RuntimeError: could not search again for [address]")
@@ -333,9 +335,9 @@ class WorkerHealthTests(unittest.TestCase):
                 (target["id"], USER, stamp, stamp, stamp),
             )
         worker = AutomationWorker(self.platform_path, fetcher_factory=lambda: None, gmail_client_factory=lambda: None)
-        with mock.patch("opportunity_app.outreach_schedule.run_due_sends",
+        with mock.patch("opportunity_app.outreach.schedule.run_due_sends",
                         side_effect=RuntimeError("the send path broke for greg@bovi.test")), \
-                self.assertLogs("opportunity_app.outreach_automation", "ERROR"):
+                self.assertLogs("opportunity_app.outreach.automation", "ERROR"):
             worker.run_once()
         self.assertEqual(self.worker_health()[USER]["last_error"], "RuntimeError: the send path broke for [address]",
                          "every switch is off, but an email was due, so the failure shows")

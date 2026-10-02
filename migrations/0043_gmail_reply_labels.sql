@@ -1,4 +1,4 @@
--- A Gmail label on every reply thread (opportunity_app/outreach_labels.py), and
+-- A Gmail label on every reply thread (opportunity_app/outreach/labels.py), and
 -- which Gmail account the connection signed into.
 --
 -- The columns are added by a Python step (schema._apply_gmail_reply_labels),

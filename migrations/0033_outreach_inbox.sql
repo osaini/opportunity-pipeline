@@ -1,4 +1,4 @@
--- Replies to outreach read from Gmail (opportunity_app/outreach_inbox.py).
+-- Replies to outreach read from Gmail (opportunity_app/outreach/inbox.py).
 --
 -- outreach_inbox_messages holds every Gmail message the app has read for a
 -- target, so none is logged twice: a reply, an automatic reply (out of

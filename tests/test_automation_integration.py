@@ -1,4 +1,4 @@
-"""Application mail (application_inbox.py) and internal automation (internal_automation.py and friends) together.
+"""Application mail (applications/inbox.py) and internal automation (automation/internal.py and friends) together.
 
 Both register into the one automation registry (bootstrap.register_all, called as the app starts) and write the one
 ledger. These tests pin what they share: the switches and their groups, the action types, that each switch has its own
@@ -13,11 +13,12 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import automation, automation_handlers, bootstrap
+from opportunity_app.automation import ledger as automation, handlers as automation_handlers
+from opportunity_app import bootstrap
 from opportunity_app.api import create_app
-from opportunity_app.actions import record_intent
-from opportunity_app.database import connect_product
-from opportunity_app.timestamps import utc_now
+from opportunity_app.applications.actions import record_intent
+from opportunity_app.core.database import connect_product
+from opportunity_app.core.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 

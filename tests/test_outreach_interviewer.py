@@ -11,15 +11,15 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import outreach_linkedin, quote_check
-from opportunity_app.outreach_config import LINKEDIN_ENV
-from opportunity_app.outreach_interviewer import NOTES_INSTRUCTIONS
-from opportunity_app.outreach import create_target, get_target, log_reply, update_target
-from opportunity_app.outreach_interviewer import _meeting, confirm_profile, find_interviewer, interviewer_due, pick_profile, read_interviewer
-from opportunity_app.outreach_linkedin import LinkedInClient, LinkedInUnavailable, config_problem, username_from
-from opportunity_app.schema import ensure_product_schema
-from opportunity_app.database import connect_product
-from opportunity_app.timestamps import utc_now
+from opportunity_app.outreach import linkedin as outreach_linkedin, quote_check
+from opportunity_app.outreach.config import LINKEDIN_ENV
+from opportunity_app.outreach.interviewer import NOTES_INSTRUCTIONS
+from opportunity_app.outreach.targets import create_target, get_target, log_reply, update_target
+from opportunity_app.outreach.interviewer import _meeting, confirm_profile, find_interviewer, interviewer_due, pick_profile, read_interviewer
+from opportunity_app.outreach.linkedin import LinkedInClient, LinkedInUnavailable, config_problem, username_from
+from opportunity_app.core.schema import ensure_product_schema
+from opportunity_app.core.database import connect_product
+from opportunity_app.core.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 

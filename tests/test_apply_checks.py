@@ -13,8 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import quote
 
-from opportunity_app import apply_checks
-from opportunity_app.apply_checks import (
+from opportunity_app.apply import checks as apply_checks
+from opportunity_app.apply.checks import (
     CAPTCHA_ENDPOINTS,
     PHASE_AFTER_HAND_OVER,
     PHASE_AFTER_INPUT,

@@ -17,9 +17,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import agent_providers
-from opportunity_app.outreach_settings import OutreachSettings
-from opportunity_app.database import connect_product
+from opportunity_app.integrations import agent_providers
+from opportunity_app.outreach.settings import OutreachSettings
+from opportunity_app.core.database import connect_product
 
 from helpers_platform import build_and_migrate
 
@@ -177,7 +177,7 @@ class SettingsViewTests(unittest.TestCase):
         """The same load with the snapshot switched off, which is how it ran before."""
         which = Which(*installed)
         with clean_env(**env), mock.patch.object(agent_providers.shutil, "which", which), \
-                mock.patch("opportunity_app.outreach_settings.catalog_snapshot", contextlib.nullcontext), \
+                mock.patch("opportunity_app.outreach.settings.catalog_snapshot", contextlib.nullcontext), \
                 closing(connect_product(self.platform_path)) as conn:
             return self.settings.view(conn, user_id=USER), which.calls
 

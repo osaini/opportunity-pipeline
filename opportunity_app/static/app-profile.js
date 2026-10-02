@@ -296,7 +296,7 @@
   // document to send. Nothing from it is copied into the profile, so a second
   // variant never overwrites the facts the main résumé confirmed.
   // What the résumé section says about variants. Only a label the profile lists
-  // under resume_variants, on a confirmed résumé, is ever picked (resume_variants.variant_setup).
+  // under resume_variants, on a confirmed résumé, is ever picked (student.resume_variants.variant_setup).
   function resumeVariantSummary(resumesPayload) {
     const setup = resumesPayload?.variants || {};
     const list = (value) => (Array.isArray(value) ? value : []);

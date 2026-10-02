@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import httpx
 
-from opportunity_app.outreach import (
+from opportunity_app.outreach.targets import (
     confirm_research,
     create_target,
     delete_target,
@@ -20,10 +20,10 @@ from opportunity_app.outreach import (
     import_targets,
     update_target,
 )
-from opportunity_app.outreach_identity import company_key
-from opportunity_app.outreach_contacts import find_contacts
-from opportunity_app.outreach_drafting import location_line
-from opportunity_app.outreach_profile import (
+from opportunity_app.outreach.identity import company_key
+from opportunity_app.outreach.contacts import find_contacts
+from opportunity_app.outreach.drafting import location_line
+from opportunity_app.outreach.company_profile import (
     enrich_targets,
     form_d_lookup,
     record_form_d,
@@ -31,8 +31,8 @@ from opportunity_app.outreach_profile import (
     sec_fetcher,
     site_location,
 )
-from opportunity_app.schema import ensure_product_schema
-from opportunity_app.database import connect_product
+from opportunity_app.core.schema import ensure_product_schema
+from opportunity_app.core.database import connect_product
 
 from helpers_platform import build_and_migrate, use_profile_regions
 from helpers_outreach import company, only_for, proposals, safe_fetcher, site_transport
@@ -42,7 +42,7 @@ TODAY = date(2026, 9, 18)
 
 
 def page(url, html):
-    from opportunity_app.outreach_contacts import PageParser
+    from opportunity_app.outreach.contacts import PageParser
 
     parser = PageParser()
     parser.feed(html)
@@ -130,7 +130,7 @@ class MigrationTests(unittest.TestCase):
     def test_existing_locations_keep_the_only_basis_that_can_be_known(self):
         import sqlite3
 
-        from opportunity_app.schema import MIGRATIONS_DIR
+        from opportunity_app.core.schema import MIGRATIONS_DIR
 
         conn = sqlite3.connect(":memory:")
         try:
@@ -181,7 +181,7 @@ class CompanyDedupeTests(ProfileTestCase):
 
 
 class DeletedCompanyMailTests(ProfileTestCase):
-    """Deleting a company settles the emails that waited as its possible replies (outreach_inbox.py), and only those."""
+    """Deleting a company settles the emails that waited as its possible replies (outreach/inbox.py), and only those."""
 
     WORDS = "Thanks for writing. Could you send your resume?"
 
@@ -233,7 +233,7 @@ class DeletedCompanyMailTests(ProfileTestCase):
         which may well have sent it: its follow-up would go out on its own and
         the email would never be shown to the student again.
         """
-        from opportunity_app.outreach import heard_back
+        from opportunity_app.outreach.targets import heard_back
 
         self.mail("m-either", self.bovi["id"], candidates=[self.kite["id"]])
         self.assertEqual(get_target(self.conn, self.kite["id"], user_id=USER)["possible_reply_count"], 1)
@@ -258,7 +258,7 @@ class DiscoveryExclusionTests(ProfileTestCase):
         self.prompts = []
 
     def run_with(self, reply, **kwargs):
-        from opportunity_app.outreach_discovery import run_discovery
+        from opportunity_app.outreach.discovery import run_discovery
 
         answer = only_for(reply)
 
@@ -488,7 +488,7 @@ class EnrichTests(ProfileTestCase):
 
 class DiscoveryFollowThroughTests(ProfileTestCase):
     def test_a_new_company_gets_its_sites_location_and_its_form_d(self):
-        from opportunity_app.outreach_discovery import run_discovery
+        from opportunity_app.outreach.discovery import run_discovery
 
         sites = {"bovi.com": {
             "/robots.txt": "",
@@ -498,7 +498,7 @@ class DiscoveryFollowThroughTests(ProfileTestCase):
         site, _ = site_transport(sites)
         sec, _ = sec_transport(BOVI_HITS)
         with httpx.Client(transport=site) as site_client, httpx.Client(transport=sec) as sec_client:
-            with mock.patch("opportunity_app.outreach_discovery.form_d_lookup", wraps=lambda *a, **k: form_d_lookup(*a, **{**k, "pause": 0})):
+            with mock.patch("opportunity_app.outreach.discovery.form_d_lookup", wraps=lambda *a, **k: form_d_lookup(*a, **{**k, "pause": 0})):
                 result = run_discovery(
                     self.conn, user_id=USER, runner=only_for(proposals(company("Bovi Robotics", "https://bovi.com"))),
                     fetcher=safe_fetcher(site_client), form_d_fetcher=safe_fetcher(sec_client),
@@ -526,7 +526,7 @@ class FakeRenderer:
 
 class InferredLocationTests(ProfileTestCase):
     def test_a_label_run_into_the_city_is_split_off_without_breaking_real_names(self):
-        from opportunity_app.outreach_profile import format_location
+        from opportunity_app.outreach.company_profile import format_location
 
         found = site_location([
             page("https://acme.com/", "<p><b>Headquarters</b>Austin, TX</p><p><i>Loc</i>Austin, TX</p><p>Austin, TX</p>"),
@@ -576,7 +576,7 @@ class InferredLocationTests(ProfileTestCase):
         self.assertEqual((confirmed["location_basis"], confirmed["location_verified"]), ("manual", True))
 
     def test_a_stated_place_or_a_filing_outranks_an_inferred_one(self):
-        from opportunity_app.outreach_profile import apply_location
+        from opportunity_app.outreach.company_profile import apply_location
 
         mention = [page("https://bovi.com/", "<p>Austin, TX</p>")]
         target = create_target(self.conn, {"company": "Bovi"}, user_id=USER)
@@ -602,7 +602,7 @@ class RenderFallbackTests(ProfileTestCase):
     SHELL = '<div id="root"></div><script src="/app.js"></script>'
 
     def enrich(self, sites, renderer):
-        from opportunity_app.outreach_profile import enrich_target
+        from opportunity_app.outreach.company_profile import enrich_target
 
         target = create_target(self.conn, {"company": "Shell Robotics", "website": "https://shell.example"}, user_id=USER)
         transport, _ = site_transport(sites)
@@ -648,7 +648,7 @@ class RenderFallbackTests(ProfileTestCase):
         self.assertEqual((result["site"]["rendered"], result["site"]["render_error"]), (False, "Chromium is not installed"))
 
     def test_the_browser_may_only_reach_public_hosts(self):
-        from opportunity_app.outreach_render import request_allowed
+        from opportunity_app.outreach.render import request_allowed
 
         addresses = {"public.example": ["93.184.216.34"], "rebind.example": ["93.184.216.34", "10.0.0.5"], "lan.example": ["192.168.1.2"]}
         cache = {}
@@ -664,7 +664,7 @@ class RenderFallbackTests(ProfileTestCase):
             self.assertFalse(request_allowed(url, resolve, cache), url)
 
     def test_the_deep_search_follow_through_renders_an_empty_site(self):
-        from opportunity_app.outreach_discovery import run_discovery
+        from opportunity_app.outreach.discovery import run_discovery
 
         sites = {"shell.example": {"/robots.txt": "", "/": self.SHELL, "/about": "<p>About Shell Robotics</p>"}}
         renderer = FakeRenderer({"https://shell.example/": "<footer><p>Buda, Texas</p></footer>"})

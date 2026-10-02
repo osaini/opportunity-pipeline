@@ -16,12 +16,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import httpx
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, automation, automation_health, outreach_forms
+from opportunity_app import STATIC_DIR
+from opportunity_app.outreach import forms as outreach_forms
+from opportunity_app.automation import ledger as automation, health as automation_health
 from opportunity_app.api import create_app
-from opportunity_app.outreach import create_target, get_target
-from opportunity_app.outreach_automation import AutomationWorker, draft_due, send_form, update_settings
-from opportunity_app.outreach_contacts import find_contacts
-from opportunity_app.outreach_forms import (
+from opportunity_app.outreach.targets import create_target, get_target
+from opportunity_app.outreach.automation import AutomationWorker, draft_due, send_form, update_settings
+from opportunity_app.outreach.contacts import find_contacts
+from opportunity_app.outreach.forms import (
     FormSubmitter,
     contact_forms,
     formatting_problem,
@@ -30,8 +32,8 @@ from opportunity_app.outreach_forms import (
     plan_fill,
     submit_contact_form,
 )
-from opportunity_app.database import connect_product
-from opportunity_app.timestamps import utc_now
+from opportunity_app.core.database import connect_product
+from opportunity_app.core.timestamps import utc_now
 
 from browser_support import requires_chromium
 from helpers_platform import build_and_migrate
@@ -581,7 +583,7 @@ class CompanyMailDomainTests(unittest.TestCase):
             "PR@personainc.test hello@persona.test jobs@careers.persona.test "
             "support@webflow.test someone@gmail.com</footer>"
         )).record
-        from opportunity_app.outreach_contacts import company_mail_domains
+        from opportunity_app.outreach.contacts import company_mail_domains
 
         self.assertEqual(company_mail_domains([footer], "persona.test"), ["personainc.test"])
 
@@ -910,7 +912,7 @@ class FormSubmitterCheckTests(unittest.TestCase):
 
 class _Page:
     def __init__(self, url, raw):
-        from opportunity_app.outreach_contacts import PageParser
+        from opportunity_app.outreach.contacts import PageParser
 
         self.parser = PageParser()
         self.parser.feed(raw)

@@ -21,7 +21,7 @@
   // Defined in files that load later; looked up when called.
   const closeDetail = (...args) => App.closeDetail(...args);
 
-  // Apply for me (apply_policy.py, apply_preflight.py): what the app would fill on a saved Greenhouse role, and what it
+  // Apply for me (apply/policy.py, apply/preflight.py): what the app would fill on a saved Greenhouse role, and what it
   // still needs from you. It only reads: opening this section changes nothing in your tracker, and it shows no answer
   // you gave, only the questions, where each answer would come from, and what is missing.
   const APPLY_NOTE = "Nothing in your tracker has changed. Filling the form in a window comes in a later step.";
@@ -167,7 +167,7 @@
     return line;
   }
 
-  // Needs you, for a sensitive question the student allowed the app to answer (apply_sensitive.py). Only the answer and the
+  // Needs you, for a sensitive question the student allowed the app to answer (apply/sensitive.py). Only the answer and the
   // consent tick go to the server: it takes the category, the wording and the options from the form it read.
   function applySensitiveForm(problem, company, onSaved) {
     const action = problem.action;
@@ -503,7 +503,7 @@
     return section;
   }
 
-  // The answers the app may give on sensitive questions (apply_sensitive.py): which kinds the student switched on, what they
+  // The answers the app may give on sensitive questions (apply/sensitive.py): which kinds the student switched on, what they
   // stored, and a form to add one. Nothing here is answered for the student until they switch a kind on and add the answer.
   const APPLY_NO_ROLE_MATCH = "None of your roles is at a company with this name, so no role will use this answer yet. Check the name against the one on the role.";
 

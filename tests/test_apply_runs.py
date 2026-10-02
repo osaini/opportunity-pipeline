@@ -1,4 +1,4 @@
-"""Apply for me's data layer (apply_runs.py, migration 0045): claims and their two locks, retry, hand-over, heartbeat,
+"""Apply for me's data layer (apply/runs.py, migration 0045): claims and their two locks, retry, hand-over, heartbeat,
 recovery, limits, the rehearsal gate, the readers that learn about claims, the worker step, retention, deletion, export.
 
 No browser and nothing that reaches a network: every company, board and posting here is fictional.
@@ -18,14 +18,18 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import SERVER_INSTANCE, actions, apply_claims, apply_runs, automation, automation_health, schema, urgent
-from opportunity_app.apply_runs import ClaimHeldError, ClaimRefused
+from opportunity_app import SERVER_INSTANCE
+from opportunity_app.automation import ledger as automation, health as automation_health
+from opportunity_app.apply import claims as apply_claims, runs as apply_runs
+from opportunity_app.applications import actions, urgent
+from opportunity_app.core import schema
+from opportunity_app.apply.runs import ClaimHeldError, ClaimRefused
 from pipeline_core.identity import employer_key
-from opportunity_app.operations import ACCOUNT_QUERIES, delete_account, export_account, run_retention
-from opportunity_app.outreach_automation import AutomationWorker
-from opportunity_app.schema import ensure_product_schema
-from opportunity_app.database import connect_product
-from opportunity_app.timestamps import utc_now
+from opportunity_app.accounts.operations import ACCOUNT_QUERIES, delete_account, export_account, run_retention
+from opportunity_app.outreach.automation import AutomationWorker
+from opportunity_app.core.schema import ensure_product_schema
+from opportunity_app.core.database import connect_product
+from opportunity_app.core.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 from helpers_apply import ApplyCase, BLUEFIN, USER, setUpModule, tearDownModule  # noqa: F401 (module fixtures: unittest and pytest find them here)

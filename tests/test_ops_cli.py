@@ -15,8 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from cryptography.fernet import Fernet
 
 from opportunity_app import ops_cli
-from opportunity_app.operations import enqueue_job
-from opportunity_app.database import connect_product
+from opportunity_app.accounts.operations import enqueue_job
+from opportunity_app.core.database import connect_product
 
 from helpers_platform import build_and_migrate
 

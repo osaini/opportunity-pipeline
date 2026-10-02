@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
-from ...outreach_drafting import MAX_COMMENT_CHARS as MAX_DRAFT_COMMENT_CHARS
+from ...outreach.drafting import MAX_COMMENT_CHARS as MAX_DRAFT_COMMENT_CHARS
 
 
 class OutreachTargetRequest(BaseModel):

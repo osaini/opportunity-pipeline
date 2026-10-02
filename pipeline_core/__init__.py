@@ -20,7 +20,7 @@ flat modules, all standard library only (tests/test_dependency_boundary.py):
     artifacts   the tailored resume and cover letter
     cli         the argument parser and ``main``
 
-The web app imports these through ``opportunity_app/legacy.py`` and nowhere else.
+The web app imports these through ``opportunity_app/opportunities/legacy.py`` and nowhere else.
 """
 
 from .read_model import (

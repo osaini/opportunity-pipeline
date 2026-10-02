@@ -641,7 +641,7 @@ input.settings-switch:disabled { opacity: .6; cursor: progress; }
 .confirmation-row input { margin-top: 2px; accent-color: var(--accent); }
 .resume-review .secondary-button { margin-top: var(--space-4); }
 .resume-actions { display: flex; gap: 8px; margin-top: var(--space-4); padding-top: var(--space-4); border-top: 1px solid var(--line); }
-/* Résumé variants (resume_variants.py): the label form on each card, the pick on a role. */
+/* Résumé variants (student/resume_variants.py): the label form on each card, the pick on a role. */
 /* Beats .resume-heading > div, which would stack the chips in a grid. */
 .resume-heading > .resume-chips { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .resume-variant { display: grid; gap: 8px; margin-top: var(--space-4); padding-top: var(--space-4); border-top: 1px solid var(--line); }
@@ -654,7 +654,7 @@ input.settings-switch:disabled { opacity: .6; cursor: progress; }
 .resume-pick-control { max-width: 360px; }
 .resume-pick .form-status { min-height: 1.3em; margin: 6px 0 0; font-size: 12px; }
 .resume-check-note { margin: 10px 0 4px; color: var(--ink-muted); font-size: 11px; }
-/* Apply for me (apply_preflight.py): what is missing on a saved Greenhouse role, and the settings that go with it. */
+/* Apply for me (apply/preflight.py): what is missing on a saved Greenhouse role, and the settings that go with it. */
 .apply-summary { margin: 0 0 10px; color: var(--ink-soft); font-size: 13px; overflow-wrap: anywhere; }
 .apply-problems { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
 .apply-problem { padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-sunken); }
@@ -674,7 +674,7 @@ input.settings-switch:disabled { opacity: .6; cursor: progress; }
 .apply-note { margin: 12px 0 0; color: var(--ink-muted); font-size: 11px; }
 .apply-label { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .apply-settings h5 { margin: var(--space-5) 0 var(--space-2); font-size: 12px; }
-/* The sensitive-answers store (apply_sensitive.py): the Needs you form and its settings. */
+/* The sensitive-answers store (apply/sensitive.py): the Needs you form and its settings. */
 .apply-statement { margin: 0; padding: var(--space-3) var(--space-4); border-left: 3px solid var(--line); color: var(--ink); font-size: 12px; overflow-wrap: anywhere; }
 .apply-consent { padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); }
 .apply-optional summary { cursor: pointer; color: var(--ink-soft); }

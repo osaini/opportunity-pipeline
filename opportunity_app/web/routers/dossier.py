@@ -10,7 +10,7 @@ from typing import Any
 from fastapi import Depends, HTTPException, Response, status
 
 from ..overrides import shared_router
-from ...dossier import (
+from ...accounts.dossier import (
     DossierNotFoundError,
     create_share,
     delete_all as delete_dossier_all,
@@ -22,7 +22,7 @@ from ...dossier import (
     share_preview,
     update_settings as update_dossier_settings,
 )
-from ...database import connect_product
+from ...core.database import connect_product
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection
 from ..models.dossier import DossierItemRequest, DossierPreviewRequest, DossierSettingsRequest, DossierShareRequest

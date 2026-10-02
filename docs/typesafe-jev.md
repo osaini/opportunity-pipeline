@@ -72,7 +72,7 @@ confidence thresholds to a new alias.
 
 ## Inbox suggestions, with a keyword-rule fallback
 
-`opportunity_app/inbox_classifiers.py` asks Jev one Choice question for each of
+`opportunity_app/mail/classifiers.py` asks Jev one Choice question for each of
 two suggestions the student already confirms by hand:
 
 - the outreach status a pasted cold-email reply points to (offer, call scheduled,
@@ -103,7 +103,7 @@ labelling independently, with a third labeler settling disagreements), Jev's
 suggestion matched on 90% of 100 replies against the rules' 58%, and 82% of 100
 application emails against 41%. Both sets were synthetic, so treat these as
 evidence for the choice, not as accuracy on real mail. The question wording in
-`inbox_classifiers.py` is the tested wording; change it only with a new test.
+`mail/classifiers.py` is the tested wording; change it only with a new test.
 
 The same test found three places Jev should **not** go yet. Posting titles and
 most posting fields (role type, seniority, citizenship, remote mode, graduation

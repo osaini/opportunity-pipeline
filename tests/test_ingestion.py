@@ -13,7 +13,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from opportunity_app.worker import enqueue_due_schedules  # noqa: E402
-from opportunity_app.database import connect_product  # noqa: E402
+from opportunity_app.core.database import connect_product  # noqa: E402
 
 from helpers_platform import build_and_migrate
 
@@ -33,7 +33,7 @@ class PipelineStageTests(unittest.TestCase):
         self.tempdir.cleanup()
 
     def test_score_stage_runs_hermetically_against_fixture_db(self):
-        from opportunity_app.ingestion import make_stage_handler, record_ingestion_run
+        from opportunity_app.opportunities.ingestion import make_stage_handler, record_ingestion_run
 
         with closing(connect_product(self.platform_path)) as conn:
             handler = make_stage_handler(conn, db_path=self.legacy_path)
@@ -44,7 +44,7 @@ class PipelineStageTests(unittest.TestCase):
         self.assertEqual(runs[0]["status"], "success")
 
     def test_failing_stage_records_failed_run(self):
-        from opportunity_app.ingestion import make_stage_handler
+        from opportunity_app.opportunities.ingestion import make_stage_handler
 
         with closing(connect_product(self.platform_path)) as conn:
             handler = make_stage_handler(conn, db_path=self.legacy_path)
@@ -55,7 +55,7 @@ class PipelineStageTests(unittest.TestCase):
         self.assertEqual(row["status"], "failed")
 
     def test_report_stage_writes_artifacts_into_temp_output(self):
-        from opportunity_app.ingestion import run_pipeline_stage
+        from opportunity_app.opportunities.ingestion import run_pipeline_stage
 
         result = run_pipeline_stage("report", db_path=self.legacy_path)
         self.assertEqual(result["status"], "success")
@@ -63,7 +63,7 @@ class PipelineStageTests(unittest.TestCase):
     def test_import_discovered_stage_runs_the_cli_subcommand(self):
         """Regression: rss_discovery_handler called this stage, but it was missing
         from STAGE_COMMANDS, so every configured feed raised ValueError."""
-        from opportunity_app.ingestion import run_pipeline_stage
+        from opportunity_app.opportunities.ingestion import run_pipeline_stage
 
         discovered = Path(self.tempdir.name) / "discovered.json"
         discovered.write_text(json.dumps([{
@@ -80,7 +80,7 @@ class PipelineStageTests(unittest.TestCase):
         self.assertEqual(result["status"], "success", result["stderr_tail"])
 
     def test_rss_discovery_handler_imports_feed_entries_into_the_target_db(self):
-        from opportunity_app import ingestion
+        from opportunity_app.opportunities import ingestion
 
         root = Path(self.tempdir.name)
         config = root / "sources.json"
@@ -129,7 +129,7 @@ class RssParsingTests(unittest.TestCase):
     </feed>"""
 
     def test_rss_entries_normalize_to_discovered_shape(self):
-        from opportunity_app.ingestion import parse_feed
+        from opportunity_app.opportunities.ingestion import parse_feed
 
         items = parse_feed(self.RSS, channel_company="UT Austin")
         self.assertEqual(len(items), 1, "entries without title or link are skipped")
@@ -142,13 +142,13 @@ class RssParsingTests(unittest.TestCase):
         self.assertIn("description", entry)
 
     def test_rss_channel_title_is_company_fallback(self):
-        from opportunity_app.ingestion import parse_feed
+        from opportunity_app.opportunities.ingestion import parse_feed
 
         items = parse_feed(self.RSS)
         self.assertEqual(items[0]["company"], "UT Austin Research Listings")
 
     def test_atom_entries_parse_with_href_links(self):
-        from opportunity_app.ingestion import parse_feed
+        from opportunity_app.opportunities.ingestion import parse_feed
 
         items = parse_feed(self.ATOM)
         self.assertEqual(len(items), 1)
@@ -156,7 +156,7 @@ class RssParsingTests(unittest.TestCase):
         self.assertEqual(items[0]["title"], "Manufacturing Co-op")
 
     def test_malformed_xml_raises_parse_error(self):
-        from opportunity_app.ingestion import parse_feed
+        from opportunity_app.opportunities.ingestion import parse_feed
 
         from xml.etree import ElementTree
 

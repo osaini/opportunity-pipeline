@@ -6,7 +6,7 @@
 # same result -- discovery, scoring, and reporting never touch this.
 #
 # The outreach location check also uses it, when installed, to read company
-# sites that are empty without JavaScript (opportunity_app/outreach_render.py).
+# sites that are empty without JavaScript (opportunity_app/outreach/render.py).
 #
 #   pip install -r requirements-optional.txt
 #   python3 -m playwright install chromium

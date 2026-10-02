@@ -28,9 +28,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import httpcore
 import httpx
 
-from opportunity_app import schema
-from opportunity_app.outreach import DraftChangedError, compute_draft_fingerprint, approve_draft, create_target, get_target, update_target
-from opportunity_app.outreach_contacts import (
+from opportunity_app.core import schema
+from opportunity_app.outreach.targets import DraftChangedError, compute_draft_fingerprint, approve_draft, create_target, get_target, update_target
+from opportunity_app.outreach.contacts import (
     add_manual_contact,
     apply_candidate,
     apply_choice,
@@ -41,14 +41,14 @@ from opportunity_app.outreach_contacts import (
     guess_strength,
     list_candidates,
 )
-from opportunity_app.outreach_discovery import run_discovery
-from opportunity_app.outreach_email_search import check_person, search_emails
-from opportunity_app.outreach_gmail import _mime
-from opportunity_app.outreach_recontact import RecontactManager, apply_recontact, eligible_targets, recontact_targets
-from opportunity_app.outreach_smtp import ACCEPTED, CATCH_ALL, REJECTED, UNKNOWN, SmtpVerifier, classify
-from opportunity_app.schema import ensure_product_schema
-from opportunity_app.database import connect_product
-from opportunity_app.web_fetch import _FETCH_CLOCK, SafeFetcher, _DeadlineBackend, _DeadlineStream, default_client
+from opportunity_app.outreach.discovery import run_discovery
+from opportunity_app.outreach.email_search import check_person, search_emails
+from opportunity_app.outreach.gmail import _mime
+from opportunity_app.outreach.recontact import RecontactManager, apply_recontact, eligible_targets, recontact_targets
+from opportunity_app.integrations.smtp_probe import ACCEPTED, CATCH_ALL, REJECTED, UNKNOWN, SmtpVerifier, classify
+from opportunity_app.core.schema import ensure_product_schema
+from opportunity_app.core.database import connect_product
+from opportunity_app.integrations.web_fetch import _FETCH_CLOCK, SafeFetcher, _DeadlineBackend, _DeadlineStream, default_client
 
 from helpers_platform import build_and_migrate
 from helpers_outreach import USER, company, only_for, proposals, safe_fetcher, site_transport
@@ -542,7 +542,7 @@ class StoredContactTests(DatabaseCase):
         self.assertEqual(added["email_body"], "Hi Sam,\n\nI build robots.")
 
     def test_the_latest_mail_server_answer_replaces_an_older_one(self):
-        from opportunity_app.outreach_contacts import store_candidate
+        from opportunity_app.outreach.contacts import store_candidate
 
         target = create_target(self.conn, {"company": "Acme", "website": "https://acme.test"}, user_id=USER)
         found = candidate("sam@acme.test", name="Sam Lee", method="published_elsewhere", verification=ACCEPTED)
@@ -633,7 +633,7 @@ class RecontactTests(DatabaseCase):
         broken = self.target(company="Acme", contact_email="hello@acme.test")
         self.conn.execute("UPDATE outreach_targets SET source_urls_json='{bad' WHERE id=?", (broken["id"],))
         self.conn.commit()
-        with mock.patch("opportunity_app.outreach_recontact.find_contacts") as search:
+        with mock.patch("opportunity_app.outreach.recontact.find_contacts") as search:
             with self.assertRaises(json.JSONDecodeError):
                 self.recontact(apply=True)
         search.assert_not_called()

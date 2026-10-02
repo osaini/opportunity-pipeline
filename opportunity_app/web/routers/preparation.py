@@ -9,8 +9,8 @@ from fastapi import Depends, File, Form, HTTPException, Query, Response, UploadF
 from fastapi.responses import FileResponse
 
 from ..overrides import shared_router
-from ...document_artifacts import delete_document, delete_document_artifact, ensure_document_artifact
-from ...preparation import (
+from ...student.artifacts import delete_document, delete_document_artifact, ensure_document_artifact
+from ...student.preparation import (
     MAX_MOCK_AUDIO_BYTES,
     PreparationNotFoundError,
     answer_mock_question,
@@ -28,8 +28,8 @@ from ...preparation import (
     save_answer,
     store_recorded_mock_answer,
 )
-from ...agent_providers import provider_catalog
-from ...document_pdf import markdown_to_html
+from ...integrations.agent_providers import provider_catalog
+from ...integrations.pdf import markdown_to_html
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection
 from ..models.preparation import (

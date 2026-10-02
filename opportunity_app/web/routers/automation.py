@@ -8,12 +8,13 @@ from typing import Any, Callable
 from fastapi import Depends, HTTPException, Query, status
 
 from ..overrides import shared_router
-from ... import application_inbox
-from ... import automation as automation_core
-from ... import automation_health
-from ... import auto_triage, mail_trust
-from ...actions import ApplicationNotFoundError
-from ...inbox_classifiers import client_for as inbox_client_for
+from ...applications import inbox as application_inbox
+from ...automation import ledger as automation_core
+from ...automation import health as automation_health
+from ...automation import triage as auto_triage
+from ...mail import trust as mail_trust
+from ...applications.actions import ApplicationNotFoundError
+from ...mail.classifiers import client_for as inbox_client_for
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection
 from ..models.automation import (
@@ -27,7 +28,7 @@ from ..models.automation import (
 router = shared_router()
 
 
-# Everything the app does on its own (automation.py): the switches, the
+# Everything the app does on its own (automation/ledger.py): the switches, the
 # master pause, the ledger of what it did, its notices, and its health.
 def automation_view(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
     return {
@@ -202,7 +203,7 @@ def get_auto_passed(
     return {"items": items, "total": len(items), "days": auto_triage.REVIEW_DAYS}
 
 
-# Company mail domains the student trusts for application mail (mail_trust.py).
+# Company mail domains the student trusts for application mail (mail/trust.py).
 @router.get("/api/v1/automation/employer-domains")
 def get_employer_domains(
     conn: sqlite3.Connection = Depends(writable_connection),
@@ -241,7 +242,7 @@ def dismiss_employer_domain(
     return decide_employer_domain(conn, user_id, domain_id, "dismissed")
 
 
-# Update applications from job emails (application_inbox.py).
+# Update applications from job emails (applications/inbox.py).
 @router.get("/api/v1/automation/application-mail")
 def get_application_mail(
     conn: sqlite3.Connection = Depends(writable_connection),

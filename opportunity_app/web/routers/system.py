@@ -10,9 +10,9 @@ from typing import Any, Literal
 from fastapi import Depends, HTTPException, Request, status
 
 from ..overrides import shared_router
-from ...refresh import RefreshBusy, fresh_steps
-from ...database import connect_product, is_postgres_target
-from ...boards import BoardLookupExpired, BoardTracker
+from ...opportunities.refresh import RefreshBusy, fresh_steps
+from ...core.database import connect_product, is_postgres_target
+from ...opportunities.boards import BoardLookupExpired, BoardTracker
 from ..context import AppContext
 from ..dependencies import get_ctx, require_owner
 from ..models.system import BoardAddRequest, BoardLookupRequest, RefreshStatusResponse

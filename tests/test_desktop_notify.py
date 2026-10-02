@@ -13,11 +13,11 @@ from xml.sax.saxutils import unescape
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import automation, desktop_notify
-from opportunity_app.connections import update_preferences
-from opportunity_app.outreach_automation import AutomationWorker
-from opportunity_app.schema import LOCAL_USER_ID
-from opportunity_app.database import connect_product
+from opportunity_app.automation import ledger as automation, desktop_notify
+from opportunity_app.mail.connections import update_preferences
+from opportunity_app.outreach.automation import AutomationWorker
+from opportunity_app.core.schema import LOCAL_USER_ID
+from opportunity_app.core.database import connect_product
 
 from helpers_platform import build_and_migrate
 
@@ -261,7 +261,7 @@ class DeliveryTests(unittest.TestCase):
         with closing(connect_product(self.platform_path)) as conn:
             self.assertIsNotNone(conn.execute("SELECT desktop_at FROM automation_notices WHERE event_key='now'").fetchone()[0])
         with mock.patch.object(desktop_notify, "deliver_desktop_notices", side_effect=RuntimeError("no desktop")), \
-                self.assertLogs("opportunity_app.outreach_automation", "ERROR"):
+                self.assertLogs("opportunity_app.outreach.automation", "ERROR"):
             self.assertEqual(worker.run_once(), {"sent": [], "recovered": [], "drafted": [], "forms": []})
 
 

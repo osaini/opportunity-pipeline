@@ -19,14 +19,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, apply_claims, apply_runs, automation, automation_health, outreach_schedule, schema
-from opportunity_app.actions import record_intent, update_application
+from opportunity_app import STATIC_DIR
+from opportunity_app.outreach import schedule as outreach_schedule
+from opportunity_app.automation import ledger as automation, health as automation_health
+from opportunity_app.apply import claims as apply_claims, runs as apply_runs
+from opportunity_app.core import schema
+from opportunity_app.applications.actions import record_intent, update_application
 from opportunity_app.api import create_app
-from opportunity_app.automation import Feature
-from opportunity_app.schema import MIGRATIONS_DIR, ensure_product_schema
-from opportunity_app.legacy_sync import migrate_legacy_database
-from opportunity_app.database import connect_product, has_column
-from opportunity_app.timestamps import utc_now
+from opportunity_app.automation.ledger import Feature
+from opportunity_app.core.schema import MIGRATIONS_DIR, ensure_product_schema
+from opportunity_app.opportunities.legacy_sync import migrate_legacy_database
+from opportunity_app.core.database import connect_product, has_column
+from opportunity_app.core.timestamps import utc_now
 from pipeline_core import OpportunityFilters, OpportunityRepository
 from pipeline_core.identity import employer_key
 from helpers_platform import JOBS, LEGACY_SCHEMA, build_profile
@@ -84,7 +88,7 @@ class PostgresContractTests(unittest.TestCase):
     def test_every_sort_matches_sqlite_on_the_same_data(self):
         """The read model's ordering must not depend on the backend.
 
-        database.py translates SQL by string substitution -- it rewrites `?` and
+        core/database.py translates SQL by string substitution -- it rewrites `?` and
         deletes one exact spelling of COLLATE NOCASE -- so nothing guarantees
         that a query ordering one way on SQLite orders the same way on
         PostgreSQL. NULL ordering differs between them by default, and text
@@ -220,9 +224,9 @@ class PostgresContractTests(unittest.TestCase):
         """Deadline UPSERT, Urgent aggregation, capture ownership and cascades on PostgreSQL."""
         from datetime import date, timedelta
 
-        from opportunity_app import urgent
-        from opportunity_app.schema import LOCAL_USER_ID
-        from opportunity_app.database import connect_product
+        from opportunity_app.applications import urgent
+        from opportunity_app.core.schema import LOCAL_USER_ID
+        from opportunity_app.core.database import connect_product
 
         auth = {"Authorization": "Bearer pg-secret"}
         soon = (date.today() + timedelta(days=3)).isoformat()
@@ -299,7 +303,7 @@ class PostgresContractTests(unittest.TestCase):
 
 @unittest.skipUnless(POSTGRES_TEST_URL, "POSTGRES_TEST_URL is not configured")
 class PostgresAutomationContractTests(unittest.TestCase):
-    """The automation ledger, the pause, and Health on PostgreSQL (migration 0037, automation.py).
+    """The automation ledger, the pause, and Health on PostgreSQL (migration 0037, automation/ledger.py).
 
     Their PostgreSQL-only paths (pause_guard's FOR SHARE, the handlers' FOR
     UPDATE, IS NOT DISTINCT FROM, the Python migration step) run nowhere
@@ -420,7 +424,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
         self.conn.commit()
 
     def test_migration_0038_repairs_a_half_applied_upgrade_and_application_mail_runs(self):
-        from opportunity_app import application_inbox
+        from opportunity_app.applications import inbox as application_inbox
 
         for table, column in (("application_tasks", "link"), ("monitored_events", "decided_by")):
             self.assertTrue(has_column(self.conn, table, column), f"{table}.{column}")
@@ -451,7 +455,8 @@ class PostgresAutomationContractTests(unittest.TestCase):
         self.assertEqual(remaining, 0)
 
     def test_a_job_email_reopens_only_the_automatic_archive(self):
-        from opportunity_app import application_inbox, internal_automation
+        from opportunity_app.applications import inbox as application_inbox
+        from opportunity_app.automation import internal as internal_automation
 
         with self.conn:
             for key in ("application_mail", "archive_silent_applications"):
@@ -484,7 +489,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
         self.assertFalse(internal_automation.automation_archived(self.conn, "app-job-b"))
         self.conn.commit()
         # The student archives it: an email's reopen is refused inside the transaction.
-        from opportunity_app.actions import update_application
+        from opportunity_app.applications.actions import update_application
 
         update_application(self.conn, "app-job-b", stage="archived", user_id=AUTOMATION_USER)
         refused = automation.perform(self.conn, user_id=AUTOMATION_USER, **email, after={"stage": "rejected"},
@@ -496,7 +501,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
     def test_a_job_email_restarts_the_silence_and_an_undone_archive_stays_undone(self):
         from datetime import datetime, timedelta, timezone
 
-        from opportunity_app import internal_automation
+        from opportunity_app.automation import internal as internal_automation
 
         now = datetime.now(timezone.utc).replace(microsecond=0)
         with self.conn:
@@ -654,8 +659,8 @@ class PostgresAutomationContractTests(unittest.TestCase):
         self.assertEqual((component["component"], component["detail"]), ("inbox.replies", {"read": 2}))
 
     def test_migration_0040_and_a_thank_you_scheduled_handed_over_and_settled(self):
-        from opportunity_app import outreach, outreach_thank_you
-        from opportunity_app.outreach_gmail import thank_you_fingerprint
+        from opportunity_app.outreach import targets as outreach, thank_you as outreach_thank_you
+        from opportunity_app.outreach.gmail import thank_you_fingerprint
 
         # The switch needs the address the student sends from (automation.REQUIREMENTS), as it does in every student's .env.
         sending = mock.patch.dict("os.environ", {"PIPELINE_OUTREACH_ACCOUNT": "student@school.example"})
@@ -738,10 +743,10 @@ class PostgresAutomationContractTests(unittest.TestCase):
         self.conn.commit()
         self.assertEqual(stored["state"], "cancelled")
 
-    # --- Replies from other addresses (migration 0041, outreach_inbox.py) -------------------------
+    # --- Replies from other addresses (migration 0041, outreach/inbox.py) -------------------------
 
     def test_migration_0041_applies_and_a_rerun_repairs_a_half_applied_upgrade(self):
-        from opportunity_app import outreach_inbox
+        from opportunity_app.outreach import inbox as outreach_inbox
 
         self.assertEqual({column for _table, column, _definition in schema._OUTREACH_REPLY_RULES_COLUMNS}, set(REPLY_RULES_COLUMNS),
                          "the table as 0039 left it, below, lacks every column 0041 adds")
@@ -802,7 +807,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
         """
         import psycopg
 
-        from opportunity_app import outreach_inbox
+        from opportunity_app.outreach import inbox as outreach_inbox
 
         copy = "reply_rules_copy"
         with psycopg.connect(POSTGRES_TEST_URL, autocommit=True) as admin:
@@ -832,7 +837,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
                                                      text="Could you send your availability?"))
         self.assertEqual(self.inbox_row("careers-1")["text"], "Could you send your availability?")
 
-    # --- The reply label (migration 0043, outreach_labels.py) and read-only connections -----------
+    # --- The reply label (migration 0043, outreach/labels.py) and read-only connections -----------
 
     def test_migration_0043_applies_and_a_rerun_repairs_a_half_applied_upgrade(self):
         self.assertEqual({(table, column) for table, column, _definition in schema._GMAIL_REPLY_LABELS_COLUMNS},
@@ -994,7 +999,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
         written is replaced once, returning True; a verdict under these rules,
         or a reply the old code logged, never is, returning False.
         """
-        from opportunity_app import outreach_inbox as inbox
+        from opportunity_app.outreach import inbox
 
         self.outreach_target("t-1", "Bovi")
         self.student("student-2")
@@ -1081,7 +1086,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
         """
         import psycopg
 
-        from opportunity_app import outreach_inbox as inbox
+        from opportunity_app.outreach import inbox
 
         self.outreach_target("t-1", "Bovi")
         self.inbox_message("careers-1", "ignored", target_id="")
@@ -1125,7 +1130,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
 
     def test_the_job_mail_reader_leaves_to_outreach_only_what_outreach_holds(self):
         """application_inbox._outreach_owns and _reclaim on PostgreSQL, through outreach_inbox.owned_sql (plain and aliased)."""
-        from opportunity_app import application_inbox
+        from opportunity_app.applications import inbox as application_inbox
 
         self.outreach_target("t-1", "Bovi")
         self.student("student-2")
@@ -1194,7 +1199,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
         from Gmail: it is held until the next morning without counting a try.
         The id is matched whole, so t-10's possible reply never holds t-1's.
         """
-        from opportunity_app import outreach_inbox as inbox
+        from opportunity_app.outreach import inbox
 
         now = utc_now()
         for target_id, company in (("t-1", "Bovi"), ("t-10", "Kiva"), ("t-3", "Orbit")):
@@ -1245,7 +1250,7 @@ APPLY_LOCKS = ("ux_submit_claims_live_application", "ux_submit_claims_live_job")
 
 @unittest.skipUnless(POSTGRES_TEST_URL, "POSTGRES_TEST_URL is not configured")
 class PostgresApplyContractTests(unittest.TestCase):
-    """Apply for me's claims, their two partial unique indexes, the hand-over and recovery on PostgreSQL (migration 0045, apply_runs.py).
+    """Apply for me's claims, their two partial unique indexes, the hand-over and recovery on PostgreSQL (migration 0045, apply/runs.py).
 
     The locks (a transaction that starts with an UPDATE of the student's users row, the partial unique
     indexes, FOR UPDATE on the claim) are what make one attempt per application and per job hold across

@@ -14,8 +14,9 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import bootstrap, outreach_callbacks, outreach_schedule, outreach_thank_you
-from opportunity_app.hooks import Hook, NotRegistered
+from opportunity_app import bootstrap
+from opportunity_app.outreach import callbacks as outreach_callbacks, schedule as outreach_schedule, thank_you as outreach_thank_you
+from opportunity_app.core.hooks import Hook, NotRegistered
 
 from helpers_platform import build_and_migrate  # noqa: F401  (also registers, as a test without an app needs)
 
@@ -107,7 +108,8 @@ class EntryPointTests(unittest.TestCase):
                 self.assertTrue(self.calls_register_all(module, function), f"{module}.{function} must call bootstrap.register_all()")
 
     def test_the_daily_triage_step_can_hand_a_change_to_the_ledger_after_registering(self):
-        from opportunity_app import automation, migrate
+        from opportunity_app.automation import ledger as automation
+        from opportunity_app import migrate
 
         with mock.patch.dict(automation.HANDLERS, clear=True), mock.patch.object(bootstrap, "_registered", False):
             with mock.patch.object(migrate, "build_parser") as parser, mock.patch.object(migrate, "migrate_legacy_database") as sync, \

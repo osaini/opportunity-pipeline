@@ -38,15 +38,24 @@ what puts a module there.
       schedule workflows, automation handlers, apply runs, discovery and research, and the background worker base.
   L5  entry points: the FastAPI app (api and opportunity_app.web), the launcher, the worker, and every CLI that is run as
       `python -m opportunity_app.X`.
-      One exception: purge. It has a `__main__` guard (the daily run calls `python -m opportunity_app.purge`), but its
-      logic is a domain operation (expire records) and main() is a thin wrapper, so it stays in L3 where refresh (L4),
-      the manual refresh workflow, can import it at the top of the file. Do not move it up without moving refresh up too.
+      purge is two modules: the top-level opportunity_app.purge is the L5 command (it only imports main, so the daily run's
+      `python -m opportunity_app.purge` keeps working), and opportunities.purge holds the domain operation (expire
+      records) in L3, where refresh (L4), the manual refresh workflow, imports it at the top of the file.
 
 One deviation from the proposal in the refactor audit (critic.md): it put integrations ABOVE domain (L3) and workflows
-at L4. Today's top-level graph forbids that. outreach.py (domain) imports web_fetch and typesafe_decisions, outreach_config
-(domain, imported by the automation ledger) imports agent_providers, and preparation imports agent_providers. With integrations
-above domain, every one of those domain modules would itself be an "integration" and the domain layer would be empty. Integrations
-are leaves that import nothing first-party, so putting them under domain loses nothing: they still cannot reach back up.
+at L4. Today's top-level graph forbids that. outreach.targets (domain) imports integrations.web_fetch and
+integrations.typesafe_decisions, outreach.config (domain, imported by the automation ledger) imports integrations.agent_providers,
+and student.preparation imports integrations.agent_providers. With integrations above domain, every one of those domain modules
+would itself be an "integration" and the domain layer would be empty. Integrations are leaves that import nothing first-party, so
+putting them under domain loses nothing: they still cannot reach back up.
+
+Packages and layers. The module list below is written per package, and four of the package facts are tests of their own
+(PackageLayerTests): the integrations package is exactly L2; the core package holds only L0 and L1 modules and imports nothing
+first-party beyond core, pipeline_core and the package constants; every top-level module of opportunity_app other than __init__
+and opportunity_metadata is L5, and every L5 module is top-level or under web; and the eight domain packages (opportunities,
+applications, apply, mail, automation, student, accounts, outreach) hold only L0 (their __init__), L1, L3 and L4 modules. The
+domain packages are not a DAG among themselves (the automation ledger imports outreach.config, outreach.inbox imports
+automation, and so on), so the layer rules stay module-level; only core and integrations are closed bottom packages.
 
 Adding a module: put it in the lowest layer that holds everything it imports at the top of the file, unless its role says
 higher. Do not raise a layer to make an upward import pass; fix the import.
@@ -81,6 +90,10 @@ def _app(names: str) -> frozenset[str]:
     return _mods("opportunity_app", names)
 
 
+def _pkg(package: str, names: str) -> frozenset[str]:
+    return _mods(f"opportunity_app.{package}", names)
+
+
 def _core(names: str) -> frozenset[str]:
     return _mods("pipeline_core", names)
 
@@ -94,49 +107,76 @@ LAYER_NAMES = {
     5: "entry points",
 }
 
-# Every module is listed here, in exactly one layer. There is deliberately no default layer for an unlisted module.
+# Every module is listed here, in exactly one layer. There is deliberately no default layer for an unlisted module. The members
+# are written per package (see _pkg), because the packages line up with the layers: core is L0 and L1, integrations is exactly
+# L2, the eight domain packages hold L0 (their __init__), L1, L3 and L4, and the top level plus the web package is L5.
+# PackageLayerTests below checks each of those statements, so a module cannot be placed against its package by accident.
 LAYER_MEMBERS: dict[int, frozenset[str]] = {
-    # L0 stdlib leaves. `opportunity_app` and `pipeline_core` are the package __init__ modules (constants and re-exports).
+    # L0 stdlib leaves. `opportunity_app` and `pipeline_core` are the package __init__ modules (constants only). Every new
+    # subpackage __init__ is a one-line docstring, so it is L0 as well.
     0: (
-        _app(". timestamps user_time database json_values mail_message opportunity_metadata storage_paths contact_names daily_lock hooks monitored_classifier outreach_replies")
+        _app(". opportunity_metadata")
+        | _pkg("core", ". timestamps user_time json_values storage_paths hooks database daily_lock")
+        | _pkg("integrations", ".")
+        | _pkg("mail", ". message monitored_classifier")
+        | _pkg("outreach", ". contact_names replies")
+        | _pkg("opportunities", ".")
+        | _pkg("applications", ".")
+        | _pkg("apply", ".")
+        | _pkg("automation", ".")
+        | _pkg("student", ".")
+        | _pkg("accounts", ".")
         | _core(". env identity visibility regions read_model paths clock text http config sources scoring artifacts store liveness retention importers discovery fetch reports cli")
         | frozenset({"pipeline"})
     ),
-    # L1 storage. company_tags is here because schema.py imports it; legacy is the one adapter onto pipeline.py; legacy_sync
+    # L1 storage. company_tags is here because core/schema.py imports it; legacy is the one adapter onto pipeline.py; legacy_sync
     # writes the product database from the legacy one, so it sits beside schema, which it imports one way.
-    1: _app("schema legacy_sync settings_store profile_store company_tags legacy"),
-    # L2 integrations. Leaves: none of them imports another first-party module.
-    2: _app("agent_providers web_fetch gmail_client typesafe_decisions outreach_smtp document_pdf"),
+    1: _pkg("core", "schema settings_store profile_store company_tags") | _pkg("opportunities", "legacy legacy_sync"),
+    # L2 integrations. Leaves: none of them imports another first-party module. This is exactly the integrations package.
+    2: _pkg("integrations", "agent_providers web_fetch gmail_client typesafe_decisions smtp_probe pdf"),
     # L3 domain.
-    3: _app(
-        "actions apply_sessions auth apply_checks apply_claims apply_classify apply_greenhouse apply_policy apply_sensitive apply_schema_client "
-        "automation automation_health boards captures connections dossier employer market early_programs extension_apply mail_trust "
-        "notifications purge ingestion profile resumes resume_variants preparation document_artifacts inbox_classifiers gmail_connection "
-        "send_claims outreach outreach_agents outreach_callbacks outreach_config outreach_decline_reading outreach_identity outreach_label_name "
-        "outreach_location outreach_greeting outreach_versions outreach_contacts outreach_linkedin outreach_batch "
-        "outreach_thank_you_writing outreach_render"
+    3: (
+        _pkg("applications", "actions extension")
+        | _pkg("apply", "checks claims classify greenhouse policy sensitive schema_client sessions")
+        | _pkg("automation", "ledger health notifications")
+        | _pkg("accounts", "auth employer dossier")
+        | _pkg("opportunities", "boards captures market early_programs ingestion purge")
+        | _pkg("student", "profile resumes resume_variants preparation artifacts")
+        | _pkg("mail", "trust classifiers gmail_connection connections")
+        | _pkg(
+            "outreach",
+            "targets send_claims agents batch callbacks config decline_reading identity label_name location greeting versions contacts "
+            "linkedin render thank_you_writing",
+        )
     ),
-    # L4 workflows. refresh is the manual refresh/purge workflow run in a background thread; api (L5) is its only importer.
-    4: _app(
-        "background application_inbox application_mail_rules inbox_watcher internal_automation automation_handlers auto_triage apply_runs apply_preflight "
-        "outreach_gmail outreach_gmail_sends outreach_delivery outreach_inbox outreach_labels outreach_schedule "
-        "outreach_thank_you outreach_reply_senders outreach_automation outreach_recontact outreach_review outreach_call_prep "
-        "outreach_call_questions outreach_forms outreach_discovery outreach_research quote_check outreach_drafting "
-        "outreach_interviewer outreach_email_search outreach_locate outreach_profile outreach_settings "
-        "refresh desktop_notify operations backups student_agent urgent monitored_events"
+    # L4 workflows. opportunities.refresh is the manual refresh/purge workflow run in a background thread; api (L5) is its only importer.
+    4: (
+        _pkg("applications", "inbox mail_rules urgent monitored_events")
+        | _pkg("apply", "runs preflight")
+        | _pkg("automation", "background inbox_watcher internal handlers triage desktop_notify")
+        | _pkg("accounts", "operations backups")
+        | _pkg("opportunities", "refresh")
+        | _pkg("student", "agent")
+        | _pkg(
+            "outreach",
+            "gmail gmail_sends delivery inbox labels schedule thank_you reply_senders automation recontact review call_prep "
+            "call_questions forms discovery research quote_check drafting interviewer email_search locate company_profile settings",
+        )
     ),
-    # L5 entry points. opportunity_app.web is the FastAPI app behind api: the composition root (app), the per-app context, the
-    # dependencies, middleware and asset handling, the request models, and one router module per feature.
+    # L5 entry points: the top-level commands and the composition root (api, bootstrap, launch, worker, daily, migrate, ops_cli,
+    # outreach_cli, pipeline_mailbox, setup, and purge, which only imports main from opportunities.purge), and opportunity_app.web, the
+    # FastAPI app behind api: the composition root (app), the per-app context, the status panel, the dependencies, middleware and asset
+    # handling, the request models, and one router module per feature.
     5: (
-        _app("api bootstrap launch worker daily system_status migrate ops_cli outreach_cli pipeline_mailbox setup")
-        | _mods("opportunity_app.web", ". app context dependencies errors middleware assets payloads overrides")
-        | _mods(
-            "opportunity_app.web.models",
+        _app("api bootstrap launch worker daily migrate ops_cli outreach_cli pipeline_mailbox setup purge")
+        | _pkg("web", ". app context system_status dependencies errors middleware assets payloads overrides")
+        | _pkg(
+            "web.models",
             ". account admin agent applications apply_agent automation captures connections dossier employer extension market "
             "opportunities outreach preparation resumes session system",
         )
-        | _mods(
-            "opportunity_app.web.routers",
+        | _pkg(
+            "web.routers",
             ". account admin agent applications apply_agent apply_sessions automation captures connections dossier employer "
             "extension market opportunities outreach_contacts outreach_delivery outreach_drafting outreach_research "
             "outreach_settings outreach_targets pages preparation resumes session system typesafe urgent",
@@ -149,14 +189,14 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
 _P = "opportunity_app."
 ALLOWLIST: tuple[tuple[str, str, str], ...] = (
     # --- Upward: a lower layer reaches a higher one at call time. Each is a registry or callback that is looked up late.
-    (_P + "outreach_contacts", _P + "outreach_forms", "record_contact_form: contact search records the contact form the form workflow found"),
-    (_P + "outreach_contacts", _P + "outreach_profile", "rendered_pages and record_site_location: contact search re-reads pages in a browser and records the site location"),
-    (_P + "outreach_settings", _P + "setup", "set_env_values: the settings page writes .env through the setup CLI's helper"),
+    (_P + "outreach.contacts", _P + "outreach.forms", "record_contact_form: contact search records the contact form the form workflow found"),
+    (_P + "outreach.contacts", _P + "outreach.company_profile", "rendered_pages and record_site_location: contact search re-reads pages in a browser and records the site location"),
+    (_P + "outreach.settings", _P + "setup", "set_env_values: the settings page writes .env through the setup CLI's helper"),
     # --- Same layer, but hoisting the import would close a top-level cycle. One entry per cycle edge that must stay lazy.
-    (_P + "actions", _P + "resume_variants", "safe_pick_after_save: resume_variants imports actions at the top"),
-    (_P + "launch", _P + "api", "create_app: api imports system_status, which would import launch if that were hoisted too"),
-    (_P + "launch", _P + "web.context", "LOOPBACK_HOSTS: web.context imports system_status, which would import launch if that were hoisted too"),
-    (_P + "profile", _P + "outreach_greeting", "greeting_style_error: outreach_greeting and outreach_location read confirmed facts through preparation, which imports profile"),
+    (_P + "applications.actions", _P + "student.resume_variants", "safe_pick_after_save: student.resume_variants imports applications.actions at the top"),
+    (_P + "launch", _P + "api", "create_app: api imports web.system_status, which would import launch if that were hoisted too"),
+    (_P + "launch", _P + "web.context", "LOOPBACK_HOSTS: web.context imports web.system_status, which would import launch if that were hoisted too"),
+    (_P + "student.profile", _P + "outreach.greeting", "greeting_style_error: outreach.greeting and outreach.location read confirmed facts through student.preparation, which imports student.profile"),
 )
 
 
@@ -452,6 +492,68 @@ class LayerMapTests(unittest.TestCase):
     def test_every_allowlist_entry_gives_a_reason(self):
         thin = [f"({a}, {b})" for a, b, reason in ALLOWLIST if len(reason.split()) < 3]
         self.assertNone(thin, "give each entry a one-line reason naming what the import is for")
+
+
+DOMAIN_PACKAGES = ("opportunities", "applications", "apply", "mail", "automation", "student", "accounts", "outreach")
+
+
+class PackageLayerTests(unittest.TestCase):
+    """The packages line up with the layers: four facts about the tree, each checked against LAYER_MEMBERS both ways."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.modules = discover_modules()
+        cls.layer = {name: layer for layer, members in LAYER_MEMBERS.items() for name in members}
+        cls.sources = {name: read_source(path) for name, (path, _is_package) in cls.modules.items()}
+
+    def under(self, package: str) -> set[str]:
+        """The modules inside opportunity_app.<package>, the package's own __init__ included."""
+        prefix = f"opportunity_app.{package}"
+        return {name for name in self.modules if name == prefix or name.startswith(prefix + ".")}
+
+    def test_the_integrations_package_is_exactly_layer_two(self):
+        inside = self.under("integrations") - {"opportunity_app.integrations"}
+        self.assertTrue(inside, "the integrations package holds no modules")
+        self.assertEqual(
+            (sorted(inside - LAYER_MEMBERS[2]), sorted(LAYER_MEMBERS[2] - inside)), ([], []),
+            "L2 and opportunity_app.integrations must hold the same modules: (in the package but not L2, in L2 but not the package)",
+        )
+
+    def test_core_holds_only_layer_zero_and_one_and_imports_nothing_outside_itself(self):
+        inside = self.under("core")
+        self.assertGreater(len(inside), 5, "the core package holds almost no modules")
+        self.assertEqual(sorted(name for name in inside if self.layer[name] not in (0, 1)), [], "core modules are L0 or L1")
+        known = frozenset(self.modules)
+        stray = []
+        for name in sorted(inside):
+            edges, _unresolved = imports_of(name, self.modules[name][1], self.sources[name], known)
+            for edge in edges:
+                # Allowed: its own package, the package-root constants (`from .. import ROOT`), and the legacy pipeline.
+                if not (edge.target in inside or edge.target == "opportunity_app" or edge.target.split(".")[0] in ("pipeline_core", "pipeline")):
+                    stray.append(f"{name}:{edge.line} imports {edge.target}")
+        self.assertEqual(stray, [], "core imports nothing first-party beyond core, pipeline_core and the package constants")
+
+    def test_every_top_level_module_is_an_entry_point_and_every_entry_point_is_top_level_or_web(self):
+        top = {
+            name for name, (_path, is_package) in self.modules.items()
+            if name.startswith("opportunity_app.") and name.count(".") == 1 and not is_package
+        }
+        self.assertIn("opportunity_app.api", top)
+        left_out = {"opportunity_app.opportunity_metadata"}  # the stdlib-only date parser pipeline_core imports lazily
+        self.assertEqual(sorted(name for name in top - left_out if self.layer[name] != 5), [], "a top-level module is an L5 command")
+        misplaced = [
+            name for name, layer in self.layer.items()
+            if layer == 5 and name.count(".") > 1 and not name.startswith("opportunity_app.web.") and name not in self.under("web")
+        ]
+        self.assertEqual(sorted(misplaced), [], "an L5 module lives at the top level or in the web package")
+
+    def test_domain_packages_hold_only_layers_zero_one_three_and_four(self):
+        for package in DOMAIN_PACKAGES:
+            with self.subTest(package=package):
+                inside = self.under(package)
+                self.assertGreater(len(inside), 3, f"opportunity_app.{package} holds almost no modules")
+                wrong = sorted(f"{name} is L{self.layer[name]}" for name in inside if self.layer[name] not in (0, 1, 3, 4))
+                self.assertEqual(wrong, [], "integrations are L2 and entry points are L5; neither belongs in a domain package")
 
 
 class AnalysisBitesTests(unittest.TestCase):

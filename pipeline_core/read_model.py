@@ -339,7 +339,7 @@ def _where(
     if filters.tag:
         # A company carries a tag when it was generated (from its postings, or
         # from this user's own outreach research) and this user has not removed
-        # it, or when this user added it (opportunity_app/company_tags.py).
+        # it, or when this user added it (opportunity_app/core/company_tags.py).
         clauses.append(
             f"""(
             (

@@ -20,13 +20,13 @@ from unittest import mock
 
 import httpx
 
-from opportunity_app.agent_providers import ProviderReply
-from opportunity_app.web_fetch import SafeFetcher
-from opportunity_app.outreach_discovery import DiscoveryManager
-from opportunity_app.outreach_recontact import RecontactManager
-from opportunity_app.system_status import SystemStatus
-from opportunity_app.boards import BoardTracker
-from opportunity_app.outreach_settings import OutreachSettings
+from opportunity_app.integrations.agent_providers import ProviderReply
+from opportunity_app.integrations.web_fetch import SafeFetcher
+from opportunity_app.outreach.discovery import DiscoveryManager
+from opportunity_app.outreach.recontact import RecontactManager
+from opportunity_app.web.system_status import SystemStatus
+from opportunity_app.opportunities.boards import BoardTracker
+from opportunity_app.outreach.settings import OutreachSettings
 
 COMPOSE_ACCOUNT = "student@school.example"
 

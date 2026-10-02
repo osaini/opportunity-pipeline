@@ -1,4 +1,4 @@
-"""Apply for me's policy (apply_policy.py, apply_preflight.py): what may fill each field, and from where.
+"""Apply for me's policy (apply/policy.py, apply/preflight.py): what may fill each field, and from where.
 
 No browser and no network. Every company, board and posting here is fictional. The eligibility truth table of
 docs/phase5-apply-agent-spec.md 7.5 is run row by row: the pure rows through ``build_plan``, the rows that read
@@ -16,14 +16,22 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import actions, apply_checks, apply_classify, apply_policy, apply_preflight, apply_runs, preparation
-from opportunity_app.apply_checks import question_key
-from opportunity_app.apply_classify import classify_sensitive, context_dependent, needs_label_key, without_enumeration
-from opportunity_app.apply_greenhouse import identify
-from opportunity_app.apply_policy import SchemaField, Sources, build_plan, parse_schema, plan_hash, resume_for
-from opportunity_app.extension_apply import SENSITIVE_FIELD
-from opportunity_app.profile import update_profile
-from opportunity_app.timestamps import utc_now
+from opportunity_app.applications import actions
+from opportunity_app.apply import (
+    checks as apply_checks,
+    classify as apply_classify,
+    policy as apply_policy,
+    preflight as apply_preflight,
+    runs as apply_runs,
+)
+from opportunity_app.student import preparation
+from opportunity_app.apply.checks import question_key
+from opportunity_app.apply.classify import classify_sensitive, context_dependent, needs_label_key, without_enumeration
+from opportunity_app.apply.greenhouse import identify
+from opportunity_app.apply.policy import SchemaField, Sources, build_plan, parse_schema, plan_hash, resume_for
+from opportunity_app.applications.extension import SENSITIVE_FIELD
+from opportunity_app.student.profile import update_profile
+from opportunity_app.core.timestamps import utc_now
 
 from helpers_source import apply_modules
 from helpers_apply import (
@@ -951,9 +959,9 @@ class NothingIsGuessedTests(unittest.TestCase):
     def test_the_policy_has_no_label_regex_mapping_and_no_similarity_tier(self):
         # The extension's label-pattern mappings are regexes over the label and its answer tier scores word overlap;
         # the agent has an exact list of keys and equality of keys, and nothing else. Every apply module is scanned, not
-        # only apply_policy.py, so the policy moving into several files or a package cannot take this guard with it.
+        # only apply/policy.py, so the policy moving into several files or a package cannot take this guard with it.
         sources = apply_modules()
-        self.assertIn("apply_policy.py", sources)
+        self.assertIn("apply/policy.py", sources)
         for name, source in sources.items():
             with self.subTest(module=name):
                 self.assertNotIn("mappings", source)
@@ -1134,7 +1142,7 @@ class TruthTableHandOverRows(PolicyCase):
         self.assertFalse(apply_runs.hand_over(self.conn, token, user_id=USER, now=self.at(15)))
 
     def test_rows_46_and_47_the_newer_of_a_pause_and_the_confirm_wins(self):
-        from opportunity_app import automation
+        from opportunity_app.automation import ledger as automation
 
         rehearsal = self.rehearsal(-10)
         token = self.claim("one_click", "job-1", confirmed_at=self.at(-5).isoformat(timespec="microseconds"), rehearsal_run_id=rehearsal)
@@ -1144,7 +1152,7 @@ class TruthTableHandOverRows(PolicyCase):
         self.assertTrue(apply_runs.hand_over(self.conn, later, user_id=USER, now=self.at(1)), "47: paused before the confirm")
 
     def test_row_48_unattended_is_refused_while_paused(self):
-        from opportunity_app import automation
+        from opportunity_app.automation import ledger as automation
 
         token = self.claim("unattended", "job-1")
         automation.set_paused(self.conn, USER, True)
@@ -1401,7 +1409,7 @@ class RequirementTests(ApplyCase):
             apply_runs.setup_requirement(self.conn, USER)
 
     def test_the_switch_is_registered_off_and_on_only_with_no_shadow_and_cannot_turn_on_until_the_requirement_is_met(self):
-        from opportunity_app import automation
+        from opportunity_app.automation import ledger as automation
 
         feature = automation.FEATURES["apply_agent"]
         self.assertEqual((feature.label, feature.group, feature.risk, feature.modes), ("Apply for me", "applications", "external", automation.OFF_ON))
@@ -1473,8 +1481,8 @@ class SourceBoundaryTests(ApplyCase):
         # It asks apply_sensitive.lookup; the table is named there and nowhere in the plan or the check.
         # Every apply module but the store's own is scanned, so the plan or the check moving files cannot hide a read.
         sources = apply_modules(exclude_store=True)
-        self.assertIn("apply_policy.py", sources)
-        self.assertIn("apply_preflight.py", sources)
+        self.assertIn("apply/policy.py", sources)
+        self.assertIn("apply/preflight.py", sources)
         for name, source in sources.items():
             with self.subTest(module=name):
                 self.assertNotIn("FROM apply_sensitive_answers", source)

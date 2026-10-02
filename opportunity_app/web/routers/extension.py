@@ -10,9 +10,9 @@ from fastapi import Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse
 
 from ..overrides import shared_router
-from ...actions import ApplicationNotFoundError
-from ...document_artifacts import backfill_approved_artifacts
-from ...extension_apply import (
+from ...applications.actions import ApplicationNotFoundError
+from ...student.artifacts import backfill_approved_artifacts
+from ...applications.extension import (
     ExtensionApplyError,
     ExtensionAuthError,
     answer_is_sensitive,
@@ -27,9 +27,9 @@ from ...extension_apply import (
     sync_session as sync_extension_session,
     sync_step as sync_extension_step,
 )
-from ...preparation import save_answer
-from ...database import connect_product
-from ... import apply_classify
+from ...student.preparation import save_answer
+from ...core.database import connect_product
+from ...apply import classify as apply_classify
 from ..context import AppContext
 from ..dependencies import extension_connection, get_ctx, require_auth, writable_connection
 from ..models.extension import (

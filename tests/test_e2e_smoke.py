@@ -15,8 +15,8 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
-from opportunity_app.operations import enqueue_job, run_next_job
-from opportunity_app.database import connect_product
+from opportunity_app.accounts.operations import enqueue_job, run_next_job
+from opportunity_app.core.database import connect_product
 
 from helpers_platform import build_and_migrate
 
@@ -158,7 +158,7 @@ class EndToEndSmokeTests(unittest.TestCase):
         self.assertEqual(confirmed.status_code, 200, confirmed.text)
 
         # 6. Digest delivers through a live-capable provider.
-        from opportunity_app.connections import ensure_preferences, queue_notification
+        from opportunity_app.mail.connections import ensure_preferences, queue_notification
 
         provider = FakeLiveProvider()
         user_id = session.json()["user_id"]
@@ -174,7 +174,7 @@ class EndToEndSmokeTests(unittest.TestCase):
                 {"subject": "Weekly application digest"}, user_id=user_id,
             )
             enqueue_job(conn, "notification_digest", {}, "e2e-digest")
-            with mock.patch("opportunity_app.notifications.build_provider", return_value=provider):
+            with mock.patch("opportunity_app.automation.notifications.build_provider", return_value=provider):
                 record = run_next_job(conn, {
                     "notification_digest": lambda payload: _digest(conn, payload),
                 })
@@ -191,7 +191,7 @@ class EndToEndSmokeTests(unittest.TestCase):
 
 
 def _digest(conn, payload):
-    from opportunity_app.notifications import run_notification_digest
+    from opportunity_app.automation.notifications import run_notification_digest
 
     # Quiet hours resolve through user_time.user_timezone; pin its fallback so
     # RUN_AT (12:00 UTC) is daytime on every machine.

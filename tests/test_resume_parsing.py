@@ -8,8 +8,8 @@ from pathlib import Path
 from pypdf import PdfWriter
 from pypdf.annotations import Link
 
-from opportunity_app.outreach_drafting import outreach_proof
-from opportunity_app.resumes import (
+from opportunity_app.outreach.drafting import outreach_proof
+from opportunity_app.student.resumes import (
     extract_docx_links,
     extract_pdf_links,
     extract_resume_links,

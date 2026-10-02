@@ -8,10 +8,16 @@ from typing import Any
 from fastapi import Depends, HTTPException, Response, status
 
 from ..overrides import shared_router
-from ... import automation as automation_core
-from ...actions import OpportunityNotFoundError
-from ... import apply_classify, apply_policy, apply_preflight, apply_runs, apply_sensitive
-from ...apply_schema_client import SchemaClient
+from ...automation import ledger as automation_core
+from ...applications.actions import OpportunityNotFoundError
+from ...apply import (
+    classify as apply_classify,
+    policy as apply_policy,
+    preflight as apply_preflight,
+    runs as apply_runs,
+    sensitive as apply_sensitive,
+)
+from ...apply.schema_client import SchemaClient
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, require_browser_session, writable_connection
 from ..models.apply_agent import (

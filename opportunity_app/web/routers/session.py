@@ -13,7 +13,7 @@ from typing import Annotated, Any
 from fastapi import Cookie, Depends, HTTPException, Request, Response, status
 
 from ..overrides import shared_router
-from ...auth import (
+from ...accounts.auth import (
     authenticate_email_password,
     authenticate_password,
     complete_recovery,
@@ -25,10 +25,10 @@ from ...auth import (
     request_recovery,
     revoke_user_token,
 )
-from ...profile import get_profile
-from ...database import connect_product, is_postgres_target
-from ...schema import LOCAL_USER_ID
-from ...notifications import build_provider as build_notification_provider
+from ...student.profile import get_profile
+from ...core.database import connect_product, is_postgres_target
+from ...core.schema import LOCAL_USER_ID
+from ...automation.notifications import build_provider as build_notification_provider
 from ..context import AppContext, LAUNCH_SESSION_SECONDS, LAUNCH_TICKET_SECONDS, SESSION_COOKIE, USER_SESSION_COOKIE
 from ..dependencies import get_ctx, require_auth
 from ..models.session import (

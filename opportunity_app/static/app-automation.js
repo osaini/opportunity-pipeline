@@ -136,7 +136,7 @@
     recent: { query: `status=${Object.keys(AUTOMATION_STATUS_CHIPS).join(",")}&limit=50`, heading: "Recent activity", empty: "Nothing has happened automatically yet." },
   };
   const AUTOMATION_LIST_KEYS = Object.keys(AUTOMATION_LISTS);
-  // What Pause does, in the words of automation.py's pause.
+  // What Pause does, in the words of automation/ledger.py's pause.
   const AUTOMATION_PAUSE_HELP = "Stops everything the app does on its own. Replies and bounces are still recorded, and notices still appear.";
   const AUTOMATION_PAUSE_TEXT = {
     true: "Paused. Nothing is sent and no switch acts on its own until you resume. Replies and bounces are still recorded.",

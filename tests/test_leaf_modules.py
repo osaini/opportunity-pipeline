@@ -47,10 +47,12 @@ def module_imports(path: Path) -> tuple[set[str], set[str]]:
     """(imports that run when the module is imported, imports inside a function) of a source file, as dotted names.
 
     ``from .x import y`` in opportunity_app/m.py is opportunity_app.x; ``from . import x`` is opportunity_app.x as
-    well; ``import a.b`` is a.b and ``from a.b import c`` is a.b. A file in pipeline_core/ resolves relative imports
-    against pipeline_core.
+    well; ``import a.b`` is a.b and ``from a.b import c`` is a.b. A relative import resolves against the file's own
+    package, taken from its dotted path under the repository root and the import's level, so ``from .. import x`` in
+    opportunity_app/core/m.py is opportunity_app.x and ``from .x import y`` there is opportunity_app.core.x. A file in
+    pipeline_core/ resolves against pipeline_core.
     """
-    package = path.parent.name
+    own_package = ".".join(path.resolve().relative_to(ROOT).parts[:-1])  # a module and a package's __init__ both resolve against their directory
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     top: set[str] = set()
     lazy: set[str] = set()
@@ -61,6 +63,7 @@ def module_imports(path: Path) -> tuple[set[str], set[str]]:
             found = {alias.name for alias in node.names}
         elif isinstance(node, ast.ImportFrom):
             if node.level:
+                package = own_package.rsplit(".", node.level - 1)[0] if node.level > 1 else own_package
                 found = {f"{package}.{node.module}"} if node.module else {f"{package}.{alias.name}" for alias in node.names}
             else:
                 found = {node.module or ""}
@@ -101,53 +104,53 @@ def dotted(*names: str) -> set[str]:
 # Everything else must be the standard library. Not every entry is a pure leaf; each one that is not says why.
 LEAVES: dict[str, tuple[set[str], set[str]]] = {
     # Workstream T: time, database, settings, JSON, stored profile
-    "opportunity_app/timestamps.py": (set(), set()),
+    "opportunity_app/core/timestamps.py": (set(), set()),
     # PostgreSQL support imports psycopg inside PostgresConnection, so SQLite-only installs never need it. The connection
     # factory's default paths are the package's own constants.
-    "opportunity_app/database.py": ({f"{PACKAGE}.DEFAULT_LEGACY_DB", f"{PACKAGE}.DEFAULT_PLATFORM_DB"}, {"psycopg"}),
-    "opportunity_app/settings_store.py": (set(), set()),
-    "opportunity_app/json_values.py": (set(), set()),
-    "opportunity_app/profile_store.py": (dotted("json_values"), set()),
-    "opportunity_app/user_time.py": (set(), set()),
+    "opportunity_app/core/database.py": ({f"{PACKAGE}.DEFAULT_LEGACY_DB", f"{PACKAGE}.DEFAULT_PLATFORM_DB"}, {"psycopg"}),
+    "opportunity_app/core/settings_store.py": (set(), set()),
+    "opportunity_app/core/json_values.py": (set(), set()),
+    "opportunity_app/core/profile_store.py": (dotted("core.json_values"), set()),
+    "opportunity_app/core/user_time.py": (set(), set()),
     # Keyword rules over an application email: pure text, split out of connections so the inbox workflow can use them.
-    "opportunity_app/monitored_classifier.py": (set(), set()),
+    "opportunity_app/mail/monitored_classifier.py": (set(), set()),
     # Workstream I: identity and the legacy boundary
     "pipeline_core/identity.py": (set(), set()),
     "pipeline_core/regions.py": ({"pipeline_core.identity"}, set()),
     "pipeline_core/env.py": (set(), set()),
-    "opportunity_app/storage_paths.py": (set(), set()),
+    "opportunity_app/core/storage_paths.py": (set(), set()),
     # Workstream M: the mail leaves. mail_message is stdlib-only so scripts/pipeline_mailbox.py can use it without httpx.
-    "opportunity_app/mail_message.py": (set(), set()),
-    "opportunity_app/gmail_client.py": ({"httpx"}, set()),
+    "opportunity_app/mail/message.py": (set(), set()),
+    "opportunity_app/integrations/gmail_client.py": ({"httpx"}, set()),
     # Workstream B: workers, the AI CLI runner, outreach leaves
     # Not a pure leaf: automation (record_health) is imported where used, so importing background loads neither it
     # nor the mail reader. mail_message and timestamps are stdlib-only leaves.
-    "opportunity_app/background.py": (dotted("mail_message", "timestamps"), dotted("automation")),
-    "opportunity_app/web_fetch.py": ({"httpx", "httpcore"}, set()),
-    "opportunity_app/outreach_config.py": (dotted("agent_providers"), set()),
-    "opportunity_app/contact_names.py": (set(), set()),
-    "opportunity_app/outreach_batch.py": (dotted("agent_providers"), set()),
-    "opportunity_app/daily_lock.py": ({f"{PACKAGE}.ROOT"}, set()),
+    "opportunity_app/automation/background.py": (dotted("mail.message", "core.timestamps"), dotted("automation.ledger")),
+    "opportunity_app/integrations/web_fetch.py": ({"httpx", "httpcore"}, set()),
+    "opportunity_app/outreach/config.py": (dotted("integrations.agent_providers"), set()),
+    "opportunity_app/outreach/contact_names.py": (set(), set()),
+    "opportunity_app/outreach/batch.py": (dotted("integrations.agent_providers"), set()),
+    "opportunity_app/core/daily_lock.py": ({f"{PACKAGE}.ROOT"}, set()),
     # The two API SDKs are imported where a provider is built, so a missing one fails only that provider.
-    "opportunity_app/agent_providers.py": (set(), {"openai", "anthropic"}),
+    "opportunity_app/integrations/agent_providers.py": (set(), {"openai", "anthropic"}),
     "opportunity_app/__init__.py": (set(), set()),
     # Storage over outreach, not a pure leaf: it may import only outreach and the clock.
-    "opportunity_app/outreach_versions.py": (dotted("outreach", "timestamps"), set()),
-    # Split out of outreach.py. Replies is pure text rules; location and greeting read the student's profile (the owner's
+    "opportunity_app/outreach/versions.py": (dotted("outreach.targets", "core.timestamps"), set()),
+    # Split out of outreach/targets.py. Replies is pure text rules; location and greeting read the student's profile (the owner's
     # file, or another user's confirmed facts through preparation, which is imported where used).
-    "opportunity_app/outreach_replies.py": (set(), set()),
-    "opportunity_app/outreach_location.py": (dotted("legacy", "schema"), dotted("preparation")),
-    "opportunity_app/outreach_greeting.py": (dotted("outreach_identity", "outreach_location", "schema"), dotted("preparation")),
-    # Split out of outreach_gmail.py. The claim ledger needs only the process id, the unique-violation test and the clock, so
+    "opportunity_app/outreach/replies.py": (set(), set()),
+    "opportunity_app/outreach/location.py": (dotted("opportunities.legacy", "core.schema"), dotted("student.preparation")),
+    "opportunity_app/outreach/greeting.py": (dotted("outreach.identity", "outreach.location", "core.schema"), dotted("student.preparation")),
+    # Split out of outreach/gmail.py. The claim ledger needs only the process id, the unique-violation test and the clock, so
     # the contact-form submitter and the thank-you recovery can hold claims without loading the Gmail REST client.
-    "opportunity_app/send_claims.py": ({f"{PACKAGE}.SERVER_INSTANCE", *dotted("database", "timestamps")}, set()),
+    "opportunity_app/outreach/send_claims.py": ({f"{PACKAGE}.SERVER_INSTANCE", *dotted("core.database", "core.timestamps")}, set()),
 }
 
 # Leaves that load nothing late: no function-level import at all, not even of the standard library.
-NO_LAZY_IMPORTS = ("pipeline_core/identity.py", "pipeline_core/regions.py", "pipeline_core/env.py", "opportunity_app/storage_paths.py")
+NO_LAZY_IMPORTS = ("pipeline_core/identity.py", "pipeline_core/regions.py", "pipeline_core/env.py", "opportunity_app/core/storage_paths.py")
 
 # Leaves that must not open a database connection when imported.
-NO_CONNECTION_AT_IMPORT = ("timestamps", "database", "settings_store", "json_values", "profile_store", "user_time")
+NO_CONNECTION_AT_IMPORT = ("core/timestamps", "core/database", "core/settings_store", "core/json_values", "core/profile_store", "core/user_time")
 
 
 class LeavesImportOnlyWhatTheyMayTests(unittest.TestCase):
@@ -176,6 +179,35 @@ class LeavesImportOnlyWhatTheyMayTests(unittest.TestCase):
                 for inner in ast.walk(node):
                     if isinstance(inner, ast.Attribute) and inner.attr == "connect":
                         self.fail(f"{name}.py opens a connection at import (line {inner.lineno})")
+
+
+class ModuleImportsResolveNestedPackagesTests(unittest.TestCase):
+    """module_imports reads a relative import against the file's own package and the import's level, at any depth."""
+
+    def read(self, relative, source):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / relative
+            path.parent.mkdir(parents=True)
+            path.write_text(source, encoding="utf-8")
+            with mock.patch(f"{__name__}.ROOT", Path(directory).resolve()):
+                return module_imports(path)
+
+    def test_a_flat_module_resolves_against_the_package(self):
+        top, _ = self.read("opportunity_app/m.py", "from . import ROOT, x\nfrom .y import z\n")
+        self.assertEqual(top, {"opportunity_app.ROOT", "opportunity_app.x", "opportunity_app.y"})
+
+    def test_a_module_one_package_deeper_needs_two_dots_for_the_package_above(self):
+        top, lazy = self.read(
+            "opportunity_app/core/m.py",
+            "from .. import ROOT\nfrom ..elsewhere import z\nfrom . import sibling\nfrom .other import q\n"
+            "def f():\n    from ..deep import d\n",
+        )
+        self.assertEqual(top, {"opportunity_app.ROOT", "opportunity_app.elsewhere", "opportunity_app.core.sibling", "opportunity_app.core.other"})
+        self.assertEqual(lazy, {"opportunity_app.deep"})
+
+    def test_a_package_init_resolves_against_itself(self):
+        top, _ = self.read("opportunity_app/core/__init__.py", "from . import a\nfrom .. import b\n")
+        self.assertEqual(top, {"opportunity_app.core.a", "opportunity_app.b"})
 
 
 # --- Workstream T: time, database, settings, JSON, stored profile -------------------------------------------------------
@@ -220,7 +252,7 @@ STAMPS = [
 
 class ParseAppInstantTests(unittest.TestCase):
     def test_it_agrees_with_every_copy_it_replaced(self):
-        from opportunity_app.timestamps import parse_app_instant
+        from opportunity_app.core.timestamps import parse_app_instant
 
         for stamp in STAMPS:
             with self.subTest(stamp=repr(stamp)):
@@ -232,7 +264,7 @@ class ParseAppInstantTests(unittest.TestCase):
                     self.assertEqual(got.utcoffset(), legacy_parse(stamp).utcoffset())
 
     def test_a_naive_stamp_the_app_wrote_is_utc_and_a_non_utc_offset_is_kept(self):
-        from opportunity_app.timestamps import parse_app_instant
+        from opportunity_app.core.timestamps import parse_app_instant
 
         self.assertEqual(parse_app_instant("2026-09-30T12:00:00").utcoffset(), timedelta(0))
         self.assertEqual(parse_app_instant("2026-09-30T12:00:00-04:00").utcoffset(), timedelta(hours=-4))
@@ -240,7 +272,7 @@ class ParseAppInstantTests(unittest.TestCase):
 
     def test_a_source_date_without_an_offset_stays_unknown(self):
         # The opposite rule, on purpose: canonical_utc is for dates a source sent, and a naive one is "did not say when".
-        from opportunity_app.timestamps import canonical_utc, parse_app_instant
+        from opportunity_app.core.timestamps import canonical_utc, parse_app_instant
 
         self.assertIsNone(canonical_utc("2026-09-30T12:00:00"))
         self.assertIsNotNone(parse_app_instant("2026-09-30T12:00:00"))
@@ -248,7 +280,7 @@ class ParseAppInstantTests(unittest.TestCase):
 
 class UtcNowTests(unittest.TestCase):
     def test_stamps_never_repeat_even_when_the_clock_does(self):
-        from opportunity_app import timestamps
+        from opportunity_app.core import timestamps
 
         frozen = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
 
@@ -265,7 +297,7 @@ class UtcNowTests(unittest.TestCase):
         self.assertEqual(stamps[1], "2026-09-30T12:00:00.000001+00:00")
 
     def test_there_is_one_clock(self):
-        from opportunity_app import company_tags, schema, timestamps
+        from opportunity_app.core import company_tags, schema, timestamps
 
         self.assertIs(schema.utc_now, timestamps.utc_now)
         self.assertIs(company_tags.utc_now, timestamps.utc_now)
@@ -273,7 +305,7 @@ class UtcNowTests(unittest.TestCase):
 
 class LocalTimeHelperTests(unittest.TestCase):
     def test_to_local_uses_the_zone_or_the_machines_own(self):
-        from opportunity_app.user_time import UserTimezone, to_local
+        from opportunity_app.core.user_time import UserTimezone, to_local
 
         instant = datetime(2026, 7, 1, 16, 0, tzinfo=timezone.utc)
         zone = ZoneInfo("America/Chicago")
@@ -283,7 +315,7 @@ class LocalTimeHelperTests(unittest.TestCase):
         self.assertEqual(UserTimezone("system-local").to_local(instant), to_local(instant, None))
 
     def test_at_wall_clock_reads_a_naive_time_in_the_zone(self):
-        from opportunity_app.user_time import at_wall_clock
+        from opportunity_app.core.user_time import at_wall_clock
 
         naive = datetime(2026, 7, 1, 9, 0)
         self.assertEqual(at_wall_clock(naive, ZoneInfo("America/Chicago")).isoformat(), "2026-07-01T09:00:00-05:00")
@@ -301,7 +333,7 @@ class RollbackQuietlyTests(unittest.TestCase):
         self.conn.close()
 
     def test_an_open_transaction_is_rolled_back(self):
-        from opportunity_app.database import rollback_quietly
+        from opportunity_app.core.database import rollback_quietly
 
         self.conn.execute("INSERT INTO t VALUES (1)")
         self.assertTrue(self.conn.in_transaction)
@@ -310,7 +342,7 @@ class RollbackQuietlyTests(unittest.TestCase):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM t").fetchone()[0], 0)
 
     def test_a_connection_with_nothing_open_is_left_alone(self):
-        from opportunity_app.database import rollback_quietly
+        from opportunity_app.core.database import rollback_quietly
 
         conn = mock.Mock()
         conn.in_transaction = False
@@ -318,7 +350,7 @@ class RollbackQuietlyTests(unittest.TestCase):
         conn.rollback.assert_not_called()
 
     def test_a_failed_rollback_is_logged_under_the_callers_logger_and_never_raised(self):
-        from opportunity_app.database import rollback_quietly
+        from opportunity_app.core.database import rollback_quietly
 
         conn = mock.Mock()
         conn.in_transaction = True
@@ -341,13 +373,13 @@ class SettingsStoreTests(unittest.TestCase):
         self.conn.close()
 
     def test_a_missing_row_reads_as_none(self):
-        from opportunity_app.settings_store import get_setting, setting_updated_at
+        from opportunity_app.core.settings_store import get_setting, setting_updated_at
 
         self.assertIsNone(get_setting(self.conn, "u", "k"))
         self.assertIsNone(setting_updated_at(self.conn, "u", "k"))
 
     def test_put_inserts_then_updates_the_value_and_the_stamp(self):
-        from opportunity_app.settings_store import get_setting, put_setting, setting_updated_at
+        from opportunity_app.core.settings_store import get_setting, put_setting, setting_updated_at
 
         put_setting(self.conn, "u", "k", "on", "2026-09-30T10:00:00+00:00")
         self.assertEqual(get_setting(self.conn, "u", "k"), "on")
@@ -357,7 +389,7 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM user_settings").fetchone()[0], 1)
 
     def test_settings_are_per_student_and_per_key(self):
-        from opportunity_app.settings_store import get_setting, put_setting
+        from opportunity_app.core.settings_store import get_setting, put_setting
 
         put_setting(self.conn, "u", "k", "1", "s")
         put_setting(self.conn, "v", "k", "2", "s")
@@ -366,7 +398,7 @@ class SettingsStoreTests(unittest.TestCase):
                          ["1", "2", "3"])
 
     def test_put_opens_no_transaction_of_its_own_commit_is_the_callers(self):
-        from opportunity_app.settings_store import get_setting, put_setting
+        from opportunity_app.core.settings_store import get_setting, put_setting
 
         put_setting(self.conn, "u", "k", "on", "s")
         self.assertTrue(self.conn.in_transaction)
@@ -376,7 +408,7 @@ class SettingsStoreTests(unittest.TestCase):
 
 class JsonValuesTests(unittest.TestCase):
     def test_json_dict_gives_an_object_or_nothing(self):
-        from opportunity_app.json_values import json_dict
+        from opportunity_app.core.json_values import json_dict
 
         self.assertEqual(json_dict('{"a": 1}'), {"a": 1})
         for text in (None, "", "{", "[1]", '"x"', "3", "null", b"\xff", 5):
@@ -384,7 +416,7 @@ class JsonValuesTests(unittest.TestCase):
                 self.assertEqual(json_dict(text), {})
 
     def test_json_as_requires_the_type_of_the_default(self):
-        from opportunity_app.json_values import json_as
+        from opportunity_app.core.json_values import json_as
 
         self.assertEqual(json_as("[1, 2]", []), [1, 2])
         self.assertEqual(json_as('{"a": 1}', {}), {"a": 1})
@@ -397,7 +429,7 @@ class JsonValuesTests(unittest.TestCase):
     def test_it_agrees_with_the_copies_it_replaced(self):
         import json
 
-        from opportunity_app.json_values import json_as, json_dict
+        from opportunity_app.core.json_values import json_as, json_dict
 
         def old_dict(text):
             try:
@@ -429,13 +461,13 @@ class ReadStoredProfileTests(unittest.TestCase):
         self.conn.close()
 
     def test_no_row_gives_an_empty_profile_and_creates_none(self):
-        from opportunity_app.profile_store import read_stored_profile
+        from opportunity_app.core.profile_store import read_stored_profile
 
         self.assertEqual(read_stored_profile(self.conn, "u"), {})
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM profiles").fetchone()[0], 0)
 
     def test_the_stored_object_is_returned_and_anything_else_is_empty(self):
-        from opportunity_app.profile_store import read_stored_profile
+        from opportunity_app.core.profile_store import read_stored_profile
 
         for stored, expected in (('{"school": "X"}', {"school": "X"}), ("", {}), (None, {}), ("[1]", {}), ("junk", {}), ("null", {})):
             with self.subTest(stored=stored):
@@ -460,7 +492,7 @@ class LogApplicationEventTests(unittest.TestCase):
         return [dict(row) for row in self.conn.execute("SELECT * FROM application_events")]
 
     def test_the_columns_default_to_null_stages_and_json_dumps_detail(self):
-        from opportunity_app.actions import log_application_event
+        from opportunity_app.applications.actions import log_application_event
 
         log_application_event(self.conn, "a1", "task_added", {"task_id": "t", "title": "x"}, "2026-09-30T10:00:00+00:00")
         self.assertEqual(self.rows(), [{
@@ -469,7 +501,7 @@ class LogApplicationEventTests(unittest.TestCase):
         }])
 
     def test_stages_and_pre_encoded_detail_are_stored_as_given(self):
-        from opportunity_app.actions import log_application_event
+        from opportunity_app.applications.actions import log_application_event
 
         log_application_event(self.conn, "a1", "stage_changed", {"b": 1, "a": 2}, "s", from_stage="applied", to_stage="interview")
         log_application_event(self.conn, "a1", "apply_agent_submitted", None, "s", encoded='{"a": 2, "b": 1}')
@@ -482,7 +514,7 @@ class LogApplicationEventTests(unittest.TestCase):
 # --- Workstream I: identity and the legacy boundary ---------------------------------------------------------------------
 
 class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
-    """Workstream I: pipeline_core/identity.py, opportunity_app/legacy.py and the constants collapsed into one place."""
+    """Workstream I: pipeline_core/identity.py, opportunity_app/opportunities/legacy.py and the constants collapsed into one place."""
 
     def test_employer_key_output_is_pinned_because_apply_stores_persist_it(self):
         from pipeline_core.identity import employer_key
@@ -506,14 +538,14 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
             employer_key(None)  # type: ignore[arg-type]
 
     def test_mail_trust_company_key_still_reads_none_as_empty(self):
-        from opportunity_app import mail_trust
+        from opportunity_app.mail import trust as mail_trust
         from pipeline_core.identity import employer_key
 
         self.assertEqual(mail_trust.company_key(None), "")  # type: ignore[arg-type]
         self.assertEqual(mail_trust.company_key("Acme Robotics Inc."), employer_key("Acme Robotics Inc."))
 
     def test_the_apply_stores_and_policy_use_the_one_employer_key(self):
-        from opportunity_app import apply_policy, apply_runs, apply_sensitive
+        from opportunity_app.apply import policy as apply_policy, runs as apply_runs, sensitive as apply_sensitive
 
         for module in (apply_runs, apply_sensitive, apply_policy):
             self.assertFalse(hasattr(module, "company_key"), f"{module.__name__} defines its own company_key again")
@@ -528,7 +560,7 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         self.assertEqual(sort_key("ACME"), "acme")
 
     def test_schema_read_model_and_tags_share_that_one_sort_key(self):
-        from opportunity_app import company_tags, schema
+        from opportunity_app.core import company_tags, schema
         from pipeline_core import identity, read_model
 
         self.assertIs(schema.sort_key, identity.sort_key)
@@ -536,7 +568,7 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         self.assertIs(read_model.sort_key, identity.sort_key)
 
     def test_outreach_company_key_is_a_different_rule_and_stays_separate(self):
-        from opportunity_app import outreach_identity
+        from opportunity_app.outreach import identity as outreach_identity
         from pipeline_core.identity import employer_key, sort_key
 
         # NFKC, "&" becomes "and", a leading "The" and trailing legal words dropped, word order kept.
@@ -557,14 +589,14 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         import subprocess
 
         code = (
-            "import sys; sys.path.insert(0, %r); import opportunity_app.schema; "
+            "import sys; sys.path.insert(0, %r); import opportunity_app.core.schema; "
             "print('pipeline' in sys.modules)" % str(ROOT)
         )
         done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=ROOT, check=True)
         self.assertEqual(done.stdout.strip(), "False")
 
     def test_only_the_legacy_adapter_imports_the_legacy_pipeline(self):
-        # pipeline.py is split into these pipeline_core modules; the web app reaches them through opportunity_app/legacy.py.
+        # pipeline.py is split into these pipeline_core modules; the web app reaches them through opportunity_app/opportunities/legacy.py.
         # (identity, regions, env, visibility and read_model are shared leaves, not part of the legacy door.)
         split = {
             "paths", "clock", "config", "text", "http", "sources", "store", "liveness", "retention", "discovery", "fetch",
@@ -572,7 +604,7 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         }
         offenders = []
         for path in sorted((ROOT / "opportunity_app").rglob("*.py")):
-            if path.name == "legacy.py":
+            if path.relative_to(ROOT).as_posix() == "opportunity_app/opportunities/legacy.py":
                 continue
             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
                 names = []
@@ -583,8 +615,8 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
                 for name in names:
                     parts = name.split(".")
                     if parts[0] == "pipeline" or (parts[0] == "pipeline_core" and len(parts) > 1 and parts[1] in split):
-                        offenders.append(f"{path.name}: {name}")
-        self.assertEqual(offenders, [], "web modules must import the legacy pipeline through opportunity_app.legacy")
+                        offenders.append(f"{path.relative_to(ROOT).as_posix()}: {name}")
+        self.assertEqual(offenders, [], "web modules must import the legacy pipeline through opportunity_app.opportunities.legacy")
 
     def test_the_regions_moved_to_pipeline_core_still_bucket_locations(self):
         from pipeline_core.regions import match_region, region_label
@@ -674,7 +706,7 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
             self.assertIn("jobs", tables)
 
     def test_legacy_create_database_does_not_move_the_global_db_path(self):
-        from opportunity_app import legacy
+        from opportunity_app.opportunities import legacy
         from pipeline_core import paths
 
         before = paths.DB_PATH
@@ -685,20 +717,21 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         self.assertEqual(paths.DB_PATH, before)
 
     def test_one_ruleset_version_constant_backs_every_fit_score_read_and_write(self):
-        from opportunity_app import legacy_sync, schema
+        from opportunity_app.opportunities import legacy_sync
+        from opportunity_app.core import schema
         from pipeline_core.read_model import RULESET_VERSION
 
         self.assertEqual(RULESET_VERSION, "legacy-v1")  # the SQL views in migrations/0001, 0020 and 0021 bake this in
         self.assertFalse(hasattr(schema, "RULESET_VERSION") and schema.RULESET_VERSION is not RULESET_VERSION)
         # The migration_runs key is a different concept that happens to read the same today.
         self.assertEqual(legacy_sync.LEGACY_MIGRATION_KEY, "legacy-v1")
-        for relative in ("actions.py", "extension_apply.py", "profile.py"):
+        for relative in ("applications/actions.py", "applications/extension.py", "student/profile.py"):
             with self.subTest(module=relative):
                 text = (ROOT / "opportunity_app" / relative).read_text(encoding="utf-8")
                 self.assertNotIn("legacy-v1", text)
 
     def test_the_closed_application_stages_are_defined_once(self):
-        from opportunity_app import actions, urgent
+        from opportunity_app.applications import actions, urgent
 
         self.assertIs(urgent.CLOSED_APPLICATION_STAGES, actions.CLOSED_APPLICATION_STAGES)
         self.assertEqual(tuple(actions.CLOSED_APPLICATION_STAGES), ("rejected", "withdrawn", "archived"))
@@ -722,7 +755,7 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         self.assertEqual(accepted, set(seen))
 
     def test_confined_path_accepts_a_direct_child_and_refuses_everything_else(self):
-        from opportunity_app.storage_paths import confined_path
+        from opportunity_app.core.storage_paths import confined_path
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "store"
@@ -733,7 +766,8 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
                     self.assertIsNone(confined_path(root, name))
 
     def test_each_store_still_raises_its_own_error_for_a_name_outside_its_folder(self):
-        from opportunity_app import captures, preparation, resumes
+        from opportunity_app.opportunities import captures
+        from opportunity_app.student import preparation, resumes
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -755,7 +789,7 @@ def parsed(raw: str):
 
 class MailMessageLeafTests(unittest.TestCase):
     def test_the_header_map_keeps_the_last_of_a_repeated_header_and_folds_names(self):
-        from opportunity_app.mail_message import header_map
+        from opportunity_app.mail.message import header_map
 
         message = {"payload": {"headers": [
             {"name": "Subject", "value": "first"}, {"name": "SUBJECT", "value": "second"}, {"name": "To", "value": "a@b.example"},
@@ -765,7 +799,7 @@ class MailMessageLeafTests(unittest.TestCase):
         self.assertEqual(header_map({"payload": {"headers": None}}), {})
 
     def test_the_guarded_header_map_skips_what_is_not_a_header_and_the_plain_one_does_not(self):
-        from opportunity_app.mail_message import header_map
+        from opportunity_app.mail.message import header_map
 
         message = {"payload": {"headers": [None, {"name": "From", "value": "a@b.example"}, "junk"]}}
         with self.assertRaises(AttributeError):
@@ -773,7 +807,7 @@ class MailMessageLeafTests(unittest.TestCase):
         self.assertEqual(header_map(message, guarded=True), {"from": "a@b.example"})
 
     def test_base64url_gets_its_padding_back_and_refuses_what_is_not_base64(self):
-        from opportunity_app.mail_message import decode_base64url
+        from opportunity_app.mail.message import decode_base64url
 
         self.assertEqual(decode_base64url("aGVsbG8"), b"hello")
         self.assertEqual(decode_base64url("aGVsbG8="), b"hello")
@@ -782,14 +816,14 @@ class MailMessageLeafTests(unittest.TestCase):
             decode_base64url("not base64 ☃")
 
     def test_the_two_html_readers_keep_their_different_text_retention(self):
-        from opportunity_app.mail_message import html_text_reply, html_text_spaced
+        from opportunity_app.mail.message import html_text_reply, html_text_spaced
 
         markup = "<p>Hi <b>there</b></p><style>x{}</style><blockquote>quoted words</blockquote>after"
         self.assertEqual(html_text_spaced(markup), " Hi  there \n quoted words after")
         self.assertEqual(html_text_reply(markup), "Hi there\n")
 
     def test_the_two_bulk_checks_differ_only_in_the_auto_submitted_rule(self):
-        from opportunity_app.mail_message import has_list_headers, is_bulk_or_generated
+        from opportunity_app.mail.message import has_list_headers, is_bulk_or_generated
 
         generated = parsed("From: a@b.example\nAuto-Submitted: auto-generated\n\nbody\n")
         listed = parsed("From: a@b.example\nList-Id: <news.b.example>\n\nbody\n")
@@ -804,7 +838,7 @@ class MailMessageLeafTests(unittest.TestCase):
         self.assertFalse(has_list_headers(replied))
 
     def test_the_two_received_times_fall_back_differently(self):
-        from opportunity_app.mail_message import received_or_epoch, received_or_none
+        from opportunity_app.mail.message import received_or_epoch, received_or_none
 
         dated = parsed("From: a@b.example\nDate: Tue, 01 Sep 2026 10:00:00 +0000\n\nbody\n")
         undated = parsed("From: a@b.example\n\nbody\n")
@@ -815,7 +849,7 @@ class MailMessageLeafTests(unittest.TestCase):
         self.assertIsNone(received_or_none({}, undated))
 
     def test_a_link_is_cut_to_its_host_and_a_query_is_never_kept(self):
-        from opportunity_app.mail_message import clean_url, host_of, strip_queries
+        from opportunity_app.mail.message import clean_url, host_of, strip_queries
 
         self.assertEqual(clean_url("https://Acme.com/a?x=1&amp;y=2)."), "https://Acme.com/a?x=1&y=2")
         self.assertEqual(host_of("https://Careers.Acme.com./jobs?id=1"), "careers.acme.com")
@@ -824,7 +858,7 @@ class MailMessageLeafTests(unittest.TestCase):
         self.assertEqual(strip_queries("failed for https://acme.com/a/b?token=secret#frag and more"), "failed for https://acme.com/a/b and more")
 
     def test_link_hosts_fail_closed_where_hosts_in_does_not(self):
-        from opportunity_app.mail_message import LINK_HOST_LIMIT, hosts_in, link_hosts_or_none
+        from opportunity_app.mail.message import LINK_HOST_LIMIT, hosts_in, link_hosts_or_none
 
         many = " ".join(f"https://site{number}.example/" for number in range(LINK_HOST_LIMIT + 1))
         crowded = parsed(f"From: a@b.example\nContent-Type: text/plain\n\n{many}\n")
@@ -833,7 +867,7 @@ class MailMessageLeafTests(unittest.TestCase):
         self.assertEqual(link_hosts_or_none(parsed("From: a@b.example\n\nsee https://www.acme.com/x?y=1.\n")), ["www.acme.com"])
 
     def test_a_mailbox_folds_its_tag_and_a_gmail_address_its_dots(self):
-        from opportunity_app.mail_message import mailbox_key
+        from opportunity_app.mail.message import mailbox_key
 
         self.assertEqual(mailbox_key(" Dana.Reyes+jobs@Gmail.com "), "danareyes@gmail.com")
         self.assertEqual(mailbox_key("d.reyes@googlemail.com"), "dreyes@gmail.com")
@@ -844,7 +878,7 @@ class MailMessageLeafTests(unittest.TestCase):
 
 class GmailClientLeafTests(unittest.TestCase):
     def test_a_connection_is_connected_not_connected_or_needing_a_reconnect(self):
-        from opportunity_app.gmail_client import connection_state
+        from opportunity_app.integrations.gmail_client import connection_state
 
         self.assertEqual(connection_state(None), "not_connected")
         self.assertEqual(connection_state({"status": "disconnected"}), "not_connected")
@@ -853,7 +887,7 @@ class GmailClientLeafTests(unittest.TestCase):
         self.assertEqual(connection_state({"status": "anything else"}), "needs_reconnect")
 
     def test_granted_scopes_read_a_list_and_nothing_else(self):
-        from opportunity_app.gmail_client import MODIFY_SCOPE, READ_SCOPE, can_read_mail, granted_scopes
+        from opportunity_app.integrations.gmail_client import MODIFY_SCOPE, READ_SCOPE, can_read_mail, granted_scopes
 
         self.assertEqual(granted_scopes(f'["{READ_SCOPE}", 7]'), [READ_SCOPE, "7"])
         for unreadable in (None, "", "not json", "null", '"a string"', '{"a": 1}', 5):
@@ -866,7 +900,7 @@ class GmailClientLeafTests(unittest.TestCase):
     def test_a_throttle_is_a_429_or_a_403_that_names_a_rate_limit(self):
         import httpx
 
-        from opportunity_app.gmail_client import error_reasons, is_throttle
+        from opportunity_app.integrations.gmail_client import error_reasons, is_throttle
 
         def answer(status, body=None):
             return httpx.Response(status, json=body) if body is not None else httpx.Response(status, text="not json")
@@ -886,7 +920,7 @@ class GmailClientLeafTests(unittest.TestCase):
     def test_a_throttle_is_read_as_could_not_reach_gmail_and_never_as_a_refused_connection(self):
         import httpx
 
-        from opportunity_app.gmail_client import GmailAuthError, GmailNeedsReadScope, GmailThrottled
+        from opportunity_app.integrations.gmail_client import GmailAuthError, GmailNeedsReadScope, GmailThrottled
 
         self.assertIsInstance(GmailThrottled("slow down"), httpx.HTTPError)
         self.assertNotIsInstance(GmailAuthError("refused"), httpx.HTTPError)
@@ -896,7 +930,7 @@ class GmailClientLeafTests(unittest.TestCase):
         import threading
         from datetime import timedelta
 
-        from opportunity_app.gmail_client import LookSchedule
+        from opportunity_app.integrations.gmail_client import LookSchedule
 
         last: dict = {}
         schedule = LookSchedule(
@@ -920,7 +954,7 @@ class GmailClientLeafTests(unittest.TestCase):
         import threading
         from datetime import timedelta
 
-        from opportunity_app.gmail_client import LookSchedule
+        from opportunity_app.integrations.gmail_client import LookSchedule
 
         schedule = LookSchedule(
             {}, threading.Lock(), interval=lambda age: timedelta(hours=1), key=lambda item: item["id"], started=lambda item: item["at"],
@@ -937,7 +971,7 @@ class GmailClientLeafTests(unittest.TestCase):
         self.assertEqual(schedule.take_due("u", [text], now), [text])
 
     def test_each_watcher_keeps_its_own_look_state_under_its_own_name(self):
-        from opportunity_app import outreach_delivery, outreach_gmail_sends
+        from opportunity_app.outreach import delivery as outreach_delivery, gmail_sends as outreach_gmail_sends
 
         self.assertIs(outreach_delivery._LOOKS.last, outreach_delivery._LAST_LOOK)
         self.assertIs(outreach_gmail_sends._LOOKS.last, outreach_gmail_sends._LAST_LOOK)
@@ -947,42 +981,44 @@ class GmailClientLeafTests(unittest.TestCase):
 
 class OutreachIdentityTests(unittest.TestCase):
     def test_company_identity_does_not_load_the_mail_readers(self):
-        heavy = dotted("outreach_inbox", "application_inbox", "outreach_labels", "outreach_delivery", "automation", "api")
-        self.assertEqual(all_imports(APP / "outreach_identity.py") & heavy, set())
+        heavy = dotted("outreach.inbox", "applications.inbox", "outreach.labels", "outreach.delivery", "automation.ledger", "api")
+        self.assertEqual(all_imports(APP / "outreach/identity.py") & heavy, set())
 
     def test_importing_it_in_a_fresh_process_loads_no_sender_gmail_or_automation(self):
         # all_imports reads the imports one file writes; only a fresh interpreter shows what they pull in after them.
         script = (
-            "import sys, opportunity_app.outreach_identity\n"
+            "import sys, opportunity_app.outreach.identity\n"
             "print(sorted(name for name in sys.modules if name.startswith('opportunity_app.') or name in ('cryptography', 'httpx')))\n"
         )
         done = subprocess.run([sys.executable, "-c", script], cwd=ROOT, capture_output=True, text=True, timeout=120)
         self.assertEqual(done.returncode, 0, done.stderr)
         loaded = set(ast.literal_eval(done.stdout.strip().splitlines()[-1]))
         heavy = dotted(
-            "outreach", "outreach_contacts", "outreach_forms", "outreach_gmail", "outreach_inbox", "application_inbox",
-            "outreach_labels", "outreach_delivery", "automation", "schema", "gmail_client", "connections", "api",
+            "outreach.targets", "outreach.contacts", "outreach.forms", "outreach.gmail", "outreach.inbox", "applications.inbox",
+            "outreach.labels", "outreach.delivery", "automation.ledger", "core.schema", "integrations.gmail_client", "mail.connections", "api",
         ) | {"cryptography", "httpx"}
         self.assertEqual(loaded & heavy, set())
 
     def test_the_mailbox_names_it_shares_live_in_a_leaf_that_the_senders_import_from(self):
-        for module in ("outreach_contacts.py", "outreach_forms.py", "outreach_reply_senders.py", "outreach_identity.py"):
+        for module in ("outreach/contacts.py", "outreach/forms.py", "outreach/reply_senders.py", "outreach/identity.py"):
             with self.subTest(module=module):
-                self.assertIn(f"{PACKAGE}.contact_names", all_imports(APP / module))
+                self.assertIn(f"{PACKAGE}.outreach.contact_names", all_imports(APP / module))
 
     def test_the_interviewer_and_the_quote_check_take_identity_from_it_not_from_the_mail_reader(self):
-        for module in ("outreach_interviewer.py", "quote_check.py"):
+        for module in ("outreach/interviewer.py", "outreach/quote_check.py"):
             with self.subTest(module=module):
-                self.assertNotIn(f"{PACKAGE}.outreach_inbox", all_imports(APP / module))
-                self.assertIn(f"{PACKAGE}.outreach_identity", all_imports(APP / module))
-        self.assertNotIn(f"{PACKAGE}.outreach_inbox", all_imports(APP / "outreach_research.py"))
+                self.assertNotIn(f"{PACKAGE}.outreach.inbox", all_imports(APP / module))
+                self.assertIn(f"{PACKAGE}.outreach.identity", all_imports(APP / module))
+        self.assertNotIn(f"{PACKAGE}.outreach.inbox", all_imports(APP / "outreach/research.py"))
 
 
 # --- Workstream B: background workers, the AI CLI runner, outreach leaves ---------------------------------------------
 
-from opportunity_app import agent_providers, background, inbox_watcher, outreach_batch, outreach_config, outreach_review, web_fetch  # noqa: E402
-from opportunity_app.outreach import create_target, get_target, latest_event_stamp, log_event, withdraw_auto_approval  # noqa: E402
-from opportunity_app.database import connect_product  # noqa: E402
+from opportunity_app.integrations import agent_providers, web_fetch
+from opportunity_app.automation import background, inbox_watcher
+from opportunity_app.outreach import batch as outreach_batch, config as outreach_config, review as outreach_review  # noqa: E402
+from opportunity_app.outreach.targets import create_target, get_target, latest_event_stamp, log_event, withdraw_auto_approval  # noqa: E402
+from opportunity_app.core.database import connect_product  # noqa: E402
 
 from helpers_platform import build_and_migrate  # noqa: E402
 

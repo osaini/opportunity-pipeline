@@ -14,8 +14,8 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
-from opportunity_app.captures import ocr_image
-from opportunity_app.schema import LOCAL_USER_ID
+from opportunity_app.opportunities.captures import ocr_image
+from opportunity_app.core.schema import LOCAL_USER_ID
 
 from helpers_platform import build_and_migrate
 
@@ -98,7 +98,7 @@ class OcrDegradeTests(unittest.TestCase):
 
         buffer = io.BytesIO()
         Image.new("RGB", (40, 20), "white").save(buffer, format="PNG")
-        with mock.patch("opportunity_app.captures.shutil.which", return_value=None):
+        with mock.patch("opportunity_app.opportunities.captures.shutil.which", return_value=None):
             self.assertEqual(ocr_image(buffer.getvalue()), "")
 
     def test_ocr_failure_degrades_to_empty_string(self):
@@ -107,8 +107,8 @@ class OcrDegradeTests(unittest.TestCase):
 
         buffer = io.BytesIO()
         Image.new("RGB", (40, 20), "white").save(buffer, format="PNG")
-        with mock.patch("opportunity_app.captures.shutil.which", return_value="tesseract-fake"):
-            with mock.patch("opportunity_app.captures.subprocess.run", side_effect=OSError("boom")):
+        with mock.patch("opportunity_app.opportunities.captures.shutil.which", return_value="tesseract-fake"):
+            with mock.patch("opportunity_app.opportunities.captures.subprocess.run", side_effect=OSError("boom")):
                 self.assertEqual(ocr_image(buffer.getvalue()), "")
 
 

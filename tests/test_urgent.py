@@ -19,16 +19,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
-from opportunity_app import urgent
-from opportunity_app.actions import add_application_task, application_analytics
+from opportunity_app.applications import urgent
+from opportunity_app.applications.actions import add_application_task, application_analytics
 from opportunity_app.api import create_app
-from opportunity_app.operations import delete_account, export_account
-from opportunity_app.outreach import local_today
-from opportunity_app.purge import purge_expired_opportunities
-from opportunity_app.schema import LOCAL_USER_ID
-from opportunity_app.database import connect_product
-from opportunity_app.student_agent import decide_proposal
-from opportunity_app.user_time import SYSTEM_LOCAL, UserTimezone, user_timezone
+from opportunity_app.accounts.operations import delete_account, export_account
+from opportunity_app.outreach.targets import local_today
+from opportunity_app.opportunities.purge import purge_expired_opportunities
+from opportunity_app.core.schema import LOCAL_USER_ID
+from opportunity_app.core.database import connect_product
+from opportunity_app.student.agent import decide_proposal
+from opportunity_app.core.user_time import SYSTEM_LOCAL, UserTimezone, user_timezone
 from pipeline_core import OpportunityFilters, OpportunityRepository
 from helpers_platform import build_and_migrate
 
@@ -142,7 +142,7 @@ class UrgentFixture(unittest.TestCase):
         self.conn.commit()
 
     def capture(self, opportunity_id: str, *, owner: str, capture_id: str, deadline: str | None = None) -> None:
-        """Seed a confirmed manual capture the way captures.py stores one."""
+        """Seed a confirmed manual capture the way opportunities/captures.py stores one."""
         self.posting(opportunity_id, deadline=deadline)
         self.conn.execute(
             """INSERT INTO opportunity_sources(opportunity_id, source_key, source_name, external_id, source_url,
@@ -349,7 +349,7 @@ class UrgentRuleTests(UrgentFixture):
     def test_unparseable_dates_are_reported_and_logged_once(self):
         app = self.application("job-a")
         self.task(app, "next tuesday")
-        with self.assertLogs("opportunity_app.urgent", level="WARNING") as logs:
+        with self.assertLogs("opportunity_app.applications.urgent", level="WARNING") as logs:
             first = self.queue()
             second = self.queue()
         self.assertEqual(len(logs.records), 1)
@@ -509,13 +509,13 @@ class AnalyticsOverdueTests(UrgentFixture):
         self.task(active, "2026-09-17T03:00:00+00:00")  # 22:00 on the 16th in Chicago: overdue
         closed = self.application("job-b", "withdrawn", follow_up_at="2026-09-01T09:00:00-05:00")
         self.task(closed, "2026-09-01T09:00:00-05:00")
-        with mock.patch("opportunity_app.actions.datetime") as fake:
+        with mock.patch("opportunity_app.applications.actions.datetime") as fake:
             fake.now.return_value = NOW
             fake.fromisoformat = datetime.fromisoformat
             analytics = application_analytics(self.conn, user_id=LOCAL_USER_ID)
         self.assertEqual(analytics["overdue_tasks"], 2)
-        from opportunity_app.actions import list_applications
-        with mock.patch("opportunity_app.user_time.datetime") as clock:
+        from opportunity_app.applications.actions import list_applications
+        with mock.patch("opportunity_app.core.user_time.datetime") as clock:
             clock.now.return_value = NOW
             clock.fromisoformat = datetime.fromisoformat
             listed = {item["id"]: item for item in list_applications(self.conn, user_id=LOCAL_USER_ID)}
@@ -600,7 +600,7 @@ class DeadlineApiTests(unittest.TestCase):
         def failing_sql(alias="o"):
             raise sqlite3.IntegrityError("FOREIGN KEY constraint failed")
 
-        with mock.patch("opportunity_app.urgent.capture_visible_sql", side_effect=failing_sql):
+        with mock.patch("opportunity_app.applications.urgent.capture_visible_sql", side_effect=failing_sql):
             response = self.put("job-a", "2026-10-01")
         self.assertEqual(response.status_code, 404, response.text)
         self.assertIs(urgent.capture_visible_sql, original)
@@ -668,7 +668,7 @@ class DeadlineApiTests(unittest.TestCase):
         self.assertEqual(bad.status_code, 422)
 
     def test_the_agent_reports_entered_deadlines_as_the_students_own(self):
-        from opportunity_app import student_agent
+        from opportunity_app.student import agent as student_agent
 
         with closing(connect_product(self.platform_path)) as conn:
             conn.execute("UPDATE opportunities SET deadline_at='2026-09-20T00:00:00+00:00' WHERE id='job-b'")

@@ -25,8 +25,10 @@ realdata_guard.install()
 
 PROFILE_REGIONS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "profile_regions.json"
 
-from opportunity_app import bootstrap, database, legacy_sync, schema, timestamps
-from opportunity_app.legacy_sync import migrate_legacy_database
+from opportunity_app import bootstrap
+from opportunity_app.opportunities import legacy_sync
+from opportunity_app.core import database, schema, timestamps
+from opportunity_app.opportunities.legacy_sync import migrate_legacy_database
 
 # What create_app (and the worker and CLI entry points) do as a process starts: fill the automation, scheduler and callback
 # registries. A test that calls the ledger, the scheduler or a record's callbacks without building an app needs it too, and
@@ -372,7 +374,7 @@ def use_profile_regions(case, path: Path = PROFILE_REGIONS_FIXTURE) -> None:
     Outreach reads regions only from the student's config/profile.json, so an
     unpatched test would read whatever profile the machine running it has.
     """
-    patcher = mock.patch("opportunity_app.outreach_location.PROFILE_PATH", path)
+    patcher = mock.patch("opportunity_app.outreach.location.PROFILE_PATH", path)
     patcher.start()
     case.addCleanup(patcher.stop)
 

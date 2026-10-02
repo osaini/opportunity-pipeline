@@ -33,9 +33,9 @@ import httpx
 from cryptography.fernet import Fernet, InvalidToken
 
 from . import ROOT
-from .connections import OAUTH_PROVIDERS
-from .database import is_postgres_target, connect_product
-from .gmail_client import (
+from .mail.connections import OAUTH_PROVIDERS
+from .core.database import is_postgres_target, connect_product
+from .integrations.gmail_client import (
     GMAIL_API,
     MODIFY_SCOPE,
     PROVIDER,
@@ -47,8 +47,8 @@ from .gmail_client import (
     error_reasons,
     granted_scopes,
 )
-from .mail_message import decode_base64url
-from .schema import LOCAL_USER_ID
+from .mail.message import decode_base64url
+from .core.schema import LOCAL_USER_ID
 from .setup import read_env
 
 TEXT_CAP = 4000
@@ -244,8 +244,8 @@ def _whoami(session: _Session, conn, user: str, row: dict[str, Any], env: dict[s
     out(f"Permissions: {', '.join(_permissions(granted)) or 'none'} ({source})")
     try:
         # Imported here: the reader must still start on a checkout that predates reply labels.
-        from .outreach_label_name import label_name
-        from .outreach_labels import label_backlog, search_form
+        from .outreach.label_name import label_name
+        from .outreach.labels import label_backlog, search_form
 
         label = label_name(conn, user)
     except (ImportError, sqlite3.Error):

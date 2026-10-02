@@ -11,8 +11,8 @@ from unittest import mock
 # Importable on its own as well as through discovery.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app.purge import purge_expired_opportunities
-from opportunity_app.database import connect_product
+from opportunity_app.opportunities.purge import purge_expired_opportunities
+from opportunity_app.core.database import connect_product
 from helpers_platform import build_and_migrate
 
 
@@ -91,7 +91,7 @@ class PurgeExpiredOpportunitiesTests(unittest.TestCase):
 
     def test_failed_backup_deletes_nothing(self):
         with closing(connect_product(self.platform_path)) as conn:
-            with mock.patch("opportunity_app.purge.backup_sqlite", side_effect=OSError("disk full")):
+            with mock.patch("opportunity_app.opportunities.purge.backup_sqlite", side_effect=OSError("disk full")):
                 with self.assertRaises(OSError):
                     purge_expired_opportunities(conn, today="2026-09-14")
         self.assertEqual(self.ids(), {"job-a", "job-b", "job-retired", "job-dup"})

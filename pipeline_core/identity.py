@@ -8,7 +8,7 @@ persisted or matched against stored values:
 * ``employer_key``: the sorted identity tokens that the apply run, apply answer
   and employer-domain tables store. A change to the identity rule orphans those
   rows, so ``tests/test_leaf_modules.py`` pins it.
-* ``opportunity_app.outreach_identity.company_key``: a third, different rule (NFKC, "&"
+* ``opportunity_app.outreach.identity.company_key``: a third, different rule (NFKC, "&"
   becomes "and", drops a leading "The" and trailing legal suffixes, keeps word
   order) that outreach targets are matched on. It is not here and must not be
   folded into ``employer_key``: that would change which outreach targets match.
@@ -42,7 +42,7 @@ def sort_key(value: str | None) -> str:
     tenant path has always used -- `lower` leaves U+00DF alone and would change
     which of 'Straße' and 'Strasse' comes first.
 
-    ``opportunity_app.schema`` writes the ``company_sort_key`` column with this
+    ``opportunity_app.core.schema`` writes the ``company_sort_key`` column with this
     and ``pipeline_core.read_model`` filters on it, so both import this one
     definition. It is also the key ``company_tags`` stores tags under.
     """

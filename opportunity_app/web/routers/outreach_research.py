@@ -8,12 +8,12 @@ from typing import Any
 from fastapi import Depends, HTTPException, status
 
 from ..overrides import shared_router
-from ...schema import LOCAL_USER_ID
-from ...outreach import OutreachNotFoundError
-from ...outreach_call_prep import NotReplied, ReplyRequired, queue_call_prep
-from ...outreach_research import queue_research as queue_company_research
-from ...outreach_discovery import DiscoveryBusy
-from ...outreach_recontact import RecontactBusy, RecontactManager
+from ...core.schema import LOCAL_USER_ID
+from ...outreach.targets import OutreachNotFoundError
+from ...outreach.call_prep import NotReplied, ReplyRequired, queue_call_prep
+from ...outreach.research import queue_research as queue_company_research
+from ...outreach.discovery import DiscoveryBusy
+from ...outreach.recontact import RecontactBusy, RecontactManager
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection
 from ..errors import outreach_not_found

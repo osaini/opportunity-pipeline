@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import Depends, HTTPException, status
 
 from ..overrides import shared_router
-from ...market import (
+from ...opportunities.market import (
     MarketNotFoundError,
     create_issue,
     create_snapshot,
@@ -18,7 +18,7 @@ from ...market import (
     publish_issue,
     verify_snapshot,
 )
-from ...database import connect_product
+from ...core.database import connect_product
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection
 from ..models.market import MarketIssueRequest, MarketSnapshotRequest

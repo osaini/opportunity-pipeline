@@ -12,7 +12,7 @@ from contextlib import closing
 from playwright.sync_api import expect
 
 from conftest import sign_in_as_owner, wait_for_results
-from opportunity_app.schema import LOCAL_USER_ID
+from opportunity_app.core.schema import LOCAL_USER_ID
 from pipeline_core.identity import sort_key
 from pipeline_core import RANKED_VIEW_PER_COMPANY
 from ui_helpers import assert_accessible

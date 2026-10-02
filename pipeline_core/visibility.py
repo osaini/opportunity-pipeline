@@ -1,6 +1,6 @@
 """Who may see an opportunity: the one rule every read path shares.
 
-Standard library only (AGENTS.md rule 4). ``opportunity_app.urgent`` re-exports
+Standard library only (AGENTS.md rule 4). ``opportunity_app.applications.urgent`` re-exports
 these names, so the Urgent queue, the opportunity list and detail, and the
 assistant all apply the same predicate.
 """

@@ -14,11 +14,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import httpx
 
-from opportunity_app import automation, automation_health, gmail_connection, inbox_watcher, mail_message, outreach_inbox
-from opportunity_app.inbox_watcher import InboxWatcher
-from opportunity_app.mail_message import reply_text, strip_quoted
-from opportunity_app.database import connect_product
-from opportunity_app.timestamps import utc_now
+from opportunity_app.automation import ledger as automation, health as automation_health, inbox_watcher
+from opportunity_app.outreach import inbox as outreach_inbox
+from opportunity_app.mail import gmail_connection, message as mail_message
+from opportunity_app.automation.inbox_watcher import InboxWatcher
+from opportunity_app.mail.message import reply_text, strip_quoted
+from opportunity_app.core.database import connect_product
+from opportunity_app.core.timestamps import utc_now
 
 from helpers_gmail import (
     ACCOUNT,
@@ -187,7 +189,7 @@ class ReplyCaptureTests(ReplyCaptureFixture, unittest.TestCase):
         self.assertEqual(self.target(target)["status"], "replied")
 
     def test_two_checks_reading_the_same_reply_log_it_once(self):
-        from opportunity_app.outreach_inbox import _record_reply
+        from opportunity_app.outreach.inbox import _record_reply
 
         target = self.sent_target()
         with closing(connect_product(self.platform_path)) as conn:
@@ -612,7 +614,7 @@ class ReplyCaptureTests(ReplyCaptureFixture, unittest.TestCase):
         self.assertEqual(self.inbox_row("careers-3")["kind"], "reply")
 
     def test_the_job_mail_reader_takes_back_what_outreach_no_longer_holds(self):
-        from opportunity_app import application_inbox
+        from opportunity_app.applications import inbox as application_inbox
 
         target = self.sent_target()
         with closing(connect_product(self.platform_path)) as conn:
@@ -876,7 +878,7 @@ class ReplyCaptureTests(ReplyCaptureFixture, unittest.TestCase):
     def test_a_step_that_raises_does_not_stop_the_others(self):
         deliveries = mock.Mock(return_value={"state": "ok", "checked": 0, "bounced": []})
         replies = mock.Mock(return_value={"state": "unreachable", "replies": [], "automatic": []})
-        with mock.patch("opportunity_app.outreach_gmail_sends.capture_gmail_sends",
+        with mock.patch("opportunity_app.outreach.gmail_sends.capture_gmail_sends",
                         side_effect=RuntimeError("could not read the draft to greg@bovi.example")),                 mock.patch.object(inbox_watcher, "check_deliveries", deliveries),                 mock.patch.object(inbox_watcher, "capture_replies", replies):
             self.watcher().run_once()
         deliveries.assert_called_once()

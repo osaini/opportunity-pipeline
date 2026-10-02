@@ -8,9 +8,9 @@ from typing import Any
 from fastapi import Depends, HTTPException, status
 
 from ..overrides import shared_router
-from ...outreach_automation import settings as automation_settings, update_settings as update_automation_settings
-from ... import outreach_label_name, outreach_labels
-from ...outreach_gmail import gmail_drafts_status
+from ...outreach.automation import settings as automation_settings, update_settings as update_automation_settings
+from ...outreach import label_name as outreach_label_name, labels as outreach_labels
+from ...outreach.gmail import gmail_drafts_status
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, require_owner, writable_connection
 from ..models.outreach import GmailLabelRequest, OutreachAutomationRequest, OutreachSettingsRequest

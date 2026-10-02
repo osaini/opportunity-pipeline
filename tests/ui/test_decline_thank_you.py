@@ -19,9 +19,9 @@ from playwright.sync_api import expect
 import outreach_fakes
 from conftest import OWNER_TOKEN, wait_for_results
 from ui_helpers import assert_accessible, card_for, db, open_outreach, seed_target
-from opportunity_app import automation
-from opportunity_app.outreach_gmail import thank_you_fingerprint
-from opportunity_app.timestamps import utc_now
+from opportunity_app.automation import ledger as automation
+from opportunity_app.outreach.gmail import thank_you_fingerprint
+from opportunity_app.core.timestamps import utc_now
 
 BEARER = {"Authorization": f"Bearer {OWNER_TOKEN}"}
 USER = "local-user"

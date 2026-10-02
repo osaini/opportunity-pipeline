@@ -14,10 +14,12 @@ from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import actions as actions_module, automation, automation_handlers, automation_health, schema, timestamps
-from opportunity_app.operations import ACCOUNT_QUERIES, delete_account, export_account
-from opportunity_app.student_agent import decide_proposal
-from opportunity_app.actions import (
+from opportunity_app.applications import actions as actions_module
+from opportunity_app.automation import ledger as automation, handlers as automation_handlers, health as automation_health
+from opportunity_app.core import schema, timestamps
+from opportunity_app.accounts.operations import ACCOUNT_QUERIES, delete_account, export_account
+from opportunity_app.student.agent import decide_proposal
+from opportunity_app.applications.actions import (
     add_application_task,
     import_applications,
     record_intent,
@@ -27,11 +29,11 @@ from opportunity_app.actions import (
     record_intent_tx,
     update_application_tx,
 )
-from opportunity_app.automation import OFF_SHADOW_ON, AutomationGateError, Feature, Superseded
-from opportunity_app.outreach_automation import SETTINGS, settings, update_settings
-from opportunity_app.schema import ensure_product_schema
-from opportunity_app.database import connect_product, has_column
-from opportunity_app.timestamps import utc_now
+from opportunity_app.automation.ledger import OFF_SHADOW_ON, AutomationGateError, Feature, Superseded
+from opportunity_app.outreach.automation import SETTINGS, settings, update_settings
+from opportunity_app.core.schema import ensure_product_schema
+from opportunity_app.core.database import connect_product, has_column
+from opportunity_app.core.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 
@@ -613,7 +615,7 @@ class AtomicityTests(AutomationCase):
         self.assertEqual(count(), interactions)
 
 
-# --- The transaction refactor in actions.py -----------------------------------------------------
+# --- The transaction refactor in applications/actions.py -----------------------------------------------------
 
 
 class ActionsTests(AutomationCase):

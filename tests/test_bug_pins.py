@@ -4,7 +4,7 @@ All defects originally pinned here are fixed. Their tests remain live so a
 regression fails the build directly; there are no ``expectedFailure`` markers.
 
 Status:
-  * ReadOnlyTokenResolutionTests — FIXED 2026-08-23 (auth.py:147 now catches
+  * ReadOnlyTokenResolutionTests — FIXED 2026-08-23 (accounts/auth.py:147 now catches
     broadly); the tests are live regression guards.
   * CliProviderErrorBoundaryTests — FIXED 2026-08-23; the test is a live
     regression guard.
@@ -85,7 +85,7 @@ class ReadOnlyTokenResolutionTests(unittest.TestCase):
     """
 
     def test_resolve_user_token_survives_a_read_only_postgres_write(self):
-        from opportunity_app import auth
+        from opportunity_app.accounts import auth
 
         conn = ReadOnlyPostgresLike()
         resolved = auth.resolve_user_token(conn, "student-token")
@@ -109,7 +109,7 @@ class ReadOnlyTokenResolutionTests(unittest.TestCase):
         from helpers_platform import build_and_migrate
         from opportunity_app import STATIC_DIR
         from opportunity_app.api import create_app
-        from opportunity_app.auth import resolve_user_token
+        from opportunity_app.accounts.auth import resolve_user_token
         from opportunity_app.web import dependencies
 
         with tempfile.TemporaryDirectory() as tempdir:
@@ -165,7 +165,7 @@ class ReadOnlyTokenResolutionTests(unittest.TestCase):
 
 class UnicodeCredentialComparisonTests(unittest.TestCase):
     def test_arbitrary_unicode_credentials_compare_without_type_errors(self):
-        from opportunity_app.auth import constant_time_equal
+        from opportunity_app.accounts.auth import constant_time_equal
 
         self.assertTrue(constant_time_equal("梵.²", "梵.²"))
         self.assertFalse(constant_time_equal("梵.²", "owner-token"))
@@ -173,7 +173,7 @@ class UnicodeCredentialComparisonTests(unittest.TestCase):
     def test_lone_surrogate_credentials_compare_without_encode_errors(self):
         """A JSON "\\ud800" escape decodes to an unpaired surrogate, which strict
         UTF-8 encoding refuses. The comparison must answer, not raise."""
-        from opportunity_app.auth import constant_time_equal
+        from opportunity_app.accounts.auth import constant_time_equal
 
         self.assertFalse(constant_time_equal("x\ud800y", "owner-token"))
         self.assertTrue(constant_time_equal("x\ud800y", "x\ud800y"))
@@ -257,11 +257,11 @@ class CliProviderErrorBoundaryTests(unittest.TestCase):
         honest RuntimeError that the agent turn recorder can attribute, not as
         a raw OSError/500 out of create()."""
 
-        from opportunity_app.agent_providers import CliAgentProvider
+        from opportunity_app.integrations.agent_providers import CliAgentProvider
 
         provider = CliAgentProvider("claude-code", "subscription")
         with mock.patch(
-            "opportunity_app.agent_providers.subprocess.run",
+            "opportunity_app.integrations.agent_providers.subprocess.run",
             side_effect=OSError("[WinError 206] The filename or extension is too long"),
         ):
             with self.assertRaises(RuntimeError):

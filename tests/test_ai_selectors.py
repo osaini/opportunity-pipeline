@@ -12,15 +12,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, agent_providers
+from opportunity_app import STATIC_DIR
+from opportunity_app.integrations import agent_providers
 from opportunity_app.api import create_app
-from opportunity_app.outreach import create_target
-from opportunity_app.outreach_config import resolve_provider
-from opportunity_app.outreach_drafting import generate_draft
-from opportunity_app.outreach_review import review_choice, review_runner
+from opportunity_app.outreach.targets import create_target
+from opportunity_app.outreach.config import resolve_provider
+from opportunity_app.outreach.drafting import generate_draft
+from opportunity_app.outreach.review import review_choice, review_runner
 from opportunity_app.web.models.preparation import DocumentCreateRequest
-from opportunity_app.outreach_settings import OutreachSettings
-from opportunity_app.database import connect_product
+from opportunity_app.outreach.settings import OutreachSettings
+from opportunity_app.core.database import connect_product
 
 from helpers_platform import build_and_migrate
 

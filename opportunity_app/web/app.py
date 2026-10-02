@@ -23,12 +23,12 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .overrides import SharedRouteApp
 from .. import DEFAULT_PLATFORM_DB, STATIC_DIR
 from .. import bootstrap
-from ..apply_runs import recover_stale as recover_stale_applications
-from ..captures import DEFAULT_CAPTURE_STORAGE
-from ..preparation import DEFAULT_MOCK_AUDIO_STORAGE
-from ..resumes import DEFAULT_STORAGE
-from ..database import connect_product
-from ..schema import ensure_product_schema
+from ..apply.runs import recover_stale as recover_stale_applications
+from ..opportunities.captures import DEFAULT_CAPTURE_STORAGE
+from ..student.preparation import DEFAULT_MOCK_AUDIO_STORAGE
+from ..student.resumes import DEFAULT_STORAGE
+from ..core.database import connect_product
+from ..core.schema import ensure_product_schema
 from .context import AppOptions, build_context
 from .middleware import security_headers
 from .routers import ROUTERS_AFTER_ASSETS, ROUTERS_BEFORE_ASSETS
@@ -36,17 +36,17 @@ from .routers import ROUTERS_AFTER_ASSETS, ROUTERS_BEFORE_ASSETS
 if TYPE_CHECKING:  # only the create_app signature names these
     import httpx
 
-    from ..agent_providers import AgentProvider
-    from ..apply_schema_client import SchemaClient
-    from ..boards import BoardTracker
-    from ..outreach_call_prep import CallPrepWorker
-    from ..outreach_discovery import DiscoveryManager
-    from ..outreach_recontact import RecontactManager
-    from ..outreach_settings import OutreachSettings
-    from ..refresh import RefreshManager
-    from ..system_status import SystemStatus
-    from ..typesafe_decisions import DecisionClient
-    from ..web_fetch import SafeFetcher
+    from ..integrations.agent_providers import AgentProvider
+    from ..apply.schema_client import SchemaClient
+    from ..opportunities.boards import BoardTracker
+    from ..outreach.call_prep import CallPrepWorker
+    from ..outreach.discovery import DiscoveryManager
+    from ..outreach.recontact import RecontactManager
+    from ..outreach.settings import OutreachSettings
+    from ..opportunities.refresh import RefreshManager
+    from .system_status import SystemStatus
+    from ..integrations.typesafe_decisions import DecisionClient
+    from ..integrations.web_fetch import SafeFetcher
 
 LOGGER = logging.getLogger("opportunity_app")
 

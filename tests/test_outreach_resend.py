@@ -16,14 +16,15 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, outreach_delivery, outreach_inbox
+from opportunity_app import STATIC_DIR
+from opportunity_app.outreach import delivery as outreach_delivery, inbox as outreach_inbox
 from opportunity_app.api import create_app
-from opportunity_app.outreach import log_event, create_target, get_target
-from opportunity_app.outreach_automation import AutomationWorker, RESEND_EVENT, recover_contact, recovery_due, resend_refusal, update_settings
-from opportunity_app.outreach_delivery import record_bounce
-from opportunity_app.outreach_schedule import RESEND_LABEL, run_due_sends
-from opportunity_app.database import connect_product
-from opportunity_app.timestamps import utc_now
+from opportunity_app.outreach.targets import log_event, create_target, get_target
+from opportunity_app.outreach.automation import AutomationWorker, RESEND_EVENT, recover_contact, recovery_due, resend_refusal, update_settings
+from opportunity_app.outreach.delivery import record_bounce
+from opportunity_app.outreach.schedule import RESEND_LABEL, run_due_sends
+from opportunity_app.core.database import connect_product
+from opportunity_app.core.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 from helpers_outreach import safe_fetcher, site_transport
@@ -53,7 +54,7 @@ GUESS_SITE = {
 
 
 def careers_mail():
-    """The site's careers@ inbox writing back: not one person, so only a possible reply (outreach_inbox.py)."""
+    """The site's careers@ inbox writing back: not one person, so only a possible reply (outreach/inbox.py)."""
     return (
         f"From: Bovi Careers <careers@bovi.test>\nTo: {ACCOUNT}\nSubject: Next steps\n"
         "MIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\n\nCould you send over your availability?\n"
@@ -234,7 +235,7 @@ class ResendAfterBounceTests(unittest.TestCase):
         self.assertIn("may have answered your earlier email", self.events(target, "send_cancelled")[-1])
         self.assertEqual(get_target(self.conn, target["id"], user_id=USER)["scheduled"], {})
 
-    # --- They may have answered the first email (outreach_inbox.py) ----------------------------
+    # --- They may have answered the first email (outreach/inbox.py) ----------------------------
 
     def test_no_resend_while_an_email_from_them_may_be_a_reply(self):
         target = self.sent_and_bounced()
@@ -274,7 +275,7 @@ class ResendAfterBounceTests(unittest.TestCase):
         self.cancelled_as_answered(target)
 
     def test_the_contact_is_not_searched_again_while_an_email_from_them_may_be_a_reply(self):
-        # The design (outreach_inbox.py, holds): every automatic step waits for the student, the
+        # The design (outreach/inbox.py, holds): every automatic step waits for the student, the
         # contact search after a bounce included; once they say it is not a reply, it runs.
         target = self.sent_and_bounced()
         self.waiting(target)

@@ -16,11 +16,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import apply_classify, apply_policy, apply_preflight, apply_sensitive
-from opportunity_app.apply_checks import question_key
-from opportunity_app.apply_classify import classify_item, net_topics, never_storable, possibly_sensitive
-from opportunity_app.apply_policy import SchemaField
-from opportunity_app.apply_sensitive import StoreRefused
+from opportunity_app.apply import classify as apply_classify, policy as apply_policy, preflight as apply_preflight, sensitive as apply_sensitive
+from opportunity_app.apply.checks import question_key
+from opportunity_app.apply.classify import classify_item, net_topics, never_storable, possibly_sensitive
+from opportunity_app.apply.policy import SchemaField
+from opportunity_app.apply.sensitive import StoreRefused
 from pipeline_core.identity import employer_key
 
 import helpers_apply as apply_helpers
@@ -487,7 +487,7 @@ class PreflightTests(apply_helpers.PolicyCase):
 
     def test_a_reusable_row_saved_some_other_way_still_does_not_travel(self):
         (key,) = self.listing(("Do you have unrestricted work rights in the United States?", SINGLE, YES_NO))
-        from opportunity_app import preparation
+        from opportunity_app.student import preparation
         preparation.save_answer(self.conn, "Do you have unrestricted work rights in the United States?", "Yes", apply_helpers.BLUEFIN, ["reusable"], user_id=USER)
         other = self.role("gh-2", company=OTHER, job="4000000002")
         problems = {item["key"]: item for item in self.run_check(other)["problems"]}
