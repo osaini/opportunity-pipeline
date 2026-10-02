@@ -709,6 +709,12 @@ After that, the student opens the app with **`Open Pipeline.vbs`** (Windows) or
 both sign in automatically, with no token to copy. The first time on macOS,
 right-click the `.command` file and choose **Open**.
 
+Ask the student whether anyone else uses this computer. If nobody does and they
+would rather open the app from a bookmark too, run
+`echo 1 | python -m opportunity_app.setup set-key PIPELINE_SKIP_SIGN_IN`, then
+`python -m opportunity_app.launch restart`. Leave it unset on a shared computer
+([The web app](docs/guide/web-app.md) explains the trade).
+
 ## 9. Updating later
 
 ```bash
@@ -740,7 +746,7 @@ may still use them. Audit the whole history at any time with
 | Symptom | Fix |
 | --- | --- |
 | `Missing config/profile.json` | `python -m opportunity_app.setup init` |
-| Browser shows the sign-in page | Open the app through the launcher, not a bookmark. Or paste `PIPELINE_WEB_TOKEN` from `.env` into **Owner token**. |
+| Browser shows the sign-in page | Open the app through the launcher, not a bookmark. Or paste `PIPELINE_WEB_TOKEN` from `.env` into **Owner token**. On a computer nobody else uses, `PIPELINE_SKIP_SIGN_IN=1` turns sign-in off. |
 | "did not accept the token in .env" | The running server was started with another token: `python -m opportunity_app.launch restart` |
 | A source errors every run | `python -m opportunity_app.setup status` shows sources that need keys; add the key or disable the source. |
 | Nothing scores high | Check `regions`, `degree_keywords`, and `interest_keywords`. Every score comes with its reasons in the dashboard. |

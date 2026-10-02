@@ -25,6 +25,16 @@ for a one-time ticket, so there is no token to copy; the session lasts 30 days.
 Running `python -m opportunity_app.api` directly still works, and prints the
 token for the sign-in page's **Owner token** field.
 
+On a computer nobody else uses, `PIPELINE_SKIP_SIGN_IN=1` in `.env` turns sign-in
+off: every page this computer's browser opens, from a bookmark or a typed
+address, is signed in, and each visit renews the 30-day session. Restart the
+server after changing it (`launch restart`). It applies only to a server that
+answers to `127.0.0.1` and `localhost` alone (the launcher and the scheduled task
+start it that way), never in production, and never to another machine; a
+browser signed in to a student account keeps that account. Signing out shows the
+sign-in page until the next reload. Any program running on the computer can open
+the app as you while it is on, so leave it off on a shared computer.
+
 Important properties:
 
 - `data/pipeline.db` is opened read-only and is never changed by the migration.
