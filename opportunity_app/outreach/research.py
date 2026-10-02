@@ -160,20 +160,27 @@ def research_agent() -> str:
     return "claude-code"
 
 
+CODEX_CODE_MODE_REASON = "Codex's web tool needs code mode, which exposes apply_patch"
+
+
 def available_agent(preferred: str | None = None) -> tuple[str, str]:
-    """The agent to run and a note when it is not the one chosen, because that one is not installed.
+    """The agent to run and a note when it is not the one chosen.
 
     Company research reads web pages, which are not trusted. Claude Code runs here
-    with only web search and fetch, so it is preferred. Codex is not that tight:
-    its web tool comes with code mode, which also exposes apply_patch (the
-    read-only sandbox stops it writing, but not testing whether a local file holds
-    given lines). It runs only when the student has allowed it (ALLOW_CODEX_ENV)
-    and Claude Code is not installed.
+    with only web search and fetch. Codex is not that tight: its web tool needs code
+    mode, which also exposes apply_patch (the read-only sandbox stops it writing,
+    but not testing whether a local file holds given lines). So Codex runs only
+    when the student has allowed it (ALLOW_CODEX_ENV), and then it runs when it is
+    the one chosen, as the deep search does (agents.resolve_discovery_agent).
+    Without the opt-in a Codex choice falls back to Claude Code when it is installed.
     """
     chosen = preferred or research_agent()
     claude_here = cli_available(cli_binary(CLAUDE_AGENT))
-    if chosen == CODEX_AGENT and claude_here:
-        return CLAUDE_AGENT, f"{CODEX_AGENT} can read files on this computer, so {CLAUDE_AGENT} (web search and fetch only) did the research"
+    if chosen == CODEX_AGENT and not codex_web_allowed() and claude_here:
+        return CLAUDE_AGENT, (
+            f"{CODEX_CODE_MODE_REASON}, so {CLAUDE_AGENT} (web search and fetch only) did the research. "
+            f"Set {ALLOW_CODEX_ENV}=1 in .env to let {CODEX_AGENT} do it."
+        )
     candidates = [chosen, *(other for other in RUNNERS if other != chosen)]
     for agent in candidates:
         if agent == CODEX_AGENT and not codex_web_allowed():
@@ -182,7 +189,7 @@ def available_agent(preferred: str | None = None) -> tuple[str, str]:
             return agent, "" if agent == chosen else f"{chosen} is not installed here, so {agent} did the research"
     if not claude_here and cli_available(cli_binary(CODEX_AGENT)):
         raise ResearchUnavailable(
-            "Only Codex CLI is installed here, and it can read files on this computer while it reads web pages. "
+            f"Only Codex CLI is installed here, and {CODEX_CODE_MODE_REASON}. "
             f"Install Claude Code, or set {ALLOW_CODEX_ENV}=1 in .env to accept that."
         )
     raise ResearchUnavailable(

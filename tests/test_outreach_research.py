@@ -1053,16 +1053,28 @@ class AgentChoiceTests(unittest.TestCase):
             with self.assertRaises(research.ResearchUnavailable):
                 research.available_agent("claude-code")
 
-    def test_codex_is_swapped_for_claude_code_when_both_are_installed(self):
-        """Codex's read-only sandbox can still read local files, and research reads untrusted pages."""
-        with mock.patch.object(research, "cli_available", return_value=True):
-            agent, note = research.available_agent("codex-cli")
-            self.assertEqual(agent, "claude-code")
-            self.assertIn("can read files on this computer", note)
-            self.assertEqual(research.available_agent("claude-code"), ("claude-code", ""))
-        with mock.patch.dict("os.environ", {research.ALLOW_CODEX_ENV: "1"}), \
-                mock.patch.object(research, "cli_available", side_effect=lambda binary: "codex" in binary):
-            self.assertEqual(research.available_agent("codex-cli"), ("codex-cli", ""), "with nothing else installed it is used only when the student allowed it")
+    def test_codex_is_swapped_for_claude_code_only_without_the_opt_in_when_both_are_installed(self):
+        """Codex's web tool comes with code mode, which exposes apply_patch; the pages it reads are not trusted."""
+        both = mock.patch.object(research, "cli_available", return_value=True)
+        for value in (None, "", "0", "no"):
+            env = {} if value is None else {research.ALLOW_CODEX_ENV: value}
+            with self.subTest(value=value), mock.patch.dict("os.environ", env), both:
+                if value is None:
+                    os.environ.pop(research.ALLOW_CODEX_ENV, None)
+                agent, note = research.available_agent("codex-cli")
+                self.assertEqual(agent, "claude-code")
+                self.assertIn("code mode", note)
+                self.assertIn("apply_patch", note)
+                self.assertIn(research.ALLOW_CODEX_ENV, note, "the note names the way to let Codex do it")
+                self.assertNotIn("can read files on this computer", note, "the old reason is gone")
+                self.assertEqual(research.available_agent("claude-code"), ("claude-code", ""))
+        # With the opt-in the student's choice stands, whether or not Claude Code is installed too.
+        with mock.patch.dict("os.environ", {research.ALLOW_CODEX_ENV: "1"}):
+            with both:
+                self.assertEqual(research.available_agent("codex-cli"), ("codex-cli", ""))
+                self.assertEqual(research.available_agent("claude-code"), ("claude-code", ""))
+            with mock.patch.object(research, "cli_available", side_effect=lambda binary: "codex" in binary):
+                self.assertEqual(research.available_agent("codex-cli"), ("codex-cli", ""), "with nothing else installed")
 
     def test_codex_does_not_research_untrusted_pages_unless_the_student_allowed_it(self):
         """Codex's read-only sandbox can read local files; the pages it reads are not trusted."""
@@ -1079,7 +1091,7 @@ class AgentChoiceTests(unittest.TestCase):
         # The Research button is not offered either, and no job is queued to fail.
         with mock.patch.dict("os.environ", {research.ALLOW_CODEX_ENV: ""}), only_codex:
             researcher = research.web_researcher(lambda: None)
-            self.assertIn("can read files", researcher.problem())
+            self.assertIn("code mode", researcher.problem())
         with mock.patch.dict("os.environ", {research.ALLOW_CODEX_ENV: "yes"}), only_codex:
             self.assertEqual(research.web_researcher(lambda: None).problem(), "")
         # With Claude Code installed nothing changes, allowed or not.
