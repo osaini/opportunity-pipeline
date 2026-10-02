@@ -148,6 +148,30 @@ def test_the_connect_gmail_panel_does_not_promise_that_nothing_sends_with_a_swit
     expect(panel).to_contain_text("a thank-you when someone declines")
     owner_page.unroute_all(behavior="ignoreErrors")
 
+def test_the_connect_gmail_panel_follows_pause_and_resume_while_it_is_open(owner_page, live_server, base_url):
+    """The panel's sentence is built through pauseWords, so a pause or resume rewrites it in place."""
+    seed_drafted(owner_page, base_url)
+    switch_on(live_server, "decline_thank_you")
+    gmail_listing(owner_page, connected=False)
+    open_outreach(owner_page)
+    panel = owner_page.locator(".outreach-gmail-connect .profile-help")
+    expect(panel).to_contain_text("These go out without a click")
+    expect(panel).not_to_contain_text("paused")
+    with db(live_server) as conn:
+        automation.set_paused(conn, USER, True)
+    owner_page.evaluate("() => window.OpportunityApp.refreshAutomationStatus()")
+    banner = owner_page.locator("#automation-banner")
+    expect(banner).to_contain_text("Automation is paused.")
+    expect(panel).to_contain_text("paused")
+    expect(panel).to_contain_text("none of it goes out until you resume")
+    expect(panel).not_to_contain_text("These go out without a click")
+    banner.get_by_role("button", name="Resume").click()
+    expect(banner).to_be_hidden()
+    expect(panel).to_contain_text("These go out without a click")
+    expect(panel).not_to_contain_text("paused")
+    owner_page.unroute_all(behavior="ignoreErrors")
+
+
 def test_turning_a_sending_switch_on_in_settings_updates_the_page_status(owner_page, base_url):
     seed_drafted(owner_page, base_url)
     open_outreach(owner_page)
