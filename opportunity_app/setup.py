@@ -538,7 +538,8 @@ def set_key(paths: Paths, name: str, value: str | None = None) -> str:
         raise SystemExit(f"{name!r} is not an environment variable name")
     if value is None:
         value = getpass.getpass(f"{name} (input hidden): ") if sys.stdin.isatty() else sys.stdin.readline()
-    value = value.strip()
+    # Windows PowerShell 5.1 starts what it pipes to a program with a byte-order mark, which strip() keeps.
+    value = value.lstrip("﻿").strip()
     if not value:
         raise SystemExit("No value given; nothing changed.")
     if any(character in value for character in "\r\n"):

@@ -127,6 +127,15 @@ class SetupTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             setup.set_key(self.paths, "ADZUNA_APP_KEY", "   ")
 
+    def test_set_key_drops_the_byte_order_mark_windows_powershell_pipes_in(self):
+        # `'1' | python -m opportunity_app.setup set-key NAME` in Windows PowerShell 5.1 sends a BOM first.
+        setup.init(self.paths, migrate=False)
+        with mock.patch("sys.stdin", io.StringIO("\ufeff1\r\n")):
+            setup.set_key(self.paths, "PIPELINE_SKIP_SIGN_IN")
+        self.assertEqual(setup.read_env(self.paths.env)["PIPELINE_SKIP_SIGN_IN"], "1")
+        with self.assertRaises(SystemExit):
+            setup.set_key(self.paths, "PIPELINE_SKIP_SIGN_IN", "\ufeff ")
+
     def test_status_reports_integrations_without_values(self):
         setup.init(self.paths, migrate=False)
         setup.set_env_values(self.paths.env, {"TYPESAFE_API_KEY": "jev-secret"}, overwrite=True)
