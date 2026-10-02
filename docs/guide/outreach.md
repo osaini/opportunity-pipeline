@@ -4,14 +4,19 @@ The Outreach tab from research to reply, call prep, company locations, and the s
 
 ## Cold outreach pipeline
 
-The Outreach tab runs cold email from research to reply. Every email starts from
-an approved draft: it opens in your own email account, where you press Send, or,
-with Gmail connected, goes out when you press **Send** in the app and then
-confirm the recipient. Four things can send later without another click from you,
-and each is an opt-in setting under Outreach settings → Automation: scheduled
-sends, the resend after a bounce, the thank-you after a decline, and
-contact-form submission. [Gmail](gmail.md) and the steps below say what each one
-checks first.
+The Outreach tab runs cold email from research to reply. Every email you send
+starts from a draft you approved: it opens in your own email account, where you
+press Send, or, with Gmail connected, goes out when you press **Send** in the app
+and then confirm the recipient. Three opt-in automations send that approved text
+later without another click from you: scheduled sends, the resend after a bounce,
+and contact-form submission (your approved first email, once per company; a field
+the app cannot answer truthfully, or a picture CAPTCHA, leaves it for you). One
+writes its own: the short thank-you after a plain decline is the only email the
+app composes and sends without your approval, and only when the keyword rules and
+Jev both read the reply as a decline and it passes the sender checks (R1–R7 in
+`opportunity_app/outreach/thank_you.py`). Each is a switch under Outreach settings
+→ Automation, and pausing automation stops them all. [Gmail](gmail.md) says what
+scheduled sends and the bounce resend check first.
 
 1. **Find companies.** The deep search runs on Monday and Thursday mornings (or
    **Run deep search now**). Claude Code searches for accelerator startups

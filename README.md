@@ -61,12 +61,14 @@ the owner (see [`AGENTS.md`](AGENTS.md), "Product invariants").
   guesses a missing fact, and it still has no third-party dependencies. Stale and
   inactive postings remain in the database for history but disappear from the
   active shortlist.
-- Outreach mail starts from an approved draft: it opens in your own email
-  account, or goes out when you press **Send** in the app and confirm the
-  recipient. What the app can send later on its own (scheduled sends, the resend
-  after a bounce, the thank-you after a decline, contact-form submission) is an
-  opt-in setting under Outreach settings → Automation (see
-  [Cold outreach](docs/guide/outreach.md) and [Gmail](docs/guide/gmail.md)).
+- Outreach mail you send starts from a draft you approved: it opens in your own
+  email account, or goes out when you press **Send** in the app and confirm the
+  recipient. Three opt-in automations send that approved text later without
+  another click (a scheduled send, the resend after a bounce, contact-form
+  submission). One writes its own: the short thank-you after a plain decline is
+  the only email the app composes and sends without your approval. Each is a
+  switch under Outreach settings → Automation, and pausing automation stops them
+  all (see [Cold outreach](docs/guide/outreach.md) and [Gmail](docs/guide/gmail.md)).
 - Every posting keeps its source, its fetch time, and an honest explanation of its
   score; an inferred value is never shown as confirmed.
 
