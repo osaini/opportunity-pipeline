@@ -91,7 +91,7 @@ def test_jev_inbox_suggestions_are_off_until_the_student_turns_them_on(owner_pag
     expect(log_reply()).to_contain_text("Jev suggestion, 94% sure")
 
 
-def test_a_codex_that_is_installed_but_not_opted_in_says_what_it_needs_not_that_it_is_not_set_up(owner_page):
+def test_a_codex_that_is_installed_but_not_opted_in_says_what_it_needs_not_that_it_is_not_set_up(owner_page, restored_environment):
     """Codex is on this computer; only the .env opt-in is missing. The picker must not read as if it were not installed."""
     import json
     import re
@@ -117,4 +117,6 @@ def test_a_codex_that_is_installed_but_not_opted_in_says_what_it_needs_not_that_
         expect(option).to_have_text(f"Codex ({reason})")
     panel.get_by_label("Who does the web research").select_option("codex-cli")
     expect(panel.get_by_text(hint).first).to_be_visible()
+    # The save the change made goes through the same route; let it finish before the test ends.
+    expect(panel.locator(".form-status")).to_have_text("Research agent saved.")
 
