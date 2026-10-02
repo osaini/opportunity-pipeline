@@ -217,7 +217,7 @@ def resend_refusal(
         return "The new contact's basis is not one that may be sent to automatically"
     if after["contact_bounced"] or after["cc_bounced"]:
         return "An address on it bounced before"
-    if after["email_subject"] != before["email_subject"] or without_greeting(after["email_body"]) != without_greeting(before["email_body"]):
+    if after["email_subject"] != before["email_subject"] or without_greeting(after["email_body"], style) != without_greeting(before["email_body"], style):
         return "More than the greeting changed"
     if not greets_contact(after["email_body"], after["contact_name"], after["company"], style):
         return "Its greeting is not to the new contact"

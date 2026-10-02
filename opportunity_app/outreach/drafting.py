@@ -22,7 +22,7 @@ from typing import Any, Callable
 
 from ..integrations.agent_providers import AgentProvider, CliAgentProvider, complete_text
 from .targets import AWAITING_REPLY, DRAFT_KINDS, DRAFT_META, cancel_schedules, log_event, draft_checks, get_target
-from .greeting import DEFAULT_GREETING, greeting_line, greeting_style
+from .greeting import DEFAULT_GREETING, greeting_line, greeting_patterns, greeting_style
 from .location import home_terms, location_usable, mentions_home, near_home, student_home, user_regions
 from .config import resolve_provider, sender_account
 from .versions import insert_version, keep_current_draft
@@ -239,18 +239,19 @@ def _inputs(conn: sqlite3.Connection, target: dict[str, Any], user_id: str, kind
     return payload
 
 
-# A greeting on a line of its own: "Hi Dana," or "Hello Acme team,".
-_GREETING_LINE = re.compile(r"^(?:hi|hello|hey|dear|good (?:morning|afternoon|evening))\b[^\n,]{0,80},$", re.IGNORECASE)
+def _unnamed_greeting_problem(body: str, inputs: dict[str, Any], style: dict[str, str] | None = None) -> str | None:
+    """A greeting that names someone when the contact is only an address.
 
-
-def _unnamed_greeting_problem(body: str, inputs: dict[str, Any]) -> str | None:
-    """A greeting that names someone when the contact is only an address."""
+    A greeting line is "Hi Dana," or "Hello Acme team," on a line of its own,
+    opening with a common word or the student's own greeting word (``style``).
+    """
     if inputs["company_research"].get("contact_name") or inputs["unverified_research"].get("contact_name"):
         return None
     first = next((line.strip() for line in body.split("\n") if line.strip()), "")
     # Inputs built without the student's greeting (older callers) get the default style.
-    expected = inputs.get("greeting") or greeting_line(inputs["company_research"].get("company", ""), "", DEFAULT_GREETING)
-    if not _GREETING_LINE.match(first) or first == expected:
+    expected = inputs.get("greeting") or greeting_line(inputs["company_research"].get("company", ""), "", style or DEFAULT_GREETING)
+    _alone, _leading, greeting_only = greeting_patterns(style)
+    if not greeting_only.match(first) or first == expected:
         return None
     return f"it greets {first!r}, but the contact has no name; open with {expected!r}"
 
@@ -402,8 +403,13 @@ def validate_draft(
     inputs: dict[str, Any],
     kind: str,
     regions: list[dict[str, Any]] | None = None,
+    style: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
-    """Parse a model reply and list every reason it cannot be stored as-is."""
+    """Parse a model reply and list every reason it cannot be stored as-is.
+
+    ``style`` is the student's greeting style (greeting.greeting_style), so a greeting
+    in their own word is recognised; None reads only the common opening words.
+    """
     try:
         parsed = CliAgentProvider.extract_json(raw)
     except ValueError as exc:
@@ -426,7 +432,7 @@ def validate_draft(
         clean_claims.append({"text": text, "basis": basis})
     if body and not clean_claims:
         problems.append("it cites no basis for any of its claims")
-    unnamed = _unnamed_greeting_problem(body, inputs)
+    unnamed = _unnamed_greeting_problem(body, inputs, style)
     if unnamed:
         problems.append(unnamed)
     numbers = _unsupported_numbers(body, inputs, subject)
@@ -599,6 +605,7 @@ def compose_draft(
             raise ValueError("A follow-up needs the original email text")
     inputs = _inputs(conn, target, user_id, kind)
     regions = user_regions(conn, user_id)
+    style = greeting_style(conn, user_id)
     provider_id, model = resolve_provider(provider, purpose=kind)
 
     if provider_id == "legacy":
@@ -613,14 +620,14 @@ def compose_draft(
         if comments:
             content += revision_request(target, kind, comments)
         raw = complete_text(agent, instructions, content)
-        draft, problems = validate_draft(raw, inputs, kind, regions)
+        draft, problems = validate_draft(raw, inputs, kind, regions, style)
         if problems:
             retry = (
                 f"{content}\n\nYour previous draft was rejected because " + "; ".join(problems)
                 + ". Write it again following every rule."
             )
             raw = complete_text(agent, instructions, retry)
-            draft, problems = validate_draft(raw, inputs, kind, regions)
+            draft, problems = validate_draft(raw, inputs, kind, regions, style)
         if problems:
             raise DraftRejected("The generated draft was not grounded in your profile and research: " + "; ".join(problems))
         generated_by = f"{provider_id}:{model}"

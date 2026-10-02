@@ -759,7 +759,7 @@ def _readdress_drafts(values: dict[str, Any], previous: dict[str, Any], style: d
             continue
         if body_field in values and values[body_field] != previous[body_field]:
             continue
-        swapped = readdress_greeting(previous[body_field] or "", old_names, new_name, previous["company"])
+        swapped = readdress_greeting(previous[body_field] or "", old_names, new_name, previous["company"], style)
         if swapped:
             values[body_field] = swapped[0]
             changed.append((kind, swapped[1], swapped[2]))

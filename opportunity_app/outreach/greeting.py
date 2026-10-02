@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from functools import lru_cache
 from typing import Any
 
 from .identity import company_key
@@ -19,15 +20,32 @@ from ..core.schema import LOCAL_USER_ID
 # The greeting is the draft's first line: "Hi Dana," or "Hi Acme team,". When
 # the contact changes it is the only part written to the old one, so it is
 # swapped here with no model call. The draft still goes back for approval.
-_GREETING = re.compile(
-    r"(?P<word>(?:hi|hello|hey|dear|good (?:morning|afternoon|evening))\s+)(?P<name>[^,!:\n]{1,80}?)(?P<end>\s*[,!:]?)",
-    re.IGNORECASE,
-)
-# The greeting and the first sentence on one line: "Hi Alex, I'm writing...".
-_LEADING_GREETING = re.compile(
-    r"(?P<word>(?:hi|hello|hey|dear|good (?:morning|afternoon|evening))\s+)(?P<name>[^,!:\n]{1,80}?)(?P<end>\s*[,!:])(?P<rest>\s+\S.*)",
-    re.IGNORECASE,
-)
+# The words it may open with are the common ones plus the student's own
+# greeting_word (their style), so "Howdy Dana," is read like "Hi Dana,".
+_DEFAULT_OPENERS = ("hi", "hello", "hey", "dear", "good (?:morning|afternoon|evening)")
+
+
+@lru_cache(maxsize=32)
+def _patterns(word: str | None) -> tuple[re.Pattern[str], re.Pattern[str], re.Pattern[str]]:
+    """(greeting alone, greeting then the first sentence, a whole greeting line) for one greeting word."""
+    own = [r"\s+".join(re.escape(part) for part in word.split())] if word else []
+    openers = "(?:" + "|".join([*own, *_DEFAULT_OPENERS]) + ")"
+    alone = re.compile(rf"(?P<word>{openers}\s+)(?P<name>[^,!:\n]{{1,80}}?)(?P<end>\s*[,!:]?)", re.IGNORECASE)
+    # The greeting and the first sentence on one line: "Hi Alex, I'm writing...".
+    leading = re.compile(rf"(?P<word>{openers}\s+)(?P<name>[^,!:\n]{{1,80}}?)(?P<end>\s*[,!:])(?P<rest>\s+\S.*)", re.IGNORECASE)
+    line = re.compile(rf"^{openers}\b[^\n,]{{0,80}},$", re.IGNORECASE)
+    return alone, leading, line
+
+
+def greeting_patterns(style: dict[str, str] | None = None) -> tuple[re.Pattern[str], re.Pattern[str], re.Pattern[str]]:
+    """The recognisers for a draft's greeting: (alone, followed by the first sentence, a whole line).
+
+    They know the common opening words and the student's own ``style["word"]``.
+    With no style only the common words are known.
+    """
+    word = " ".join(str((style or {}).get("word") or "").split())
+    return _patterns(word or None)
+
 _HONORIFICS = {"dr", "mr", "mrs", "ms", "mx", "prof", "professor"}
 # Greetings to nobody in particular, which a named contact improves on.
 GENERIC_GREETINGS = {"there", "team", "all", "everyone", "hiring team", "recruiting team"}
@@ -101,20 +119,24 @@ def _own_team(greeted: str, company: str) -> bool:
     return bool(company) and greeted.endswith(" team") and company_key(greeted[: -len(" team")]) == company_key(company)
 
 
-def readdress_greeting(body: str, old_names: set[str], new_name: str, company: str = "") -> tuple[str, str, str] | None:
+def readdress_greeting(
+    body: str, old_names: set[str], new_name: str, company: str = "", style: dict[str, str] | None = None,
+) -> tuple[str, str, str] | None:
     """The body greeting ``new_name``, with the old and new greetings.
 
     The greeting is the first line, or the start of it when the first sentence
     follows on the same line. None when it does not greet one of ``old_names``
     (casefolded) or ``company``'s own team: a greeting the student wrote to
-    someone else is theirs.
+    someone else is theirs. ``style`` is the student's greeting style, so their
+    own greeting word is read like the common ones.
     """
+    alone, leading_pattern, _line = greeting_patterns(style)
     lines = body.split("\n")
     index = next((number for number, line in enumerate(lines) if line.strip()), None)
     if index is None:
         return None
     line = lines[index].strip()
-    match = _GREETING.fullmatch(line) or _LEADING_GREETING.fullmatch(line)
+    match = alone.fullmatch(line) or leading_pattern.fullmatch(line)
     greeted = " ".join(match["name"].split()).casefold() if match else ""
     if not match or not (greeted in old_names or _own_team(greeted, company)):
         return None
@@ -126,18 +148,19 @@ def readdress_greeting(body: str, old_names: set[str], new_name: str, company: s
     return "\n".join(lines), old_greeting, new_greeting.strip()
 
 
-def without_greeting(body: str) -> list[str]:
+def without_greeting(body: str, style: dict[str, str] | None = None) -> list[str]:
     """The body's lines with the greeting taken out: the first line when it is only a
     greeting, or its start when the first sentence follows on the same line."""
+    alone, leading_pattern, _line = greeting_patterns(style)
     lines = (body or "").split("\n")
     index = next((number for number, line in enumerate(lines) if line.strip()), None)
     if index is None:
         return lines
     line = lines[index].strip()
-    leading = _LEADING_GREETING.fullmatch(line)
+    leading = leading_pattern.fullmatch(line)
     if leading:
         return [*lines[:index], leading["rest"].strip(), *lines[index + 1:]]
-    if _GREETING.fullmatch(line):
+    if alone.fullmatch(line):
         return [*lines[:index], *lines[index + 1:]]
     return lines
 
@@ -149,8 +172,9 @@ def greets_contact(body: str, contact_name: str, company: str, style: dict[str, 
     company's team, "there"). False for a greeting to anyone else, and for a
     body with no greeting line: the student looks before it goes on its own.
     """
+    alone, leading_pattern, _line = greeting_patterns(style)
     line = next((line.strip() for line in (body or "").split("\n") if line.strip()), "")
-    match = _GREETING.fullmatch(line) or _LEADING_GREETING.fullmatch(line)
+    match = alone.fullmatch(line) or leading_pattern.fullmatch(line)
     if not match:
         return False
     greeted = " ".join(match["name"].split()).casefold()
