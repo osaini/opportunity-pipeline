@@ -5,6 +5,7 @@ it from tests/conftest.py). The tests below never touch a real database: they as
 """
 
 import ast
+import contextlib
 import io
 import os
 import shutil
@@ -32,11 +33,6 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
 
 
-def leftovers(path):
-    """The database file and its journal files that exist, so a refused open can be shown to have created nothing."""
-    return [candidate for candidate in (path, Path(f"{path}-wal"), Path(f"{path}-shm"), Path(f"{path}-journal")) if candidate.exists()]
-
-
 class GuardIsInstalledTests(unittest.TestCase):
     def test_sqlite_connect_is_the_guarded_one_in_this_process(self):
         self.assertEqual(sqlite3.connect.__name__, "guarded_connect")
@@ -48,36 +44,80 @@ class GuardIsInstalledTests(unittest.TestCase):
 
 
 class OpeningRealDataFailsLoudlyTests(unittest.TestCase):
+    """Opening a file in a guarded data directory fails before anything is opened or created.
+
+    These tests never make a filesystem call into the checkout's real data/. Each one guards a temp directory named data/ in the
+    sqlite wrapper the way the real ones are guarded (the real ones stay guarded too) and probes inside it. The audit hook is
+    left off for it: code such as connect_product creates its parent directory first, and the hook would refuse that mkdir
+    before the wrapper is reached, which is not what these tests are about (RealDataFilesAreRefusedTests covers the hook). What the real directory would refuse is checked with pure functions: is_real_data_path judges a path without
+    opening it, so the real names, the real defaults and the real relative spellings are all asserted that way."""
+
+    NAMES = ("platform.db", "pipeline.db", "platform.db-wal", "platform.db-shm", "old.sqlite", "backup.sqlite3",
+             "platform.db.pre-0047-backup", "platform.db.pre-0029-backup-wal", "platform.db.bak-pre-x", "notes.txt")
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="guard-data-")).resolve()
+        self.data = self.root / "data"
+        self.data.mkdir()
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.addCleanup(realdata_guard.guard_extra_dir(self.data, audit=False))
+
+    def listing(self):
+        return sorted(os.listdir(self.data))
+
     def refuse(self, call):
-        before = {name: leftovers(DATA / name) for name in ("platform.db", "pipeline.db")}
+        before = self.listing()
         with self.assertRaises(realdata_guard.RealDataAccessError):
             call()
-        self.assertEqual({name: leftovers(DATA / name) for name in before}, before, "a refused open must not create or touch the file")
+        self.assertEqual(self.listing(), before, "a refused open must not create or touch the file")
+        self.assertEqual(before, [], "nothing in the guarded directory before or after")
 
-    def test_a_direct_open_of_either_real_database_is_refused(self):
+    def test_the_probe_directory_is_guarded_like_a_real_data_directory(self):
+        self.assertIn(self.data, realdata_guard._extra_dirs)
+        self.assertEqual(realdata_guard._audit["prefixes"], _AUDITED_AT_IMPORT, "the audit hook's prefixes are untouched")
+        for directory in realdata_guard.real_data_dirs():
+            self.assertNotIn(directory, realdata_guard._extra_dirs)
+        self.doCleanups()
+        self.assertNotIn(self.data, realdata_guard._extra_dirs)
+        self.assertEqual(realdata_guard._audit["prefixes"], _AUDITED_AT_IMPORT)
+        self.assertFalse(self.root.exists())
+
+    def test_the_real_names_are_refused_in_the_real_directory_by_the_same_judge(self):
+        for name in self.NAMES:
+            with self.subTest(name=name):
+                for target in (DATA / name, str(DATA / name)):
+                    self.assertTrue(realdata_guard.is_real_data_path(target))
+                self.assertTrue(realdata_guard.is_real_data_path(f"{DATA.joinpath(name).as_uri()}?mode=ro", uri=True))
+                self.assertTrue(realdata_guard.is_real_data_path(str(DATA / name), uri=True))
+
+    def test_a_direct_open_of_either_database_is_refused(self):
         for name in ("platform.db", "pipeline.db"):
             with self.subTest(name=name):
-                self.refuse(lambda: sqlite3.connect(DATA / name))
-                self.refuse(lambda: sqlite3.connect(str(DATA / name)))
+                self.refuse(lambda: sqlite3.connect(self.data / name))
+                self.refuse(lambda: sqlite3.connect(str(self.data / name)))
 
     def test_the_journal_files_and_other_sqlite_suffixes_are_refused_too(self):
         for name in ("platform.db-wal", "platform.db-shm", "old.sqlite", "backup.sqlite3"):
             with self.subTest(name=name):
-                self.refuse(lambda: sqlite3.connect(DATA / name))
+                self.refuse(lambda: sqlite3.connect(self.data / name))
 
     def test_dated_backups_and_any_other_name_in_the_data_directory_are_refused(self):
         # The real directory holds platform.db.pre-0047-backup, platform.db.bak-pre-callprep-regen-2026-09-29 and similar.
         for name in ("platform.db.pre-0047-backup", "platform.db.pre-0029-backup-wal", "platform.db.bak-pre-x", "notes.txt"):
             with self.subTest(name=name):
-                self.refuse(lambda: sqlite3.connect(DATA / name))
+                self.refuse(lambda: sqlite3.connect(self.data / name))
 
     def test_a_relative_path_and_dot_dot_segments_are_resolved_before_the_check(self):
-        with mock.patch("os.getcwd", return_value=str(ROOT)), mock.patch.object(Path, "cwd", return_value=ROOT):
+        with mock.patch("os.getcwd", return_value=str(self.root)), mock.patch.object(Path, "cwd", return_value=self.root):
             self.refuse(lambda: sqlite3.connect("data/platform.db"))
             self.refuse(lambda: sqlite3.connect("tests/../data/platform.db"))
+        with mock.patch("os.getcwd", return_value=str(ROOT)), mock.patch.object(Path, "cwd", return_value=ROOT):
+            self.assertTrue(realdata_guard.is_real_data_path("data/platform.db"))
+            self.assertTrue(realdata_guard.is_real_data_path("tests/../data/platform.db"))
+            self.assertFalse(realdata_guard.is_real_data_path("tests/data/platform.db"))
 
     def test_uri_forms_are_refused(self):
-        uri = DATA.joinpath("platform.db").as_uri()
+        uri = self.data.joinpath("platform.db").as_uri()
         self.refuse(lambda: sqlite3.connect(f"{uri}?mode=ro", uri=True))
         self.refuse(lambda: sqlite3.connect(uri, uri=True))
 
@@ -85,33 +125,55 @@ class OpeningRealDataFailsLoudlyTests(unittest.TestCase):
         # With uri=True sqlite still opens a name that does not start with "file:" as an ordinary filename.
         for name in ("platform.db", "pipeline.db", "platform.db.pre-0047-backup"):
             with self.subTest(name=name):
-                self.refuse(lambda: sqlite3.connect(str(DATA / name), uri=True))
-                self.refuse(lambda: sqlite3.connect(DATA / name, uri=True))
-        with mock.patch("os.getcwd", return_value=str(ROOT)), mock.patch.object(Path, "cwd", return_value=ROOT):
+                self.refuse(lambda: sqlite3.connect(str(self.data / name), uri=True))
+                self.refuse(lambda: sqlite3.connect(self.data / name, uri=True))
+        with mock.patch("os.getcwd", return_value=str(self.root)), mock.patch.object(Path, "cwd", return_value=self.root):
             self.refuse(lambda: sqlite3.connect("data/platform.db", uri=True))
 
     def test_memory_mode_is_the_exact_query_parameter_not_a_substring(self):
-        uri = DATA.joinpath("platform.db").as_uri()
+        uri = self.data.joinpath("platform.db").as_uri()
         self.refuse(lambda: sqlite3.connect(f"{uri}?mode=ro&unused=mode=memory", uri=True))
         self.refuse(lambda: sqlite3.connect(f"{uri}?mode=ro&note=memory", uri=True))
-        self.assertFalse(realdata_guard.is_real_data_path(f"{uri}?mode=memory", uri=True))
-        self.assertFalse(realdata_guard.is_real_data_path(f"{uri}?cache=shared&mode=memory", uri=True))
+        real_uri = DATA.joinpath("platform.db").as_uri()
+        self.assertTrue(realdata_guard.is_real_data_path(f"{real_uri}?mode=ro&unused=mode=memory", uri=True))
+        self.assertTrue(realdata_guard.is_real_data_path(f"{real_uri}?mode=ro&note=memory", uri=True))
+        self.assertFalse(realdata_guard.is_real_data_path(f"{real_uri}?mode=memory", uri=True))
+        self.assertFalse(realdata_guard.is_real_data_path(f"{real_uri}?cache=shared&mode=memory", uri=True))
 
-    def test_the_defaults_the_code_uses_are_refused(self):
-        self.assertEqual(DEFAULT_PLATFORM_DB.resolve(), (DATA / "platform.db").resolve())
-        self.refuse(lambda: connect_product())
-        self.refuse(lambda: connect_product(DEFAULT_PLATFORM_DB, read_only=True))
-        self.refuse(lambda: sqlite3.connect(DEFAULT_LEGACY_DB))
+    def test_the_defaults_the_code_uses_are_real_data_paths(self):
+        # Judged by pure functions: opening the defaults would be the very thing this guard exists to stop.
+        self.assertTrue(realdata_guard.is_real_data_path(DEFAULT_PLATFORM_DB))
+        self.assertTrue(realdata_guard.is_real_data_path(DEFAULT_LEGACY_DB))
+        self.assertTrue(realdata_guard.is_real_data_path(paths.ROOT / "data" / "pipeline.db"), "the default of paths.DB_PATH")
+        self.assertEqual(DEFAULT_PLATFORM_DB.name, "platform.db")
+        self.assertEqual(DEFAULT_LEGACY_DB.name, "pipeline.db")
+        self.assertEqual(connect_product.__defaults__, (DEFAULT_PLATFORM_DB,), "connect_product's default path")
+
+    def test_connect_product_with_its_default_path_is_refused_by_the_sqlite_wrapper(self):
+        # The default is swapped for a file under the guarded probe directory, whose parent exists, so the refusal can only
+        # come from the sqlite wrapper (a missing parent would be created first and refused by the audit hook instead).
+        default = self.data / "platform.db"
+        with mock.patch.object(connect_product, "__defaults__", (default,)):
+            with self.assertRaisesRegex(realdata_guard.RealDataAccessError, "tried to open a real data file"):
+                connect_product()
+            with self.assertRaisesRegex(realdata_guard.RealDataAccessError, "tried to open a real data file"):
+                connect_product(read_only=True)
+        with self.assertRaisesRegex(realdata_guard.RealDataAccessError, "tried to open a real data file"):
+            connect_product(default, read_only=True)
+        self.assertEqual(self.listing(), [])
 
     def test_a_legacy_test_that_forgot_to_patch_db_path_is_caught(self):
-        # paths.DB_PATH is the one global about thirty tests patch. Unpatched, store.connect() would open the real file.
-        with mock.patch.object(paths, "DB_PATH", DATA / "pipeline.db"):
-            self.refuse(store.connect)
+        # paths.DB_PATH is the one global about thirty tests patch. Unpatched, store.connect() would open the real file;
+        # pointed at the guarded probe directory it shows the wrapper refuses it, with the parent already there.
+        with mock.patch.object(paths, "DB_PATH", self.data / "pipeline.db"):
+            with self.assertRaisesRegex(realdata_guard.RealDataAccessError, "tried to open a real data file"):
+                store.connect()
+        self.assertEqual(self.listing(), [])
 
     def test_code_that_catches_exceptions_cannot_swallow_it(self):
         def swallowing():
             try:
-                sqlite3.connect(DATA / "platform.db")
+                sqlite3.connect(self.data / "platform.db")
             except Exception:  # noqa: BLE001 - the point: a broad handler must not hide this
                 return "swallowed"
 
@@ -119,7 +181,7 @@ class OpeningRealDataFailsLoudlyTests(unittest.TestCase):
             swallowing()
         with self.assertRaises(realdata_guard.RealDataAccessError):
             try:
-                sqlite3.connect(DATA / "platform.db")
+                sqlite3.connect(self.data / "platform.db")
             except sqlite3.Error:
                 self.fail("sqlite3.Error handlers must not see it")
 
@@ -256,28 +318,97 @@ class RealDataFilesAreRefusedTests(unittest.TestCase):
                 self.assertFalse(refuse("socket.connect", (object(), str(target)), dirs=dirs))
 
 
+# Calls that look at a path without opening it for writing: they are a live filesystem call into a directory too.
+_PROBES = (
+    *((os, f"os.{name}", name) for name in ("stat", "lstat", "listdir", "scandir", "access")),
+    *((os.path, f"os.path.{name}", name) for name in ("exists", "lexists", "isdir", "isfile")),
+    *((Path, f"Path.{name}", name) for name in ("exists", "is_dir", "is_file", "stat", "lstat", "iterdir")),
+)
+
+
+@contextlib.contextmanager
+def recording_calls_into(prefixes, seen):
+    """Record into `seen` every filesystem call a test makes into `prefixes`, a refused write included.
+
+    Two kinds are recorded: the audit events (open, mkdir, remove, rename; judged by realdata_guard.audit_refuses, which the
+    audit hook calls for every event in the process) and the probes that raise no audit event: stat, lstat, exists, is_dir,
+    is_file, listdir, scandir, access, iterdir. A probe made while the guard judges a path (is_real_data_path and
+    real_data_dirs resolve the path they are given) is the guard reading the path string, not a test touching the
+    directory, so it is left out; a test's own call is not.
+    """
+    judging = [0]
+    judge = realdata_guard.audit_refuses
+
+    def judged(function):
+        def wrapper(*args, **kwargs):
+            judging[0] += 1
+            try:
+                return function(*args, **kwargs)
+            finally:
+                judging[0] -= 1
+        return wrapper
+
+    def recording_event(event, args, dirs=None):
+        if dirs is None and any(realdata_guard._inside_prefixes(arg, prefixes) for arg in args):
+            seen.append((event, args[0]))
+        return judge(event, args, dirs)
+
+    def probing(name, function):
+        def wrapper(*args, **kwargs):
+            if not judging[0] and args and realdata_guard._inside_prefixes(args[0], prefixes):
+                seen.append((name, args[0]))
+            return function(*args, **kwargs)
+        return wrapper
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(mock.patch.object(realdata_guard, "audit_refuses", recording_event))
+        for name in ("is_real_data_path", "real_data_dirs"):
+            stack.enter_context(mock.patch.object(realdata_guard, name, judged(getattr(realdata_guard, name))))
+        for owner, label, name in _PROBES:
+            if hasattr(owner, name):
+                stack.enter_context(mock.patch.object(owner, name, probing(label, getattr(owner, name))))
+        yield
+
+
 class NoGuardTestTouchesARealDataDirectoryTests(unittest.TestCase):
-    """RealDataFilesAreRefusedTests exists to prove a test cannot write into data/, so it must not do the very thing it forbids."""
+    """The tests that prove a test cannot touch data/ must not do the very thing they forbid: not a write, and not a stat either."""
 
-    def test_running_the_file_guard_tests_makes_no_filesystem_call_into_a_real_data_directory(self):
-        real = realdata_guard._prefixes(realdata_guard.real_data_dirs())
+    def run_cases(self, *cases, prefixes=None):
+        real = realdata_guard._prefixes(realdata_guard.real_data_dirs()) if prefixes is None else prefixes
         seen = []
-        judge = realdata_guard.audit_refuses
-
-        def recording(event, args, dirs=None):
-            # The audit hook calls this for every event in the process, so this sees an open, mkdir, remove, rename or
-            # listing the tests make, a refused write included (the refusal would otherwise hide it).
-            if dirs is None and any(realdata_guard._inside_prefixes(arg, real) for arg in args):
-                seen.append((event, args[0]))
-            return judge(event, args, dirs)
-
         stream = io.StringIO()
-        suite = unittest.defaultTestLoader.loadTestsFromTestCase(RealDataFilesAreRefusedTests)
-        with mock.patch.object(realdata_guard, "audit_refuses", recording):
+        suite = unittest.TestSuite(unittest.defaultTestLoader.loadTestsFromTestCase(case) for case in cases)
+        with recording_calls_into(real, seen):
             result = unittest.TextTestRunner(stream=stream, verbosity=0).run(suite)
-        self.assertTrue(result.wasSuccessful(), stream.getvalue())
-        self.assertGreater(result.testsRun, 5)
+        return result, stream.getvalue(), seen
+
+    def test_running_the_guard_tests_makes_no_filesystem_call_into_a_real_data_directory(self):
+        result, output, seen = self.run_cases(RealDataFilesAreRefusedTests, OpeningRealDataFailsLoudlyTests)
+        self.assertTrue(result.wasSuccessful(), output)
+        self.assertGreater(result.testsRun, 15)
         self.assertEqual(seen, [], "these tests must probe a temp directory, not data/")
+
+    def test_the_recorder_sees_a_write_and_a_stat_alike(self):
+        """Verifies the instrument: the same recorder, pointed at a temp directory standing in for data/, sees every kind of call."""
+        with tempfile.TemporaryDirectory() as tmp:
+            stand_in = Path(tmp).resolve() / "data"
+            stand_in.mkdir()
+            target = stand_in / "platform.db"
+
+            class Probing(unittest.TestCase):
+                def test_it(self):
+                    target.exists()
+                    os.path.exists(target)
+                    os.stat(stand_in)
+                    os.listdir(stand_in)
+                    Path(target).is_file()
+                    open(target, "w").close()
+                    os.mkdir(stand_in / "sub")
+
+            result, output, seen = self.run_cases(Probing, prefixes=realdata_guard._prefixes([stand_in]))
+        self.assertTrue(result.wasSuccessful(), output)
+        self.assertGreaterEqual({event for event, _ in seen},
+                                {"Path.exists", "os.path.exists", "os.stat", "os.listdir", "Path.is_file", "open", "os.mkdir"})
 
 
 class NormalOpensStillWorkTests(unittest.TestCase):

@@ -130,6 +130,8 @@ def is_real_data_path(database, *, uri=False, dirs=None):
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
 _PATH_EVENTS = {"open": (0,), "os.mkdir": (0,), "os.remove": (0,), "os.rmdir": (0,), "os.rename": (0, 1)}
 _audit = {"hooked": False, "on": False, "prefixes": ()}
+# Directories guarded in addition to the real ones, for this guard's own tests only (see guard_extra_dir).
+_extra_dirs = []
 
 
 def _inside_prefixes(value, prefixes):
@@ -210,7 +212,7 @@ def install():
     def guarded_connect(database=None, *args, **kwargs):
         # `uri` is the eighth positional parameter of the old signature and keyword-only after that.
         uri = kwargs.get("uri", args[6] if len(args) > 6 else False)
-        if database is not None and is_real_data_path(database, uri=bool(uri), dirs=dirs):
+        if database is not None and is_real_data_path(database, uri=bool(uri), dirs=(*dirs, *_extra_dirs)):
             raise RealDataAccessError(
                 f"a test tried to open a real data file ({database!r}); AGENTS.md hard rule 1. Point it at a temp copy "
                 "(tests/helpers_platform.build_and_migrate, or patch pipeline_core.paths.DB_PATH) and never at data/*.db."
@@ -220,6 +222,33 @@ def install():
     guarded_connect.__name__ = _GUARD_NAME
     guarded_connect.__wrapped__ = real_connect
     sqlite3.connect = guarded_connect
+
+
+def guard_extra_dir(directory, *, audit=True):
+    """Guard `directory` as if it were a real data directory, and return the function that stops guarding it again.
+
+    For this guard's own tests: they must prove that opening a file under a guarded data/ is refused without ever making a
+    filesystem call into the real data/. They create a temp directory (before this call: the audit hook refuses a mkdir inside
+    it afterwards), guard that one and probe inside it. The real directories stay guarded.
+
+    The sqlite wrapper always guards it. With `audit=True` (the default) the audit hook does too, so a write or mkdir there is
+    refused, an mkdir of the directory itself included even when it exists. A test that needs code to get past its own
+    `path.parent.mkdir(parents=True, exist_ok=True)` to reach the sqlite wrapper passes `audit=False`. Call the returned
+    function before removing the directory, or an audited directory's removal is refused.
+    """
+    resolved = Path(directory).resolve()
+    prefix = os.path.normcase(os.path.abspath(str(resolved)))
+    _extra_dirs.append(resolved)
+    before = _audit["prefixes"]
+    if audit:
+        _audit["prefixes"] = tuple(dict.fromkeys((*before, prefix)))
+
+    def stop():
+        if resolved in _extra_dirs:
+            _extra_dirs.remove(resolved)
+        _audit["prefixes"] = tuple(item for item in _audit["prefixes"] if item != prefix or item in before)
+
+    return stop
 
 
 def uninstall():
