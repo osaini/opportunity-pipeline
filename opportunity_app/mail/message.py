@@ -448,6 +448,36 @@ def hosts_in(text: str) -> set[str]:
     return set(_hosts(text))
 
 
+_BLOCKQUOTE_TAG = re.compile(r"(?is)<(/?)blockquote\b[^>]*>")
+# Outlook and OWA quote the original under these markers, with no <blockquote>; everything after is the quote.
+_OUTLOOK_QUOTE = re.compile(r"""(?is)<[^<>]*\bid\s*=\s*["']?(?:divRplyFwdMsg|appendonsend)\b""")
+
+
+def _without_quoted_markup(markup: str) -> str:
+    """The markup without its quoted email: balanced <blockquote> elements are cut out and what follows them
+    (a tracking pixel the sender's tool adds after the quote) is kept; an element never closed runs to the end.
+    Outlook's reply markers cut everything after them."""
+    outlook = _OUTLOOK_QUOTE.search(markup)
+    if outlook:
+        markup = markup[:outlook.start()]
+    kept: list[str] = []
+    position = 0
+    depth = 0
+    for tag in _BLOCKQUOTE_TAG.finditer(markup):
+        if tag.group(1):
+            if depth:
+                depth -= 1
+                if not depth:
+                    position = tag.end()
+            continue
+        if not depth:
+            kept.append(markup[position:tag.start()])
+        depth += 1
+    if not depth:
+        kept.append(markup[position:])
+    return "".join(kept)
+
+
 _ATTRIBUTE_URL = re.compile(r"""(?is)\b(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""")
 
 
@@ -455,8 +485,9 @@ def unquoted_link_hosts(message: EmailMessage) -> set[str]:
     """The host of every link in what the sender wrote, quoted email left out. Hosts only.
 
     The text of an HTML message has no hrefs, so they are read from the markup
-    (href and src, a tracking pixel included; the markup stops at the first
-    <blockquote>) as well as from the links written out in the text. An
+    (href and src, a tracking pixel included; the quoted email is cut out, the
+    <blockquote> elements and what follows Outlook's reply marker) as well as
+    from the links written out in the text. An
     unreadable HTML part adds nothing. link_hosts_or_none reads the quoted
     parts too and fails closed; this is for judging who sent a message, not for
     vouching that it has no link.
@@ -468,7 +499,7 @@ def unquoted_link_hosts(message: EmailMessage) -> set[str]:
             markup = str(part.get_content())
         except Exception:  # noqa: BLE001 - a part that cannot be read has no links to give
             return hosts
-        markup = re.sub(r"(?is)<blockquote\b.*", "", markup)
+        markup = _without_quoted_markup(markup)
         for match in _ATTRIBUTE_URL.finditer(markup):
             hosts.update(_hosts(next(group for group in match.groups() if group is not None)))
     return hosts

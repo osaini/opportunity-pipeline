@@ -834,6 +834,29 @@ class ReplyCaptureTests(ReplyCaptureFixture, unittest.TestCase):
         self.assertEqual([item["target_id"] for item in result["replies"]], [target["id"]])
         self.assertEqual(result["possible"], [])
 
+    def test_a_sales_tracking_pixel_after_the_quoted_email_still_makes_it_a_possible_reply(self):
+        target = self.sent_target()
+        self.arrive("seq-after-quote", html_mail(
+            '<div>Hi Sam, just bumping this to the top of your inbox.</div><blockquote class="gmail_quote">'
+            '<a href="https://t.hubspotlinks.com/x">Book</a></blockquote>'
+            '<img src="https://t.hubspotemail.net/e2t/to/abc" width="1" height="1">',
+            sender="Mike Chen <mike.chen@bovi.example>", subject="Re: Quick question"))
+        result = self.check()
+        self.assertEqual(result["replies"], [])
+        self.assertEqual([item["reason"] for item in result["possible"]], ["mailing_tool"])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_the_quote_is_cut_out_of_the_markup_but_the_rest_is_read(self):
+        def hosts(markup):
+            return outreach_inbox._link_hosts(BytesParser(policy=policy.default).parsebytes(html_mail(markup)))
+
+        nested = '<blockquote><a href="https://a.example/1">x</a><blockquote><a href="https://b.example/2">y</a></blockquote><a href="https://c.example/3">z</a></blockquote>'
+        self.assertEqual(hosts(f'<p>hi</p>{nested}<img src="https://pixel.example/p.gif">'), {"pixel.example"})
+        self.assertEqual(hosts('<a href="https://before.example/">b</a><BLOCKQUOTE type=cite><a href="https://q.example/">q</a>'), {"before.example"})
+        self.assertEqual(hosts('<p>Sure, Tuesday works.</p><hr><div id="divRplyFwdMsg"><b>From:</b> Sam<br></div>'
+                               '<div>I applied at <a href="https://jobs.lever.co/bovi/1">your posting</a></div>'), set())
+        self.assertEqual(hosts('<div id="appendonsend"></div><hr><div id=\'divRplyFwdMsg\'><a href="https://jobs.lever.co/b">q</a></div>'), set())
+
     def test_link_hosts_are_read_from_href_src_and_text_without_punctuation(self):
         def hosts(raw):
             return outreach_inbox._link_hosts(BytesParser(policy=policy.default).parsebytes(raw))
