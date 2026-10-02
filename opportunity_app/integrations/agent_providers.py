@@ -206,9 +206,14 @@ class CodexNotIsolated(RuntimeError):
     """A Codex command that lacks the isolation, or a Codex call the app refuses to make. Nothing was started."""
 
 
+def opt_in_value_is_on(value: str | None) -> bool:
+    """Whether an opt-in setting's text turns it on: 1, true, yes or on, in any case. Anything else, '0' included, is off."""
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def codex_web_opted_in() -> bool:
     """Whether the student accepted, in .env, that Codex reads web pages for research (CODEX_WEB_OPT_IN_ENV)."""
-    return os.environ.get(CODEX_WEB_OPT_IN_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+    return opt_in_value_is_on(os.environ.get(CODEX_WEB_OPT_IN_ENV))
 
 
 def codex_model_settings() -> tuple[str, str]:

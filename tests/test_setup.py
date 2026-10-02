@@ -64,6 +64,15 @@ class SetupTests(unittest.TestCase):
             setup.set_env_values(self.paths.env, {"PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX": ""}, overwrite=True)
             self.assertFalse(any("ALLOW_CODEX" in warning for warning in setup.init(self.paths)["warnings"]))
 
+    def test_init_warns_for_a_value_that_is_not_an_opt_in_the_way_the_app_reads_it(self):
+        """Any non-empty value used to silence the warning, yet the app opts in only for 1, true, yes or on: '0' is not one."""
+        for value, warns in (("0", True), ("no", True), ("off", True), ("false", True), ("1", False), ("true", False), ("YES", False), ("on", False)):
+            with self.subTest(value=value):
+                setup.set_env_values(self.paths.env, {"PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX": value}, overwrite=True)
+                with mock.patch.object(setup, "detect_agent_cli", return_value="codex-cli"):
+                    report = setup.init(self.paths)
+                self.assertEqual(any("ALLOW_CODEX" in warning for warning in report["warnings"]), warns, report["warnings"])
+
     def test_init_records_claude_code_for_research_when_both_agents_are_installed(self):
         """Claude Code can be limited to web search and Codex cannot, so Codex is only recorded when it is the only one."""
         both = {"claude": True, "codex": True}
