@@ -1,6 +1,6 @@
 # Known defects
 
-This file lists defects found during the 2026-09/10 refactor audit and its phase reviews. Each one was checked against the code at `be33c50` (main after PR #64). On 2026-10-02, after the package move (PRs #65 and #66), every path and line below was re-pointed at the current tree, and each cited line was opened to confirm it still holds the code the entry names. The move changed no behaviour, so the entries still describe what the code does. None of the entries below is fixed. The owner approved fixing the six serious bugs first, and PR #60 fixed those: the email-draft number check, the student-agent CLI chat sandbox, Gmail label tables missed by account erase and export, asset versioning outside `static_dir`, pollers that kept running after sign-out, and an extension scan that carried over to another application. Two entries below (the Codex sandbox and the labelling worker) were found in review of those fixes and left for the owner to decide. The owner then approved fixing this file's six high-severity entries; they were fixed on 2026-10-02 and removed, and one narrower high-severity gap those fixes left is listed in their place.
+This file lists defects found during the 2026-09/10 refactor audit and its phase reviews. Each one was checked against the code at `be33c50` (main after PR #64). On 2026-10-02, after the package move (PRs #65 and #66), every path and line below was re-pointed at the current tree, and each cited line was opened to confirm it still holds the code the entry names. The move changed no behaviour, so the entries still describe what the code does. None of the entries below is fixed. The owner approved fixing the six serious bugs first, and PR #60 fixed those: the email-draft number check, the student-agent CLI chat sandbox, Gmail label tables missed by account erase and export, asset versioning outside `static_dir`, pollers that kept running after sign-out, and an extension scan that carried over to another application. One entry below (the labelling worker) was found in review of those fixes and left for the owner to decide. The other one found there, the Codex sandbox, was fixed on 2026-10-02 and removed; the narrower gap it left is listed in its place. The owner then approved fixing this file's six high-severity entries; they were fixed on 2026-10-02 and removed, and one narrower high-severity gap those fixes left is listed in their place.
 
 Severity rules:
 
@@ -20,12 +20,12 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Browser extension | 0 | 1 | 0 | 1 |
 | Mail, Gmail and inboxes | 0 | 4 | 6 | 10 |
 | Outreach drafting, research, forms and CLI | 0 | 4 | 2 | 6 |
-| Agents and notifications | 0 | 1 | 1 | 2 |
+| Agents and notifications | 0 | 0 | 2 | 2 |
 | Web API, auth and storage | 0 | 4 | 1 | 5 |
 | Scoring, scheduling and configuration | 1 | 1 | 4 | 6 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 3 | 3 |
-| **Total** | **1** | **22** | **21** | **44** |
+| **Total** | **1** | **21** | **22** | **44** |
 
 ## Start here: the high-severity entries
 
@@ -37,9 +37,8 @@ sales-tool check reads every link, quoted ones included (`all_link_hosts`). One 
 
 - [The repost FLAG disappears the day after the daily purge removes the retired twin](#the-repost-flag-disappears-the-day-after-the-daily-purge-removes-the-retired-twin)
 
-The two entries flagged for an owner decision are
-[the Codex sandbox](#codex-cli-calls-rely-on---sandbox-read-only-which-does-not-turn-off-codexs-own-tools-or-the-users-mcp-servers)
-and [the labelling worker](#the-gmail-labelling-worker-can-write-label-rows-for-an-account-that-was-just-deleted).
+The entry flagged for an owner decision is
+[the labelling worker](#the-gmail-labelling-worker-can-write-label-rows-for-an-account-that-was-just-deleted).
 
 ---
 
@@ -228,12 +227,12 @@ and [the labelling worker](#the-gmail-labelling-worker-can-write-label-rows-for-
 
 ## Agents and notifications
 
-### Codex CLI calls rely on --sandbox read-only, which does not turn off Codex's own tools or the user's MCP servers
-- **Severity:** medium, privacy; flagged for an owner decision (notes 180)
-- **Where:** `opportunity_app/integrations/agent_providers.py:163` `CODEX_READ_ONLY`, used in `CliAgentProvider._command()` `:472`; `opportunity_app/outreach/review.py:155`
-- **What happens:** The Claude path runs with no tools (`--tools "" --strict-mcp-config`). The Codex path keeps its shell tool, which can read any file the user can, such as `.env`, `data/platform.db` and `~/.ssh`. MCP servers from `~/.codex/config.toml` run outside the sandbox. Chat history, fetched pages and drafts are attacker-influenced and can steer it. The docstring overstates the isolation.
-- **Suggested fix:** Override the user config per call (`-c mcp_servers={}`, turn off shell and web search, or use an empty `CODEX_HOME`), and keep the sandbox as a second layer. Otherwise record the owner's acceptance and fix the docstring.
-- **Regression suite:** tests/ unittest (argv contract test for the Codex command, like the existing CLAUDE_NO_TOOLS checks)
+### Codex web research, once the student opts in, still reaches apply_patch through code mode
+- **Severity:** low, privacy (found fixing the Codex sandbox entry)
+- **Where:** `opportunity_app/outreach/agents.py` `codex_runner`; `opportunity_app/integrations/agent_providers.py` `codex_command(web_search=True)`
+- **What happens:** Codex's web tool is carried by code mode (`--disable code_mode_host` removes it), and code mode also exposes `apply_patch`. With `PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX=1` the research call keeps code mode on, so a page the agent reads could steer it into patch attempts. The read-only sandbox blocks the write, but the failure message tells the model whether the patch's context lines matched a local file, a one-bit-per-try test of file contents. Shell, MCP servers, plugins and file writes stay off, and without the opt-in the call is refused. Every Codex call that carries no web search runs with code mode off and no reachable tool. The collaboration tools (`spawn_agent`) stay listed in every call; a sub-agent starts with the same settings.
+- **Suggested fix:** Drop the opt-in path when a Codex release lets web search run without code mode (`standalone_web_search` is still under development in 0.159.2), or when a flag removes `apply_patch`; until then the opt-in is the owner's acceptance.
+- **Regression suite:** tests/ unittest (`test_codex_isolation`: the web command is the only one with web search and code mode on, and it is refused without the opt-in)
 
 ### Desktop pop-ups skip waiting notices after a same-value re-save of the switch
 - **Severity:** low (notes 76)
