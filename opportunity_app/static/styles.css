@@ -320,6 +320,8 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 .advanced-filter-grid input, .advanced-filter-grid select { width: 100%; min-height: var(--control-md); padding: 0 var(--field-pad-x); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); color: var(--ink); font-size: 12px; text-transform: none; letter-spacing: 0; }
 
 .results-heading { display: flex; justify-content: space-between; align-items: end; gap: 24px; margin: 30px 0 16px; }
+/* The heading keeps its width; a long #page-status sentence (the Outreach send status) wraps instead of squeezing it. */
+.results-heading > div:first-child { flex-shrink: 0; }
 .filter-panel[hidden] + .results-heading { margin-top: 0; }
 .results-heading h2 { margin: 0; font-size: 22px; letter-spacing: -.025em; }
 .page-status { color: var(--ink-muted); font-size: 12px; }

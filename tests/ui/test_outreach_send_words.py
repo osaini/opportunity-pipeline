@@ -208,3 +208,19 @@ def test_turning_a_sending_switch_on_in_settings_updates_the_page_status(owner_p
     expect(status).to_contain_text("contact forms")
     owner_page.locator("#settings-automation-form_submission").uncheck()
     expect(status).to_contain_text("Nothing sends on its own")
+
+
+@pytest.mark.parametrize("width", [1280, 1440])
+def test_a_long_send_status_wraps_beside_the_heading_instead_of_squeezing_it(owner_page, live_server, base_url, width):
+    """The send status can run to several sentences; the page heading keeps its one line at desktop widths."""
+    owner_page.set_viewport_size({"width": width, "height": 900})
+    seed_drafted(owner_page, base_url)
+    switch_on(live_server, "bounce_auto_resend", "form_submission")
+    open_outreach(owner_page)
+    expect(owner_page.locator("#page-status")).to_contain_text("without a click")
+    heading = owner_page.locator("#result-count")
+    # Count the heading's rendered line boxes (distinct tops of its text rects).
+    lines = heading.evaluate(
+        "el => { const r = document.createRange(); r.selectNodeContents(el);"
+        " return new Set([...r.getClientRects()].map(rect => Math.round(rect.top))).size; }")
+    assert lines == 1, f"the heading wrapped to {lines} lines at {width}px"
