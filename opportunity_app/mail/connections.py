@@ -39,9 +39,12 @@ OAUTH_PROVIDERS = {
         "client_secret_env": "GOOGLE_OAUTH_CLIENT_SECRET",
     },
     # Approved outreach, as drafts or sent after a confirm click, with the
-    # resume attached. gmail.compose drafts and sends. gmail.readonly lets the
-    # app find and read the delivery failure notice for a send that bounced
-    # (outreach/delivery.py). gmail.modify is used only to add the student's
+    # resume attached. gmail.compose drafts and sends. gmail.readonly is every
+    # read of the outreach mailbox: the delivery failure notice for a send that
+    # bounced (outreach/delivery.py), replies (outreach/inbox.py), job-application
+    # mail (applications/inbox.py), sends made in Gmail (outreach/gmail_sends.py),
+    # the thank-you thread check (outreach/thank_you.py) and
+    # scripts/pipeline_mailbox.py. gmail.modify is used only to add the student's
     # label to outreach threads, sent mail and replies (outreach/labels.py: messages.batchModify
     # with addLabelIds, and labels.list and labels.create); nothing in the app
     # removes a label, trashes, archives or marks mail read. Not
