@@ -12,6 +12,19 @@
   taken from that commit and were refreshed against ac2398d on 2026-09-29. Revision 2 re-checked the ones the review questioned: sidepanel.js:82
   (injection list) and :212 (answer save; the call starts at :210) are right; the contact-form
   factory wiring is api.py:1063-1064; `discover_ats` lives in pipeline.py:2277, not opportunities/boards.py.
+- **Since this was written (2026-10-02):** the code moved into packages (`opportunity_app/apply/`, `outreach/`,
+  `mail/`, `automation/`, `student/`, `core/`, and so on), `api.py`'s routes into `web/routers/<feature>.py`, and
+  `app.js` into ordered `app-*.js` scripts. Paths in this document use the new layout. A bare module name such as
+  `apply_runs`, `apply_policy`, `apply_checks`, `apply_preflight`, `extension_apply`, `mail_trust`,
+  `resume_variants`, `outreach_forms`, `outreach_gmail`, `outreach_render`, `document_artifacts` or `user_time` is the
+  module's name before the move, kept here as shorthand (`apply/runs.py`, `apply/policy.py`, `apply/checks.py`, `apply/preflight.py`,
+  `applications/extension.py`, `mail/trust.py`, `student/resume_variants.py`, `outreach/forms.py`,
+  `outreach/gmail.py`, `outreach/render.py`, `student/artifacts.py`, `core/user_time.py`); `apply_runs` is also a
+  table name. File:line citations of `api.py` and `app.js` are as of the base commit and no longer match the
+  split files. The README manual is now `docs/guide/`, so citations of README sections name the heading. The
+  migration this plan calls 0044 was numbered 0045 when it was built (`migrations/0045_apply_agent.sql`), and
+  `apply_agent.py`, `test_apply_watch.py`, `test_apply_agent_browser.py` and `scripts/apply_shape_check.py` are
+  planned files that M5a and M5b have not built.
 - **Relation to PLAN.md:** this document expands PLAN.md "Phase 5: Apply agent pilot"
   (PLAN.md:1099-1255). PLAN.md is the student's automation roadmap and is kept outside the
   repository, so its line references are to that file. Where the two differ, this document wins. Appendix A lists every
@@ -226,12 +239,13 @@ Finish in browser on real applications.
 
 ### D1. The gate and the "Never auto-apply" rule
 
-AGENTS.md:62 says "Never auto-apply." The same idea appears in several other places:
+AGENTS.md, "Product invariants", says "Never auto-apply." The same idea appears in several other places:
 
-- README.md:5 and README.md:115;
+- README.md, "What it never does" (the intro sentence and the Apply Mode statement), and the
+  Apply Mode bullet of docs/guide/web-app.md, "Full opportunity platform";
 - docs/THREAT_MODEL.md:12;
 - docs/assisted-apply.md:5-6 and :36-37, which says "There is no success-page inference";
-- docs/ACCEPTANCE.md:23;
+- the "Extension safety" row of docs/ACCEPTANCE.md;
 - apps/extension/README.md:3-5 and the extension's manifest.
 
 **Options:**
@@ -1019,7 +1033,7 @@ gathered correctly.
 
 ### 4.8 What stays true
 
-- `pipeline.py` and `pipeline_core/` gain nothing (README.md:384, AGENTS.md rule 4). All new code
+- `pipeline.py` and `pipeline_core/` gain nothing (README.md, "What it never does"; AGENTS.md hard rule 4). All new code
   is in `opportunity_app/`. Playwright stays optional (requirements-optional.txt), and
   `tests/test_dependency_boundary.py` is unchanged.
 - The extension keeps its no-submit guarantee and `final_submit_available: false`
@@ -2596,7 +2610,7 @@ pause came after the confirm. It shows a submit that was already handed over as 
   one. M8 needs its own AGENTS.md rewrite, decided by the student in that PR (D2).
 - **Switch.** `Feature("auto_apply", ..., "applications", "external", OFF_SHADOW_ON)`.
   `REQUIREMENTS`: `apply_agent` on; the profile's `automation.auto_apply_at` set, with no default,
-  so the switch cannot turn on without it (the pattern of `auto_save_at`, SETUP.md:466);
+  so the switch cannot turn on without it (the pattern of `auto_save_at`, the automation thresholds table in SETUP.md step 7);
   `application_mail` on or shadow with the Gmail address known; the gate met with
   `rehearsals_before_submit + 5`; the ATS not disabled by the 8.8 threshold; and, if D5 is B to E,
   each sensitive entry consented again with `consent_scope='unattended'` (entries without it are
@@ -2749,7 +2763,7 @@ decline (7.3 "As built").
   application failed and never suggests applying again.
 - `not_watched`: "The app isn't checking for a confirmation email".
 - `unconfirmed`: "May have been sent. Check your email or the Greenhouse portal", with **It went
-  through** / **It didn't go through**. **It is never shown as Applied** (AGENTS.md:30-32).
+  through** / **It didn't go through**. **It is never shown as Applied** (AGENTS.md, "The product's core promise is source integrity").
 - `needs_you` or `failed`: the claim's note, with the matching action from 10.3.
 
 **Timeline** (`application_events`) entries, each linking to its run:
@@ -3289,7 +3303,7 @@ M4s is built only if D5 is B to E.
 | M4s | Sensitive store (only if D5 is B to E) | `apply_sensitive_answers` with consent scope, the EEO opt-in, company-specific statements; its settings UI and Needs you form; the doc changes in the same PR: assisted-apply.md step 3, THREAT_MODEL.md:17, PRIVACY_ACCESSIBILITY.md:7. | 12.9 M4s tests green; the docs say what the store does. |
 | M5a | Rehearsal engine | `apply_agent.py` in lookup and rehearse modes; the child-process runner with deadlines and the watchdog; the start, run and lookup API; Look up options in the UI; `GREENHOUSE_LOOKUP_ENDPOINTS` and `CAPTCHA_ENDPOINTS` confirmed on a live board. | 12.9 M5a tests green. |
 | M5b | Finish in browser and the watch | Handoff mode with hand-over in the route handler; the plan preview with screenshots and review marks; handoff recording with `stage_policy` (`ask` under D1 B); `watch()` with its badges, notices, Urgent kind and paused state; per-ATS statistics; the assisted-apply.md section and the THREAT_MODEL Apply agent row; SETUP.md step (Playwright install, Linux display, VPN off, "your name on every application", name for applications, limits, retention). | 12.9 M5b tests green. |
-| M6 | **Gate: one-click submit** (needs D1 A) | The policy rewrite in the same PR, with the D1 A wording (AGENTS.md:62, README.md:5 and :115, THREAT_MODEL row, assisted-apply.md:5-6 and :36-37, ACCEPTANCE.md:23, PHASE_VERIFICATION.md:20; the extension README and manifest stay "never submits"); submit mode; hand-over with pause-after-confirm, Cancel and the 15-minute clock; outcome detection; `record` stage write; two-click confirm with nonce; the rehearsal gate; the 8.8 threshold and warning; D9 B and D14 B if chosen. | 12.9 M6 tests green; sandbox acceptance with the fake agent. |
+| M6 | **Gate: one-click submit** (needs D1 A) | The policy rewrite in the same PR, with the D1 A wording (AGENTS.md "Product invariants", README.md "What it never does" and the Apply Mode bullet of docs/guide/web-app.md, THREAT_MODEL row, assisted-apply.md:5-6 and :36-37, the "Extension safety" row of ACCEPTANCE.md, the "7 — Apply Mode" row of PHASE_VERIFICATION.md; the extension README and manifest stay "never submits"); submit mode; hand-over with pause-after-confirm, Cancel and the 15-minute clock; outcome detection; `record` stage write; two-click confirm with nonce; the rehearsal gate; the 8.8 threshold and warning; D9 B and D14 B if chosen. | 12.9 M6 tests green; sandbox acceptance with the fake agent. |
 | M7 | Cover letters in the flow (D11 B) | The Draft one path wired to preparation; the latest-approved-version rule; `content_sha256` freshness; attaching approved letters. | The cover-letter rows of 7.5 pass. |
 | M8 | Unattended (**only with a separate yes**, D2) | Its own AGENTS.md rewrite; `auto_apply` feature, shadow, the worker step, limits, `ledger` stage write, breaker, Undo wording, re-consent. | 48 h shadow with 5 reviewed clean rows before `on` is offered. |
 | Later | Lever, then Ashby | Lever: `/parseResume` fires on attach **[live]**, so upload first, then overwrite and verify; hidden `timezone` field; hCaptcha may escalate. Ashby: fields autosave as they are filled **[1-src]**, so rehearsal means "fill-only on a local fixture" or accepting that filling sends data; a puzzle question is always `needs_you`. Each needs its own rehearsal definition first. | Separate specs. |
@@ -3407,7 +3421,7 @@ process id (memory note restart-web-dashboard).
   `docs/assisted-apply.md` and `docs/THREAT_MODEL.md` (Apply agent section and row, M5b).
 - **Only in M4s:** `docs/assisted-apply.md` step 3, `docs/THREAT_MODEL.md:17`,
   `docs/PRIVACY_ACCESSIBILITY.md:7`.
-- **Only in M6:** `AGENTS.md`, `README.md`, `docs/THREAT_MODEL.md`, `docs/assisted-apply.md`,
+- **Only in M6:** `AGENTS.md`, `README.md` and `docs/guide/web-app.md`, `docs/THREAT_MODEL.md`, `docs/assisted-apply.md`,
   `docs/ACCEPTANCE.md`, `docs/PHASE_VERIFICATION.md`.
 - **Only in M8:** `AGENTS.md` again, for unattended mode.
 

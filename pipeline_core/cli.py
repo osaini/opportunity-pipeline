@@ -34,12 +34,12 @@ def build_parser() -> argparse.ArgumentParser:
     import_parser = sub.add_parser("import-csv", help="Import login-only or manually found postings")
     import_parser.add_argument("path", nargs="?", default=str(paths.MANUAL_PATH))
     import_email_parser = sub.add_parser(
-        "import-emails", help="Import LinkedIn job-alert email JSON (see README)"
+        "import-emails", help="Import LinkedIn job-alert email JSON (see docs/guide/sources.md)"
     )
     import_email_parser.add_argument("path", nargs="?", default=str(paths.EMAIL_IMPORT_PATH))
     import_discovered_parser = sub.add_parser(
         "import-discovered",
-        help="Import agent-discovered postings from search/public pages/lists (see README)",
+        help="Import agent-discovered postings from search/public pages/lists (see docs/guide/sources.md)",
     )
     import_discovered_parser.add_argument("path", nargs="?", default=str(paths.DISCOVERED_IMPORT_PATH))
     enrich_parser = sub.add_parser(

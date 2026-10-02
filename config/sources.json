@@ -561,7 +561,7 @@
       "kind": "usajobs",
       "id": "federal-engineering",
       "company": "USAJOBS (Federal)",
-      "note": "Needs USAJOBS_API_KEY and USAJOBS_CONTACT_EMAIL in .env; switch it on with \"enabled_sources\": [\"usajobs:federal-engineering\"] in config/sources.local.json. Every federal agency that posts to USAJOBS, in one source. company is only a fallback label -- each posting keeps its own hiring agency. Query shapes were measured against the live API on 2026-07-26, see README; do not merge these two queries into one, because HiringPath AND Keyword together returns almost nothing. NASA internships are NOT here -- NASA had 0 student-path postings on USAJOBS and runs them through intern.nasa.gov instead (see manual_check_sources).",
+      "note": "Needs USAJOBS_API_KEY and USAJOBS_CONTACT_EMAIL in .env; switch it on with \"enabled_sources\": [\"usajobs:federal-engineering\"] in config/sources.local.json. Every federal agency that posts to USAJOBS, in one source. company is only a fallback label -- each posting keeps its own hiring agency. Query shapes were measured against the live API on 2026-07-26, see docs/guide/sources.md (Federal postings (USAJOBS)); do not merge these two queries into one, because HiringPath AND Keyword together returns almost nothing. NASA internships are NOT here -- NASA had 0 student-path postings on USAJOBS and runs them through intern.nasa.gov instead (see manual_check_sources).",
       "fields": "Full",
       "queries": [
         {

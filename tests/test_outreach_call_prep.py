@@ -1230,9 +1230,12 @@ class CallPrepApiTests(unittest.TestCase):
         self.assertEqual({module_of(path) for path in modules}, set(names))
         for name, text in modules.items():
             self.assertNotIn("second model", text.casefold(), name)
-        readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        self.assertNotIn("second model confirms", readme)
-        self.assertNotIn("a second model which did not write", readme)
+        # The manual moved out of README.md into docs/guide/, so read both: a check of README.md alone would pass vacuously.
+        manual_files = [ROOT / "README.md", *sorted((ROOT / "docs" / "guide").glob("*.md"))]
+        self.assertGreater(len(manual_files), 1, "docs/guide/ holds the manual")
+        manual = "\n".join(path.read_text(encoding="utf-8") for path in manual_files)
+        self.assertNotIn("second model confirms", manual)
+        self.assertNotIn("a second model which did not write", manual)
 
 
 if __name__ == "__main__":

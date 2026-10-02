@@ -20,7 +20,7 @@ It has four layers. The first three run in CI; the fourth is interactive.
 powershell -File .\scripts\ui-test.ps1 -Setup
 ```
 
-(This machine has Windows PowerShell 5.1, not `pwsh`. From an interactive prompt
+(On Windows the shell is Windows PowerShell 5.1, not `pwsh`. From an interactive prompt
 `.\scripts\ui-test.ps1 -Setup` also works — `CurrentUser` is `RemoteSigned`, which
 permits locally-authored scripts.)
 

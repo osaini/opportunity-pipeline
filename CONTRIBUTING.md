@@ -15,8 +15,9 @@ search, so the rules below are mostly about keeping that private and honest.
    git config core.hooksPath .githooks
    ```
 
-2. Read [`AGENTS.md`](AGENTS.md), sections 1 and 2. They are short, and they
-   are the rules a pull request is reviewed against.
+2. Read [`AGENTS.md`](AGENTS.md), sections 1, 2 and 8. They are short, and they
+   are the rules a pull request is reviewed against. Section 8 says where new code
+   goes and which tests guard the layout.
 
 ## Keep personal data out
 
@@ -34,7 +35,7 @@ search, so the rules below are mostly about keeping that private and honest.
 
 - Keep a PR to one change. Explain what a student sees differently.
 - Run `python -m unittest discover -s tests` before pushing. For frontend
-  changes, also try it in the browser; the unit tests can't see `app.js`.
+  changes, also try it in the browser; the unit tests can't see the browser scripts (`app*.js`).
   The other suites are in [`AGENTS.md`](AGENTS.md#3-running-the-test-suites).
 - `pipeline.py` and `pipeline_core/` must stay free of third-party
   dependencies. Web dependencies belong in `opportunity_app/`.

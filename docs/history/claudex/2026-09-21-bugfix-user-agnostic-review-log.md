@@ -4,19 +4,19 @@ Phases 0-1 (recon + interrogation) complete — plan locked (owner away; escape 
 ## Round 1 — Codex
 The plan still has material problems:
 
-1. **P1 — B6 leaves assistant privacy bypasses.** Recommendations and model tools call `OpportunityRepository(conn)` without `user_id`; the save proposal also queries `opportunities` directly ([student_agent.py:238](opportunity_app/student_agent.py:238)). Keeping the owner/local path unchanged preserves these leaks; this cannot be deferred as merely “owner scores.”
+1. **P1 — B6 leaves assistant privacy bypasses.** Recommendations and model tools call `OpportunityRepository(conn)` without `user_id`; the save proposal also queries `opportunities` directly (`opportunity_app/student_agent.py:238`). Keeping the owner/local path unchanged preserves these leaks; this cannot be deferred as merely “owner scores.”
    **Fix:** Pass the authenticated user through every assistant opportunity read and proposal check; test recommendations, search, detail, deadlines, and guessed IDs.
 
-2. **P1 — A4 confuses eligibility evidence with deadline evidence.** `evidence="explicit"` means the host names the student’s class year, not that a deadline was verified ([early_programs.py:37](opportunity_app/early_programs.py:37)). Labeling dates as published based on this field still overstates certainty.
+2. **P1 — A4 confuses eligibility evidence with deadline evidence.** `evidence="explicit"` means the host names the student’s class year, not that a deadline was verified (`opportunity_app/early_programs.py:37`). Labeling dates as published based on this field still overstates certainty.
    **Fix:** Use a neutral research label for all program dates unless a separate deadline-specific provenance field establishes verification.
 
-3. **P1 — B7’s suggested validator breaks ordinary profile saves.** The profile form creates regions with `state_markers: []` ([app.js:3991](opportunity_app/static/app.js:3991)), but `setup.validate_profile` requires nonempty markers and places. Adding a region through the existing UI would return 422.
+3. **P1 — B7’s suggested validator breaks ordinary profile saves.** The profile form creates regions with `state_markers: []` (`opportunity_app/static/app.js:3991`), but `setup.validate_profile` requires nonempty markers and places. Adding a region through the existing UI would return 422.
    **Fix:** Define a shared validation contract that accepts incomplete user-entered regions without inventing geography, and add a browser regression for creating and saving one.
 
-4. **P1 — B7’s validator can itself crash and misses scoring inputs.** It records a type error for `regions: 1`, then attempts to iterate it; `preferred_role_types: [{}]` triggers unhashable set membership. Conversely, `skills: [null]` and a region’s `bonus: "bad"` pass its checks but fail during scoring ([setup.py:329](opportunity_app/setup.py:329)).
+4. **P1 — B7’s validator can itself crash and misses scoring inputs.** It records a type error for `regions: 1`, then attempts to iterate it; `preferred_role_types: [{}]` triggers unhashable set membership. Conversely, `skills: [null]` and a region’s `bonus: "bad"` pass its checks but fail during scoring (`opportunity_app/setup.py:329`).
    **Fix:** Stop traversing invalid containers and validate nested element types and scoring fields; require each malformed payload to return 422 without changing profile, facts, scores, or the owner file.
 
-5. **P1 — B7 does not resolve database/file consistency.** The owner profile also persists to JSON after database commits, and `rescore_profile` owns an internal transaction context ([profile.py:266](opportunity_app/profile.py:266)). A file-write failure can leave updated database state with stale CLI configuration; wrapping calls in another `with conn` does not make the filesystem transactional.
+5. **P1 — B7 does not resolve database/file consistency.** The owner profile also persists to JSON after database commits, and `rescore_profile` owns an internal transaction context (`opportunity_app/profile.py:266`). A file-write failure can leave updated database state with stale CLI configuration; wrapping calls in another `with conn` does not make the filesystem transactional.
    **Fix:** Specify transaction ownership and a recoverable database/file synchronization strategy, with failure-injection tests covering rescore, file replacement, and database commit.
 
 6. **P2 — B7 silently changes an explicit zero experience limit.** `int(profile.get("max_years_experience") or 1)` converts a valid `0` into `1`, so one-year requirements stop receiving the intended penalty.
@@ -25,7 +25,7 @@ The plan still has material problems:
 7. **P2 — A3’s exact regex misses `Sr. Engineer`.** The trailing `\b` follows the period; there is no word boundary between that period and the following space, so an existing seniority match disappears.
    **Fix:** Handle the abbreviation separately, such as `(?:\b(?:senior|staff|principal|manager|director|lead)\b|\bsr\.(?=\W|$))`, and test punctuation alongside internship exemptions.
 
-8. **P2 — E19’s focus restoration assumes the control survives.** Changing a program from `todo` to `applied` moves it into `done`, removing its control from the current filtered tab ([app.js:5597](opportunity_app/static/app.js:5597)). Restoring focus to that rebuilt control is impossible.
+8. **P2 — E19’s focus restoration assumes the control survives.** Changing a program from `todo` to `applied` moves it into `done`, removing its control from the current filtered tab (`opportunity_app/static/app.js:5597`). Restoring focus to that rebuilt control is impossible.
    **Fix:** Define a fallback to the next visible row or active subtab, avoid stealing focus after a blur-triggered save, and test both disappearing rows and delayed responses.
 
 No files were modified. This was a static review: both Python launchers failed because their underlying interpreter was unavailable.
@@ -44,16 +44,16 @@ Accepted all eight:
 ## Round 2 — Codex
 The revision addresses the assistant visibility paths, deadline evidence labels, empty-region compatibility, malformed-container checks, zero experience threshold, and `Sr.` matching. Four material gaps remain:
 
-1. **P1 — B7’s file-sync recovery still permits score reversion.** Logging a mirror-write failure and waiting for another save does not protect committed scores: refresh imports legacy scores unconditionally ([schema.py:471](opportunity_app/schema.py:471)). The claim that the database is authoritative is therefore incomplete.
+1. **P1 — B7’s file-sync recovery still permits score reversion.** Logging a mirror-write failure and waiting for another save does not protect committed scores: refresh imports legacy scores unconditionally (`opportunity_app/schema.py:471`). The claim that the database is authoritative is therefore incomplete.
    **Fix:** Persist a pending-sync marker and prevent refresh from importing stale owner scores until reconciliation succeeds; test file-write failure followed by refresh and restart.
 
-2. **P1 — B7’s new type rules reject legitimate unanswered fields.** “Numbers for hours_per_week” and “booleans for flags” exclude `null`, which the existing form deliberately submits for unanswered hours, authorization, citizenship, sponsorship, and relocation ([app.js:4009](opportunity_app/static/app.js:4009)).
+2. **P1 — B7’s new type rules reject legitimate unanswered fields.** “Numbers for hours_per_week” and “booleans for flags” exclude `null`, which the existing form deliberately submits for unanswered hours, authorization, citizenship, sponsorship, and relocation (`opportunity_app/static/app.js:4009`).
    **Fix:** Specify field-by-field nullable types, distinguish integers from booleans, and test saving a partially answered profile without converting unknown answers into facts.
 
-3. **P2 — B7’s “nothing stored” guarantee misses first-time users.** `update_profile` reads through `get_profile`, which creates and commits a missing profile and its default scores before validation or the proposed transaction ([profile.py:155](opportunity_app/profile.py:155)).
+3. **P2 — B7’s “nothing stored” guarantee misses first-time users.** `update_profile` reads through `get_profile`, which creates and commits a missing profile and its default scores before validation or the proposed transaction (`opportunity_app/profile.py:155`).
    **Fix:** Read the current profile without provisioning, then include any initial profile creation in the validated write transaction; test an invalid first PUT before any profile GET.
 
-4. **P2 — E19 still loses focus after blur.** Avoiding an explicit focus call is insufficient: `loadPrograms()` removes every result immediately ([app.js:5507](opportunity_app/static/app.js:5507)). If Tab moved focus to another program’s control, the blur-triggered reload destroys that newly focused element.
+4. **P2 — E19 still loses focus after blur.** Avoiding an explicit focus call is insufficient: `loadPrograms()` removes every result immediately (`opportunity_app/static/app.js:5507`). If Tab moved focus to another program’s control, the blur-triggered reload destroys that newly focused element.
    **Fix:** Preserve the active destination through an in-place update or equivalent focus-preserving refresh, and test Tab to another row with a delayed save response.
 
 No files were modified; this was a static review.
@@ -69,7 +69,7 @@ Accepted all four:
 ## Round 3 — Codex
 The first-time provisioning, nullable form answers, and blur-focus findings are addressed. The persistence fix remains incomplete, and the expanded validation rules introduce two problems:
 
-1. **P1 — B7’s compensating file write is not atomic with the database.** A process exit between steps (d) and (e) leaves an uncommitted profile in the file; refresh can import it because its modification time is newer ([schema.py:329](opportunity_app/schema.py:329)). Concurrent saves also allow one request’s rollback to overwrite another request’s successful file update. An exception handler cannot guarantee “file and DB move together.”
+1. **P1 — B7’s compensating file write is not atomic with the database.** A process exit between steps (d) and (e) leaves an uncommitted profile in the file; refresh can import it because its modification time is newer (`opportunity_app/schema.py:329`). Concurrent saves also allow one request’s rollback to overwrite another request’s successful file update. An exception handler cannot guarantee “file and DB move together.”
    **Fix:** Use durable synchronization state with restart recovery and serialize profile saves against reconciliation/refresh; test interruption between stores and overlapping saves.
 
 2. **P1 — B7 now accepts nulls that scoring cannot consume.** `preferred_role_types: null`, `skills: null`, and `available_terms: null` pass the proposed validator but cause iteration/membership failures; `out_of_region_penalty: null` fails at `int(None)` for an out-of-region opportunity ([pipeline.py:2967](pipeline.py:2967)). Also, the plan both accepts `max_years_experience: null` and requires its test to return 422.
@@ -93,7 +93,7 @@ Unresolved: file/DB crash-window atomicity (Codex wants durable sync state; Clau
 Unit 807 pass, unittest discover pass, extension 14 pass, browser 230 pass/4 skip before inspection.
 
 ## Post-build inspection — round 1 (fresh read-only Codex session)
-1. **P2 — Refresh can still overwrite a committed profile rescore.** [profile.py:407](opportunity_app/profile.py:407)  
+1. **P2 — Refresh can still overwrite a committed profile rescore.** `opportunity_app/profile.py:407`  
    Start a refresh, then save different profile preferences while fetching continues. The CLI already loaded the old profile; refresh subsequently imports those old scores through `schema.py:471`, overwriting the newly committed scores. The new lock only coordinates profile saves, leaving PLAN B7’s score-consistency guarantee incomplete.  
    **Fix:** Coordinate saves with refresh, or reject/recompute imported scores when their profile version is stale.
 
@@ -101,7 +101,7 @@ Unit 807 pass, unittest discover pass, extension 14 pass, browser 230 pass/4 ski
    “Applicants must be at least **18 years of age and have experience** using spreadsheets” matches as 18 years’ experience. Likewise, “a **4 year degree with practical experience**” matches four years. Both incorrectly subtract 18 points, leaving PLAN A2 incomplete.  
    **Fix:** Exclude age/degree constructions from experience-year matches and add these regression cases.
 
-3. **P2 — A delayed Programs reload discards another row’s pending keyboard edit.** [app.js:5676](opportunity_app/static/app.js:5676)  
+3. **P2 — A delayed Programs reload discards another row’s pending keyboard edit.** `opportunity_app/static/app.js:5676`  
    Change program A, Tab to B, and arrow B to another status while A’s save/reload is pending. A’s response rebuilds B from its stored value, destroying B’s pending selection and keyboard state. Focus returns to B, but pressing Enter saves nothing. The added delayed-save test checks focus without editing the destination control.  
    **Fix:** Preserve pending values and commit state across rebuilding, or update rows without replacing controls with unsaved edits.
 
@@ -118,7 +118,7 @@ The reported age/degree false positives are fixed, and the Programs fix preserve
    “Requires **5 years of research and development experience**” and “3 years of sales or marketing experience” now match nothing because `and`/`or` are forbidden. For a student with one year’s experience, this incorrectly removes the 18-point penalty.  
    **Fix:** Allow conjunctions within experience descriptions while retaining the age/degree exclusions.
 
-2. **P2 — Applications reload discards another row’s pending selection.** [app.js:1335](opportunity_app/static/app.js:1335)  
+2. **P2 — Applications reload discards another row’s pending selection.** `opportunity_app/static/app.js:1335`  
    Change application A’s stage, leave it to trigger a delayed save, then arrow through B’s stage options. When A’s save completes, `loadApplications()` removes B’s control without saving its pending selection. The new deferred keyboard edits introduce this loss; the Programs preservation fix does not cover Applications.  
    **Fix:** Preserve pending stage values and focus across reloads, or update A without replacing B’s control.
 
