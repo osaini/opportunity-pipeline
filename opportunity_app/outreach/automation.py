@@ -90,6 +90,15 @@ def settings(conn: sqlite3.Connection, *, user_id: str) -> dict[str, bool]:
     return {key: current[key] == "on" for key in SETTINGS}
 
 
+def listing_switches(conn: sqlite3.Connection, *, user_id: str) -> dict[str, bool]:
+    """The switches the Outreach page reads to say what can go out without a click.
+
+    Every outreach switch (``settings``) plus decline_thank_you, which lives in the registry rather than in this
+    module's legacy list but sends a thank-you email on its own, so the page's promises about sending must know it.
+    """
+    return {**settings(conn, user_id=user_id), "decline_thank_you": automation.mode(conn, user_id, "decline_thank_you") == "on"}
+
+
 def update_settings(conn: sqlite3.Connection, changes: dict[str, Any], *, user_id: str) -> dict[str, bool]:
     unknown = set(changes) - set(SETTINGS)
     if unknown:

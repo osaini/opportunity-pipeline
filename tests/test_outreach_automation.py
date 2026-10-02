@@ -356,6 +356,26 @@ class AutomationApiTests(unittest.TestCase):
                 self.assertEqual(saved.json(), {"auto_drafts": True, "bounce_recovery": False, "bounce_auto_resend": False, "scheduled_sending": False, "follow_up_review": False, "form_submission": False})
                 self.assertEqual(client.get("/api/v1/outreach/automation").status_code, 401)
 
+    def test_the_outreach_listing_reports_every_switch_that_sends_on_its_own(self):
+        """The page and the draft note say what goes out without a click, so the listing must carry every such switch:
+        the two outreach ones and the decline thank-you, which is not one of the legacy outreach switches."""
+        sends = ("bounce_auto_resend", "form_submission", "decline_thank_you")
+        with tempfile.TemporaryDirectory() as root:
+            _, platform_path = build_and_migrate(Path(root))
+            app = create_app(db_path=platform_path, access_token="automation-owner", static_dir=STATIC_DIR)
+            with TestClient(app) as client:
+                off = client.get("/api/v1/outreach", headers=AUTH).json()["automation"]
+                self.assertEqual({key: off.get(key) for key in sends}, {key: False for key in sends})
+                with closing(connect_product(platform_path)) as conn, conn:
+                    for key in sends:
+                        conn.execute(
+                            "INSERT INTO user_settings(user_id, key, value, updated_at) VALUES(?, ?, 'on', '2026-10-01T00:00:00+00:00') "
+                            "ON CONFLICT(user_id, key) DO UPDATE SET value='on'", (USER, key))
+                on = client.get("/api/v1/outreach", headers=AUTH).json()["automation"]
+                self.assertEqual({key: on.get(key) for key in sends}, {key: True for key in sends})
+                # The settings route keeps its own shape.
+                self.assertNotIn("decline_thank_you", client.get("/api/v1/outreach/automation", headers=AUTH).json())
+
 
 if __name__ == "__main__":
     unittest.main()

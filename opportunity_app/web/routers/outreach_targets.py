@@ -33,7 +33,7 @@ from ...outreach.targets import (
 )
 from ...outreach.call_prep import auto_queue_call_prep
 from ...outreach.config import sender_account
-from ...outreach.automation import settings as automation_settings
+from ...outreach.automation import listing_switches
 from ...outreach.gmail import gmail_drafts_status
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection
@@ -90,7 +90,7 @@ def outreach_targets(
         "contact_confidence": list(CONTACT_CONFIDENCE),
         "compose": outreach_compose_settings(),
         "gmail_drafts": gmail_drafts_status(conn, user_id=user_id),
-        "automation": automation_settings(conn, user_id=user_id),
+        "automation": listing_switches(conn, user_id=user_id),
         "discovery": outreach_discovery_payload(ctx, conn, user_id),
         "recontact": outreach_recontact_payload(ctx, conn, user_id),
         "company_research": company_research,

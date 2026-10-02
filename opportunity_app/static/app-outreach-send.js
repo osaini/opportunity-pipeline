@@ -606,6 +606,46 @@
     });
   }
 
+  // Every promise the Outreach page makes about what sends is built from these, so it can never say "nothing sends"
+  // while a switch that sends without a click is on. Each phrase finishes "Automatic sending is on: ...".
+  const AUTOMATIC_SENDS = {
+    bounce_auto_resend: "resending an approved email after a bounce",
+    decline_thank_you: "a thank-you when someone declines",
+    form_submission: "sending through contact forms",
+  };
+  // The switches that email through Gmail; Send through contact forms needs no Gmail.
+  const AUTOMATIC_SENDS_NEEDING_GMAIL = ["bounce_auto_resend", "decline_thank_you"];
+
+  function joinPhrases(phrases) {
+    return phrases.length < 3
+      ? phrases.join(" and ")
+      : `${phrases.slice(0, -1).join(", ")}, and ${phrases[phrases.length - 1]}`;
+  }
+
+  // The sentence for the switches in `keys` that are on, in both versions (a pause holds all of them): null
+  // when none is, so the caller keeps whatever reassurance is then true.
+  function automaticSendWords(automation, keys, gmail) {
+    const on = keys.filter((key) => automation?.[key]);
+    if (!on.length) return null;
+    const list = joinPhrases(on.map((key) => AUTOMATIC_SENDS[key]));
+    const needsGmail = !gmail?.connected && on.some((key) => AUTOMATIC_SENDS_NEEDING_GMAIL.includes(key));
+    return {
+      running: `Automatic sending is on: ${list}. These go out without a click${needsGmail ? " (the emails need Gmail connected first)" : ""}.`,
+      paused: `Automatic sending is on: ${list}, but automation is paused, so none of it goes out until you resume.`,
+    };
+  }
+
+  // The Outreach page's status line. It holds whether or not automation is paused, so it never claims a pause.
+  function outreachSendStatus(gmail, automation) {
+    const automatic = automaticSendWords(automation, Object.keys(AUTOMATIC_SENDS), gmail);
+    if (!automatic) {
+      return gmail?.connected
+        ? "Approved drafts send from your Gmail only when you press Send and confirm the recipient"
+        : "Nothing sends from here; approved drafts open in your own email";
+    }
+    return `${automatic.running.replace(/\.$/, "")}, while automation is running. Anything else sends only when you press Send${gmail?.connected ? " and confirm the recipient" : " in your own email"}.`;
+  }
+
   // When a scheduled send goes, in words. The worker holds every send while
   // automation is paused, so then it goes after the student resumes, not at
   // its time; the time it had is kept in brackets.
@@ -699,8 +739,8 @@
   Object.assign(App, {
     CALL_PREP_ACTIVE, CALL_PREP_WRITING, CANDIDATE_METHOD_LABELS, CANDIDATE_VERIFICATION_LABELS,
     CONTACT_CONFIDENCE_LABELS, DRAFT_PROVIDER_LABELS, DRAFT_STATUS_LABELS, OUTREACH_EVENT_LABELS, OUTREACH_STATUS_LABELS,
-    checkForBounces, composeControl, formHost, formSendControls, installOutreachSend, outreachChoice,
-    outreachContactFormSection, outreachDraftNeedsReview, outreachField, outreachReachable, pauseWords, refocusOutreach,
+    automaticSendWords, checkForBounces, composeControl, formHost, formSendControls, installOutreachSend, outreachChoice,
+    outreachContactFormSection, outreachDraftNeedsReview, outreachField, outreachReachable, outreachSendStatus, pauseWords, refocusOutreach,
     refuseUnsavedHandOff, reloadOutreachAt, repaintPauseWords, scheduleText, scheduleWords, sentFolderCheck,
   });
 })();

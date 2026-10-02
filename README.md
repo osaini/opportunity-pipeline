@@ -929,10 +929,12 @@ minimal environment where a bare `py` often isn't on `PATH`.
 
 ## Cold outreach pipeline
 
-The Outreach tab runs cold email from research to reply. **Nothing sends on its
-own**: an approved draft opens in your own email account, where you press Send,
+The Outreach tab runs cold email from research to reply. **Nothing sends unless you press
+Send, or switch on a switch that sends**: an approved draft opens in your own email account, where you press Send,
 or, with Gmail connected, goes out when you press **Send** in the app and then
-confirm the recipient.
+confirm the recipient. Three switches under Automation send without a click: resend after a
+bounce, the thank-you after a decline, and contact-form submission. The Outreach page and each draft
+name the ones that are on, so a reassurance there is never stale.
 
 1. **Find companies.** The deep search runs on Monday and Thursday mornings (or
    **Run deep search now**). Claude Code searches for accelerator startups
