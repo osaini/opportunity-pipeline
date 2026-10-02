@@ -10,9 +10,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import httpx
 
-from opportunity_app.outreach import create_target, get_target, update_target
-from opportunity_app.outreach_locate import clean_place, locate_targets, needs_a_location
-from opportunity_app.outreach_profile import apply_location
+from opportunity_app.outreach.targets import create_target, get_target, update_target
+from opportunity_app.outreach.locate import clean_place, locate_targets, needs_a_location
+from opportunity_app.outreach.company_profile import apply_location
 from opportunity_app.core.schema import ensure_product_schema
 from opportunity_app.core.database import connect_product
 

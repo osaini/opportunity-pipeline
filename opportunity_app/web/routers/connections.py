@@ -37,7 +37,7 @@ from ...core.database import connect_product
 from ...applications.monitored_events import decide_monitored_event
 from ...core.timestamps import utc_now
 from ...mail.classifiers import client_for as inbox_client_for
-from ...outreach_config import sender_account
+from ...outreach.config import sender_account
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection
 from ..models.connections import (

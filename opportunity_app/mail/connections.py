@@ -21,7 +21,7 @@ from cryptography.fernet import Fernet
 from ..applications.actions import ApplicationNotFoundError, add_application_task, update_application
 from .classifiers import classify_email
 from .monitored_classifier import classify_monitored_message
-from ..outreach_config import sender_account
+from ..outreach.config import sender_account
 from ..core.timestamps import utc_now
 from ..integrations.typesafe_decisions import DecisionClient
 

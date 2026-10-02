@@ -341,7 +341,7 @@ def validate_profile_types(profile: dict[str, Any]) -> None:
             if not isinstance(value, str):
                 errors.append(f"{field} must be text")
             elif field in {"greeting_word", "unnamed_greeting"}:
-                from ..outreach_greeting import greeting_style_error
+                from ..outreach.greeting import greeting_style_error
 
                 error = greeting_style_error(value if field == "greeting_word" else None, value if field == "unnamed_greeting" else None)
                 if error:

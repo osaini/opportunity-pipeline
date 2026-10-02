@@ -14,12 +14,13 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, outreach_delivery, outreach_gmail_sends, outreach_inbox
+from opportunity_app import STATIC_DIR
+from opportunity_app.outreach import delivery as outreach_delivery, gmail_sends as outreach_gmail_sends, inbox as outreach_inbox
 from opportunity_app.mail import gmail_connection
 from opportunity_app.api import create_app
-from opportunity_app.outreach_automation import update_settings
-from opportunity_app.outreach_gmail_sends import capture_gmail_sends
-from opportunity_app.outreach_schedule import run_due_sends
+from opportunity_app.outreach.automation import update_settings
+from opportunity_app.outreach.gmail_sends import capture_gmail_sends
+from opportunity_app.outreach.schedule import run_due_sends
 from opportunity_app.core.database import connect_product
 from opportunity_app.core.timestamps import utc_now
 

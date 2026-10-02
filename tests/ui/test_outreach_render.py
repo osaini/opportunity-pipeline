@@ -11,7 +11,7 @@ from __future__ import annotations
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from opportunity_app.outreach_render import PlaywrightRenderer
+from opportunity_app.outreach.render import PlaywrightRenderer
 
 PAGE = """<!doctype html><html><body><div id="root"></div><img src="/pixel.png">
 <script>

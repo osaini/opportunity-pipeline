@@ -17,7 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, migrate, outreach_inbox
+from opportunity_app import STATIC_DIR, migrate
+from opportunity_app.outreach import inbox as outreach_inbox
 from opportunity_app.automation import (
     triage as auto_triage,
     ledger as automation,
@@ -31,12 +32,12 @@ from opportunity_app.applications.actions import record_intent, update_applicati
 from opportunity_app.api import create_app
 from opportunity_app.automation.ledger import Superseded
 from opportunity_app.applications.extension import apply_context
-from opportunity_app.outreach import (
+from opportunity_app.outreach.targets import (
     create_target, delete_target, get_target, lifecycle_suggestion, list_targets, log_reply, update_target,
 )
-from opportunity_app.outreach_automation import AutomationWorker
-from opportunity_app.outreach_delivery import record_bounce
-from opportunity_app.outreach_versions import draft_versions
+from opportunity_app.outreach.automation import AutomationWorker
+from opportunity_app.outreach.delivery import record_bounce
+from opportunity_app.outreach.versions import draft_versions
 from opportunity_app.opportunities.refresh import RefreshManager
 from opportunity_app.student.resumes import ResumeValidationError, confirm_variant, resume_record
 from opportunity_app.core.schema import ensure_product_schema
@@ -897,7 +898,7 @@ class AutoCloseTests(OutreachCase):
     def test_it_holds_when_the_fresh_look_fails(self):
         target = self.quiet()
         self.on("outreach_auto_close")
-        with mock.patch("opportunity_app.outreach_review.fresh_look", return_value={"ok": False, "reason": "Gmail could not be reached"}):
+        with mock.patch("opportunity_app.outreach.review.fresh_look", return_value={"ok": False, "reason": "Gmail could not be reached"}):
             [result] = internal_automation.auto_close(self.conn, USER, client_factory=lambda: None)
         self.assertEqual((result["closed"], result["reason"]), (False, "Gmail could not be reached"))
         self.assertEqual(get_target(self.conn, target["id"], user_id=USER)["status"], "followed_up")
@@ -907,7 +908,7 @@ class AutoCloseTests(OutreachCase):
     def test_it_closes_after_the_fresh_look_and_undo_restores_the_status_and_date(self):
         target = self.quiet()
         self.on("outreach_auto_close")
-        with mock.patch("opportunity_app.outreach_review.fresh_look", return_value={"ok": True, "reason": ""}):
+        with mock.patch("opportunity_app.outreach.review.fresh_look", return_value={"ok": True, "reason": ""}):
             [result] = internal_automation.auto_close(self.conn, USER, client_factory=lambda: None)
         self.assertTrue(result["closed"])
         closed = get_target(self.conn, target["id"], user_id=USER, include_events=True)
@@ -922,7 +923,7 @@ class AutoCloseTests(OutreachCase):
     def test_undo_refuses_once_the_status_moved(self):
         target = self.quiet()
         self.on("outreach_auto_close")
-        with mock.patch("opportunity_app.outreach_review.fresh_look", return_value={"ok": True, "reason": ""}):
+        with mock.patch("opportunity_app.outreach.review.fresh_look", return_value={"ok": True, "reason": ""}):
             internal_automation.auto_close(self.conn, USER, client_factory=lambda: None)
         [action] = automation.list_actions(self.conn, USER, feature="outreach_auto_close")
         update_target(self.conn, target["id"], {"status": "replied"}, user_id=USER)
@@ -952,13 +953,13 @@ class AutoCloseTests(OutreachCase):
         quiet = [self.quiet(company=f"Quiet {index}", website=f"https://q{index}.test", contact_email=f"a@q{index}.test")
                  for index in range(6)]
         self.on("outreach_auto_close")
-        with mock.patch("opportunity_app.outreach_review.fresh_look", return_value={"ok": True, "reason": ""}):
+        with mock.patch("opportunity_app.outreach.review.fresh_look", return_value={"ok": True, "reason": ""}):
             first = internal_automation.auto_close(self.conn, USER, client_factory=lambda: None)
         self.assertEqual(sum(1 for result in first if result["closed"]), 5)
         for action in automation.list_actions(self.conn, USER, feature="outreach_auto_close"):
             automation.undo(self.conn, action["id"], USER)
         self.on("outreach_auto_close")  # the breaker turned it off; the student turns it back on
-        with mock.patch("opportunity_app.outreach_review.fresh_look", return_value={"ok": True, "reason": ""}) as look:
+        with mock.patch("opportunity_app.outreach.review.fresh_look", return_value={"ok": True, "reason": ""}) as look:
             second = internal_automation.auto_close(self.conn, USER, client_factory=lambda: None)
             self.assertEqual(look.call_count, 1, "Gmail is read only for the company never tried")
             self.assertEqual([(result["company"], result["closed"]) for result in second], [("Quiet 5", True)])
@@ -996,7 +997,7 @@ class AutoCloseTests(OutreachCase):
         for status, reason in (("error", "Gmail needs to be reconnected"), ("disconnected", "Gmail is not connected")):
             with self.subTest(status=status):
                 self.connect_gmail(status)
-                with mock.patch("opportunity_app.outreach_review.fresh_look") as look:
+                with mock.patch("opportunity_app.outreach.review.fresh_look") as look:
                     [result] = internal_automation.auto_close(self.conn, USER, client_factory=lambda: None)
                 look.assert_not_called()
                 self.assertEqual((result["closed"], result["reason"]), (False, reason))
@@ -1005,7 +1006,7 @@ class AutoCloseTests(OutreachCase):
     def test_a_close_records_that_gmail_was_searched_for_the_company(self):
         target = self.quiet()
         self.on("outreach_auto_close")
-        with mock.patch("opportunity_app.outreach_review.fresh_look", return_value={"ok": True, "reason": ""}) as look:
+        with mock.patch("opportunity_app.outreach.review.fresh_look", return_value={"ok": True, "reason": ""}) as look:
             internal_automation.auto_close(self.conn, USER, client_factory=lambda: None)
         self.assertEqual(look.call_args.args[1], target["id"])
         [action] = automation.list_actions(self.conn, USER, feature="outreach_auto_close")
@@ -1016,7 +1017,7 @@ class AutoCloseTests(OutreachCase):
         self.on("outreach_auto_close")
         classifier, hook = object(), mock.Mock()
         report = {}
-        with mock.patch("opportunity_app.outreach_review.fresh_look", return_value={"ok": True, "reason": ""}) as look:
+        with mock.patch("opportunity_app.outreach.review.fresh_look", return_value={"ok": True, "reason": ""}) as look:
             internal_automation.run_for_user(
                 self.conn, USER, report, gmail_client_factory=lambda: None, provider_factory=None,
                 decisions_for=lambda _conn, _user: classifier, on_reply=hook,
@@ -1029,7 +1030,7 @@ class AutoCloseTests(OutreachCase):
         target = self.quiet()
         self.on("outreach_auto_close")
         worker = AutomationWorker(self.platform_path, fetcher_factory=lambda: None, gmail_client_factory=lambda: None)
-        with mock.patch("opportunity_app.outreach_review.fresh_look", return_value={"ok": True, "reason": ""}):
+        with mock.patch("opportunity_app.outreach.review.fresh_look", return_value={"ok": True, "reason": ""}):
             report = worker.run_once()
         self.assertEqual([(item["target_id"], item["closed"]) for item in report["closed"]], [(target["id"], True)])
         self.assertEqual(self.status(target), "no_response")
@@ -1039,7 +1040,7 @@ class AutoCloseTests(OutreachCase):
             self.quiet(company=f"Quiet {index}", website=f"https://q{index}.test", contact_email=f"a@q{index}.test")
         self.on("outreach_auto_close")
         automation.set_paused(self.conn, USER, True)
-        with mock.patch("opportunity_app.outreach_review.fresh_look", return_value={"ok": True, "reason": ""}) as look:
+        with mock.patch("opportunity_app.outreach.review.fresh_look", return_value={"ok": True, "reason": ""}) as look:
             self.assertEqual(internal_automation.auto_close(self.conn, USER, client_factory=lambda: None), [])
             look.assert_not_called()
             automation.set_paused(self.conn, USER, False)
@@ -1058,7 +1059,7 @@ class AutoCloseTests(OutreachCase):
         self.possible(owner, candidate)
         self.assertEqual([item["id"] for item in internal_automation.auto_close_due(self.conn, USER)], [free["id"]])
         self.on("outreach_auto_close")
-        with mock.patch("opportunity_app.outreach_review.fresh_look", return_value={"ok": True, "reason": ""}) as look:
+        with mock.patch("opportunity_app.outreach.review.fresh_look", return_value={"ok": True, "reason": ""}) as look:
             results = internal_automation.auto_close(self.conn, USER, client_factory=lambda: None)
         self.assertEqual([(result["target_id"], result["closed"]) for result in results], [(free["id"], True)])
         self.assertEqual([call.args[1] for call in look.call_args_list], [free["id"]], "Gmail is not read for a held company")
@@ -1109,7 +1110,7 @@ class AutoCloseTests(OutreachCase):
                               *[get_target(conn, other, user_id=USER) for other in (owner["id"], candidate["id"]) if other != target_id])
             return {"ok": True, "reason": ""}
 
-        with mock.patch("opportunity_app.outreach_review.fresh_look", side_effect=finds_one):
+        with mock.patch("opportunity_app.outreach.review.fresh_look", side_effect=finds_one):
             results = internal_automation.auto_close(self.conn, USER, client_factory=lambda: None)
         self.assertEqual({(result["target_id"], result["closed"], result["reason"]) for result in results},
                          {(owner["id"], False, "It is no longer waiting on a reply"),
@@ -1136,7 +1137,7 @@ class AutoCloseTests(OutreachCase):
                     arrive(target, other)
                     return original(*args, **kwargs)
 
-                with mock.patch("opportunity_app.outreach_review.fresh_look", return_value={"ok": True, "reason": ""}), \
+                with mock.patch("opportunity_app.outreach.review.fresh_look", return_value={"ok": True, "reason": ""}), \
                         mock.patch.object(automation, "perform", side_effect=arrives_first) as perform:
                     [result] = internal_automation.auto_close(self.conn, USER, client_factory=lambda: None)
                 self.assertEqual(perform.call_count, 1, "the re-read saw nothing, so the write was reached")
@@ -1260,7 +1261,7 @@ class FollowUpDraftTests(OutreachCase):
     def test_a_follow_up_written_meanwhile_stands(self):
         target = self.due()
         self.on("auto_follow_up_drafts")
-        from opportunity_app import outreach_drafting
+        from opportunity_app.outreach import drafting as outreach_drafting
 
         original = outreach_drafting.compose_draft
 
@@ -1307,7 +1308,7 @@ class FollowUpDraftTests(OutreachCase):
 
     def test_a_possible_reply_found_while_the_draft_is_written_stops_it_and_is_not_a_failure(self):
         self.on("auto_follow_up_drafts")
-        from opportunity_app import outreach_drafting
+        from opportunity_app.outreach import drafting as outreach_drafting
 
         original = outreach_drafting.compose_draft
         for index, filed_under_another in enumerate((False, True)):

@@ -28,8 +28,8 @@ from playwright.sync_api import expect
 
 from conftest import OWNER_TOKEN
 from ui_helpers import assert_accessible, card_for, describe, open_details, open_outreach, row_for, seed_target
-from opportunity_app.outreach import get_target
-from opportunity_app.outreach_inbox import _record_possible, _record_reply
+from opportunity_app.outreach.targets import get_target
+from opportunity_app.outreach.inbox import _record_possible, _record_reply
 from opportunity_app.core.database import connect_product
 from opportunity_app.core.timestamps import utc_now
 

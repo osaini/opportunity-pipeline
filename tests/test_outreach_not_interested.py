@@ -15,7 +15,7 @@ from opportunity_app import STATIC_DIR
 from opportunity_app.automation import internal as internal_automation
 from opportunity_app.core import schema
 from opportunity_app.api import create_app
-from opportunity_app.outreach import (
+from opportunity_app.outreach.targets import (
     log_event,
     create_target,
     existing_keys,
@@ -24,12 +24,12 @@ from opportunity_app.outreach import (
     queue_follow_up_reminders,
     update_target,
 )
-from opportunity_app.outreach_identity import company_key
-from opportunity_app.outreach_automation import draft_due
-from opportunity_app.outreach_call_prep import auto_queue_call_prep
-from opportunity_app.outreach_recontact import eligible_targets
-from opportunity_app.outreach_research import due_for_research
-from opportunity_app.outreach_thank_you import due as thank_you_due
+from opportunity_app.outreach.identity import company_key
+from opportunity_app.outreach.automation import draft_due
+from opportunity_app.outreach.call_prep import auto_queue_call_prep
+from opportunity_app.outreach.recontact import eligible_targets
+from opportunity_app.outreach.research import due_for_research
+from opportunity_app.outreach.thank_you import due as thank_you_due
 from opportunity_app.core.database import connect_product
 from opportunity_app.applications.urgent import urgent_queue
 

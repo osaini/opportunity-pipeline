@@ -12,11 +12,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, outreach_research
+from opportunity_app import STATIC_DIR
+from opportunity_app.outreach import research as outreach_research
 from opportunity_app.api import create_app
-from opportunity_app.outreach import create_target, get_target, update_target
-from opportunity_app.outreach_call_prep import CallPrepWorker
-from opportunity_app.outreach_research import research_due, web_researcher
+from opportunity_app.outreach.targets import create_target, get_target, update_target
+from opportunity_app.outreach.call_prep import CallPrepWorker
+from opportunity_app.outreach.research import research_due, web_researcher
 from opportunity_app.core.schema import ensure_product_schema
 from opportunity_app.core.database import connect_product
 

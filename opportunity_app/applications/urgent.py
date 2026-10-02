@@ -30,7 +30,7 @@ from pipeline_core.visibility import CAPTURE_SOURCE_KEY, capture_visible_sql  # 
 from .actions import CLOSED_APPLICATION_STAGES
 from ..opportunities.early_programs import early_programs
 from ..automation.internal import silence_rows
-from ..outreach import CLOSED_STATUSES as OUTREACH_CLOSED, REVISIT_STATUSES as OUTREACH_REVISIT
+from ..outreach.targets import CLOSED_STATUSES as OUTREACH_CLOSED, REVISIT_STATUSES as OUTREACH_REVISIT
 from ..core.timestamps import utc_now
 from ..core.user_time import UserTimezone, user_timezone
 

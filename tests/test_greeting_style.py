@@ -10,11 +10,11 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import outreach_location
-from opportunity_app.outreach import create_target, update_target
-from opportunity_app.outreach_greeting import DEFAULT_GREETING, greeting_line, greeting_style
-from opportunity_app.outreach_contacts import add_manual_contact
-from opportunity_app.outreach_drafting import _inputs, generate_draft
+from opportunity_app.outreach import location as outreach_location
+from opportunity_app.outreach.targets import create_target, update_target
+from opportunity_app.outreach.greeting import DEFAULT_GREETING, greeting_line, greeting_style
+from opportunity_app.outreach.contacts import add_manual_contact
+from opportunity_app.outreach.drafting import _inputs, generate_draft
 from opportunity_app.student.profile import validate_profile_types
 from opportunity_app.core.schema import LOCAL_USER_ID
 from opportunity_app.core.database import connect_product

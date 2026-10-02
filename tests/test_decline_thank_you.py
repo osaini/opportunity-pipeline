@@ -23,29 +23,29 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import (
-    STATIC_DIR,
-    outreach,
-    outreach_decline_reading,
-    outreach_delivery,
-    outreach_greeting,
-    outreach_inbox,
-    outreach_location,
-    outreach_replies,
-    outreach_reply_senders,
-    outreach_thank_you,
+from opportunity_app import STATIC_DIR
+from opportunity_app.outreach import (
+    targets as outreach,
+    decline_reading as outreach_decline_reading,
+    delivery as outreach_delivery,
+    greeting as outreach_greeting,
+    inbox as outreach_inbox,
+    location as outreach_location,
+    replies as outreach_replies,
+    reply_senders as outreach_reply_senders,
+    thank_you as outreach_thank_you,
 )
 from opportunity_app.automation import ledger as automation, health as automation_health
 from opportunity_app.mail import message as mail_message
 from opportunity_app.api import create_app
-from opportunity_app.outreach_greeting import greeting_line
-from opportunity_app.outreach_config import resolve_provider
-from opportunity_app.outreach_gmail import THANK_YOU_KIND, send_thank_you, thank_you_row
-from opportunity_app.outreach_schedule import run_due_sends
-from opportunity_app.outreach_settings import OutreachSettings
-from opportunity_app.outreach_reply_senders import thank_you_blockers
-from opportunity_app.outreach_thank_you import STUDENT_WROTE, WROTE_AGAIN, plan, plan_send_at, stable_delay
-from opportunity_app.outreach_thank_you_writing import MAX_WORDS, recipient_name, template, validate, write
+from opportunity_app.outreach.greeting import greeting_line
+from opportunity_app.outreach.config import resolve_provider
+from opportunity_app.outreach.gmail import THANK_YOU_KIND, send_thank_you, thank_you_row
+from opportunity_app.outreach.schedule import run_due_sends
+from opportunity_app.outreach.settings import OutreachSettings
+from opportunity_app.outreach.reply_senders import thank_you_blockers
+from opportunity_app.outreach.thank_you import STUDENT_WROTE, WROTE_AGAIN, plan, plan_send_at, stable_delay
+from opportunity_app.outreach.thank_you_writing import MAX_WORDS, recipient_name, template, validate, write
 from opportunity_app.core.database import connect_product
 from opportunity_app.core.timestamps import utc_now
 from opportunity_app.integrations.typesafe_decisions import TypeSafeResponseError
@@ -1230,16 +1230,25 @@ class ThankYouRulesTests(DeclineCase):
     def test_the_debug_log_names_the_rule_and_nothing_is_written(self):
         self.deliver(raw_reply(BLAST, to="undisclosed-recipients:;", subject=BLAST_SUBJECT, gmail_id="blast-1"), message_id="blast-1")
         self.confirm(self.acme["id"], "blast-1")
-        with self.assertLogs("opportunity_app.outreach_thank_you", level="DEBUG") as logged:
+        with self.assertLogs("opportunity_app.outreach.thank_you", level="DEBUG") as logged:
             self.assert_not_thanked(self.acme["id"], "(failed: R1, R3)")
         self.assertTrue(any("failed: R1, R3" in line and self.acme["id"] in line for line in logged.output), logged.output)
+
+    def test_the_helpers_log_on_the_workflow_s_own_channel(self):
+        # reply_senders and thank_you_writing name the logger by hand so one listener hears all three; a module that moved
+        # would otherwise leave them writing to a channel nobody reads.
+        from opportunity_app.outreach import reply_senders, thank_you, thank_you_writing
+
+        self.assertEqual(thank_you.LOGGER.name, "opportunity_app.outreach.thank_you")
+        for module in (reply_senders, thank_you_writing):
+            self.assertEqual(module.LOGGER.name, thank_you.LOGGER.name, module.__name__)
 
     def test_the_rules_are_read_again_just_before_it_goes(self):
         self.decline()
         self.assertTrue(self.plan(self.acme["id"])["planned"])
         # The student changed the Gmail account the app sends from: their decline was not addressed to it.
         with mock.patch.dict(os.environ, {"PIPELINE_OUTREACH_ACCOUNT": "someone.else@school.example"}), \
-                self.assertLogs("opportunity_app.outreach_thank_you", level="DEBUG") as logged:
+                self.assertLogs("opportunity_app.outreach.thank_you", level="DEBUG") as logged:
             outcome = self.run_due(self.acme["id"])
         self.assertEqual([item["state"] for item in outcome], ["cancelled"])
         row = thank_you_row(self.conn, self.acme["id"], USER)
@@ -1250,7 +1259,7 @@ class ThankYouRulesTests(DeclineCase):
         self.assertEqual(self.notices(), [], "a reply left for the student is no alarm")
 
     def test_the_shared_inbox_check_lives_with_contact_finding_and_leaves_it_unchanged(self):
-        from opportunity_app.outreach_contacts import is_generic_address, is_shared_inbox
+        from opportunity_app.outreach.contacts import is_generic_address, is_shared_inbox
 
         for address in ("careers@acme.com", "university-recruiting@acme.com", "Hiring.Team@acme.com", "no-reply@acme.com",
                         *(f"{local}@acme.com" for local in ROLE_INBOXES)):
@@ -1997,12 +2006,12 @@ class ReviewFindingEligibilityTests(DeclineCase):
         self.assert_not_planned(bovi["id"], "Jev as nothing (Jev was not asked)")
 
     def test_the_worker_hands_its_jev_client_to_the_scheduled_sends(self):
-        from opportunity_app.outreach_automation import AutomationWorker
+        from opportunity_app.outreach.automation import AutomationWorker
 
         decisions, hook = (lambda conn, user_id: self.jev), (lambda conn, target_id, user_id: None)
         worker = AutomationWorker(self.platform_path, fetcher_factory=lambda: None, gmail_client_factory=self.factory,
                                   decisions_for=decisions, on_reply=hook)
-        with mock.patch("opportunity_app.outreach_schedule.run_due_sends", return_value=[]) as sends:
+        with mock.patch("opportunity_app.outreach.schedule.run_due_sends", return_value=[]) as sends:
             worker.run_once()
         self.assertIs(sends.call_args.kwargs["decisions_for"], decisions)
         self.assertIs(sends.call_args.kwargs["on_reply"], hook)
@@ -2066,7 +2075,7 @@ class ReviewFindingGateTests(DeclineCase):
     def test_a_reply_logged_after_the_thread_read_is_caught_at_the_hand_over(self):
         target_id = self.planned()
         self.gmail.thread_hooks["t-decline"] = lambda: self.raw_reply(target_id)
-        with mock.patch("opportunity_app.outreach_schedule.send_thank_you", wraps=send_thank_you) as sender:
+        with mock.patch("opportunity_app.outreach.schedule.send_thank_you", wraps=send_thank_you) as sender:
             self.assert_stopped(target_id, self.run_due(target_id), "cancelled", WROTE_AGAIN)
         self.assertEqual(self.scheduled(target_id)["state"], "cancelled")
         self.assertEqual(sender.call_count, 0, "stopped at the hand-over, before the send began")
@@ -2225,7 +2234,7 @@ class ReviewFindingWindowTests(DeclineCase):
         self.assert_morning(target_id, "2026-09-30")
 
     def test_a_review_that_runs_past_five_is_moved_at_the_hand_over(self):
-        from opportunity_app import outreach_schedule
+        from opportunity_app.outreach import schedule as outreach_schedule
 
         target_id = self.planned()
         self.due_at(target_id, datetime(2026, 9, 29, 16, 55, tzinfo=CHICAGO))

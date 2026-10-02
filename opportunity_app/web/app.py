@@ -39,10 +39,10 @@ if TYPE_CHECKING:  # only the create_app signature names these
     from ..integrations.agent_providers import AgentProvider
     from ..apply.schema_client import SchemaClient
     from ..opportunities.boards import BoardTracker
-    from ..outreach_call_prep import CallPrepWorker
-    from ..outreach_discovery import DiscoveryManager
-    from ..outreach_recontact import RecontactManager
-    from ..outreach_settings import OutreachSettings
+    from ..outreach.call_prep import CallPrepWorker
+    from ..outreach.discovery import DiscoveryManager
+    from ..outreach.recontact import RecontactManager
+    from ..outreach.settings import OutreachSettings
     from ..opportunities.refresh import RefreshManager
     from ..system_status import SystemStatus
     from ..integrations.typesafe_decisions import DecisionClient

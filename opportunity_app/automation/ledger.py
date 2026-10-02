@@ -69,7 +69,7 @@ from uuid import uuid4
 
 from ..apply.claims import claim_held
 from ..core.database import is_unique_violation
-from ..outreach_config import sender_account
+from ..outreach.config import sender_account
 from ..core.schema import PAUSE_NEVER_CHANGED
 from ..core.settings_store import get_setting, put_setting
 from ..core.timestamps import parse_app_instant, utc_now

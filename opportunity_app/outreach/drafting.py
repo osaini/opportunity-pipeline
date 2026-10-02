@@ -1,0 +1,711 @@
+"""Grounded cold email drafts for outreach targets.
+
+A draft may only say what the student's confirmed profile or the target's
+recorded research supports. The model is asked to cite a basis for every
+factual claim, and a draft whose citations point anywhere else, or that states
+a number found in neither source, is retried once and then refused. A draft
+that passes is still only "generated": the student reviews and approves it
+before the compose link unlocks, and nothing here sends mail.
+
+Every draft a target has had is kept as a version, so a regenerated draft that
+reads worse can be swapped back for an earlier one. The student's comments
+steer a regeneration but are never a source: a draft still has to cite the
+profile or the research for every fact.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import sqlite3
+from typing import Any, Callable
+
+from ..integrations.agent_providers import AgentProvider, CliAgentProvider, complete_text
+from .targets import AWAITING_REPLY, DRAFT_KINDS, DRAFT_META, cancel_schedules, log_event, draft_checks, get_target
+from .greeting import DEFAULT_GREETING, greeting_line, greeting_style
+from .location import home_terms, location_usable, mentions_home, near_home, student_home, user_regions
+from .config import resolve_provider, sender_account
+from .versions import insert_version, keep_current_draft
+from ..student.preparation import confirmed_facts
+from .quote_check import word_tokens
+from ..core.timestamps import utc_now
+
+ProviderFactory = Callable[[str, str], AgentProvider]
+
+# Profile facts a cold email may draw on. Contact details, compensation, and
+# work authorization stay out of a first email.
+DRAFT_FACT_FIELDS = (
+    "name", "school", "degree", "graduation_year", "summary", "skills", "interest_keywords",
+    "preferred_role_types", "available_terms",
+)
+# Entries in these fields may carry "outreach": "lead", "support" (the default),
+# or "omit". A cold email opens with a lead entry and never sees an omitted one.
+PROOF_FIELDS = ("experience", "projects", "awards", "activities")
+LINK_FIELDS = ("portfolio", "linkedin", "github")
+RESEARCH_FIELDS = ("company", "website", "summary", "fit_rationale", "activity_signal", "contact_name", "contact_role")
+# A cold email carries an opening, a two-sentence them + me = success bridge, and
+# an ask, which lands near 150 words; a draft is refused 30 words past this.
+MAX_WORDS = {"initial": 150, "follow_up": 80}
+MAX_COMMENT_CHARS = 2_000
+# The bridge's one claim about what the student would contribute may rest on inference.
+INFERENCE_BASIS = "inference"
+FILLER_PHRASES = (
+    "i would love to learn", "i'd love to learn", "i am especially interested", "i'm especially interested",
+    "passionate", "i read that", "i came across", "my experience includes", "to whom it may concern",
+    # Stock phrasing that reads as machine written in a cold email.
+    "hope this email finds you", "i am writing to", "i'm writing to", "i am reaching out", "i'm reaching out",
+    "thrilled", "excited to", "delve", "leverage", "showcas", "cutting-edge", "innovative", "aligns with",
+    "align with", "is relevant to", "valuable", "not only",
+    # Scale comparisons turn the bridge into a template.
+    "smaller version of", "harder version of", "the same work",
+    # A manner in place of a concrete contribution.
+    "in a meaningful way",
+    # College essay words that read as a cover letter in a cold email.
+    "empower", "impactful", "uplift",
+    # Saying the contrast outright instead of letting it show.
+    "further than i could", "than i could alone", "than i could on my own", "couldn't take on by myself",
+)
+# Build docs, test data, and designs from an internship belong to that employer.
+# Describing the work is fine; offering to hand it over is not.
+OFFER_TO_SHARE_WORK = re.compile(
+    r"\b(send|share|forward|attach|show)\w*\b[^.?!\n]{0,40}\b(docs?|documentation|data|designs?|drawings?|files?|cad|code|schematics?|notes)\b",
+    re.IGNORECASE,
+)
+
+INSTRUCTIONS = """You write cold emails for one university student to a small company that may have no internship posting.
+
+The student's own results carry the email. A founder or a shared jobs inbox should see in the first two lines that this student has already built real things, with numbers.
+
+Follow this formula, in this order:
+1. Subject: the student's most relevant proof plus the company, under 12 words, in the shape "[proof] at [school], interested in interning at [company]".
+2. Greeting: the greeting line in the input, exactly as written, on its own line. It is the student's own style.
+3. Opening, two sentences, in this shape:
+   "I'm a [major] student at [school] [location_line] and [a or an] [role] at [primary_experience], where I [what the student built or did there]. I [result], [result], and [result]."
+   - Who the student is, written the way a person says it: their major and school as they would say them aloud, not the degree's formal title.
+   - If location_line is not empty, put it right after the school's name, exactly as written, parentheses included, and cite it with basis "profile:break_location". It tells a company near the student's home, before anything else, that they can be there in person. If location_line is empty, leave it out, and say nothing anywhere in the email about where the student lives or could work.
+   - Their current role and the primary_experience entry, joined with "where I" to the thing the student built or did there.
+   - The second sentence gives three results from the entry as one parallel list of verbs ("I cut..., expanded..., and extended..."), or two when the entry has only two. Prefer before-and-after results ("from 42 kg to 31 kg"), which show how much the student changed something, over totals and counts, and among those pick the ones that matter most to this company. Copy every number exactly as the input writes it.
+   The whole email is built on this one experience. Never bring in another project, employer, or product of the student's by name anywhere in the email, because the reader has not met it and it would only confuse them. Say what the student did ("I cut its weight"), not what a platform or project did.
+4. The bridge, about 50 words in two sentences, written the way a strong "why us" application essay reads: the student should clearly want this company, and the company should clearly want the student. The shape is fixed; the wording is not.
+   a. Them, the first sentence: name the company's specific product or effort from the research the way you would name a program at a school (a product by name, a named study or pilot, a specific platform or service), never the company in general and never praise. Set it against what the student has built so far in the primary experience, so the reader sees this company as the next step past it: higher stakes, harder conditions, or a product that goes where the student's could not. Let the contrast between the two show that; never say it outright. Either side can come first, and the verbs are free; do not default to opening with "I've built". The student wants this company because it takes their own work somewhere new.
+   b. Me = success, the second sentence: what the student would bring from the primary experience, the company's specific work it goes to, the concrete contribution, and how they would work there. In shape only: [the primary experience's work] to [their product or work], [a concrete action], [with their team].
+      - What they bring: only work the primary experience's entry describes, named in the entry's own terms. Pick the part this company's product needs most. A tool or method from the student's skills may be named only as part of that same work, when the entry describes the work it was used for. Never pitch the student as a documentation writer; offer docs or guides only when documentation is itself what this company needs.
+      - Their work: a product or effort the research names.
+      - Contribution: a concrete action, in the kind of verbs the primary experience's entry and the student's skills already use for their own work, so a software student offers software work, a lab student offers lab work, and a builder offers building. When the entry gives no clear verbs, use plain, specific verbs for doing the work itself rather than supporting it. Avoid stock pairs like "design and test", and never a manner like "in a meaningful way" or "efficiently". This is the email's one inference; cite it with basis "inference". Keep it modest, never a promise or a claim to solve their problem.
+      - With their team: end on one short clause about working with the people there, named in terms of this company's own team or work, such as the people running its pilot or the two founders building its product, and never the generic "alongside your engineers". One clause, never "team player" language.
+   End the bridge on a statement, never a question. The ask is the email's only question.
+   Keep it plain and grounded. No numbers in the bridge, and do not repeat the opening's results. No stock connectors that could drop into any email, like "that's the work I want to do", "is where I learned", or "I'd get to". Do not compare scale ("a smaller version of", "a harder version of", "the same work"), and never write "is relevant to" or "aligns with". No mission statements about helping communities or the world; this is an internship, not a cause. If the research names nothing concrete, work from the kind of product it describes rather than invent specifics.
+5. Nothing else. The email stays on the primary experience, with no second proof and no list of skills.
+6. The ask: would they consider the student as an intern for the earliest term in available_terms. The opening already said where the student is based, so do not repeat it here. If preferred_role_types includes part_time, add that the student is open to part-time work too, without listing every arrangement. Then close with the 15 minute call, and give it a purpose: "If you have 15 minutes, I'd like to hear how you..." followed by one short, specific thing only this company could tell the student about the work the bridge names. Write it as a statement, not a second question. When the research is too thin to name something sharp, just say the student is happy to talk for 15 minutes. Never offer to send or share documents, data, designs, or code from the student's work; they may belong to an employer.
+7. Sign-off: the student's name on one line, then the sender address and every entry in links, joined with " | ".
+
+An example of the shape, for a different, invented student and company whose field is unrelated to this student's. Match its length and directness, not its content, its field, its verbs, or its phrasing:
+Subject: Battery pack builder at Georgia Tech, interested in interning at Voltworks
+Hi Dana,
+
+I'm an electrical engineering student at Georgia Tech (live in the Seattle area) and battery lead on our Formula SAE team, where I designed and built the car's pack. I cut pack mass from 42 kg to 31 kg, kept the cells under 45 C through a full endurance run, and brought charge time from 90 min to 40 min.
+
+I've built a pack that only had to last one endurance run, and Voltworks is sealing packs inside boat hulls for years at a time. I'd bring the thermal work from our Formula SAE pack to your hull packs, wiring in thermocouples and bench testing cooling layouts alongside your engineers.
+
+Would you consider me as an intern for summer 2027? I'm open to part-time work too. If you have 15 minutes, I'd like to hear how you get the heat out through the hull.
+
+Sam Rivera
+sam@gatech.edu | https://samrivera.dev
+
+Rules:
+- Use only facts in the JSON input. Never invent achievements, numbers, dates, mutual connections, deadlines, or anything about the company that the research does not say.
+- Plain text. No markdown, no em dashes or en dashes, no [placeholders].
+- Put one blank line after the greeting, between paragraphs, and before the sign-off, as in the example; the sign-off's own lines stay together.
+- Stay near max_words. Confident and direct, never gushing or apologetic.
+- Sound like a student writing to a person, not a cover letter: use contractions (I'm, I've), mix short and longer sentences, and use plain verbs (is, has, built, cut). Write at the reading level of a plain text message, not a punchy, dramatic pitch.
+- Never write "I would love to learn", "I am especially interested", "passionate", "I read that", "I came across", "I'm writing to", "I'm reaching out", "excited", "innovative", "cutting-edge", "leverage", "aligns with", or "valuable".
+- No trailing -ing phrases that comment on a fact ("..., showing my ability to..."), no "not only X but Y", no lists of three adjectives, and no praise for the company.
+- The sign-off's address and links are not claims; leave them out of claims.
+- List every factual claim you make with its basis: "profile:<field>" for a student fact, "research:<field>" for a company fact, one of the research source URLs, or "inference" for the one connecting inference.
+- unverified_research is unconfirmed deep-search text. It may inform the connecting sentence only when cited with its matching "unverified:<field>" basis.
+
+Reply with exactly one JSON object and nothing else:
+{"subject": "...", "body": "...", "claims": [{"text": "...", "basis": "..."}]}"""
+
+FOLLOW_UP_INSTRUCTIONS = """You write a short follow-up to a cold email a university student already sent.
+
+Rules:
+- Use only facts in the JSON input. Never invent anything.
+- Plain text, no markdown, no em dashes or en dashes, no [placeholders].
+- Politely restate the ask in fewer words than the original. Do not repeat the whole original email.
+- Sound like a person: contractions, plain words, no "just circling back", "hope this email finds you well", or "I'm reaching out".
+- Open with the greeting line in the input, exactly as written.
+- Sign off with the student's name.
+- List every factual claim with its basis, exactly as in the original: "profile:<field>", "research:<field>", or a source URL.
+- unverified_research is unconfirmed deep-search text and must use its matching "unverified:<field>" basis.
+
+Reply with exactly one JSON object and nothing else:
+{"subject": "...", "body": "...", "claims": [{"text": "...", "basis": "..."}]}"""
+
+
+class DraftRejected(ValueError):
+    """The model's draft cited or stated something the inputs do not support."""
+
+
+def entry_name(entry: Any) -> str:
+    if isinstance(entry, dict):
+        return str(entry.get("organization") or entry.get("title") or entry.get("name") or "").strip()
+    return str(entry).strip()
+
+
+def outreach_proof(facts: dict[str, Any]) -> tuple[dict[str, list[Any]], list[str]]:
+    """The experience, projects, awards, and activities outreach may use, and the entries to lead with.
+
+    An entry marked "omit" is dropped here, so no model ever sees it.
+    """
+    proof: dict[str, list[Any]] = {}
+    lead: list[str] = []
+    for field in PROOF_FIELDS:
+        value = facts.get(field)
+        entries = value if isinstance(value, list) else [value] if value else []
+        kept = []
+        for entry in entries:
+            use = entry.get("outreach", "support") if isinstance(entry, dict) else "support"
+            if use == "omit":
+                continue
+            if use == "lead" and entry_name(entry):
+                lead.append(entry_name(entry))
+            kept.append({key: item for key, item in entry.items() if key != "outreach"} if isinstance(entry, dict) else entry)
+        if kept:
+            proof[field] = kept
+    return proof, lead
+
+
+def location_line(
+    facts: dict[str, Any],
+    target: dict[str, Any],
+    regions: list[dict[str, Any]] | None = None,
+) -> str:
+    """The sentence saying the student lives near the company, or "" when none belongs.
+
+    Every company where the student lives gets one: in their home region, or in
+    their home city when that is not one of their regions (outreach_location.student_home).
+    When the school is in the same region, the line says year-round. An
+    unrecognized location gets none rather than a guess. Neither does a location
+    only the deep search reported, until the company's site or a filing states
+    it or the research is confirmed. ``regions`` defaults to the local owner's;
+    pass ``user_regions`` for others.
+    """
+    if not location_usable(target):
+        return ""
+    home = student_home(facts, regions)
+    if not near_home(str(target.get("location") or ""), home, regions):
+        return ""
+    return f"(live in {home['phrase']}{' year-round' if home['year_round'] else ''})"
+
+
+def _inputs(conn: sqlite3.Connection, target: dict[str, Any], user_id: str, kind: str) -> dict[str, Any]:
+    facts = confirmed_facts(conn, user_id)
+    student = {field: facts[field] for field in DRAFT_FACT_FIELDS if field in facts}
+    if not student.get("name"):
+        raise ValueError("Confirm your name in your profile before generating a draft")
+    proof, lead = outreach_proof(facts)
+    student.update(proof)
+    contact = facts["contact"] if isinstance(facts.get("contact"), dict) else {}
+    research = {field: target[field] for field in RESEARCH_FIELDS if target.get(field)}
+    if target.get("research_confidence") == "unverified":
+        confirmed_research = {field: value for field, value in research.items() if field in {"company", "website"}}
+        unverified_research = {field: value for field, value in research.items() if field not in {"company", "website"}}
+    else:
+        confirmed_research = research
+        unverified_research = {}
+    payload = {
+        "student": student,
+        "lead_with": lead,
+        # The first lead entry carries the whole email; experience comes before projects.
+        "primary_experience": lead[0] if lead else "",
+        "sender_address": sender_account(),
+        "links": [str(contact[field]).strip() for field in LINK_FIELDS if str(contact.get(field) or "").strip()],
+        "company_research": confirmed_research,
+        # The student's own way of opening an email, with this contact's name.
+        "greeting": greeting_line(target["company"], target.get("contact_name") or "", greeting_style(conn, user_id)),
+        "unverified_research": unverified_research,
+        "source_urls": target["source_urls"],
+        "max_words": MAX_WORDS[kind],
+        "suggested_ask": "whether they would consider an intern, or a 15 minute call",
+    }
+    if kind == "initial":
+        payload["location_line"] = location_line(facts, target, user_regions(conn, user_id))
+        if payload["location_line"]:
+            student["break_location"] = facts["break_location"]
+    if kind == "follow_up":
+        payload["original_email"] = {"subject": target["email_subject"], "body": target["email_body"]}
+        payload["sent_on"] = target.get("sent_at")
+    return payload
+
+
+# A greeting on a line of its own: "Hi Dana," or "Hello Acme team,".
+_GREETING_LINE = re.compile(r"^(?:hi|hello|hey|dear|good (?:morning|afternoon|evening))\b[^\n,]{0,80},$", re.IGNORECASE)
+
+
+def _unnamed_greeting_problem(body: str, inputs: dict[str, Any]) -> str | None:
+    """A greeting that names someone when the contact is only an address."""
+    if inputs["company_research"].get("contact_name") or inputs["unverified_research"].get("contact_name"):
+        return None
+    first = next((line.strip() for line in body.split("\n") if line.strip()), "")
+    # Inputs built without the student's greeting (older callers) get the default style.
+    expected = inputs.get("greeting") or greeting_line(inputs["company_research"].get("company", ""), "", DEFAULT_GREETING)
+    if not _GREETING_LINE.match(first) or first == expected:
+        return None
+    return f"it greets {first!r}, but the contact has no name; open with {expected!r}"
+
+
+def _allowed_bases(inputs: dict[str, Any]) -> set[str]:
+    bases = {f"profile:{field}" for field in inputs["student"]}
+    bases |= {f"research:{field}" for field in inputs["company_research"]}
+    bases |= {f"unverified:{field}" for field in inputs["unverified_research"]}
+    bases |= set(inputs["source_urls"]) | {INFERENCE_BASIS}
+    if inputs["company_research"].get("website"):
+        bases.add(inputs["company_research"]["website"])
+    return bases
+
+
+_SENTENCE_END = (".", "?", "!", ":")
+
+
+def _sign_off_start(lines: list[str]) -> int:
+    """Where the sign-off begins: the student's name (after an optional "Thanks,"), then the address and links."""
+    start = len(lines)
+    while start > 1:
+        line = lines[start - 1].strip()
+        contact = "@" in line or " | " in line or "http" in line
+        short = len(line) <= 40 and not line.endswith(_SENTENCE_END)
+        if not (contact or short):
+            break
+        start -= 1
+    return start
+
+
+def space_paragraphs(body: str) -> str:
+    """The email as it should read: a blank line after the greeting, between paragraphs, and before the sign-off.
+
+    A model sometimes returns every paragraph on its own line with no blank line
+    between them, which reads as one block in an email or a website's message box.
+    Only that case is changed, and only the spacing: the words stay exactly as written,
+    and the sign-off's lines stay together.
+    """
+    if "\n\n" in body or "\n" not in body:
+        return body
+    lines = [line.rstrip() for line in body.split("\n") if line.strip()]
+    start = _sign_off_start(lines)
+    if start <= 1:
+        return body
+    return "\n\n".join(lines[:start]) + "\n\n" + "\n".join(lines[start:])
+
+
+def _opening(body: str) -> str:
+    """The email's introduction, where the student says who they are.
+
+    That is the first paragraph, and the second as well when the greeting sits
+    alone in the first: a model may or may not leave a blank line after it.
+    """
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", body) if part.strip()]
+    if not paragraphs:
+        return ""
+    if "\n" not in paragraphs[0] and paragraphs[0].endswith(","):
+        return "\n".join(paragraphs[:2])
+    return paragraphs[0]
+
+
+# What a number check takes out of the text first, on both sides (the draft and the inputs): email addresses,
+# links with a scheme, and links without one (github.com/t/arm-2024, acme360.com), whose digits name a page,
+# not a fact. A scheme-less link is a dotted host ending in a 2+ letter TLD, optionally followed by a path. The
+# label before the TLD must hold a letter and the TLD must end the word, so 3.5, U.S., Ph.D., e.g. and v2.0
+# are not hosts, nor is "2024.Then" (a missing space after a full stop). Call prep's number check shares this.
+ADDRESS_PATTERN = re.compile(
+    r"\S+@\S+|https?://\S+"
+    # A scheme-less host such as github.com/t/x or acme360.com. The ending must be lowercase, so a number run into the
+    # next sentence ("$2.5M.Series A", "40k.Users") stays a number rather than being taken for a domain.
+    r"|(?<![\w@.-])(?:[A-Za-z0-9-]+\.)*[A-Za-z0-9-]*[A-Za-z][A-Za-z0-9-]*\.[a-z]{2,}(?![\w-])(?:/\S*)?"
+)
+
+
+def _entry_names(entry: Any) -> set[str]:
+    """Every name a reader would recognize an entry by."""
+    names = {entry_name(entry)}
+    if isinstance(entry, dict):
+        names |= {str(entry.get(key) or "").strip() for key in ("organization", "name")}
+    return {name for name in names if len(name) >= 3}
+
+
+def _primary_entries(inputs: dict[str, Any]) -> list[Any]:
+    primary = inputs.get("primary_experience")
+    return [
+        entry for field in PROOF_FIELDS for entry in inputs["student"].get(field, [])
+        if primary and entry_name(entry) == primary
+    ]
+
+
+def _states_a_lead_result(body: str, inputs: dict[str, Any]) -> bool:
+    """Whether the body gives a number from the primary experience, not one that only belongs to the company."""
+    research = {**inputs["company_research"], **inputs["unverified_research"]}
+    lead_numbers = _supported_numbers(_input_text(_primary_entries(inputs))) - _supported_numbers(_input_text(research))
+    return any(needed in lead_numbers for _, needed in _number_keys(ADDRESS_PATTERN.sub(" ", body)))
+
+
+def _other_entries_named(body: str, inputs: dict[str, Any]) -> list[str]:
+    """Names of the student's other projects and employers, which the reader has not met."""
+    primary = set().union(*(_entry_names(entry) for entry in _primary_entries(inputs)))
+    if not primary:
+        return []
+    named: list[str] = []
+    for field in PROOF_FIELDS:
+        for entry in inputs["student"].get(field, []):
+            for name in sorted(_entry_names(entry) - primary):
+                if any(name.lower() in own.lower() for own in primary):
+                    continue
+                if re.search(rf"(?<!\w){re.escape(name)}(?!\w)", body, re.IGNORECASE) and name not in named:
+                    named.append(name)
+    return named
+
+
+# Keys whose values only name or locate a record: "project-123" is not 123 of anything. Call prep's number
+# check skips the same keys (outreach_call_prep._NOT_A_SOURCE). Its other keys (sent_on, logged_on, status,
+# research_gaps, unverified_research) are not in a draft's inputs, except sent_on, a date the draft may cite.
+IDENTIFIER_KEYS = frozenset({"id", "source_urls"})
+# Inputs that tell the model how to write, not facts it may quote: 150 is not a number the student earned.
+_NOT_A_FACT = IDENTIFIER_KEYS | {"max_words"}
+
+
+def _input_text(value: Any):
+    """Every piece of the inputs' own words a number may come from, with addresses taken out."""
+    if isinstance(value, str):
+        yield ADDRESS_PATTERN.sub(" ", value)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            if key not in _NOT_A_FACT:
+                yield from _input_text(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _input_text(item)
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        yield str(value)
+
+
+def _number_key(token: str) -> str:
+    """The number as a comparison key: 09 and 9 are one number, 3.50 and 3.5 are one, 3.5 and 5 are not."""
+    whole, point, fraction = token.partition(".")
+    whole = whole.lstrip("0") or "0"
+    fraction = fraction.rstrip("0")
+    return f"{whole}.{fraction}" if fraction else whole
+
+
+def _number_keys(text: str) -> list[tuple[str, str]]:
+    """Each number in the text as (its key, the key a draft needs to claim it).
+
+    Whole numbers, as outreach_call_prep checks them, not pieces of text: the tokenizer
+    is the quote check's (quote_check.word_tokens), so 1,500 and 1500 are one number and a range such as
+    2019-2023 is two. A number written as a percentage (45% or 45 percent) is claimed
+    as a percentage, so it needs 45% in the inputs, not a headcount of 45.
+    """
+    tokens = word_tokens(text)
+    keys = []
+    for index, token in enumerate(tokens):
+        if token[0].isdigit():
+            key = _number_key(token)
+            keys.append((key, key + "%" if tokens[index + 1:index + 2] == ["percent"] else key))
+    return keys
+
+
+def _supported_numbers(pieces) -> set[str]:
+    """What the pieces of the inputs' own words let a draft claim: a bare 45 may be a 45% too, a 45% is only a percentage."""
+    return {key for piece in pieces for pair in _number_keys(piece) for key in pair}
+
+
+def _unsupported_numbers(text: str, inputs: dict[str, Any], *more: str) -> list[str]:
+    """Numbers in the draft's text (the body, and the subject when given as ``more``) that are no whole number in the inputs' own words (see _number_keys)."""
+    allowed = _supported_numbers(_input_text(inputs))
+    found = []
+    for piece in (text, *more):
+        for key, needed in _number_keys(ADDRESS_PATTERN.sub(" ", piece)):
+            if needed not in allowed and needed not in found:
+                found.append(needed)
+    return found
+
+
+_FIELD_BASIS = re.compile(r"^((?:profile|research|unverified):\w+)[\[.]")
+
+
+def field_basis(basis: str) -> str:
+    """Reduce a basis that points inside a field, like profile:experience[0].title, to the field itself."""
+    match = _FIELD_BASIS.match(basis)
+    return match.group(1) if match else basis
+
+
+def validate_draft(
+    raw: str,
+    inputs: dict[str, Any],
+    kind: str,
+    regions: list[dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], list[str]]:
+    """Parse a model reply and list every reason it cannot be stored as-is."""
+    try:
+        parsed = CliAgentProvider.extract_json(raw)
+    except ValueError as exc:
+        raise DraftRejected("The model did not return a draft") from exc
+    subject = str(parsed.get("subject") or "").strip()
+    body = space_paragraphs(str(parsed.get("body") or "").replace("\r\n", "\n").strip())
+    claims = parsed.get("claims") if isinstance(parsed.get("claims"), list) else []
+    problems: list[str] = []
+    if not subject or not body:
+        problems.append("the reply is missing a subject or body")
+    allowed = _allowed_bases(inputs)
+    clean_claims = []
+    for claim in claims:
+        if not isinstance(claim, dict):
+            continue
+        basis = field_basis(str(claim.get("basis") or "").strip())
+        text = str(claim.get("text") or "").strip()[:500]
+        if basis not in allowed:
+            problems.append(f"the claim {text[:80]!r} cites {basis or 'nothing'}, which is not in the inputs")
+        clean_claims.append({"text": text, "basis": basis})
+    if body and not clean_claims:
+        problems.append("it cites no basis for any of its claims")
+    unnamed = _unnamed_greeting_problem(body, inputs)
+    if unnamed:
+        problems.append(unnamed)
+    numbers = _unsupported_numbers(body, inputs, subject)
+    if numbers:
+        problems.append("it states numbers found in neither your profile nor the research: " + ", ".join(numbers))
+    if kind == "initial":
+        if inputs.get("primary_experience") and not _states_a_lead_result(body, inputs):
+            problems.append("it gives no concrete number from its primary lead_with entry (" + inputs["primary_experience"] + ")")
+        others = _other_entries_named(body, inputs)
+        if others:
+            problems.append(
+                "it names " + ", ".join(others) + ", which the reader has not met; keep the email on " + inputs["primary_experience"]
+            )
+        if inputs.get("location_line"):
+            home = student_home(inputs["student"], regions)
+            line = inputs["location_line"]
+            opening = " ".join(_opening(body).split()).casefold()
+            if " ".join(line.split()).casefold() not in opening:
+                where = "later on" if mentions_home(body, home_terms(home)) else "nowhere"
+                problems.append(
+                    f"it leaves out location_line: it says where you live {where} instead of the opening's {line!r}, "
+                    "which goes right after the school's name, exactly as written"
+                )
+        inferences = sum(claim["basis"] == INFERENCE_BASIS for claim in clean_claims)
+        if inferences > 1:
+            problems.append(f"it rests {inferences} claims on inference, but only the bridge's one claim about what you'd contribute may")
+    filler = [phrase for phrase in FILLER_PHRASES if phrase in body.lower()]
+    if filler:
+        problems.append("it uses filler the formula bans: " + ", ".join(repr(phrase) for phrase in filler))
+    offer = OFFER_TO_SHARE_WORK.search(body)
+    if offer:
+        problems.append(f"it offers to hand over work material ({offer.group(0)!r}), which may belong to an employer")
+    checks = draft_checks(subject, body)
+    if kind == "initial" and body.count("?") > 1:
+        problems.append("it asks more than one question; the ask is the only question, and the call carries the rest")
+    if checks["dash_count"]:
+        problems.append("it uses em or en dashes")
+    if checks["placeholders"]:
+        problems.append("it leaves placeholders: " + ", ".join(checks["placeholders"]))
+    if checks["word_count"] > MAX_WORDS[kind] + 30:
+        problems.append(f"it runs {checks['word_count']} words, over the {MAX_WORDS[kind]} word target")
+    return {"subject": subject, "body": body, "claims": clean_claims}, problems
+
+
+def template_draft(inputs: dict[str, Any], kind: str) -> dict[str, Any]:
+    """Deterministic fallback when no model provider is configured."""
+    student = inputs["student"]
+    research = inputs["company_research"]
+    company = research.get("company", "your team")
+    opening = inputs["greeting"]
+    claims = [{"text": f"I'm {student['name']}", "basis": "profile:name"}]
+    contact_line = " | ".join(part for part in (inputs.get("sender_address", ""), *inputs.get("links", [])) if part)
+    signature = "\n".join(part for part in (student["name"], contact_line) if part)
+    if kind == "follow_up":
+        original = inputs["original_email"]
+        subject = original["subject"] if original["subject"].lower().startswith("re:") else f"Re: {original['subject']}"
+        body = (
+            f"{opening}\n\nI wanted to follow up on my note below about internship opportunities at {company}. "
+            f"I would still welcome the chance to talk if the timing works.\n\nThank you,\n{signature}"
+        )
+        return {"subject": subject, "body": body, "claims": claims}
+    study = ""
+    nearby = f" {inputs['location_line']}" if inputs.get("location_line") else ""
+    if nearby:
+        claims.append({"text": inputs["location_line"], "basis": "profile:break_location"})
+    if student.get("degree") and student.get("school"):
+        study = f", studying {student['degree']} at {student['school']}{nearby}"
+        claims += [{"text": student["degree"], "basis": "profile:degree"}, {"text": student["school"], "basis": "profile:school"}]
+    elif nearby:
+        study = nearby
+    lead = next(
+        (
+            (field, entry) for field in PROOF_FIELDS for entry in student.get(field, [])
+            if isinstance(entry, dict) and entry_name(entry) in inputs["lead_with"] and entry.get("highlights")
+        ),
+        None,
+    )
+    skills = [str(skill) for skill in student.get("skills", [])][:3] if isinstance(student.get("skills"), list) else []
+    skill_sentence = ""
+    if lead:
+        field, entry = lead
+        highlight = str(entry["highlights"][0]).rstrip(".")
+        skill_sentence = f" At {entry_name(entry)}, I {highlight[:1].lower()}{highlight[1:]}."
+        claims.append({"text": highlight, "basis": f"profile:{field}"})
+    elif skills:
+        skill_sentence = f" I work with {', '.join(skills)}."
+        claims.append({"text": ", ".join(skills), "basis": "profile:skills"})
+    reason = ""
+    if research.get("summary"):
+        reason = f" I read about {company}'s work and would like to learn more about it."
+        claims.append({"text": f"{company}'s work", "basis": "research:summary"})
+    body = (
+        f"{opening}\n\nI'm {student['name']}{study}.{reason}{skill_sentence}\n\n"
+        f"Would {company} consider taking on an intern? I would welcome a 15 minute call to learn about your team.\n\n"
+        f"Thank you,\n{signature}"
+    )
+    subject = f"Internship inquiry from {student['name']}"
+    return {"subject": subject, "body": body, "claims": claims}
+
+
+def revision_request(target: dict[str, Any], kind: str, comments: str) -> str:
+    """The student's comments on the current draft, appended after the grounded inputs.
+
+    Kept out of the inputs on purpose: the grounding checks compare the reply
+    against the inputs, and neither the comments nor an edited draft is a source.
+    """
+    subject_field, body_field, _ = DRAFT_KINDS[kind]
+    parts = [
+        "The student reviewed the current draft and asked for changes. Follow their comments wherever they do not "
+        "break a rule. The comments and the current draft are not sources: take every fact from the JSON input above, "
+        "and never state a number, achievement, or company fact that appears only in the comments or the current draft."
+    ]
+    if target.get(body_field):
+        parts.append(f"Current draft:\nSubject: {target.get(subject_field, '')}\n\n{target[body_field]}")
+    parts.append(f"The student's comments:\n{comments}")
+    return "\n\n" + "\n\n".join(parts)
+
+
+def generate_draft(
+    conn: sqlite3.Connection,
+    target_id: str,
+    *,
+    user_id: str,
+    provider_factory: ProviderFactory,
+    kind: str = "initial",
+    provider: str | None = None,
+    comments: str = "",
+    before_write: Callable[[], None] | None = None,
+) -> dict[str, Any]:
+    """Write a draft and save it for the student to approve.
+
+    ``before_write`` runs first inside the transaction that saves it, after
+    the model call; raising there saves nothing.
+    """
+    prepared = compose_draft(
+        conn, target_id, user_id=user_id, provider_factory=provider_factory, kind=kind, provider=provider, comments=comments,
+    )
+    with conn:
+        if before_write is not None:
+            before_write()
+        save_draft_tx(conn, target_id, user_id=user_id, prepared=prepared)
+    return get_target(conn, target_id, user_id=user_id)
+
+
+def compose_draft(
+    conn: sqlite3.Connection,
+    target_id: str,
+    *,
+    user_id: str,
+    provider_factory: ProviderFactory,
+    kind: str = "initial",
+    provider: str | None = None,
+    comments: str = "",
+) -> dict[str, Any]:
+    """Write a draft without saving it: the model call, checked against the student's facts and the research.
+
+    Returns what save_draft_tx stores. Raises ValueError (DraftRejected
+    included) or RuntimeError when no draft can be written.
+    """
+    if kind not in DRAFT_KINDS:
+        raise ValueError("kind must be initial or follow_up")
+    comments = comments.replace("\r\n", "\n").strip()
+    if len(comments) > MAX_COMMENT_CHARS:
+        raise ValueError(f"Keep comments under {MAX_COMMENT_CHARS:,} characters")
+    target = get_target(conn, target_id, user_id=user_id)
+    if kind == "follow_up":
+        if target["status"] not in AWAITING_REPLY:
+            raise ValueError("A follow-up needs an email marked sent first")
+        if not target["email_body"]:
+            raise ValueError("A follow-up needs the original email text")
+    inputs = _inputs(conn, target, user_id, kind)
+    regions = user_regions(conn, user_id)
+    provider_id, model = resolve_provider(provider, purpose=kind)
+
+    if provider_id == "legacy":
+        if comments:
+            raise ValueError("The template drafter cannot follow comments. Clear them, or configure a model provider.")
+        draft = template_draft(inputs, kind)
+        generated_by = "template"
+    else:
+        agent = provider_factory(provider_id, model)
+        instructions = INSTRUCTIONS if kind == "initial" else FOLLOW_UP_INSTRUCTIONS
+        content = json.dumps(inputs, ensure_ascii=False, indent=2)
+        if comments:
+            content += revision_request(target, kind, comments)
+        raw = complete_text(agent, instructions, content)
+        draft, problems = validate_draft(raw, inputs, kind, regions)
+        if problems:
+            retry = (
+                f"{content}\n\nYour previous draft was rejected because " + "; ".join(problems)
+                + ". Write it again following every rule."
+            )
+            raw = complete_text(agent, instructions, retry)
+            draft, problems = validate_draft(raw, inputs, kind, regions)
+        if problems:
+            raise DraftRejected("The generated draft was not grounded in your profile and research: " + "; ".join(problems))
+        generated_by = f"{provider_id}:{model}"
+
+    return {
+        "kind": kind, "subject": draft["subject"], "body": draft["body"],
+        "claims_json": json.dumps(draft["claims"], ensure_ascii=kind != "follow_up"),
+        "generated_by": generated_by, "comments": comments,
+        # What the target held when the draft was written; save_draft_tx logs against it.
+        "target_status": target["status"], "target_draft_status": target[DRAFT_KINDS[kind][2]],
+    }
+
+
+def save_draft_tx(conn: sqlite3.Connection, target_id: str, *, user_id: str, prepared: dict[str, Any]) -> str:
+    """Store a draft compose_draft wrote, inside a transaction the caller owns. Returns its version id.
+
+    The draft in the editor is kept in the history first, so nothing the
+    student wrote is lost; the new draft needs approval, like any draft.
+    """
+    kind = prepared["kind"]
+    subject_field, body_field, status_field = DRAFT_KINDS[kind]
+    claims_field, generated_field = DRAFT_META[kind]
+    timestamp = utc_now()
+    claims_json, generated_by = prepared["claims_json"], prepared["generated_by"]
+    assignments: dict[str, Any] = {
+        subject_field: prepared["subject"], body_field: prepared["body"], status_field: "generated",
+        claims_field: claims_json, generated_field: generated_by,
+    }
+    if kind == "initial":
+        assignments.update(draft_generated_at=timestamp, draft_approved_at=None)
+        if prepared["target_status"] == "not_started":
+            assignments["status"] = "drafted"
+    keep_current_draft(conn, target_id, user_id, kind)
+    version_id = insert_version(
+        conn, target_id, user_id, kind, source="generated", subject=prepared["subject"], body=prepared["body"],
+        claims_json=claims_json, generated_by=generated_by, comments=prepared.get("comments", ""), created_at=timestamp,
+    )
+    conn.execute(
+        f"UPDATE outreach_targets SET {', '.join(f'{column}=?' for column in assignments)}, updated_at=? WHERE id=? AND user_id=?",
+        [*assignments.values(), timestamp, target_id, user_id],
+    )
+    if prepared["target_draft_status"] == "approved":
+        log_event(conn, target_id, user_id, "approval_withdrawn", detail=f"The {kind.replace('_', '-')} draft was regenerated")
+        cancel_schedules(conn, target_id, user_id, [kind], "The draft was regenerated after you scheduled it")
+    log_event(conn, target_id, user_id, "draft_generated" if kind == "initial" else "follow_up_generated", detail=generated_by)
+    if assignments.get("status"):
+        log_event(conn, target_id, user_id, "status", from_status=prepared["target_status"], to_status="drafted")
+    return version_id

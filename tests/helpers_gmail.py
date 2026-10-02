@@ -18,7 +18,8 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, outreach_delivery, outreach_inbox
+from opportunity_app import STATIC_DIR
+from opportunity_app.outreach import delivery as outreach_delivery, inbox as outreach_inbox
 from opportunity_app.mail import gmail_connection
 from opportunity_app.api import create_app
 from opportunity_app.mail.trust import Authentication
@@ -108,7 +109,7 @@ def forget_gmail_backoff(test):
 
     The memory outlives a test, and every test's student is local-user with sends in thread-1, thread-2...
     """
-    from opportunity_app import outreach_inbox
+    from opportunity_app.outreach import inbox as outreach_inbox
 
     for state in (gmail_connection._BACKOFF, gmail_connection._HEALTH, outreach_inbox._RESUME, outreach_inbox._LAST_SWEEP):
         state.clear()

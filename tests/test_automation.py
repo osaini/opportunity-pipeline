@@ -30,7 +30,7 @@ from opportunity_app.applications.actions import (
     update_application_tx,
 )
 from opportunity_app.automation.ledger import OFF_SHADOW_ON, AutomationGateError, Feature, Superseded
-from opportunity_app.outreach_automation import SETTINGS, settings, update_settings
+from opportunity_app.outreach.automation import SETTINGS, settings, update_settings
 from opportunity_app.core.schema import ensure_product_schema
 from opportunity_app.core.database import connect_product, has_column
 from opportunity_app.core.timestamps import utc_now

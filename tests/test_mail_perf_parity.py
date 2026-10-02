@@ -16,12 +16,12 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from opportunity_app.applications import inbox as application_inbox
-from opportunity_app import outreach_inbox
+from opportunity_app.outreach import inbox as outreach_inbox
 from opportunity_app.mail import trust as mail_trust
 from opportunity_app.mail.message import host_of
-from opportunity_app import outreach_gmail_sends as sends
-from opportunity_app.outreach import DRAFT_KINDS, UNSENT_STATUSES, get_target
-from opportunity_app.outreach_gmail import DRAFT_EVENT, _already_sent, last_bounce
+from opportunity_app.outreach import gmail_sends as sends
+from opportunity_app.outreach.targets import DRAFT_KINDS, UNSENT_STATUSES, get_target
+from opportunity_app.outreach.gmail import DRAFT_EVENT, _already_sent, last_bounce
 from opportunity_app.core.database import connect_product
 
 import helpers_platform
@@ -571,8 +571,8 @@ class MailIndexMigrationTests(unittest.TestCase):
         return conn, drafting, sending
 
     def answers(self, conn, drafting, sending, now):
-        from opportunity_app import outreach_delivery as delivery
-        from opportunity_app.outreach_gmail import _draft_events, _previous_draft
+        from opportunity_app.outreach import delivery
+        from opportunity_app.outreach.gmail import _draft_events, _previous_draft
 
         pending = [item["detail"]["draft_id"] for item in sends._pending(conn, USER, now) if item["target_id"] == drafting]
         watched = [item["detail"]["message_id"] for item in delivery._watched(conn, USER, now) if item["target_id"] == sending]

@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
-from opportunity_app.outreach import (
+from opportunity_app.outreach.targets import (
     DraftChangedError,
     approve_draft,
     confirm_research,
@@ -27,15 +27,15 @@ from opportunity_app.outreach import (
     queue_follow_up_reminders,
     update_target,
 )
-from opportunity_app.outreach_location import location_region, region_phrase
-from opportunity_app.outreach_replies import suggest_reply_status
-from opportunity_app.outreach_drafting import (
+from opportunity_app.outreach.location import location_region, region_phrase
+from opportunity_app.outreach.replies import suggest_reply_status
+from opportunity_app.outreach.drafting import (
     INSTRUCTIONS,
     DraftRejected,
     generate_draft,
     _states_a_lead_result, _unsupported_numbers, validate_draft,
 )
-from opportunity_app.outreach_versions import DraftVersionNotFoundError, draft_versions, restore_draft_version
+from opportunity_app.outreach.versions import DraftVersionNotFoundError, draft_versions, restore_draft_version
 from opportunity_app.core.schema import ensure_product_schema
 from opportunity_app.core.database import connect_product
 from opportunity_app.core.timestamps import utc_now
@@ -281,12 +281,12 @@ class DraftingTests(unittest.TestCase):
             profile.write_text(json.dumps({"regions": [{
                 "name": "Atlanta", "state_markers": ["ga", "georgia"], "places": ["atlanta", "marietta"],
             }]}), encoding="utf-8")
-            with mock.patch("opportunity_app.outreach_location.PROFILE_PATH", profile):
+            with mock.patch("opportunity_app.outreach.location.PROFILE_PATH", profile):
                 self.assertEqual(location_region("Marietta, GA"), "Atlanta")
                 self.assertEqual(location_region("Atlanta, Texas"), "")
                 self.assertEqual(location_region("Austin, TX"), "", "no metro is built in")
                 self.assertEqual(region_phrase("Atlanta"), "Atlanta")
-            with mock.patch("opportunity_app.outreach_location.PROFILE_PATH", Path(tmp) / "missing.json"):
+            with mock.patch("opportunity_app.outreach.location.PROFILE_PATH", Path(tmp) / "missing.json"):
                 self.assertEqual(location_region("Marietta, GA"), "")
                 self.assertEqual(location_region("San Francisco, CA"), "")
                 self.assertEqual(region_phrase("Research Triangle Area"), "the Research Triangle Area")
@@ -357,7 +357,7 @@ class DraftingTests(unittest.TestCase):
         self.assertEqual(approved["draft_status"], "approved")
 
     def test_an_approved_draft_that_lacks_the_line_is_not_put_in_gmail(self):
-        from opportunity_app.outreach_gmail import create_gmail_draft
+        from opportunity_app.outreach.gmail import create_gmail_draft
 
         confirm_facts(self.conn, break_location="Bay Area")
         target = self.generate(ScriptedProvider([GOOD]))
@@ -622,7 +622,7 @@ class DraftingTests(unittest.TestCase):
                 conn.commit()
             return target
 
-        with mock.patch("opportunity_app.outreach.get_target", side_effect=racing_get):
+        with mock.patch("opportunity_app.outreach.targets.get_target", side_effect=racing_get):
             with self.assertRaises(DraftChangedError):
                 approve_draft(self.conn, self.target["id"], user_id=USER, fingerprint=drafted["draft_fingerprint"])
 
@@ -925,7 +925,7 @@ class LifecycleTests(unittest.TestCase):
         # The Windows clock on Python 3.12 ticks about every 15ms, so one action
         # that logs two events can stamp both with the same time. Freeze the
         # clock to force that tie everywhere.
-        with mock.patch("opportunity_app.outreach.utc_now", return_value="2026-09-23T12:00:00.000000+00:00"):
+        with mock.patch("opportunity_app.outreach.targets.utc_now", return_value="2026-09-23T12:00:00.000000+00:00"):
             target = create_target(self.conn, {"company": "Align", "status": "sent"}, user_id=USER)
             result = log_reply(self.conn, target["id"], "Happy to chat, when are you free?", user_id=USER)
         self.assertEqual([event["event_type"] for event in result["target"]["events"]], ["reply_logged", "created"])
@@ -1025,7 +1025,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(queued_user, "tokyo")
 
     def test_import_skips_a_company_already_tracked_under_another_name(self):
-        from opportunity_app.outreach import import_targets
+        from opportunity_app.outreach.targets import import_targets
 
         create_target(self.conn, {"company": "Acme", "website": "https://www.acme.com"}, user_id=USER)
         result = import_targets(self.conn, [

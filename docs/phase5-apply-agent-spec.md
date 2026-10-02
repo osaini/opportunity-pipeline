@@ -3394,7 +3394,7 @@ process id (memory note restart-web-dashboard).
   - `opportunity_app/applications/urgent.py`;
   - `opportunity_app/api.py`: routes, `require_browser_session`, the factory wiring next to
     api.py:1063-1064, and the deletion caller at :3207;
-  - `opportunity_app/outreach_automation.py`: the apply worker step;
+  - `opportunity_app/outreach/automation.py`: the apply worker step;
   - `opportunity_app/static/app.js`, `styles.css`.
 - **Scripts:** `scripts/serve_for_testing.py` (the fake apply flag).
 - **Tests:** `tests/extension/run_tests.mjs`, `tests/extension/dom_stub.mjs`,

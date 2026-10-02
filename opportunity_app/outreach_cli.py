@@ -56,15 +56,15 @@ from .integrations.agent_providers import build_provider
 from .core.daily_lock import TEMPFAIL_EXIT
 from .core.database import is_postgres_target, connect_product
 from .opportunities.legacy import load_env_file
-from .outreach import queue_follow_up_reminders
-from .outreach_config import RESEARCH_ENV, discovery_provider
-from .outreach_agents import RUNNERS
-from .outreach_discovery import DEFAULT_SCOPES, MAX_PER_SCOPE, SCOPES, DiscoveryBusy, run_discovery
-from .outreach_locate import BATCH_SIZE, locate_targets
-from .outreach_profile import SEC_USER_AGENT_ENV, enrich_targets, sec_fetcher
-from .outreach_recontact import recontact_targets
-from .outreach_research import available_agent, due_for_research, research_company, research_runner, text_model
-from .outreach_render import default_renderer
+from .outreach.targets import queue_follow_up_reminders
+from .outreach.config import RESEARCH_ENV, discovery_provider
+from .outreach.agents import RUNNERS
+from .outreach.discovery import DEFAULT_SCOPES, MAX_PER_SCOPE, SCOPES, DiscoveryBusy, run_discovery
+from .outreach.locate import BATCH_SIZE, locate_targets
+from .outreach.company_profile import SEC_USER_AGENT_ENV, enrich_targets, sec_fetcher
+from .outreach.recontact import recontact_targets
+from .outreach.research import available_agent, due_for_research, research_company, research_runner, text_model
+from .outreach.render import default_renderer
 from .integrations.smtp_probe import default_verifier
 from .core.schema import LOCAL_USER_ID, ensure_product_schema
 from .integrations.web_fetch import default_fetcher

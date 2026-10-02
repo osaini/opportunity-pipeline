@@ -19,7 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, outreach_schedule
+from opportunity_app import STATIC_DIR
+from opportunity_app.outreach import schedule as outreach_schedule
 from opportunity_app.automation import ledger as automation, health as automation_health
 from opportunity_app.apply import claims as apply_claims, runs as apply_runs
 from opportunity_app.core import schema
@@ -658,8 +659,8 @@ class PostgresAutomationContractTests(unittest.TestCase):
         self.assertEqual((component["component"], component["detail"]), ("inbox.replies", {"read": 2}))
 
     def test_migration_0040_and_a_thank_you_scheduled_handed_over_and_settled(self):
-        from opportunity_app import outreach, outreach_thank_you
-        from opportunity_app.outreach_gmail import thank_you_fingerprint
+        from opportunity_app.outreach import targets as outreach, thank_you as outreach_thank_you
+        from opportunity_app.outreach.gmail import thank_you_fingerprint
 
         # The switch needs the address the student sends from (automation.REQUIREMENTS), as it does in every student's .env.
         sending = mock.patch.dict("os.environ", {"PIPELINE_OUTREACH_ACCOUNT": "student@school.example"})
@@ -745,7 +746,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
     # --- Replies from other addresses (migration 0041, outreach_inbox.py) -------------------------
 
     def test_migration_0041_applies_and_a_rerun_repairs_a_half_applied_upgrade(self):
-        from opportunity_app import outreach_inbox
+        from opportunity_app.outreach import inbox as outreach_inbox
 
         self.assertEqual({column for _table, column, _definition in schema._OUTREACH_REPLY_RULES_COLUMNS}, set(REPLY_RULES_COLUMNS),
                          "the table as 0039 left it, below, lacks every column 0041 adds")
@@ -806,7 +807,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
         """
         import psycopg
 
-        from opportunity_app import outreach_inbox
+        from opportunity_app.outreach import inbox as outreach_inbox
 
         copy = "reply_rules_copy"
         with psycopg.connect(POSTGRES_TEST_URL, autocommit=True) as admin:
@@ -998,7 +999,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
         written is replaced once, returning True; a verdict under these rules,
         or a reply the old code logged, never is, returning False.
         """
-        from opportunity_app import outreach_inbox as inbox
+        from opportunity_app.outreach import inbox
 
         self.outreach_target("t-1", "Bovi")
         self.student("student-2")
@@ -1085,7 +1086,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
         """
         import psycopg
 
-        from opportunity_app import outreach_inbox as inbox
+        from opportunity_app.outreach import inbox
 
         self.outreach_target("t-1", "Bovi")
         self.inbox_message("careers-1", "ignored", target_id="")
@@ -1198,7 +1199,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
         from Gmail: it is held until the next morning without counting a try.
         The id is matched whole, so t-10's possible reply never holds t-1's.
         """
-        from opportunity_app import outreach_inbox as inbox
+        from opportunity_app.outreach import inbox
 
         now = utc_now()
         for target_id, company in (("t-1", "Bovi"), ("t-10", "Kiva"), ("t-3", "Orbit")):

@@ -351,13 +351,13 @@ class OutreachStatus(HandlerBase):
             f"SELECT status FROM outreach_targets WHERE id=? AND user_id=?{for_update_clause(conn)}", (subject_id, user_id),
         ).fetchone()
         if row is None:
-            from ..outreach import OutreachNotFoundError
+            from ..outreach.targets import OutreachNotFoundError
 
             raise OutreachNotFoundError(subject_id)
         return {"status": row["status"]}
 
     def effective(self, before: dict[str, Any], after: dict[str, Any], timestamp: str) -> dict[str, Any]:
-        from ..outreach import OUTREACH_STATUSES
+        from ..outreach.targets import OUTREACH_STATUSES
 
         if after.get("status") not in OUTREACH_STATUSES:
             raise ValueError(f"Unsupported outreach status: {after.get('status')!r}")
@@ -369,7 +369,7 @@ class OutreachStatus(HandlerBase):
     def apply(
         self, conn: sqlite3.Connection, user_id: str, subject_id: str, after: dict[str, Any], *, source: str, timestamp: str,
     ) -> dict[str, Any]:
-        from ..outreach import update_target_tx
+        from ..outreach.targets import update_target_tx
 
         written = update_target_tx(
             conn, subject_id, {"status": after["status"]}, user_id=user_id, status_detail="Changed automatically",
@@ -384,7 +384,7 @@ class OutreachStatus(HandlerBase):
         self, conn: sqlite3.Connection, user_id: str, subject_id: str, before: dict[str, Any], after: dict[str, Any],
         *, source: str, timestamp: str,
     ) -> dict[str, Any] | None:
-        from ..outreach import log_event
+        from ..outreach.targets import log_event
 
         row = conn.execute(
             f"SELECT status, follow_up_at FROM outreach_targets WHERE id=? AND user_id=?{for_update_clause(conn)}", (subject_id, user_id),
@@ -411,7 +411,7 @@ class OutreachStatus(HandlerBase):
             (subject_id, user_id),
         ).fetchone()
         if waiting is not None:
-            from ..outreach_greeting import contact_first_name
+            from ..outreach.greeting import contact_first_name
 
             who = contact_first_name(waiting["to_name"]) or waiting["to_email"]
             notes.append(
@@ -443,7 +443,7 @@ class OutreachFollowUpDraft(HandlerBase):
 
     @staticmethod
     def _fingerprint(row: Any) -> str:
-        from ..outreach import compute_draft_fingerprint
+        from ..outreach.targets import compute_draft_fingerprint
 
         # The same inputs outreach._record fingerprints the follow-up with.
         return compute_draft_fingerprint(
@@ -454,7 +454,7 @@ class OutreachFollowUpDraft(HandlerBase):
     def read(self, conn: sqlite3.Connection, user_id: str, subject_id: str) -> dict[str, Any]:
         row = self._row(conn, user_id, subject_id)
         if row is None:
-            from ..outreach import OutreachNotFoundError
+            from ..outreach.targets import OutreachNotFoundError
 
             raise OutreachNotFoundError(subject_id)
         written = bool(str(row["follow_up_body"] or "").strip() or str(row["follow_up_subject"] or "").strip())
@@ -472,8 +472,8 @@ class OutreachFollowUpDraft(HandlerBase):
     def apply(
         self, conn: sqlite3.Connection, user_id: str, subject_id: str, after: dict[str, Any], *, source: str, timestamp: str,
     ) -> dict[str, Any]:
-        from ..outreach import get_target, heard_back
-        from ..outreach_drafting import save_draft_tx
+        from ..outreach.targets import get_target, heard_back
+        from ..outreach.drafting import save_draft_tx
 
         target = get_target(conn, subject_id, user_id=user_id)
         if (
@@ -489,7 +489,7 @@ class OutreachFollowUpDraft(HandlerBase):
         self, conn: sqlite3.Connection, user_id: str, subject_id: str, before: dict[str, Any], after: dict[str, Any],
         *, source: str, timestamp: str,
     ) -> dict[str, Any]:
-        from ..outreach import log_event
+        from ..outreach.targets import log_event
 
         result = after.get("_result") or {}
         row = self._row(conn, user_id, subject_id)
@@ -602,7 +602,7 @@ class OutreachThankYou(HandlerBase):
         if conn.execute(
             f"SELECT 1 FROM outreach_targets WHERE id=? AND user_id=?{for_update_clause(conn)}", (subject_id, user_id),
         ).fetchone() is None:
-            from ..outreach import OutreachNotFoundError
+            from ..outreach.targets import OutreachNotFoundError
 
             raise OutreachNotFoundError(subject_id)
         row = conn.execute("SELECT state FROM outreach_thank_yous WHERE target_id=? AND user_id=?", (subject_id, user_id)).fetchone()

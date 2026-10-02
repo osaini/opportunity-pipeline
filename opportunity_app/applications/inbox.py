@@ -170,9 +170,9 @@ from .mail_rules import (
 from ..core.database import is_transient_error
 from ..integrations.gmail_client import ClientFactory, GmailAuthError, GmailThrottled, connection_state
 from ..mail.message import host_of, strip_queries
-from ..outreach_config import sender_account
+from ..outreach.config import sender_account
 from ..mail.gmail_connection import connector_row, GmailClient
-from ..outreach_inbox import RULES, owned_sql
+from ..outreach.inbox import RULES, owned_sql
 from ..core.settings_store import setting_updated_at
 from ..core.timestamps import parse_app_instant, utc_now
 from ..integrations.typesafe_decisions import DecisionClient

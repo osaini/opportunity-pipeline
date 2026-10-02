@@ -10,25 +10,25 @@ from fastapi import Depends, HTTPException, status
 
 from ..overrides import shared_router
 from ...mail.classifiers import client_for as inbox_client_for
-from ...outreach import (
+from ...outreach.targets import (
     DraftChangedError,
     OutreachNotFoundError,
     dismiss_reply_suggestion,
     get_target as get_outreach_target,
 )
-from ...outreach_delivery import bounce_from_text, check_deliveries
-from ...outreach_inbox import PossibleReplyNotFound, PossibleReplySettled, capture_replies, decide_possible_reply
-from ...outreach_forms import set_contact_form, submit_contact_form
-from ...outreach_schedule import cancel_send, schedule_send
-from ... import outreach_thank_you
+from ...outreach.delivery import bounce_from_text, check_deliveries
+from ...outreach.inbox import PossibleReplyNotFound, PossibleReplySettled, capture_replies, decide_possible_reply
+from ...outreach.forms import set_contact_form, submit_contact_form
+from ...outreach.schedule import cancel_send, schedule_send
+from ...outreach import thank_you as outreach_thank_you
 from ...integrations.gmail_client import GmailAuthError
-from ...outreach_gmail import (
+from ...outreach.gmail import (
     SendNeedsCheckError,
     ThankYouChanged,
     create_gmail_draft,
     send_gmail_message,
 )
-from ...send_claims import SendConflictError
+from ...outreach.send_claims import SendConflictError
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection
 from ..errors import outreach_not_found, send_needs_check
@@ -181,7 +181,7 @@ def check_outreach_inbox(
     ctx: AppContext = Depends(get_ctx),
 ) -> dict[str, Any]:
     """Look in Gmail for drafts sent or scheduled there, bounces, and replies. Never raises for Gmail trouble."""
-    from ...outreach_gmail_sends import capture_gmail_sends
+    from ...outreach.gmail_sends import capture_gmail_sends
 
     gmail_sends = capture_gmail_sends(conn, user_id=user_id, client_factory=ctx.services.gmail_client_factory)
     delivery = check_deliveries(conn, user_id=user_id, client_factory=ctx.services.gmail_client_factory)

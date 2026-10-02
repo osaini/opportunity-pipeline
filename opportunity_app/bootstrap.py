@@ -29,7 +29,7 @@ import threading
 from .applications import inbox as application_inbox
 from .apply import runs as apply_runs
 from .automation import triage as auto_triage, handlers as automation_handlers
-from . import outreach_thank_you
+from .outreach import thank_you as outreach_thank_you
 from .student import resume_variants
 
 # In the order they are filled. Each is a module with a ``register()`` function.

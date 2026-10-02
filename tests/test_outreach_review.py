@@ -16,13 +16,14 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, outreach_delivery, outreach_inbox
+from opportunity_app import STATIC_DIR
+from opportunity_app.outreach import delivery as outreach_delivery, inbox as outreach_inbox
 from opportunity_app.integrations import gmail_client
 from opportunity_app.api import create_app
-from opportunity_app.outreach import log_event
-from opportunity_app.outreach_automation import update_settings
-from opportunity_app.outreach_review import review_runner
-from opportunity_app.outreach_schedule import MAX_ATTEMPTS, run_due_sends
+from opportunity_app.outreach.targets import log_event
+from opportunity_app.outreach.automation import update_settings
+from opportunity_app.outreach.review import review_runner
+from opportunity_app.outreach.schedule import MAX_ATTEMPTS, run_due_sends
 from opportunity_app.core.database import connect_product
 from opportunity_app.core.timestamps import utc_now
 
@@ -226,7 +227,7 @@ class SendGateTests(unittest.TestCase):
     def test_gmail_is_read_again_just_before_an_automatic_follow_up(self):
         target = self.scheduled_follow_up()
         # The last background look was a moment ago, so only a forced look reads Gmail now.
-        from opportunity_app.outreach_delivery import check_deliveries
+        from opportunity_app.outreach.delivery import check_deliveries
         check_deliveries(self.conn, user_id=USER, client_factory=self.factory)
         first_send = len(self.gmail.requests)
         self.assertEqual([item["state"] for item in self.due(target)], ["sent"])
@@ -288,16 +289,16 @@ class SendGateTests(unittest.TestCase):
         self.assertEqual(len(self.gmail.requests), asked)
 
     def test_a_slowdown_that_escapes_a_check_still_only_holds_the_email(self):
-        from opportunity_app.outreach_review import fresh_look
+        from opportunity_app.outreach.review import fresh_look
 
         target = self.scheduled_follow_up()
-        with mock.patch("opportunity_app.outreach_review.check_deliveries",
+        with mock.patch("opportunity_app.outreach.review.check_deliveries",
                         side_effect=gmail_client.GmailThrottled("Gmail asked the app to slow down")):
             look = fresh_look(self.conn, target["id"], user_id=USER, client_factory=self.factory)
         self.assertEqual(look, {"ok": False, "reason": "Gmail asked the app to slow down"})
 
     def test_a_failed_bounce_read_is_not_taken_as_no_bounce(self):
-        from opportunity_app.outreach_delivery import check_deliveries
+        from opportunity_app.outreach.delivery import check_deliveries
 
         target = self.scheduled_follow_up()
         self.gmail.thread_status = 400

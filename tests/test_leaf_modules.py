@@ -127,23 +127,23 @@ LEAVES: dict[str, tuple[set[str], set[str]]] = {
     # nor the mail reader. mail_message and timestamps are stdlib-only leaves.
     "opportunity_app/automation/background.py": (dotted("mail.message", "core.timestamps"), dotted("automation.ledger")),
     "opportunity_app/integrations/web_fetch.py": ({"httpx", "httpcore"}, set()),
-    "opportunity_app/outreach_config.py": (dotted("integrations.agent_providers"), set()),
-    "opportunity_app/contact_names.py": (set(), set()),
-    "opportunity_app/outreach_batch.py": (dotted("integrations.agent_providers"), set()),
+    "opportunity_app/outreach/config.py": (dotted("integrations.agent_providers"), set()),
+    "opportunity_app/outreach/contact_names.py": (set(), set()),
+    "opportunity_app/outreach/batch.py": (dotted("integrations.agent_providers"), set()),
     "opportunity_app/core/daily_lock.py": ({f"{PACKAGE}.ROOT"}, set()),
     # The two API SDKs are imported where a provider is built, so a missing one fails only that provider.
     "opportunity_app/integrations/agent_providers.py": (set(), {"openai", "anthropic"}),
     "opportunity_app/__init__.py": (set(), set()),
     # Storage over outreach, not a pure leaf: it may import only outreach and the clock.
-    "opportunity_app/outreach_versions.py": (dotted("outreach", "core.timestamps"), set()),
+    "opportunity_app/outreach/versions.py": (dotted("outreach.targets", "core.timestamps"), set()),
     # Split out of outreach.py. Replies is pure text rules; location and greeting read the student's profile (the owner's
     # file, or another user's confirmed facts through preparation, which is imported where used).
-    "opportunity_app/outreach_replies.py": (set(), set()),
-    "opportunity_app/outreach_location.py": (dotted("opportunities.legacy", "core.schema"), dotted("student.preparation")),
-    "opportunity_app/outreach_greeting.py": (dotted("outreach_identity", "outreach_location", "core.schema"), dotted("student.preparation")),
+    "opportunity_app/outreach/replies.py": (set(), set()),
+    "opportunity_app/outreach/location.py": (dotted("opportunities.legacy", "core.schema"), dotted("student.preparation")),
+    "opportunity_app/outreach/greeting.py": (dotted("outreach.identity", "outreach.location", "core.schema"), dotted("student.preparation")),
     # Split out of outreach_gmail.py. The claim ledger needs only the process id, the unique-violation test and the clock, so
     # the contact-form submitter and the thank-you recovery can hold claims without loading the Gmail REST client.
-    "opportunity_app/send_claims.py": ({f"{PACKAGE}.SERVER_INSTANCE", *dotted("core.database", "core.timestamps")}, set()),
+    "opportunity_app/outreach/send_claims.py": ({f"{PACKAGE}.SERVER_INSTANCE", *dotted("core.database", "core.timestamps")}, set()),
 }
 
 # Leaves that load nothing late: no function-level import at all, not even of the standard library.
@@ -568,7 +568,7 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         self.assertIs(read_model.sort_key, identity.sort_key)
 
     def test_outreach_company_key_is_a_different_rule_and_stays_separate(self):
-        from opportunity_app import outreach_identity
+        from opportunity_app.outreach import identity as outreach_identity
         from pipeline_core.identity import employer_key, sort_key
 
         # NFKC, "&" becomes "and", a leading "The" and trailing legal words dropped, word order kept.
@@ -971,7 +971,7 @@ class GmailClientLeafTests(unittest.TestCase):
         self.assertEqual(schedule.take_due("u", [text], now), [text])
 
     def test_each_watcher_keeps_its_own_look_state_under_its_own_name(self):
-        from opportunity_app import outreach_delivery, outreach_gmail_sends
+        from opportunity_app.outreach import delivery as outreach_delivery, gmail_sends as outreach_gmail_sends
 
         self.assertIs(outreach_delivery._LOOKS.last, outreach_delivery._LAST_LOOK)
         self.assertIs(outreach_gmail_sends._LOOKS.last, outreach_gmail_sends._LAST_LOOK)
@@ -981,43 +981,43 @@ class GmailClientLeafTests(unittest.TestCase):
 
 class OutreachIdentityTests(unittest.TestCase):
     def test_company_identity_does_not_load_the_mail_readers(self):
-        heavy = dotted("outreach_inbox", "applications.inbox", "outreach_labels", "outreach_delivery", "automation.ledger", "api")
-        self.assertEqual(all_imports(APP / "outreach_identity.py") & heavy, set())
+        heavy = dotted("outreach.inbox", "applications.inbox", "outreach.labels", "outreach.delivery", "automation.ledger", "api")
+        self.assertEqual(all_imports(APP / "outreach/identity.py") & heavy, set())
 
     def test_importing_it_in_a_fresh_process_loads_no_sender_gmail_or_automation(self):
         # all_imports reads the imports one file writes; only a fresh interpreter shows what they pull in after them.
         script = (
-            "import sys, opportunity_app.outreach_identity\n"
+            "import sys, opportunity_app.outreach.identity\n"
             "print(sorted(name for name in sys.modules if name.startswith('opportunity_app.') or name in ('cryptography', 'httpx')))\n"
         )
         done = subprocess.run([sys.executable, "-c", script], cwd=ROOT, capture_output=True, text=True, timeout=120)
         self.assertEqual(done.returncode, 0, done.stderr)
         loaded = set(ast.literal_eval(done.stdout.strip().splitlines()[-1]))
         heavy = dotted(
-            "outreach", "outreach_contacts", "outreach_forms", "outreach_gmail", "outreach_inbox", "applications.inbox",
-            "outreach_labels", "outreach_delivery", "automation.ledger", "core.schema", "integrations.gmail_client", "mail.connections", "api",
+            "outreach.targets", "outreach.contacts", "outreach.forms", "outreach.gmail", "outreach.inbox", "applications.inbox",
+            "outreach.labels", "outreach.delivery", "automation.ledger", "core.schema", "integrations.gmail_client", "mail.connections", "api",
         ) | {"cryptography", "httpx"}
         self.assertEqual(loaded & heavy, set())
 
     def test_the_mailbox_names_it_shares_live_in_a_leaf_that_the_senders_import_from(self):
-        for module in ("outreach_contacts.py", "outreach_forms.py", "outreach_reply_senders.py", "outreach_identity.py"):
+        for module in ("outreach/contacts.py", "outreach/forms.py", "outreach/reply_senders.py", "outreach/identity.py"):
             with self.subTest(module=module):
-                self.assertIn(f"{PACKAGE}.contact_names", all_imports(APP / module))
+                self.assertIn(f"{PACKAGE}.outreach.contact_names", all_imports(APP / module))
 
     def test_the_interviewer_and_the_quote_check_take_identity_from_it_not_from_the_mail_reader(self):
-        for module in ("outreach_interviewer.py", "quote_check.py"):
+        for module in ("outreach/interviewer.py", "outreach/quote_check.py"):
             with self.subTest(module=module):
-                self.assertNotIn(f"{PACKAGE}.outreach_inbox", all_imports(APP / module))
-                self.assertIn(f"{PACKAGE}.outreach_identity", all_imports(APP / module))
-        self.assertNotIn(f"{PACKAGE}.outreach_inbox", all_imports(APP / "outreach_research.py"))
+                self.assertNotIn(f"{PACKAGE}.outreach.inbox", all_imports(APP / module))
+                self.assertIn(f"{PACKAGE}.outreach.identity", all_imports(APP / module))
+        self.assertNotIn(f"{PACKAGE}.outreach.inbox", all_imports(APP / "outreach/research.py"))
 
 
 # --- Workstream B: background workers, the AI CLI runner, outreach leaves ---------------------------------------------
 
 from opportunity_app.integrations import agent_providers, web_fetch
 from opportunity_app.automation import background, inbox_watcher
-from opportunity_app import outreach_batch, outreach_config, outreach_review  # noqa: E402
-from opportunity_app.outreach import create_target, get_target, latest_event_stamp, log_event, withdraw_auto_approval  # noqa: E402
+from opportunity_app.outreach import batch as outreach_batch, config as outreach_config, review as outreach_review  # noqa: E402
+from opportunity_app.outreach.targets import create_target, get_target, latest_event_stamp, log_event, withdraw_auto_approval  # noqa: E402
 from opportunity_app.core.database import connect_product  # noqa: E402
 
 from helpers_platform import build_and_migrate  # noqa: E402

@@ -22,7 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import httpx
 from cryptography.fernet import Fernet
 
-from opportunity_app import outreach_labels, pipeline_mailbox
+from opportunity_app.outreach import labels as outreach_labels
+from opportunity_app import pipeline_mailbox
 from opportunity_app.core.database import connect_product
 from opportunity_app.core.timestamps import utc_now
 

@@ -407,7 +407,7 @@ def validate_profile(profile: Any) -> dict[str, Any]:
             errors.append(f"available_terms entry {term!r} should look like 'summer 2027'")
     home = str(profile.get("break_location") or "").strip()
     if home:
-        from .outreach_location import student_home
+        from .outreach.location import student_home
 
         regions = [region for region in profile.get("regions") or [] if isinstance(region, dict)]
         if not student_home({"break_location": home}, regions):

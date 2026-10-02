@@ -454,7 +454,7 @@ def auto_close_due(conn: sqlite3.Connection, user_id: str, *, today: date | None
     undo) is not tried again for the same follow-up date, so an undo sticks and
     costs no Gmail read on later passes.
     """
-    from ..outreach import heard_back, lifecycle_suggestion, list_targets, local_today
+    from ..outreach.targets import heard_back, lifecycle_suggestion, list_targets, local_today
 
     today = today or local_today(conn, user_id)
     due = []
@@ -484,11 +484,11 @@ def auto_close(
 
     Returns one entry per company it looked at: closed, or held with the reason.
     """
-    from ..outreach import NO_RESPONSE_AFTER_DAYS, get_target, heard_back, lifecycle_suggestion, local_today
+    from ..outreach.targets import NO_RESPONSE_AFTER_DAYS, get_target, heard_back, lifecycle_suggestion, local_today
     from ..integrations.gmail_client import connection_state
     from ..mail.gmail_connection import connector_row
-    from ..outreach_inbox import REPLY_WINDOW, watched_ids
-    from ..outreach_review import FRESH_LOOK_REASONS, fresh_look
+    from ..outreach.inbox import REPLY_WINDOW, watched_ids
+    from ..outreach.review import FRESH_LOOK_REASONS, fresh_look
 
     results: list[dict[str, Any]] = []
     if not automation.is_enabled(conn, user_id, "outreach_auto_close"):
@@ -588,7 +588,7 @@ def _follow_up_key(target: dict[str, Any]) -> str:
 
 
 def _latest_event(conn: sqlite3.Connection, target_id: str, user_id: str, event_type: str) -> datetime | None:
-    from ..outreach import latest_event_stamp
+    from ..outreach.targets import latest_event_stamp
 
     stamp = latest_event_stamp(conn, target_id, user_id, event_type)
     return parse_app_instant(stamp) if stamp else None
@@ -601,7 +601,7 @@ def follow_up_draft_due(conn: sqlite3.Connection, user_id: str, *, now: datetime
     undo) is not written again for the same follow-up date, and one that failed
     waits FOLLOW_UP_RETRY_AFTER.
     """
-    from ..outreach import heard_back, list_targets, local_today
+    from ..outreach.targets import heard_back, list_targets, local_today
 
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     today = local_today(conn, user_id, now)
@@ -633,8 +633,8 @@ def auto_follow_up_draft(
     pause or the switch turned off during the model call saves nothing and
     is not a failure: it is tried again on resume.
     """
-    from ..outreach import log_event
-    from ..outreach_drafting import compose_draft
+    from ..outreach.targets import log_event
+    from ..outreach.drafting import compose_draft
 
     target_id = target["id"]
     try:

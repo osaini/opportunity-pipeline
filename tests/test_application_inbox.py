@@ -910,7 +910,7 @@ class OutreachPossibleReplyRecordTests(MailCase):
 
     def setUp(self):
         super().setUp()
-        from opportunity_app.outreach import create_target
+        from opportunity_app.outreach.targets import create_target
 
         self.bovi = create_target(self.conn, {"company": "Bovi Robotics", "website": "https://bovi.example", "status": "sent"}, user_id=USER)
         with self.conn:
@@ -940,7 +940,7 @@ class OutreachPossibleReplyRecordTests(MailCase):
         import os
 
         from opportunity_app.accounts.operations import run_retention
-        from opportunity_app.outreach import get_target, heard_back
+        from opportunity_app.outreach.targets import get_target, heard_back
 
         now = datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
         self.mail("m-old", now - timedelta(days=31))
@@ -2097,7 +2097,7 @@ class OutreachHandoffTests(MailCase):
 
     def setUp(self):
         super().setUp()
-        from opportunity_app.outreach import create_target
+        from opportunity_app.outreach.targets import create_target
 
         self.target = create_target(self.conn, {
             "company": "Acme Robotics", "website": "https://acme.com", "contact_email": "dana@acme.com", "status": "sent",
@@ -2109,7 +2109,7 @@ class OutreachHandoffTests(MailCase):
 
     def outreach_took(self, gmail_id, kind, *, via, reason, sender="careers@acme.com", target_id=None, received=None, text=""):
         """Record the message in outreach_inbox_messages as outreach's capture does, under its current rules."""
-        from opportunity_app import outreach_inbox
+        from opportunity_app.outreach import inbox as outreach_inbox
 
         stamp = (received or now_utc()).isoformat(timespec="seconds")
         with self.conn:
@@ -2179,7 +2179,7 @@ class OutreachHandoffTests(MailCase):
         self.assertEqual(self.gmail.message_gets, len(read))
 
     def test_a_row_the_old_rules_set_aside_keeps_the_email_with_outreach_until_outreach_reads_it_again(self):
-        from opportunity_app import outreach_inbox
+        from opportunity_app.outreach import inbox as outreach_inbox
 
         self.started()
         received = now_utc() - timedelta(minutes=30)
@@ -2220,7 +2220,7 @@ class OutreachHandoffTests(MailCase):
         self.assertEqual(self.gmail.message_gets, 1, "taken back once, read once")
 
     def test_a_possible_reply_the_student_says_is_not_one_is_read_on_the_next_pass(self):
-        from opportunity_app import outreach_inbox
+        from opportunity_app.outreach import inbox as outreach_inbox
 
         self.started()
         self.deliver("m-p", self.recruiter_mail())
@@ -2238,7 +2238,7 @@ class OutreachHandoffTests(MailCase):
         self.assertEqual(self.gmail.message_gets, 1, "not read twice")
 
     def test_a_possible_reply_the_student_confirms_stays_with_outreach_only_when_it_came_in_the_thread(self):
-        from opportunity_app import outreach_inbox
+        from opportunity_app.outreach import inbox as outreach_inbox
 
         self.started()
         self.deliver("m-in-thread", self.recruiter_mail(sender="Pat Kim <pat@talent.example>"), thread_id="thread-of-the-email")
@@ -2259,7 +2259,7 @@ class OutreachHandoffTests(MailCase):
         self.assertEqual(self.gmail.message_gets, 1)
 
     def test_deleting_the_company_in_outreach_hands_its_waiting_possible_reply_to_this_reader(self):
-        from opportunity_app.outreach import delete_target
+        from opportunity_app.outreach.targets import delete_target
 
         self.started()
         self.deliver("m-p", self.recruiter_mail())
@@ -2279,7 +2279,7 @@ class OutreachHandoffTests(MailCase):
         mail_trust.decide(self.conn, USER, suggestion["id"], "trusted")
 
     def test_an_email_taken_back_from_outreach_is_only_ever_proposed_even_from_a_trusted_sender(self):
-        from opportunity_app import outreach_inbox
+        from opportunity_app.outreach import inbox as outreach_inbox
 
         self.trust_acme()
         self.started()
@@ -2302,7 +2302,7 @@ class OutreachHandoffTests(MailCase):
         self.assertEqual(self.stage(self.acme)[0], "applied")
 
     def test_an_email_taken_back_is_read_on_a_later_pass_when_this_one_is_cut_short(self):
-        from opportunity_app import outreach_inbox
+        from opportunity_app.outreach import inbox as outreach_inbox
 
         self.started()
         for gmail_id in ("m-p1", "m-p2"):
@@ -2328,7 +2328,7 @@ class OutreachHandoffTests(MailCase):
         self.assertEqual(self.gmail.message_gets, 3, "one read throttled, then one read each")
 
     def test_while_automation_is_paused_an_email_taken_back_waits_like_the_rest(self):
-        from opportunity_app import outreach_inbox
+        from opportunity_app.outreach import inbox as outreach_inbox
 
         self.started()
         self.deliver("m-p", self.recruiter_mail())
@@ -2346,7 +2346,7 @@ class OutreachHandoffTests(MailCase):
         self.assertEqual({action["status"] for action in self.read_here("m-p")}, {"proposed"})
 
     def test_an_email_taken_back_is_recorded_like_any_email_this_reader_reads(self):
-        from opportunity_app import outreach_inbox
+        from opportunity_app.outreach import inbox as outreach_inbox
 
         self.started()
         # Arrived four hours ago; outreach held it from then until the student said it is not a reply.
@@ -2367,7 +2367,7 @@ class OutreachHandoffTests(MailCase):
         self.assertTrue(listed["gmail_url"].endswith("/thread-careers"))
 
     def test_an_email_from_before_the_switch_taken_back_from_outreach_is_still_only_proposed(self):
-        from opportunity_app import outreach_inbox
+        from opportunity_app.outreach import inbox as outreach_inbox
 
         self.trust_acme()
         received = now_utc() - timedelta(days=10)

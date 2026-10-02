@@ -6,8 +6,8 @@ import sqlite3
 from typing import Any
 
 from ..core.schema import LOCAL_USER_ID
-from ..outreach_discovery import scope_definitions as discovery_scope_definitions, last_runs as last_discovery_runs
-from ..outreach_recontact import eligible_targets as recontact_eligible_targets
+from ..outreach.discovery import scope_definitions as discovery_scope_definitions, last_runs as last_discovery_runs
+from ..outreach.recontact import eligible_targets as recontact_eligible_targets
 from .context import AppContext
 
 

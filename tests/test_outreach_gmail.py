@@ -20,7 +20,8 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import SERVER_INSTANCE, STATIC_DIR, outreach_delivery, outreach_gmail
+from opportunity_app import SERVER_INSTANCE, STATIC_DIR
+from opportunity_app.outreach import delivery as outreach_delivery, gmail as outreach_gmail
 from opportunity_app.automation import ledger as automation, health as automation_health
 from opportunity_app.mail import gmail_connection
 from opportunity_app.integrations import gmail_client
@@ -661,7 +662,7 @@ class GmailDraftTests(unittest.TestCase):
     def test_a_send_is_recorded_even_when_the_status_cannot_be_updated(self):
         self.connect()
         target = self.approved_target()
-        with mock.patch("opportunity_app.outreach_gmail.update_target", side_effect=sqlite3.OperationalError("database is locked")):
+        with mock.patch("opportunity_app.outreach.gmail.update_target", side_effect=sqlite3.OperationalError("database is locked")):
             response = self.send(target)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertFalse(response.json()["marked"])

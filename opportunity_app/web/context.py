@@ -42,15 +42,15 @@ from ..opportunities.early_programs import DEFAULT_EARLY_PROGRAMS
 from ..mail.classifiers import build_client as build_inbox_client, client_for as inbox_client_for
 from ..automation.inbox_watcher import InboxWatcher
 from ..opportunities.legacy import load_env_file
-from ..outreach_automation import AutomationWorker
-from ..outreach_call_prep import CallPrepWorker, auto_queue_call_prep
-from ..outreach_discovery import DiscoveryManager
-from ..outreach_forms import default_submitter_factory as default_form_submitter_factory
-from ..outreach_interviewer import web_interviewer
-from ..outreach_recontact import RecontactManager
-from ..outreach_render import default_renderer
-from ..outreach_research import web_researcher
-from ..outreach_settings import OutreachSettings
+from ..outreach.automation import AutomationWorker
+from ..outreach.call_prep import CallPrepWorker, auto_queue_call_prep
+from ..outreach.discovery import DiscoveryManager
+from ..outreach.forms import default_submitter_factory as default_form_submitter_factory
+from ..outreach.interviewer import web_interviewer
+from ..outreach.recontact import RecontactManager
+from ..outreach.render import default_renderer
+from ..outreach.research import web_researcher
+from ..outreach.settings import OutreachSettings
 from ..integrations.smtp_probe import default_verifier as default_smtp_verifier
 from ..student.preparation import DEFAULT_MOCK_AUDIO_STORAGE
 from ..opportunities.refresh import RefreshManager

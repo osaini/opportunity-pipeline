@@ -15,11 +15,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
-from opportunity_app import outreach as outreach_module
+from opportunity_app.outreach import targets as outreach_module
 from opportunity_app.api import create_app
 from opportunity_app.core.database import is_unique_violation, connect_product
 from opportunity_app.mail.connections import update_preferences
-from opportunity_app.outreach import (
+from opportunity_app.outreach.targets import (
     CLAIM_DETAIL_LIMIT,
     _claim_detail,
     create_target,
@@ -33,9 +33,9 @@ from opportunity_app.outreach import (
     parse_import,
     update_target,
 )
-from opportunity_app.outreach_location import location_usable
-from opportunity_app import outreach_profile as profile_module
-from opportunity_app.outreach_profile import apply_location
+from opportunity_app.outreach.location import location_usable
+from opportunity_app.outreach import company_profile as profile_module
+from opportunity_app.outreach.company_profile import apply_location
 from opportunity_app.core.schema import ensure_product_schema
 from opportunity_app.core.timestamps import utc_now
 
@@ -145,7 +145,7 @@ class OutreachApiTests(unittest.TestCase):
 
     def test_marking_sent_sets_sent_date_and_follow_up(self):
         created = self.create()
-        with mock.patch("opportunity_app.outreach.local_today", return_value=date(2026, 9, 16)):
+        with mock.patch("opportunity_app.outreach.targets.local_today", return_value=date(2026, 9, 16)):
             sent = self.client.patch(f"/api/v1/outreach/{created['id']}", headers=AUTH, json={"status": "sent"}).json()
         self.assertEqual(sent["sent_at"], "2026-09-16")
         self.assertEqual(sent["follow_up_at"], "2026-09-23")
@@ -336,7 +336,7 @@ class DraftCheckTests(unittest.TestCase):
 
     def test_csv_formula_codec_round_trips_apostrophes_and_formulas(self):
         values = ["=x", "'=x", "'plain", "''=x", "'''", "-5", "plain"]
-        items = [{field: "" for field in __import__("opportunity_app.outreach", fromlist=["EXPORT_FIELDS"]).EXPORT_FIELDS} for _ in values]
+        items = [{field: "" for field in __import__("opportunity_app.outreach.targets", fromlist=["EXPORT_FIELDS"]).EXPORT_FIELDS} for _ in values]
         for item, value in zip(items, values):
             item.update(company=value, source_urls=[])
         encoded = export_csv(items)

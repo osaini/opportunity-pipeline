@@ -8,9 +8,9 @@ from typing import Any, Literal
 from fastapi import Depends, HTTPException, Query, status
 
 from ..overrides import shared_router
-from ...outreach import DraftChangedError, OutreachNotFoundError, approve_draft as approve_outreach_draft
-from ...outreach_drafting import generate_draft as generate_outreach_draft
-from ...outreach_versions import (
+from ...outreach.targets import DraftChangedError, OutreachNotFoundError, approve_draft as approve_outreach_draft
+from ...outreach.drafting import generate_draft as generate_outreach_draft
+from ...outreach.versions import (
     DraftVersionNotFoundError,
     draft_versions as outreach_draft_versions,
     restore_draft_version as restore_outreach_draft_version,

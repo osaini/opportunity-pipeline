@@ -12,7 +12,7 @@ from fastapi import Depends, File, HTTPException, Query, Response, UploadFile, s
 
 from ..overrides import shared_router
 from ...core.company_tags import decorate_outreach_with_tags, sync_outreach_tags
-from ...outreach import (
+from ...outreach.targets import (
     CONTACT_CONFIDENCE,
     LocationConflictError,
     OUTREACH_PRIORITIES,
@@ -31,10 +31,10 @@ from ...outreach import (
     parse_import as parse_outreach_import,
     update_target as update_outreach_target,
 )
-from ...outreach_call_prep import auto_queue_call_prep
-from ...outreach_config import sender_account
-from ...outreach_automation import settings as automation_settings
-from ...outreach_gmail import gmail_drafts_status
+from ...outreach.call_prep import auto_queue_call_prep
+from ...outreach.config import sender_account
+from ...outreach.automation import settings as automation_settings
+from ...outreach.gmail import gmail_drafts_status
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection
 from ..errors import outreach_not_found

@@ -15,10 +15,10 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
-from opportunity_app.outreach import create_target, get_target, list_targets
-from opportunity_app.outreach_contacts import apply_candidate, crawl_site, discover_candidates, find_contacts
+from opportunity_app.outreach.targets import create_target, get_target, list_targets
+from opportunity_app.outreach.contacts import apply_candidate, crawl_site, discover_candidates, find_contacts
 from opportunity_app.integrations.web_fetch import SafeFetcher
-from opportunity_app.outreach_discovery import DiscoveryBusy, DiscoveryManager, _RunLock, _scope_brief, run_discovery, scope_definitions, validate_proposals
+from opportunity_app.outreach.discovery import DiscoveryBusy, DiscoveryManager, _RunLock, _scope_brief, run_discovery, scope_definitions, validate_proposals
 from opportunity_app.core.schema import ensure_product_schema
 from opportunity_app.core.database import connect_product
 
@@ -319,7 +319,7 @@ class DiscoveryTests(unittest.TestCase):
         self.assertIn("not requested", reasons["Wrong scope"])
 
         acme = next(item for item in list_targets(self.conn, user_id=USER) if item["company"] == "Acme")
-        from opportunity_app.outreach import outreach_summary
+        from opportunity_app.outreach.targets import outreach_summary
 
         summary = outreach_summary(list_targets(self.conn, user_id=USER))
         self.assertEqual(summary["new_from_search"], 1)
@@ -342,7 +342,7 @@ class DiscoveryTests(unittest.TestCase):
         leaving the comma searched every page for "acme robotics," and rejected
         real companies with "no source mentions the company".
         """
-        from opportunity_app.outreach_identity import mentions_company
+        from opportunity_app.outreach.identity import mentions_company
 
         page = "About Acme Robotics -- we build robots."
         for name in (
@@ -359,7 +359,7 @@ class DiscoveryTests(unittest.TestCase):
                 self.assertTrue(mentions_company(page, name, "acme.example"))
 
     def test_a_different_company_is_still_not_a_mention(self):
-        from opportunity_app.outreach_identity import mentions_company
+        from opportunity_app.outreach.identity import mentions_company
 
         page = "About Acme Robotics -- we build robots."
         self.assertFalse(mentions_company(page, "Bovi Robotics, Inc.", "bovi.com"))
@@ -546,7 +546,7 @@ class ScopeDefinitionTests(unittest.TestCase):
                 "local-accelerators": {"brief": "ATDC and Engage in Atlanta."},
                 "made-up": {"brief": "ignored"},
             }}), encoding="utf-8")
-            with mock.patch("opportunity_app.outreach_discovery.SOURCES_LOCAL_PATH", local):
+            with mock.patch("opportunity_app.outreach.discovery.SOURCES_LOCAL_PATH", local):
                 definitions = scope_definitions()
         self.assertEqual(definitions["local-accelerators"]["brief"], "ATDC and Engage in Atlanta.")
         self.assertEqual(definitions["local-accelerators"]["channel"], "Local accelerators")
@@ -596,7 +596,7 @@ class CommandLineTests(unittest.TestCase):
 
     def test_a_busy_lock_reports_a_temporary_failure(self):
         from opportunity_app import outreach_cli
-        from opportunity_app.outreach_discovery import REPORT_DIR, _RunLock
+        from opportunity_app.outreach.discovery import REPORT_DIR, _RunLock
 
         with tempfile.TemporaryDirectory() as tmp:
             _, platform_path = build_and_migrate(Path(tmp))
