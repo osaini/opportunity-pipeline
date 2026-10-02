@@ -846,6 +846,40 @@ class ReplyCaptureTests(ReplyCaptureFixture, unittest.TestCase):
         self.assertEqual([item["reason"] for item in result["possible"]], ["mailing_tool"])
         self.assertEqual(self.target(target)["status"], "sent")
 
+    def test_a_sequence_bump_whose_tool_link_is_only_in_the_quoted_step_is_a_possible_reply(self):
+        # Sequence tools quote the step before, tracked link and all; the new text has no link, the quote does.
+        target = self.sent_target()
+        self.arrive("seq-quoted-link", mail(
+            "Hi Sam, just bumping this to the top of your inbox.\n\n"
+            "On Mon, Sep 22, 2026 at 9:00 AM Mike Chen <mike.chen@bovi.example> wrote:\n"
+            "> Would a quick call work? https://t.hubspotlinks.com/Ctc/abc\n",
+            sender="Mike Chen <mike.chen@bovi.example>", subject="Re: Quick question"))
+        result = self.check()
+        self.assertEqual(result["replies"], [])
+        self.assertEqual([item["reason"] for item in result["possible"]], ["mailing_tool"])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    ATTRIBUTED_QUOTE_PIXEL = (
+        '<div>Hi Sam, bumping this.</div><div>On Mon, Sep 22, 2026 at 9:00 AM Mike Chen '
+        '&lt;mike.chen@bovi.example&gt; wrote:<br></div><blockquote type="cite">old</blockquote>'
+        '<img src="https://t.hubspotemail.net/e2t/to/abc" width="1" height="1">'
+    )
+
+    def assert_attributed_quote_pixel_is_possible(self, sender):
+        # Thunderbird and many sequence tools put the attribution line outside the blockquote, then append the pixel.
+        target = self.sent_target()
+        self.arrive("seq-attr", html_mail(self.ATTRIBUTED_QUOTE_PIXEL, sender=sender, subject="Re: Quick question"))
+        result = self.check()
+        self.assertEqual(result["replies"], [])
+        self.assertEqual([item["reason"] for item in result["possible"]], ["mailing_tool"])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_a_tracking_pixel_after_an_attributed_quote_from_someone_at_the_company_is_seen(self):
+        self.assert_attributed_quote_pixel_is_possible("Mike Chen <mike.chen@bovi.example>")
+
+    def test_a_tracking_pixel_after_an_attributed_quote_from_the_address_written_to_is_seen(self):
+        self.assert_attributed_quote_pixel_is_possible("Greg Lee <greg@bovi.example>")
+
     SALES_PIXEL = (
         '<div>Hi Sam, just bumping this to the top of your inbox.</div>'
         '<img src="https://t.hubspotemail.net/e2t/to/abc" width="1" height="1">'

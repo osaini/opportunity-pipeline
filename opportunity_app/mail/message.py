@@ -568,6 +568,30 @@ def unquoted_link_hosts(message: EmailMessage) -> set[str]:
     return hosts
 
 
+def all_link_hosts(message: EmailMessage) -> set[str]:
+    """The host of every link in a message, quoted email included. Hosts only.
+
+    Links written out in the text and every href and src in the HTML (a
+    tracking pixel and protocol-relative links too), with nothing cut out. This
+    is for checks where a link anywhere is the sign, such as a sales tool whose
+    sequence step quotes the step before, tracked link and all, or appends its
+    pixel after the quote. unquoted_link_hosts is for checks where the student's
+    own quoted email must not count. An unreadable HTML part adds nothing.
+    """
+    hosts = set(_hosts(body_text(message, whole=False)))
+    part = message.get_body(preferencelist=("html",))
+    if part is not None:
+        try:
+            markup = str(part.get_content())
+        except Exception:  # noqa: BLE001 - a part that cannot be read has no links to give
+            return hosts
+        for match in _ATTRIBUTE_URL.finditer(markup):
+            host = _attribute_host(next(group for group in match.groups() if group is not None))
+            if host:
+                hosts.add(host)
+    return hosts
+
+
 def link_hosts_or_none(message: EmailMessage) -> list[str] | None:
     """The host of every link in a message's text parts, plain and HTML (href too), quoted parts included. Hosts only.
 

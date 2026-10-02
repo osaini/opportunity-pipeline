@@ -204,7 +204,9 @@ _SALES_HOSTS = (
 def _sales_tool(message: EmailMessage) -> bool:
     if any(str(name).casefold().startswith("x-hubspot") for name in message.keys()):
         return True
-    hosts = _link_hosts(message) | {domain_of(address) for address in mail_message.addresses(message, "Return-Path")}
+    # Every link, quoted parts included: a sequence step quotes the step before (tracked link and all) and appends its
+    # pixel after the quote, and erring here only ever makes a message a possible reply, never a confirmed one.
+    hosts = mail_message.all_link_hosts(message) | {domain_of(address) for address in mail_message.addresses(message, "Return-Path")}
     return any(marker in host for host in hosts for marker in _SALES_HOSTS)
 
 
