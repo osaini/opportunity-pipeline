@@ -30,7 +30,7 @@ from urllib.parse import quote
 
 import httpx
 
-from .gmail_client import (
+from .integrations.gmail_client import (
     ClientFactory,
     GmailAuthError,
     GmailNeedsReadScope,

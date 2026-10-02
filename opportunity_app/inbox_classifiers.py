@@ -40,7 +40,7 @@ from typing import Any, Callable
 from . import automation
 from .settings_store import get_setting, put_setting
 from .timestamps import utc_now
-from .typesafe_decisions import DecisionClient, TypeSafeClient, TypeSafeError
+from .integrations.typesafe_decisions import DecisionClient, TypeSafeClient, TypeSafeError
 
 SETTING_KEY = "jev_inbox_suggestions"
 # v2 added the assessment and scheduling kinds (application mail). The

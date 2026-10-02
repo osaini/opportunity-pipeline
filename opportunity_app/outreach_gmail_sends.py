@@ -29,7 +29,7 @@ from uuid import uuid4
 import httpx
 
 from . import SERVER_INSTANCE
-from .gmail_client import (
+from .integrations.gmail_client import (
     ClientFactory,
     GmailAuthError,
     GmailNeedsReadScope,

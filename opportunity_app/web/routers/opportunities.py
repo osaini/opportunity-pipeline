@@ -22,7 +22,7 @@ from ...urgent import (
 )
 from ...profile import is_personalized
 from ...profile_store import read_stored_profile
-from ...typesafe_decisions import (
+from ...integrations.typesafe_decisions import (
     TypeSafeError,
     TypeSafeNotConfigured,
     review_opportunity as review_opportunity_with_typesafe,

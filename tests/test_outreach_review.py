@@ -16,7 +16,8 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, gmail_client, outreach_delivery, outreach_inbox
+from opportunity_app import STATIC_DIR, outreach_delivery, outreach_inbox
+from opportunity_app.integrations import gmail_client
 from opportunity_app.api import create_app
 from opportunity_app.outreach import log_event
 from opportunity_app.outreach_automation import update_settings
@@ -421,7 +422,7 @@ class SendGateTests(unittest.TestCase):
 
     def test_the_reviewer_is_the_students_pick_or_another_company_than_the_writer(self):
         # A fixed catalog, so the answer does not depend on which CLIs this machine has.
-        from opportunity_app import agent_providers
+        from opportunity_app.integrations import agent_providers
 
         both = [
             {"id": provider, "display_name": provider, "model": "m", "configured": provider in {"claude-code", "codex-cli"}, "setup_hint": ""}

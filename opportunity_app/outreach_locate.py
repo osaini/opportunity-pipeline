@@ -24,7 +24,7 @@ from .contact_names import website_domain
 from .outreach_agents import Runner
 from .outreach_location import PAGE_CHECKED_BASES
 from .outreach_batch import answers_by_target
-from .web_fetch import SafeFetcher, public_web_url_error
+from .integrations.web_fetch import SafeFetcher, public_web_url_error
 from .outreach_identity import mentions_company
 from .outreach_profile import state_code, apply_location, format_location
 

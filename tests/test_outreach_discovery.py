@@ -17,7 +17,7 @@ from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
 from opportunity_app.outreach import create_target, get_target, list_targets
 from opportunity_app.outreach_contacts import apply_candidate, crawl_site, discover_candidates, find_contacts
-from opportunity_app.web_fetch import SafeFetcher
+from opportunity_app.integrations.web_fetch import SafeFetcher
 from opportunity_app.outreach_discovery import DiscoveryBusy, DiscoveryManager, _RunLock, _scope_brief, run_discovery, scope_definitions, validate_proposals
 from opportunity_app.schema import ensure_product_schema
 from opportunity_app.database import connect_product
@@ -437,7 +437,7 @@ class DiscoveryTests(unittest.TestCase):
             name, model = "anthropic", "test-model"
 
             def create(self, *, instructions, messages, tools, max_output_tokens):
-                from opportunity_app.agent_providers import ProviderReply
+                from opportunity_app.integrations.agent_providers import ProviderReply
 
                 drafted.append(json.loads(messages[-1]["content"].split("\n\nYour previous draft")[0]))
                 return ProviderReply(text="no draft")

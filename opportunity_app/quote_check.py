@@ -31,13 +31,13 @@ import unicodedata
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
-from .agent_providers import CliAgentProvider
+from .integrations.agent_providers import CliAgentProvider
 from .contact_names import website_domain
 from .mail_trust import FREEMAIL, registrable_domain
 from .outreach_contacts import PageParser
 from .outreach_email_search import BLOCKED_HOSTS
 from .outreach_identity import LEGAL_SUFFIXES, company_key, is_institution, is_platform_host, names_host
-from .web_fetch import UNVERIFIABLE_STATUSES, FetchResult, SafeFetcher, public_web_url_error
+from .integrations.web_fetch import UNVERIFIABLE_STATUSES, FetchResult, SafeFetcher, public_web_url_error
 
 # Sends instructions and content to a model and returns its reply.
 Judge = Callable[[str, str], str]

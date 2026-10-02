@@ -32,12 +32,12 @@ import httpx
 
 from .. import APPLY_ROOT, DEFAULT_PLATFORM_DB, DEFAULT_PROFILE, STATIC_DIR
 from .. import apply_preflight, apply_runs
-from ..agent_providers import AgentProvider, build_provider
+from ..integrations.agent_providers import AgentProvider, build_provider
 from ..apply_schema_client import SchemaClient, default_schema_client_factory
 from ..boards import BoardTracker
 from ..captures import DEFAULT_CAPTURE_STORAGE
 from ..database import is_postgres_target
-from ..document_pdf import pdf_renderer
+from ..integrations.pdf import pdf_renderer
 from ..early_programs import DEFAULT_EARLY_PROGRAMS
 from ..inbox_classifiers import build_client as build_inbox_client, client_for as inbox_client_for
 from ..inbox_watcher import InboxWatcher
@@ -51,14 +51,14 @@ from ..outreach_recontact import RecontactManager
 from ..outreach_render import default_renderer
 from ..outreach_research import web_researcher
 from ..outreach_settings import OutreachSettings
-from ..outreach_smtp import default_verifier as default_smtp_verifier
+from ..integrations.smtp_probe import default_verifier as default_smtp_verifier
 from ..preparation import DEFAULT_MOCK_AUDIO_STORAGE
 from ..refresh import RefreshManager
 from ..resumes import DEFAULT_STORAGE
 from ..system_status import SystemStatus
-from ..typesafe_decisions import DecisionClient, build_client as build_typesafe_client
-from ..web_fetch import SafeFetcher, default_fetcher as default_contact_fetcher
-from ..gmail_client import default_client_factory as default_gmail_client_factory
+from ..integrations.typesafe_decisions import DecisionClient, build_client as build_typesafe_client
+from ..integrations.web_fetch import SafeFetcher, default_fetcher as default_contact_fetcher
+from ..integrations.gmail_client import default_client_factory as default_gmail_client_factory
 
 SESSION_COOKIE = "pipeline_session"
 # Students sign in to the browser with their own per-user token. It lives in a

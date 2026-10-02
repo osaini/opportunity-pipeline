@@ -32,16 +32,16 @@ from typing import Any
 
 import httpx
 
-from . import agent_providers
+from .integrations import agent_providers
 from .outreach_agents import Runner
 from .outreach_config import REVIEW_ENV, resolve_provider
-from .agent_providers import CLAUDE_NO_TOOLS, CODEX_READ_ONLY, cli_binary, failure_detail, run_headless
+from .integrations.agent_providers import CLAUDE_NO_TOOLS, CODEX_READ_ONLY, cli_binary, failure_detail, run_headless
 from .outreach import get_target
 from .outreach_delivery import check_deliveries
 from .outreach_inbox import OnReply, capture_replies
-from .gmail_client import ClientFactory, GmailThrottled
+from .integrations.gmail_client import ClientFactory, GmailThrottled
 from .preparation import confirmed_facts
-from .typesafe_decisions import DecisionClient
+from .integrations.typesafe_decisions import DecisionClient
 
 REVIEW_TIMEOUT_SECONDS = 240
 

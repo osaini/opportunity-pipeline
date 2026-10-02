@@ -10,7 +10,7 @@ from fastapi import Depends
 
 from ..overrides import shared_router
 from ...inbox_classifiers import set_enabled as set_inbox_suggestions, status as inbox_suggestions_status
-from ...typesafe_decisions import DEFAULT_MODEL as TYPESAFE_DEFAULT_MODEL, QUESTION_SET_VERSION, TypeSafeError
+from ...integrations.typesafe_decisions import DEFAULT_MODEL as TYPESAFE_DEFAULT_MODEL, QUESTION_SET_VERSION, TypeSafeError
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection
 from ..models.opportunities import InboxSuggestionsRequest

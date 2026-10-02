@@ -11,7 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from . import ROOT
-from .agent_providers import AgentProvider
+from .integrations.agent_providers import AgentProvider
 from .profile import is_answered
 from .storage_paths import confined_path
 from .timestamps import utc_now

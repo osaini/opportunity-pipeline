@@ -45,10 +45,10 @@ from opportunity_app.outreach_discovery import run_discovery
 from opportunity_app.outreach_email_search import check_person, search_emails
 from opportunity_app.outreach_gmail import _mime
 from opportunity_app.outreach_recontact import RecontactManager, apply_recontact, eligible_targets, recontact_targets
-from opportunity_app.outreach_smtp import ACCEPTED, CATCH_ALL, REJECTED, UNKNOWN, SmtpVerifier, classify
+from opportunity_app.integrations.smtp_probe import ACCEPTED, CATCH_ALL, REJECTED, UNKNOWN, SmtpVerifier, classify
 from opportunity_app.schema import ensure_product_schema
 from opportunity_app.database import connect_product
-from opportunity_app.web_fetch import _FETCH_CLOCK, SafeFetcher, _DeadlineBackend, _DeadlineStream, default_client
+from opportunity_app.integrations.web_fetch import _FETCH_CLOCK, SafeFetcher, _DeadlineBackend, _DeadlineStream, default_client
 
 from helpers_platform import build_and_migrate
 from helpers_outreach import USER, company, only_for, proposals, safe_fetcher, site_transport

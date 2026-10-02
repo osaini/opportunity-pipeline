@@ -49,7 +49,7 @@ from .outreach_contacts import apply_choice, choose_contact, find_contacts, list
 from .outreach_forms import form_due, submit_contact_form
 from .outreach_gmail import last_bounce
 from .timestamps import utc_now
-from .web_fetch import SafeFetcher
+from .integrations.web_fetch import SafeFetcher
 
 LOGGER = logging.getLogger(__name__)
 

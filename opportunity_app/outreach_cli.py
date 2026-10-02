@@ -52,7 +52,7 @@ from contextlib import ExitStack, closing
 from pathlib import Path
 
 from . import DEFAULT_PLATFORM_DB
-from .agent_providers import build_provider
+from .integrations.agent_providers import build_provider
 from .daily_lock import TEMPFAIL_EXIT
 from .database import is_postgres_target, connect_product
 from .legacy import load_env_file
@@ -65,9 +65,9 @@ from .outreach_profile import SEC_USER_AGENT_ENV, enrich_targets, sec_fetcher
 from .outreach_recontact import recontact_targets
 from .outreach_research import available_agent, due_for_research, research_company, research_runner, text_model
 from .outreach_render import default_renderer
-from .outreach_smtp import default_verifier
+from .integrations.smtp_probe import default_verifier
 from .schema import LOCAL_USER_ID, ensure_product_schema
-from .web_fetch import default_fetcher
+from .integrations.web_fetch import default_fetcher
 
 
 def build_parser() -> argparse.ArgumentParser:

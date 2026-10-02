@@ -49,7 +49,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from . import automation
-from .gmail_client import ClientFactory, GmailAuthError
+from .integrations.gmail_client import ClientFactory, GmailAuthError
 from .outreach import (
     NOT_INTERESTED, DraftChangedError, OutreachNotFoundError, UNSENT_STATUSES, get_target, heard_back, log_event,
     withdraw_auto_approval,

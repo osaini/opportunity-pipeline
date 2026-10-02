@@ -33,7 +33,7 @@ from .outreach_contacts import apply_choice, choose_contact, find_contacts, is_g
 from .database import connect_product
 from .outreach_discovery import search_other_sites
 from .outreach_drafting import generate_draft
-from .web_fetch import SafeFetcher, default_fetcher
+from .integrations.web_fetch import SafeFetcher, default_fetcher
 
 
 PERSON_BASES = {"confirmed", "strong_guess", "weak_guess"}

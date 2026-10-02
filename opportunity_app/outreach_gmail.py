@@ -36,7 +36,7 @@ import httpx
 
 from . import ROOT, automation, automation_health, outreach_callbacks
 from .connections import OAUTH_PROVIDERS
-from .gmail_client import (
+from .integrations.gmail_client import (
     MODIFY_SCOPE,
     PROVIDER,
     ClientFactory,

@@ -21,7 +21,7 @@ from ...outreach_inbox import PossibleReplyNotFound, PossibleReplySettled, captu
 from ...outreach_forms import set_contact_form, submit_contact_form
 from ...outreach_schedule import cancel_send, schedule_send
 from ... import outreach_thank_you
-from ...gmail_client import GmailAuthError
+from ...integrations.gmail_client import GmailAuthError
 from ...outreach_gmail import (
     SendNeedsCheckError,
     ThankYouChanged,

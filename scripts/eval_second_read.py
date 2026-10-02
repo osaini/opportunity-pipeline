@@ -25,7 +25,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 from test_outreach_research import TARGET, fetcher_for, reply
 from opportunity_app import outreach_research as research
 from opportunity_app import quote_check
-from opportunity_app.agent_providers import build_provider
+from opportunity_app.integrations.agent_providers import build_provider
 
 TEAM = ("<html><body><h1>Chargebot team</h1><h3>Dana Ortiz</h3><p>Co-founder and CTO</p>"
         "<p>Dana previously built motion planning software at Tesla for the Model Y line.</p>"

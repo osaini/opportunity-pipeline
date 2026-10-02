@@ -12,7 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, agent_providers
+from opportunity_app import STATIC_DIR
+from opportunity_app.integrations import agent_providers
 from opportunity_app.api import create_app
 from opportunity_app.outreach import create_target
 from opportunity_app.outreach_config import resolve_provider

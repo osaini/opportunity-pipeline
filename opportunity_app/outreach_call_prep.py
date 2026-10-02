@@ -102,7 +102,7 @@ from .outreach_call_questions import standing_questions
 from .outreach_interviewer import (
     TOPICS as INTERVIEWER_TOPICS, who_key, find_interviewer, interviewer_due, interviewer_of,
 )
-from .agent_providers import CliAgentProvider, complete_text
+from .integrations.agent_providers import CliAgentProvider, complete_text
 from .operations import JobDeferred, enqueue_job, recover_stale_jobs, run_next_job
 from .outreach import CALL_PREP_STATUSES, OutreachNotFoundError, log_event, get_target, local_today
 from .outreach_drafting import (

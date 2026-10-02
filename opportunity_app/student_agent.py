@@ -22,7 +22,7 @@ from .actions import (
     record_intent,
     update_application,
 )
-from .agent_providers import AgentProvider, ToolCall, ToolDefinition, build_provider, configured_provider
+from .integrations.agent_providers import AgentProvider, ToolCall, ToolDefinition, build_provider, configured_provider
 from .preparation import PreparationNotFoundError, create_document
 from .profile import get_profile
 from .timestamps import utc_now

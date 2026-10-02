@@ -30,7 +30,7 @@ from typing import Any
 from pipeline_core.env import iter_env_pairs
 
 from . import ROOT
-from .agent_providers import CLI_CONFIG, cli_available, cli_binary
+from .integrations.agent_providers import CLI_CONFIG, cli_available, cli_binary
 
 MIN_PYTHON = (3, 11)
 GENERATED_SECRETS = {

@@ -57,7 +57,7 @@ from typing import Any, Callable
 
 from . import outreach_research as research
 from . import quote_check
-from .agent_providers import CliAgentProvider, complete_text
+from .integrations.agent_providers import CliAgentProvider, complete_text
 from .mail_message import mailbox_key
 from .mail_trust import registrable_domain
 from .outreach import log_event, get_target
@@ -80,7 +80,7 @@ from .outreach_identity import (
 )
 from .outreach_linkedin import CMD_META, LinkedInClient, LinkedInUnavailable, username_from
 from .timestamps import parse_app_instant, utc_now
-from .web_fetch import FetchResult
+from .integrations.web_fetch import FetchResult
 
 # Kinds of inbox message a person at the company wrote (outreach_inbox).
 PERSON_KINDS = ("reply", "possible")

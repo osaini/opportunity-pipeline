@@ -23,7 +23,7 @@ from pipeline_core.regions import region_label
 from helpers_platform import LEGACY_SCHEMA, migrate_cached, sample_docx
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
-from opportunity_app.agent_providers import ProviderReply, ToolCall
+from opportunity_app.integrations.agent_providers import ProviderReply, ToolCall
 from opportunity_app.captures import parse_html_draft
 from opportunity_app.connections import queue_notification
 from opportunity_app.profile import get_profile, update_profile

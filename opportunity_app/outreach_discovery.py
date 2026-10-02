@@ -38,7 +38,7 @@ from uuid import uuid4
 import httpx
 
 from . import ROOT
-from .agent_providers import CliAgentProvider
+from .integrations.agent_providers import CliAgentProvider
 from .background import SingleFlightManager
 from .legacy import SOURCES_LOCAL_PATH
 from .outreach import OUTREACH_PRIORITIES, log_event, existing_keys, get_target, import_targets, local_today
@@ -56,7 +56,7 @@ from .outreach_render import PlaywrightRenderer, default_renderer
 from .preparation import confirmed_facts
 from .database import connect_product
 from .timestamps import utc_now
-from .web_fetch import UNVERIFIABLE_STATUSES, FetchResult, SafeFetcher, default_fetcher
+from .integrations.web_fetch import UNVERIFIABLE_STATUSES, FetchResult, SafeFetcher, default_fetcher
 
 # Briefs are templates filled from the student's confirmed profile, so every
 # student searches their own regions and fields. A student can replace any
@@ -445,7 +445,7 @@ def run_discovery(
     sites and EDGAR did not place (outreach_locate.py). email_runner, when given,
     searches other sites for a person's address at the new companies whose own
     site gave no confirmed one (outreach_email_search.py), before any draft is
-    written. verifier puts guessed addresses to the mail server (outreach_smtp.py).
+    written. verifier puts guessed addresses to the mail server (integrations/smtp_probe.py).
     """
     scopes = [scope for scope in (scopes or DEFAULT_SCOPES) if scope in SCOPES]
     if not scopes:

@@ -6,7 +6,7 @@ the page that shows it. Guessed addresses (first@, first.last@, ...) are made
 only for people the site names, only when the domain accepts mail, and are
 always labeled unverified, whatever backs them: the company's own address
 format (pattern_observed) or a mail server's answer (verification, see
-outreach_smtp.py) makes a guess stronger, never confirmed. Addresses printed on
+integrations/smtp_probe.py) makes a guess stronger, never confirmed. Addresses printed on
 other sites come from outreach_email_search.py and stay unverified too.
 robots.txt is honored and the crawl is small.
 
@@ -30,7 +30,7 @@ import httpx
 from .contact_names import GENERIC_LOCAL_PARTS, ROLE_INBOX_LOCAL_PARTS, ROLE_INBOX_QUALIFIERS, website_domain
 from .outreach import EMAIL_ADDRESS, MANUAL_CONTACT_ROUTE, log_event, get_target, update_target
 from .timestamps import utc_now
-from .web_fetch import USER_AGENT, SafeFetcher, public_web_url_error, same_site, site_robots
+from .integrations.web_fetch import USER_AGENT, SafeFetcher, public_web_url_error, same_site, site_robots
 
 MAX_PAGES = 12
 # Pages rendered in a browser when the plain crawl found no one: a team page
@@ -560,7 +560,7 @@ def discover_candidates(
 
     When the plain pages name no one and a renderer is given, the people pages
     are read again in a browser. When a verifier is given, the guessed
-    addresses are put to the domain's mail server (see outreach_smtp.py).
+    addresses are put to the domain's mail server (see integrations/smtp_probe.py).
     """
     crawl = crawl_site(website, fetcher=fetcher, delay=delay)
     domain = crawl["domain"]

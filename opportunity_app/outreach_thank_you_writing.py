@@ -16,7 +16,7 @@ import logging
 import re
 from typing import Any, Callable
 
-from . import agent_providers
+from .integrations import agent_providers
 from .outreach_greeting import spoken_company
 from .outreach_identity import company_key
 from .outreach_config import resolve_provider

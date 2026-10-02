@@ -35,7 +35,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from . import ROOT
 from .connections import OAUTH_PROVIDERS
 from .database import is_postgres_target, connect_product
-from .gmail_client import (
+from .integrations.gmail_client import (
     GMAIL_API,
     MODIFY_SCOPE,
     PROVIDER,

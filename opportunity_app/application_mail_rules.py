@@ -38,7 +38,7 @@ from .mail_message import (
     html_text_spaced,
     received_or_epoch,
 )
-from .typesafe_decisions import DecisionClient
+from .integrations.typesafe_decisions import DecisionClient
 
 
 EXCERPT_LIMIT = 500

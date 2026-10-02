@@ -74,8 +74,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from uuid import uuid4
 
-from . import agent_providers
-from .agent_providers import cli_available, cli_binary, complete_text
+from .integrations import agent_providers
+from .integrations.agent_providers import cli_available, cli_binary, complete_text
 from .operations import enqueue_job
 from .contact_names import website_domain
 from .outreach import CALL_PREP_STATUSES, OutreachNotFoundError, log_event, get_target
@@ -85,7 +85,7 @@ from .outreach_config import COMPANY_RESEARCH_ENV, RESEARCH_ENV, resolve_provide
 from .preparation import confirmed_facts
 from .quote_check import SECTION_IDS, Judge, check_brief
 from .timestamps import parse_app_instant, utc_now
-from .web_fetch import SafeFetcher
+from .integrations.web_fetch import SafeFetcher
 
 JOB_TYPE = "outreach_company_research"
 MAX_ATTEMPTS = 3

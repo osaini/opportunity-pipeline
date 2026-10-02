@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .agent_providers import CliAgentProvider
+from .integrations.agent_providers import CliAgentProvider
 
 
 def answers_by_target(

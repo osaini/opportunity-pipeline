@@ -36,7 +36,7 @@ from .routers import ROUTERS_AFTER_ASSETS, ROUTERS_BEFORE_ASSETS
 if TYPE_CHECKING:  # only the create_app signature names these
     import httpx
 
-    from ..agent_providers import AgentProvider
+    from ..integrations.agent_providers import AgentProvider
     from ..apply_schema_client import SchemaClient
     from ..boards import BoardTracker
     from ..outreach_call_prep import CallPrepWorker
@@ -45,8 +45,8 @@ if TYPE_CHECKING:  # only the create_app signature names these
     from ..outreach_settings import OutreachSettings
     from ..refresh import RefreshManager
     from ..system_status import SystemStatus
-    from ..typesafe_decisions import DecisionClient
-    from ..web_fetch import SafeFetcher
+    from ..integrations.typesafe_decisions import DecisionClient
+    from ..integrations.web_fetch import SafeFetcher
 
 LOGGER = logging.getLogger("opportunity_app")
 

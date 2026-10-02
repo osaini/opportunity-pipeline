@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from . import ROOT
-from .agent_providers import catalog_snapshot, default_provider, provider_catalog
+from .integrations.agent_providers import catalog_snapshot, default_provider, provider_catalog
 from .outreach_config import (
     ATTACHMENT_ENV,
     CALL_PREP_ENV,

@@ -121,18 +121,18 @@ LEAVES: dict[str, tuple[set[str], set[str]]] = {
     "opportunity_app/storage_paths.py": (set(), set()),
     # Workstream M: the mail leaves. mail_message is stdlib-only so scripts/pipeline_mailbox.py can use it without httpx.
     "opportunity_app/mail_message.py": (set(), set()),
-    "opportunity_app/gmail_client.py": ({"httpx"}, set()),
+    "opportunity_app/integrations/gmail_client.py": ({"httpx"}, set()),
     # Workstream B: workers, the AI CLI runner, outreach leaves
     # Not a pure leaf: automation (record_health) is imported where used, so importing background loads neither it
     # nor the mail reader. mail_message and timestamps are stdlib-only leaves.
     "opportunity_app/background.py": (dotted("mail_message", "timestamps"), dotted("automation")),
-    "opportunity_app/web_fetch.py": ({"httpx", "httpcore"}, set()),
-    "opportunity_app/outreach_config.py": (dotted("agent_providers"), set()),
+    "opportunity_app/integrations/web_fetch.py": ({"httpx", "httpcore"}, set()),
+    "opportunity_app/outreach_config.py": (dotted("integrations.agent_providers"), set()),
     "opportunity_app/contact_names.py": (set(), set()),
-    "opportunity_app/outreach_batch.py": (dotted("agent_providers"), set()),
+    "opportunity_app/outreach_batch.py": (dotted("integrations.agent_providers"), set()),
     "opportunity_app/daily_lock.py": ({f"{PACKAGE}.ROOT"}, set()),
     # The two API SDKs are imported where a provider is built, so a missing one fails only that provider.
-    "opportunity_app/agent_providers.py": (set(), {"openai", "anthropic"}),
+    "opportunity_app/integrations/agent_providers.py": (set(), {"openai", "anthropic"}),
     "opportunity_app/__init__.py": (set(), set()),
     # Storage over outreach, not a pure leaf: it may import only outreach and the clock.
     "opportunity_app/outreach_versions.py": (dotted("outreach", "timestamps"), set()),
@@ -876,7 +876,7 @@ class MailMessageLeafTests(unittest.TestCase):
 
 class GmailClientLeafTests(unittest.TestCase):
     def test_a_connection_is_connected_not_connected_or_needing_a_reconnect(self):
-        from opportunity_app.gmail_client import connection_state
+        from opportunity_app.integrations.gmail_client import connection_state
 
         self.assertEqual(connection_state(None), "not_connected")
         self.assertEqual(connection_state({"status": "disconnected"}), "not_connected")
@@ -885,7 +885,7 @@ class GmailClientLeafTests(unittest.TestCase):
         self.assertEqual(connection_state({"status": "anything else"}), "needs_reconnect")
 
     def test_granted_scopes_read_a_list_and_nothing_else(self):
-        from opportunity_app.gmail_client import MODIFY_SCOPE, READ_SCOPE, can_read_mail, granted_scopes
+        from opportunity_app.integrations.gmail_client import MODIFY_SCOPE, READ_SCOPE, can_read_mail, granted_scopes
 
         self.assertEqual(granted_scopes(f'["{READ_SCOPE}", 7]'), [READ_SCOPE, "7"])
         for unreadable in (None, "", "not json", "null", '"a string"', '{"a": 1}', 5):
@@ -898,7 +898,7 @@ class GmailClientLeafTests(unittest.TestCase):
     def test_a_throttle_is_a_429_or_a_403_that_names_a_rate_limit(self):
         import httpx
 
-        from opportunity_app.gmail_client import error_reasons, is_throttle
+        from opportunity_app.integrations.gmail_client import error_reasons, is_throttle
 
         def answer(status, body=None):
             return httpx.Response(status, json=body) if body is not None else httpx.Response(status, text="not json")
@@ -918,7 +918,7 @@ class GmailClientLeafTests(unittest.TestCase):
     def test_a_throttle_is_read_as_could_not_reach_gmail_and_never_as_a_refused_connection(self):
         import httpx
 
-        from opportunity_app.gmail_client import GmailAuthError, GmailNeedsReadScope, GmailThrottled
+        from opportunity_app.integrations.gmail_client import GmailAuthError, GmailNeedsReadScope, GmailThrottled
 
         self.assertIsInstance(GmailThrottled("slow down"), httpx.HTTPError)
         self.assertNotIsInstance(GmailAuthError("refused"), httpx.HTTPError)
@@ -928,7 +928,7 @@ class GmailClientLeafTests(unittest.TestCase):
         import threading
         from datetime import timedelta
 
-        from opportunity_app.gmail_client import LookSchedule
+        from opportunity_app.integrations.gmail_client import LookSchedule
 
         last: dict = {}
         schedule = LookSchedule(
@@ -952,7 +952,7 @@ class GmailClientLeafTests(unittest.TestCase):
         import threading
         from datetime import timedelta
 
-        from opportunity_app.gmail_client import LookSchedule
+        from opportunity_app.integrations.gmail_client import LookSchedule
 
         schedule = LookSchedule(
             {}, threading.Lock(), interval=lambda age: timedelta(hours=1), key=lambda item: item["id"], started=lambda item: item["at"],
@@ -993,7 +993,7 @@ class OutreachIdentityTests(unittest.TestCase):
         loaded = set(ast.literal_eval(done.stdout.strip().splitlines()[-1]))
         heavy = dotted(
             "outreach", "outreach_contacts", "outreach_forms", "outreach_gmail", "outreach_inbox", "application_inbox",
-            "outreach_labels", "outreach_delivery", "automation", "schema", "gmail_client", "connections", "api",
+            "outreach_labels", "outreach_delivery", "automation", "schema", "integrations.gmail_client", "connections", "api",
         ) | {"cryptography", "httpx"}
         self.assertEqual(loaded & heavy, set())
 
@@ -1012,7 +1012,8 @@ class OutreachIdentityTests(unittest.TestCase):
 
 # --- Workstream B: background workers, the AI CLI runner, outreach leaves ---------------------------------------------
 
-from opportunity_app import agent_providers, background, inbox_watcher, outreach_batch, outreach_config, outreach_review, web_fetch  # noqa: E402
+from opportunity_app.integrations import agent_providers, web_fetch
+from opportunity_app import background, inbox_watcher, outreach_batch, outreach_config, outreach_review  # noqa: E402
 from opportunity_app.outreach import create_target, get_target, latest_event_stamp, log_event, withdraw_auto_approval  # noqa: E402
 from opportunity_app.database import connect_product  # noqa: E402
 

@@ -33,7 +33,7 @@ from opportunity_app.outreach_replies import suggest_reply_status
 from opportunity_app.inbox_watcher import InboxWatcher
 from opportunity_app.schema import LOCAL_USER_ID
 from opportunity_app.database import connect_product
-from opportunity_app.typesafe_decisions import TypeSafeNotConfigured, TypeSafeResponseError
+from opportunity_app.integrations.typesafe_decisions import TypeSafeNotConfigured, TypeSafeResponseError
 
 from helpers_platform import build_and_migrate
 from helpers_gmail import ReplyCaptureFixture, mail as inbox_mail

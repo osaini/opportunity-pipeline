@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
-from opportunity_app.document_pdf import markdown_to_html
+from opportunity_app.integrations.pdf import markdown_to_html
 from opportunity_app.web import context as context_module
 
 from helpers_platform import build_and_migrate

@@ -29,7 +29,7 @@ import httpx
 from cryptography.fernet import Fernet, InvalidToken
 
 from .connections import OAUTH_PROVIDERS
-from .gmail_client import (
+from .integrations.gmail_client import (
     GMAIL_API,
     PROVIDER,
     SERVER_ERRORS,

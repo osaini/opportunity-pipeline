@@ -485,7 +485,7 @@ def auto_close(
     Returns one entry per company it looked at: closed, or held with the reason.
     """
     from .outreach import NO_RESPONSE_AFTER_DAYS, get_target, heard_back, lifecycle_suggestion, local_today
-    from .gmail_client import connection_state
+    from .integrations.gmail_client import connection_state
     from .gmail_connection import connector_row
     from .outreach_inbox import REPLY_WINDOW, watched_ids
     from .outreach_review import FRESH_LOOK_REASONS, fresh_look

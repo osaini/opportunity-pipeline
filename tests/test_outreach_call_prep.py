@@ -24,7 +24,7 @@ from opportunity_app.outreach_call_prep import (
     generate_call_prep, is_automatic, queue_call_prep,
 )
 from opportunity_app import outreach_call_prep, outreach_call_questions
-from opportunity_app.agent_providers import ProviderReply
+from opportunity_app.integrations.agent_providers import ProviderReply
 from opportunity_app.outreach_research import queue_research
 from opportunity_app.schema import ensure_product_schema
 from opportunity_app.database import connect_product

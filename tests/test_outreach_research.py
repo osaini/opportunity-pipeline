@@ -17,7 +17,7 @@ import httpx
 from opportunity_app import outreach_research as research
 from opportunity_app import quote_check
 from opportunity_app.outreach import create_target, get_target
-from opportunity_app.web_fetch import SafeFetcher
+from opportunity_app.integrations.web_fetch import SafeFetcher
 from opportunity_app.outreach_config import COMPANY_RESEARCH_ENV, RESEARCH_ENV
 from opportunity_app.outreach_settings import OutreachSettings
 from opportunity_app.schema import ensure_product_schema
@@ -245,7 +245,7 @@ class CheckBriefTests(unittest.TestCase):
         self.assertIn("Chargebot raises seed round", shown["top"], "the page's title comes too")
 
     def test_the_passage_always_holds_the_quotes_own_paragraph_and_a_nearby_dateline(self):
-        from opportunity_app.web_fetch import FetchResult
+        from opportunity_app.integrations.web_fetch import FetchResult
 
         history = "<p>" + "Background paragraph about the company history. " * 60 + "</p>"
         page = quote_check.ResearchPage(FetchResult("https://news.example/release", 200,

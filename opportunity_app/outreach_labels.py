@@ -58,7 +58,7 @@ import httpx
 
 from . import automation
 from .database import rollback_quietly, has_column
-from .gmail_client import (
+from .integrations.gmail_client import (
     MODIFY_SCOPE,
     PROVIDER,
     SERVER_ERRORS,

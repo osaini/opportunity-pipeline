@@ -257,11 +257,11 @@ class CliProviderErrorBoundaryTests(unittest.TestCase):
         honest RuntimeError that the agent turn recorder can attribute, not as
         a raw OSError/500 out of create()."""
 
-        from opportunity_app.agent_providers import CliAgentProvider
+        from opportunity_app.integrations.agent_providers import CliAgentProvider
 
         provider = CliAgentProvider("claude-code", "subscription")
         with mock.patch(
-            "opportunity_app.agent_providers.subprocess.run",
+            "opportunity_app.integrations.agent_providers.subprocess.run",
             side_effect=OSError("[WinError 206] The filename or extension is too long"),
         ):
             with self.assertRaises(RuntimeError):

@@ -38,7 +38,7 @@ from opportunity_app.outreach_thank_you import STUDENT_WROTE, WROTE_AGAIN, plan,
 from opportunity_app.outreach_thank_you_writing import MAX_WORDS, recipient_name, template, validate, write
 from opportunity_app.database import connect_product
 from opportunity_app.timestamps import utc_now
-from opportunity_app.typesafe_decisions import TypeSafeResponseError
+from opportunity_app.integrations.typesafe_decisions import TypeSafeResponseError
 
 from helpers_platform import build_and_migrate
 from helpers_outreach import FakeJev
@@ -2363,7 +2363,7 @@ class ReviewFindingCardTests(DeclineCase):
         self.assertTrue(card["body"].startswith("Hi Priya,\n"))
 
     def test_the_settings_name_the_reviewer_of_each_kind(self):
-        from opportunity_app import agent_providers
+        from opportunity_app.integrations import agent_providers
 
         def catalog(*ready):
             names = {"openai": "OpenAI", "anthropic": "Anthropic", "claude-code": "Claude Code", "codex-cli": "Codex CLI"}

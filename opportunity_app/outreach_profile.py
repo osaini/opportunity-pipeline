@@ -44,7 +44,7 @@ from .outreach import log_event, get_target, local_today
 from .outreach_location import LOCATION_BASES, US_STATES
 from .outreach_identity import company_key
 from .outreach_contacts import page_priority, PageParser, crawl_site
-from .web_fetch import USER_AGENT, SafeFetcher, same_site, site_robots
+from .integrations.web_fetch import USER_AGENT, SafeFetcher, same_site, site_robots
 from .outreach_render import PlaywrightRenderer
 from .timestamps import utc_now
 

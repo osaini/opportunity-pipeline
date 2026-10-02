@@ -62,7 +62,7 @@ from .send_claims import (
 from .outreach_render import request_allowed
 from .preparation import confirmed_facts
 from .timestamps import utc_now
-from .web_fetch import USER_AGENT, Resolver, close_browser, resolve_host, same_site, site_robots
+from .integrations.web_fetch import USER_AGENT, Resolver, close_browser, resolve_host, same_site, site_robots
 
 FORM_STATES = ("found", "submitted", "unconfirmed", "needs_you", "failed")
 SUBMITTED_EVENT = "form_submitted"

@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
-from opportunity_app.typesafe_decisions import (
+from opportunity_app.integrations.typesafe_decisions import (
     TypeSafeClient,
     TypeSafeNotConfigured,
     TypeSafeResponseError,

@@ -18,7 +18,7 @@ from ...student_agent import (
     post_message,
     thread_record,
 )
-from ...agent_providers import default_provider, provider_catalog
+from ...integrations.agent_providers import default_provider, provider_catalog
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection
 from ..models.agent import AgentDecisionRequest, AgentMessageRequest, AgentThreadRequest

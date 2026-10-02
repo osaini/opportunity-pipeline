@@ -20,7 +20,7 @@ import re
 import sqlite3
 from typing import Any, Callable
 
-from .agent_providers import AgentProvider, CliAgentProvider, complete_text
+from .integrations.agent_providers import AgentProvider, CliAgentProvider, complete_text
 from .outreach import AWAITING_REPLY, DRAFT_KINDS, DRAFT_META, cancel_schedules, log_event, draft_checks, get_target
 from .outreach_greeting import DEFAULT_GREETING, greeting_line, greeting_style
 from .outreach_location import home_terms, location_usable, mentions_home, near_home, student_home, user_regions

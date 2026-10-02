@@ -22,7 +22,7 @@ import ipaddress
 from typing import Any
 from urllib.parse import urlsplit
 
-from .web_fetch import MAX_PAGE_BYTES, USER_AGENT, Resolver, close_browser, public_web_url_error, resolve_host
+from .integrations.web_fetch import MAX_PAGE_BYTES, USER_AGENT, Resolver, close_browser, public_web_url_error, resolve_host
 
 SKIPPED_RESOURCES = {"image", "media", "font", "stylesheet"}
 NAVIGATION_TIMEOUT_MS = 20_000

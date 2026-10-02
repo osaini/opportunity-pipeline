@@ -17,7 +17,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import agent_providers
+from opportunity_app.integrations import agent_providers
 from opportunity_app.outreach_settings import OutreachSettings
 from opportunity_app.database import connect_product
 

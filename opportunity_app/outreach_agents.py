@@ -14,7 +14,7 @@ from __future__ import annotations
 import tempfile
 from typing import Callable
 
-from .agent_providers import CODEX_READ_ONLY, cli_binary, failure_detail, run_headless
+from .integrations.agent_providers import CODEX_READ_ONLY, cli_binary, failure_detail, run_headless
 from .outreach_config import discovery_provider
 
 Runner = Callable[[str], str]

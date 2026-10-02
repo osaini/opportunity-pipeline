@@ -23,7 +23,7 @@ from .inbox_classifiers import classify_email
 from .monitored_classifier import classify_monitored_message
 from .outreach_config import sender_account
 from .timestamps import utc_now
-from .typesafe_decisions import DecisionClient
+from .integrations.typesafe_decisions import DecisionClient
 
 
 class ConnectionNotFoundError(LookupError):

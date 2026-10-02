@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from urllib.parse import quote
 
-from .agent_providers import default_provider, provider_catalog
+from .integrations.agent_providers import default_provider, provider_catalog
 
 ACCOUNT_ENV = "PIPELINE_OUTREACH_ACCOUNT"
 DRAFT_ENV = "PIPELINE_OUTREACH_PROVIDER"

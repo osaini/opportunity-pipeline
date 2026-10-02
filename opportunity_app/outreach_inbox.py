@@ -73,7 +73,7 @@ from .mail_message import (
 from .mail_trust import FREEMAIL, READ_CATEGORIES, authenticate, listed, sender_lists
 from .outreach import log_event, get_target, update_target
 from .outreach_replies import BOUNCED, reply_reason, suggest_reply_status
-from .gmail_client import (
+from .integrations.gmail_client import (
     ClientFactory,
     GmailAuthError,
     GmailNeedsReadScope,
@@ -109,7 +109,7 @@ from .outreach_forms import (
 )
 from .settings_store import get_setting, put_setting
 from .timestamps import parse_app_instant, utc_now
-from .typesafe_decisions import DecisionClient
+from .integrations.typesafe_decisions import DecisionClient
 
 LOGGER = logging.getLogger(__name__)
 

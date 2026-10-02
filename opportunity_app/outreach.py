@@ -40,9 +40,9 @@ from .outreach_location import (
 )
 from .outreach_replies import BOUNCED, bounce_notice, reply_reason, suggest_reply_status
 from .timestamps import utc_now
-from .typesafe_decisions import DecisionClient
+from .integrations.typesafe_decisions import DecisionClient
 from .user_time import user_timezone
-from .web_fetch import public_web_url_error
+from .integrations.web_fetch import public_web_url_error
 
 
 # How contact_route opens for an address the student typed in themselves.
