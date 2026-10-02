@@ -27,9 +27,9 @@ from opportunity_app.integrations.agent_providers import ProviderReply, ToolCall
 from opportunity_app.captures import parse_html_draft
 from opportunity_app.connections import queue_notification
 from opportunity_app.profile import get_profile, update_profile
-from opportunity_app.schema import LOCAL_USER_ID
+from opportunity_app.core.schema import LOCAL_USER_ID
 from opportunity_app.legacy_sync import migrate_legacy_database
-from opportunity_app.database import connect_product, _postgres_schema, _postgres_sql
+from opportunity_app.core.database import connect_product, _postgres_schema, _postgres_sql
 from opportunity_app.operations import enqueue_job, queue_status, retry_dead_job, run_next_job
 from opportunity_app.backups import encrypted_backup, restore_backup
 from pipeline_core import OpportunityFilters, OpportunityRepository

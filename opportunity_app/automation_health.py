@@ -15,8 +15,8 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from .automation import BREAKER_NOTICE_PREFIX, FEATURES, in_flight, now_utc, paused, unconfirmed, undoable
-from .timestamps import parse_app_instant
-from .user_time import user_timezone
+from .core.timestamps import parse_app_instant
+from .core.user_time import user_timezone
 
 BREAKER_OFF_DAYS = 30
 DEFAULT_GMAIL_TOKEN_DAYS = 7

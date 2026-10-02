@@ -17,7 +17,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, auto_triage, automation, automation_handlers, automation_health, internal_automation, migrate, outreach_inbox, resume_variants, schema
+from opportunity_app import (
+    STATIC_DIR,
+    auto_triage,
+    automation,
+    automation_handlers,
+    automation_health,
+    internal_automation,
+    migrate,
+    outreach_inbox,
+    resume_variants,
+)
+from opportunity_app.core import schema
 from opportunity_app.actions import record_intent, update_application
 from opportunity_app.api import create_app
 from opportunity_app.automation import Superseded
@@ -30,11 +41,11 @@ from opportunity_app.outreach_delivery import record_bounce
 from opportunity_app.outreach_versions import draft_versions
 from opportunity_app.refresh import RefreshManager
 from opportunity_app.resumes import ResumeValidationError, confirm_variant, resume_record
-from opportunity_app.schema import ensure_product_schema
-from opportunity_app.database import connect_product, has_column
-from opportunity_app.timestamps import utc_now
+from opportunity_app.core.schema import ensure_product_schema
+from opportunity_app.core.database import connect_product, has_column
+from opportunity_app.core.timestamps import utc_now
 from opportunity_app.urgent import urgent_queue
-from opportunity_app.user_time import user_timezone
+from opportunity_app.core.user_time import user_timezone
 
 from helpers_platform import build_and_migrate
 

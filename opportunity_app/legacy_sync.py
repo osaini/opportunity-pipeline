@@ -22,11 +22,11 @@ from pipeline_core.read_model import RULESET_VERSION
 from pipeline_core.regions import region_label
 
 from . import DEFAULT_LEGACY_DB, DEFAULT_PLATFORM_DB, DEFAULT_PROFILE
-from .company_tags import regenerate_company_tags
-from .database import connect_legacy_read_only, connect_product, is_postgres_target
+from .core.company_tags import regenerate_company_tags
+from .core.database import connect_legacy_read_only, connect_product, is_postgres_target
 from .opportunity_metadata import extract_opportunity_metadata
-from .schema import LOCAL_USER_ID, ensure_product_schema
-from .timestamps import canonical_utc, utc_now
+from .core.schema import LOCAL_USER_ID, ensure_product_schema
+from .core.timestamps import canonical_utc, utc_now
 
 # The migration_runs key of the one-time import from the legacy database. Not the
 # ruleset version (`pipeline_core.read_model.RULESET_VERSION`), though the string is the same.

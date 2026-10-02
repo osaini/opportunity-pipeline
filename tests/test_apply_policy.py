@@ -23,7 +23,7 @@ from opportunity_app.apply_greenhouse import identify
 from opportunity_app.apply_policy import SchemaField, Sources, build_plan, parse_schema, plan_hash, resume_for
 from opportunity_app.extension_apply import SENSITIVE_FIELD
 from opportunity_app.profile import update_profile
-from opportunity_app.timestamps import utc_now
+from opportunity_app.core.timestamps import utc_now
 
 from helpers_source import apply_modules
 from helpers_apply import (

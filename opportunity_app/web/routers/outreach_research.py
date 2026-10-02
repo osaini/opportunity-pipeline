@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import Depends, HTTPException, status
 
 from ..overrides import shared_router
-from ...schema import LOCAL_USER_ID
+from ...core.schema import LOCAL_USER_ID
 from ...outreach import OutreachNotFoundError
 from ...outreach_call_prep import NotReplied, ReplyRequired, queue_call_prep
 from ...outreach_research import queue_research as queue_company_research

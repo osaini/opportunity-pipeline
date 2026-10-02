@@ -9,7 +9,7 @@ from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
-from . import DEFAULT_LEGACY_DB, DEFAULT_PLATFORM_DB
+from .. import DEFAULT_LEGACY_DB, DEFAULT_PLATFORM_DB
 
 
 def is_postgres_target(target: Any) -> bool:

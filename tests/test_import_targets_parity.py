@@ -35,8 +35,8 @@ from opportunity_app.outreach import (
 )
 from opportunity_app.outreach_identity import company_key
 from opportunity_app.contact_names import website_domain
-from opportunity_app.database import is_unique_violation, connect_product
-from opportunity_app.timestamps import utc_now
+from opportunity_app.core.database import is_unique_violation, connect_product
+from opportunity_app.core.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 

@@ -111,8 +111,8 @@ from .outreach_drafting import (
 )
 from .outreach_config import resolve_provider
 from .preparation import confirmed_facts
-from .database import connect_product
-from .timestamps import utc_now
+from .core.database import connect_product
+from .core.timestamps import utc_now
 
 LOGGER = logging.getLogger(__name__)
 JOB_TYPE = "outreach_call_prep"

@@ -12,7 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from .outreach import DRAFT_KINDS, DRAFT_META, cancel_schedules, log_event, get_target
-from .timestamps import utc_now
+from .core.timestamps import utc_now
 
 
 class DraftVersionNotFoundError(LookupError):

@@ -19,8 +19,8 @@ from opportunity_app.outreach import create_target, get_target, list_targets
 from opportunity_app.outreach_contacts import apply_candidate, crawl_site, discover_candidates, find_contacts
 from opportunity_app.integrations.web_fetch import SafeFetcher
 from opportunity_app.outreach_discovery import DiscoveryBusy, DiscoveryManager, _RunLock, _scope_brief, run_discovery, scope_definitions, validate_proposals
-from opportunity_app.schema import ensure_product_schema
-from opportunity_app.database import connect_product
+from opportunity_app.core.schema import ensure_product_schema
+from opportunity_app.core.database import connect_product
 
 from helpers_platform import build_and_migrate, use_profile_regions
 from helpers_outreach import LOCATE_PROMPT, company, only_for, proposals, safe_fetcher, scope_of, site_transport

@@ -28,7 +28,7 @@ from .outreach_config import resolve_provider, sender_account
 from .outreach_versions import insert_version, keep_current_draft
 from .preparation import confirmed_facts
 from .quote_check import word_tokens
-from .timestamps import utc_now
+from .core.timestamps import utc_now
 
 ProviderFactory = Callable[[str, str], AgentProvider]
 

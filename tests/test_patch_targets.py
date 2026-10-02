@@ -137,25 +137,25 @@ class InstrumentBitesTests(unittest.TestCase):
     def test_a_missing_module_attribute_and_logger_are_each_reported(self):
         source = (
             "from unittest import mock\n"
-            "mock.patch('opportunity_app.schema.no_such_name')\n"
+            "mock.patch('opportunity_app.core.schema.no_such_name')\n"
             "mock.patch('opportunity_app.no_such_module.helper')\n"
             "self.assertLogs('opportunity_app.no_such_module', level='ERROR')\n"
             "logging.getLogger('opportunity_app.no_such_module')\n"
         )
         found = stale(source)
         self.assertEqual(len(found), 4, found)
-        self.assertIn("opportunity_app.schema.no_such_name", found[0])
+        self.assertIn("opportunity_app.core.schema.no_such_name", found[0])
 
     def test_existing_targets_pass_in_every_spelling(self):
         source = (
             "from unittest import mock\n"
             "import unittest.mock\n"
-            "mock.patch('opportunity_app.schema.ensure_product_schema')\n"
-            "unittest.mock.patch('opportunity_app.schema.ensure_product_schema')\n"
-            "@patch('opportunity_app.schema.ensure_product_schema')\n"
+            "mock.patch('opportunity_app.core.schema.ensure_product_schema')\n"
+            "unittest.mock.patch('opportunity_app.core.schema.ensure_product_schema')\n"
+            "@patch('opportunity_app.core.schema.ensure_product_schema')\n"
             "def f(): pass\n"
-            "mock.patch.dict('opportunity_app.schema.__dict__', {})\n"
-            "self.assertLogs('opportunity_app.schema', level='ERROR')\n"
+            "mock.patch.dict('opportunity_app.core.schema.__dict__', {})\n"
+            "self.assertLogs('opportunity_app.core.schema', level='ERROR')\n"
             "mock.patch('os.environ')\n"
             "mock.patch(f'{__name__}.x')\n"
         )

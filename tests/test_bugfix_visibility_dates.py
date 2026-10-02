@@ -28,8 +28,8 @@ from opportunity_app import STATIC_DIR, student_agent, urgent
 from opportunity_app.integrations.agent_providers import ToolCall
 from opportunity_app.api import create_app
 from opportunity_app.auth import issue_user_token
-from opportunity_app.schema import LOCAL_USER_ID
-from opportunity_app.database import connect_product
+from opportunity_app.core.schema import LOCAL_USER_ID
+from opportunity_app.core.database import connect_product
 from pipeline_core import OpportunityFilters, OpportunityRepository, capture_visible_sql
 from helpers_platform import build_and_migrate
 

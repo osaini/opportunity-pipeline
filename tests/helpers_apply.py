@@ -19,8 +19,8 @@ from opportunity_app.apply_policy import SchemaField, Sources, build_plan
 from pipeline_core.identity import employer_key
 from opportunity_app.apply_sensitive import StoreRefused, add_entry
 from opportunity_app.profile import update_profile
-from opportunity_app.database import connect_product
-from opportunity_app.timestamps import utc_now
+from opportunity_app.core.database import connect_product
+from opportunity_app.core.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 

@@ -16,9 +16,9 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from opportunity_app import automation
-from opportunity_app.database import connect_product
-from opportunity_app.settings_store import get_setting, put_setting
-from opportunity_app.timestamps import utc_now
+from opportunity_app.core.database import connect_product
+from opportunity_app.core.settings_store import get_setting, put_setting
+from opportunity_app.core.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 

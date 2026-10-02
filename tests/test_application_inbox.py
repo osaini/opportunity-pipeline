@@ -39,8 +39,8 @@ from opportunity_app.connections import monitored_event
 from opportunity_app.monitored_events import decide_monitored_event
 from opportunity_app.monitored_classifier import classify_monitored_message
 from opportunity_app.operations import export_account
-from opportunity_app.database import connect_product
-from opportunity_app.timestamps import parse_app_instant, utc_now
+from opportunity_app.core.database import connect_product
+from opportunity_app.core.timestamps import parse_app_instant, utc_now
 from opportunity_app.urgent import urgent_queue
 
 from helpers_platform import build_and_migrate
@@ -1004,8 +1004,8 @@ class WatcherTests(MailCase):
 
 class MigrationTests(unittest.TestCase):
     def test_a_half_applied_0038_is_repaired_by_running_it_again(self):
-        from opportunity_app import schema
-        from opportunity_app.database import has_column
+        from opportunity_app.core import schema
+        from opportunity_app.core.database import has_column
 
         migrations = Path(__file__).resolve().parent.parent / "migrations"
         with tempfile.TemporaryDirectory() as directory:

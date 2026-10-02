@@ -18,7 +18,7 @@ from opportunity_app.api import create_app
 from opportunity_app.auth import issue_user_token
 from opportunity_app.employer import ensure_actor
 from opportunity_app.refresh import RefreshBusy, RefreshManager
-from opportunity_app.database import connect_product
+from opportunity_app.core.database import connect_product
 from helpers_platform import build_and_migrate, build_profile
 
 OWNER_TOKEN = "refresh-owner-token"

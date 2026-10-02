@@ -25,7 +25,8 @@ realdata_guard.install()
 
 PROFILE_REGIONS_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "profile_regions.json"
 
-from opportunity_app import bootstrap, database, legacy_sync, schema, timestamps
+from opportunity_app import bootstrap, legacy_sync
+from opportunity_app.core import database, schema, timestamps
 from opportunity_app.legacy_sync import migrate_legacy_database
 
 # What create_app (and the worker and CLI entry points) do as a process starts: fill the automation, scheduler and callback

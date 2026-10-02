@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 import sys
 
-from . import ROOT
+from .. import ROOT
 
 DAILY_LOCK_PATH = ROOT / "data" / "daily-run.lock"
 # pipeline.py's exit code when some sources were unreachable (EX_TEMPFAIL).

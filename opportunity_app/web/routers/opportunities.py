@@ -11,7 +11,7 @@ from pipeline_core import MAX_PER_COMPANY, OpportunityFilters, OpportunityReposi
 from ..overrides import shared_router
 from ... import resume_variants
 from ...actions import OpportunityNotFoundError, record_intent
-from ...company_tags import CompanyNotFoundError, decorate_with_tags, set_company_tag, tag_facets_for_keys
+from ...core.company_tags import CompanyNotFoundError, decorate_with_tags, set_company_tag, tag_facets_for_keys
 from ...urgent import (
     DeadlineNotFoundError,
     clear_user_deadline,
@@ -21,7 +21,7 @@ from ...urgent import (
     visible_opportunity,
 )
 from ...profile import is_personalized
-from ...profile_store import read_stored_profile
+from ...core.profile_store import read_stored_profile
 from ...integrations.typesafe_decisions import (
     TypeSafeError,
     TypeSafeNotConfigured,

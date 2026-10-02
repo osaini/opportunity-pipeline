@@ -21,7 +21,7 @@ from opportunity_app.outreach_drafting import generate_draft
 from opportunity_app.outreach_review import review_choice, review_runner
 from opportunity_app.web.models.preparation import DocumentCreateRequest
 from opportunity_app.outreach_settings import OutreachSettings
-from opportunity_app.database import connect_product
+from opportunity_app.core.database import connect_product
 
 from helpers_platform import build_and_migrate
 

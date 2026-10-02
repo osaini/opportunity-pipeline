@@ -33,9 +33,9 @@ from ...connections import (
     request_phone_verification,
     update_preferences,
 )
-from ...database import connect_product
+from ...core.database import connect_product
 from ...monitored_events import decide_monitored_event
-from ...timestamps import utc_now
+from ...core.timestamps import utc_now
 from ...inbox_classifiers import client_for as inbox_client_for
 from ...outreach_config import sender_account
 from ..context import AppContext

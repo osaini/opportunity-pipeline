@@ -17,7 +17,7 @@ from pipeline_core.read_model import RULESET_VERSION
 
 from .actions import ApplicationNotFoundError, log_application_event, update_application
 from .auth import hash_secret
-from .timestamps import utc_now
+from .core.timestamps import utc_now
 
 
 PAIRING_TTL_MINUTES = 10

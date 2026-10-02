@@ -13,8 +13,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pipeline_core.read_model import RULESET_VERSION
 
-from .timestamps import utc_now
-from .user_time import named_timezone, user_timezone
+from .core.timestamps import utc_now
+from .core.user_time import named_timezone, user_timezone
 
 
 INTENT_ACTIONS = {"seen", "saved", "passed", "apply_opened", "undo"}

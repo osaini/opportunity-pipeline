@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any
 
-from ..schema import LOCAL_USER_ID
+from ..core.schema import LOCAL_USER_ID
 from ..outreach_discovery import scope_definitions as discovery_scope_definitions, last_runs as last_discovery_runs
 from ..outreach_recontact import eligible_targets as recontact_eligible_targets
 from .context import AppContext

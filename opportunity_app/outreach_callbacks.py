@@ -15,7 +15,7 @@ thank_you_problem_now(conn, target_id, user_id, thank_you, *, manual=False) -> (
 
 from __future__ import annotations
 
-from .hooks import Hook
+from .core.hooks import Hook
 
 on_new_reply = Hook("outreach_callbacks.on_new_reply")
 on_not_interested = Hook("outreach_callbacks.on_not_interested")

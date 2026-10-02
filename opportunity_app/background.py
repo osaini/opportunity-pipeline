@@ -24,7 +24,7 @@ import threading
 from typing import Any, Callable
 
 from .mail_message import strip_queries
-from .timestamps import utc_now
+from .core.timestamps import utc_now
 
 LOGGER = logging.getLogger(__name__)
 

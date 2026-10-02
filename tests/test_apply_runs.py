@@ -18,14 +18,15 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import SERVER_INSTANCE, actions, apply_claims, apply_runs, automation, automation_health, schema, urgent
+from opportunity_app import SERVER_INSTANCE, actions, apply_claims, apply_runs, automation, automation_health, urgent
+from opportunity_app.core import schema
 from opportunity_app.apply_runs import ClaimHeldError, ClaimRefused
 from pipeline_core.identity import employer_key
 from opportunity_app.operations import ACCOUNT_QUERIES, delete_account, export_account, run_retention
 from opportunity_app.outreach_automation import AutomationWorker
-from opportunity_app.schema import ensure_product_schema
-from opportunity_app.database import connect_product
-from opportunity_app.timestamps import utc_now
+from opportunity_app.core.schema import ensure_product_schema
+from opportunity_app.core.database import connect_product
+from opportunity_app.core.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 from helpers_apply import ApplyCase, BLUEFIN, USER, setUpModule, tearDownModule  # noqa: F401 (module fixtures: unittest and pytest find them here)

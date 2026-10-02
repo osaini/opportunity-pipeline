@@ -25,8 +25,8 @@ from .actions import (
 from .integrations.agent_providers import AgentProvider, ToolCall, ToolDefinition, build_provider, configured_provider
 from .preparation import PreparationNotFoundError, create_document
 from .profile import get_profile
-from .timestamps import utc_now
-from .user_time import user_timezone
+from .core.timestamps import utc_now
+from .core.user_time import user_timezone
 
 
 class AgentNotFoundError(LookupError):

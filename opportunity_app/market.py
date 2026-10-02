@@ -11,7 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from .profile import get_profile
-from .timestamps import utc_now
+from .core.timestamps import utc_now
 
 
 class MarketNotFoundError(LookupError):

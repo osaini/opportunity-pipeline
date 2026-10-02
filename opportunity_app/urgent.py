@@ -31,8 +31,8 @@ from .actions import CLOSED_APPLICATION_STAGES
 from .early_programs import early_programs
 from .internal_automation import silence_rows
 from .outreach import CLOSED_STATUSES as OUTREACH_CLOSED, REVISIT_STATUSES as OUTREACH_REVISIT
-from .timestamps import utc_now
-from .user_time import UserTimezone, user_timezone
+from .core.timestamps import utc_now
+from .core.user_time import UserTimezone, user_timezone
 
 logger = logging.getLogger(__name__)
 

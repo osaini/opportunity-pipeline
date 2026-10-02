@@ -20,8 +20,8 @@ from opportunity_app.outreach import create_target, get_target
 from opportunity_app.integrations.web_fetch import SafeFetcher
 from opportunity_app.outreach_config import COMPANY_RESEARCH_ENV, RESEARCH_ENV
 from opportunity_app.outreach_settings import OutreachSettings
-from opportunity_app.schema import ensure_product_schema
-from opportunity_app.database import connect_product
+from opportunity_app.core.schema import ensure_product_schema
+from opportunity_app.core.database import connect_product
 
 from helpers_platform import build_and_migrate
 from helpers_outreach import confirm_facts

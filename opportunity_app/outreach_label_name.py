@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from .settings_store import get_setting
+from .core.settings_store import get_setting
 
 DEFAULT_LABEL = "opportunities"
 # user_settings: no row means DEFAULT_LABEL, and '' means labelling is off.

@@ -36,7 +36,7 @@ from ..integrations.agent_providers import AgentProvider, build_provider
 from ..apply_schema_client import SchemaClient, default_schema_client_factory
 from ..boards import BoardTracker
 from ..captures import DEFAULT_CAPTURE_STORAGE
-from ..database import is_postgres_target
+from ..core.database import is_postgres_target
 from ..integrations.pdf import pdf_renderer
 from ..early_programs import DEFAULT_EARLY_PROGRAMS
 from ..inbox_classifiers import build_client as build_inbox_client, client_for as inbox_client_for

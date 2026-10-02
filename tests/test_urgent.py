@@ -25,10 +25,10 @@ from opportunity_app.api import create_app
 from opportunity_app.operations import delete_account, export_account
 from opportunity_app.outreach import local_today
 from opportunity_app.purge import purge_expired_opportunities
-from opportunity_app.schema import LOCAL_USER_ID
-from opportunity_app.database import connect_product
+from opportunity_app.core.schema import LOCAL_USER_ID
+from opportunity_app.core.database import connect_product
 from opportunity_app.student_agent import decide_proposal
-from opportunity_app.user_time import SYSTEM_LOCAL, UserTimezone, user_timezone
+from opportunity_app.core.user_time import SYSTEM_LOCAL, UserTimezone, user_timezone
 from pipeline_core import OpportunityFilters, OpportunityRepository
 from helpers_platform import build_and_migrate
 
@@ -515,7 +515,7 @@ class AnalyticsOverdueTests(UrgentFixture):
             analytics = application_analytics(self.conn, user_id=LOCAL_USER_ID)
         self.assertEqual(analytics["overdue_tasks"], 2)
         from opportunity_app.actions import list_applications
-        with mock.patch("opportunity_app.user_time.datetime") as clock:
+        with mock.patch("opportunity_app.core.user_time.datetime") as clock:
             clock.now.return_value = NOW
             clock.fromisoformat = datetime.fromisoformat
             listed = {item["id"]: item for item in list_applications(self.conn, user_id=LOCAL_USER_ID)}

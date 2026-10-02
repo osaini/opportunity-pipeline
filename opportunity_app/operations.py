@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from .timestamps import utc_now
+from .core.timestamps import utc_now
 
 
 class OperationsError(RuntimeError):

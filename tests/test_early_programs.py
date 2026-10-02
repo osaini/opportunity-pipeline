@@ -18,8 +18,8 @@ from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
 from opportunity_app.early_programs import early_programs, load_programs, set_program_status
 from opportunity_app.operations import export_account
-from opportunity_app.schema import LOCAL_USER_ID
-from opportunity_app.database import connect_product
+from opportunity_app.core.schema import LOCAL_USER_ID
+from opportunity_app.core.database import connect_product
 from opportunity_app.setup import Paths, programs_report
 from opportunity_app.urgent import urgent_queue
 from helpers_platform import build_and_migrate

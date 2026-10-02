@@ -42,13 +42,13 @@ import httpx
 
 from . import apply_runs, automation, internal_automation, outreach_thank_you
 from .background import PollingWorker, record_health_quietly, step_error
-from .database import rollback_quietly, connect_product
+from .core.database import rollback_quietly, connect_product
 from .outreach import approve_draft, get_target, heard_back, latest_event_stamp, list_targets, log_event, withdraw_auto_approval
 from .outreach_greeting import greeting_style, greets_contact, without_greeting
 from .outreach_contacts import apply_choice, choose_contact, find_contacts, list_candidates
 from .outreach_forms import form_due, submit_contact_form
 from .outreach_gmail import last_bounce
-from .timestamps import utc_now
+from .core.timestamps import utc_now
 from .integrations.web_fetch import SafeFetcher
 
 LOGGER = logging.getLogger(__name__)

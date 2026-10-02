@@ -15,8 +15,8 @@ from opportunity_app import STATIC_DIR, automation
 from opportunity_app.actions import update_application
 from opportunity_app.api import create_app
 from opportunity_app.automation import OFF_SHADOW_ON, Feature
-from opportunity_app.database import connect_product
-from opportunity_app.timestamps import utc_now
+from opportunity_app.core.database import connect_product
+from opportunity_app.core.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 

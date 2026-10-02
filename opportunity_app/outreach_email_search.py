@@ -40,7 +40,7 @@ from .outreach_contacts import (
     list_candidates,
     store_candidate,
 )
-from .timestamps import utc_now
+from .core.timestamps import utc_now
 from .integrations.web_fetch import USER_AGENT, SafeFetcher, fetch_site_robots, public_web_url_error, same_site
 
 

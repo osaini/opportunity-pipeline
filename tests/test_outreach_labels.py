@@ -17,13 +17,24 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, automation, gmail_connection, inbox_watcher, outreach, outreach_gmail, outreach_inbox, outreach_label_name, outreach_labels, schema
+from opportunity_app import (
+    STATIC_DIR,
+    automation,
+    gmail_connection,
+    inbox_watcher,
+    outreach,
+    outreach_gmail,
+    outreach_inbox,
+    outreach_label_name,
+    outreach_labels,
+)
+from opportunity_app.core import schema
 from opportunity_app.api import create_app
 from opportunity_app.inbox_watcher import InboxWatcher
 from opportunity_app.outreach_inbox import decide_possible_reply
-from opportunity_app.database import connect_product, has_column
-from opportunity_app.settings_store import get_setting, put_setting
-from opportunity_app.timestamps import utc_now
+from opportunity_app.core.database import connect_product, has_column
+from opportunity_app.core.settings_store import get_setting, put_setting
+from opportunity_app.core.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 from helpers_gmail import (

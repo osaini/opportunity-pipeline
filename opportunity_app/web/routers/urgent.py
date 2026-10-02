@@ -11,7 +11,7 @@ from pipeline_core import OpportunityRepository
 from ..overrides import shared_router
 from ...early_programs import EarlyProgramNotFoundError, early_programs, set_program_status
 from ...urgent import urgent_queue
-from ...schema import LOCAL_USER_ID
+from ...core.schema import LOCAL_USER_ID
 from ..context import AppContext
 from ..dependencies import get_ctx, repository, require_auth, writable_connection
 from ..models.opportunities import EarlyProgramStatusRequest

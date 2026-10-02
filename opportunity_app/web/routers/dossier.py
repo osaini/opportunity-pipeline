@@ -22,7 +22,7 @@ from ...dossier import (
     share_preview,
     update_settings as update_dossier_settings,
 )
-from ...database import connect_product
+from ...core.database import connect_product
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection
 from ..models.dossier import DossierItemRequest, DossierPreviewRequest, DossierSettingsRequest, DossierShareRequest

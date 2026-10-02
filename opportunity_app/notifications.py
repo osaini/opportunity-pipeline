@@ -19,8 +19,8 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .connections import ensure_preferences
-from .timestamps import utc_now
-from .user_time import UserTimezone, user_timezone
+from .core.timestamps import utc_now
+from .core.user_time import UserTimezone, user_timezone
 
 DIGEST_FREQUENCIES = {"immediate", "daily", "weekly", "off"}
 OUTBOX_PENDING_STATES = ("sandbox_suppressed", "queued")

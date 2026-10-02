@@ -46,7 +46,7 @@ from .outreach_identity import company_key
 from .outreach_contacts import page_priority, PageParser, crawl_site
 from .integrations.web_fetch import USER_AGENT, SafeFetcher, same_site, site_robots
 from .outreach_render import PlaywrightRenderer
-from .timestamps import utc_now
+from .core.timestamps import utc_now
 
 SEC_USER_AGENT_ENV = "PIPELINE_SEC_USER_AGENT"
 EDGAR_SEARCH = "https://efts.sec.gov/LATEST/search-index"

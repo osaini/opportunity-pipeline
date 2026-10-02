@@ -18,7 +18,7 @@ from ...market import (
     publish_issue,
     verify_snapshot,
 )
-from ...database import connect_product
+from ...core.database import connect_product
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection
 from ..models.market import MarketIssueRequest, MarketSnapshotRequest

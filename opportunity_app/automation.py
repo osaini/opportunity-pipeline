@@ -68,11 +68,11 @@ from typing import Any, Callable, Protocol
 from uuid import uuid4
 
 from .apply_claims import claim_held
-from .database import is_unique_violation
+from .core.database import is_unique_violation
 from .outreach_config import sender_account
-from .schema import PAUSE_NEVER_CHANGED
-from .settings_store import get_setting, put_setting
-from .timestamps import parse_app_instant, utc_now
+from .core.schema import PAUSE_NEVER_CHANGED
+from .core.settings_store import get_setting, put_setting
+from .core.timestamps import parse_app_instant, utc_now
 
 OFF_ON = ("off", "on")
 OFF_SHADOW_ON = ("off", "shadow", "on")

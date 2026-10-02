@@ -38,8 +38,8 @@ import sqlite3
 from typing import Any, Callable
 
 from . import automation
-from .settings_store import get_setting, put_setting
-from .timestamps import utc_now
+from .core.settings_store import get_setting, put_setting
+from .core.timestamps import utc_now
 from .integrations.typesafe_decisions import DecisionClient, TypeSafeClient, TypeSafeError
 
 SETTING_KEY = "jev_inbox_suggestions"

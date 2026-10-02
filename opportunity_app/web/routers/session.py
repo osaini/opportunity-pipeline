@@ -26,8 +26,8 @@ from ...auth import (
     revoke_user_token,
 )
 from ...profile import get_profile
-from ...database import connect_product, is_postgres_target
-from ...schema import LOCAL_USER_ID
+from ...core.database import connect_product, is_postgres_target
+from ...core.schema import LOCAL_USER_ID
 from ...notifications import build_provider as build_notification_provider
 from ..context import AppContext, LAUNCH_SESSION_SECONDS, LAUNCH_TICKET_SECONDS, SESSION_COOKIE, USER_SESSION_COOKIE
 from ..dependencies import get_ctx, require_auth

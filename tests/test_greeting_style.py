@@ -16,8 +16,8 @@ from opportunity_app.outreach_greeting import DEFAULT_GREETING, greeting_line, g
 from opportunity_app.outreach_contacts import add_manual_contact
 from opportunity_app.outreach_drafting import _inputs, generate_draft
 from opportunity_app.profile import validate_profile_types
-from opportunity_app.schema import LOCAL_USER_ID
-from opportunity_app.database import connect_product
+from opportunity_app.core.schema import LOCAL_USER_ID
+from opportunity_app.core.database import connect_product
 
 from helpers_platform import build_and_migrate
 

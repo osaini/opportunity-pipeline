@@ -36,9 +36,9 @@ from opportunity_app.outreach_drafting import (
     _states_a_lead_result, _unsupported_numbers, validate_draft,
 )
 from opportunity_app.outreach_versions import DraftVersionNotFoundError, draft_versions, restore_draft_version
-from opportunity_app.schema import ensure_product_schema
-from opportunity_app.database import connect_product
-from opportunity_app.timestamps import utc_now
+from opportunity_app.core.schema import ensure_product_schema
+from opportunity_app.core.database import connect_product
+from opportunity_app.core.timestamps import utc_now
 
 from helpers_platform import build_and_migrate, use_profile_regions
 from helpers_outreach import DRAFTING_AUTH as AUTH, USER, confirm_facts

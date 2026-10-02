@@ -57,7 +57,7 @@ from urllib.parse import quote
 import httpx
 
 from . import automation
-from .database import rollback_quietly, has_column
+from .core.database import rollback_quietly, has_column
 from .integrations.gmail_client import (
     MODIFY_SCOPE,
     PROVIDER,
@@ -69,7 +69,7 @@ from .integrations.gmail_client import (
     granted_scopes,
     is_throttle,
 )
-from .json_values import json_dict
+from .core.json_values import json_dict
 from .mail_message import MAILER_DAEMONS, header_map
 from .mail_trust import FREEMAIL, registrable_domain
 from .outreach import UNSENT_STATUSES
@@ -77,8 +77,8 @@ from .outreach_config import sender_account
 from .outreach_delivery import is_delivery_notice
 from .outreach_gmail import DRAFT_EVENT, SENT_EVENT, THANK_YOU_SENT_EVENT
 from .gmail_connection import connector_row, GmailClient, backoff_until
-from .settings_store import get_setting, put_setting
-from .timestamps import parse_app_instant, utc_now
+from .core.settings_store import get_setting, put_setting
+from .core.timestamps import parse_app_instant, utc_now
 from .outreach_label_name import DEFAULT_LABEL, LABEL_SETTING, label_name
 
 LOGGER = logging.getLogger(__name__)

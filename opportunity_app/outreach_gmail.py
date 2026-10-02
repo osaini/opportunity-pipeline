@@ -69,8 +69,8 @@ from .send_claims import (
     send_claim_row,
     settle_send_claim,
 )
-from .timestamps import utc_now
-from .user_time import user_timezone
+from .core.timestamps import utc_now
+from .core.user_time import user_timezone
 
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 DRAFT_EVENT = "gmail_draft_created"

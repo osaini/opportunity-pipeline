@@ -17,8 +17,8 @@ from opportunity_app.api import create_app
 from opportunity_app.outreach import create_target, get_target, update_target
 from opportunity_app.outreach_call_prep import CallPrepWorker
 from opportunity_app.outreach_research import research_due, web_researcher
-from opportunity_app.schema import ensure_product_schema
-from opportunity_app.database import connect_product
+from opportunity_app.core.schema import ensure_product_schema
+from opportunity_app.core.database import connect_product
 
 from helpers_platform import build_and_migrate
 from helpers_source import static_script_text

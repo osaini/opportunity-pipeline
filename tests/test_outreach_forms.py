@@ -30,8 +30,8 @@ from opportunity_app.outreach_forms import (
     plan_fill,
     submit_contact_form,
 )
-from opportunity_app.database import connect_product
-from opportunity_app.timestamps import utc_now
+from opportunity_app.core.database import connect_product
+from opportunity_app.core.timestamps import utc_now
 
 from browser_support import requires_chromium
 from helpers_platform import build_and_migrate

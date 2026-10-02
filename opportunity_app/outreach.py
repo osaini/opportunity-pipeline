@@ -24,7 +24,7 @@ from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
 from . import automation, outreach_callbacks
-from .database import is_unique_violation
+from .core.database import is_unique_violation
 from .inbox_classifiers import read_reply
 from .contact_names import website_domain
 from .outreach_config import gmail_web_url, sender_account
@@ -39,9 +39,9 @@ from .outreach_location import (
     user_regions,
 )
 from .outreach_replies import BOUNCED, bounce_notice, reply_reason, suggest_reply_status
-from .timestamps import utc_now
+from .core.timestamps import utc_now
 from .integrations.typesafe_decisions import DecisionClient
-from .user_time import user_timezone
+from .core.user_time import user_timezone
 from .integrations.web_fetch import public_web_url_error
 
 

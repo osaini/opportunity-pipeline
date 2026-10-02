@@ -19,8 +19,8 @@ from opportunity_app.api import create_app
 from opportunity_app.outreach_automation import update_settings
 from opportunity_app.outreach_gmail_sends import capture_gmail_sends
 from opportunity_app.outreach_schedule import run_due_sends
-from opportunity_app.database import connect_product
-from opportunity_app.timestamps import utc_now
+from opportunity_app.core.database import connect_product
+from opportunity_app.core.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 from helpers_gmail import ACCOUNT, PDF, SCOPES, FakeGmail, delivery_report, forget_gmail_backoff, rate_limited

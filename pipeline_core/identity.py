@@ -42,7 +42,7 @@ def sort_key(value: str | None) -> str:
     tenant path has always used -- `lower` leaves U+00DF alone and would change
     which of 'Straße' and 'Strasse' comes first.
 
-    ``opportunity_app.schema`` writes the ``company_sort_key`` column with this
+    ``opportunity_app.core.schema`` writes the ``company_sort_key`` column with this
     and ``pipeline_core.read_model`` filters on it, so both import this one
     definition. It is also the key ``company_tags`` stores tags under.
     """

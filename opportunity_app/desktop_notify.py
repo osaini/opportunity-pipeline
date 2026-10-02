@@ -38,8 +38,8 @@ from xml.sax.saxutils import escape
 from . import automation
 from .connections import ensure_preferences
 from .notifications import in_quiet_hours
-from .settings_store import setting_updated_at
-from .user_time import user_timezone
+from .core.settings_store import setting_updated_at
+from .core.user_time import user_timezone
 
 LOGGER = logging.getLogger(__name__)
 

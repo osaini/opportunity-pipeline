@@ -23,8 +23,8 @@ from opportunity_app.outreach import log_event
 from opportunity_app.outreach_automation import update_settings
 from opportunity_app.outreach_review import review_runner
 from opportunity_app.outreach_schedule import MAX_ATTEMPTS, run_due_sends
-from opportunity_app.database import connect_product
-from opportunity_app.timestamps import utc_now
+from opportunity_app.core.database import connect_product
+from opportunity_app.core.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 from helpers_gmail import ACCOUNT, PDF, SCOPES, FakeGmail, failure_notice, forget_gmail_backoff, rate_limited

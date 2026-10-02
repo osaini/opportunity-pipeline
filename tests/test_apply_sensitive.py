@@ -146,7 +146,7 @@ class WritingTests(StoreCase):
         self.assertIn("alpha labs zeta", [entry["company"] for entry in apply_sensitive.list_entries(self.conn, USER)])
 
     def test_the_company_name_column_is_added_once_and_repairs_a_database_that_lacks_it(self):
-        from opportunity_app import schema
+        from opportunity_app.core import schema
 
         migration = REPO / "migrations" / "0046_apply_sensitive_company_name.sql"
         self.assertIn("0046_apply_sensitive_company_name.sql", {row[0] for row in self.conn.execute("SELECT name FROM schema_migrations")})
@@ -1081,9 +1081,9 @@ class StoreReaderScanTests(unittest.TestCase):
     """12.7: only the policy, the runs, operations (export and deletion), the schema (its migration step) and the store's own module name the table."""
 
     # Allowed modules, as paths from the repo root without ".py". Each may be a single file or, after a split, a package of
-    # the same name (opportunity_app/schema/...), but only at this location: a same-named file elsewhere (scripts/schema.py,
+    # the same name (opportunity_app/core/schema/...), but only at this location: a same-named file elsewhere (scripts/schema.py,
     # pipeline_core/operations.py) is not allowed, which the old basename check wrongly let through.
-    ALLOWED = ("opportunity_app/apply_sensitive", "opportunity_app/operations", "opportunity_app/schema")
+    ALLOWED = ("opportunity_app/apply_sensitive", "opportunity_app/operations", "opportunity_app/core/schema")
 
     def sources(self):
         for folder in ("opportunity_app", "pipeline_core"):

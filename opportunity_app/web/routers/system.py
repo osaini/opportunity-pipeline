@@ -11,7 +11,7 @@ from fastapi import Depends, HTTPException, Request, status
 
 from ..overrides import shared_router
 from ...refresh import RefreshBusy, fresh_steps
-from ...database import connect_product, is_postgres_target
+from ...core.database import connect_product, is_postgres_target
 from ...boards import BoardLookupExpired, BoardTracker
 from ..context import AppContext
 from ..dependencies import get_ctx, require_owner

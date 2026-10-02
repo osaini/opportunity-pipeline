@@ -30,7 +30,7 @@ from .outreach import get_target
 from .outreach_agents import discovery_runner
 from .outreach_agents import Runner
 from .outreach_contacts import apply_choice, choose_contact, find_contacts, is_generic_address, list_candidates
-from .database import connect_product
+from .core.database import connect_product
 from .outreach_discovery import search_other_sites
 from .outreach_drafting import generate_draft
 from .integrations.web_fetch import SafeFetcher, default_fetcher

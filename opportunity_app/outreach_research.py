@@ -84,7 +84,7 @@ from .outreach_identity import company_key
 from .outreach_config import COMPANY_RESEARCH_ENV, RESEARCH_ENV, resolve_provider
 from .preparation import confirmed_facts
 from .quote_check import SECTION_IDS, Judge, check_brief
-from .timestamps import parse_app_instant, utc_now
+from .core.timestamps import parse_app_instant, utc_now
 from .integrations.web_fetch import SafeFetcher
 
 JOB_TYPE = "outreach_company_research"

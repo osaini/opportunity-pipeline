@@ -13,7 +13,7 @@ from typing import Any
 
 from .outreach_identity import company_key
 from .outreach_location import owner_profile
-from .schema import LOCAL_USER_ID
+from .core.schema import LOCAL_USER_ID
 
 
 # The greeting is the draft's first line: "Hi Dana," or "Hi Acme team,". When

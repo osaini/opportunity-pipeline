@@ -13,8 +13,8 @@ import httpx
 from opportunity_app.outreach import create_target, get_target, update_target
 from opportunity_app.outreach_locate import clean_place, locate_targets, needs_a_location
 from opportunity_app.outreach_profile import apply_location
-from opportunity_app.schema import ensure_product_schema
-from opportunity_app.database import connect_product
+from opportunity_app.core.schema import ensure_product_schema
+from opportunity_app.core.database import connect_product
 
 from helpers_platform import build_and_migrate
 from helpers_outreach import safe_fetcher, site_transport

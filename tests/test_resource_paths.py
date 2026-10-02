@@ -50,7 +50,7 @@ class ResolvedPathTests(unittest.TestCase):
 
     def test_the_package_anchors_resolve(self):
         import opportunity_app
-        from opportunity_app import schema
+        from opportunity_app.core import schema
 
         self.assertEqual(opportunity_app.ROOT, ROOT)
         self.assertTrue((opportunity_app.STATIC_DIR / "index.html").is_file())

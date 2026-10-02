@@ -11,7 +11,7 @@ from typing import Any, Literal
 from fastapi import Depends, File, HTTPException, Query, Response, UploadFile, status
 
 from ..overrides import shared_router
-from ...company_tags import decorate_outreach_with_tags, sync_outreach_tags
+from ...core.company_tags import decorate_outreach_with_tags, sync_outreach_tags
 from ...outreach import (
     CONTACT_CONFIDENCE,
     LocationConflictError,

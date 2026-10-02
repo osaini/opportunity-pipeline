@@ -12,7 +12,7 @@ from typing import Any, Callable
 
 from pipeline_core.identity import sort_key
 
-from . import ROOT
+from .. import ROOT
 from .company_tags import ensure_company_tags_current
 from .database import has_column
 from .timestamps import canonical_utc, utc_now

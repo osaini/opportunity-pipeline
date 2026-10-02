@@ -31,8 +31,8 @@ from opportunity_app.outreach_profile import (
     sec_fetcher,
     site_location,
 )
-from opportunity_app.schema import ensure_product_schema
-from opportunity_app.database import connect_product
+from opportunity_app.core.schema import ensure_product_schema
+from opportunity_app.core.database import connect_product
 
 from helpers_platform import build_and_migrate, use_profile_regions
 from helpers_outreach import company, only_for, proposals, safe_fetcher, site_transport
@@ -130,7 +130,7 @@ class MigrationTests(unittest.TestCase):
     def test_existing_locations_keep_the_only_basis_that_can_be_known(self):
         import sqlite3
 
-        from opportunity_app.schema import MIGRATIONS_DIR
+        from opportunity_app.core.schema import MIGRATIONS_DIR
 
         conn = sqlite3.connect(":memory:")
         try:

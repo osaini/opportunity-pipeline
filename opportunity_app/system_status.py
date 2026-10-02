@@ -27,7 +27,7 @@ from typing import Any, Callable
 
 from . import DEFAULT_LEGACY_DB, ROOT
 from .daily import STATE_PATH as DAILY_STATE_PATH, read_state as read_daily_state
-from .timestamps import parse_app_instant
+from .core.timestamps import parse_app_instant
 
 SOURCES_CONFIG = ROOT / "config" / "sources.json"
 

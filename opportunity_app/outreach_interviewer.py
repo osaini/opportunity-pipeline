@@ -79,7 +79,7 @@ from .outreach_identity import (
     website_strength,
 )
 from .outreach_linkedin import CMD_META, LinkedInClient, LinkedInUnavailable, username_from
-from .timestamps import parse_app_instant, utc_now
+from .core.timestamps import parse_app_instant, utc_now
 from .integrations.web_fetch import FetchResult
 
 # Kinds of inbox message a person at the company wrote (outreach_inbox).

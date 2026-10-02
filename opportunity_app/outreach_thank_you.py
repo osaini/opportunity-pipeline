@@ -111,9 +111,9 @@ import httpx
 
 from . import automation, outreach_callbacks, outreach_review
 from .background import record_health_quietly, step_error
-from .database import is_unique_violation, rollback_quietly
+from .core.database import is_unique_violation, rollback_quietly
 from .inbox_classifiers import MIN_CONFIDENCE
-from .json_values import json_dict
+from .core.json_values import json_dict
 from .mail_message import FULL_TEXT_LIMIT, written_between_quotes
 from .outreach import OutreachNotFoundError, log_event, get_target
 from .outreach_greeting import contact_first_name, greeting_line, greeting_style, spoken_company
@@ -157,8 +157,8 @@ from .outreach_schedule import (
     wait_for_gmail,
 )
 from .outreach_thank_you_writing import recipient_name, reply_subject, write
-from .timestamps import parse_app_instant, utc_now
-from .user_time import at_wall_clock, to_local
+from .core.timestamps import parse_app_instant, utc_now
+from .core.user_time import at_wall_clock, to_local
 
 LOGGER = logging.getLogger(__name__)
 

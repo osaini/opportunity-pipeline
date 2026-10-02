@@ -62,8 +62,8 @@ def seed_fake_apply(platform_path: Path, resume_root: Path) -> None:
     switch on happens after the app is built (its requirement asks the app's agent factory).
     """
     from opportunity_app.profile import update_profile
-    from opportunity_app.schema import LOCAL_USER_ID
-    from opportunity_app.timestamps import utc_now
+    from opportunity_app.core.schema import LOCAL_USER_ID
+    from opportunity_app.core.timestamps import utc_now
 
     conn = sqlite3.connect(platform_path)
     conn.row_factory = sqlite3.Row
@@ -128,7 +128,7 @@ def main() -> int:
     )
     if fake_apply:
         from opportunity_app import automation
-        from opportunity_app.schema import LOCAL_USER_ID
+        from opportunity_app.core.schema import LOCAL_USER_ID
 
         conn = sqlite3.connect(platform_path)
         conn.row_factory = sqlite3.Row

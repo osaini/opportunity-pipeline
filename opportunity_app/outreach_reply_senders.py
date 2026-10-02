@@ -25,13 +25,13 @@ from pipeline_core.identity import identity_tokens, normalized
 
 from . import mail_trust
 from .contact_names import GENERIC_LOCAL_PARTS, ROLE_INBOX_LOCAL_PARTS, ROLE_INBOX_QUALIFIERS, website_domain
-from .json_values import json_dict
+from .core.json_values import json_dict
 from .mail_message import hosts_in, is_automatic
 from .outreach_config import sender_account
 from .outreach_contacts import is_shared_inbox, made_of
 from .outreach_forms import ALWAYS_AUTOMATIC
 from .outreach_gmail import SENT_EVENT
-from .timestamps import parse_app_instant
+from .core.timestamps import parse_app_instant
 
 # One logger for the whole thank-you feature (what its tests and the student's log filters name), whichever module logs.
 LOGGER = logging.getLogger("opportunity_app.outreach_thank_you")

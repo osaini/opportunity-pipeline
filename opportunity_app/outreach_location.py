@@ -14,7 +14,7 @@ from functools import lru_cache
 from typing import Any
 
 from .legacy import PROFILE_PATH
-from .schema import LOCAL_USER_ID
+from .core.schema import LOCAL_USER_ID
 
 
 # Where a target's location came from, most authoritative first. A deep search

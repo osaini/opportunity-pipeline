@@ -29,7 +29,7 @@ import httpx
 
 from .contact_names import GENERIC_LOCAL_PARTS, ROLE_INBOX_LOCAL_PARTS, ROLE_INBOX_QUALIFIERS, website_domain
 from .outreach import EMAIL_ADDRESS, MANUAL_CONTACT_ROUTE, log_event, get_target, update_target
-from .timestamps import utc_now
+from .core.timestamps import utc_now
 from .integrations.web_fetch import USER_AGENT, SafeFetcher, public_web_url_error, same_site, site_robots
 
 MAX_PAGES = 12

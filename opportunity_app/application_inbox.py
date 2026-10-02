@@ -166,16 +166,16 @@ from .application_mail_rules import (
     redact,
     stated_deadline,
 )
-from .database import is_transient_error
+from .core.database import is_transient_error
 from .integrations.gmail_client import ClientFactory, GmailAuthError, GmailThrottled, connection_state
 from .mail_message import host_of, strip_queries
 from .outreach_config import sender_account
 from .gmail_connection import connector_row, GmailClient
 from .outreach_inbox import RULES, owned_sql
-from .settings_store import setting_updated_at
-from .timestamps import parse_app_instant, utc_now
+from .core.settings_store import setting_updated_at
+from .core.timestamps import parse_app_instant, utc_now
 from .integrations.typesafe_decisions import DecisionClient
-from .user_time import user_timezone
+from .core.user_time import user_timezone
 
 LOGGER = logging.getLogger(__name__)
 

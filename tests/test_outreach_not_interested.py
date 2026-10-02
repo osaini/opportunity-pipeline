@@ -11,7 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, internal_automation, schema
+from opportunity_app import STATIC_DIR, internal_automation
+from opportunity_app.core import schema
 from opportunity_app.api import create_app
 from opportunity_app.outreach import (
     log_event,
@@ -28,7 +29,7 @@ from opportunity_app.outreach_call_prep import auto_queue_call_prep
 from opportunity_app.outreach_recontact import eligible_targets
 from opportunity_app.outreach_research import due_for_research
 from opportunity_app.outreach_thank_you import due as thank_you_due
-from opportunity_app.database import connect_product
+from opportunity_app.core.database import connect_product
 from opportunity_app.urgent import urgent_queue
 
 from helpers_platform import build_and_migrate

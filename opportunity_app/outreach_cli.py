@@ -53,8 +53,8 @@ from pathlib import Path
 
 from . import DEFAULT_PLATFORM_DB
 from .integrations.agent_providers import build_provider
-from .daily_lock import TEMPFAIL_EXIT
-from .database import is_postgres_target, connect_product
+from .core.daily_lock import TEMPFAIL_EXIT
+from .core.database import is_postgres_target, connect_product
 from .legacy import load_env_file
 from .outreach import queue_follow_up_reminders
 from .outreach_config import RESEARCH_ENV, discovery_provider
@@ -66,7 +66,7 @@ from .outreach_recontact import recontact_targets
 from .outreach_research import available_agent, due_for_research, research_company, research_runner, text_model
 from .outreach_render import default_renderer
 from .integrations.smtp_probe import default_verifier
-from .schema import LOCAL_USER_ID, ensure_product_schema
+from .core.schema import LOCAL_USER_ID, ensure_product_schema
 from .integrations.web_fetch import default_fetcher
 
 

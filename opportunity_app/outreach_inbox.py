@@ -107,8 +107,8 @@ from .outreach_forms import (
     UNCONFIRMED_EVENT as FORM_UNCONFIRMED,
     is_acknowledgement,
 )
-from .settings_store import get_setting, put_setting
-from .timestamps import parse_app_instant, utc_now
+from .core.settings_store import get_setting, put_setting
+from .core.timestamps import parse_app_instant, utc_now
 from .integrations.typesafe_decisions import DecisionClient
 
 LOGGER = logging.getLogger(__name__)

@@ -16,9 +16,9 @@ from cryptography.fernet import Fernet
 from opportunity_app import auth
 from opportunity_app import notifications as notif
 from opportunity_app.connections import ensure_preferences
-from opportunity_app.schema import LOCAL_USER_ID
-from opportunity_app.database import connect_product
-from opportunity_app.timestamps import utc_now
+from opportunity_app.core.schema import LOCAL_USER_ID
+from opportunity_app.core.database import connect_product
+from opportunity_app.core.timestamps import utc_now
 
 from helpers_platform import build_and_migrate
 

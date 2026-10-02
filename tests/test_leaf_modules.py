@@ -104,53 +104,53 @@ def dotted(*names: str) -> set[str]:
 # Everything else must be the standard library. Not every entry is a pure leaf; each one that is not says why.
 LEAVES: dict[str, tuple[set[str], set[str]]] = {
     # Workstream T: time, database, settings, JSON, stored profile
-    "opportunity_app/timestamps.py": (set(), set()),
+    "opportunity_app/core/timestamps.py": (set(), set()),
     # PostgreSQL support imports psycopg inside PostgresConnection, so SQLite-only installs never need it. The connection
     # factory's default paths are the package's own constants.
-    "opportunity_app/database.py": ({f"{PACKAGE}.DEFAULT_LEGACY_DB", f"{PACKAGE}.DEFAULT_PLATFORM_DB"}, {"psycopg"}),
-    "opportunity_app/settings_store.py": (set(), set()),
-    "opportunity_app/json_values.py": (set(), set()),
-    "opportunity_app/profile_store.py": (dotted("json_values"), set()),
-    "opportunity_app/user_time.py": (set(), set()),
+    "opportunity_app/core/database.py": ({f"{PACKAGE}.DEFAULT_LEGACY_DB", f"{PACKAGE}.DEFAULT_PLATFORM_DB"}, {"psycopg"}),
+    "opportunity_app/core/settings_store.py": (set(), set()),
+    "opportunity_app/core/json_values.py": (set(), set()),
+    "opportunity_app/core/profile_store.py": (dotted("core.json_values"), set()),
+    "opportunity_app/core/user_time.py": (set(), set()),
     # Keyword rules over an application email: pure text, split out of connections so the inbox workflow can use them.
     "opportunity_app/monitored_classifier.py": (set(), set()),
     # Workstream I: identity and the legacy boundary
     "pipeline_core/identity.py": (set(), set()),
     "pipeline_core/regions.py": ({"pipeline_core.identity"}, set()),
     "pipeline_core/env.py": (set(), set()),
-    "opportunity_app/storage_paths.py": (set(), set()),
+    "opportunity_app/core/storage_paths.py": (set(), set()),
     # Workstream M: the mail leaves. mail_message is stdlib-only so scripts/pipeline_mailbox.py can use it without httpx.
     "opportunity_app/mail_message.py": (set(), set()),
     "opportunity_app/integrations/gmail_client.py": ({"httpx"}, set()),
     # Workstream B: workers, the AI CLI runner, outreach leaves
     # Not a pure leaf: automation (record_health) is imported where used, so importing background loads neither it
     # nor the mail reader. mail_message and timestamps are stdlib-only leaves.
-    "opportunity_app/background.py": (dotted("mail_message", "timestamps"), dotted("automation")),
+    "opportunity_app/background.py": (dotted("mail_message", "core.timestamps"), dotted("automation")),
     "opportunity_app/integrations/web_fetch.py": ({"httpx", "httpcore"}, set()),
     "opportunity_app/outreach_config.py": (dotted("integrations.agent_providers"), set()),
     "opportunity_app/contact_names.py": (set(), set()),
     "opportunity_app/outreach_batch.py": (dotted("integrations.agent_providers"), set()),
-    "opportunity_app/daily_lock.py": ({f"{PACKAGE}.ROOT"}, set()),
+    "opportunity_app/core/daily_lock.py": ({f"{PACKAGE}.ROOT"}, set()),
     # The two API SDKs are imported where a provider is built, so a missing one fails only that provider.
     "opportunity_app/integrations/agent_providers.py": (set(), {"openai", "anthropic"}),
     "opportunity_app/__init__.py": (set(), set()),
     # Storage over outreach, not a pure leaf: it may import only outreach and the clock.
-    "opportunity_app/outreach_versions.py": (dotted("outreach", "timestamps"), set()),
+    "opportunity_app/outreach_versions.py": (dotted("outreach", "core.timestamps"), set()),
     # Split out of outreach.py. Replies is pure text rules; location and greeting read the student's profile (the owner's
     # file, or another user's confirmed facts through preparation, which is imported where used).
     "opportunity_app/outreach_replies.py": (set(), set()),
-    "opportunity_app/outreach_location.py": (dotted("legacy", "schema"), dotted("preparation")),
-    "opportunity_app/outreach_greeting.py": (dotted("outreach_identity", "outreach_location", "schema"), dotted("preparation")),
+    "opportunity_app/outreach_location.py": (dotted("legacy", "core.schema"), dotted("preparation")),
+    "opportunity_app/outreach_greeting.py": (dotted("outreach_identity", "outreach_location", "core.schema"), dotted("preparation")),
     # Split out of outreach_gmail.py. The claim ledger needs only the process id, the unique-violation test and the clock, so
     # the contact-form submitter and the thank-you recovery can hold claims without loading the Gmail REST client.
-    "opportunity_app/send_claims.py": ({f"{PACKAGE}.SERVER_INSTANCE", *dotted("database", "timestamps")}, set()),
+    "opportunity_app/send_claims.py": ({f"{PACKAGE}.SERVER_INSTANCE", *dotted("core.database", "core.timestamps")}, set()),
 }
 
 # Leaves that load nothing late: no function-level import at all, not even of the standard library.
-NO_LAZY_IMPORTS = ("pipeline_core/identity.py", "pipeline_core/regions.py", "pipeline_core/env.py", "opportunity_app/storage_paths.py")
+NO_LAZY_IMPORTS = ("pipeline_core/identity.py", "pipeline_core/regions.py", "pipeline_core/env.py", "opportunity_app/core/storage_paths.py")
 
 # Leaves that must not open a database connection when imported.
-NO_CONNECTION_AT_IMPORT = ("timestamps", "database", "settings_store", "json_values", "profile_store", "user_time")
+NO_CONNECTION_AT_IMPORT = ("core/timestamps", "core/database", "core/settings_store", "core/json_values", "core/profile_store", "core/user_time")
 
 
 class LeavesImportOnlyWhatTheyMayTests(unittest.TestCase):
@@ -252,7 +252,7 @@ STAMPS = [
 
 class ParseAppInstantTests(unittest.TestCase):
     def test_it_agrees_with_every_copy_it_replaced(self):
-        from opportunity_app.timestamps import parse_app_instant
+        from opportunity_app.core.timestamps import parse_app_instant
 
         for stamp in STAMPS:
             with self.subTest(stamp=repr(stamp)):
@@ -264,7 +264,7 @@ class ParseAppInstantTests(unittest.TestCase):
                     self.assertEqual(got.utcoffset(), legacy_parse(stamp).utcoffset())
 
     def test_a_naive_stamp_the_app_wrote_is_utc_and_a_non_utc_offset_is_kept(self):
-        from opportunity_app.timestamps import parse_app_instant
+        from opportunity_app.core.timestamps import parse_app_instant
 
         self.assertEqual(parse_app_instant("2026-09-30T12:00:00").utcoffset(), timedelta(0))
         self.assertEqual(parse_app_instant("2026-09-30T12:00:00-04:00").utcoffset(), timedelta(hours=-4))
@@ -272,7 +272,7 @@ class ParseAppInstantTests(unittest.TestCase):
 
     def test_a_source_date_without_an_offset_stays_unknown(self):
         # The opposite rule, on purpose: canonical_utc is for dates a source sent, and a naive one is "did not say when".
-        from opportunity_app.timestamps import canonical_utc, parse_app_instant
+        from opportunity_app.core.timestamps import canonical_utc, parse_app_instant
 
         self.assertIsNone(canonical_utc("2026-09-30T12:00:00"))
         self.assertIsNotNone(parse_app_instant("2026-09-30T12:00:00"))
@@ -280,7 +280,7 @@ class ParseAppInstantTests(unittest.TestCase):
 
 class UtcNowTests(unittest.TestCase):
     def test_stamps_never_repeat_even_when_the_clock_does(self):
-        from opportunity_app import timestamps
+        from opportunity_app.core import timestamps
 
         frozen = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
 
@@ -297,7 +297,7 @@ class UtcNowTests(unittest.TestCase):
         self.assertEqual(stamps[1], "2026-09-30T12:00:00.000001+00:00")
 
     def test_there_is_one_clock(self):
-        from opportunity_app import company_tags, schema, timestamps
+        from opportunity_app.core import company_tags, schema, timestamps
 
         self.assertIs(schema.utc_now, timestamps.utc_now)
         self.assertIs(company_tags.utc_now, timestamps.utc_now)
@@ -305,7 +305,7 @@ class UtcNowTests(unittest.TestCase):
 
 class LocalTimeHelperTests(unittest.TestCase):
     def test_to_local_uses_the_zone_or_the_machines_own(self):
-        from opportunity_app.user_time import UserTimezone, to_local
+        from opportunity_app.core.user_time import UserTimezone, to_local
 
         instant = datetime(2026, 7, 1, 16, 0, tzinfo=timezone.utc)
         zone = ZoneInfo("America/Chicago")
@@ -315,7 +315,7 @@ class LocalTimeHelperTests(unittest.TestCase):
         self.assertEqual(UserTimezone("system-local").to_local(instant), to_local(instant, None))
 
     def test_at_wall_clock_reads_a_naive_time_in_the_zone(self):
-        from opportunity_app.user_time import at_wall_clock
+        from opportunity_app.core.user_time import at_wall_clock
 
         naive = datetime(2026, 7, 1, 9, 0)
         self.assertEqual(at_wall_clock(naive, ZoneInfo("America/Chicago")).isoformat(), "2026-07-01T09:00:00-05:00")
@@ -333,7 +333,7 @@ class RollbackQuietlyTests(unittest.TestCase):
         self.conn.close()
 
     def test_an_open_transaction_is_rolled_back(self):
-        from opportunity_app.database import rollback_quietly
+        from opportunity_app.core.database import rollback_quietly
 
         self.conn.execute("INSERT INTO t VALUES (1)")
         self.assertTrue(self.conn.in_transaction)
@@ -342,7 +342,7 @@ class RollbackQuietlyTests(unittest.TestCase):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM t").fetchone()[0], 0)
 
     def test_a_connection_with_nothing_open_is_left_alone(self):
-        from opportunity_app.database import rollback_quietly
+        from opportunity_app.core.database import rollback_quietly
 
         conn = mock.Mock()
         conn.in_transaction = False
@@ -350,7 +350,7 @@ class RollbackQuietlyTests(unittest.TestCase):
         conn.rollback.assert_not_called()
 
     def test_a_failed_rollback_is_logged_under_the_callers_logger_and_never_raised(self):
-        from opportunity_app.database import rollback_quietly
+        from opportunity_app.core.database import rollback_quietly
 
         conn = mock.Mock()
         conn.in_transaction = True
@@ -373,13 +373,13 @@ class SettingsStoreTests(unittest.TestCase):
         self.conn.close()
 
     def test_a_missing_row_reads_as_none(self):
-        from opportunity_app.settings_store import get_setting, setting_updated_at
+        from opportunity_app.core.settings_store import get_setting, setting_updated_at
 
         self.assertIsNone(get_setting(self.conn, "u", "k"))
         self.assertIsNone(setting_updated_at(self.conn, "u", "k"))
 
     def test_put_inserts_then_updates_the_value_and_the_stamp(self):
-        from opportunity_app.settings_store import get_setting, put_setting, setting_updated_at
+        from opportunity_app.core.settings_store import get_setting, put_setting, setting_updated_at
 
         put_setting(self.conn, "u", "k", "on", "2026-09-30T10:00:00+00:00")
         self.assertEqual(get_setting(self.conn, "u", "k"), "on")
@@ -389,7 +389,7 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM user_settings").fetchone()[0], 1)
 
     def test_settings_are_per_student_and_per_key(self):
-        from opportunity_app.settings_store import get_setting, put_setting
+        from opportunity_app.core.settings_store import get_setting, put_setting
 
         put_setting(self.conn, "u", "k", "1", "s")
         put_setting(self.conn, "v", "k", "2", "s")
@@ -398,7 +398,7 @@ class SettingsStoreTests(unittest.TestCase):
                          ["1", "2", "3"])
 
     def test_put_opens_no_transaction_of_its_own_commit_is_the_callers(self):
-        from opportunity_app.settings_store import get_setting, put_setting
+        from opportunity_app.core.settings_store import get_setting, put_setting
 
         put_setting(self.conn, "u", "k", "on", "s")
         self.assertTrue(self.conn.in_transaction)
@@ -408,7 +408,7 @@ class SettingsStoreTests(unittest.TestCase):
 
 class JsonValuesTests(unittest.TestCase):
     def test_json_dict_gives_an_object_or_nothing(self):
-        from opportunity_app.json_values import json_dict
+        from opportunity_app.core.json_values import json_dict
 
         self.assertEqual(json_dict('{"a": 1}'), {"a": 1})
         for text in (None, "", "{", "[1]", '"x"', "3", "null", b"\xff", 5):
@@ -416,7 +416,7 @@ class JsonValuesTests(unittest.TestCase):
                 self.assertEqual(json_dict(text), {})
 
     def test_json_as_requires_the_type_of_the_default(self):
-        from opportunity_app.json_values import json_as
+        from opportunity_app.core.json_values import json_as
 
         self.assertEqual(json_as("[1, 2]", []), [1, 2])
         self.assertEqual(json_as('{"a": 1}', {}), {"a": 1})
@@ -429,7 +429,7 @@ class JsonValuesTests(unittest.TestCase):
     def test_it_agrees_with_the_copies_it_replaced(self):
         import json
 
-        from opportunity_app.json_values import json_as, json_dict
+        from opportunity_app.core.json_values import json_as, json_dict
 
         def old_dict(text):
             try:
@@ -461,13 +461,13 @@ class ReadStoredProfileTests(unittest.TestCase):
         self.conn.close()
 
     def test_no_row_gives_an_empty_profile_and_creates_none(self):
-        from opportunity_app.profile_store import read_stored_profile
+        from opportunity_app.core.profile_store import read_stored_profile
 
         self.assertEqual(read_stored_profile(self.conn, "u"), {})
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM profiles").fetchone()[0], 0)
 
     def test_the_stored_object_is_returned_and_anything_else_is_empty(self):
-        from opportunity_app.profile_store import read_stored_profile
+        from opportunity_app.core.profile_store import read_stored_profile
 
         for stored, expected in (('{"school": "X"}', {"school": "X"}), ("", {}), (None, {}), ("[1]", {}), ("junk", {}), ("null", {})):
             with self.subTest(stored=stored):
@@ -560,7 +560,7 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         self.assertEqual(sort_key("ACME"), "acme")
 
     def test_schema_read_model_and_tags_share_that_one_sort_key(self):
-        from opportunity_app import company_tags, schema
+        from opportunity_app.core import company_tags, schema
         from pipeline_core import identity, read_model
 
         self.assertIs(schema.sort_key, identity.sort_key)
@@ -589,7 +589,7 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         import subprocess
 
         code = (
-            "import sys; sys.path.insert(0, %r); import opportunity_app.schema; "
+            "import sys; sys.path.insert(0, %r); import opportunity_app.core.schema; "
             "print('pipeline' in sys.modules)" % str(ROOT)
         )
         done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=ROOT, check=True)
@@ -717,7 +717,8 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         self.assertEqual(paths.DB_PATH, before)
 
     def test_one_ruleset_version_constant_backs_every_fit_score_read_and_write(self):
-        from opportunity_app import legacy_sync, schema
+        from opportunity_app import legacy_sync
+        from opportunity_app.core import schema
         from pipeline_core.read_model import RULESET_VERSION
 
         self.assertEqual(RULESET_VERSION, "legacy-v1")  # the SQL views in migrations/0001, 0020 and 0021 bake this in
@@ -754,7 +755,7 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         self.assertEqual(accepted, set(seen))
 
     def test_confined_path_accepts_a_direct_child_and_refuses_everything_else(self):
-        from opportunity_app.storage_paths import confined_path
+        from opportunity_app.core.storage_paths import confined_path
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "store"
@@ -993,7 +994,7 @@ class OutreachIdentityTests(unittest.TestCase):
         loaded = set(ast.literal_eval(done.stdout.strip().splitlines()[-1]))
         heavy = dotted(
             "outreach", "outreach_contacts", "outreach_forms", "outreach_gmail", "outreach_inbox", "application_inbox",
-            "outreach_labels", "outreach_delivery", "automation", "schema", "integrations.gmail_client", "connections", "api",
+            "outreach_labels", "outreach_delivery", "automation", "core.schema", "integrations.gmail_client", "connections", "api",
         ) | {"cryptography", "httpx"}
         self.assertEqual(loaded & heavy, set())
 
@@ -1015,7 +1016,7 @@ class OutreachIdentityTests(unittest.TestCase):
 from opportunity_app.integrations import agent_providers, web_fetch
 from opportunity_app import background, inbox_watcher, outreach_batch, outreach_config, outreach_review  # noqa: E402
 from opportunity_app.outreach import create_target, get_target, latest_event_stamp, log_event, withdraw_auto_approval  # noqa: E402
-from opportunity_app.database import connect_product  # noqa: E402
+from opportunity_app.core.database import connect_product  # noqa: E402
 
 from helpers_platform import build_and_migrate  # noqa: E402
 

@@ -38,7 +38,7 @@ from .integrations.gmail_client import (
     connection_state,
     is_throttle,
 )
-from .timestamps import parse_app_instant, utc_now
+from .core.timestamps import parse_app_instant, utc_now
 
 LOGGER = logging.getLogger(__name__)
 

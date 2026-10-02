@@ -18,8 +18,8 @@ from typing import Any, Callable, Iterator
 from uuid import uuid4
 
 from . import SERVER_INSTANCE
-from .database import is_unique_violation
-from .timestamps import utc_now
+from .core.database import is_unique_violation
+from .core.timestamps import utc_now
 
 
 # The server runs as one process, so a claim from another instance was left by

@@ -15,7 +15,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from opportunity_app import bootstrap, outreach_callbacks, outreach_schedule, outreach_thank_you
-from opportunity_app.hooks import Hook, NotRegistered
+from opportunity_app.core.hooks import Hook, NotRegistered
 
 from helpers_platform import build_and_migrate  # noqa: F401  (also registers, as a test without an app needs)
 

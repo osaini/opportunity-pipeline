@@ -24,12 +24,12 @@ from tempfile import TemporaryDirectory
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from opportunity_app import legacy_sync
-from opportunity_app.schema import (
+from opportunity_app.core.schema import (
     backfill_posted_at_utc,
     ensure_product_schema,
 )
-from opportunity_app.database import connect_product
-from opportunity_app.timestamps import canonical_utc
+from opportunity_app.core.database import connect_product
+from opportunity_app.core.timestamps import canonical_utc
 from pipeline_core import OpportunityFilters, OpportunityRepository
 
 try:

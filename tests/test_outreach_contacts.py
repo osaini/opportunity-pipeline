@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import httpcore
 import httpx
 
-from opportunity_app import schema
+from opportunity_app.core import schema
 from opportunity_app.outreach import DraftChangedError, compute_draft_fingerprint, approve_draft, create_target, get_target, update_target
 from opportunity_app.outreach_contacts import (
     add_manual_contact,
@@ -46,8 +46,8 @@ from opportunity_app.outreach_email_search import check_person, search_emails
 from opportunity_app.outreach_gmail import _mime
 from opportunity_app.outreach_recontact import RecontactManager, apply_recontact, eligible_targets, recontact_targets
 from opportunity_app.integrations.smtp_probe import ACCEPTED, CATCH_ALL, REJECTED, UNKNOWN, SmtpVerifier, classify
-from opportunity_app.schema import ensure_product_schema
-from opportunity_app.database import connect_product
+from opportunity_app.core.schema import ensure_product_schema
+from opportunity_app.core.database import connect_product
 from opportunity_app.integrations.web_fetch import _FETCH_CLOCK, SafeFetcher, _DeadlineBackend, _DeadlineStream, default_client
 
 from helpers_platform import build_and_migrate

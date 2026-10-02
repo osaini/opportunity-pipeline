@@ -29,8 +29,8 @@ from .automation import (
     register_handler,
     same_as,
 )
-from .timestamps import parse_app_instant
-from .user_time import user_timezone
+from .core.timestamps import parse_app_instant
+from .core.user_time import user_timezone
 
 
 UNDO_REMINDER_NOTES = {

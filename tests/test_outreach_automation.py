@@ -28,7 +28,7 @@ from opportunity_app.outreach_automation import (
     update_settings,
 )
 from opportunity_app.outreach_delivery import record_bounce
-from opportunity_app.database import connect_product
+from opportunity_app.core.database import connect_product
 
 from helpers_platform import build_and_migrate
 from helpers_outreach import safe_fetcher, site_transport

@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from opportunity_app import auth
-from opportunity_app.database import connect_product
+from opportunity_app.core.database import connect_product
 
 from helpers_platform import build_and_migrate
 

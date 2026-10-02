@@ -12,7 +12,7 @@ import urllib.parse
 from typing import Any
 
 from .actions import log_application_event
-from .timestamps import utc_now
+from .core.timestamps import utc_now
 
 # The only keys of a field the session keeps; anything else the browser sent (a proposed value, say) is dropped.
 ALLOWED_FIELD_KEYS = {

@@ -65,7 +65,7 @@ from .apply_classify import (
 )
 from .apply_greenhouse import ATS_GREENHOUSE
 from .extension_apply import ExtensionApplyError, confirmed_resume_file
-from .json_values import json_as
+from .core.json_values import json_as
 
 __all__ = [
     "ALLOWED_ATS_LABEL_FIELDS", "Plan", "PlanField", "SchemaField", "Source", "Sources", "build_plan", "company_matches", "control_of",

@@ -98,13 +98,13 @@ LAYER_NAMES = {
 LAYER_MEMBERS: dict[int, frozenset[str]] = {
     # L0 stdlib leaves. `opportunity_app` and `pipeline_core` are the package __init__ modules (constants and re-exports).
     0: (
-        _app(". integrations timestamps user_time database json_values mail_message opportunity_metadata storage_paths contact_names daily_lock hooks monitored_classifier outreach_replies")
+        _app(". core integrations core.timestamps core.user_time core.database core.json_values mail_message opportunity_metadata core.storage_paths contact_names core.daily_lock core.hooks monitored_classifier outreach_replies")
         | _core(". env identity visibility regions read_model paths clock text http config sources scoring artifacts store liveness retention importers discovery fetch reports cli")
         | frozenset({"pipeline"})
     ),
     # L1 storage. company_tags is here because schema.py imports it; legacy is the one adapter onto pipeline.py; legacy_sync
     # writes the product database from the legacy one, so it sits beside schema, which it imports one way.
-    1: _app("schema legacy_sync settings_store profile_store company_tags legacy"),
+    1: _app("core.schema legacy_sync core.settings_store core.profile_store core.company_tags legacy"),
     # L2 integrations. Leaves: none of them imports another first-party module.
     2: _app("integrations.agent_providers integrations.web_fetch integrations.gmail_client integrations.typesafe_decisions integrations.smtp_probe integrations.pdf"),
     # L3 domain.
