@@ -937,6 +937,33 @@ class ReplyCaptureTests(ReplyCaptureFixture, unittest.TestCase):
         # A sentence that only starts with "On" is the sender's own words.
         self.assertEqual(hosts(f'<div>On Friday I wrote the offer: {link}</div>'), {"jobs.lever.co"})
 
+    def test_a_protocol_relative_link_has_a_host(self):
+        def hosts(markup):
+            return outreach_inbox._link_hosts(BytesParser(policy=policy.default).parsebytes(html_mail(markup)))
+
+        self.assertEqual(hosts('<a href="//boards.greenhouse.io/company/jobs/1">View your application</a>'), {"boards.greenhouse.io"})
+        self.assertEqual(hosts('<img src="//t.hubspotemail.net/e2t/to/abc" width="1" height="1">'), {"t.hubspotemail.net"})
+        self.assertEqual(hosts("<a href='  //Lever.co/bovi?a=1&amp;b=2'>go</a>"), {"lever.co"})
+        # Relative links, mail links and other schemes have no host.
+        self.assertEqual(hosts('<a href="/jobs/1">x</a><a href="mailto:greg@bovi.example">m</a><img src="cid:logo">'), set())
+
+    def test_an_html_only_mail_with_a_protocol_relative_applicant_link_is_job_mail(self):
+        target = self.sent_target()
+        self.arrive("ats-rel", html_mail(
+            '<p>Unfortunately we will not move forward.</p><p><a href="//boards.greenhouse.io/bovi/jobs/1">View</a></p>'))
+        result = self.check()
+        self.assertEqual(result["replies"], [])
+        self.assertEqual([item["reason"] for item in result["possible"]], ["job_mail"])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_an_html_only_mail_with_a_protocol_relative_sales_pixel_is_only_a_possible_reply(self):
+        target = self.sent_target()
+        self.arrive("seq-rel", html_mail(
+            '<div>Hi Sam, just bumping this.</div><img src="//t.hubspotemail.net/e2t/to/abc" width="1" height="1">',
+            sender="Mike Chen <mike.chen@bovi.example>", subject="Quick question"))
+        self.assertEqual([item["reason"] for item in self.check()["possible"]], ["mailing_tool"])
+        self.assertEqual(self.target(target)["status"], "sent")
+
     def test_a_contact_at_regional_free_mail_stands_for_nobody_else_there(self):
         self.sent_target(company="Tiny Co", contact_email="owner@yahoo.co.uk", website="")
         self.check()

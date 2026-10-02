@@ -530,6 +530,14 @@ def _above_text_quote(markup: str) -> str:
 
 
 _ATTRIBUTE_URL = re.compile(r"""(?is)\b(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""")
+_ATTRIBUTE_SCHEME = re.compile(r"(?i)(?:https?:)?//")
+
+
+def _attribute_host(value: str) -> str:
+    """The host of an href or src value: an http(s) URL or a protocol-relative one (//host/path); '' for any other
+    (a relative path, mailto:, cid:). The value is parsed as the URL it is, not searched for one in text."""
+    value = re.sub(r"[\t\r\n]", "", clean_url(value.strip()))
+    return host_of(value) if _ATTRIBUTE_SCHEME.match(value) else ""
 
 
 def unquoted_link_hosts(message: EmailMessage) -> set[str]:
@@ -554,7 +562,9 @@ def unquoted_link_hosts(message: EmailMessage) -> set[str]:
             return hosts
         markup = _above_text_quote(_without_quote_containers(_without_quoted_markup(markup)))
         for match in _ATTRIBUTE_URL.finditer(markup):
-            hosts.update(_hosts(next(group for group in match.groups() if group is not None)))
+            host = _attribute_host(next(group for group in match.groups() if group is not None))
+            if host:
+                hosts.add(host)
     return hosts
 
 
