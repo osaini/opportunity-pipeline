@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import Depends
+from fastapi import Depends, Request
 from fastapi.responses import HTMLResponse
 
 from ..overrides import shared_router
 from ..assets import versioned_page
 from ..context import AppContext
 from ..dependencies import get_ctx
+from ..local_sign_in import sign_in_this_computer
 
 
 router = shared_router()
@@ -42,5 +43,7 @@ def public_market_page(ctx: AppContext = Depends(get_ctx)) -> HTMLResponse:
 @router.get("/agent", include_in_schema=False)
 @router.get("/profile", include_in_schema=False)
 @router.get("/opportunities/{opportunity_id}", include_in_schema=False)
-def web_app(opportunity_id: str | None = None, ctx: AppContext = Depends(get_ctx)) -> HTMLResponse:
-    return versioned_page(ctx, "index.html")
+def web_app(request: Request, opportunity_id: str | None = None, ctx: AppContext = Depends(get_ctx)) -> HTMLResponse:
+    page = versioned_page(ctx, "index.html")
+    sign_in_this_computer(request, page, ctx)
+    return page

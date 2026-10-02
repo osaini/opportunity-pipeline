@@ -169,7 +169,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
     # handling, the request models, and one router module per feature.
     5: (
         _app("api bootstrap launch worker daily migrate ops_cli outreach_cli pipeline_mailbox setup purge")
-        | _pkg("web", ". app context system_status dependencies errors middleware assets payloads overrides")
+        | _pkg("web", ". app context system_status dependencies errors middleware assets payloads overrides local_sign_in")
         | _pkg(
             "web.models",
             ". account admin agent applications apply_agent automation captures connections dossier employer extension market "

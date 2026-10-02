@@ -143,6 +143,8 @@ class AppConfig:
     profile_file: Path | None
     early_programs_file: Path | None
     recovery_sandbox: bool
+    # PIPELINE_SKIP_SIGN_IN=1: opening a page signs this computer's browser in as the owner (web/local_sign_in.py).
+    skip_sign_in: bool
     outreach_draft_provider: str | None
     outreach_contact_delay: float
     # True only for the real product database: it gates every default that reaches the network, a browser or a personal file.
@@ -271,6 +273,14 @@ def build_context(options: AppOptions) -> AppContext:
     resolved_admin_token = options.admin_token or os.environ.get("PIPELINE_ADMIN_TOKEN") or secrets.token_urlsafe(24)
     expected_session = _session_signature(resolved_token)
     csrf_token = hmac.new(resolved_token.encode(), b"pipeline-csrf-v1", hashlib.sha256).hexdigest()
+    # Skipping sign-in holds only for a server that answers to loopback names alone, outside production: a server reachable
+    # by another name or from another machine always asks.
+    skip_sign_in = (
+        os.environ.get("PIPELINE_SKIP_SIGN_IN") == "1"
+        and os.environ.get("PIPELINE_ENV") != "production"
+        and bool(options.allowed_hosts)
+        and all(host in LOOPBACK_HOSTS for host in options.allowed_hosts)
+    )
     runtime = AppRuntime()
     resolved_agent_provider_factory = options.agent_provider_factory or build_provider
     resolved_typesafe_client_factory = options.typesafe_client_factory or build_typesafe_client
@@ -410,6 +420,7 @@ def build_context(options: AppOptions) -> AppContext:
             profile_file=profile_file,
             early_programs_file=early_programs_file,
             recovery_sandbox=options.recovery_sandbox,
+            skip_sign_in=skip_sign_in,
             outreach_draft_provider=outreach_draft_provider,
             outreach_contact_delay=outreach_contact_delay,
             real_product_db=real_product_db,

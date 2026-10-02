@@ -31,6 +31,7 @@ from ...core.schema import LOCAL_USER_ID
 from ...automation.notifications import build_provider as build_notification_provider
 from ..context import AppContext, LAUNCH_SESSION_SECONDS, LAUNCH_TICKET_SECONDS, SESSION_COOKIE, USER_SESSION_COOKIE
 from ..dependencies import get_ctx, require_auth
+from ..local_sign_in import set_owner_session_cookies
 from ..models.session import (
     LaunchTicketResponse,
     RecoveryCompleteRequest,
@@ -106,21 +107,7 @@ def create_session(payload: SessionRequest, response: Response, ctx: AppContext 
     if authenticated_user == LOCAL_USER_ID or issued_token is None:
         # The launcher proves it runs as this computer's user, so its
         # session is remembered longer than one typed in a sign-in form.
-        owner_max_age = LAUNCH_SESSION_SECONDS if launched else 60 * 60 * 12
-        response.delete_cookie(USER_SESSION_COOKIE, path="/")
-        response.set_cookie(
-            key=SESSION_COOKIE,
-            value=ctx.config.expected_session,
-            httponly=True,
-            samesite="strict",
-            secure=secure,
-            max_age=owner_max_age,
-            path="/",
-        )
-        response.set_cookie(
-            key="pipeline_csrf", value=ctx.config.csrf_token, httponly=False, samesite="strict",
-            secure=secure, max_age=owner_max_age, path="/",
-        )
+        set_owner_session_cookies(response, ctx, LAUNCH_SESSION_SECONDS if launched else 60 * 60 * 12)
     else:
         # A lingering owner cookie takes precedence in require_auth and would
         # hand this student the owner identity, so clear it.
