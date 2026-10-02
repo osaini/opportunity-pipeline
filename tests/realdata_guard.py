@@ -15,6 +15,10 @@ and tests/ui) and by every tests/test_*.py module, directly or through helpers_p
 single-module run (`python -m unittest tests.test_pipeline`) is covered too. tests/test_real_data_guard.py fails when a module
 is added without one of those imports. Installing twice is harmless.
 
+The same install also gives the process an empty CODEX_HOME and no Codex model or effort variable (isolate_codex_config), so no
+test reads the developer's own ~/.codex/config.toml. It is here because every test module already imports this file one way or
+another, which is what makes it hold for a single-module `unittest` run too.
+
 The exception derives from BaseException on purpose: code under test that wraps a database open in `except Exception` or
 `except sqlite3.Error` to degrade gracefully must not be able to hide an open of the real file.
 
@@ -24,9 +28,12 @@ arguments.
 Nothing here is named test*, so pytest never collects it.
 """
 
+import atexit
 import os
 import re
+import shutil
 import sqlite3
+import tempfile
 import urllib.parse
 from pathlib import Path
 
@@ -110,10 +117,30 @@ def is_real_data_path(database, *, uri=False, dirs=None):
 
 
 _GUARD_NAME = "guarded_connect"
+_CODEX_ENV = {"PIPELINE_CODEX_MODEL": "", "PIPELINE_CODEX_REASONING_EFFORT": ""}
+_codex_home = None
+
+
+def isolate_codex_config():
+    """Point CODEX_HOME at an empty temp directory and clear the two Codex setting variables, for the whole process.
+
+    codex_model_settings() reads the student's model and reasoning effort from PIPELINE_CODEX_MODEL and
+    PIPELINE_CODEX_REASONING_EFFORT, and otherwise from $CODEX_HOME/config.toml (~/.codex/config.toml by default). A test that
+    builds a Codex command would then pick up the developer's own model, and its expected argv would differ from machine to
+    machine. With an empty CODEX_HOME there is no file to read, so a test sets the variables itself when it wants a model.
+    A test that does so with mock.patch.dict restores these values, not the developer's. Idempotent.
+    """
+    global _codex_home
+    if _codex_home is None:
+        _codex_home = tempfile.mkdtemp(prefix="codex-home-for-tests-")
+        atexit.register(shutil.rmtree, _codex_home, ignore_errors=True)
+    os.environ["CODEX_HOME"] = _codex_home
+    os.environ.update(_CODEX_ENV)
 
 
 def install():
-    """Wrap sqlite3.connect once for this process. Idempotent."""
+    """Wrap sqlite3.connect once for this process, and isolate the Codex settings (isolate_codex_config). Idempotent."""
+    isolate_codex_config()
     if getattr(sqlite3.connect, "__name__", "") == _GUARD_NAME:
         return
     dirs = real_data_dirs()

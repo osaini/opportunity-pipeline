@@ -157,6 +157,50 @@ class NormalOpensStillWorkTests(unittest.TestCase):
         self.assertFalse(realdata_guard.is_real_data_path("file::memory:?cache=shared", uri=True))
 
 
+class CodexConfigIsolationTests(unittest.TestCase):
+    """No test reads the developer's own Codex settings: the model and effort come from ~/.codex/config.toml when .env names none."""
+
+    CONFIG = 'model = "developers-own-model"\nmodel_reasoning_effort = "xhigh"\n'
+
+    def test_the_suite_has_an_empty_codex_home_and_no_model_override(self):
+        import os
+
+        from opportunity_app.integrations.agent_providers import codex_model_settings
+
+        home = Path(os.environ["CODEX_HOME"])
+        self.assertTrue(home.is_dir())
+        self.assertEqual(list(home.iterdir()), [], "an empty directory, so there is no config.toml to read")
+        self.assertEqual((os.environ.get("PIPELINE_CODEX_MODEL"), os.environ.get("PIPELINE_CODEX_REASONING_EFFORT")), ("", ""))
+        self.assertEqual(codex_model_settings(), ("", ""))
+
+    def test_a_real_config_toml_in_the_users_home_is_not_read(self):
+        """The developer's file lives at ~/.codex/config.toml; pretend it holds a model and the settings still come back empty."""
+        from opportunity_app.integrations.agent_providers import codex_model_settings
+
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / ".codex").mkdir()
+            (Path(tmp) / ".codex" / "config.toml").write_text(self.CONFIG, encoding="utf-8")
+            with mock.patch.object(Path, "home", return_value=Path(tmp)):
+                self.assertEqual(codex_model_settings(), ("", ""))
+
+    def test_install_isolates_a_process_that_starts_with_a_real_codex_home_and_model_settings(self):
+        """What a single-module `python -m unittest tests.test_x` relies on: importing the guard is enough."""
+        import os
+        import subprocess
+
+        probe = (
+            "import sys; sys.path.insert(0, 'tests'); import realdata_guard; realdata_guard.install(); "
+            "from opportunity_app.integrations.agent_providers import codex_model_settings; "
+            "print(repr(codex_model_settings()))"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "config.toml").write_text(self.CONFIG, encoding="utf-8")
+            env = {**os.environ, "CODEX_HOME": tmp, "PIPELINE_CODEX_MODEL": "env-model", "PIPELINE_CODEX_REASONING_EFFORT": "high"}
+            ran = subprocess.run([sys.executable, "-c", probe], cwd=ROOT, env=env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(ran.returncode, 0, ran.stderr)
+        self.assertEqual(ran.stdout.strip(), "('', '')")
+
+
 class EveryTestModuleIsGuardedTests(unittest.TestCase):
     """`python -m unittest tests.test_x` runs one module alone, so each module must install the guard through an import of its own."""
 
