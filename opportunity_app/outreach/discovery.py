@@ -438,8 +438,12 @@ def run_discovery(
     verifier: Any = None,
     today: date | None = None,
     now: datetime | None = None,
+    agent_note: str = "",
 ) -> dict[str, Any]:
     """Run one search per scope and import what passes the checks. max_targets is per scope.
+
+    agent_note says why the runner is not the agent the student chose (agents.resolve_discovery_agent). It is stored with
+    the run, so the deep search panel shows it for a search the web app started and for one the scheduled task ran.
 
     locate_runner, when given, searches the web for the new companies their own
     sites and EDGAR did not place (outreach/locate.py). email_runner, when given,
@@ -466,8 +470,8 @@ def run_discovery(
         if not dry_run:
             with conn:
                 conn.execute(
-                    "INSERT INTO outreach_discovery_runs(id, user_id, run_trigger, status, scopes_json, started_at) VALUES(?, ?, ?, 'running', ?, ?)",
-                    (run_id, user_id, trigger, json.dumps(scopes), utc_now()),
+                    "INSERT INTO outreach_discovery_runs(id, user_id, run_trigger, status, scopes_json, started_at, agent_note) VALUES(?, ?, ?, 'running', ?, ?, ?)",
+                    (run_id, user_id, trigger, json.dumps(scopes), utc_now(), agent_note[:1_000]),
                 )
         try:
             summary = _run(
@@ -780,7 +784,7 @@ class DiscoveryManager(SingleFlightManager):
                 renderer = self._renderer_factory()
                 verifier = self._verifier_factory()
                 result = run_discovery(
-                    conn, user_id=user_id, runner=runner, fetcher=fetcher, scopes=scopes,
+                    conn, user_id=user_id, runner=runner, fetcher=fetcher, scopes=scopes, agent_note=note,
                     report_dir=self._report_dir, provider_factory=self._provider_factory, draft_provider=self._draft_provider,
                     contact_delay=self._contact_delay,
                     form_d_fetcher=stack.enter_context(form_d) if form_d is not None else None,

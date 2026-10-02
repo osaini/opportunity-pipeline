@@ -90,9 +90,11 @@
           return;
         }
         const result = discovery.active?.result;
+        // Claude Code ran in place of the Codex the student chose: the finished search says so, from its result or its stored run.
+        const note = result?.agent_note || discovery.runs?.[0]?.agent_note || "";
         announce(discovery.active?.state === "failed"
-          ? `The deep search failed: ${discovery.active.error}`
-          : `Deep search finished${result ? `: ${plural(result.imported, "new company", "new companies")} added` : ""}.`);
+          ? `The deep search failed: ${discovery.active.error}${note ? ` ${note}` : ""}`
+          : `Deep search finished${result ? `: ${plural(result.imported, "new company", "new companies")} added` : ""}.${note ? ` ${note}` : ""}`);
         // Watching the search: show what it found rather than the finished panel.
         if (result?.imported && state.subtabs.outreach === "deep-search") state.subtabs.outreach = "from-search";
         if (!state.loading) await loadOutreach();
@@ -126,6 +128,8 @@
         chip(`${latest.rejected.length} rejected`, latest.rejected.length ? "is-soon" : "")
       );
       body.appendChild(facts);
+      // Stored with the run, so a search the scheduled task ran shows it too: Claude Code ran instead of the Codex chosen.
+      if (latest.agent_note) body.appendChild(element("p", "outreach-note outreach-agent-note", latest.agent_note));
       if (latest.error) body.appendChild(element("p", "form-error", latest.error));
       if (latest.rejected.length) {
         const rejected = element("details", "outreach-rejected");
@@ -197,7 +201,7 @@
         }
         if (active?.state === "failed") announce(`The contact search failed: ${active.error}`);
         else if (active?.mode === "apply") announce(`Updated ${plural(active.result?.upgraded || 0, "contact", "contacts")}.`);
-        else announce(`Contact search finished: ${plural(active?.result?.upgraded || 0, "person", "people")} found.`);
+        else announce(`Contact search finished: ${plural(active?.result?.upgraded || 0, "person", "people")} found.${active?.result?.agent_note ? ` ${active.result.agent_note}` : ""}`);
         if (!state.loading) await loadOutreach();
       } catch (error) {
         if (state.sessionEpoch === epoch) showError(error.message);
@@ -625,6 +629,8 @@
     const found = result.results.filter((entry) => entry.to);
     const missed = result.results.filter((entry) => !entry.to);
     wrap.appendChild(element("p", "", `Checked ${plural(result.checked, "company", "companies")}; found a person at ${plural(found.length, "company", "companies")}.`));
+    // Claude Code ran the email search in place of the Codex the student chose.
+    if (result.agent_note) wrap.appendChild(element("p", "outreach-note outreach-agent-note", result.agent_note));
     if (found.length) {
       const form = element("fieldset", "outreach-recontact-list");
       form.appendChild(element("legend", "", "Tick the contacts to use"));

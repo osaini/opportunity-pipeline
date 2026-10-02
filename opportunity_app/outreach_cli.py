@@ -149,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "research":
             return _research(conn, args)
         try:
-            runner = _runner_for(args.provider)
+            runner, note = _runner_and_note(args.provider)
             with ExitStack() as stack:
                 fetcher = stack.enter_context(default_fetcher())
                 form_d = sec_fetcher()
@@ -164,6 +164,7 @@ def main(argv: list[str] | None = None) -> int:
                     max_targets=args.max_targets,
                     dry_run=args.dry_run,
                     trigger=args.trigger,
+                    agent_note=note,
                     provider_factory=build_provider,
                     form_d_fetcher=stack.enter_context(form_d) if form_d is not None else None,
                     renderer=stack.enter_context(renderer) if renderer is not None else None,
@@ -181,12 +182,21 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _runner_for(provider: str):
-    """The runner for --provider. Codex needs the .env opt-in to read the web; without it Claude Code runs, and this says so."""
+def _runner_and_note(provider: str):
+    """The runner for --provider and the note when it is not that provider, printed to stderr.
+
+    Codex needs the .env opt-in to read the web; without it Claude Code runs, and the note says so. The deep search also
+    stores the note with its run (run_discovery's agent_note), because a log is the only place the scheduled task's stderr goes.
+    """
     resolved, note = resolve_discovery_agent(provider)
     if note:
         print(note, file=sys.stderr)
-    return RUNNERS[resolved]
+    return RUNNERS[resolved], note
+
+
+def _runner_for(provider: str):
+    """The runner for --provider (see _runner_and_note)."""
+    return _runner_and_note(provider)[0]
 
 
 def _locate(conn, args: argparse.Namespace) -> int:
