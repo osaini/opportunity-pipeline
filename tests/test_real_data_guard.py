@@ -108,7 +108,10 @@ class OpeningRealDataFailsLoudlyTests(unittest.TestCase):
                 self.refuse(lambda: sqlite3.connect(self.data / name))
 
     def test_a_relative_path_and_dot_dot_segments_are_resolved_before_the_check(self):
-        with mock.patch("os.getcwd", return_value=str(self.root)), mock.patch.object(Path, "cwd", return_value=self.root):
+        # The real process cwd moves to the temp root, so the file sqlite would open and the file the guard judges are the same:
+        # were the wrapper to let one through, it would land in the temp data/, never in the checkout's.
+        (self.root / "tests").mkdir()
+        with contextlib.chdir(self.root):
             self.refuse(lambda: sqlite3.connect("data/platform.db"))
             self.refuse(lambda: sqlite3.connect("tests/../data/platform.db"))
         with mock.patch("os.getcwd", return_value=str(ROOT)), mock.patch.object(Path, "cwd", return_value=ROOT):
@@ -127,7 +130,7 @@ class OpeningRealDataFailsLoudlyTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.refuse(lambda: sqlite3.connect(str(self.data / name), uri=True))
                 self.refuse(lambda: sqlite3.connect(self.data / name, uri=True))
-        with mock.patch("os.getcwd", return_value=str(self.root)), mock.patch.object(Path, "cwd", return_value=self.root):
+        with contextlib.chdir(self.root):
             self.refuse(lambda: sqlite3.connect("data/platform.db", uri=True))
 
     def test_memory_mode_is_the_exact_query_parameter_not_a_substring(self):
