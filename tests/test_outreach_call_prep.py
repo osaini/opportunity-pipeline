@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, automation
+from opportunity_app import ROOT, STATIC_DIR, automation
 from opportunity_app.api import create_app
 from opportunity_app.outreach import confirm_research, create_target, get_target, log_reply, update_target
 from opportunity_app.operations import enqueue_job, run_next_job
@@ -1218,7 +1218,7 @@ class CallPrepApiTests(unittest.TestCase):
         self.assertEqual({path.split("/")[0].removesuffix(".py") for path in modules}, set(names))
         for name, text in modules.items():
             self.assertNotIn("second model", text.casefold(), name)
-        readme = (Path(outreach_call_prep.__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertNotIn("second model confirms", readme)
         self.assertNotIn("a second model which did not write", readme)
 

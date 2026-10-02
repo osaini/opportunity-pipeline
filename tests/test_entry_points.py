@@ -65,7 +65,7 @@ OTHER_LAUNCH_FILES = (
 REFERENCE_GLOBS = (
     "scripts/*.ps1", "scripts/*.vbs", "scripts/*.py", "Open Pipeline.*", "Dockerfile", "infra/*.yml", "infra/*.yaml",
     ".github/workflows/*.yml", ".githooks/*", ".mcp.json", "package.json", "README.md", "SETUP.md", "CONTRIBUTING.md",
-    ".env.example", "opportunity_app/*.py", "pipeline.py", "pipeline_core/*.py",
+    ".env.example", "opportunity_app/**/*.py", "pipeline.py", "pipeline_core/**/*.py",
 )
 MODULE_REFERENCE = re.compile(r"""-m['", ]+\s*((?:opportunity_app|pipeline_core)(?:\.\w+)+)""")
 UVICORN_REFERENCE = re.compile(r"""uvicorn['", ]+\s*([\w.]+):(\w+)""")

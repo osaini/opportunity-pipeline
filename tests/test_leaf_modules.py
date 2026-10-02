@@ -47,10 +47,12 @@ def module_imports(path: Path) -> tuple[set[str], set[str]]:
     """(imports that run when the module is imported, imports inside a function) of a source file, as dotted names.
 
     ``from .x import y`` in opportunity_app/m.py is opportunity_app.x; ``from . import x`` is opportunity_app.x as
-    well; ``import a.b`` is a.b and ``from a.b import c`` is a.b. A file in pipeline_core/ resolves relative imports
-    against pipeline_core.
+    well; ``import a.b`` is a.b and ``from a.b import c`` is a.b. A relative import resolves against the file's own
+    package, taken from its dotted path under the repository root and the import's level, so ``from .. import x`` in
+    opportunity_app/core/m.py is opportunity_app.x and ``from .x import y`` there is opportunity_app.core.x. A file in
+    pipeline_core/ resolves against pipeline_core.
     """
-    package = path.parent.name
+    own_package = ".".join(path.resolve().relative_to(ROOT).parts[:-1])  # a module and a package's __init__ both resolve against their directory
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     top: set[str] = set()
     lazy: set[str] = set()
@@ -61,6 +63,7 @@ def module_imports(path: Path) -> tuple[set[str], set[str]]:
             found = {alias.name for alias in node.names}
         elif isinstance(node, ast.ImportFrom):
             if node.level:
+                package = own_package.rsplit(".", node.level - 1)[0] if node.level > 1 else own_package
                 found = {f"{package}.{node.module}"} if node.module else {f"{package}.{alias.name}" for alias in node.names}
             else:
                 found = {node.module or ""}
@@ -176,6 +179,35 @@ class LeavesImportOnlyWhatTheyMayTests(unittest.TestCase):
                 for inner in ast.walk(node):
                     if isinstance(inner, ast.Attribute) and inner.attr == "connect":
                         self.fail(f"{name}.py opens a connection at import (line {inner.lineno})")
+
+
+class ModuleImportsResolveNestedPackagesTests(unittest.TestCase):
+    """module_imports reads a relative import against the file's own package and the import's level, at any depth."""
+
+    def read(self, relative, source):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / relative
+            path.parent.mkdir(parents=True)
+            path.write_text(source, encoding="utf-8")
+            with mock.patch(f"{__name__}.ROOT", Path(directory).resolve()):
+                return module_imports(path)
+
+    def test_a_flat_module_resolves_against_the_package(self):
+        top, _ = self.read("opportunity_app/m.py", "from . import ROOT, x\nfrom .y import z\n")
+        self.assertEqual(top, {"opportunity_app.ROOT", "opportunity_app.x", "opportunity_app.y"})
+
+    def test_a_module_one_package_deeper_needs_two_dots_for_the_package_above(self):
+        top, lazy = self.read(
+            "opportunity_app/core/m.py",
+            "from .. import ROOT\nfrom ..elsewhere import z\nfrom . import sibling\nfrom .other import q\n"
+            "def f():\n    from ..deep import d\n",
+        )
+        self.assertEqual(top, {"opportunity_app.ROOT", "opportunity_app.elsewhere", "opportunity_app.core.sibling", "opportunity_app.core.other"})
+        self.assertEqual(lazy, {"opportunity_app.deep"})
+
+    def test_a_package_init_resolves_against_itself(self):
+        top, _ = self.read("opportunity_app/core/__init__.py", "from . import a\nfrom .. import b\n")
+        self.assertEqual(top, {"opportunity_app.core.a", "opportunity_app.b"})
 
 
 # --- Workstream T: time, database, settings, JSON, stored profile -------------------------------------------------------
@@ -572,7 +604,7 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         }
         offenders = []
         for path in sorted((ROOT / "opportunity_app").rglob("*.py")):
-            if path.name == "legacy.py":
+            if path.relative_to(ROOT).as_posix() == "opportunity_app/legacy.py":
                 continue
             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
                 names = []
@@ -583,7 +615,7 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
                 for name in names:
                     parts = name.split(".")
                     if parts[0] == "pipeline" or (parts[0] == "pipeline_core" and len(parts) > 1 and parts[1] in split):
-                        offenders.append(f"{path.name}: {name}")
+                        offenders.append(f"{path.relative_to(ROOT).as_posix()}: {name}")
         self.assertEqual(offenders, [], "web modules must import the legacy pipeline through opportunity_app.legacy")
 
     def test_the_regions_moved_to_pipeline_core_still_bucket_locations(self):

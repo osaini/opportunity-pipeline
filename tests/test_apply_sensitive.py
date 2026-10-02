@@ -6,13 +6,16 @@ decline for an EEO question, nothing for export control or salary, and a stateme
 company only. The plan tests run rows 4 to 10 and 38 of section 7.5 against a real database instead of a stand-in.
 """
 
+import ast
 import copy
 import json
 import re
 import sys
+import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -1101,10 +1104,61 @@ class StoreReaderScanTests(unittest.TestCase):
     def package_modules(self):
         return [path for path in (REPO / "opportunity_app").rglob("*.py")]
 
+    # Dotted names, spelled by the import statement and then resolved from the importing file's own package, so a relative
+    # `from ..apply import sensitive` and an absolute `from opportunity_app.apply.sensitive import lookup` name the same module
+    # as `from . import apply_sensitive` does today. A text search for the module's old file name would go quiet the day the
+    # module moves into a package, so the importer checks below read the import targets, not the words.
+    STORE_MODULE = "opportunity_app.apply_sensitive"
+    POLICY_MODULE = "opportunity_app.apply_policy"
+
+    def resolved_imports(self, path):
+        """Every dotted module name `path` imports: for `from X import a` both X and X.a, with relative X resolved."""
+        package = list(path.relative_to(REPO).with_suffix("").parts[:-1])
+        found = set()
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))):
+            if isinstance(node, ast.Import):
+                found.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                anchor = package[: len(package) - (node.level - 1)] if node.level else []
+                base = ".".join(anchor + ([node.module] if node.module else []))
+                found.add(base)
+                found.update(f"{base}.{alias.name}" for alias in node.names)
+        return found
+
+    def imports_module(self, path, module):
+        return any(name == module or name.startswith(module + ".") for name in self.resolved_imports(path))
+
     def in_module(self, path, name):
         """Whether `path` is the module `name` (repo-relative, no .py) or sits inside a package of that name."""
         module = path.relative_to(REPO).as_posix()[:-3]
         return module == name or module.startswith(name + "/")
+
+    def test_the_import_reader_finds_every_spelling_of_an_import_of_a_module(self):
+        # A made-up store module, so the cases stay valid wherever the real one lives.
+        module = "opportunity_app.vault.store"
+        found = {
+            "opportunity_app/web/x.py": ("from ..vault import store", "from ..vault.store import lookup", "from opportunity_app.vault import store",
+                                         "from opportunity_app.vault.store import lookup", "import opportunity_app.vault.store as s"),
+            "opportunity_app/vault/y.py": ("from . import store", "from .store import lookup"),
+            "opportunity_app/x.py": ("from .vault import store", "from .vault.store import lookup"),
+        }
+        missed = ("from . import schema", "from .vault import storefront", "from .vault.store_other import x", "from . import vault", "import os")
+        for relative, lines in found.items():
+            for line in lines:
+                with self.subTest(file=relative, line=line):
+                    self.assertTrue(self.imports_text(relative, line, module))
+        for relative in found:
+            for line in missed:
+                with self.subTest(file=relative, line=line):
+                    self.assertFalse(self.imports_text(relative, line, module))
+
+    def imports_text(self, relative, source, module):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / relative
+            path.parent.mkdir(parents=True)
+            path.write_text(source + "\n", encoding="utf-8")
+            with mock.patch(f"{__name__}.REPO", Path(directory)):
+                return self.imports_module(path, module)
 
     def test_employer_and_reporting_code_never_read_the_store_or_import_it(self):
         # Matched against the repo-relative path, so a reporting module moved into a subpackage (opportunity_app/metrics/x.py,
@@ -1116,6 +1170,8 @@ class StoreReaderScanTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             with self.subTest(file=path.relative_to(REPO).as_posix()):
                 self.assertNotRegex(text, r"apply_sensitive|apply_policy|sensitive_answers|stored_sensitive_answer")
+                self.assertFalse(self.imports_module(path, self.STORE_MODULE), "imports the sensitive-answer store")
+                self.assertFalse(self.imports_module(path, self.POLICY_MODULE), "imports the apply policy")
         for path in [REPO / "pipeline.py"] + list((REPO / "pipeline_core").rglob("*.py")):
             self.assertNotIn("apply_sensitive", path.read_text(encoding="utf-8"), path.relative_to(REPO).as_posix())
 
@@ -1125,7 +1181,7 @@ class StoreReaderScanTests(unittest.TestCase):
 
     def test_only_the_plan_the_check_and_the_settings_routes_import_the_store(self):
         importers = {path.relative_to(REPO).as_posix() for path in self.package_modules()
-                     if re.search(r"\bapply_sensitive\b", path.read_text(encoding="utf-8"))
+                     if (re.search(r"\bapply_sensitive\b", path.read_text(encoding="utf-8")) or self.imports_module(path, self.STORE_MODULE))
                      and not self.in_module(path, "opportunity_app/apply_sensitive")}
         self.assertTrue(importers, "the scan found the files it should")
         self.assertEqual([item for item in sorted(importers)
@@ -1142,6 +1198,7 @@ class StoreReaderScanTests(unittest.TestCase):
             for path in found:
                 with self.subTest(file=path.relative_to(REPO).as_posix()):
                     self.assertNotRegex(path.read_text(encoding="utf-8"), r"apply_sensitive|sensitive_answers|stored_sensitive_answer")
+                    self.assertFalse(self.imports_module(path, self.STORE_MODULE), "imports the sensitive-answer store")
 
 
 if __name__ == "__main__":
