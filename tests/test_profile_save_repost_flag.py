@@ -27,7 +27,8 @@ from opportunity_app.api import create_app
 from opportunity_app.core.schema import LOCAL_USER_ID
 from opportunity_app.opportunities.legacy_sync import migrate_legacy_database
 from opportunity_app.student import profile as profile_module
-from pipeline_core import paths, scoring, store
+from opportunity_app.opportunities.purge import purge_expired_opportunities
+from pipeline_core import paths, retention, scoring, store
 
 from helpers_platform import build_and_migrate, build_profile, fast_throwaway_databases
 
@@ -138,6 +139,39 @@ class ProfileSaveKeepsRepostFlagTests(unittest.TestCase):
         # Only the re-listed posting is flagged; the retired one never is.
         self.assertEqual(_flags(self._explanation(self.retired_id)), [])
 
+    def _run_the_daily_purges(self):
+        """pipeline.py purge-expired, then opportunity_app.purge: the retired twin is gone from both databases."""
+        with mock.patch.object(paths, "DB_PATH", self.legacy_path):
+            conn = store.connect()
+            try:
+                retention.purge_expired(conn)
+                conn.commit()
+                left = conn.execute("SELECT COUNT(*) FROM jobs WHERE active=0").fetchone()[0]
+            finally:
+                conn.close()
+        self.assertEqual(left, 0)
+        with closing(sqlite3.connect(self.platform_path)) as conn:
+            purge_expired_opportunities(conn, backup=False)
+            gone = conn.execute("SELECT COUNT(*) FROM opportunities WHERE id=?", (self.retired_id,)).fetchone()[0]
+        self.assertEqual(gone, 0, "the retired twin is purged from the product database")
+
+    def test_saving_the_profile_keeps_the_flag_after_the_daily_purges_removed_the_retired_twin(self):
+        before = _flags(self._explanation(self.relisted_id))
+        self.assertEqual(len(before), 1)
+        self._run_the_daily_purges()
+        saved = self._client().put(
+            "/api/v1/profile",
+            json={"updates": {"skills": ["SolidWorks"]}, "confirmed_fields": ["skills"]},
+            headers=OWNER,
+        )
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(_flags(self._explanation(self.relisted_id)), before)
+        # Saved again, the flag is still there once, not added twice.
+        profile = json.loads(self.profile_path.read_text(encoding="utf-8"))
+        with closing(sqlite3.connect(self.platform_path)) as conn:
+            profile_module.rescore_profile(conn, profile, user_id=LOCAL_USER_ID)
+        self.assertEqual(_flags(self._explanation(self.relisted_id)), before)
+
     def test_rescoring_the_profile_keeps_the_flag_and_adds_it_once(self):
         before = _flags(self._explanation(self.relisted_id))
         profile = json.loads(self.profile_path.read_text(encoding="utf-8"))
@@ -193,6 +227,29 @@ class ProfileSaveRepostSharedDefinitionTests(unittest.TestCase):
             self.assertTrue(
                 any("2 different URLs" in r and old[:10] in r for r in by_id["rp-new"]), by_id["rp-new"]
             )
+
+
+class RepostFlagsReadRowsByPositionTests(unittest.TestCase):
+    """PostgreSQL's cursor yields dict-like rows, whose tuple unpacking gives column names, not values."""
+
+    def test_repost_flags_reads_dict_like_rows(self):
+        class DictRow(dict):
+            def __getitem__(self, key):
+                return list(self.values())[key] if isinstance(key, int) else super().__getitem__(key)
+
+        old = (datetime.now(timezone.utc) - timedelta(days=20)).isoformat()
+        new = datetime.now(timezone.utc).isoformat()
+        names = ("id", "company", "title", "url", "first_seen_at", "active")
+        rows = [
+            DictRow(zip(names, ("rp-old", "Repost Co", "Controls Intern", "https://rp.example.test/1", old, False))),
+            DictRow(zip(names, ("rp-new", "Repost Co", "Controls Intern", "https://rp.example.test/2", new, True))),
+        ]
+
+        class Conn:
+            def execute(self, *_args):
+                return iter(rows)
+
+        self.assertEqual(scoring.repost_flags(Conn(), table="opportunities"), {"rp-new": (2, old[:10])})
 
 
 if __name__ == "__main__":

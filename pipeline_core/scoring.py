@@ -352,12 +352,14 @@ def repost_flags(
         raise ValueError(f"repost_flags cannot read table {table!r}")
     cutoff = (datetime.now(timezone.utc) - timedelta(days=window_days)).isoformat()
     groups: dict[tuple[str, str], list[tuple[str, str, str, str, bool]]] = {}
-    for row_id, company, title, url, first_seen_at, active in conn.execute(
+    # Rows are read by position: the product database's cursor on PostgreSQL yields dict-like rows, and
+    # unpacking one into names gives the column names, not the values.
+    for row in conn.execute(
         f"SELECT id, company, title, url, first_seen_at, active FROM {table} WHERE first_seen_at >= ?",
         (cutoff,),
     ):
-        groups.setdefault((normalized(company), role_key(title)), []).append(
-            (row_id, url, first_seen_at, bool(active))
+        groups.setdefault((normalized(row[1]), role_key(row[2])), []).append(
+            (row[0], row[3], row[4], bool(row[5]))
         )
 
     flags: dict[str, tuple[int, str]] = {}
@@ -379,6 +381,9 @@ def repost_flags(
     return flags
 
 
+REPOST_FLAG_PREFIX = "FLAG: this role has been listed under"
+
+
 def repost_reason(listings: int, since: str) -> str:
     """The explanation line for a ``repost_flags`` entry.
 
@@ -387,7 +392,7 @@ def repost_reason(listings: int, since: str) -> str:
     reader, not a verdict on the employer.
     """
     return (
-        f"FLAG: this role has been listed under {listings} different URLs "
+        f"{REPOST_FLAG_PREFIX} {listings} different URLs "
         f"since {since}—may be an evergreen or re-listed req"
     )
 
