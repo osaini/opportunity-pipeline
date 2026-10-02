@@ -20,12 +20,12 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Browser extension | 0 | 1 | 0 | 1 |
 | Mail, Gmail and inboxes | 0 | 4 | 6 | 10 |
 | Outreach drafting, research, forms and CLI | 0 | 4 | 2 | 6 |
-| Agents and notifications | 0 | 0 | 2 | 2 |
+| Agents and notifications | 0 | 1 | 1 | 2 |
 | Web API, auth and storage | 0 | 4 | 1 | 5 |
 | Scoring, scheduling and configuration | 1 | 1 | 4 | 6 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 3 | 3 |
-| **Total** | **1** | **21** | **22** | **44** |
+| **Total** | **1** | **22** | **21** | **44** |
 
 ## Start here: the high-severity entries
 
@@ -228,7 +228,7 @@ The entry flagged for an owner decision is
 ## Agents and notifications
 
 ### Codex web research, once the student opts in, still reaches apply_patch through code mode
-- **Severity:** low, privacy (found fixing the Codex sandbox entry)
+- **Severity:** medium, privacy; reachable only with the `PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX` opt-in, which is why it is not high (found fixing the Codex sandbox entry)
 - **Where:** `opportunity_app/outreach/agents.py` `codex_runner`; `opportunity_app/integrations/agent_providers.py` `codex_command(web_search=True)`
 - **What happens:** Codex's web tool is carried by code mode (`--disable code_mode_host` removes it), and code mode also exposes `apply_patch`. With `PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX=1` the research call keeps code mode on, so a page the agent reads could steer it into patch attempts. The read-only sandbox blocks the write, but the failure message tells the model whether the patch's context lines matched a local file, a one-bit-per-try test of file contents. Shell, MCP servers, plugins and file writes stay off, and without the opt-in the call is refused. Every Codex call that carries no web search runs with code mode off and no reachable tool. The collaboration tools (`spawn_agent`) stay listed in every call; a sub-agent starts with the same settings.
 - **Suggested fix:** Drop the opt-in path when a Codex release lets web search run without code mode (`standalone_web_search` is still under development in 0.159.2), or when a flag removes `apply_patch`; until then the opt-in is the owner's acceptance.
