@@ -13,6 +13,7 @@ from opportunity_app.integrations.agent_providers import (
     CliAgentProvider,
     OpenAIProvider,
     ToolDefinition,
+    codex_command,
 )
 
 try:
@@ -177,7 +178,8 @@ class CliAgentProviderTests(unittest.TestCase):
         provider = CliAgentProvider("codex-cli", "subscription", runner=runner)
         reply = provider.create(instructions="t", messages=[{"role": "user", "content": "hi"}], tools=[], max_output_tokens=10)
         self.assertEqual(reply.text, "ok")
-        self.assertEqual(calls[0][:3], ["codex", "exec", "--skip-git-repo-check"])
+        self.assertEqual(calls[0][:3], ["codex", "exec", "--sandbox"])
+        self.assertIn("--ignore-user-config", calls[0])
 
 
 # A stand-in for the CLI: reports the stdin it received, its working directory
@@ -233,10 +235,10 @@ class CliAgentProviderSubprocessTests(unittest.TestCase):
         self.assertEqual(kwargs["encoding"], "utf-8")
         self.assertEqual(kwargs["errors"], "replace")
 
-    def test_codex_chat_sends_prompt_on_stdin_with_a_read_only_sandbox(self):
+    def test_codex_chat_sends_prompt_on_stdin_with_the_isolated_command(self):
         _, captured = self._run_chat("codex-cli")
         command, kwargs = captured[0]
-        self.assertEqual(command, ["codex-cli", "exec", "--skip-git-repo-check", "--sandbox", "read-only", "-"])
+        self.assertEqual(command, codex_command("codex-cli"))
         self.assertIn("SCRAPED", kwargs["input"])
         self.assertFalse(any("SCRAPED" in part for part in command), "the prompt is not on argv")
         self.assert_throwaway_cwd(kwargs["cwd"])

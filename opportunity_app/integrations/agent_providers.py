@@ -159,8 +159,100 @@ def cli_available(binary: str) -> bool:
 
 # The Claude Code flags for a call with no tools and no MCP servers (a reviewer, or complete_text).
 CLAUDE_NO_TOOLS = ["-p", "--output-format", "text", "--tools", "", "--strict-mcp-config"]
-# The start of every Codex CLI call here: a read-only sandbox, run outside any repository.
-CODEX_READ_ONLY = ["exec", "--skip-git-repo-check", "--sandbox", "read-only"]
+
+# Codex has no single "no tools" switch like Claude's, so a Codex call is isolated by several settings together. The app
+# builds every Codex argv with codex_command, and run_headless refuses one that lacks any of them (require_codex_isolation).
+#
+# What each setting closes (checked against codex-cli 0.157.0 and 0.159.2 by asking the model to list its tools):
+#   --ignore-user-config, --ignore-rules   ~/.codex/config.toml, its MCP servers, hooks, profiles and exec-policy rules are
+#                                          not loaded (auth still comes from CODEX_HOME, which this app never reads or copies)
+#   -c mcp_servers={}                      no MCP server, whatever else configures one
+#   --sandbox read-only                    the second layer: nothing the model runs can write
+#   --disable shell_tool, unified_exec     no command-running tool
+#   --disable code_mode_host               "code mode" fails closed. It is what carries the web tool, apply_patch and the
+#                                          clock, so with it off the model has no tool it can reach at all
+#   -c web_search=disabled                 no web search
+#   -c shell_environment_policy.inherit=none   a command that somehow ran would see none of this app's environment
+#   --ephemeral                            no session files are left in CODEX_HOME
+#   --strict-config, --disable <name>      an unknown setting or feature is an error, so a Codex that does not know one of
+#                                          these refuses to start rather than starting with a tool the app meant to turn off
+# Not closed: the collaboration tools (spawn_agent and friends) stay listed; a sub-agent starts with the same settings.
+CODEX_OFF_FEATURES = (
+    "shell_tool", "unified_exec", "plugins", "apps", "multi_agent", "browser_use", "computer_use", "in_app_browser",
+    "view_image", "image_generation", "goals", "memories", "hooks", "skill_search", "tool_suggest", "sleep_tool",
+)
+CODEX_CODE_MODE = "code_mode_host"
+_CODEX_SWITCHES = ("--skip-git-repo-check", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--strict-config")
+# Values carry no quotes: a quote on argv does not survive a cmd.exe shim (codex.cmd), and Codex reads a value that is
+# not valid TOML as a plain string.
+_CODEX_OVERRIDES = ("mcp_servers={}", "shell_environment_policy.inherit=none")
+_CODEX_WEB_SEARCH = "web_search="
+_CODEX_NEVER = (
+    "--enable", "--add-dir", "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust",
+    "--approve-for-me", "--oss", "--local-provider", "--profile", "-p", "-s", "--full-auto", "--yolo",
+)
+
+
+class CodexNotIsolated(RuntimeError):
+    """A Codex command that lacks the isolation, or a Codex call the app refuses to make. Nothing was started."""
+
+
+def _codex_flags(web_search: bool) -> list[str]:
+    flags = ["exec", "--sandbox", "read-only", *_CODEX_SWITCHES]
+    for override in (*_CODEX_OVERRIDES, f"{_CODEX_WEB_SEARCH}{'live' if web_search else 'disabled'}"):
+        flags += ["-c", override]
+    for feature in (*CODEX_OFF_FEATURES, *(() if web_search else (CODEX_CODE_MODE,))):
+        flags += ["--disable", feature]
+    return flags
+
+
+def codex_command(binary: str, *, web_search: bool = False, extra: tuple[str, ...] = ()) -> list[str]:
+    """The argv for one isolated Codex call: no MCP servers, command tool, file writes or web search, prompt on stdin.
+
+    ``web_search=True`` is for the company-research runner alone. Codex reaches the web through code mode, which cannot be
+    switched on without also exposing apply_patch (read-only keeps it from writing, but it can still test whether a local
+    file holds given lines), so that one call is isolated less than the rest and its caller must have the student's opt-in.
+    ``extra`` goes before the final "-".
+    """
+    return [binary, *_codex_flags(web_search), *extra, "-"]
+
+
+def _values_after(args: list[str], flag: str) -> list[str]:
+    return [args[index + 1] for index, item in enumerate(args[:-1]) if item == flag]
+
+
+def _is_codex(command: list[str]) -> bool:
+    return bool(command) and (os.path.basename(str(command[0])).lower().startswith("codex") or command[0] == cli_binary("codex-cli"))
+
+
+def require_codex_isolation(command: list[str]) -> None:
+    """Raise CodexNotIsolated, before anything starts, when a Codex command lacks any part of codex_command's isolation.
+
+    Commands for other programs pass untouched.
+    """
+    if not _is_codex(command):
+        return
+    args = [str(item) for item in command[1:]]
+    problems = []
+    if args[:1] != ["exec"]:
+        problems.append("it is not `codex exec`")
+    problems += [f"{switch} is missing" for switch in _CODEX_SWITCHES if switch not in args]
+    if _values_after(args, "--sandbox") != ["read-only"]:
+        problems.append("--sandbox must be given once, as read-only")
+    overrides = _values_after(args, "-c")
+    problems += [f"-c {override} is missing" for override in _CODEX_OVERRIDES if override not in overrides]
+    web = [item for item in overrides if item.startswith(_CODEX_WEB_SEARCH)]
+    if len(web) != 1 or web[0] not in (f"{_CODEX_WEB_SEARCH}disabled", f"{_CODEX_WEB_SEARCH}live"):
+        problems.append("-c web_search must be set once, to disabled or live")
+    off = _values_after(args, "--disable")
+    wanted = (*CODEX_OFF_FEATURES, *(() if web == [f"{_CODEX_WEB_SEARCH}live"] else (CODEX_CODE_MODE,)))
+    problems += [f"--disable {feature} is missing" for feature in wanted if feature not in off]
+    problems += [f"{item} is not allowed" for item in _CODEX_NEVER if item in args]
+    if problems:
+        raise CodexNotIsolated(
+            "Codex was not started because its command is not isolated: " + "; ".join(problems) + ". "
+            "Every Codex call is built with agent_providers.codex_command."
+        )
 
 
 def run_headless(command: list[str], prompt: str, *, timeout: float, cwd: str) -> subprocess.CompletedProcess:
@@ -169,7 +261,9 @@ def run_headless(command: list[str], prompt: str, *, timeout: float, cwd: str) -
     Only the invocation is shared: UTF-8 with undecodable bytes replaced, no console window on Windows. Each caller
     chooses its own directory (an empty one, outside the project), checks the return code and words its own error,
     because what a student sees on a failure differs per caller. A timeout or a missing binary raises as subprocess does.
+    A Codex command that lacks the isolation of codex_command raises CodexNotIsolated without starting anything.
     """
+    require_codex_isolation(command)
     return subprocess.run(
         command, input=prompt, capture_output=True, text=True, encoding="utf-8", errors="replace",
         timeout=timeout, cwd=cwd, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -179,6 +273,22 @@ def run_headless(command: list[str], prompt: str, *, timeout: float, cwd: str) -
 def failure_detail(completed: subprocess.CompletedProcess) -> str:
     """What a failed CLI said: its stderr, else its stdout, trimmed."""
     return (completed.stderr or completed.stdout or "").strip()
+
+
+_CODEX_TOO_OLD = ("unexpected argument", "unknown feature flag", "unknown configuration field")
+
+
+def codex_update_hint(detail: str) -> str:
+    """A sentence to add to a failed Codex call's message when the CLI did not understand a setting of the isolation."""
+    if any(phrase in detail.lower() for phrase in _CODEX_TOO_OLD):
+        return " (This Codex CLI does not understand a setting the app needs to keep it isolated. Update it with `codex update`.)"
+    return ""
+
+
+def codex_failure_detail(completed: subprocess.CompletedProcess) -> str:
+    """failure_detail for a Codex call, with the update hint when the CLI is too old for the isolation settings."""
+    detail = failure_detail(completed)
+    return detail + codex_update_hint(detail)
 
 
 def configured_provider(provider: str) -> dict[str, Any]:
@@ -400,8 +510,9 @@ class CliAgentProvider:
     subscription. Each turn renders the full conversation plus a tool
     manifest into one prompt and demands a strict JSON decision:
     {"answer": "..."} or {"tool": name, "arguments": {...}}. The student
-    agent's approval gates stay authoritative — the CLI can only request
-    one tool call per turn and never executes anything itself.
+    agent's approval gates stay authoritative: the CLI is asked for one tool
+    call per turn and is started with its own tools and MCP servers turned
+    off (see _command), so it has nothing to execute a call with.
     """
 
     def __init__(
@@ -460,18 +571,21 @@ class CliAgentProvider:
     # -- CLI invocation ---------------------------------------------------
 
     def _command(self) -> list[str]:
-        """The sandboxed CLI invocation shared by every turn and by complete_text.
+        """The isolated CLI invocation shared by every turn and by complete_text.
 
-        The prompt is never part of it: it goes over stdin, the CLI gets no
-        tools or MCP servers (Codex: a read-only sandbox), and _invoke runs it
-        in a directory of its own outside the project, so text taken from the web cannot steer
-        it into local files or be re-parsed by a cmd.exe shim.
+        The prompt is never part of it: it goes over stdin, so text taken from the web or from tool results cannot be
+        re-parsed by a cmd.exe shim. Claude Code gets no tools and no MCP servers (CLAUDE_NO_TOOLS). Codex gets
+        codex_command's settings, which together leave it no MCP server, command tool, web search or file write, with the
+        read-only sandbox as a second layer; _invoke refuses a Codex command without them. _invoke runs it in a directory
+        of its own, empty and outside the project.
         """
         if self.provider_id == "claude-code":
             return [self.binary, *CLAUDE_NO_TOOLS]
-        return [self.binary, *CODEX_READ_ONLY, "-"]
+        return codex_command(self.binary)
 
     def _invoke(self, command: list[str], stdin: str) -> str:
+        # Checked here as well as in run_headless so an injected runner cannot hide a command that lost its isolation.
+        require_codex_isolation(command)
         try:
             if self._runner is not None:
                 completed = self._runner([*command, stdin])
@@ -483,7 +597,8 @@ class CliAgentProvider:
             raise RuntimeError(f"{self.provider_id} CLI could not start: {exc}") from exc
         if getattr(completed, "returncode", 1) != 0:
             stderr = (getattr(completed, "stderr", "") or "").strip()
-            raise RuntimeError(f"{self.provider_id} CLI failed: {stderr[:300] or 'non-zero exit'}")
+            hint = codex_update_hint(stderr) if self.provider_id == "codex-cli" else ""
+            raise RuntimeError(f"{self.provider_id} CLI failed: {stderr[:300] or 'non-zero exit'}{hint}")
         return (getattr(completed, "stdout", "") or "").strip()
 
     @staticmethod
@@ -561,8 +676,8 @@ class CliAgentProvider:
 
         The agent contract wraps every reply in {"answer": ...}; callers that
         need their own JSON shape use this instead. The prompt goes over stdin,
-        the CLI gets no tools or MCP servers, and it runs outside the project
-        directory, so text taken from the web cannot steer it into local files.
+        the CLI runs with the isolation described at _command (Codex: codex_command),
+        and in an empty directory outside the project.
         """
         prompt = f"{instructions}\n\n{content}"
         return self._invoke(self._command(), stdin=prompt)

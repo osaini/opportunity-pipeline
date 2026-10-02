@@ -81,7 +81,7 @@ from .contact_names import website_domain
 from .targets import CALL_PREP_STATUSES, OutreachNotFoundError, log_event, get_target
 from .agents import RUNNERS, Runner
 from .identity import company_key
-from .config import COMPANY_RESEARCH_ENV, RESEARCH_ENV, resolve_provider
+from .config import ALLOW_CODEX_ENV, COMPANY_RESEARCH_ENV, RESEARCH_ENV, codex_web_allowed, resolve_provider
 from ..student.preparation import confirmed_facts
 from .quote_check import SECTION_IDS, Judge, check_brief
 from ..core.timestamps import parse_app_instant, utc_now
@@ -90,9 +90,9 @@ from ..integrations.web_fetch import SafeFetcher
 JOB_TYPE = "outreach_company_research"
 MAX_ATTEMPTS = 3
 ACTIVE_JOB_STATES = {"queued", "running", "retry"}
-# Codex's read-only sandbox can still read files on this computer, and research reads pages nobody vetted.
-# Company research therefore never runs on Codex unless the student says, in .env, that they accept that.
-ALLOW_CODEX_ENV = "PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX"
+# Research reads pages nobody vetted. Codex can only be given a web tool through code mode, which also exposes apply_patch
+# (the read-only sandbox stops it writing, but it can still test whether a local file holds given lines), so research never
+# runs on Codex unless the student says, in .env, that they accept that (config.ALLOW_CODEX_ENV).
 # One company, read closely: longer than a location search, far shorter than a deep search.
 RUNNER_TIMEOUT_SECONDS = 20 * 60
 # Call prep researches again when the brief is older than this.
@@ -160,17 +160,15 @@ def research_agent() -> str:
     return "claude-code"
 
 
-def _codex_allowed() -> bool:
-    return os.environ.get(ALLOW_CODEX_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
-
-
 def available_agent(preferred: str | None = None) -> tuple[str, str]:
     """The agent to run and a note when it is not the one chosen, because that one is not installed.
 
-    Company research reads web pages, which are not trusted, and Codex's read-only
-    sandbox can still read files on this computer. Claude Code runs here with only
-    web search and fetch, so it is preferred, and Codex runs only when the student
-    has allowed it (ALLOW_CODEX_ENV) and Claude Code is not installed.
+    Company research reads web pages, which are not trusted. Claude Code runs here
+    with only web search and fetch, so it is preferred. Codex is not that tight:
+    its web tool comes with code mode, which also exposes apply_patch (the
+    read-only sandbox stops it writing, but not testing whether a local file holds
+    given lines). It runs only when the student has allowed it (ALLOW_CODEX_ENV)
+    and Claude Code is not installed.
     """
     chosen = preferred or research_agent()
     claude_here = cli_available(cli_binary(CLAUDE_AGENT))
@@ -178,7 +176,7 @@ def available_agent(preferred: str | None = None) -> tuple[str, str]:
         return CLAUDE_AGENT, f"{CODEX_AGENT} can read files on this computer, so {CLAUDE_AGENT} (web search and fetch only) did the research"
     candidates = [chosen, *(other for other in RUNNERS if other != chosen)]
     for agent in candidates:
-        if agent == CODEX_AGENT and not _codex_allowed():
+        if agent == CODEX_AGENT and not codex_web_allowed():
             continue
         if cli_available(cli_binary(agent)):
             return agent, "" if agent == chosen else f"{chosen} is not installed here, so {agent} did the research"

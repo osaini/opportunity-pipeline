@@ -23,6 +23,9 @@ CALL_PREP_ENV = "PIPELINE_OUTREACH_CALL_PREP_PROVIDER"
 REVIEW_ENV = "PIPELINE_OUTREACH_REVIEW_PROVIDER"
 # The thank-you after a decline (outreach_thank_you); empty means the first-email writer.
 THANK_YOU_ENV = "PIPELINE_OUTREACH_THANK_YOU_PROVIDER"
+# Set to 1 in .env to let Codex read web pages for company research and the deep search. Off by default: the only way to
+# give Codex a web tool also switches on code mode, which Codex cannot be stopped from exposing (see agent_providers.codex_command).
+ALLOW_CODEX_ENV = "PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX"
 ATTACHMENT_ENV = "PIPELINE_OUTREACH_ATTACHMENT"
 LINKEDIN_ENV = "PIPELINE_LINKEDIN_ACCOUNT"
 
@@ -42,6 +45,11 @@ def sender_account() -> str:
 def discovery_provider() -> str:
     """The CLI that does the web research, "claude-code" when none is chosen."""
     return os.environ.get(RESEARCH_ENV) or "claude-code"
+
+
+def codex_web_allowed() -> bool:
+    """Whether the student accepted, in .env, that Codex reads web pages for research (ALLOW_CODEX_ENV)."""
+    return os.environ.get(ALLOW_CODEX_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def resolve_provider(requested: str | None = None, purpose: str = "initial") -> tuple[str, str]:
