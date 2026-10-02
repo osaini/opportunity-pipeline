@@ -846,6 +846,48 @@ class ReplyCaptureTests(ReplyCaptureFixture, unittest.TestCase):
         self.assertEqual([item["reason"] for item in result["possible"]], ["mailing_tool"])
         self.assertEqual(self.target(target)["status"], "sent")
 
+    SALES_PIXEL = (
+        '<div>Hi Sam, just bumping this to the top of your inbox.</div>'
+        '<img src="https://t.hubspotemail.net/e2t/to/abc" width="1" height="1">'
+    )
+    ATS_LINK = '<p>Unfortunately we will not move forward.</p><p><a href="https://boards.greenhouse.io/bovi/jobs/1">View</a></p>'
+
+    def test_an_html_only_sales_pixel_from_the_address_written_to_is_only_a_possible_reply(self):
+        target = self.sent_target()
+        self.arrive("seq-exact", html_mail(self.SALES_PIXEL, subject="Quick question"))
+        result = self.check()
+        self.assertEqual(result["replies"], [])
+        self.assertEqual([item["reason"] for item in result["possible"]], ["mailing_tool"])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_a_sales_tool_header_on_mail_from_the_address_written_to_is_only_a_possible_reply(self):
+        target = self.sent_target()
+        self.arrive("seq-exact-header", mail("Hi Sam, evaluating arms for your lab?", subject="Quick question",
+                                              headers="X-HubSpot-Sequence-Id: 7\n"))
+        self.assertEqual([item["reason"] for item in self.check()["possible"]], ["mailing_tool"])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_an_html_only_sales_pixel_in_a_watched_thread_is_only_a_possible_reply(self):
+        target = self.sent_target()
+        self.arrive_in_thread("seq-thread", html_mail(self.SALES_PIXEL))
+        result = self.check()
+        self.assertEqual(result["replies"], [])
+        self.assertEqual([item["reason"] for item in result["possible"]], ["mailing_tool"])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_an_html_only_applicant_system_mail_in_a_watched_thread_is_job_mail_not_a_reply(self):
+        target = self.sent_target()
+        self.arrive_in_thread("ats-thread", html_mail(self.ATS_LINK))
+        result = self.check()
+        self.assertEqual(result["replies"], [])
+        self.assertEqual([item["reason"] for item in result["possible"]], ["job_mail"])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_a_person_writing_in_a_watched_thread_with_no_such_link_is_still_a_reply(self):
+        target = self.sent_target()
+        self.arrive_in_thread("plain-thread", html_mail("<div>Happy to chat Tuesday.</div>"))
+        self.assertEqual([item["target_id"] for item in self.check()["replies"]], [target["id"]])
+
     def test_the_quote_is_cut_out_of_the_markup_but_the_rest_is_read(self):
         def hosts(markup):
             return outreach_inbox._link_hosts(BytesParser(policy=policy.default).parsebytes(html_mail(markup)))

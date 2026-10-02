@@ -476,6 +476,11 @@ def _judge(
                 return POSSIBLE, "auto_generated"
             if not own_person and is_machine_local(local):
                 return POSSIBLE, "automated_sender"
+            # Whatever matched it to the company, a job system's or a sales tool's mail is only ever a possible reply.
+            if _job_mail(message, sender):
+                return POSSIBLE, "job_mail"
+            if _sales_tool(message):
+                return POSSIBLE, "mailing_tool"
             return REPLY, "thread"
         automated = is_automatic(message) or (
             not person and (is_machine_local(local) or listed(domain_of(sender), tuple(sender_lists())) or not is_person(sender))
@@ -532,6 +537,9 @@ def _judge_match(
         # An applicant system writes in the name of the recruiter (and from the careers@ inbox) the student wrote to.
         if _job_mail(message, sender):
             return POSSIBLE, "job_mail"
+        # A rep's sequence email sent from the address the student wrote to reads like that person writing.
+        if _sales_tool(message):
+            return POSSIBLE, "mailing_tool"
         # A blast they blind-copied everyone on ("all positions are filled") is not an answer to the student.
         if not _addressed(message, account) and not answers_something(message):
             return POSSIBLE, "not_addressed"
