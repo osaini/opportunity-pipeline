@@ -61,6 +61,30 @@ def test_the_finished_announcement_says_which_agent_ran(owner_page):
     expect(owner_page.locator("#action-status")).to_contain_text("Claude Code ran this search")
 
 
+def test_a_search_that_fails_before_its_run_is_stored_does_not_borrow_an_older_runs_note(owner_page):
+    # The newest stored run is an older search's (it carries a note); this search failed before it stored a run of its own.
+    older = {"id": "discovery-older", "run_trigger": "scheduled", "status": "succeeded", "scopes": [], "imported": 2,
+             "started_at": "2026-01-01T09:00:00+00:00", "finished_at": "2026-01-01T09:05:00+00:00", "agent_note": NOTE}
+
+    def failed_without_a_run(route):
+        if route.request.method != "GET":
+            route.continue_()
+            return
+        response = route.fetch()
+        body = response.json()
+        if (body.get("active") or {}).get("state") in ("succeeded", "failed"):
+            body["active"] = {**body["active"], "state": "failed", "result": None, "error": "A deep search is already running"}
+            body["runs"] = [older]
+        route.fulfill(response=response, body=json.dumps(body))
+
+    owner_page.route(re.compile(r"/api/v1/outreach/discovery$"), failed_without_a_run)
+    open_outreach(owner_page, "deep-search")
+    owner_page.locator("details.outreach-deep-search").get_by_role("button", name="Run deep search now").click()
+    status = owner_page.locator("#action-status")
+    expect(status).to_contain_text("The deep search failed", timeout=30_000)
+    expect(status).not_to_contain_text("Claude Code ran this search")
+
+
 def test_the_contact_search_report_shows_the_note(owner_page, base_url):
     seed_target(owner_page, base_url, contact_email="hello@bovi.example", contact_confidence="confirmed")
 

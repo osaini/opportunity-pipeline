@@ -90,8 +90,13 @@
           return;
         }
         const result = discovery.active?.result;
-        // Claude Code ran in place of the Codex the student chose: the finished search says so, from its result or its stored run.
-        const note = result?.agent_note || discovery.runs?.[0]?.agent_note || "";
+        // Claude Code ran in place of the Codex the student chose: the finished search says so, from its result or, only when
+        // the newest stored run is this search's own (it started after this search did), from that run. A search that failed
+        // before its run was stored (another search held the lock, say) must not borrow an older run's note.
+        const latestRun = discovery.runs?.[0];
+        const startedAt = Date.parse(discovery.active?.started_at || "");
+        const ownRun = latestRun && Number.isFinite(startedAt) && Date.parse(latestRun.started_at || "") >= startedAt - 1000;
+        const note = result?.agent_note || (ownRun ? latestRun.agent_note : "") || "";
         announce(discovery.active?.state === "failed"
           ? `The deep search failed: ${discovery.active.error}${note ? ` ${note}` : ""}`
           : `Deep search finished${result ? `: ${plural(result.imported, "new company", "new companies")} added` : ""}.${note ? ` ${note}` : ""}`);

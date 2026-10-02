@@ -635,6 +635,8 @@ class CommandLineTests(unittest.TestCase):
                 mock.patch("opportunity_app.outreach_cli.default_renderer", lambda: None),
                 mock.patch("opportunity_app.outreach_cli.default_verifier", lambda: None),
                 mock.patch("opportunity_app.outreach.discovery.REPORT_DIR", root / "reports"),
+                # No real model CLI: drafting the imported company must not start claude or codex.
+                mock.patch("opportunity_app.outreach_cli.build_provider", side_effect=RuntimeError("no model CLI in tests")),
                 mock.patch("sys.stderr"),
             ):
                 exit_code = outreach_cli.main([
@@ -646,8 +648,11 @@ class CommandLineTests(unittest.TestCase):
                 runs = last_runs(conn, user_id=USER)
             finally:
                 conn.close()
+            # The report (and its lock) went to the patched folder, not the checkout's data/.
+            reported_here = any((root / "reports").glob("outreach-discovered-*.json"))
         self.assertEqual(exit_code, 0)
         self.assertEqual([run["agent_note"] for run in runs], [note])
+        self.assertTrue(reported_here)
 
     def test_a_busy_lock_reports_a_temporary_failure(self):
         from opportunity_app import outreach_cli

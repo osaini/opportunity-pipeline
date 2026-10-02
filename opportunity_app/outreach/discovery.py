@@ -426,7 +426,7 @@ def run_discovery(
     max_targets: int = MAX_PER_SCOPE,
     dry_run: bool = False,
     trigger: str = "manual",
-    report_dir: Path = REPORT_DIR,
+    report_dir: Path | None = None,
     lock_path: Path | None = None,
     provider_factory: Callable[[str, str], Any] | None = None,
     draft_provider: str | None = None,
@@ -451,6 +451,8 @@ def run_discovery(
     site gave no confirmed one (outreach/email_search.py), before any draft is
     written. verifier puts guessed addresses to the mail server (integrations/smtp_probe.py).
     """
+    # Resolved per call, not bound at definition time, so tests (and callers that pass nothing) follow REPORT_DIR.
+    report_dir = REPORT_DIR if report_dir is None else report_dir
     scopes = [scope for scope in (scopes or DEFAULT_SCOPES) if scope in SCOPES]
     if not scopes:
         raise ValueError(f"Choose at least one scope: {', '.join(SCOPES)}")
@@ -752,7 +754,7 @@ class DiscoveryManager(SingleFlightManager):
         locate: bool = True,
         client_factory: Callable[[], SafeFetcher] = default_fetcher,
         provider_factory: Callable[[str, str], Any] | None = None,
-        report_dir: Path = REPORT_DIR,
+        report_dir: Path | None = None,
         contact_delay: float = 1.0,
         form_d_fetcher_factory: Callable[[], SafeFetcher | None] = sec_fetcher,
         renderer_factory: Callable[[], PlaywrightRenderer | None] = default_renderer,
@@ -770,7 +772,7 @@ class DiscoveryManager(SingleFlightManager):
         self._locate = locate
         self._client_factory = client_factory
         self._provider_factory = provider_factory
-        self._report_dir = report_dir
+        self._report_dir = REPORT_DIR if report_dir is None else report_dir
         self._contact_delay = contact_delay
         super().__init__()
 

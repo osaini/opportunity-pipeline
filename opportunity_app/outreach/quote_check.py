@@ -142,8 +142,9 @@ def safe_gap(text: str) -> bool:
     also rules out a phone number, a street address, and a token in groups
     ("3f9a1c 77be20"). A run of four same-length words ("abcd efgh ijkl mnop",
     the shape of an app password) and a long sentence are out too. This is a
-    second line of defense: the research agent cannot read this computer's
-    files at all (available_agent), and no filter catches every way to spell out a secret.
+    second line of defense: the research agent runs with web search and fetch
+    only, unless the student opted in to Codex, whose code mode exposes apply_patch
+    (available_agent); and no filter catches every way to spell out a secret.
     """
     words = re.findall(r"[^\W_]+", text)
     if len(words) > MAX_GAP_WORDS or any(char.isdigit() for char in text):
