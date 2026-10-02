@@ -25,9 +25,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from . import DEFAULT_LEGACY_DB, ROOT
-from .daily import STATE_PATH as DAILY_STATE_PATH, read_state as read_daily_state
-from .core.timestamps import parse_app_instant
+from .. import DEFAULT_LEGACY_DB, ROOT
+from ..daily import STATE_PATH as DAILY_STATE_PATH, read_state as read_daily_state
+from ..core.timestamps import parse_app_instant
 
 SOURCES_CONFIG = ROOT / "config" / "sources.json"
 
@@ -48,7 +48,7 @@ class Scheduler:
     """The operating system's scheduler: which jobs exist, and installing one."""
 
     def jobs(self) -> dict[str, dict[str, Any]]:
-        from .launch import LABEL_PREFIX, UNIT_PREFIX, WINDOWS_TASKS
+        from ..launch import LABEL_PREFIX, UNIT_PREFIX, WINDOWS_TASKS
 
         if sys.platform == "win32":
             return _windows_tasks({job: task for job, (_script, task) in WINDOWS_TASKS.items()})
@@ -65,7 +65,7 @@ class Scheduler:
         return found
 
     def install(self, job: str) -> int:
-        from .launch import install
+        from ..launch import install
 
         return install(job)
 
@@ -115,7 +115,7 @@ def source_health(
     legacy_path: Path, sources_path: Path = SOURCES_CONFIG, *, now: datetime | None = None,
 ) -> dict[str, Any]:
     """The latest fetch of every enabled board, failing and stale ones first."""
-    from .opportunities.legacy import load_sources, source_key
+    from ..opportunities.legacy import load_sources, source_key
 
     now = now or datetime.now(timezone.utc)
     try:

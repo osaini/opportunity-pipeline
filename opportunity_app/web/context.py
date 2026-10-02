@@ -55,7 +55,7 @@ from ..integrations.smtp_probe import default_verifier as default_smtp_verifier
 from ..student.preparation import DEFAULT_MOCK_AUDIO_STORAGE
 from ..opportunities.refresh import RefreshManager
 from ..student.resumes import DEFAULT_STORAGE
-from ..system_status import SystemStatus
+from .system_status import SystemStatus
 from ..integrations.typesafe_decisions import DecisionClient, build_client as build_typesafe_client
 from ..integrations.web_fetch import SafeFetcher, default_fetcher as default_contact_fetcher
 from ..integrations.gmail_client import default_client_factory as default_gmail_client_factory

@@ -128,7 +128,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
     # L5 entry points. opportunity_app.web is the FastAPI app behind api: the composition root (app), the per-app context, the
     # dependencies, middleware and asset handling, the request models, and one router module per feature.
     5: (
-        _app("api bootstrap launch worker daily system_status migrate ops_cli outreach_cli pipeline_mailbox setup purge")
+        _app("api bootstrap launch worker daily web.system_status migrate ops_cli outreach_cli pipeline_mailbox setup purge")
         | _mods("opportunity_app.web", ". app context dependencies errors middleware assets payloads overrides")
         | _mods(
             "opportunity_app.web.models",

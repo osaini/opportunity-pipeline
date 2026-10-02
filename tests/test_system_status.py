@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
-from opportunity_app.system_status import SystemStatus, daily_run, source_health
+from opportunity_app.web.system_status import SystemStatus, daily_run, source_health
 
 from helpers_platform import build_and_migrate
 

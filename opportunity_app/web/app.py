@@ -44,7 +44,7 @@ if TYPE_CHECKING:  # only the create_app signature names these
     from ..outreach.recontact import RecontactManager
     from ..outreach.settings import OutreachSettings
     from ..opportunities.refresh import RefreshManager
-    from ..system_status import SystemStatus
+    from .system_status import SystemStatus
     from ..integrations.typesafe_decisions import DecisionClient
     from ..integrations.web_fetch import SafeFetcher
 
