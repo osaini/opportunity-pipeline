@@ -32,8 +32,8 @@ realdata_guard.install()
 
 # Written out here on purpose: a change to the builder's list must show up as a change to this contract too.
 ALWAYS_OFF = {
-    "shell_tool", "unified_exec", "plugins", "apps", "multi_agent", "browser_use", "computer_use", "in_app_browser",
-    "view_image", "image_generation", "goals", "memories", "hooks", "skill_search", "tool_suggest", "sleep_tool",
+    "shell_tool", "unified_exec", "plugins", "apps", "multi_agent", "multi_agent_v2", "browser_use", "computer_use",
+    "in_app_browser", "view_image", "image_generation", "goals", "memories", "hooks", "skill_search", "tool_suggest", "sleep_tool",
 }
 SWITCHES = ("--skip-git-repo-check", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--strict-config")
 NEVER = ("--enable", "--add-dir", "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust",
@@ -442,6 +442,21 @@ class EveryNonResearchCodexCallRunsWithoutAnEnvironmentTests(unittest.TestCase):
         self.assertIn("multi_agent", agent_providers.CODEX_OFF_FEATURES)
         self.assertIn("multi_agent", values_after(agent_providers.codex_command("codex"), "--disable"))
         self.assertIn("multi_agent", values_after(agent_providers.codex_command("codex", web_search=True), "--disable"))
+
+    def test_multi_agent_v2_is_turned_off_too_because_it_wins_over_agents_enabled(self):
+        """Config::multi_agent_version_override returns V2 when Feature::MultiAgentV2 is enabled before it checks agents_enabled
+        (codex-rs/core/src/config/mod.rs, rust-v0.157.0 and rust-v0.159.2), so agents.enabled=false alone does not close spawn_agent."""
+        self.assertIn("multi_agent_v2", agent_providers.CODEX_OFF_FEATURES)
+        for web in (False, True):
+            with self.subTest(web=web):
+                command = agent_providers.codex_command("codex", web_search=web)
+                self.assertIn("multi_agent_v2", values_after(command, "--disable"))
+                without = [item for index, item in enumerate(command)
+                           if item != "multi_agent_v2" and not (item == "--disable" and command[index + 1] == "multi_agent_v2")]
+                self.assertNotIn("multi_agent_v2", without)
+                with self.assertRaises(agent_providers.CodexNotIsolated) as raised:
+                    agent_providers.require_codex_isolation(without, env=None if web else NO_ENVIRONMENT)
+                self.assertIn("--disable multi_agent_v2 is missing", str(raised.exception))
 
     def test_agents_are_switched_off_by_setting_too_because_the_feature_flag_does_not_reach_every_model(self):
         """Config::multi_agent_version_for_model prefers the model catalog's multi_agent_version (v1 or v2: gpt-6*, gpt-6.1-sol,

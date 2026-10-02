@@ -177,6 +177,11 @@ CLAUDE_NO_TOOLS = ["-p", "--output-format", "text", "--tools", "", "--strict-mcp
 #                                          whose catalog entry carries multi_agent_version v1 or v2 (gpt-6*, gpt-6.1-sol,
 #                                          gpt-5.6-*) Config::multi_agent_version_for_model prefers the catalog value unless
 #                                          agents.enabled=false (or MultiAgentV2 overrides it)
+#   --disable multi_agent, multi_agent_v2  the feature flags. multi_agent_v2 is needed as well as agents.enabled=false:
+#                                          Config::multi_agent_version_override returns V2 when Feature::MultiAgentV2 is
+#                                          enabled before it looks at agents_enabled (codex-rs/core/src/config/mod.rs,
+#                                          rust-v0.157.0 and rust-v0.159.2), so the setting alone does not close it. Both are
+#                                          Stable feature keys in those versions, so --strict-config accepts them
 #   --disable code_mode_host               "code mode" fails closed for the models whose catalog entry selects it
 #                                          (code_mode_only: the GPT-5.6 and GPT-6 families). It is what carries the web tool and
 #                                          the clock, and, for those models, apply_patch
@@ -187,7 +192,7 @@ CLAUDE_NO_TOOLS = ["-p", "--output-format", "text", "--tools", "", "--strict-mcp
 #   --ephemeral                            no session files are left in CODEX_HOME
 #   --strict-config, --disable <name>      an unknown setting or feature is an error, so a Codex that does not know one of
 #                                          these refuses to start rather than starting with a tool the app meant to turn off
-# Not closed: nothing the model can reach. multi_agent is off and agents.enabled=false, so there is no spawn_agent to start
+# Not closed: nothing the model can reach. multi_agent and multi_agent_v2 are off and agents.enabled=false, so there is no spawn_agent to start
 # another model with (asked to list its tools, gpt-6.1-sol on 0.159.2 and gpt-6-sol on 0.157.0 named no spawn_agent, and both
 # versions accept the setting under --strict-config).
 # What still lists: request_user_input and multi_tool_use.parallel, which read no file (both versions, gpt-5.5).
@@ -200,8 +205,8 @@ CLAUDE_NO_TOOLS = ["-p", "--output-format", "text", "--tools", "", "--strict-mcp
 # the one switch that removes it for every model. It is an environment variable, so --strict-config cannot vouch for it:
 # run_headless sets it itself (codex_process_env) and require_codex_isolation checks the environment it was handed.
 CODEX_OFF_FEATURES = (
-    "shell_tool", "unified_exec", "plugins", "apps", "multi_agent", "browser_use", "computer_use", "in_app_browser",
-    "view_image", "image_generation", "goals", "memories", "hooks", "skill_search", "tool_suggest", "sleep_tool",
+    "shell_tool", "unified_exec", "plugins", "apps", "multi_agent", "multi_agent_v2", "browser_use", "computer_use",
+    "in_app_browser", "view_image", "image_generation", "goals", "memories", "hooks", "skill_search", "tool_suggest", "sleep_tool",
 )
 CODEX_CODE_MODE = "code_mode_host"
 # The process environment every Codex call without web search gets: no environment, so no apply_patch for any model.
