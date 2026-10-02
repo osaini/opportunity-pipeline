@@ -8,7 +8,7 @@
 
   // Sensitive questions are never mapped, proposed from the library, or offered for saving.
   // The immigration, clearance, export-control, 18-or-older, criminal-history and non-compete
-  // terms mirror the ones the agent's classifier (apply_policy.classify_sensitive) adds.
+  // terms mirror the ones the agent's classifier (apply.policy.classify_sensitive) adds.
   // opportunity_app/applications/extension.py keeps a copy for the save guard; a test pins the two.
   // "opt in" and "opt out" are marketing wording, unless a country or year follows ("OPT in 2027").
   const SENSITIVE = /\b(gender|sex|sexual orientation|race|ethnic(?:ity)?|disab(?:ility|led)?|veteran|age|birth|sponsor(?:ship)?|authori[sz](?:ed|ation)|citizen(?:ship)?|salary|compensation|pronoun|marital|religio\w*|genetic|pregnan(?:cy|t)|eeo|transgender|immigration|petition|employment[- ]based|green card|permanent resident|visa[- ](?:sponsor\w*|status|support|type|holder|transfer)|(?:require|need|hold)\w*\s+(?:a\s+)?visa|work visa|student visa|f[- ]?1|j[- ]?1|h[- ]?1[- ]?b|tn|e[- ]?3|stem opt|opt(?!-(?:in|out)\b)(?! (?:in|out)\b(?! (?:the )?(?:us|u\.s\.|usa|united states|20\d\d)(?!\w)))|cpt|practical training|clearance|right to work|eligible to work|legally (?:eligible|authori[sz]ed)|(?:18|eighteen)\+?(?: years)? (?:or older|of age)|over (?:the age of )?(?:18|eighteen)|at least (?:18|eighteen)|age of (?:18|eighteen)|(?:are you|you are|must be)\s+(?:18|eighteen)|u\.? ?s\.? person|itar|export control|export administration regulations|legally\s+(?:(?:able|permitted|allowed)\s+to\s+)?work|eligib\w*\s+(?:for|to)\s+(?:employment|work)|work permit|type of visa|(?:hold|have|has|current\w*|which)\s+(?:(?:a|an|your|any|the)\s+)?(?:\w+\s+)?visa|what(?:['’]s|\s+(?:is|are))?\s+(?:(?:your|the|my)\s+)?(?:\w+\s+)?visa|on\s+(?:a|an)\s+(?:\w+\s+)?visa|^visas?(?=\W*$)|(?<!\bat\s)(?<!\bfor\s)(?<!\bwith\s)(?<!\babout\s)(?<!\bwhy\s)(?<!\bjoin\s)(?<!\bjoining\s)(?<!\blike\s)(?<!\bfrom\s)(?<!\bby\s)visas?(?!['’]s\b|\s+(?:inc|card|cards|payment|payments|network|corp|corporation|company|co|usa|international|gift)\b)|nationalit\w*|(?:u\.? ?s\.?|united states|american)\s+national|national of|crimes?|offen[cs]es?|lgbt\w*|queer|sexual\w*|military|armed forces|wages?|base pay|pay rate|felony|misdemeanor|arrest\w*|criminal|convict\w*|background check|non[- ]?compete)\b/i;
@@ -239,7 +239,7 @@
 
   // The broad net: a second, deliberately wide reading of a question, kept apart from SENSITIVE above. It never marks a field
   // sensitive by itself; it only says "possibly sensitive", so a reusable saved answer never carries such a question to another
-  // company. One list per topic, each item a topic word or a short phrase. Python's apply_policy.NET_TOPICS repeats these lists
+  // company. One list per topic, each item a topic word or a short phrase. Python's apply.policy.NET_TOPICS repeats these lists
   // and tests/fixtures/apply/broad_net.json is run by both suites. The text is normalized first: lower case, every run of
   // anything but a-z and 0-9 one space ("visa's" reads "visa s", "H-1B" reads "h 1 b").
   const NET_TOPICS = Object.freeze({
@@ -295,7 +295,7 @@
   const NEVER_STORABLE_TOPICS = Object.freeze(["criminal", "demographic", "money", "security"]);
   const NET_PATTERNS = Object.freeze(Object.fromEntries(Object.entries(NET_TOPICS).map(([topic, list]) => [topic, new RegExp(list.map((item) => item.source).join("|"))])));
   // Ordinary phrases removed before the topics are read, so "take charge of a project", "in two sentences", "network security" and
-  // "exporting data" are not criminal or security questions and "hourly availability" is not about pay. Python's apply_policy.NET_BENIGN
+  // "exporting data" are not criminal or security questions and "hourly availability" is not about pay. Python's apply.policy.NET_BENIGN
   // repeats this list; tests/fixtures/apply/broad_net.json runs both.
   const NET_BENIGN = new RegExp([
     /\b(?:take|takes|took|taken|taking) charge\b/,
@@ -496,7 +496,7 @@
   }
 
   // What the broad net reads on a field beyond its question: its help text (aria-describedby), and for a select its option labels.
-  // apply_policy._field_net reads the same: the options only for the topics a person's own status is answered in and a few narrow
+  // apply.policy._field_net reads the same: the options only for the topics a person's own status is answered in and a few narrow
   // phrases (pay, clearance, race), so a plain choice list ("Security" as one team among several) is not read as a question about it.
   const NET_OPTION_TOPICS = ["immigration", "work_authorization", "criminal", "demographic"];
   const OPTION_EXTRA = {
@@ -539,7 +539,7 @@
   // One reading per control, in page order. hit: the field itself may be sensitive (its words, its help text, a select's options, a
   // signature). never: it hits a never-storable topic. follows: the field above it hit, or was itself a follow-up of one that did, so it
   // is that question's continuation ("Year it happened", then "Please tell us what happened"); this mirrors the own chain in
-  // apply_policy.build_plan. followsNever: the same for a never-storable question, only when this field is follow-up shaped, so an
+  // apply.policy.build_plan. followsNever: the same for a never-storable question, only when this field is follow-up shaped, so an
   // independent question after one is still offered for saving.
   function netReadings(controls) {
     const readings = [];
@@ -735,10 +735,10 @@
     attachDocumentFromBytes,
     questionText,
     questionKey,
-    // The two rules apply_policy.py repeats for the agent's plan; tests/fixtures/apply/context_keys.json is run by both.
+    // The two rules apply/policy.py repeats for the agent's plan; tests/fixtures/apply/context_keys.json is run by both.
     needsLabelKey,
     contextDependent,
-    // The broad net (apply_policy.py repeats it; tests/fixtures/apply/broad_net.json is run by both).
+    // The broad net (apply/policy.py repeats it; tests/fixtures/apply/broad_net.json is run by both).
     netTopics,
     possiblySensitive,
     neverStorable,

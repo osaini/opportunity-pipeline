@@ -1,4 +1,4 @@
-"""Apply for me's sensitive-answers store (apply_sensitive.py) and the plan that reads it (spec 5.4, 7.1, 7.5, 12.7).
+"""Apply for me's sensitive-answers store (apply/sensitive.py) and the plan that reads it (spec 5.4, 7.1, 7.5, 12.7).
 
 No browser and no network. Every company, form and answer is fictional. The store holds only what the student chose to
 let the app type into an application form, so these tests pin what it refuses as much as what it keeps: nothing but a

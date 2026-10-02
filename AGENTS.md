@@ -23,6 +23,7 @@ loopback-only.
 | Legacy pipeline + CLI | `pipeline.py` (entry point) and `pipeline_core/` (`paths`, `config`, `http`, `text`, `sources`, `store`, `liveness`, `retention`, `discovery`, `fetch`, `importers`, `scoring`, `reports`, `artifacts`, `cli`) | No third-party dependencies. See rule 4 for the two allowed non-stdlib imports. The web app reaches it only through `opportunity_app/opportunities/legacy.py`. |
 | Shared read model | `pipeline_core/read_model.py` | Framework-neutral read model shared by CLI parity tests and the web app; standard library only. |
 | Web API | `opportunity_app/` | FastAPI. `opportunity_app/web/` holds the app: `app.py` (create_app), `context.py`, `dependencies.py`, `middleware.py` and `routers/<feature>.py`. `api.py` is the thin entry module (`create_app`, lazy `app`, CLI `main`). |
+| Domain packages | `opportunity_app/<package>/` | `core` (clocks, database adapter, schema and migrations, settings and profile stores) and `integrations` (AI CLIs and SDKs, web fetching, Gmail REST, TypeSafe, the SMTP probe, the PDF renderer; each a leaf that imports nothing first-party) sit at the bottom. Above them, by domain: `opportunities` (the `legacy` door, sync, ingestion, boards, captures, market, refresh, purge), `applications` (state machine, Urgent queue, job-email capture, the extension's server half), `apply` (Apply for me), `mail`, `automation`, `student`, `accounts`, `outreach`. `tests/test_layers.py` places every module in a layer and says which way imports may point; the packages are not a DAG among themselves. The modules left at the top level (`api`, `bootstrap`, `launch`, `worker`, `daily`, `migrate`, `ops_cli`, `outreach_cli`, `purge`, `setup`, `pipeline_mailbox`) are the `python -m` entry points and the composition root. |
 | Frontend | `opportunity_app/static/` | Vanilla JS. No framework, no build step. Ordered classic scripts (`app-context.js` first, `app.js` last), each an IIFE sharing `window.OpportunityApp`; `index.html` lists them in load order. |
 | Browser extension | `apps/extension/` | Tested by `node tests/extension/run_tests.mjs`. |
 | Schema | `migrations/*.sql` | SQLite by default; PostgreSQL supported. |
@@ -95,7 +96,7 @@ weight it above crashes.
 
 - Never fabricate jobs, dates, eligibility, compensation, or deadlines.
 - Never auto-apply. External delivery, such as the SMTP path in
-  `notifications.py`, happens only through an explicitly configured live
+  `automation/notifications.py`, happens only through an explicitly configured live
   provider, never as a side effect an agent adds.
 - Never bypass authentication or disable TLS verification for source fetching.
 - Preserve existing application state and manual data.

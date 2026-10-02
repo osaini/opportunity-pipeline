@@ -7,8 +7,8 @@ only by pressing Send and then confirming the recipient; nothing goes out
 without both. The OAuth connection is the separate "gmail_drafts" connector, so
 its gmail.compose scope (which covers drafts and sending) is never mixed with
 the read-only monitoring connection. Its read scope, gmail.readonly, is for
-finding bounces (outreach_delivery.py). Its gmail.modify scope is only for
-adding the student's label to outreach threads, sent mail and replies (outreach_labels.py); the
+finding bounces (outreach/delivery.py). Its gmail.modify scope is only for
+adding the student's label to outreach threads, sent mail and replies (outreach/labels.py); the
 app never uses it to remove a label, trash, archive or mark mail read.
 
 The authorized REST client, its rate limits and its health are in gmail_connection; the once-only claim ledger is in
@@ -288,7 +288,7 @@ def _draft_still_there(gmail: GmailClient, draft_id: str) -> bool:
     raise RuntimeError(f"Could not check your Gmail drafts (HTTP {response.status_code}). Nothing was sent")
 
 
-# --- Drafting and sending under a claim (send_claims.py holds the ledger) -----------
+# --- Drafting and sending under a claim (outreach/send_claims.py holds the ledger) -----------
 
 _DRAFT_VANISHED = (
     "A Gmail draft of this email is no longer in your Drafts, so it may have been sent from Gmail. "
@@ -627,7 +627,7 @@ def send_gmail_message(
 
 # --- The thank-you after a decline -------------------------------------------------
 #
-# The one email the app writes and sends on its own (outreach_thank_you.py). It
+# The one email the app writes and sends on its own (outreach/thank_you.py). It
 # answers the person who declined, in their thread: Gmail's threadId, and
 # In-Reply-To and References set to their Message-ID. Plain text with its HTML
 # twin, never an attachment. It goes out once, under the same claim as every

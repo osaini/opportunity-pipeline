@@ -54,7 +54,7 @@ GUESS_SITE = {
 
 
 def careers_mail():
-    """The site's careers@ inbox writing back: not one person, so only a possible reply (outreach_inbox.py)."""
+    """The site's careers@ inbox writing back: not one person, so only a possible reply (outreach/inbox.py)."""
     return (
         f"From: Bovi Careers <careers@bovi.test>\nTo: {ACCOUNT}\nSubject: Next steps\n"
         "MIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\n\nCould you send over your availability?\n"
@@ -235,7 +235,7 @@ class ResendAfterBounceTests(unittest.TestCase):
         self.assertIn("may have answered your earlier email", self.events(target, "send_cancelled")[-1])
         self.assertEqual(get_target(self.conn, target["id"], user_id=USER)["scheduled"], {})
 
-    # --- They may have answered the first email (outreach_inbox.py) ----------------------------
+    # --- They may have answered the first email (outreach/inbox.py) ----------------------------
 
     def test_no_resend_while_an_email_from_them_may_be_a_reply(self):
         target = self.sent_and_bounced()
@@ -275,7 +275,7 @@ class ResendAfterBounceTests(unittest.TestCase):
         self.cancelled_as_answered(target)
 
     def test_the_contact_is_not_searched_again_while_an_email_from_them_may_be_a_reply(self):
-        # The design (outreach_inbox.py, holds): every automatic step waits for the student, the
+        # The design (outreach/inbox.py, holds): every automatic step waits for the student, the
         # contact search after a bounce included; once they say it is not a reply, it runs.
         target = self.sent_and_bounced()
         self.waiting(target)

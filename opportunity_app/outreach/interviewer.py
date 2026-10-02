@@ -27,7 +27,7 @@ Who (``find_interviewer``), in this order:
   is looked up on LinkedIn until they name the person.
 
 The notes (``read_interviewer``) come from their LinkedIn profile, read through
-the student's LinkedIn test account (outreach_linkedin.py, with its account
+the student's LinkedIn test account (outreach/linkedin.py, with its account
 checks). With no profile link on file, LinkedIn is searched for their name and
 the company, and a result is used only when it is the one person whose result
 names both; several leave the choice to the student. A profile is "confirmed"

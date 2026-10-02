@@ -9,7 +9,7 @@ Two free sources, never a model:
   its footer) gives that place as an inference: it is shown as not yet checked
   and a draft does not rely on it until the student confirms it. A site whose
   pages are empty without JavaScript is rendered in a headless browser when
-  Playwright is installed (outreach_render.py).
+  Playwright is installed (outreach/render.py).
 * SEC Form D filings, which a US startup files after selling shares in a
   private round. EDGAR full-text search finds filings whose issuer has the same
   name as the target (ignoring case, punctuation, and "Inc."), and the filing

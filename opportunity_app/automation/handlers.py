@@ -1,7 +1,7 @@
 """The action types the ledger knows how to read, make and take back: stage, intent, task, status, follow-up draft,
 résumé pick and thank-you.
 
-automation.py is the ledger itself (perform, approve, undo, the switches, the breaker); each class here is what one
+automation/ledger.py is the ledger itself (perform, approve, undo, the switches, the breaker); each class here is what one
 action type does to its own records, and none of them opens a transaction. They reach into the outreach and
 application modules (a status change, a saved draft), which the ledger must not depend on, so they live here and are
 registered at startup (register(), called through bootstrap.register_all) instead of being built into the ledger's

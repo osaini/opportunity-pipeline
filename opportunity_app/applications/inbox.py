@@ -6,7 +6,7 @@ the fifth step of the inbox watcher (inbox_watcher.InboxWatcher), with the
 same Gmail connection and transport, at most one pass every ten minutes.
 
 The rules that read one message (parsing, classifying, naming the company and role, matching an application,
-reading a stated date) are in application_mail_rules.py; this module is the engine that fetches mail, keeps the
+reading a stated date) are in applications/mail_rules.py; this module is the engine that fetches mail, keeps the
 cursor and the queues, and decides what to do with what the rules find.
 
 Reading. Live mail comes from users.history.list (2 quota units a call,
@@ -1732,7 +1732,7 @@ class ApplicationDeadline(automation.HandlerBase):
 class CaptureProposal(automation.HandlerBase):
     """application.capture_proposal: an email about a role that is not tracked. Approving opens a capture draft.
 
-    The draft goes through the ordinary capture confirmation (captures.py):
+    The draft goes through the ordinary capture confirmation (opportunities/captures.py):
     nothing enters the tracker until the student checks the fields and
     confirms. Undo is not offered: the draft is the student's to confirm or
     leave, and deleting it would take away something they may have edited.

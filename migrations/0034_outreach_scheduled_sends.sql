@@ -1,5 +1,5 @@
 -- Approved outreach emails queued to go out on the recipient's next weekday
--- morning (opportunity_app/outreach_schedule.py). One row per target and kind;
+-- morning (opportunity_app/outreach/schedule.py). One row per target and kind;
 -- scheduling again replaces it.
 --
 -- fingerprint is the approved draft the student scheduled: if the words or the

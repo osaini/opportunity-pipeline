@@ -21,7 +21,7 @@ honestly: 'submitted' only when the page says it arrived; 'unconfirmed' when
 the form was sent but the page did not say so, which is never sent again
 without the student saying so; 'needs_you' and 'failed' when nothing was sent.
 A submitted form moves the company to Sent exactly as an email would, and its
-replies are read from Gmail by the company's domain (outreach_inbox.py).
+replies are read from Gmail by the company's domain (outreach/inbox.py).
 
 The worker's submissions are automatic, so the student's pause stops them: in
 the claim's own transaction, and once more just before the send button is

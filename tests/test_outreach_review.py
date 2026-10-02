@@ -146,7 +146,7 @@ class SendGateTests(unittest.TestCase):
         update_settings(self.conn, {"follow_up_review": True}, user_id=USER)
 
     def careers_writes(self, gmail_id="careers-1"):
-        """The company's shared inbox writes back: not one person, so only a possible reply (outreach_inbox.py)."""
+        """The company's shared inbox writes back: not one person, so only a possible reply (outreach/inbox.py)."""
         self.gmail.raw[gmail_id] = (
             mail("Could you send over your availability?", sender="Bovi Careers <careers@bovi.example>", subject="Next steps"),
             int(datetime.now(timezone.utc).timestamp() * 1000) + 60_000,
@@ -439,7 +439,7 @@ class SendGateTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     review_runner()
 
-    # --- An email from them that may be a reply (outreach_inbox.py) ---------------------
+    # --- An email from them that may be a reply (outreach/inbox.py) ---------------------
 
     def test_a_possible_reply_found_just_before_holds_the_follow_up_for_the_student(self):
         target = self.scheduled_follow_up()

@@ -58,7 +58,7 @@ research looked for and could not find is kept as the agent's list of gaps:
 not facts, but questions worth asking on the call.
 
 The brief is stored on the target with when and by which agent it was written,
-and when research last started. Call prep (outreach_call_prep.py) is built from
+and when research last started. Call prep (outreach/call_prep.py) is built from
 it and refreshes it first when it is missing or older than FRESH_FOR, but never
 more than once a day for one company. The Research this company button and
 ``outreach_cli research`` write it for any company.

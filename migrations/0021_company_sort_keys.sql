@@ -7,14 +7,14 @@
 -- paths therefore returned different orders for the same data, and which one a
 -- caller saw depended on whether it passed a user_id.
 --
--- PostgreSQL makes it three-way: database.py strips COLLATE NOCASE entirely
+-- PostgreSQL makes it three-way: core/database.py strips COLLATE NOCASE entirely
 -- and the server applies its own database collation.
 --
 -- So the fold is done once, in Python, and stored. Both paths then order by the
 -- same bytes on every backend. The displayed company and title are untouched.
 --
 -- Columns are added and backfilled by the Python step registered for this
--- migration in opportunity_app/schema.py, because ALTER TABLE ADD COLUMN is not
+-- migration in opportunity_app/core/schema.py, because ALTER TABLE ADD COLUMN is not
 -- idempotent and casefold is not a SQL function. Only the view is recreated
 -- here, to project the new columns.
 

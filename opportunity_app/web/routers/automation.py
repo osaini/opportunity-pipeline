@@ -28,7 +28,7 @@ from ..models.automation import (
 router = shared_router()
 
 
-# Everything the app does on its own (automation.py): the switches, the
+# Everything the app does on its own (automation/ledger.py): the switches, the
 # master pause, the ledger of what it did, its notices, and its health.
 def automation_view(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
     return {
@@ -242,7 +242,7 @@ def dismiss_employer_domain(
     return decide_employer_domain(conn, user_id, domain_id, "dismissed")
 
 
-# Update applications from job emails (application_inbox.py).
+# Update applications from job emails (applications/inbox.py).
 @router.get("/api/v1/automation/application-mail")
 def get_application_mail(
     conn: sqlite3.Connection = Depends(writable_connection),

@@ -46,7 +46,7 @@ Review of `PHASE5-SPEC.md` revision 1 (2026-09-28), producing revision 2 the sam
    to self-identify" options rule gives `"uncategorized"` unless an EEO name matched (7.3 steps 1,
    2, 4).
 5. **[major] `name.first`/`name.last`/`name.preferred` do not exist as profile facts.** Accepted
-   (verified: profile.py:16-48 has one `name` field; update_profile refuses others at :409-411).
+   (verified: student/profile.py:16-48 has one `name` field; update_profile refuses others at :409-411).
    New profile field `name_parts {first, last, preferred}` in `ALLOWED_PROFILE_FIELDS`,
    `validate_profile_types`, the profile UI ("Name for applications") and SETUP.md; mapping list,
    requirement sentence, 10.3 link and Appendix B updated (7.1, 5.6).
@@ -59,7 +59,7 @@ Review of `PHASE5-SPEC.md` revision 1 (2026-09-28), producing revision 2 the sam
    shown as "Your confirmed résumé"; `unsure` opens the chooser; the source ref is the version id
    (6.9, 7.1, truth-table rows 31 and 32).
 8. **[major] Opening the section creates an application and calls Greenhouse.** Accepted
-   (verified: actions.py:127-152). The check is read-only and asynchronous, with a one-hour schema
+   (verified: applications/actions.py:127-152). The check is read-only and asynchronous, with a one-hour schema
    cache; `apply_runs.application_id` is nullable; the application row is created only when a
    submit or handoff claim is taken. This follows the stricter finding 36 rather than "when a
    rehearsal starts" (6.0, 6.1, 5.3).
@@ -86,7 +86,7 @@ Review of `PHASE5-SPEC.md` revision 1 (2026-09-28), producing revision 2 the sam
     `matchAnswer` compares `questionKey(question)` first and the legacy label second; node test
     added (4.2, 12.5).
 14. **[major] D12 A needs the connected Gmail address, which is not stored.** Accepted (verified:
-    migrations/0001:362-374 has no address column; outreach_gmail.py:612-617 reads it live). New
+    migrations/0001:362-374 has no address column; outreach/gmail.py:612-617 reads it live). New
     `connector_accounts.account_email`, recorded at connect, added by a guarded Python step; 5.1
     no longer says "no column, no Python step"; the requirement compares the stored value
     case-insensitively (5.1, 5.6).
@@ -144,7 +144,7 @@ Review of `PHASE5-SPEC.md` revision 1 (2026-09-28), producing revision 2 the sam
     snapshotted after load; an optional field still at its initial value is allowed and listed as
     "left as the page set it"; a required one never is (6.4, 6.10 item 4).
 32. **[minor] Forward-only stage write is not done by `_update_application_tx`.** Accepted
-    (verified actions.py:567-625 re-reads but does not compare). The caller locks, re-reads and
+    (verified applications/actions.py:567-625 re-reads but does not compare). The caller locks, re-reads and
     skips unless the stage is `applying`; the unattended path uses `only_from` (6.15).
 33. **[minor] Some code references are off.** Partly. Checked each:
     - factory wiring: the spec's api.py:1036-1040 was loose, but the finding's 1044-1045 is the
@@ -152,7 +152,7 @@ Review of `PHASE5-SPEC.md` revision 1 (2026-09-28), producing revision 2 the sam
     - sidepanel.js: the spec's :82 (injection) and :212 (answer save) are correct; the finding's
       :81 is the line before, and :210 is where the `api(` call starts. Kept, with a note;
     - `discover_ats` is pipeline.py:2277 (accepted);
-    - captures.py:337 also inserts an application (accepted; schema.py:606 does too).
+    - opportunities/captures.py:337 also inserts an application (accepted; core/schema.py:606 does too).
 34. **[critical] "Nothing was sent" is claimed but not enforced.** Accepted in full: (1) submit and
     handoff abort every non-GET before hand-over except CAPTCHA hosts and the résumé upload whose
     body is the planned bytes; (2) the handoff hand-over runs inside the route handler before
@@ -219,7 +219,7 @@ Review of `PHASE5-SPEC.md` revision 1 (2026-09-28), producing revision 2 the sam
 45. **[major] D5 C reverses "demographic attributes are deliberately not collected".** Accepted.
     D5 states the reversal; EEO sub-choice (i) stores only decline answers; the consent text
     limits use to filling forms; THREAT_MODEL.md:17 and PRIVACY_ACCESSIBILITY.md:7 change in M4s;
-    a source test proves `employer.py` and reports never read the store (D5, 5.4, 12.7).
+    a source test proves `accounts/employer.py` and reports never read the store (D5, 5.4, 12.7).
 46. **[major] The loopback demo builds a real agent that can reach real Greenhouse.** Accepted:
     the loopback demo and flag are dropped; the sandbox has only the fake agent (12.2).
 47. **[minor] Screenshot masking misses react-select values.** Accepted. Masks cover the whole
@@ -264,7 +264,7 @@ Review of `PHASE5-SPEC.md` revision 1 (2026-09-28), producing revision 2 the sam
     scans uncertain attempts and tombstones for 14 days, flips a strong match to `submitted` with
     `resolved_by='email'`, and reconciles with a stage Phase 1 already moved (6.16, 12.3).
 59. **[major] Outcome and required-field decisions are only testable with Chromium.** Accepted.
-    New stdlib-only `apply_checks.py` in M3 with `decide_outcome`, `join`, `check_required` and
+    New stdlib-only `apply/checks.py` in M3 with `decide_outcome`, `join`, `check_required` and
     `clean_rehearsal`, table-tested in the default suite, including the missing rows (4.7, 12.3).
 60. **[major] Screenshot retention never runs automatically.** Accepted (verified: retention jobs
     are enqueued only from the admin route). The worker purges once per local day and sweeps
@@ -281,7 +281,7 @@ Review of `PHASE5-SPEC.md` revision 1 (2026-09-28), producing revision 2 the sam
     `tests/browser_support.py`; `test_outreach_forms.py` moves to it and is in Appendix B; lazy
     import; browser cache; required status check in M3 (12.4, 12.8).
 64. **[minor] Milestones are misordered, and M5 is oversized.** Accepted. Test-to-milestone map
-    (12.9); `REQUIRED_CHECK_SCRIPT` and the outcome detector in M3's `apply_checks.py`; the sandbox
+    (12.9); `REQUIRED_CHECK_SCRIPT` and the outcome detector in M3's `apply/checks.py`; the sandbox
     flag and fake schema client in M4; M4 limited to text, select and name answers; M5 split into
     M5a and M5b; live rehearsals moved to a post-merge rollout checklist (14).
 65. **[minor] The gate reset cannot be computed; "clean" is ambiguous.** Accepted (with 24).

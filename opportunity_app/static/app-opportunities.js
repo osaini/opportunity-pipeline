@@ -104,7 +104,7 @@
     reason.appendChild(document.createTextNode(item.reasons?.[0] || baseScoreReason()));
 
     button.append(top, title, description, meta, reason);
-    // The résumé variant picked for a saved role (resume_variants.py); changed on the role's page.
+    // The résumé variant picked for a saved role (student/resume_variants.py); changed on the role's page.
     if (item.resume_pick) button.appendChild(element("p", "card-resume", resumePickText(item.resume_pick)));
 
     const actions = element("div", "card-actions");

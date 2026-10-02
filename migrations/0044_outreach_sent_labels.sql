@@ -1,5 +1,5 @@
 -- A Gmail label on every outreach email the student sent, not only on reply
--- threads (opportunity_app/outreach_labels.py). Portable SQL: no Python step.
+-- threads (opportunity_app/outreach/labels.py). Portable SQL: no Python step.
 --
 -- outreach_label_threads: one row per Gmail thread that holds an outreach email
 -- the student sent. There is no foreign key to outreach_targets, so a deleted

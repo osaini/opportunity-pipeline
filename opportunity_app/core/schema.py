@@ -2,7 +2,7 @@
 
 ensure_product_schema applies migrations/*.sql in order. The steps that SQL alone cannot
 express (guarded column adds, backfills) are Python functions keyed by migration name. The
-connection factory lives in database.py and the legacy-data sync in legacy_sync.py.
+connection factory lives in core/database.py and the legacy-data sync in opportunities/legacy_sync.py.
 """
 
 from __future__ import annotations
@@ -182,7 +182,7 @@ _APPLICATION_MAIL_COLUMNS = (
 _apply_application_mail = _columns_step(_APPLICATION_MAIL_COLUMNS)
 
 
-# The student's own name for a résumé kept for one kind of role (resume_variants.py).
+# The student's own name for a résumé kept for one kind of role (student/resume_variants.py).
 _INTERNAL_AUTOMATION_COLUMNS = (
     ("resume_files", "variant_label", "TEXT NOT NULL DEFAULT ''"),
 )
@@ -204,7 +204,7 @@ _apply_decline_thank_you = _columns_step(_DECLINE_THANK_YOU_COLUMNS)
 # aside or is only a possible reply, the other companies that could have sent
 # it, where it sits in Gmail, and, for a reply or a possible reply, its subject,
 # its Message-ID and sender's name (to answer it in its thread), and while a
-# possible reply waits, its words (outreach_inbox.py).
+# possible reply waits, its words (outreach/inbox.py).
 _OUTREACH_REPLY_RULES_COLUMNS = (
     ("outreach_inbox_messages", "via", "TEXT NOT NULL DEFAULT ''"),
     ("outreach_inbox_messages", "rules", "INTEGER NOT NULL DEFAULT 0"),
@@ -223,7 +223,7 @@ _OUTREACH_REPLY_RULES_COLUMNS = (
 _apply_outreach_reply_rules = _columns_step(_OUTREACH_REPLY_RULES_COLUMNS)
 
 
-# Research for call prep: the company from the web (outreach_research.py), and the interviewer.
+# Research for call prep: the company from the web (outreach/research.py), and the interviewer.
 _TECH_BRIEF_COLUMNS = (
     ("outreach_targets", "tech_brief_json", "TEXT NOT NULL DEFAULT '{}'"),
     ("outreach_targets", "tech_brief_at", "TEXT"),
@@ -231,7 +231,7 @@ _TECH_BRIEF_COLUMNS = (
     ("outreach_targets", "tech_brief_error", "TEXT NOT NULL DEFAULT ''"),
     ("outreach_targets", "tech_brief_tried_at", "TEXT"),
     ("outreach_targets", "tech_brief_job_id", "TEXT"),
-    # Who the call is with and notes from their LinkedIn (outreach_interviewer.py);
+    # Who the call is with and notes from their LinkedIn (outreach/interviewer.py);
     # the student's own entry for who it is, and their profile link.
     ("outreach_targets", "interviewer_json", "TEXT NOT NULL DEFAULT '{}'"),
     ("outreach_targets", "interviewer_at", "TEXT"),
@@ -244,7 +244,7 @@ _TECH_BRIEF_COLUMNS = (
 _apply_tech_brief = _columns_step(_TECH_BRIEF_COLUMNS)
 
 
-# The Gmail label a reply carries (outreach_labels.py), and which account the
+# The Gmail label a reply carries (outreach/labels.py), and which account the
 # Gmail connection signed into.
 _GMAIL_REPLY_LABELS_COLUMNS = (
     ("outreach_inbox_messages", "label_name", "TEXT NOT NULL DEFAULT ''"),
@@ -256,7 +256,7 @@ _GMAIL_REPLY_LABELS_COLUMNS = (
 _apply_gmail_reply_labels = _columns_step(_GMAIL_REPLY_LABELS_COLUMNS)
 
 
-# Apply for me (apply_runs.py): whether a job email's sender was vouched for, and
+# Apply for me (apply/runs.py): whether a job email's sender was vouched for, and
 # the hash of the approved text a generated PDF was rendered from. The Gmail
 # address the app reads is connector_accounts.account_email, added by 0043.
 _APPLY_AGENT_COLUMNS = (

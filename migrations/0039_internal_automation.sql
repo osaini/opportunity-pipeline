@@ -1,5 +1,5 @@
 -- Reversible internal automation: résumé variants and the pick for each saved
--- role (opportunity_app/resume_variants.py).
+-- role (opportunity_app/student/resume_variants.py).
 --
 -- The column this migration adds to an existing table (resume_files.variant_label,
 -- the student's own name for a résumé they keep for one kind of role, '' for

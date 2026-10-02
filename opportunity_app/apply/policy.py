@@ -18,7 +18,7 @@ the student saved (only when the question is word for word the same and it was s
 answer never travels to another company here, whatever tag it carries), an exact option label the student
 confirmed, and the résumé or cover letter for the role.
 Sensitive answers come from one function, ``stored_sensitive_answer``, which reads the store the student
-filled in on purpose (apply_sensitive.py) and nothing else. Nothing is ever guessed: no fuzzy match, no first
+filled in on purpose (apply/sensitive.py) and nothing else. Nothing is ever guessed: no fuzzy match, no first
 option, no label regex.
 
 The value of a field is held in the plan in memory only. What is stored and hashed is a keyed MAC of it.

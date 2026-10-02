@@ -1,7 +1,7 @@
 """Reading one person's LinkedIn profile, through the student's own LinkedIn test account.
 
 Call prep reads the interviewer's profile so the student can ask about the
-interviewer's own path (outreach_interviewer.py). LinkedIn is behind a login,
+interviewer's own path (outreach/interviewer.py). LinkedIn is behind a login,
 so this goes through ``mcp-server-linkedin`` run by ``mcporter``, signed in as
 an account the student set up for this (SETUP.md step 7b, Call prep),
 never the account in their everyday browser. Every read checks, first:

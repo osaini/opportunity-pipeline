@@ -1,4 +1,4 @@
-"""Apply for me's data layer (apply_runs.py, migration 0045): claims and their two locks, retry, hand-over, heartbeat,
+"""Apply for me's data layer (apply/runs.py, migration 0045): claims and their two locks, retry, hand-over, heartbeat,
 recovery, limits, the rehearsal gate, the readers that learn about claims, the worker step, retention, deletion, export.
 
 No browser and nothing that reaches a network: every company, board and posting here is fictional.

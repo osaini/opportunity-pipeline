@@ -1,7 +1,7 @@
 """Render company pages that build their text with JavaScript, for the location check.
 
 Some startup sites send an empty shell and fill it in with JavaScript, so the
-plain fetcher in outreach_contacts.py reads nothing from them. This loads such a
+plain fetcher in outreach/contacts.py reads nothing from them. This loads such a
 page in headless Chromium through Playwright, which is optional: without it, or
 without its browser, the location check just has fewer pages to read.
 

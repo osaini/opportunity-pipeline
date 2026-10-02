@@ -1,8 +1,8 @@
 """The quote check: is a fact's quote on the page it cites, and does the page support what the fact says.
 
-The engine behind company research (outreach_research.py), the interviewer's
-profile notes (outreach_interviewer.py) and the call-prep line check
-(outreach_call_prep.py). It knows nothing about jobs, agents or stored briefs.
+The engine behind company research (outreach/research.py), the interviewer's
+profile notes (outreach/interviewer.py) and the call-prep line check
+(outreach/call_prep.py). It knows nothing about jobs, agents or stored briefs.
 Given a research agent's reply and the web it cites, ``check_brief`` keeps the
 facts their pages back up, in two steps:
 
@@ -17,7 +17,7 @@ facts their pages back up, in two steps:
 
 The limits (MAX_PROPOSALS, MAX_PAGES, MAX_RENDERS, FETCH_SECONDS, CHECK_SECONDS,
 JUDGE_BATCH and the rest) are this module's: a test that changes one patches it
-here. outreach_research.py's module docstring tells the whole story, from the
+here. outreach/research.py's module docstring tells the whole story, from the
 agent's prompt to the stored brief.
 """
 

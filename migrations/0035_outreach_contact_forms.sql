@@ -1,5 +1,5 @@
 -- The contact form on a company's own site, for companies that publish no
--- email address (opportunity_app/outreach_forms.py). One row per target.
+-- email address (opportunity_app/outreach/forms.py). One row per target.
 --
 -- page_url is the company page that holds the form, found by the same crawl
 -- that looks for addresses. fields_json is what the plain HTML showed (labels,

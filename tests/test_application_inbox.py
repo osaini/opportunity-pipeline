@@ -1,4 +1,4 @@
-"""Application mail: job-system emails read from Gmail, matched, then acted on or proposed (application_inbox.py).
+"""Application mail: job-system emails read from Gmail, matched, then acted on or proposed (applications/inbox.py).
 
 Every company, address and message here is invented. Gmail is FakeGmail from
 test_outreach_gmail, taught users.history.list and a historyId on the profile.

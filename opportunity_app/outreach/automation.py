@@ -12,9 +12,9 @@
   and a guessed address has an inbox from the company's site in Cc
   (resend_refusal). Once per company.
 - scheduled_sending: the student's confirmed Send queues the approved email
-  for the recipient's next weekday morning (outreach_schedule.py).
+  for the recipient's next weekday morning (outreach/schedule.py).
 - form_submission: a company with no email but a contact form on its site
-  gets its approved first message sent through that form (outreach_forms.py),
+  gets its approved first message sent through that form (outreach/forms.py),
   once. A form that asks for a picture CAPTCHA or a field the app cannot
   answer waits for the student.
 

@@ -2,7 +2,7 @@
 
 Both are suggestions the student confirms before anything changes, with one
 exception: when the student turns on "Update applications from job emails"
-(application_inbox.py), an application email may be acted on without asking,
+(applications/inbox.py), an application email may be acted on without asking,
 and a Jev answer counts toward that only when it agrees with the rules.
 
 - the status a reply to a cold email points to (outreach.log_reply, and the

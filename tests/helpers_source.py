@@ -128,7 +128,7 @@ def is_apply_module(relative, exclude_store=False):
 
     That is a file named `apply*.py` or any file inside a directory named `apply*`, wherever it sits: opportunity_app/apply_x.py,
     opportunity_app/apply/x.py, opportunity_app/routers/apply_x.py or opportunity_app/routers/apply/x.py. `exclude_store` leaves
-    out the sensitive-answer store's own module: apply_sensitive.py, an apply_sensitive/ package, or apply*/sensitive.py.
+    out the sensitive-answer store's own module: apply/sensitive.py, an apply_sensitive/ package, or apply*/sensitive.py.
     """
     parts = relative.split("/")
     if not any(part.startswith("apply") for part in parts):

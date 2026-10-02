@@ -4,7 +4,7 @@ All defects originally pinned here are fixed. Their tests remain live so a
 regression fails the build directly; there are no ``expectedFailure`` markers.
 
 Status:
-  * ReadOnlyTokenResolutionTests — FIXED 2026-08-23 (auth.py:147 now catches
+  * ReadOnlyTokenResolutionTests — FIXED 2026-08-23 (accounts/auth.py:147 now catches
     broadly); the tests are live regression guards.
   * CliProviderErrorBoundaryTests — FIXED 2026-08-23; the test is a live
     regression guard.

@@ -1,4 +1,4 @@
-"""Application mail (application_inbox.py) and internal automation (internal_automation.py and friends) together.
+"""Application mail (applications/inbox.py) and internal automation (automation/internal.py and friends) together.
 
 Both register into the one automation registry (bootstrap.register_all, called as the app starts) and write the one
 ledger. These tests pin what they share: the switches and their groups, the action types, that each switch has its own

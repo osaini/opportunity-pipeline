@@ -13,13 +13,13 @@ the questions in mind:
 - ASK, in call order: questions that get the interviewer talking (rapport,
   their own story, then the product, including where its design came from and
   how customers compare it with others), then the student's standing questions
-  in their own words (outreach_call_questions.py). A standing question may gain
+  in their own words (outreach/call_questions.py). A standing question may gain
   a hook from the research ("I read the seed is going into scaling production
   in Texas") and a sharper ask; its lead-in is never reworded. Each line names
   what it builds on, and each standing question what to have ready.
 - TALKING POINTS: the results the sent email led with, each with where it lands
   for this company ("→ scaling their production").
-- KNOW: who they are talking to and their path (outreach_interviewer.py), a
+- KNOW: who they are talking to and their path (outreach/interviewer.py), a
   marked reading of the company (its ideal customer, what sets it apart, what
   makes that possible, where it is heading), the research behind it, and what
   the web does not say.
@@ -36,7 +36,7 @@ nothing stored about the other one. LinkedIn notes from a profile that never
 named the company are printed and listed marked "(profile not confirmed as
 them)".
 
-The company side comes from the research (outreach_research.py), each fact
+The company side comes from the research (outreach/research.py), each fact
 confirmed on the page it cites, printed as the research kept it with a numbered
 source, never rewritten by a model. A fact from the company's own site that
 turned the check away is printed marked (not checked). With no research yet,
@@ -1042,11 +1042,11 @@ class CallPrepWorker(PollingWorker):
     call fails, as one cut off by a sleeping laptop does, is retried by the
     queue with backoff; the thread polls, so a retry runs soon after it is due.
 
-    ``researcher`` researches a company from the web (outreach_research.py).
+    ``researcher`` researches a company from the web (outreach/research.py).
     A call prep job runs it first when the company's brief is missing or
     stale; without one, call prep uses whatever research is on file.
     ``interviewer`` finds who the call is with and reads their LinkedIn
-    (outreach_interviewer.py), when interviewer_due says so.
+    (outreach/interviewer.py), when interviewer_due says so.
     """
 
     thread_name = "call-prep-worker"

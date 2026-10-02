@@ -1,4 +1,4 @@
-"""The lock a daily run holds, shared by the scheduled run (daily.py) and a manual refresh (refresh.py).
+"""The lock a daily run holds, shared by the scheduled run (daily.py) and a manual refresh (opportunities/refresh.py).
 
 Standard library only, with ROOT from the package, so the scheduled run that exits at once does not load the
 pipeline and the automation stack to take a lock.

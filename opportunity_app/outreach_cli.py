@@ -8,11 +8,11 @@
     python -m opportunity_app.outreach_cli enrich [--all] [--force] [--limit 20] [--no-sec] [--no-render]
     python -m opportunity_app.outreach_cli remind
 
-``discover`` runs the deep search (see outreach_discovery.py), one search per
+``discover`` runs the deep search (see outreach/discovery.py), one search per
 scope with up to --max companies each. With --dry-run it
 only writes a timestamped data/outreach-discovered-<date>-<time>-<run>-dry-run.json report and changes no rows.
 ``enrich`` fills in where each company is based, from its own site and its SEC
-Form D filings (see outreach_profile.py), for targets with no sourced location
+Form D filings (see outreach/company_profile.py), for targets with no sourced location
 or no Form D lookup yet. --all rechecks every target not checked in 30 days,
 --force ignores the 30 days. A location you typed is never changed. Form D
 lookups need PIPELINE_SEC_USER_AGENT ("Your Name you@example.com") in .env.
@@ -21,11 +21,11 @@ Playwright is installed (requirements-optional.txt); --no-render skips that.
 ``locate`` searches the web for the companies neither their site nor a filing
 placed, through the same headless CLI the deep search uses. Python opens the
 page the search cites and keeps the location only when that page loads, names
-the company, and states the place (see outreach_locate.py). A deep search runs
+the company, and states the place (see outreach/locate.py). A deep search runs
 this for its new companies too.
 ``research`` reads the web for each company: what they build and how it
 works, what they build it with, who built it, and where the company stands (see
-outreach_research.py). A fact is kept only when its quote is found on the page
+outreach/research.py). A fact is kept only when its quote is found on the page
 it cites and it says no more than the quote and the lines around it. By default
 it researches the companies that replied and have no research from the last 30
 days, which call prep does on its own too; --all covers every tracked company,
@@ -33,7 +33,7 @@ and --target names some. Each company is one run of the research CLI, a few
 minutes apiece.
 ``recontact`` looks again for a person to write to at targets that have only a
 shared inbox or no address, and are not sent or approved (see
-outreach_recontact.py): it re-reads their site, asks the mail server about
+outreach/recontact.py): it re-reads their site, asks the mail server about
 guesses, and searches other sites. It reports what it would change; --apply
 makes the change and --redraft rewrites unapproved drafts for the new recipient.
 Guesses go to the mail server unless PIPELINE_OUTREACH_SMTP_VERIFY=0; this sends

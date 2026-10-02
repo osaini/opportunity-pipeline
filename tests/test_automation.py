@@ -615,7 +615,7 @@ class AtomicityTests(AutomationCase):
         self.assertEqual(count(), interactions)
 
 
-# --- The transaction refactor in actions.py -----------------------------------------------------
+# --- The transaction refactor in applications/actions.py -----------------------------------------------------
 
 
 class ActionsTests(AutomationCase):

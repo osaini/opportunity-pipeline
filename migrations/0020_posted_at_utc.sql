@@ -12,7 +12,7 @@
 -- would invent an offset the source never gave.
 --
 -- The column is added and backfilled by the Python step registered for this
--- migration in opportunity_app/schema.py; ALTER TABLE ADD COLUMN is not
+-- migration in opportunity_app/core/schema.py; ALTER TABLE ADD COLUMN is not
 -- idempotent, and the backfill has to parse timestamps, which SQL cannot do
 -- portably across SQLite and PostgreSQL. Only the view is recreated here.
 

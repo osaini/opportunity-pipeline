@@ -159,7 +159,7 @@
     host.replaceChildren(cards, metadata, element("p", "score-note", result.notice), disclosure);
   }
 
-  // Which of the student's résumés goes with a role (resume_variants.py).
+  // Which of the student's résumés goes with a role (student/resume_variants.py).
   function resumePickText(pick) {
     if (!pick) return "";
     const label = pick.label || "your résumé";

@@ -1,4 +1,4 @@
--- One-word industry tags per company (opportunity_app/company_tags.py).
+-- One-word industry tags per company (opportunity_app/core/company_tags.py).
 --
 -- company_tags holds the automatic tags, rebuilt from the postings on every
 -- sync; `evidence` says which words each one was inferred from, so the UI can
@@ -8,7 +8,7 @@
 --
 -- company_tag_choices holds one student's own edits, and survives every
 -- rebuild: 'removed' hides an automatic tag, 'added' adds one of their own.
--- The Python step registered in schema.py backfills tags for existing data.
+-- The Python step registered in core/schema.py backfills tags for existing data.
 CREATE TABLE IF NOT EXISTS company_tags (
     company_key TEXT NOT NULL,
     tag TEXT NOT NULL,

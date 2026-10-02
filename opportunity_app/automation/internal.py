@@ -3,7 +3,7 @@
 - application_silence: an application still at Applied N days after the
   student applied gets an Urgent row ("No reply yet"). N is the profile's
   application_follow_up_days (default 21). The row is derived each time the
-  queue is read (urgent.py); nothing is written, so there is nothing to undo.
+  queue is read (applications/urgent.py); nothing is written, so there is nothing to undo.
   While "Update applications from job emails" (application_mail) is on, a
   job email linked to the application that says something happened (a
   confirmation, an invitation, a scheduling link, an assessment, a deadline,

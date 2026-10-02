@@ -1,7 +1,7 @@
 """Where a company is based, from a web search, for the ones nothing else places.
 
 The company's own site and its Form D filings settle most locations
-(outreach_profile.py). What is left is usually a site that states its city
+(outreach/company_profile.py). What is left is usually a site that states its city
 nowhere and a company too young or too private to have filed: a plain search
 finds those in one result, on a YC or accelerator page, a funding announcement,
 or a news story.

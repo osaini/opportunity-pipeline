@@ -14,7 +14,7 @@ with the reason and never imported. Accepted companies are added (never
 overwriting an existing target), their own sites are searched for published
 contacts, and a draft is generated when a confirmed address turns up. The
 same crawl, and an SEC Form D lookup when one is configured, record where the
-company is based with the page or filing that says so (outreach_profile.py).
+company is based with the page or filing that says so (outreach/company_profile.py).
 Every draft still waits for the student's approval; nothing is sent.
 
 A company is never proposed twice: tracked companies, companies the student
@@ -442,9 +442,9 @@ def run_discovery(
     """Run one search per scope and import what passes the checks. max_targets is per scope.
 
     locate_runner, when given, searches the web for the new companies their own
-    sites and EDGAR did not place (outreach_locate.py). email_runner, when given,
+    sites and EDGAR did not place (outreach/locate.py). email_runner, when given,
     searches other sites for a person's address at the new companies whose own
-    site gave no confirmed one (outreach_email_search.py), before any draft is
+    site gave no confirmed one (outreach/email_search.py), before any draft is
     written. verifier puts guessed addresses to the mail server (integrations/smtp_probe.py).
     """
     scopes = [scope for scope in (scopes or DEFAULT_SCOPES) if scope in SCOPES]

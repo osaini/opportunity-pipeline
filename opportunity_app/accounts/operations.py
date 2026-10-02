@@ -1,4 +1,4 @@
-"""Production operations: durable jobs, retention, and account portability (backups.py holds the encrypted backups)."""
+"""Production operations: durable jobs, retention, and account portability (accounts/backups.py holds the encrypted backups)."""
 
 from __future__ import annotations
 

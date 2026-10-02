@@ -194,7 +194,7 @@ NO_ACCOUNT = (
     "PIPELINE_OUTREACH_ACCOUNT is not set, so their reply could not be confirmed as addressed to you and it was "
     "not sent automatically"
 )
-# An email from the company that may be a reply (outreach_inbox.py) waits for the student: it may say more than no.
+# An email from the company that may be a reply (outreach/inbox.py) waits for the student: it may say more than no.
 MAY_HAVE_REPLIED = "An email from them that may be a reply is waiting for you to check, so the thank-you was held"
 EDITED = "You chose to edit it yourself, so it went to your Gmail Drafts and was not sent automatically"
 STUCK_SENDING = "The app stopped while sending this. Check your Gmail Sent folder before sending it again"

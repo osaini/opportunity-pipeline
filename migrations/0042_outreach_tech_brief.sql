@@ -1,4 +1,4 @@
--- Technical research on a company, from the web (opportunity_app/outreach_research.py):
+-- Technical research on a company, from the web (opportunity_app/outreach/research.py):
 -- what they build and how it works, what they build it with, who built it,
 -- and where the company stands, each fact tied to the page that states it.
 --

@@ -2,8 +2,8 @@
 
 Gmail's connection state, how each background step last went, what is in flight or unconfirmed, what the circuit
 breaker turned off, what the app just did on its own, and the paused banner, in one read (health_summary). All of it
-reads the ledger, the notices and the settings that automation.py writes; nothing here changes how automation acts.
-The writes that feed it (record_health, notice) stay in automation.py beside the ledger and the breaker.
+reads the ledger, the notices and the settings that automation/ledger.py writes; nothing here changes how automation acts.
+The writes that feed it (record_health, notice) stay in automation/ledger.py beside the ledger and the breaker.
 """
 
 from __future__ import annotations

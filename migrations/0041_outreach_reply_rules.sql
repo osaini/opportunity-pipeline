@@ -1,5 +1,5 @@
 -- Replies from someone other than the address the student wrote to
--- (opportunity_app/outreach_inbox.py).
+-- (opportunity_app/outreach/inbox.py).
 --
 -- A fresh email from a person at the company's domain is now a reply, and one
 -- from a shared or automated address there (careers@, noreply@) is a possible

@@ -52,8 +52,8 @@ claiming the action (_claim). On SQLite that first write takes the database's
 write lock; on PostgreSQL the handlers' reads also lock the rows they read
 (for_update_clause), so what was read is still true when the change is written.
 
-What is in here and what is not. The action types' handlers are in automation_handlers.py, and the views of the
-ledger's health (the banner, Gmail's state, what the breaker turned off) in automation_health.py. Both import this module,
+What is in here and what is not. The action types' handlers are in automation/handlers.py, and the views of the
+ledger's health (the banner, Gmail's state, what the breaker turned off) in automation/health.py. Both import this module,
 and neither is imported by it: the handlers are registered at startup (bootstrap.register_all), like the corrections,
 breaker groupings and feature requirements the other modules hand in.
 """
@@ -170,7 +170,7 @@ FEATURES: dict[str, Feature] = {
         Feature("form_submission", "Send through contact forms",
                 "Send approved first messages through the company's contact form when it has no email", "outreach", "external"),
         # Phase 6 (preliminary): the one email the app writes and sends on its own. No shadow, as the
-        # student chose: it is off until they turn it on, and needs Jev and the sending address (REQUIREMENTS). outreach_thank_you.py.
+        # student chose: it is off until they turn it on, and needs Jev and the sending address (REQUIREMENTS). outreach/thank_you.py.
         Feature("decline_thank_you", "Send a thank-you when someone declines",
                 "When a contact replies with a plain no, and both the rules and Jev read it that way, send a short "
                 "thank-you in the same thread. It goes out after a normal delay before 5pm their time, otherwise the "
@@ -182,7 +182,7 @@ FEATURES: dict[str, Feature] = {
         Feature("desktop_notifications", "Show automation notices as desktop pop-ups",
                 "Show each automation notice as a pop-up on this computer, without any email text or links", "notifications", "internal"),
         # The first feature that changes application records from what an email means,
-        # so it runs in shadow before it may act (application_inbox.py).
+        # so it runs in shadow before it may act (applications/inbox.py).
         Feature("application_mail", "Update applications from job emails",
                 "Reads job-system and assessment emails in Gmail, moves an application forward when an email clearly "
                 "confirms, rejects or invites, and adds tasks and deadlines. Anything unclear waits for you",
@@ -192,8 +192,8 @@ FEATURES: dict[str, Feature] = {
         Feature("apply_agent", "Apply for me",
                 "Fill a Greenhouse application from your confirmed facts and saved answers, show you the result, and send it only "
                 "when you press Submit", "applications", "external"),
-        # Phase 2: changes that stay inside the app, each with an Undo (resume_variants.py,
-        # internal_automation.py, auto_triage.py).
+        # Phase 2: changes that stay inside the app, each with an Undo (student/resume_variants.py,
+        # automation/internal.py, automation/triage.py).
         Feature("outreach_auto_close", "Close companies that never answered",
                 "Mark a company No response once 14 days have passed since its follow-up with no reply, after checking "
                 "Gmail once more. A company Gmail can't search for, such as one you messaged on LinkedIn, is left for "

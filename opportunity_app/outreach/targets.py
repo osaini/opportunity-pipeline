@@ -355,7 +355,7 @@ def _record(
     item["source_urls"] = json.loads(item.pop("source_urls_json") or "[]")
     # The latest reply found in Gmail, and how it was matched to the company; None when none was.
     item["gmail_reply"] = gmail_reply
-    # Emails from the company that may be replies, waiting for the student to say (outreach_inbox.py).
+    # Emails from the company that may be replies, waiting for the student to say (outreach/inbox.py).
     item["possible_replies"] = list(possible or [])
     item["possible_reply_count"] = len(item["possible_replies"])
     draft_claims_json = item.pop("draft_claims_json", None) or "[]"
@@ -371,7 +371,7 @@ def _record(
         "attempts": int(item.pop("call_prep_job_attempts", None) or 0),
     }
     item["call_prep_job"] = job if job_state else None
-    # Technical research from the web (outreach_research.py), and the job writing it.
+    # Technical research from the web (outreach/research.py), and the job writing it.
     item["tech_brief"] = json.loads(item.pop("tech_brief_json", None) or "{}")
     item["interviewer"] = json.loads(item.pop("interviewer_json", None) or "{}")
     brief_state = item.pop("tech_brief_job_state", None)
@@ -383,7 +383,7 @@ def _record(
     }
     item["tech_brief_job"] = brief_job if brief_state else None
     item["reply_count"] = int(item.get("reply_count") or 0)
-    # The contact form on the company's site, for a company with no email (outreach_forms.py).
+    # The contact form on the company's site, for a company with no email (outreach/forms.py).
     form = {column: item.pop(f"contact_form_{column}", None) for column in CONTACT_FORM_COLUMNS}
     item["contact_form"] = {**form, "accepts_file": bool(form["accepts_file"])} if form["page_url"] else None
     if item.get("research_confidence") == "confirmed":
@@ -451,7 +451,7 @@ def heard_back(item: dict[str, Any]) -> bool:
 
 POSSIBLE_REPLY_PREVIEW = 400
 def _possible_replies(conn: sqlite3.Connection, user_id: str, target_id: str | None = None) -> dict[str, list[dict[str, Any]]]:
-    """Emails that may be replies, by target, oldest first, as the card shows them (outreach_inbox.py keeps them).
+    """Emails that may be replies, by target, oldest first, as the card shows them (outreach/inbox.py keeps them).
 
     One that more than one company could have sent is listed for each of them
     (candidates_json), so it holds all of them until the student says.
@@ -494,7 +494,7 @@ def _possible_replies(conn: sqlite3.Connection, user_id: str, target_id: str | N
 
 
 def _gmail_replies(conn: sqlite3.Connection, user_id: str, target_id: str | None = None) -> dict[str, dict[str, Any]]:
-    """Each company's latest reply found in Gmail, with how it was matched to the company (outreach_inbox.py)."""
+    """Each company's latest reply found in Gmail, with how it was matched to the company (outreach/inbox.py)."""
     sql = (
         "SELECT target_id, sender, received_at, reason, via FROM outreach_inbox_messages "
         "WHERE user_id=? AND kind='reply' AND reason<>''"
@@ -593,7 +593,7 @@ def _apply_status_side_effects(values: dict[str, Any], previous: dict[str, Any] 
 
 
 def _schedules(conn: sqlite3.Connection, user_id: str, target_id: str | None = None) -> dict[str, dict[str, Any]]:
-    """Scheduled sends still to report on (outreach_schedule.py), by target and kind."""
+    """Scheduled sends still to report on (outreach/schedule.py), by target and kind."""
     sql = (
         "SELECT target_id, kind, send_at, label, state, error FROM outreach_scheduled_sends "
         "WHERE user_id=? AND state IN ('scheduled', 'sending', 'transmitting', 'failed')"
@@ -624,7 +624,7 @@ def _thank_you_hold(conn: sqlite3.Connection, user_id: str) -> str:
 
 
 def _thank_yous(conn: sqlite3.Connection, user_id: str, target_id: str | None = None) -> dict[str, dict[str, Any]]:
-    """The thank-you after a decline each company has (outreach_thank_you.py), as its card shows it.
+    """The thank-you after a decline each company has (outreach/thank_you.py), as its card shows it.
 
     While it waits, when it goes and why it moved come from its scheduled send,
     which a pause, a missed morning, or a Gmail hold can move. Once sent, its
@@ -1507,7 +1507,7 @@ def log_reply(
         log_event(conn, target_id, user_id, "reply_logged", detail=body, data={"source": "pasted", "readings": readings})
         # They wrote again: a thank-you after their earlier decline that has not gone stops now.
         outreach_callbacks.on_new_reply(conn, target_id, user_id)
-        # A pasted reply that is an email waiting as a possible reply (outreach_inbox.py) settles it:
+        # A pasted reply that is an email waiting as a possible reply (outreach/inbox.py) settles it:
         # it is their reply, and it is not asked about again or logged twice. The event stays "pasted":
         # the student logged it themselves, so nothing automatic answers it either.
         for row in conn.execute(

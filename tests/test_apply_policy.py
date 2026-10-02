@@ -1,4 +1,4 @@
-"""Apply for me's policy (apply_policy.py, apply_preflight.py): what may fill each field, and from where.
+"""Apply for me's policy (apply/policy.py, apply/preflight.py): what may fill each field, and from where.
 
 No browser and no network. Every company, board and posting here is fictional. The eligibility truth table of
 docs/phase5-apply-agent-spec.md 7.5 is run row by row: the pure rows through ``build_plan``, the rows that read

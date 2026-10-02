@@ -142,7 +142,7 @@ class UrgentFixture(unittest.TestCase):
         self.conn.commit()
 
     def capture(self, opportunity_id: str, *, owner: str, capture_id: str, deadline: str | None = None) -> None:
-        """Seed a confirmed manual capture the way captures.py stores one."""
+        """Seed a confirmed manual capture the way opportunities/captures.py stores one."""
         self.posting(opportunity_id, deadline=deadline)
         self.conn.execute(
             """INSERT INTO opportunity_sources(opportunity_id, source_key, source_name, external_id, source_url,

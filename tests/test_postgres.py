@@ -88,7 +88,7 @@ class PostgresContractTests(unittest.TestCase):
     def test_every_sort_matches_sqlite_on_the_same_data(self):
         """The read model's ordering must not depend on the backend.
 
-        database.py translates SQL by string substitution -- it rewrites `?` and
+        core/database.py translates SQL by string substitution -- it rewrites `?` and
         deletes one exact spelling of COLLATE NOCASE -- so nothing guarantees
         that a query ordering one way on SQLite orders the same way on
         PostgreSQL. NULL ordering differs between them by default, and text
@@ -303,7 +303,7 @@ class PostgresContractTests(unittest.TestCase):
 
 @unittest.skipUnless(POSTGRES_TEST_URL, "POSTGRES_TEST_URL is not configured")
 class PostgresAutomationContractTests(unittest.TestCase):
-    """The automation ledger, the pause, and Health on PostgreSQL (migration 0037, automation.py).
+    """The automation ledger, the pause, and Health on PostgreSQL (migration 0037, automation/ledger.py).
 
     Their PostgreSQL-only paths (pause_guard's FOR SHARE, the handlers' FOR
     UPDATE, IS NOT DISTINCT FROM, the Python migration step) run nowhere
@@ -743,7 +743,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
         self.conn.commit()
         self.assertEqual(stored["state"], "cancelled")
 
-    # --- Replies from other addresses (migration 0041, outreach_inbox.py) -------------------------
+    # --- Replies from other addresses (migration 0041, outreach/inbox.py) -------------------------
 
     def test_migration_0041_applies_and_a_rerun_repairs_a_half_applied_upgrade(self):
         from opportunity_app.outreach import inbox as outreach_inbox
@@ -837,7 +837,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
                                                      text="Could you send your availability?"))
         self.assertEqual(self.inbox_row("careers-1")["text"], "Could you send your availability?")
 
-    # --- The reply label (migration 0043, outreach_labels.py) and read-only connections -----------
+    # --- The reply label (migration 0043, outreach/labels.py) and read-only connections -----------
 
     def test_migration_0043_applies_and_a_rerun_repairs_a_half_applied_upgrade(self):
         self.assertEqual({(table, column) for table, column, _definition in schema._GMAIL_REPLY_LABELS_COLUMNS},
@@ -1250,7 +1250,7 @@ APPLY_LOCKS = ("ux_submit_claims_live_application", "ux_submit_claims_live_job")
 
 @unittest.skipUnless(POSTGRES_TEST_URL, "POSTGRES_TEST_URL is not configured")
 class PostgresApplyContractTests(unittest.TestCase):
-    """Apply for me's claims, their two partial unique indexes, the hand-over and recovery on PostgreSQL (migration 0045, apply_runs.py).
+    """Apply for me's claims, their two partial unique indexes, the hand-over and recovery on PostgreSQL (migration 0045, apply/runs.py).
 
     The locks (a transaction that starts with an UPDATE of the student's users row, the partial unique
     indexes, FOR UPDATE on the claim) are what make one attempt per application and per job hold across

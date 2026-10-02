@@ -136,12 +136,12 @@ LEAVES: dict[str, tuple[set[str], set[str]]] = {
     "opportunity_app/__init__.py": (set(), set()),
     # Storage over outreach, not a pure leaf: it may import only outreach and the clock.
     "opportunity_app/outreach/versions.py": (dotted("outreach.targets", "core.timestamps"), set()),
-    # Split out of outreach.py. Replies is pure text rules; location and greeting read the student's profile (the owner's
+    # Split out of outreach/targets.py. Replies is pure text rules; location and greeting read the student's profile (the owner's
     # file, or another user's confirmed facts through preparation, which is imported where used).
     "opportunity_app/outreach/replies.py": (set(), set()),
     "opportunity_app/outreach/location.py": (dotted("opportunities.legacy", "core.schema"), dotted("student.preparation")),
     "opportunity_app/outreach/greeting.py": (dotted("outreach.identity", "outreach.location", "core.schema"), dotted("student.preparation")),
-    # Split out of outreach_gmail.py. The claim ledger needs only the process id, the unique-violation test and the clock, so
+    # Split out of outreach/gmail.py. The claim ledger needs only the process id, the unique-violation test and the clock, so
     # the contact-form submitter and the thank-you recovery can hold claims without loading the Gmail REST client.
     "opportunity_app/outreach/send_claims.py": ({f"{PACKAGE}.SERVER_INSTANCE", *dotted("core.database", "core.timestamps")}, set()),
 }

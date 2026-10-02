@@ -9,7 +9,7 @@
 -- their Sent (and Drafts) folders before the app sends anything else.
 -- instance is the server process that holds the row, so a row left behind by
 -- a process that died is told apart from one whose request is still running
--- (opportunity_app/outreach_gmail.py).
+-- (opportunity_app/outreach/gmail.py).
 CREATE TABLE IF NOT EXISTS outreach_send_claims (
     target_id TEXT NOT NULL REFERENCES outreach_targets(id) ON DELETE CASCADE,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

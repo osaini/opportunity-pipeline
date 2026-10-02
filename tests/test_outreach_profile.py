@@ -181,7 +181,7 @@ class CompanyDedupeTests(ProfileTestCase):
 
 
 class DeletedCompanyMailTests(ProfileTestCase):
-    """Deleting a company settles the emails that waited as its possible replies (outreach_inbox.py), and only those."""
+    """Deleting a company settles the emails that waited as its possible replies (outreach/inbox.py), and only those."""
 
     WORDS = "Thanks for writing. Could you send your resume?"
 

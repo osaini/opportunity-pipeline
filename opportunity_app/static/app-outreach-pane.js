@@ -436,7 +436,7 @@
     return line;
   }
 
-  // Who the call is with (outreach_interviewer.py): found in your inbox, or
+  // Who the call is with (outreach/interviewer.py): found in your inbox, or
   // named here. A name or LinkedIn link typed here wins, and the next call prep
   // looks them up again.
   function outreachInterviewer(item) {
@@ -798,7 +798,7 @@
     return section;
   }
 
-  // Emails from the company that may be replies (outreach_inbox.py). Not
+  // Emails from the company that may be replies (outreach/inbox.py). Not
   // counted until the student says; follow-ups and closing as No response wait.
   function outreachPossibleReplies(item) {
     const waiting = item.possible_replies || [];
@@ -869,7 +869,7 @@
     return box;
   }
 
-  // Research from the web (outreach_research.py). Every fact's quote was found
+  // Research from the web (outreach/research.py). Every fact's quote was found
   // on the page it cites, and the fact says no more than the quote and the
   // lines around it; one from the company's own site that turned the check away
   // is kept but says it was not checked.
@@ -1408,7 +1408,7 @@
     const formNote = (automatic) => `They publish no email, so this goes through the contact form on their site, as you. Approving it unlocks Send through contact form, which asks you to confirm first${automatic}.`;
     const sendNote = element("p", "outreach-note");
     if (!item.contact_email && item.contact_form && context.automation?.form_submission) {
-      // A pause holds automatic form submissions too (automation.py).
+      // A pause holds automatic form submissions too (automation/ledger.py).
       pauseWords(sendNote,
         formNote("; with sending through contact forms on in Settings, an approved draft goes on its own"),
         formNote("; with sending through contact forms on in Settings, an approved draft goes on its own once you resume automation"));

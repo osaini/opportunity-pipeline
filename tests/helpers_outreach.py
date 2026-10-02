@@ -76,7 +76,7 @@ def proposals(*companies):
 
 
 # The second kind of prompt a deep search sends its runner: where a new company
-# it imported is based (outreach_locate.py).
+# it imported is based (outreach/locate.py).
 LOCATE_PROMPT = "finding where each of these companies is based"
 
 

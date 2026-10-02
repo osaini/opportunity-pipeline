@@ -2,7 +2,7 @@
 
 A SQLite file is snapshotted with the online backup API, a PostgreSQL database with pg_dump, and
 either is encrypted with a Fernet key before it is written. Restoring checks the integrity of the
-result. Kept apart from operations.py (job queue, account export and deletion, retention), which
+result. Kept apart from accounts/operations.py (job queue, account export and deletion, retention), which
 shares no helper with it.
 """
 

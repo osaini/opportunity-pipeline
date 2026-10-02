@@ -1,4 +1,4 @@
--- A thank-you after a plain decline (opportunity_app/outreach_thank_you.py).
+-- A thank-you after a plain decline (opportunity_app/outreach/thank_you.py).
 --
 -- The column this migration adds to an existing table (outreach_events.detail_json,
 -- what an event records beside its text: for a reply read from Gmail, its ids,

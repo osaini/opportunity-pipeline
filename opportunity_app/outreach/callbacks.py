@@ -1,9 +1,9 @@
 """The thank-you workflow's callbacks, as the outreach records and the Gmail send path call them.
 
-outreach.py (a company set aside, a reply pasted), outreach_inbox.py (a reply captured from Gmail) and outreach_gmail.py
+outreach/targets.py (a company set aside, a reply pasted), outreach/inbox.py (a reply captured from Gmail) and outreach/gmail.py
 (the claim for the one call that sends a thank-you) all have to tell outreach_thank_you what just happened, and
 outreach_thank_you imports every one of them. These are the slots they call; outreach_thank_you.register() fills them,
-through bootstrap.register_all(), when the process starts (see hooks.py: calling one that was not filled raises).
+through bootstrap.register_all(), when the process starts (see core/hooks.py: calling one that was not filled raises).
 
 on_new_reply(conn, target_id, user_id)
     They wrote again: a thank-you that has not gone stops now. Inside the caller's transaction.

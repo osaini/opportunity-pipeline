@@ -1,4 +1,4 @@
--- Apply for me (opportunity_app/apply_runs.py): the tables behind the Greenhouse apply agent.
+-- Apply for me (opportunity_app/apply/runs.py): the tables behind the Greenhouse apply agent.
 --
 -- The columns this migration adds to existing tables
 -- (application_mail_messages.sender_verified,

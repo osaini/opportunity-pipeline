@@ -1,4 +1,4 @@
--- Application mail (opportunity_app/application_inbox.py): job-system and
+-- Application mail (opportunity_app/applications/inbox.py): job-system and
 -- assessment emails read from Gmail, matched to applications, and acted on or
 -- proposed through the automation ledger.
 --

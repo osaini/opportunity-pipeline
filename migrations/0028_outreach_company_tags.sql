@@ -8,7 +8,7 @@
 --
 -- outreach_tag_state records what the rows were built from, so the Outreach
 -- list rebuilds them only when a company, summary, or research status changed
--- (opportunity_app/company_tags.py sync_outreach_tags).
+-- (opportunity_app/core/company_tags.py sync_outreach_tags).
 CREATE TABLE IF NOT EXISTS outreach_company_tags (
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     company_key TEXT NOT NULL,

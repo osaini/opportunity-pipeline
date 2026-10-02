@@ -15,7 +15,7 @@ None of these values is secret:
   company for call prep; empty means the same as above.
 - PIPELINE_OUTREACH_ATTACHMENT: the file attached to Gmail drafts.
 - PIPELINE_LINKEDIN_ACCOUNT: the LinkedIn test account call prep may read
-  interviewers' profiles as (outreach_linkedin.py); empty means LinkedIn is off.
+  interviewers' profiles as (outreach/linkedin.py); empty means LinkedIn is off.
 
 Every choice lists what this computer can run, and says what is not set up.
 

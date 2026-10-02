@@ -1,6 +1,6 @@
 """Possible replies in the browser: an email that may be the company's answer, waiting for the student to say.
 
-outreach_inbox.py keeps such an email (kind 'possible') instead of logging it
+outreach/inbox.py keeps such an email (kind 'possible') instead of logging it
 or dropping it, and every automatic step that assumes silence waits for it.
 These tests seed one exactly as a Gmail check would, through the same writer
 (outreach_inbox._record_possible), into the live test database, then drive the
@@ -69,7 +69,7 @@ def seed_possible(live_server, targets, gmail_id, *, sender=SENDER, subject=SUBJ
 
 
 def schedule_follow_up(live_server, target, state="scheduled", error=""):
-    """An automatic follow-up queued for the company (outreach_schedule.py); 'scheduled' with an error is a held one."""
+    """An automatic follow-up queued for the company (outreach/schedule.py); 'scheduled' with an error is a held one."""
     now = utc_now()
     later = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat(timespec="seconds")
     with closing(connect_product(live_server.live_path)) as conn:

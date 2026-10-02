@@ -96,7 +96,7 @@ def _insert_user_and_profile(
         return
     # config/profile.json edited since the product database last changed the
     # profile (by hand, or by an agent following SETUP.md): the newer copy wins,
-    # the same way a web edit is written back to the file (profile.py).
+    # the same way a web edit is written back to the file (student/profile.py).
     updated_at = target.execute(
         "SELECT updated_at FROM profiles WHERE user_id=?", (LOCAL_USER_ID,)
     ).fetchone()

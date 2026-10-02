@@ -1,4 +1,4 @@
--- The automation ledger, its health, and its notices (opportunity_app/automation.py).
+-- The automation ledger, its health, and its notices (opportunity_app/automation/ledger.py).
 --
 -- The columns this migration adds to existing tables (opportunity_interactions,
 -- application_tasks, connector_accounts), and the 'automation_paused' row every

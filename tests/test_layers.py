@@ -129,7 +129,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
         | _core(". env identity visibility regions read_model paths clock text http config sources scoring artifacts store liveness retention importers discovery fetch reports cli")
         | frozenset({"pipeline"})
     ),
-    # L1 storage. company_tags is here because schema.py imports it; legacy is the one adapter onto pipeline.py; legacy_sync
+    # L1 storage. company_tags is here because core/schema.py imports it; legacy is the one adapter onto pipeline.py; legacy_sync
     # writes the product database from the legacy one, so it sits beside schema, which it imports one way.
     1: _pkg("core", "schema settings_store profile_store company_tags") | _pkg("opportunities", "legacy legacy_sync"),
     # L2 integrations. Leaves: none of them imports another first-party module. This is exactly the integrations package.

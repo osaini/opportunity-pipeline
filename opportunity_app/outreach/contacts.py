@@ -7,7 +7,7 @@ only for people the site names, only when the domain accepts mail, and are
 always labeled unverified, whatever backs them: the company's own address
 format (pattern_observed) or a mail server's answer (verification, see
 integrations/smtp_probe.py) makes a guess stronger, never confirmed. Addresses printed on
-other sites come from outreach_email_search.py and stay unverified too.
+other sites come from outreach/email_search.py and stay unverified too.
 robots.txt is honored and the crawl is small.
 
 choose_contact() is the one place that decides what an unattended run may use.

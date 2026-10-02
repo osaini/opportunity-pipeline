@@ -1,4 +1,4 @@
-"""The thank-you after a plain decline (outreach_thank_you.py): when it goes, whether a company qualifies,
+"""The thank-you after a plain decline (outreach/thank_you.py): when it goes, whether a company qualifies,
 what it says, the checks just before it goes, the ledger, and the card's actions."""
 
 import base64
@@ -917,7 +917,7 @@ class ThankYouRulesTests(DeclineCase):
         self.assertEqual(len(self.events(self.acme["id"], "reply_logged")), 1, "a message from the contact is logged")
         self.assert_not_thanked(self.acme["id"], "(failed: R1, R3)")
 
-    # Reply capture's own rules (outreach_inbox.py): how it matched a reply, and an email that may be one.
+    # Reply capture's own rules (outreach/inbox.py): how it matched a reply, and an email that may be one.
 
     def test_r1_reads_how_reply_capture_matched_the_reply(self):
         self.assertEqual(self.blockers(reason="thread", via="thread"), [])
