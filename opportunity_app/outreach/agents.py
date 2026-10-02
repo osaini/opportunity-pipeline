@@ -16,7 +16,8 @@ import tempfile
 from typing import Callable
 
 from ..integrations.agent_providers import (
-    CodexNotIsolated, cli_available, cli_binary, codex_command, codex_failure_detail, failure_detail, run_headless,
+    CodexNotIsolated, cli_available, cli_binary, codex_command, codex_failure_detail, codex_setting_notes, failure_detail,
+    run_headless,
 )
 from .config import ALLOW_CODEX_ENV, codex_web_allowed, discovery_provider
 
@@ -80,7 +81,8 @@ def resolve_discovery_agent(chosen: str | None = None) -> tuple[str, str]:
             "Codex cannot be limited to web search, so Claude Code ran this search. "
             f"Set {ALLOW_CODEX_ENV}=1 in .env to let Codex do it."
         )
-    return chosen, ""
+    # Codex runs with the student's model and effort; one that was left out because it is invalid is said, not hidden.
+    return chosen, " ".join(codex_setting_notes()) if chosen == "codex-cli" else ""
 
 
 def agent_runner(chosen: str | None = None) -> tuple[Runner, str]:

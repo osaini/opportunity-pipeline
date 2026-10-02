@@ -164,6 +164,14 @@ CODEX_CODE_MODE_REASON = "Codex's web tool needs code mode, which exposes apply_
 
 
 def available_agent(preferred: str | None = None) -> tuple[str, str]:
+    """The agent to run and a note: when it is not the one chosen, or when Codex runs with a setting left out (see _agent)."""
+    agent, note = _agent(preferred)
+    if agent == CODEX_AGENT:
+        note = " ".join(part for part in (note, *agent_providers.codex_setting_notes()) if part)
+    return agent, note
+
+
+def _agent(preferred: str | None = None) -> tuple[str, str]:
     """The agent to run and a note when it is not the one chosen.
 
     Company research reads web pages, which are not trusted. Claude Code runs here

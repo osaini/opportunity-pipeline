@@ -510,5 +510,56 @@ class AnOutputFileMustStayInsideTheCallsDirectoryTests(unittest.TestCase):
         agent_providers.require_codex_isolation(self.command(self.work / "answer.txt"), env=NO_ENVIRONMENT, cwd=str(self.work))
 
 
+
+class EveryEffortCodexUnderstandsIsKeptTests(unittest.TestCase):
+    """Codex 0.157.0 and 0.159.2 both read none, minimal, low, medium, high, xhigh, max, ultra and persistent
+    (protocol/src/openai_models.rs, ReasoningEffort); the GPT-6 models list max and ultra."""
+
+    def with_effort(self, value, model=""):
+        return mock.patch.dict("os.environ", {"PIPELINE_CODEX_REASONING_EFFORT": value, "PIPELINE_CODEX_MODEL": model})
+
+    def test_each_recognised_effort_reaches_argv_and_passes_the_guard(self):
+        for effort in ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "persistent"):
+            with self.subTest(effort=effort), self.with_effort(effort.upper(), "gpt-6.1-sol"):
+                command = agent_providers.codex_command("codex")
+                self.assertIn(f"model_reasoning_effort={effort}", values_after(command, "-c"))
+                agent_providers.require_codex_isolation(command, env=NO_ENVIRONMENT)
+                self.assertEqual(agent_providers.codex_setting_notes(), [])
+
+    def test_max_ultra_and_persistent_come_from_config_toml_too(self):
+        for effort in ("max", "ultra", "persistent"):
+            folder = tempfile.TemporaryDirectory()
+            self.addCleanup(folder.cleanup)
+            (Path(folder.name) / "config.toml").write_text(f'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "{effort}"\n', encoding="utf-8")
+            with self.subTest(effort=effort), mock.patch.dict("os.environ", {"CODEX_HOME": folder.name, "PIPELINE_CODEX_MODEL": "", "PIPELINE_CODEX_REASONING_EFFORT": ""}):
+                self.assertEqual(agent_providers.codex_model_settings(), ("gpt-6.1-sol", effort))
+
+    def test_an_unrecognised_effort_is_left_off_argv_and_reported(self):
+        with self.with_effort("ludicrous"), self.assertLogs(agent_providers.logger, "WARNING") as logged:
+            command = agent_providers.codex_command("codex")
+            notes = agent_providers.codex_setting_notes()
+        self.assertEqual([item for item in values_after(command, "-c") if item.startswith("model_reasoning")], [])
+        self.assertEqual(len(notes), 1)
+        self.assertIn("ludicrous", notes[0])
+        self.assertIn("PIPELINE_CODEX_REASONING_EFFORT", notes[0])
+        self.assertIn("ludicrous", "\n".join(logged.output))
+
+    def test_the_note_reaches_the_places_a_provider_fallback_shows_its_note(self):
+        from opportunity_app.outreach import research
+
+        catalog = [{"id": "codex-cli", "display_name": "Codex", "model": "m", "configured": True, "setup_hint": ""}]
+        with self.with_effort("ludicrous"), mock.patch.dict("os.environ", {ALLOW_CODEX_ENV: "1", "PIPELINE_OUTREACH_REVIEW_PROVIDER": "codex-cli"}), \
+                mock.patch.object(research, "cli_available", return_value=True), \
+                mock.patch.object(outreach_agents, "cli_available", return_value=True), \
+                mock.patch.object(agent_providers, "provider_catalog", return_value=catalog):
+            self.assertIn("ludicrous", research.available_agent("codex-cli")[1])
+            self.assertIn("ludicrous", outreach_agents.resolve_discovery_agent("codex-cli")[1])
+            self.assertIn("ludicrous", outreach_review.review_choice()[1])
+            self.assertEqual(research.available_agent("claude-code")[1], "", "a Claude Code run says nothing about Codex's setting")
+        with self.with_effort("high"), mock.patch.dict("os.environ", {ALLOW_CODEX_ENV: "1"}), \
+                mock.patch.object(research, "cli_available", return_value=True):
+            self.assertEqual(research.available_agent("codex-cli")[1], "")
+
+
 if __name__ == "__main__":
     unittest.main()

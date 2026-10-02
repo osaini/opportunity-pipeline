@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -211,11 +212,16 @@ _CODEX_EFFORT = "model_reasoning_effort="
 CODEX_WEB_OPT_IN_ENV = "PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX"
 CODEX_MODEL_ENV = "PIPELINE_CODEX_MODEL"
 CODEX_EFFORT_ENV = "PIPELINE_CODEX_REASONING_EFFORT"
-CODEX_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh")
+# Every effort Codex 0.157.0 and 0.159.2 read (protocol/src/openai_models.rs, ReasoningEffort; the GPT-5.6 and GPT-6 models
+# list max and ultra). A value outside this list is left off argv and reported (codex_setting_notes), never defaulted silently.
+CODEX_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "persistent")
 _CODEX_MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}")
 # The only options a Codex argv may carry. Anything else (a looser sandbox, a profile, another directory, a `-c` that
 # turns a feature back on) is refused, whatever form it is written in. Each flag below takes one value except the switches.
 _CODEX_VALUE_FLAGS = ("--sandbox", "-c", "--disable", "-m", "--output-last-message")
+
+
+logger = logging.getLogger(__name__)
 
 
 class CodexNotIsolated(RuntimeError):
@@ -232,13 +238,8 @@ def codex_web_opted_in() -> bool:
     return opt_in_value_is_on(os.environ.get(CODEX_WEB_OPT_IN_ENV))
 
 
-def codex_model_settings() -> tuple[str, str]:
-    """The model and reasoning effort Codex runs with: the student's own (.env, else Codex's config.toml), or "" for each.
-
-    ``--ignore-user-config`` stops Codex reading config.toml, which would otherwise silently drop the model and effort the
-    student chose, so they are read here (these two keys only, nothing else in that file) and passed on the command line.
-    A value that is not a plain model name or a known effort is ignored, so the file cannot put an option on argv.
-    """
+def _codex_raw_settings() -> tuple[str, str]:
+    """The model and effort as the student wrote them (.env, else Codex's config.toml), before any check."""
     model = os.environ.get(CODEX_MODEL_ENV, "").strip()
     effort = os.environ.get(CODEX_EFFORT_ENV, "").strip().lower()
     if not (model and effort):
@@ -251,6 +252,37 @@ def codex_model_settings() -> tuple[str, str]:
         file_model, file_effort = configured.get("model"), configured.get("model_reasoning_effort")
         model = model or (file_model if isinstance(file_model, str) else "").strip()
         effort = effort or (file_effort if isinstance(file_effort, str) else "").strip().lower()
+    return model, effort
+
+
+def codex_setting_notes() -> list[str]:
+    """One sentence for each of the student's Codex model or effort settings that was left out because it is not valid.
+
+    Nothing is defaulted silently: the caller shows these where it shows its other notes about which agent ran.
+    """
+    model, effort = _codex_raw_settings()
+    notes = []
+    if effort and effort not in CODEX_EFFORTS:
+        notes.append(
+            f"Codex ran with its own reasoning effort: {effort!r}, set in {CODEX_EFFORT_ENV} or Codex's config.toml, "
+            f"is not one it reads ({', '.join(CODEX_EFFORTS)})."
+        )
+    if model and not _CODEX_MODEL_NAME.fullmatch(model):
+        notes.append(f"Codex ran with its own model: {model!r}, set in {CODEX_MODEL_ENV} or Codex's config.toml, is not a model name.")
+    return notes
+
+
+def codex_model_settings() -> tuple[str, str]:
+    """The model and reasoning effort Codex runs with: the student's own (.env, else Codex's config.toml), or "" for each.
+
+    ``--ignore-user-config`` stops Codex reading config.toml, which would otherwise silently drop the model and effort the
+    student chose, so they are read here (these two keys only, nothing else in that file) and passed on the command line.
+    A value that is not a plain model name or a known effort (CODEX_EFFORTS) is ignored, so the file cannot put an option
+    on argv, and it is logged and reported by codex_setting_notes instead of passing unnoticed.
+    """
+    model, effort = _codex_raw_settings()
+    for note in codex_setting_notes():
+        logger.warning(note)
     return (model if _CODEX_MODEL_NAME.fullmatch(model) else ""), (effort if effort in CODEX_EFFORTS else "")
 
 

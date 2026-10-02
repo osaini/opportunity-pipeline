@@ -110,6 +110,14 @@ AUTOMATIC_ORDER = ("codex-cli", "claude-code", "openai", "anthropic")
 
 
 def review_choice(purpose: str = "follow_up") -> tuple[str, str]:
+    """The provider that reviews an automatic email, and a note: a compromise, or a Codex setting that was left out."""
+    provider, note = _review_choice(purpose)
+    if provider == "codex-cli":
+        note = "; ".join(part for part in (note, *agent_providers.codex_setting_notes()) if part)
+    return provider, note
+
+
+def _review_choice(purpose: str) -> tuple[str, str]:
     """The provider that reviews an automatic email, and a note when it is a compromise.
 
     The student's pick when it is set up; otherwise a set-up provider from a
