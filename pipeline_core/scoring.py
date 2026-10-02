@@ -324,7 +324,17 @@ def role_key(title: str) -> str:
 REPOST_WINDOW_DAYS = 90
 
 
-def repost_flags(conn: sqlite3.Connection, window_days: int = REPOST_WINDOW_DAYS) -> dict[str, tuple[int, str]]:
+# Tables repost_flags may read. Both hold the columns it needs under the same names;
+# the name is interpolated into SQL, so it must come from here.
+_REPOST_TABLES = ("jobs", "opportunities")
+
+
+def repost_flags(
+    conn: sqlite3.Connection,
+    window_days: int = REPOST_WINDOW_DAYS,
+    *,
+    table: str = "jobs",
+) -> dict[str, tuple[int, str]]:
     """Active postings whose role was previously listed under a different URL.
 
     The signal is a role that went away and came back somewhere else, not merely
@@ -332,32 +342,54 @@ def repost_flags(conn: sqlite3.Connection, window_days: int = REPOST_WINDOW_DAYS
     terms at once is normal, and flagging that would be noise. So a row counts
     only when an *earlier, since-retired* posting of the same role exists at a
     different URL.
+
+    ``table`` is the legacy ``jobs`` table (the refresh) or the product database's
+    ``opportunities`` table (a profile save re-scoring in the web app). Both go
+    through this one rule so a posting's explanation does not depend on which
+    of the two wrote it last.
     """
+    if table not in _REPOST_TABLES:
+        raise ValueError(f"repost_flags cannot read table {table!r}")
     cutoff = (datetime.now(timezone.utc) - timedelta(days=window_days)).isoformat()
-    groups: dict[tuple[str, str], list[sqlite3.Row]] = {}
-    for row in conn.execute(
-        "SELECT id, company, title, url, first_seen_at, active FROM jobs WHERE first_seen_at >= ?",
+    groups: dict[tuple[str, str], list[tuple[str, str, str, str, bool]]] = {}
+    for row_id, company, title, url, first_seen_at, active in conn.execute(
+        f"SELECT id, company, title, url, first_seen_at, active FROM {table} WHERE first_seen_at >= ?",
         (cutoff,),
     ):
-        groups.setdefault((normalized(row["company"]), role_key(row["title"])), []).append(row)
+        groups.setdefault((normalized(company), role_key(title)), []).append(
+            (row_id, url, first_seen_at, bool(active))
+        )
 
     flags: dict[str, tuple[int, str]] = {}
     for members in groups.values():
-        retired = [row for row in members if not row["active"]]
+        retired = [member for member in members if not member[3]]
         if not retired:
             continue
-        for row in members:
-            if not row["active"]:
+        for row_id, url, first_seen_at, active in members:
+            if not active:
                 continue
             earlier = [
                 other
                 for other in retired
-                if other["url"] != row["url"] and other["first_seen_at"] < row["first_seen_at"]
+                if other[1] != url and other[2] < first_seen_at
             ]
             if earlier:
-                oldest = min(other["first_seen_at"] for other in earlier)
-                flags[row["id"]] = (len({other["url"] for other in earlier}) + 1, oldest[:10])
+                oldest = min(other[2] for other in earlier)
+                flags[row_id] = (len({other[1] for other in earlier}) + 1, oldest[:10])
     return flags
+
+
+def repost_reason(listings: int, since: str) -> str:
+    """The explanation line for a ``repost_flags`` entry.
+
+    Non-scoring, and worded neutrally on purpose. A re-listed req is often just
+    an evergreen pipeline posting or an ATS migration; it is information for the
+    reader, not a verdict on the employer.
+    """
+    return (
+        f"FLAG: this role has been listed under {listings} different URLs "
+        f"since {since}—may be an evergreen or re-listed req"
+    )
 
 
 def score_all(conn: sqlite3.Connection, profile: dict[str, Any]) -> int:
@@ -370,14 +402,7 @@ def score_all(conn: sqlite3.Connection, profile: dict[str, Any]) -> int:
         score_input["role_type"] = role_type
         score, reasons = score_job(score_input, profile)
         if job["id"] in reposts:
-            listings, since = reposts[job["id"]]
-            # Non-scoring, and worded neutrally on purpose. A re-listed req is
-            # often just an evergreen pipeline posting or an ATS migration; it
-            # is information for the reader, not a verdict on the employer.
-            reasons.append(
-                f"FLAG: this role has been listed under {listings} different URLs "
-                f"since {since}—may be an evergreen or re-listed req"
-            )
+            reasons.append(repost_reason(*reposts[job["id"]]))
         explanation = json.dumps(reasons)
         # Rewriting a row with the values it already holds changes nothing, so
         # only rows whose result moved are written; most of a daily run's

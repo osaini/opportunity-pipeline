@@ -11,7 +11,7 @@ from typing import Any
 from pipeline_core.read_model import RULESET_VERSION
 
 from ..core.json_values import json_dict
-from ..opportunities.legacy import score_job
+from ..opportunities.legacy import repost_flags, repost_reason, score_job
 from ..core.profile_store import read_stored_profile
 from ..core.schema import LOCAL_USER_ID
 from ..core.timestamps import utc_now
@@ -130,9 +130,15 @@ def is_personalized(conn: sqlite3.Connection, *, user_id: str) -> bool:
 def _compute_scores(
     conn: sqlite3.Connection, profile: dict[str, Any]
 ) -> list[tuple[Any, int, list[str]]]:
-    """Score every opportunity for ``profile`` in memory; writes nothing."""
+    """Score every opportunity for ``profile`` in memory; writes nothing.
+
+    The explanation is what the refresh would write, repost FLAG included: a
+    role that was retired and came back at a new URL says so whichever of the
+    two writes (this one or ``pipeline_core.scoring.score_all``) ran last.
+    """
 
     conn.row_factory = sqlite3.Row
+    reposts = repost_flags(conn, table="opportunities")
     rows = conn.execute(
         """SELECT id, title, description, role_type, location, posted_at
            FROM opportunities"""
@@ -140,6 +146,8 @@ def _compute_scores(
     scores = []
     for row in rows:
         score, reasons = score_job(row, profile)
+        if row["id"] in reposts:
+            reasons.append(repost_reason(*reposts[row["id"]]))
         scores.append((row["id"], score, reasons))
     return scores
 
