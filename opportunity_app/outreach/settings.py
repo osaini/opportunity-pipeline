@@ -56,6 +56,8 @@ from ..student.resumes import DEFAULT_STORAGE, ResumeNotFoundError, list_resumes
 # Writers that fall back to the first-email setting when left empty.
 FOLLOWING_DRAFTS = {"follow_up_provider": FOLLOW_UP_ENV, "call_prep_provider": CALL_PREP_ENV, "thank_you_provider": THANK_YOU_ENV}
 RESEARCH_AGENTS = ("claude-code", "codex-cli")
+# What the research pickers show beside an installed Codex that may not read the web yet, in place of "not set up".
+CODEX_NEEDS_OPT_IN = "needs the .env opt-in"
 LEGACY_OPTION = {
     "id": "legacy", "label": "Grounded template (no AI)", "available": True,
     "hint": "Fills a fixed template from your confirmed facts; nothing is sent to a model.",
@@ -87,7 +89,7 @@ class OutreachSettings:
     def _research_option(option: dict[str, Any]) -> dict[str, Any]:
         """Codex reads the web only after the .env opt-in (agents.codex_runner); until then, say so rather than offer it."""
         if option["id"] == "codex-cli" and option["available"] and not codex_web_allowed():
-            return {**option, "available": False, "hint": (
+            return {**option, "available": False, "reason": CODEX_NEEDS_OPT_IN, "hint": (
                 f"Codex cannot be limited to web search, so it reads the web only when {ALLOW_CODEX_ENV}=1 is set in .env. "
                 "Until then Claude Code does this research when it is installed."
             )}

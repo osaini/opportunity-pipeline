@@ -468,7 +468,8 @@
     }
 
     function providerOption(option, current) {
-      return optionElement(option.id, option.available ? option.label : `${option.label} (not set up)`, option.id === current);
+      // An unavailable option says why when the server knows (Codex is installed but lacks the .env opt-in), else "not set up".
+      return optionElement(option.id, option.available ? option.label : `${option.label} (${option.reason || "not set up"})`, option.id === current);
     }
 
     const drafts = settings.draft_provider;

@@ -67,11 +67,15 @@ class OutreachSettingsApiTests(unittest.TestCase):
                 self.assertFalse(option["available"])
                 self.assertIn("PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX", option["hint"])
                 self.assertIn("Claude Code", option["hint"])
+                # The picker labels the option with this, not with "not set up": Codex is installed, it only lacks the opt-in.
+                self.assertEqual(option["reason"], "needs the .env opt-in")
         self.assertTrue(codex(blocked["draft_provider"]["options"])["available"])
+        self.assertNotIn("reason", codex(blocked["draft_provider"]["options"]))
         allowed = view("1")
         for field in ("research_agent", "company_research_agent"):
             with self.subTest(field=field, opted_in=True):
                 self.assertTrue(codex(allowed[field]["options"])["available"])
+                self.assertNotIn("reason", codex(allowed[field]["options"]))
 
     def test_changes_reach_env_and_take_effect_at_once(self):
         settings = OutreachSettings(env_path=self.env_path, attachment_dir=self.attachments, resume_storage=self.root / "resumes")
