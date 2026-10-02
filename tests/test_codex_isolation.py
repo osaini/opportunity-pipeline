@@ -374,5 +374,74 @@ class CodexWithoutTheOptInFallsBackToClaudeCodeTests(unittest.TestCase):
         self.assertEqual(OutreachSettings._research_option(other), other)
 
 
+NO_ENVIRONMENT = {"CODEX_EXEC_SERVER_URL": "none"}
+
+
+class EveryNonResearchCodexCallRunsWithoutAnEnvironmentTests(unittest.TestCase):
+    """apply_patch is registered from the model's catalog entry, not from any setting the app can pass: a model whose
+    entry selects Direct mode (gpt-5.5 in Codex 0.157.0 and 0.159.2) lists it even with code_mode_host off. What removes
+    it for every model is an empty environment (CODEX_EXEC_SERVER_URL=none), which the app puts on the process of every
+    Codex call that carries no web search. These tests look at the process each caller actually starts."""
+
+    def run_one(self, command, **env):
+        done = subprocess.CompletedProcess([], 0, "ok", "")
+        with mock.patch.dict("os.environ", env), mock.patch.object(agent_providers.subprocess, "run", return_value=done) as run:
+            agent_providers.run_headless(command, "prompt", timeout=5, cwd=".")
+        return run.call_args.kwargs.get("env")
+
+    def test_a_call_without_web_search_gets_an_empty_environment_whatever_the_student_has_set(self):
+        for inherited in ({}, {"CODEX_EXEC_SERVER_URL": "ws://127.0.0.1:9", "CODEX_EXEC_SERVER_NOISE_REGISTRY_URL": "x"}):
+            with self.subTest(inherited=inherited):
+                env = self.run_one(agent_providers.codex_command("codex"), **inherited)
+                self.assertIsNotNone(env, "the process gets an explicit environment")
+                self.assertEqual(env.get("CODEX_EXEC_SERVER_URL"), "none")
+                self.assertFalse([key for key in env if key.startswith("CODEX_EXEC_SERVER_") and key != "CODEX_EXEC_SERVER_URL"])
+                self.assertEqual(env.get("CODEX_HOME"), os.environ.get("CODEX_HOME"), "everything else, sign-in included, is kept")
+
+    def test_the_research_call_alone_keeps_its_environment(self):
+        with mock.patch.dict("os.environ", {ALLOW_CODEX_ENV: "1"}):
+            env = self.run_one(agent_providers.codex_command("codex", web_search=True), CODEX_EXEC_SERVER_URL="")
+        self.assertNotEqual((env or {}).get("CODEX_EXEC_SERVER_URL"), "none")
+
+    def test_other_commands_inherit_the_environment(self):
+        self.assertIsNone(self.run_one(["claude", *agent_providers.CLAUDE_NO_TOOLS]))
+
+    def test_the_guard_refuses_a_launch_whose_environment_would_leave_apply_patch_listed(self):
+        command = agent_providers.codex_command("codex")
+        agent_providers.require_codex_isolation(command, env=NO_ENVIRONMENT)
+        for env in ({}, {"CODEX_EXEC_SERVER_URL": ""}, {"CODEX_EXEC_SERVER_URL": "ws://x"}, None):
+            with self.subTest(env=env), self.assertRaises(agent_providers.CodexNotIsolated) as raised:
+                agent_providers.require_codex_isolation(command, env=env)
+            self.assertIn("CODEX_EXEC_SERVER_URL", str(raised.exception))
+        with mock.patch.dict("os.environ", {ALLOW_CODEX_ENV: "1"}):
+            agent_providers.require_codex_isolation(agent_providers.codex_command("codex", web_search=True), env={})
+
+    def test_every_caller_starts_its_codex_process_with_the_empty_environment(self):
+        started = []
+
+        def fake_run(command, **kwargs):
+            started.append(kwargs.get("env"))
+            Path(os.path.join(kwargs["cwd"], "answer.txt")).write_text("{}", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, '{"answer": "ok"}', "")
+
+        with mock.patch.object(agent_providers.subprocess, "run", fake_run):
+            codex_provider().create(instructions="t", messages=[{"role": "user", "content": "hi"}], tools=[], max_output_tokens=10)
+            codex_provider().complete_text("t", "c")
+            catalog = [{"id": "codex-cli", "display_name": "Codex", "model": "m", "configured": True, "setup_hint": ""}]
+            with mock.patch.dict("os.environ", {"PIPELINE_OUTREACH_REVIEW_PROVIDER": "codex-cli"}), \
+                    mock.patch.object(agent_providers, "provider_catalog", return_value=catalog):
+                outreach_review.review_runner()[1]("review this")
+        self.assertEqual(len(started), 3)
+        for env in started:
+            self.assertEqual((env or {}).get("CODEX_EXEC_SERVER_URL"), "none")
+
+    def test_no_subagent_tool_is_left_to_switch_models(self):
+        """multi_agent is turned off in every call, so there is no spawn_agent for the model to start another model with
+        (confirmed by asking Codex 0.157.0 and 0.159.2 to list their tools), and a sub-agent would inherit the same environment."""
+        self.assertIn("multi_agent", agent_providers.CODEX_OFF_FEATURES)
+        self.assertIn("multi_agent", values_after(agent_providers.codex_command("codex"), "--disable"))
+        self.assertIn("multi_agent", values_after(agent_providers.codex_command("codex", web_search=True), "--disable"))
+
+
 if __name__ == "__main__":
     unittest.main()

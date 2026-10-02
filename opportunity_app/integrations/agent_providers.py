@@ -172,19 +172,35 @@ CLAUDE_NO_TOOLS = ["-p", "--output-format", "text", "--tools", "", "--strict-mcp
 #   -c mcp_servers={}                      no MCP server, whatever else configures one
 #   --sandbox read-only                    the second layer: nothing the model runs can write
 #   --disable shell_tool, unified_exec     no command-running tool
-#   --disable code_mode_host               "code mode" fails closed. It is what carries the web tool, apply_patch and the
-#                                          clock, so with it off the model has no tool it can reach at all
+#   --disable code_mode_host               "code mode" fails closed for the models whose catalog entry selects it
+#                                          (code_mode_only: the GPT-5.6 and GPT-6 families). It is what carries the web tool and
+#                                          the clock, and, for those models, apply_patch
+#   CODEX_EXEC_SERVER_URL=none (env var)   no environment: Codex registers apply_patch (and the file and image tools) only
+#                                          when the turn has one. See CODEX_NO_ENVIRONMENT
 #   -c web_search=disabled                 no web search
 #   -c shell_environment_policy.inherit=none   a command that somehow ran would see none of this app's environment
 #   --ephemeral                            no session files are left in CODEX_HOME
 #   --strict-config, --disable <name>      an unknown setting or feature is an error, so a Codex that does not know one of
 #                                          these refuses to start rather than starting with a tool the app meant to turn off
-# Not closed: the collaboration tools (spawn_agent and friends) stay listed; a sub-agent starts with the same settings.
+# Not closed: nothing the model can reach. multi_agent is off, so there is no spawn_agent to start another model with.
+# What still lists: request_user_input and multi_tool_use.parallel, which read no file (both versions, gpt-5.5).
+#
+# Why the environment and not a setting for apply_patch: in Codex 0.157.0 and 0.159.2 (core/src/tools/spec_plan.rs) the
+# tool is registered when the turn has an environment AND the model's catalog entry has apply_patch_tool_type, which every
+# bundled entry does. No config key or feature overrides that (there is no include_apply_patch_tool any more, and
+# with_config_overrides in models-manager leaves the field alone), and for a Direct-mode model (tool_mode unset, e.g. gpt-5.5)
+# it is a top-level tool that code_mode_host does not touch. CODEX_EXEC_SERVER_URL=none (exec-server/src/environment.rs) is
+# the one switch that removes it for every model. It is an environment variable, so --strict-config cannot vouch for it:
+# run_headless sets it itself (codex_process_env) and require_codex_isolation checks the environment it was handed.
 CODEX_OFF_FEATURES = (
     "shell_tool", "unified_exec", "plugins", "apps", "multi_agent", "browser_use", "computer_use", "in_app_browser",
     "view_image", "image_generation", "goals", "memories", "hooks", "skill_search", "tool_suggest", "sleep_tool",
 )
 CODEX_CODE_MODE = "code_mode_host"
+# The process environment every Codex call without web search gets: no environment, so no apply_patch for any model.
+CODEX_EXEC_SERVER_ENV = "CODEX_EXEC_SERVER_URL"
+CODEX_NO_ENVIRONMENT = {CODEX_EXEC_SERVER_ENV: "none"}
+_ENV_UNCHECKED = object()
 _CODEX_SWITCHES = ("--skip-git-repo-check", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--strict-config")
 # Values carry no quotes: a quote on argv does not survive a cmd.exe shim (codex.cmd), and Codex reads a value that is
 # not valid TOML as a plain string.
@@ -258,9 +274,28 @@ def codex_command(binary: str, *, web_search: bool = False, extra: tuple[str, ..
     ``web_search=True`` is for the company-research runner alone. Codex reaches the web through code mode, which cannot be
     switched on without also exposing apply_patch (read-only keeps it from writing, but it can still test whether a local
     file holds given lines), so that one call is isolated less than the rest and its caller must have the student's opt-in.
-    ``extra`` goes before the final "-".
+    Every other call also needs the environment from codex_process_env, which run_headless supplies: argv alone cannot take
+    apply_patch away from a model whose catalog entry lists it directly. ``extra`` goes before the final "-".
     """
     return [binary, *_codex_flags(web_search), *extra, "-"]
+
+
+def _is_web_research(args: list[str]) -> bool:
+    return f"{_CODEX_WEB_SEARCH}live" in _values_after(args, "-c")
+
+
+def codex_process_env(command: list[str], base: dict[str, str] | None = None) -> dict[str, str] | None:
+    """The environment to start a command with: for a Codex call without web search, ``base`` (the app's) with no
+    environment for Codex (CODEX_NO_ENVIRONMENT) and no other CODEX_EXEC_SERVER_* setting; None (inherit) otherwise.
+
+    Without an environment Codex registers neither apply_patch nor any other file tool, whatever model is chosen. The
+    company-research call keeps the inherited environment: it is the one call that has apply_patch (see codex_command).
+    """
+    if not _is_codex(command) or _is_web_research([str(item) for item in command[1:]]):
+        return None
+    inherited = os.environ if base is None else base
+    env = {key: value for key, value in inherited.items() if not key.upper().startswith("CODEX_EXEC_SERVER_")}
+    return {**env, **CODEX_NO_ENVIRONMENT}
 
 
 def _values_after(args: list[str], flag: str) -> list[str]:
@@ -309,9 +344,12 @@ def _unlisted_codex_options(args: list[str]) -> list[str]:
     return problems
 
 
-def require_codex_isolation(command: list[str]) -> None:
+def require_codex_isolation(command: list[str], env: Any = _ENV_UNCHECKED) -> None:
     """Raise CodexNotIsolated, before anything starts, when a Codex command lacks any part of codex_command's isolation.
 
+    ``env`` is the environment the process will start with (None: the inherited one). When it is given, a call without web
+    search must carry CODEX_NO_ENVIRONMENT in it, the part of the isolation that is not on argv (see codex_process_env).
+    run_headless always passes it; the check run before an injected runner does not know it and leaves it out.
     Commands for other programs pass untouched.
     """
     if not _is_codex(command):
@@ -332,6 +370,9 @@ def require_codex_isolation(command: list[str]) -> None:
     off = _values_after(args, "--disable")
     wanted = (*CODEX_OFF_FEATURES, *(() if web == [f"{_CODEX_WEB_SEARCH}live"] else (CODEX_CODE_MODE,)))
     problems += [f"--disable {feature} is missing" for feature in wanted if feature not in off]
+    if env is not _ENV_UNCHECKED and not _is_web_research(args):
+        if (env or {}).get(CODEX_EXEC_SERVER_ENV) != CODEX_NO_ENVIRONMENT[CODEX_EXEC_SERVER_ENV]:
+            problems.append(f"{CODEX_EXEC_SERVER_ENV}=none is missing from its environment, so apply_patch would be listed for some models")
     if problems:
         raise CodexNotIsolated(
             "Codex was not started because its command is not isolated: " + "; ".join(problems) + ". "
@@ -345,12 +386,14 @@ def run_headless(command: list[str], prompt: str, *, timeout: float, cwd: str) -
     Only the invocation is shared: UTF-8 with undecodable bytes replaced, no console window on Windows. Each caller
     chooses its own directory (an empty one, outside the project), checks the return code and words its own error,
     because what a student sees on a failure differs per caller. A timeout or a missing binary raises as subprocess does.
-    A Codex command that lacks the isolation of codex_command raises CodexNotIsolated without starting anything.
+    A Codex command that lacks the isolation of codex_command raises CodexNotIsolated without starting anything. A Codex
+    call without web search starts with the environment of codex_process_env (no apply_patch for any model).
     """
-    require_codex_isolation(command)
+    env = codex_process_env(command)
+    require_codex_isolation(command, env)
     return subprocess.run(
         command, input=prompt, capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=timeout, cwd=cwd, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        timeout=timeout, cwd=cwd, env=env, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
 
 
@@ -659,8 +702,9 @@ class CliAgentProvider:
 
         The prompt is never part of it: it goes over stdin, so text taken from the web or from tool results cannot be
         re-parsed by a cmd.exe shim. Claude Code gets no tools and no MCP servers (CLAUDE_NO_TOOLS). Codex gets
-        codex_command's settings, which together leave it no MCP server, command tool, web search or file write, with the
-        read-only sandbox as a second layer; _invoke refuses a Codex command without them. _invoke runs it in a directory
+        codex_command's settings and run_headless's empty Codex environment (codex_process_env), which together leave it no
+        MCP server, command tool, web search, apply_patch or file write, with the read-only sandbox as a second layer;
+        _invoke refuses a Codex command without the settings. _invoke runs it in a directory
         of its own, empty and outside the project.
         """
         if self.provider_id == "claude-code":
