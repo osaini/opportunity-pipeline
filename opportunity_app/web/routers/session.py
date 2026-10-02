@@ -13,7 +13,7 @@ from typing import Annotated, Any
 from fastapi import Cookie, Depends, HTTPException, Request, Response, status
 
 from ..overrides import shared_router
-from ...auth import (
+from ...accounts.auth import (
     authenticate_email_password,
     authenticate_password,
     complete_recovery,

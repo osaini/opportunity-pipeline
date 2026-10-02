@@ -24,8 +24,8 @@ from fastapi import Cookie, Depends, Header, HTTPException, Request, status
 
 from pipeline_core import OpportunityRepository
 
-from ..auth import constant_time_equal, resolve_user_token
-from ..employer import ensure_actor
+from ..accounts.auth import constant_time_equal, resolve_user_token
+from ..accounts.employer import ensure_actor
 from ..extension_apply import resolve_extension_token
 from ..core.database import connect_product
 from ..core.schema import LOCAL_USER_ID

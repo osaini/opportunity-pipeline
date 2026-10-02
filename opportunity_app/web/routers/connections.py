@@ -15,7 +15,7 @@ from fastapi import Depends, HTTPException, Header, Request, status
 from ..overrides import shared_router
 from ... import automation as automation_core
 from ...actions import ApplicationNotFoundError
-from ...auth import constant_time_equal
+from ...accounts.auth import constant_time_equal
 from ...mail.connections import (
     ConnectionNotFoundError,
     connector_owner,

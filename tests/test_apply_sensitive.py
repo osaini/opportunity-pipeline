@@ -1083,7 +1083,7 @@ class StoreReaderScanTests(unittest.TestCase):
     # Allowed modules, as paths from the repo root without ".py". Each may be a single file or, after a split, a package of
     # the same name (opportunity_app/core/schema/...), but only at this location: a same-named file elsewhere (scripts/schema.py,
     # pipeline_core/operations.py) is not allowed, which the old basename check wrongly let through.
-    ALLOWED = ("opportunity_app/apply_sensitive", "opportunity_app/operations", "opportunity_app/core/schema")
+    ALLOWED = ("opportunity_app/apply_sensitive", "opportunity_app/accounts/operations", "opportunity_app/core/schema")
 
     def sources(self):
         for folder in ("opportunity_app", "pipeline_core"):
@@ -1165,7 +1165,7 @@ class StoreReaderScanTests(unittest.TestCase):
         # opportunity_app/reports/x.py) is still found, whatever its own file name.
         pattern = r"employer|report|metric|analytic|fairness|subgroup|export_pipeline|dossier|digest"
         reporting = [path for path in self.package_modules() if re.search(pattern, path.relative_to(REPO).as_posix())]
-        self.assertIn("opportunity_app/employer.py", {path.relative_to(REPO).as_posix() for path in reporting})
+        self.assertIn("opportunity_app/accounts/employer.py", {path.relative_to(REPO).as_posix() for path in reporting})
         for path in reporting:
             text = path.read_text(encoding="utf-8")
             with self.subTest(file=path.relative_to(REPO).as_posix()):

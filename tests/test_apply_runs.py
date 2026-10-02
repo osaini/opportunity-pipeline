@@ -22,7 +22,7 @@ from opportunity_app import SERVER_INSTANCE, actions, apply_claims, apply_runs, 
 from opportunity_app.core import schema
 from opportunity_app.apply_runs import ClaimHeldError, ClaimRefused
 from pipeline_core.identity import employer_key
-from opportunity_app.operations import ACCOUNT_QUERIES, delete_account, export_account, run_retention
+from opportunity_app.accounts.operations import ACCOUNT_QUERIES, delete_account, export_account, run_retention
 from opportunity_app.outreach_automation import AutomationWorker
 from opportunity_app.core.schema import ensure_product_schema
 from opportunity_app.core.database import connect_product

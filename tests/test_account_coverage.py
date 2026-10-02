@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app.operations import ACCOUNT_EXPLICIT_DELETES, ACCOUNT_QUERIES, delete_account, export_account
+from opportunity_app.accounts.operations import ACCOUNT_EXPLICIT_DELETES, ACCOUNT_QUERIES, delete_account, export_account
 from opportunity_app.core.database import connect_product
 
 from helpers_platform import build_and_migrate

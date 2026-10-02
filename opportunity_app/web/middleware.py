@@ -16,7 +16,7 @@ from typing import Any
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 
-from ..auth import constant_time_equal
+from ..accounts.auth import constant_time_equal
 from .assets import cache_control
 from .context import SESSION_COOKIE, USER_SESSION_COOKIE
 

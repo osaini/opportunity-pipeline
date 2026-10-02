@@ -16,7 +16,7 @@ from uuid import uuid4
 from pipeline_core.read_model import RULESET_VERSION
 
 from .actions import ApplicationNotFoundError, log_application_event, update_application
-from .auth import hash_secret
+from .accounts.auth import hash_secret
 from .core.timestamps import utc_now
 
 

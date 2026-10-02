@@ -1565,7 +1565,7 @@ class CardTests(DeclineCase):
 
     def test_the_account_export_holds_it(self):
         target_id = self.planned()
-        from opportunity_app.operations import export_account
+        from opportunity_app.accounts.operations import export_account
 
         exported = export_account(self.conn, user_id=USER)
         self.assertEqual([row["target_id"] for row in exported["outreach_thank_yous"]], [target_id])

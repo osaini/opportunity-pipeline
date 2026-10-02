@@ -76,7 +76,7 @@ from uuid import uuid4
 
 from .integrations import agent_providers
 from .integrations.agent_providers import cli_available, cli_binary, complete_text
-from .operations import enqueue_job
+from .accounts.operations import enqueue_job
 from .contact_names import website_domain
 from .outreach import CALL_PREP_STATUSES, OutreachNotFoundError, log_event, get_target
 from .outreach_agents import RUNNERS, Runner

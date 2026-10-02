@@ -29,7 +29,7 @@ from opportunity_app.application_mail_rules import match_application, parse_mess
 from opportunity_app.mail.connections import monitored_event
 from opportunity_app.monitored_events import decide_monitored_event
 from opportunity_app.mail.monitored_classifier import classify_monitored_message
-from opportunity_app.operations import export_account
+from opportunity_app.accounts.operations import export_account
 from opportunity_app.core.database import connect_product
 from opportunity_app.core.timestamps import parse_app_instant, utc_now
 from opportunity_app.urgent import urgent_queue
@@ -890,7 +890,7 @@ class RetentionTests(MailCase):
         with self.conn:
             self.conn.execute("UPDATE automation_actions SET created_at=?", (old,))
             self.conn.execute("UPDATE monitored_events SET created_at=?", (old,))
-        from opportunity_app.operations import run_retention
+        from opportunity_app.accounts.operations import run_retention
 
         counts = run_retention(self.conn)
         self.assertEqual((counts["mail_excerpts_removed"], counts["mail_previews_removed"]), (1, 1))
@@ -937,7 +937,7 @@ class OutreachPossibleReplyRecordTests(MailCase):
     def test_the_words_of_a_possible_reply_waiting_past_the_evidence_days_go_and_it_keeps_waiting(self):
         import os
 
-        from opportunity_app.operations import run_retention
+        from opportunity_app.accounts.operations import run_retention
         from opportunity_app.outreach import get_target, heard_back
 
         now = datetime(2026, 9, 28, 12, 0, tzinfo=timezone.utc)
@@ -960,7 +960,7 @@ class OutreachPossibleReplyRecordTests(MailCase):
         self.assertEqual(sorted(item["preview"] for item in bovi["possible_replies"]), ["", self.WORDS])
 
     def test_the_account_export_holds_what_outreach_read_and_why_and_only_the_students(self):
-        from opportunity_app.operations import ACCOUNT_QUERIES, delete_account
+        from opportunity_app.accounts.operations import ACCOUNT_QUERIES, delete_account
 
         self.mail("m-possible", now_utc() - timedelta(days=1))
         self.mail("m-set-aside", now_utc() - timedelta(days=2), kind="ignored", reason="list", text="")

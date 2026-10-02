@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
-from opportunity_app.operations import enqueue_job, run_next_job
+from opportunity_app.accounts.operations import enqueue_job, run_next_job
 from opportunity_app.core.database import connect_product
 
 from helpers_platform import build_and_migrate

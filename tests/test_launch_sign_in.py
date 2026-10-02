@@ -16,7 +16,7 @@ import time
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
 from opportunity_app.web import context
-from opportunity_app.auth import issue_user_token
+from opportunity_app.accounts.auth import issue_user_token
 from opportunity_app.core.schema import LOCAL_USER_ID
 from opportunity_app.core.database import connect_product
 

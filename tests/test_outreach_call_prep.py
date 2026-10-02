@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from opportunity_app import ROOT, STATIC_DIR, automation
 from opportunity_app.api import create_app
 from opportunity_app.outreach import confirm_research, create_target, get_target, log_reply, update_target
-from opportunity_app.operations import enqueue_job, run_next_job
+from opportunity_app.accounts.operations import enqueue_job, run_next_job
 from opportunity_app.outreach_call_prep import (
     DURING_CALL, JOB_TYPE, JOB_TYPES, PAUSED_WAIT, CallPrepRejected, CallPrepWorker, ReplyRequired, auto_queue_call_prep,
     generate_call_prep, is_automatic, queue_call_prep,

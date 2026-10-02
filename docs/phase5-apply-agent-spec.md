@@ -3390,7 +3390,7 @@ process id (memory note restart-web-dashboard).
   - `opportunity_app/application_inbox.py`: set `sender_verified` when recording a message;
   - the Gmail connect callback (with `outreach_gmail.py`): record `account_email`;
   - `opportunity_app/core/schema.py`: `_apply_apply_agent` in `_MIGRATION_STEPS`;
-  - `opportunity_app/operations.py`: `run_retention`, `delete_account(apply_root=...)`, export;
+  - `opportunity_app/accounts/operations.py`: `run_retention`, `delete_account(apply_root=...)`, export;
   - `opportunity_app/urgent.py`;
   - `opportunity_app/api.py`: routes, `require_browser_session`, the factory wiring next to
     api.py:1063-1064, and the deletion caller at :3207;

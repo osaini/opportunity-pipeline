@@ -308,7 +308,7 @@ class InboxSuggestionApiTests(unittest.TestCase):
     def test_the_setting_is_exported_with_the_account(self):
         self.client.put("/api/v1/typesafe/inbox-suggestions", headers=AUTH, json={"enabled": True})
         with closing(connect_product(self.platform_path)) as conn:
-            from opportunity_app.operations import export_account
+            from opportunity_app.accounts.operations import export_account
 
             exported = export_account(conn, user_id=LOCAL_USER_ID)
         self.assertEqual([row["key"] for row in exported["user_settings"]], ["jev_inbox_suggestions"])

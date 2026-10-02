@@ -8,8 +8,8 @@ from typing import Any
 from fastapi import Depends, HTTPException, status
 
 from ..overrides import shared_router
-from ...dossier import DossierNotFoundError
-from ...employer import (
+from ...accounts.dossier import DossierNotFoundError
+from ...accounts.employer import (
     EmployerNotFoundError,
     add_candidate_from_share,
     approve_candidate_message,

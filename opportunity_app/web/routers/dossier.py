@@ -10,7 +10,7 @@ from typing import Any
 from fastapi import Depends, HTTPException, Response, status
 
 from ..overrides import shared_router
-from ...dossier import (
+from ...accounts.dossier import (
     DossierNotFoundError,
     create_share,
     delete_all as delete_dossier_all,

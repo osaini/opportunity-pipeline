@@ -16,7 +16,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from .core.database import connect_product, is_postgres_target
+from ..core.database import connect_product, is_postgres_target
 from .operations import OperationsError
 
 

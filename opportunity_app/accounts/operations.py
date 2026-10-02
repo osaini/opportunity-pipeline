@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from .core.timestamps import utc_now
+from ..core.timestamps import utc_now
 
 
 class OperationsError(RuntimeError):
@@ -296,7 +296,7 @@ def delete_account(
     removed_files = 0
     if apply_root is not None:
         # The whole folder of this student's screenshots, before the rows that name them go.
-        from .apply_runs import delete_apply_folder
+        from ..apply_runs import delete_apply_folder
 
         removed_files += delete_apply_folder(apply_root, user_id)
     with conn:
@@ -335,7 +335,7 @@ def run_retention(conn: sqlite3.Connection, *, now: datetime | None = None, appl
             ).rowcount
     # Email excerpts kept as evidence go after PIPELINE_MAIL_EVIDENCE_DAYS; the ledger rows stay, with their hashes.
     # So do the words of a possible reply left waiting that long; the card still links to it in Gmail.
-    from .application_inbox import evidence_days, purge_excerpts
+    from ..application_inbox import evidence_days, purge_excerpts
 
     cutoff = (now - timedelta(days=evidence_days())).isoformat(timespec="seconds")
     with conn:
@@ -346,7 +346,7 @@ def run_retention(conn: sqlite3.Connection, *, now: datetime | None = None, appl
         ).rowcount
     counts = {"expired_grants": grants, "retired_dossier_items": stale, "possible_reply_words": waiting, **purge_excerpts(conn, now=now)}
     if apply_root is not None:
-        from .apply_runs import purge_evidence
+        from ..apply_runs import purge_evidence
 
         counts.update(purge_evidence(conn, apply_root=apply_root, now=now))
     return counts

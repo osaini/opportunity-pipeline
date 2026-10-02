@@ -11,8 +11,8 @@ from typing import Any
 from uuid import uuid4
 
 from .auth import hash_secret
-from .student.profile import is_answered
-from .core.timestamps import utc_now
+from ..student.profile import is_answered
+from ..core.timestamps import utc_now
 
 
 class DossierNotFoundError(LookupError):

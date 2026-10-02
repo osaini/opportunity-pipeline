@@ -1541,7 +1541,7 @@ class MigrationTests(Case):
         self.conn.commit()
 
     def test_picks_go_with_the_account_and_the_role(self):
-        from opportunity_app.operations import ACCOUNT_QUERIES, export_account
+        from opportunity_app.accounts.operations import ACCOUNT_QUERIES, export_account
 
         self.assertIn("resume_picks", ACCOUNT_QUERIES)
         resume = self.add_resume(label="Hardware")

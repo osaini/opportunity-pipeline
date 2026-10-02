@@ -85,7 +85,7 @@ class ReadOnlyTokenResolutionTests(unittest.TestCase):
     """
 
     def test_resolve_user_token_survives_a_read_only_postgres_write(self):
-        from opportunity_app import auth
+        from opportunity_app.accounts import auth
 
         conn = ReadOnlyPostgresLike()
         resolved = auth.resolve_user_token(conn, "student-token")
@@ -109,7 +109,7 @@ class ReadOnlyTokenResolutionTests(unittest.TestCase):
         from helpers_platform import build_and_migrate
         from opportunity_app import STATIC_DIR
         from opportunity_app.api import create_app
-        from opportunity_app.auth import resolve_user_token
+        from opportunity_app.accounts.auth import resolve_user_token
         from opportunity_app.web import dependencies
 
         with tempfile.TemporaryDirectory() as tempdir:
@@ -165,7 +165,7 @@ class ReadOnlyTokenResolutionTests(unittest.TestCase):
 
 class UnicodeCredentialComparisonTests(unittest.TestCase):
     def test_arbitrary_unicode_credentials_compare_without_type_errors(self):
-        from opportunity_app.auth import constant_time_equal
+        from opportunity_app.accounts.auth import constant_time_equal
 
         self.assertTrue(constant_time_equal("梵.²", "梵.²"))
         self.assertFalse(constant_time_equal("梵.²", "owner-token"))
@@ -173,7 +173,7 @@ class UnicodeCredentialComparisonTests(unittest.TestCase):
     def test_lone_surrogate_credentials_compare_without_encode_errors(self):
         """A JSON "\\ud800" escape decodes to an unpaired surrogate, which strict
         UTF-8 encoding refuses. The comparison must answer, not raise."""
-        from opportunity_app.auth import constant_time_equal
+        from opportunity_app.accounts.auth import constant_time_equal
 
         self.assertFalse(constant_time_equal("x\ud800y", "owner-token"))
         self.assertTrue(constant_time_equal("x\ud800y", "x\ud800y"))
