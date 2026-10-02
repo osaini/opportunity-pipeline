@@ -1156,7 +1156,7 @@ class WorkstreamBCliRunnerTests(unittest.TestCase):
         self.assertIs(result, done)
         run.assert_called_once_with(
             ["claude", "-p"], input="the prompt", capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=12.5, cwd="somewhere", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            timeout=12.5, cwd="somewhere", env=None, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
 
     def test_run_headless_lets_a_timeout_and_a_missing_binary_propagate(self):
