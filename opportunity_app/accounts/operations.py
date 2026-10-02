@@ -296,7 +296,7 @@ def delete_account(
     removed_files = 0
     if apply_root is not None:
         # The whole folder of this student's screenshots, before the rows that name them go.
-        from ..apply_runs import delete_apply_folder
+        from ..apply.runs import delete_apply_folder
 
         removed_files += delete_apply_folder(apply_root, user_id)
     with conn:
@@ -346,7 +346,7 @@ def run_retention(conn: sqlite3.Connection, *, now: datetime | None = None, appl
         ).rowcount
     counts = {"expired_grants": grants, "retired_dossier_items": stale, "possible_reply_words": waiting, **purge_excerpts(conn, now=now)}
     if apply_root is not None:
-        from ..apply_runs import purge_evidence
+        from ..apply.runs import purge_evidence
 
         counts.update(purge_evidence(conn, apply_root=apply_root, now=now))
     return counts

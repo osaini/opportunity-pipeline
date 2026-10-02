@@ -547,10 +547,10 @@ for applications.
 New files:
 
 - `apps/extension/apply-engine.js`
-- `opportunity_app/apply_checks.py` (stdlib only; created in M3)
-- `opportunity_app/apply_policy.py`
+- `opportunity_app/apply/checks.py` (stdlib only; created in M3)
+- `opportunity_app/apply/policy.py`
 - `opportunity_app/apply_agent.py`
-- `opportunity_app/apply_runs.py`
+- `opportunity_app/apply/runs.py`
 - `migrations/0044_apply_agent.sql`
 - tests and fixtures (section 12)
 
@@ -885,7 +885,7 @@ it. The rehearsal gate (9.2) counts only rehearsals made with the current versio
 - Until then, a legacy page is detected and returns `needs_you` with "This is Greenhouse's older
   form, which the app does not fill yet".
 
-### 4.5 `opportunity_app/apply_policy.py`: plan and eligibility (pure)
+### 4.5 `opportunity_app/apply/policy.py`: plan and eligibility (pure)
 
 No browser and no network. Every function takes plain data and returns plain data, so the truth
 table in 7.5 is tested without Playwright.
@@ -917,7 +917,7 @@ table in 7.5 is tested without Playwright.
   (7.3).
 - `plan_hash(plan, canonical_url)` (6.6).
 
-### 4.6 `opportunity_app/apply_runs.py`: claims, runs, watch, and the service layer
+### 4.6 `opportunity_app/apply/runs.py`: claims, runs, watch, and the service layer
 
 This module owns all database writes:
 
@@ -998,7 +998,7 @@ guards:
 A submit also needs a **single-use confirm nonce**, issued only with the plan preview, bound to
 that rehearsal's `plan_hash`, and consumed in the claim transaction (5.3).
 
-### 4.7 `opportunity_app/apply_checks.py`: the decisions, as pure functions
+### 4.7 `opportunity_app/apply/checks.py`: the decisions, as pure functions
 
 Standard library only, created in M3 so the default unittest suite (which has no Playwright)
 covers every integrity-critical decision. Browser tests then only prove that the observations are
@@ -1369,7 +1369,7 @@ they can never be stored.
 
 **As built in M4s (2026-09-30), where it differs from the text above:**
 
-- The service is `opportunity_app/apply_sensitive.py` (`add_entry`, `delete_entry`, `list_entries`, `lookup`,
+- The service is `opportunity_app/apply/sensitive.py` (`add_entry`, `delete_entry`, `list_entries`, `lookup`,
   `allowed_categories`, `set_allowed_categories`). It is the only file that names the table besides
   `operations.py` (export and deletion); `apply_policy.stored_sensitive_answer` is now a one-line call to
   `lookup`. The 12.7 allowlist reads: `apply_sensitive.py` and `operations.py`, plus a check that only
@@ -3366,8 +3366,8 @@ process id (memory note restart-web-dashboard).
 **New:**
 
 - `apps/extension/apply-engine.js`
-- `opportunity_app/apply_checks.py`, `opportunity_app/apply_policy.py`,
-  `opportunity_app/apply_agent.py`, `opportunity_app/apply_runs.py`
+- `opportunity_app/apply/checks.py`, `opportunity_app/apply/policy.py`,
+  `opportunity_app/apply_agent.py`, `opportunity_app/apply/runs.py`
 - `migrations/0044_apply_agent.sql`
 - tests: `tests/test_apply_checks.py`, `tests/test_apply_policy.py`, `tests/test_apply_runs.py`,
   `tests/test_apply_watch.py`, `tests/test_apply_api.py`, `tests/test_apply_agent_browser.py`,

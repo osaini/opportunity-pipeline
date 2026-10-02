@@ -13,13 +13,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from opportunity_app import SERVER_INSTANCE, apply_claims, apply_preflight, apply_runs, apply_sensitive, automation
+from opportunity_app import SERVER_INSTANCE, automation
+from opportunity_app.apply import claims as apply_claims, preflight as apply_preflight, runs as apply_runs, sensitive as apply_sensitive
 from opportunity_app.applications import actions
 from opportunity_app.student import preparation
-from opportunity_app.apply_checks import question_key
-from opportunity_app.apply_policy import SchemaField, Sources, build_plan
+from opportunity_app.apply.checks import question_key
+from opportunity_app.apply.policy import SchemaField, Sources, build_plan
 from pipeline_core.identity import employer_key
-from opportunity_app.apply_sensitive import StoreRefused, add_entry
+from opportunity_app.apply.sensitive import StoreRefused, add_entry
 from opportunity_app.student.profile import update_profile
 from opportunity_app.core.database import connect_product
 from opportunity_app.core.timestamps import utc_now

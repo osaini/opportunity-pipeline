@@ -23,7 +23,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .overrides import SharedRouteApp
 from .. import DEFAULT_PLATFORM_DB, STATIC_DIR
 from .. import bootstrap
-from ..apply_runs import recover_stale as recover_stale_applications
+from ..apply.runs import recover_stale as recover_stale_applications
 from ..opportunities.captures import DEFAULT_CAPTURE_STORAGE
 from ..student.preparation import DEFAULT_MOCK_AUDIO_STORAGE
 from ..student.resumes import DEFAULT_STORAGE
@@ -37,7 +37,7 @@ if TYPE_CHECKING:  # only the create_app signature names these
     import httpx
 
     from ..integrations.agent_providers import AgentProvider
-    from ..apply_schema_client import SchemaClient
+    from ..apply.schema_client import SchemaClient
     from ..opportunities.boards import BoardTracker
     from ..outreach_call_prep import CallPrepWorker
     from ..outreach_discovery import DiscoveryManager

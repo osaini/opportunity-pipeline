@@ -42,9 +42,9 @@ class ApplyModuleSelectionTests(unittest.TestCase):
 
     def test_the_real_scan_finds_the_modules_it_should(self):
         found = apply_modules()
-        self.assertIn("apply_policy.py", found)
-        self.assertIn("apply_sensitive.py", found)
-        self.assertNotIn("apply_sensitive.py", apply_modules(exclude_store=True))
+        self.assertIn("apply/policy.py", found)
+        self.assertIn("apply/sensitive.py", found)
+        self.assertNotIn("apply/sensitive.py", apply_modules(exclude_store=True))
         self.assertNotIn("applications/extension.py", found)
         # The exclusion above would hold trivially if the file were not there, so check that the file exists.
         self.assertTrue((ROOT / "opportunity_app" / "applications" / "extension.py").is_file())

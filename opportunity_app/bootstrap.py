@@ -27,7 +27,8 @@ from __future__ import annotations
 import threading
 
 from .applications import inbox as application_inbox
-from . import apply_runs, auto_triage, automation_handlers, outreach_thank_you
+from .apply import runs as apply_runs
+from . import auto_triage, automation_handlers, outreach_thank_you
 from .student import resume_variants
 
 # In the order they are filled. Each is a module with a ``register()`` function.

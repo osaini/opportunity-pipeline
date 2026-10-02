@@ -18,8 +18,8 @@ import urllib.request
 import zlib
 from typing import Any, Callable, Protocol
 
-from .apply_greenhouse import schema_url
-from .opportunities.legacy import USER_AGENT
+from .greenhouse import schema_url
+from ..opportunities.legacy import USER_AGENT
 
 TIMEOUT_SECONDS = 20
 # A listing is a few hundred kilobytes at most; anything larger is not one.

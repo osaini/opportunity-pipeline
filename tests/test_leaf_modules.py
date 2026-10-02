@@ -545,7 +545,7 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         self.assertEqual(mail_trust.company_key("Acme Robotics Inc."), employer_key("Acme Robotics Inc."))
 
     def test_the_apply_stores_and_policy_use_the_one_employer_key(self):
-        from opportunity_app import apply_policy, apply_runs, apply_sensitive
+        from opportunity_app.apply import policy as apply_policy, runs as apply_runs, sensitive as apply_sensitive
 
         for module in (apply_runs, apply_sensitive, apply_policy):
             self.assertFalse(hasattr(module, "company_key"), f"{module.__name__} defines its own company_key again")

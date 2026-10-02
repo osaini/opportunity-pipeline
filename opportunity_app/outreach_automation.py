@@ -40,7 +40,8 @@ from typing import Any, Callable
 
 import httpx
 
-from . import apply_runs, automation, internal_automation, outreach_thank_you
+from .apply import runs as apply_runs
+from . import automation, internal_automation, outreach_thank_you
 from .background import PollingWorker, record_health_quietly, step_error
 from .core.database import rollback_quietly, connect_product
 from .outreach import approve_draft, get_target, heard_back, latest_event_stamp, list_targets, log_event, withdraw_auto_approval

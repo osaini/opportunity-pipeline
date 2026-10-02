@@ -39,10 +39,10 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from pipeline_core.identity import employer_key, identity_tokens, normalized_text
 
-from . import apply_sensitive
-from .student import preparation, resume_variants
-from .apply_checks import ALTERNATE_TEXT_FIELDS, Problem, join, question_key
-from .apply_classify import (
+from . import sensitive as apply_sensitive
+from ..student import preparation, resume_variants
+from .checks import ALTERNATE_TEXT_FIELDS, Problem, join, question_key
+from .classify import (
     CATEGORY_TOPIC,
     CATEGORY_WORDS,
     INHERITING_PARENTS,
@@ -64,9 +64,9 @@ from .apply_classify import (
     statement_of,
     without_enumeration,
 )
-from .apply_greenhouse import ATS_GREENHOUSE
-from .applications.extension import ExtensionApplyError, confirmed_resume_file
-from .core.json_values import json_as
+from .greenhouse import ATS_GREENHOUSE
+from ..applications.extension import ExtensionApplyError, confirmed_resume_file
+from ..core.json_values import json_as
 
 __all__ = [
     "ALLOWED_ATS_LABEL_FIELDS", "Plan", "PlanField", "SchemaField", "Source", "Sources", "build_plan", "company_matches", "control_of",

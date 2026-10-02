@@ -360,7 +360,7 @@ def _validate_automation_settings(profile: dict[str, Any], errors: list[str], wa
 
 def _validate_apply_agent_settings(profile: dict[str, Any], errors: list[str], warnings: list[str]) -> None:
     """The per-student Apply for me settings: how the name is written on an application, and the limits."""
-    from .apply_runs import DEFAULT_LIMITS, LIMIT_MAXIMUM
+    from .apply.runs import DEFAULT_LIMITS, LIMIT_MAXIMUM
     from .student.profile import name_parts_errors
 
     parts = profile.get("name_parts")

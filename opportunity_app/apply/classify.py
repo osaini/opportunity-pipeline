@@ -22,10 +22,10 @@ from typing import TYPE_CHECKING, Any, Iterable
 
 from pipeline_core.identity import normalized_text
 
-from .applications.extension import SENSITIVE_FIELD
+from ..applications.extension import SENSITIVE_FIELD
 
 if TYPE_CHECKING:
-    from .apply_policy import SchemaField
+    from .policy import SchemaField
 
 # The categories a statement and a tick box come in. (The store of answers has its own list of what it may keep.)
 STATEMENT_CATEGORIES = ("acknowledgment", "consent")

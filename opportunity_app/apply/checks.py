@@ -29,7 +29,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, NamedTuple, Sequence
 from urllib.parse import parse_qs, quote, quote_plus, unquote, unquote_plus, urlsplit
-from .apply_greenhouse import BOARD_HOSTS, GREENHOUSE_DOMAIN, SUBMIT_HOST
+from .greenhouse import BOARD_HOSTS, GREENHOUSE_DOMAIN, SUBMIT_HOST
 
 # ---------------------------------------------------------------------------------------------
 # Hosts and endpoints

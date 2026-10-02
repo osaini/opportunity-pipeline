@@ -29,7 +29,7 @@ from ...applications.extension import (
 )
 from ...student.preparation import save_answer
 from ...core.database import connect_product
-from ... import apply_classify
+from ...apply import classify as apply_classify
 from ..context import AppContext
 from ..dependencies import extension_connection, get_ctx, require_auth, writable_connection
 from ..models.extension import (

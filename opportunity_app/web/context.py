@@ -31,9 +31,9 @@ from typing import Any, Callable
 import httpx
 
 from .. import APPLY_ROOT, DEFAULT_PLATFORM_DB, DEFAULT_PROFILE, STATIC_DIR
-from .. import apply_preflight, apply_runs
+from ..apply import preflight as apply_preflight, runs as apply_runs
 from ..integrations.agent_providers import AgentProvider, build_provider
-from ..apply_schema_client import SchemaClient, default_schema_client_factory
+from ..apply.schema_client import SchemaClient, default_schema_client_factory
 from ..opportunities.boards import BoardTracker
 from ..opportunities.captures import DEFAULT_CAPTURE_STORAGE
 from ..core.database import is_postgres_target

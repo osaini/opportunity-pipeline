@@ -18,10 +18,11 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import SERVER_INSTANCE, apply_claims, apply_runs, automation, automation_health
+from opportunity_app import SERVER_INSTANCE, automation, automation_health
+from opportunity_app.apply import claims as apply_claims, runs as apply_runs
 from opportunity_app.applications import actions, urgent
 from opportunity_app.core import schema
-from opportunity_app.apply_runs import ClaimHeldError, ClaimRefused
+from opportunity_app.apply.runs import ClaimHeldError, ClaimRefused
 from pipeline_core.identity import employer_key
 from opportunity_app.accounts.operations import ACCOUNT_QUERIES, delete_account, export_account, run_retention
 from opportunity_app.outreach_automation import AutomationWorker

@@ -67,7 +67,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Protocol
 from uuid import uuid4
 
-from .apply_claims import claim_held
+from .apply.claims import claim_held
 from .core.database import is_unique_violation
 from .outreach_config import sender_account
 from .core.schema import PAUSE_NEVER_CHANGED

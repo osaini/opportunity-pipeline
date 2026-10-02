@@ -50,17 +50,17 @@ from uuid import uuid4
 
 from pipeline_core.identity import normalized
 
-from . import SERVER_INSTANCE, automation
-from .applications import actions
-from .background import step_error
-from .core.database import is_unique_violation
-from .core.json_values import json_as
-from .core.profile_store import read_stored_profile
-from .core.settings_store import get_setting, put_setting, setting_updated_at
-from .core.timestamps import parse_app_instant, utc_now
-from .core.user_time import UserTimezone, user_timezone
-from .apply_greenhouse import ADAPTER_VERSION, ATS_GREENHOUSE, GREENHOUSE_SENDER_DOMAINS
-from .apply_claims import HELD_HEARTBEAT, RUNNING, claim_held, forget
+from .. import SERVER_INSTANCE, automation
+from ..applications import actions
+from ..background import step_error
+from ..core.database import is_unique_violation
+from ..core.json_values import json_as
+from ..core.profile_store import read_stored_profile
+from ..core.settings_store import get_setting, put_setting, setting_updated_at
+from ..core.timestamps import parse_app_instant, utc_now
+from ..core.user_time import UserTimezone, user_timezone
+from .greenhouse import ADAPTER_VERSION, ATS_GREENHOUSE, GREENHOUSE_SENDER_DOMAINS
+from .claims import HELD_HEARTBEAT, RUNNING, claim_held, forget
 
 LOGGER = logging.getLogger(__name__)
 
@@ -1438,8 +1438,8 @@ def setup_requirement(conn: sqlite3.Connection, user_id: str) -> str:
     with no display), no first and last name for applications, no confirmed email, no confirmed résumé. The confirmation-email checks (D12)
     belong to a one-click submit, not to the switch.
     """
-    from . import apply_policy
-    from .student import preparation
+    from . import policy as apply_policy
+    from ..student import preparation
 
     if _AGENT_FACTORY is None:
         return NOT_HERE
@@ -1474,7 +1474,7 @@ def set_ats_label(
     conn: sqlite3.Connection, user_id: str, field: str, label: str, *, ats: str = ATS_GREENHOUSE, now: datetime | None = None,
 ) -> dict[str, str]:
     """Save the exact text of the option the student picked for a typeahead list. Replaces an earlier one."""
-    from .apply_policy import ALLOWED_ATS_LABEL_FIELDS
+    from .policy import ALLOWED_ATS_LABEL_FIELDS
 
     if field not in ALLOWED_ATS_LABEL_FIELDS:
         raise ValueError(f"Unknown option list: {field}")

@@ -25,11 +25,11 @@ from typing import Any
 from pipeline_core.identity import employer_key
 from pipeline_core.visibility import capture_visible_sql
 
-from . import apply_classify, apply_greenhouse, apply_policy, apply_runs, apply_sensitive
-from .student import preparation
-from .applications.actions import OpportunityNotFoundError
-from .apply_schema_client import SchemaClient, SchemaUnavailable
-from .apply_checks import question_key
+from . import classify as apply_classify, greenhouse as apply_greenhouse, policy as apply_policy, runs as apply_runs, sensitive as apply_sensitive
+from ..student import preparation
+from ..applications.actions import OpportunityNotFoundError
+from .schema_client import SchemaClient, SchemaUnavailable
+from .checks import question_key
 
 NOT_GREENHOUSE = "Apply for me works with Greenhouse postings only, for now"
 NOT_FOUND = "The app couldn't find this posting on Greenhouse. It may be closed"

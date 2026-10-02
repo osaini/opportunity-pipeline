@@ -14,8 +14,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import SERVER_INSTANCE
-from .core.timestamps import parse_app_instant
+from .. import SERVER_INSTANCE
+from ..core.timestamps import parse_app_instant
 
 # A claim, or a run, that another server process holds is held while its heartbeat is this fresh.
 HELD_HEARTBEAT = timedelta(minutes=2)

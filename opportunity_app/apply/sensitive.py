@@ -44,8 +44,8 @@ from uuid import uuid4
 from pipeline_core.identity import employer_key, normalized_text
 from pipeline_core.visibility import capture_visible_sql
 
-from .apply_checks import question_key
-from .apply_classify import (
+from .checks import question_key
+from .classify import (
     NEVER_STORABLE_TOPICS,
     RESTRICTION,
     STATEMENT_CATEGORIES,
@@ -55,8 +55,8 @@ from .apply_classify import (
     eeo_words,
     net_topics,
 )
-from .core.settings_store import get_setting, put_setting
-from .core.timestamps import utc_now
+from ..core.settings_store import get_setting, put_setting
+from ..core.timestamps import utc_now
 
 __all__ = [
     "CATEGORY_GROUPS", "CONSENT_TEXT", "DECLINE_EXAMPLES", "EEO_CATEGORIES", "LABELS", "STORABLE", "StoreRefused", "add_entry", "allowed_categories",

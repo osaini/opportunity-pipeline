@@ -19,10 +19,10 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import apply_classify, apply_policy, apply_preflight, apply_sensitive
-from opportunity_app.apply_checks import question_key
-from opportunity_app.apply_policy import SchemaField
-from opportunity_app.apply_sensitive import StoreRefused, add_entry
+from opportunity_app.apply import classify as apply_classify, policy as apply_policy, preflight as apply_preflight, sensitive as apply_sensitive
+from opportunity_app.apply.checks import question_key
+from opportunity_app.apply.policy import SchemaField
+from opportunity_app.apply.sensitive import StoreRefused, add_entry
 
 from apply_fake_ats import fixture_json
 import helpers_apply as apply_helpers
@@ -1083,7 +1083,7 @@ class StoreReaderScanTests(unittest.TestCase):
     # Allowed modules, as paths from the repo root without ".py". Each may be a single file or, after a split, a package of
     # the same name (opportunity_app/core/schema/...), but only at this location: a same-named file elsewhere (scripts/schema.py,
     # pipeline_core/operations.py) is not allowed, which the old basename check wrongly let through.
-    ALLOWED = ("opportunity_app/apply_sensitive", "opportunity_app/accounts/operations", "opportunity_app/core/schema")
+    ALLOWED = ("opportunity_app/apply/sensitive", "opportunity_app/accounts/operations", "opportunity_app/core/schema")
 
     def sources(self):
         for folder in ("opportunity_app", "pipeline_core"):
@@ -1108,8 +1108,8 @@ class StoreReaderScanTests(unittest.TestCase):
     # `from ..apply import sensitive` and an absolute `from opportunity_app.apply.sensitive import lookup` name the same module
     # as `from . import apply_sensitive` does today. A text search for the module's old file name would go quiet the day the
     # module moves into a package, so the importer checks below read the import targets, not the words.
-    STORE_MODULE = "opportunity_app.apply_sensitive"
-    POLICY_MODULE = "opportunity_app.apply_policy"
+    STORE_MODULE = "opportunity_app.apply.sensitive"
+    POLICY_MODULE = "opportunity_app.apply.policy"
 
     def resolved_imports(self, path):
         """Every dotted module name `path` imports: for `from X import a` both X and X.a, with relative X resolved."""
@@ -1177,12 +1177,12 @@ class StoreReaderScanTests(unittest.TestCase):
 
     # The modules that may import the store, keyed like ALLOWED on the path from the repo root: the plan, the check, and the
     # settings routes (web/routers/apply_agent.py). A file or package at another path that imports it fails, however it is named.
-    IMPORTERS = ("opportunity_app/apply_policy", "opportunity_app/apply_preflight", "opportunity_app/web/routers/apply_agent")
+    IMPORTERS = ("opportunity_app/apply/policy", "opportunity_app/apply/preflight", "opportunity_app/web/routers/apply_agent")
 
     def test_only_the_plan_the_check_and_the_settings_routes_import_the_store(self):
         importers = {path.relative_to(REPO).as_posix() for path in self.package_modules()
                      if (re.search(r"\bapply_sensitive\b", path.read_text(encoding="utf-8")) or self.imports_module(path, self.STORE_MODULE))
-                     and not self.in_module(path, "opportunity_app/apply_sensitive")}
+                     and not self.in_module(path, "opportunity_app/apply/sensitive")}
         self.assertTrue(importers, "the scan found the files it should")
         self.assertEqual([item for item in sorted(importers)
                           if not any(self.in_module(REPO / (item), name) for name in self.IMPORTERS)], [],

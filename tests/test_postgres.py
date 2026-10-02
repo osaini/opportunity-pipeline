@@ -19,7 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, apply_claims, apply_runs, automation, automation_health, outreach_schedule
+from opportunity_app import STATIC_DIR, automation, automation_health, outreach_schedule
+from opportunity_app.apply import claims as apply_claims, runs as apply_runs
 from opportunity_app.core import schema
 from opportunity_app.applications.actions import record_intent, update_application
 from opportunity_app.api import create_app

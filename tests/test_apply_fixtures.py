@@ -52,7 +52,7 @@ from apply_fake_ats import (
 )
 from browser_support import requires_chromium
 
-from opportunity_app.apply_checks import (
+from opportunity_app.apply.checks import (
     PHASE_AFTER_HAND_OVER,
     PHASE_AFTER_INPUT,
     PHASE_BEFORE_INPUT,

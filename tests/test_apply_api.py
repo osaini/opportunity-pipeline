@@ -21,9 +21,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, apply_runs, apply_schema_client, apply_sensitive, automation
+from opportunity_app import STATIC_DIR, automation
+from opportunity_app.apply import runs as apply_runs, schema_client as apply_schema_client, sensitive as apply_sensitive
 from opportunity_app.api import create_app
-from opportunity_app.apply_schema_client import GreenhouseSchemaClient, SchemaUnavailable
+from opportunity_app.apply.schema_client import GreenhouseSchemaClient, SchemaUnavailable
 from opportunity_app.student.profile import update_profile
 from opportunity_app.core.database import connect_product
 from opportunity_app.core.timestamps import utc_now
@@ -814,7 +815,7 @@ class SchemaClientTests(unittest.TestCase):
 
     def test_the_default_factory_gives_the_live_client_and_it_reaches_only_the_public_api_host(self):
         self.assertIsInstance(apply_schema_client.default_schema_client_factory(), GreenhouseSchemaClient)
-        from opportunity_app.apply_greenhouse import API_HOST, schema_url
+        from opportunity_app.apply.greenhouse import API_HOST, schema_url
 
         self.assertEqual(schema_url("a", "1").split("/")[2], API_HOST)
 

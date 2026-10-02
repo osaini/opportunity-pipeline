@@ -21,7 +21,7 @@ CONSENT = re.compile("only to fill in application forms")
 
 def allow(live_server, *categories):
     """The student switched these kinds of sensitive answer on, before the page loads."""
-    from opportunity_app import apply_sensitive
+    from opportunity_app.apply import sensitive as apply_sensitive
 
     with db(live_server) as conn:
         apply_sensitive.set_allowed_categories(conn, USER, categories)
@@ -186,7 +186,7 @@ TERMS_LINK = "https://careers.example-robotics.test/candidate-terms"
 def yes_no_terms(monkeypatch):
     """The fictional listing also asks a Yes/No agreement question whose description holds the statement and a link."""
     from apply_fake_ats import FakeSchemaClient
-    from opportunity_app import apply_preflight
+    from opportunity_app.apply import preflight as apply_preflight
 
     original = FakeSchemaClient.fetch
 
@@ -233,7 +233,7 @@ def test_a_yes_no_agreement_shows_its_statement_and_links_before_it_can_be_ticke
 
 
 def test_switching_two_kinds_quickly_keeps_both_changes(apply_ready, owner_page, live_server):
-    from opportunity_app import apply_sensitive
+    from opportunity_app.apply import sensitive as apply_sensitive
 
     allow(live_server, *apply_sensitive.STORABLE)
     owner_page.click("#profile-nav")
@@ -255,7 +255,7 @@ def test_switching_two_kinds_quickly_keeps_both_changes(apply_ready, owner_page,
 
 
 def test_a_change_in_the_settings_keeps_keyboard_focus_and_what_was_typed(apply_ready, owner_page, live_server):
-    from opportunity_app import apply_sensitive
+    from opportunity_app.apply import sensitive as apply_sensitive
 
     allow(live_server, "work_authorization")
     with db(live_server) as conn:
@@ -323,7 +323,7 @@ AGE_STATEMENT = "Are you 18 years of age or older? Yes, I am 18 or older"
 def age_box(monkeypatch):
     """The fictional listing also asks a tick box that states the student's age."""
     from apply_fake_ats import FakeSchemaClient
-    from opportunity_app import apply_preflight
+    from opportunity_app.apply import preflight as apply_preflight
 
     original = FakeSchemaClient.fetch
 
@@ -372,7 +372,7 @@ def test_a_tick_box_answer_added_in_the_settings_is_stored_as_ticked_and_used_on
 
 
 def test_remove_buttons_say_which_company_and_the_options_say_which_question(apply_ready, owner_page, live_server):
-    from opportunity_app import apply_sensitive
+    from opportunity_app.apply import sensitive as apply_sensitive
 
     question = "Are you legally authorized to work in the United States?"
     allow(live_server, "work_authorization")
