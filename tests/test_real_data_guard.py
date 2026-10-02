@@ -296,7 +296,7 @@ class RealDataFilesAreRefusedTests(unittest.TestCase):
         self.assertFalse(realdata_guard.is_real_data_path(ROOT / "data-not-really" / "x.txt"))
         self.assertFalse(realdata_guard.is_real_data_path(ROOT / "tests" / "data" / "x.txt"))
 
-    def test_reading_is_let_through_because_tracked_files_live_there(self):
+    def test_reading_other_names_is_let_through_because_tracked_files_live_there(self):
         self.assertFalse(realdata_guard.audit_refuses("open", (str(self.target), "r", 0)))
         self.assertFalse(realdata_guard.audit_refuses("open", (str(self.target), "rb", os.O_RDONLY)))
         self.assertFalse(realdata_guard.audit_refuses("open", (self.target, None, os.O_RDONLY)))
@@ -307,6 +307,40 @@ class RealDataFilesAreRefusedTests(unittest.TestCase):
             open(self.target, "r")
         with self.assertRaises(FileNotFoundError):
             open(self.target, "rb")
+
+    def test_reading_a_database_or_a_backup_of_one_is_refused(self):
+        """A raw read_bytes() or copy of a real database goes round the sqlite wrapper, so the hook refuses database names."""
+        real = realdata_guard.real_data_dirs()
+        for name in ("platform.db", "pipeline.db", "platform.db-wal", "platform.db.pre-0047-backup", "old.sqlite", "b.sqlite3"):
+            with self.subTest(name=name):
+                self.assertTrue(realdata_guard.audit_refuses("open", (str(real[0] / name), "rb", os.O_RDONLY), dirs=real))
+                self.refuse(lambda: (self.root / name).read_bytes())
+                self.refuse(lambda: shutil.copyfile(self.root / name, Path(tempfile.gettempdir()) / f"{self.name}.copy"))
+        self.assertFalse(realdata_guard.audit_refuses("open", (str(real[0] / "manual_jobs.csv"), "r", 0), dirs=real))
+
+    def test_truncating_a_file_by_name_is_refused(self):
+        real = realdata_guard.real_data_dirs()
+        self.assertTrue(realdata_guard.audit_refuses("os.truncate", (str(real[0] / "platform.db"), 0), dirs=real))
+        self.assertFalse(realdata_guard.audit_refuses("os.truncate", (3, 0), dirs=real), "a descriptor names no path")
+        self.refuse(lambda: os.truncate(self.target, 0))
+
+    def test_a_path_through_a_link_to_a_data_directory_is_judged_by_where_it_leads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target, link = Path(tmp).resolve() / "elsewhere", Path(tmp).resolve() / "linked-data"
+            target.mkdir()
+            try:
+                if os.name == "nt":
+                    import _winapi
+                    _winapi.CreateJunction(str(target), str(link))
+                else:
+                    os.symlink(target, link, target_is_directory=True)
+            except (OSError, AttributeError) as error:
+                self.skipTest(f"cannot make a directory link here: {error}")
+            for dirs, spelled in (([target], link / "platform.db"), ([link], target / "platform.db")):
+                with self.subTest(guarded=dirs[0].name, spelled=spelled.parent.name):
+                    self.assertTrue(realdata_guard.audit_refuses("open", (str(spelled), "w", 0), dirs=dirs))
+                    self.assertTrue(realdata_guard.audit_refuses("os.truncate", (str(spelled), 0), dirs=dirs))
+            os.rmdir(link) if os.name == "nt" else link.unlink()
 
     def test_the_hook_judges_only_events_that_name_a_path(self):
         refuse = realdata_guard.audit_refuses

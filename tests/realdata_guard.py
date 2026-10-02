@@ -18,9 +18,10 @@ is added without one of those imports. Installing twice is harmless.
 `sqlite3.connect` is not the only way into data/: the deep search's lock file, its reports, the logs and dated backups are plain
 files. The same install therefore adds one audit hook (sys.addaudithook, cheap: one dict lookup for every event it does not
 care about) that refuses every write there, before the call is made, with the same RealDataAccessError: an open that can
-create or change a file (write, append, create, truncate or read-write), mkdir, remove, rmdir and rename. Reading is left alone,
-because a few tests read the tracked files in data/ (the sample jobs CSV); the databases are protected from reads by the sqlite
-wrapper above, where a read is what a migration or a lock would follow. A test that needs a folder of reports points its code at a temp directory (patch
+create or change a file (write, append, create, truncate or read-write), mkdir, remove, rmdir, rename and os.truncate. A plain
+read is refused only for a database-like name (platform.db, its -wal/-shm files, platform.db.pre-0047-backup, *.sqlite), so a
+raw read_bytes() or a copy of a real database fails too, while the tracked files in data/ (the sample jobs CSV) stay readable.
+A path is compared both as spelled and with links resolved, so a data/ that is a symlink or junction is guarded either way. A test that needs a folder of reports points its code at a temp directory (patch
 discovery.REPORT_DIR and the like), as it already does for the database. An audit hook cannot be removed, so uninstall() only
 turns it off.
 
@@ -128,7 +129,9 @@ def is_real_data_path(database, *, uri=False, dirs=None):
 
 # Audit events that name a path, and which of their arguments are paths.
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
-_PATH_EVENTS = {"open": (0,), "os.mkdir": (0,), "os.remove": (0,), "os.rmdir": (0,), "os.rename": (0, 1)}
+_PATH_EVENTS = {"open": (0,), "os.mkdir": (0,), "os.remove": (0,), "os.rmdir": (0,), "os.rename": (0, 1), "os.truncate": (0,)}
+# A read-only open of one of these names is refused too: a database, its journal files, or a dated backup of one.
+_DATABASE_NAME = re.compile(r"\.(?:db|sqlite3?)(?:$|[-.])", re.IGNORECASE)
 _audit = {"hooked": False, "on": False, "prefixes": ()}
 # Directories guarded in addition to the real ones, for this guard's own tests only (see guard_extra_dir).
 _extra_dirs = []
@@ -139,24 +142,39 @@ def _inside_prefixes(value, prefixes):
     if not isinstance(value, (str, bytes, os.PathLike)):
         return False
     try:
-        text = os.path.normcase(os.path.abspath(os.fsdecode(value)))
+        spelled = os.fsdecode(value)
+        texts = {os.path.normcase(os.path.abspath(spelled)), os.path.normcase(os.path.realpath(spelled))}
     except (OSError, ValueError, TypeError):
         return False
-    return any(text == prefix or text.startswith(prefix + os.sep) for prefix in prefixes)
+    return any(text == prefix or text.startswith(prefix + os.sep) for text in texts for prefix in prefixes)
 
 
 def _prefixes(dirs):
-    return tuple(dict.fromkeys(os.path.normcase(os.path.abspath(str(directory))) for directory in dirs))
+    spellings = (spelling for directory in dirs for spelling in (os.path.abspath(str(directory)), os.path.realpath(str(directory))))
+    return tuple(dict.fromkeys(os.path.normcase(spelling) for spelling in spellings))
+
+
+def _names_database(value):
+    if not isinstance(value, (str, bytes, os.PathLike)):
+        return False
+    try:
+        return bool(_DATABASE_NAME.search(os.path.basename(os.fsdecode(value))))
+    except (TypeError, ValueError):
+        return False
 
 
 def audit_refuses(event, args, dirs=None):
-    """Whether this audit event is a write to a file or folder inside a real data directory (see the module docstring)."""
+    """Whether this audit event is a write to a file or folder inside a real data directory, or a read of a database there.
+
+    See the module docstring.
+    """
     indexes = _PATH_EVENTS.get(event)
     if indexes is None:
         return False
-    if event == "open":  # (path, mode, flags): a read-only open is let through
-        mode, flags = (tuple(args) + (None, None))[1:3]
-        if not ((isinstance(mode, str) and any(char in mode for char in "wax+")) or (isinstance(flags, int) and flags & _WRITE_FLAGS)):
+    if event == "open":  # (path, mode, flags): a read-only open is let through unless it names a database
+        path, mode, flags = (tuple(args) + (None, None, None))[:3]
+        writes = (isinstance(mode, str) and any(char in mode for char in "wax+")) or (isinstance(flags, int) and flags & _WRITE_FLAGS)
+        if not writes and not _names_database(path):
             return False
     prefixes = _audit["prefixes"] if dirs is None else _prefixes(dirs)
     return any(index < len(args) and _inside_prefixes(args[index], prefixes) for index in indexes)
