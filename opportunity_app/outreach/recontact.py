@@ -27,7 +27,7 @@ from typing import Any, Callable
 
 from ..automation.background import SingleFlightManager
 from .targets import get_target
-from .agents import discovery_runner
+from .agents import agent_runner
 from .agents import Runner
 from .contacts import apply_choice, choose_contact, find_contacts, is_generic_address, list_candidates
 from ..core.database import connect_product
@@ -252,19 +252,21 @@ class RecontactManager(SingleFlightManager):
         ))
 
     def _report(self, conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
-        runner = self._runner
+        runner, note = self._runner, ""
         if runner is None and self._email_search:
-            runner = discovery_runner()
+            runner, note = agent_runner()
         with ExitStack() as stack:
             fetcher = stack.enter_context(self._client_factory())
             renderer = self._renderer_factory()
             verifier = self._verifier_factory()
-            return recontact_targets(
+            result = recontact_targets(
                 conn, user_id=user_id, fetcher=fetcher, runner=runner if self._email_search else None,
                 verifier=stack.enter_context(verifier) if verifier is not None else None,
                 renderer=stack.enter_context(renderer) if renderer is not None else None,
                 contact_delay=self._contact_delay,
             )
+        # When Codex was chosen but not allowed to read the web, Claude Code ran the email search: say so in the result.
+        return {**result, "agent_note": note} if note and self._email_search else result
 
     def _start(self, mode: str, work: Callable[[sqlite3.Connection], dict[str, Any]]) -> dict[str, Any]:
         def run() -> dict[str, Any]:

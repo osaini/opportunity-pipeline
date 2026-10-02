@@ -31,6 +31,7 @@ from pipeline_core.env import iter_env_pairs
 
 from . import ROOT
 from .integrations.agent_providers import CLI_CONFIG, cli_available, cli_binary
+from .outreach.config import ALLOW_CODEX_ENV
 
 MIN_PYTHON = (3, 11)
 GENERATED_SECRETS = {
@@ -228,6 +229,12 @@ def init(paths: Paths, *, migrate: bool = True) -> dict[str, Any]:
         paths.env.chmod(0o600)
     report["generated_secrets"] = sorted(generated)
     report["agent_cli"] = agent or None
+    if agent == "codex-cli" and not (existing.get(ALLOW_CODEX_ENV) or "").strip():
+        report["warnings"].append(
+            "Only Codex CLI is installed here. Codex cannot be limited to web search, so the deep search and company "
+            f"research refuse to use it until you set {ALLOW_CODEX_ENV}=1 in .env (or install Claude Code). Ask the "
+            "student; see SETUP.md. Everything else Codex does here, such as drafts and reviews, works without it."
+        )
 
     if paths.profile.exists():
         report["kept"].append("config/profile.json")

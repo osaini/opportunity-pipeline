@@ -40,6 +40,19 @@ NEVER = ("--enable", "--add-dir", "--dangerously-bypass-approvals-and-sandbox", 
          "--approve-for-me", "--oss", "--profile", "-p", "danger-full-access", "workspace-write")
 
 
+_HOME = None
+
+
+def setUpModule():
+    """The tests never read the developer's real ~/.codex/config.toml: CODEX_HOME is an empty directory for the module."""
+    global _HOME
+    _HOME = tempfile.TemporaryDirectory()
+    patcher = mock.patch.dict("os.environ", {"CODEX_HOME": _HOME.name, "PIPELINE_CODEX_MODEL": "", "PIPELINE_CODEX_REASONING_EFFORT": ""})
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+    unittest.addModuleCleanup(_HOME.cleanup)
+
+
 def values_after(args, flag):
     return [args[index + 1] for index, item in enumerate(args[:-1]) if item == flag]
 
@@ -220,6 +233,25 @@ class AnUnisolatedCodexCommandIsRefusedTests(unittest.TestCase):
         with mock.patch.object(agent_providers.subprocess, "run", return_value=done):
             agent_providers.run_headless(["claude", *agent_providers.CLAUDE_NO_TOOLS], "p", timeout=5, cwd=".")
 
+    def test_an_option_that_undoes_the_isolation_is_refused_in_every_spelling(self):
+        """Presence checks alone would accept a command that adds settings back; only options the builder writes pass."""
+        command = self.good()
+        for extra in (
+            ["-c", "mcp_servers.x.command=evil"], ["-c", "sandbox_mode=danger-full-access"], ["--config", "web_search=live"],
+            ["--config=web_search=live"], ["-c", "features.shell_tool=true"], ["-cweb_search=live"],
+            ["--sandbox=danger-full-access"], ["--profile=mine"], ["--add-dir=/"], ["-m", "--oss"], ["-m", ""],
+            ["--model", "x"], ["--full-auto"], ["-c", "model_reasoning_effort=ludicrous"], ["--disable=code_mode_host"],
+        ):
+            with self.subTest(extra=extra):
+                self.assert_refused([*command[:-1], *extra, "-"])
+
+    def test_a_model_and_effort_that_the_builder_writes_are_accepted(self):
+        with mock.patch.object(agent_providers, "codex_model_settings", return_value=("gpt-6.1-sol", "low")):
+            command = agent_providers.codex_command("codex")
+        self.assertEqual(values_after(command, "-m"), ["gpt-6.1-sol"])
+        self.assertIn("model_reasoning_effort=low", values_after(command, "-c"))
+        agent_providers.require_codex_isolation(command)
+
     def test_a_cli_too_old_for_the_flags_says_to_update_it(self):
         for message in ("error: unexpected argument '--ignore-user-config' found", "Error: Unknown feature flag: tool_suggest",
                         "Error loading config.toml: unknown configuration field `web_search`"):
@@ -228,6 +260,104 @@ class AnUnisolatedCodexCommandIsRefusedTests(unittest.TestCase):
                 self.assertIn(message, detail)
                 self.assertIn("update", detail.lower())
         self.assertEqual(agent_providers.codex_failure_detail(subprocess.CompletedProcess([], 1, "", "not signed in")), "not signed in")
+
+
+class TheStudentsModelSurvivesTheIsolationTests(unittest.TestCase):
+    """--ignore-user-config stops Codex reading config.toml, so the model and effort the student chose go on argv."""
+
+    def home(self, text):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        if text is not None:
+            (Path(folder.name) / "config.toml").write_text(text, encoding="utf-8")
+        return mock.patch.dict("os.environ", {"CODEX_HOME": folder.name, "PIPELINE_CODEX_MODEL": "", "PIPELINE_CODEX_REASONING_EFFORT": ""})
+
+    def test_the_model_and_effort_come_from_config_toml(self):
+        with self.home('model = "gpt-6.1-sol"\nmodel_reasoning_effort = "low"\nsandbox_mode = "danger-full-access"\n'):
+            command = agent_providers.codex_command("codex")
+            self.assertEqual(agent_providers.codex_model_settings(), ("gpt-6.1-sol", "low"))
+        self.assertEqual(values_after(command, "-m"), ["gpt-6.1-sol"])
+        self.assertIn("model_reasoning_effort=low", values_after(command, "-c"))
+        self.assertNotIn("danger-full-access", command, "no other key of that file reaches the command")
+        assert_isolated(self, command, web=False)
+
+    def test_the_env_settings_win_over_the_file(self):
+        with self.home('model = "from-file"\nmodel_reasoning_effort = "low"\n'), \
+                mock.patch.dict("os.environ", {"PIPELINE_CODEX_MODEL": "mine", "PIPELINE_CODEX_REASONING_EFFORT": "HIGH"}):
+            self.assertEqual(agent_providers.codex_model_settings(), ("mine", "high"))
+
+    def test_nothing_is_passed_when_nothing_is_set_or_the_file_is_missing_or_broken(self):
+        for text in (None, "", "model = [", 'model = 3\nmodel_reasoning_effort = ["low"]\n'):
+            with self.subTest(text=text), self.home(text):
+                self.assertEqual(agent_providers.codex_model_settings(), ("", ""))
+                command = agent_providers.codex_command("codex")
+                self.assertNotIn("-m", command)
+                self.assertEqual([item for item in values_after(command, "-c") if item.startswith("model_reasoning")], [])
+
+    def test_a_value_that_is_not_a_model_name_or_an_effort_cannot_put_an_option_on_argv(self):
+        with self.home('model = "--oss"\nmodel_reasoning_effort = "sandbox_mode=danger-full-access"\n'):
+            self.assertEqual(agent_providers.codex_model_settings(), ("", ""))
+
+
+class CodexWithoutTheOptInFallsBackToClaudeCodeTests(unittest.TestCase):
+    """The deep search, contact searches and the CLI do not just fail when Codex is chosen: Claude Code runs and says so."""
+
+    def agents(self, *, claude_installed, allowed):
+        env = {ALLOW_CODEX_ENV: "1" if allowed else ""}
+        return mock.patch.dict("os.environ", env), mock.patch.object(
+            outreach_agents, "cli_available", lambda binary: claude_installed or "claude" not in str(binary).lower())
+
+    def test_codex_chosen_without_the_opt_in_runs_claude_code_with_a_note(self):
+        env, installed = self.agents(claude_installed=True, allowed=False)
+        with env, installed:
+            provider, note = outreach_agents.resolve_discovery_agent("codex-cli")
+            runner, runner_note = outreach_agents.agent_runner("codex-cli")
+        self.assertEqual(provider, "claude-code")
+        self.assertIn("Claude Code ran this search", note)
+        self.assertIn(ALLOW_CODEX_ENV, note)
+        self.assertIs(runner, outreach_agents.RUNNERS["claude-code"])
+        self.assertEqual(runner_note, note)
+
+    def test_no_fallback_with_the_opt_in_with_claude_code_chosen_or_with_only_codex_installed(self):
+        for chosen, claude_installed, allowed in (("codex-cli", True, True), ("claude-code", True, False), ("codex-cli", False, False)):
+            env, installed = self.agents(claude_installed=claude_installed, allowed=allowed)
+            with self.subTest(chosen=chosen, claude_installed=claude_installed, allowed=allowed), env, installed:
+                self.assertEqual(outreach_agents.resolve_discovery_agent(chosen), (chosen, ""))
+
+    def test_a_blank_provider_is_left_alone_so_the_documented_cli_defect_stays_as_it_was(self):
+        env, installed = self.agents(claude_installed=True, allowed=False)
+        with env, installed:
+            self.assertEqual(outreach_agents.resolve_discovery_agent(""), ("", ""))
+
+    def test_the_cli_says_so_on_stderr_and_uses_claude_code(self):
+        import io
+        from contextlib import redirect_stderr
+        from opportunity_app import outreach_cli
+
+        used = []
+        env, installed = self.agents(claude_installed=True, allowed=False)
+        fakes = {"claude-code": lambda prompt: used.append("claude") or "{}", "codex-cli": lambda prompt: used.append("codex") or "{}"}
+        with env, installed, mock.patch.dict(outreach_cli.RUNNERS, fakes):
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                runner = outreach_cli._runner_for("codex-cli")
+            runner("p")
+        self.assertEqual(used, ["claude"])
+        self.assertIn("Claude Code ran this search", stderr.getvalue())
+
+    def test_settings_do_not_offer_codex_for_research_until_the_opt_in_is_set(self):
+        from opportunity_app.outreach.settings import OutreachSettings
+
+        option = {"id": "codex-cli", "label": "Codex", "available": True, "hint": ""}
+        with mock.patch.dict("os.environ", {ALLOW_CODEX_ENV: ""}):
+            shown = OutreachSettings._research_option(option)
+        self.assertFalse(shown["available"])
+        self.assertIn(ALLOW_CODEX_ENV, shown["hint"])
+        self.assertIn("Claude Code", shown["hint"])
+        with mock.patch.dict("os.environ", {ALLOW_CODEX_ENV: "1"}):
+            self.assertEqual(OutreachSettings._research_option(option), option)
+        other = {"id": "claude-code", "label": "Claude", "available": True, "hint": ""}
+        self.assertEqual(OutreachSettings._research_option(other), other)
 
 
 if __name__ == "__main__":

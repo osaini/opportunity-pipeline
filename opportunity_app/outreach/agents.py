@@ -16,7 +16,7 @@ import tempfile
 from typing import Callable
 
 from ..integrations.agent_providers import (
-    CodexNotIsolated, cli_binary, codex_command, codex_failure_detail, failure_detail, run_headless,
+    CodexNotIsolated, cli_available, cli_binary, codex_command, codex_failure_detail, failure_detail, run_headless,
 )
 from .config import ALLOW_CODEX_ENV, codex_web_allowed, discovery_provider
 
@@ -66,6 +66,32 @@ def codex_runner(prompt: str, *, timeout: float = RUNNER_TIMEOUT_SECONDS) -> str
 RUNNERS: dict[str, Runner] = {"claude-code": claude_runner, "codex-cli": codex_runner}
 
 
+def resolve_discovery_agent(chosen: str | None = None) -> tuple[str, str]:
+    """The provider that runs a deep search or a contact search, and a note when it is not the one chosen.
+
+    Codex runs web research only when the student accepted that in .env (codex_runner). Without it, Claude Code does the
+    search when it is installed, and the note says so, so a student who picked Codex is told rather than shown every
+    search fail. With only Codex installed there is nothing to fall back to: the choice is kept and codex_runner refuses.
+    """
+    if chosen is None:
+        chosen = discovery_provider()
+    if chosen == "codex-cli" and not codex_web_allowed() and cli_available(cli_binary("claude-code")):
+        return "claude-code", (
+            "Codex cannot be limited to web search, so Claude Code ran this search. "
+            f"Set {ALLOW_CODEX_ENV}=1 in .env to let Codex do it."
+        )
+    return chosen, ""
+
+
+def agent_runner(chosen: str | None = None) -> tuple[Runner, str]:
+    """The runner for the provider setting (or an explicit choice), with the note from resolve_discovery_agent.
+
+    Claude Code runs when none is set, and for a name nothing runs.
+    """
+    provider, note = resolve_discovery_agent(chosen)
+    return RUNNERS.get(provider, claude_runner), note
+
+
 def discovery_runner() -> Runner:
-    """The runner for the deep search's provider setting: Claude Code when none is set, and for a name nothing runs."""
-    return RUNNERS.get(discovery_provider(), claude_runner)
+    """The runner for the deep search's provider setting (see agent_runner)."""
+    return agent_runner()[0]

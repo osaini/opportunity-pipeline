@@ -46,7 +46,7 @@ from .identity import company_key
 from .location import location_usable
 from .contact_names import website_domain
 from .contacts import apply_choice, choose_contact, find_contacts, list_candidates
-from .agents import Runner, discovery_runner
+from .agents import Runner, agent_runner
 from .drafting import generate_draft, outreach_proof
 from .email_search import needs_a_person, search_emails
 from .identity import mentions_company
@@ -772,14 +772,14 @@ class DiscoveryManager(SingleFlightManager):
 
     def start(self, *, user_id: str, scopes: list[str] | None = None) -> dict[str, Any]:
         def run() -> dict[str, Any]:
-            runner = self._runner or discovery_runner()
+            runner, note = (self._runner, "") if self._runner is not None else agent_runner()
             with ExitStack() as stack:
                 conn = stack.enter_context(closing(connect_product(self.platform_target)))
                 fetcher = stack.enter_context(self._client_factory())
                 form_d = self._form_d_fetcher_factory()
                 renderer = self._renderer_factory()
                 verifier = self._verifier_factory()
-                return run_discovery(
+                result = run_discovery(
                     conn, user_id=user_id, runner=runner, fetcher=fetcher, scopes=scopes,
                     report_dir=self._report_dir, provider_factory=self._provider_factory, draft_provider=self._draft_provider,
                     contact_delay=self._contact_delay,
@@ -789,5 +789,7 @@ class DiscoveryManager(SingleFlightManager):
                     email_runner=runner if self._email_search else None,
                     verifier=stack.enter_context(verifier) if verifier is not None else None,
                 )
+            # When Codex was chosen but not allowed to read the web, Claude Code ran the search: say so in the result.
+            return {**result, "agent_note": note} if note else result
 
         return self._launch("outreach-discovery", run)

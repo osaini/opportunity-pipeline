@@ -611,6 +611,28 @@ class CommandLineTests(unittest.TestCase):
         self.assertEqual(exit_code, outreach_cli.TEMPFAIL_EXIT)
 
 
+class DiscoveryFallbackNoteTests(unittest.TestCase):
+    def test_a_search_that_ran_on_claude_code_instead_of_codex_says_so_in_its_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, platform_path = build_and_migrate(root)
+            transport, _ = site_transport({"acme.com": {**ACME["acme.com"], "/about": "<p>About Acme</p>"}})
+            manager = DiscoveryManager(
+                platform_path,
+                client_factory=lambda: safe_fetcher(httpx.Client(transport=transport)),
+                report_dir=root / "reports", contact_delay=0,
+                form_d_fetcher_factory=lambda: None, renderer_factory=lambda: None,
+            )
+            note = "Codex cannot be limited to web search, so Claude Code ran this search."
+            runner = only_for(proposals(company("Acme", "https://acme.com")))
+            with mock.patch("opportunity_app.outreach.discovery.agent_runner", lambda: (runner, note)):
+                manager.start(user_id=USER, scopes=["local-accelerators"])
+                manager.wait(30)
+            status = manager.status()
+        self.assertEqual(status["state"], "succeeded", status)
+        self.assertEqual(status["result"]["agent_note"], note)
+
+
 class DiscoveryApiTests(unittest.TestCase):
     def test_owner_starts_a_deep_search_and_sees_the_new_targets(self):
         with tempfile.TemporaryDirectory() as tmp:

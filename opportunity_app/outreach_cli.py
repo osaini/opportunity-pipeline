@@ -58,7 +58,7 @@ from .core.database import is_postgres_target, connect_product
 from .opportunities.legacy import load_env_file
 from .outreach.targets import queue_follow_up_reminders
 from .outreach.config import RESEARCH_ENV, discovery_provider
-from .outreach.agents import RUNNERS
+from .outreach.agents import RUNNERS, resolve_discovery_agent
 from .outreach.discovery import DEFAULT_SCOPES, MAX_PER_SCOPE, SCOPES, DiscoveryBusy, run_discovery
 from .outreach.locate import BATCH_SIZE, locate_targets
 from .outreach.company_profile import SEC_USER_AGENT_ENV, enrich_targets, sec_fetcher
@@ -149,6 +149,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "research":
             return _research(conn, args)
         try:
+            runner = _runner_for(args.provider)
             with ExitStack() as stack:
                 fetcher = stack.enter_context(default_fetcher())
                 form_d = sec_fetcher()
@@ -157,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
                 result = run_discovery(
                     conn,
                     user_id=args.user,
-                    runner=RUNNERS[args.provider],
+                    runner=runner,
                     fetcher=fetcher,
                     scopes=args.scopes,
                     max_targets=args.max_targets,
@@ -166,8 +167,8 @@ def main(argv: list[str] | None = None) -> int:
                     provider_factory=build_provider,
                     form_d_fetcher=stack.enter_context(form_d) if form_d is not None else None,
                     renderer=stack.enter_context(renderer) if renderer is not None else None,
-                    locate_runner=None if args.no_locate else RUNNERS[args.provider],
-                    email_runner=None if args.no_email_search else RUNNERS[args.provider],
+                    locate_runner=None if args.no_locate else runner,
+                    email_runner=None if args.no_email_search else runner,
                     verifier=stack.enter_context(verifier) if verifier is not None else None,
                 )
         except DiscoveryBusy as exc:
@@ -180,10 +181,18 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _runner_for(provider: str):
+    """The runner for --provider. Codex needs the .env opt-in to read the web; without it Claude Code runs, and this says so."""
+    resolved, note = resolve_discovery_agent(provider)
+    if note:
+        print(note, file=sys.stderr)
+    return RUNNERS[resolved]
+
+
 def _locate(conn, args: argparse.Namespace) -> int:
     with default_fetcher() as fetcher:
         result = locate_targets(
-            conn, user_id=args.user, runner=RUNNERS[args.provider], fetcher=fetcher,
+            conn, user_id=args.user, runner=_runner_for(args.provider), fetcher=fetcher,
             limit=args.limit, batch_size=args.batch,
         )
     print(json.dumps(result, indent=2, ensure_ascii=False))
@@ -234,7 +243,7 @@ def _recontact(conn, args: argparse.Namespace) -> int:
             conn,
             user_id=args.user,
             fetcher=fetcher,
-            runner=None if args.no_email_search else RUNNERS[args.provider],
+            runner=None if args.no_email_search else _runner_for(args.provider),
             verifier=stack.enter_context(verifier) if verifier is not None else None,
             renderer=stack.enter_context(renderer) if renderer is not None else None,
             target_ids=args.target_ids,

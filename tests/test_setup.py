@@ -53,6 +53,17 @@ class SetupTests(unittest.TestCase):
         with closing(sqlite3.connect(self.paths.platform_db)) as conn:
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM users WHERE id='local-user'").fetchone()[0], 1)
 
+    def test_init_warns_when_only_codex_is_installed_and_the_web_opt_in_is_not_set(self):
+        with mock.patch.object(setup, "detect_agent_cli", return_value="codex-cli"):
+            report = setup.init(self.paths)
+        self.assertTrue(any("PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX" in warning for warning in report["warnings"]), report["warnings"])
+        setup.set_env_values(self.paths.env, {"PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX": "1"}, overwrite=True)
+        with mock.patch.object(setup, "detect_agent_cli", return_value="codex-cli"):
+            self.assertFalse(any("ALLOW_CODEX" in warning for warning in setup.init(self.paths)["warnings"]))
+        with mock.patch.object(setup, "detect_agent_cli", return_value="claude-code"):
+            setup.set_env_values(self.paths.env, {"PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX": ""}, overwrite=True)
+            self.assertFalse(any("ALLOW_CODEX" in warning for warning in setup.init(self.paths)["warnings"]))
+
     def test_init_is_idempotent_and_never_overwrites_what_the_student_set(self):
         setup.init(self.paths)
         first = setup.read_env(self.paths.env)

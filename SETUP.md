@@ -94,8 +94,10 @@ This creates:
   that repeats your name, contact details, or keys (see below).
 
 It detects Claude Code or Codex CLI, and records whichever it finds for the
-outreach deep search. It is safe to run again, and never overwrites anything
-already set.
+outreach deep search. If only Codex is installed, it warns that the deep search
+and company research stay off until the student agrees to
+`PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX=1` in `.env` (see step 6, AI). It is safe
+to run again, and never overwrites anything already set.
 
 ## 3. Interview the student and write the profile
 
@@ -295,6 +297,17 @@ themselves (rule 3). The details:
   use. One is enough. Show them Outreach → Settings, where each AI feature has
   its own choice listing only what is set up; with two (say Claude Code and
   Codex), the follow-up reviewer picks the one that did not write the email.
+  **Codex and the web**: Codex has no web-search-only mode. The one way to give it a
+  web tool also leaves it a file-patching tool that a page it reads could steer
+  (the sandbox blocks the write, but not testing what a local file contains). So
+  the deep search, contact searches and company research use Codex only when the
+  student has agreed to `PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX=1` in `.env`. Explain
+  that in a sentence and ask; do not set it for them. Without it, Claude Code runs
+  those searches when it is installed (and says so), and with only Codex they
+  refuse. Drafts, reviews and the career agent run Codex with no tools at all and
+  need nothing. Codex is started without `~/.codex/config.toml`, so its `model` and
+  `model_reasoning_effort` are carried over by the app; `PIPELINE_CODEX_MODEL` and
+  `PIPELINE_CODEX_REASONING_EFFORT` override them.
   **Who writes thank-yous after a decline** (`PIPELINE_OUTREACH_THANK_YOU_PROVIDER`)
   is there too; left on "Same as first-email drafts", the draft writer writes them.
 - **Jev** (`TYPESAFE_API_KEY`): optional and waitlisted; skip it freely. If they

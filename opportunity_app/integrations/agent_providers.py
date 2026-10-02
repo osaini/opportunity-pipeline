@@ -5,12 +5,15 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
+import tomllib
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Iterator, Protocol
 
 
@@ -187,18 +190,49 @@ _CODEX_SWITCHES = ("--skip-git-repo-check", "--ignore-user-config", "--ignore-ru
 # not valid TOML as a plain string.
 _CODEX_OVERRIDES = ("mcp_servers={}", "shell_environment_policy.inherit=none")
 _CODEX_WEB_SEARCH = "web_search="
-_CODEX_NEVER = (
-    "--enable", "--add-dir", "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust",
-    "--approve-for-me", "--oss", "--local-provider", "--profile", "-p", "-s", "--full-auto", "--yolo",
-)
+_CODEX_EFFORT = "model_reasoning_effort="
+CODEX_MODEL_ENV = "PIPELINE_CODEX_MODEL"
+CODEX_EFFORT_ENV = "PIPELINE_CODEX_REASONING_EFFORT"
+CODEX_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh")
+_CODEX_MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}")
+# The only options a Codex argv may carry. Anything else (a looser sandbox, a profile, another directory, a `-c` that
+# turns a feature back on) is refused, whatever form it is written in. Each flag below takes one value except the switches.
+_CODEX_VALUE_FLAGS = ("--sandbox", "-c", "--disable", "-m", "--output-last-message")
 
 
 class CodexNotIsolated(RuntimeError):
     """A Codex command that lacks the isolation, or a Codex call the app refuses to make. Nothing was started."""
 
 
+def codex_model_settings() -> tuple[str, str]:
+    """The model and reasoning effort Codex runs with: the student's own (.env, else Codex's config.toml), or "" for each.
+
+    ``--ignore-user-config`` stops Codex reading config.toml, which would otherwise silently drop the model and effort the
+    student chose, so they are read here (these two keys only, nothing else in that file) and passed on the command line.
+    A value that is not a plain model name or a known effort is ignored, so the file cannot put an option on argv.
+    """
+    model = os.environ.get(CODEX_MODEL_ENV, "").strip()
+    effort = os.environ.get(CODEX_EFFORT_ENV, "").strip().lower()
+    if not (model and effort):
+        try:
+            home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+            with open(home / "config.toml", "rb") as handle:
+                configured = tomllib.load(handle)
+        except (OSError, ValueError):
+            configured = {}
+        file_model, file_effort = configured.get("model"), configured.get("model_reasoning_effort")
+        model = model or (file_model if isinstance(file_model, str) else "").strip()
+        effort = effort or (file_effort if isinstance(file_effort, str) else "").strip().lower()
+    return (model if _CODEX_MODEL_NAME.fullmatch(model) else ""), (effort if effort in CODEX_EFFORTS else "")
+
+
 def _codex_flags(web_search: bool) -> list[str]:
     flags = ["exec", "--sandbox", "read-only", *_CODEX_SWITCHES]
+    model, effort = codex_model_settings()
+    if model:
+        flags += ["-m", model]
+    if effort:
+        flags += ["-c", f"{_CODEX_EFFORT}{effort}"]
     for override in (*_CODEX_OVERRIDES, f"{_CODEX_WEB_SEARCH}{'live' if web_search else 'disabled'}"):
         flags += ["-c", override]
     for feature in (*CODEX_OFF_FEATURES, *(() if web_search else (CODEX_CODE_MODE,))):
@@ -225,6 +259,42 @@ def _is_codex(command: list[str]) -> bool:
     return bool(command) and (os.path.basename(str(command[0])).lower().startswith("codex") or command[0] == cli_binary("codex-cli"))
 
 
+def _unlisted_codex_options(args: list[str]) -> list[str]:
+    """Problems for every option in a Codex argv (after `exec`) that codex_command could not have written.
+
+    Walks the argv the way Codex reads it: a known switch, or a known flag with its one value, and a final "-" for the
+    prompt on stdin. A `-c` may carry only the settings codex_command sets, plus a valid reasoning effort, so an override
+    that re-enables an MCP server, a sandbox, a web search or a profile is refused, as are `--config`, `-p`, `--add-dir`
+    and the `--flag=value` and `-cvalue` spellings of anything.
+    """
+    problems = []
+    allowed_overrides = (*_CODEX_OVERRIDES, f"{_CODEX_WEB_SEARCH}disabled", f"{_CODEX_WEB_SEARCH}live",
+                         *(f"{_CODEX_EFFORT}{effort}" for effort in CODEX_EFFORTS))
+    index = 1
+    while index < len(args):
+        item = args[index]
+        if item in _CODEX_SWITCHES:
+            index += 1
+        elif item in _CODEX_VALUE_FLAGS:
+            if index + 1 >= len(args):
+                problems.append(f"{item} has no value")
+                break
+            value = args[index + 1]
+            if item == "-c" and value not in allowed_overrides:
+                problems.append(f"-c {value} is not allowed")
+            elif item == "-m" and not _CODEX_MODEL_NAME.fullmatch(value):
+                problems.append(f"-m {value} is not a model name")
+            index += 2
+        elif item == "-" and index == len(args) - 1:
+            index += 1
+        else:
+            problems.append(f"{item} is not allowed")
+            index += 1
+    if args[-1:] != ["-"]:
+        problems.append("the prompt must go over stdin (a final -)")
+    return problems
+
+
 def require_codex_isolation(command: list[str]) -> None:
     """Raise CodexNotIsolated, before anything starts, when a Codex command lacks any part of codex_command's isolation.
 
@@ -236,6 +306,7 @@ def require_codex_isolation(command: list[str]) -> None:
     problems = []
     if args[:1] != ["exec"]:
         problems.append("it is not `codex exec`")
+    problems += _unlisted_codex_options(args)
     problems += [f"{switch} is missing" for switch in _CODEX_SWITCHES if switch not in args]
     if _values_after(args, "--sandbox") != ["read-only"]:
         problems.append("--sandbox must be given once, as read-only")
@@ -247,7 +318,6 @@ def require_codex_isolation(command: list[str]) -> None:
     off = _values_after(args, "--disable")
     wanted = (*CODEX_OFF_FEATURES, *(() if web == [f"{_CODEX_WEB_SEARCH}live"] else (CODEX_CODE_MODE,)))
     problems += [f"--disable {feature} is missing" for feature in wanted if feature not in off]
-    problems += [f"{item} is not allowed" for item in _CODEX_NEVER if item in args]
     if problems:
         raise CodexNotIsolated(
             "Codex was not started because its command is not isolated: " + "; ".join(problems) + ". "

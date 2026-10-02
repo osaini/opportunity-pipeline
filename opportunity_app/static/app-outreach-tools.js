@@ -548,14 +548,31 @@
     const [researchField, researchSelect] = selectField("settings-research-agent", "Who does the web research",
       "Used by the deep search, placing companies, Find people, and searching other sites for addresses. It runs the CLI signed in on this computer.");
     research.options.forEach((option) => researchSelect.appendChild(providerOption(option, research.value)));
-    researchSelect.addEventListener("change", () => save({ research_agent: researchSelect.value }, "Research agent"));
+    // An agent that is installed but not allowed to read the web (Codex without its .env opt-in) says why.
+    const researchHint = element("p", "profile-help");
+    const showResearchHint = (hintElement, agent, select) => {
+      const chosen = agent.options.find((option) => option.id === select.value);
+      hintElement.textContent = chosen && !chosen.available ? chosen.hint : "";
+    };
+    showResearchHint(researchHint, research, researchSelect);
+    researchField.appendChild(researchHint);
+    researchSelect.addEventListener("change", () => {
+      showResearchHint(researchHint, research, researchSelect);
+      save({ research_agent: researchSelect.value }, "Research agent");
+    });
 
     const companyResearch = settings.company_research_agent;
     const [companyResearchField, companyResearchSelect] = selectField("settings-company-research-agent", "Who researches a company for call prep",
       "Reads a company's site, job posts, patents, papers, and news for what they build and how; a fact is kept only when its quote is found on the page it cites. Runs when a company replies, or when you press Research this company.");
     companyResearchSelect.appendChild(optionElement("", "Same as the web research above", !companyResearch.value));
     companyResearch.options.forEach((option) => companyResearchSelect.appendChild(providerOption(option, companyResearch.value)));
-    companyResearchSelect.addEventListener("change", () => save({ company_research_agent: companyResearchSelect.value }, "Company research agent"));
+    const companyResearchHint = element("p", "profile-help");
+    showResearchHint(companyResearchHint, companyResearch, companyResearchSelect);
+    companyResearchField.appendChild(companyResearchHint);
+    companyResearchSelect.addEventListener("change", () => {
+      showResearchHint(companyResearchHint, companyResearch, companyResearchSelect);
+      save({ company_research_agent: companyResearchSelect.value }, "Company research agent");
+    });
 
     // The one LinkedIn account call prep may read interviewers' profiles as.
     const linkedinField = element("div", "settings-field");
