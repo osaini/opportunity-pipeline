@@ -1,7 +1,8 @@
 (() => {
   "use strict";
   // The shared field engine: everything content.js used to hold, minus the chrome.runtime
-  // listener, so the extension and the Apply for me agent read a form with the same rules.
+  // listener. It is written to be shared: the extension reads a form with it today, and the planned
+  // Apply for me runner (not built yet; nothing in Python loads this file) is meant to read forms with the same rules.
   // It never clicks, submits, or dispatches anything but input/change events on a field the
   // reviewed plan named. Every click the agent makes lives in Python.
   if (globalThis.OpportunityApplyEngine?.version) return;

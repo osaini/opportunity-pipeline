@@ -114,7 +114,9 @@ class NeedleTests(unittest.TestCase):
             "the QIT Kitelab externship": "your situation in shipped code",
         }
         for text, kind in cases.items():
-            for path in ("opportunity_app/static/app.js", "SETUP.md", "pipeline.py", "config/profile.example.json"):
+            # docs/guide/ holds the manual that used to be README.md, so it is held to the same rule.
+            for path in ("opportunity_app/static/app.js", "SETUP.md", "pipeline.py", "config/profile.example.json",
+                         "docs/guide/outreach.md"):
                 with self.subTest(text=text, path=path):
                     kinds = {hit.kind for hit in guard.scan_text(text, path, self.needles, path)}
                     self.assertIn(kind, kinds)

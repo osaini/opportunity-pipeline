@@ -282,7 +282,7 @@ class OAuthLifecycleTests(unittest.TestCase):
                     self.assertEqual(conn.execute("SELECT COUNT(*) FROM connector_accounts").fetchone()[0], 0)
 
     def test_a_403_says_why_when_google_gave_a_reason(self):
-        api_off = "Enable the Gmail API in your Google Cloud project (README, Gmail drafts setup), then connect again"
+        api_off = "Enable the Gmail API in your Google Cloud project (docs/guide/gmail.md, Gmail drafts setup), then connect again"
         try_again = "Could not confirm which Gmail account connected; try connecting again"
         tick = "Google did not grant the Gmail permissions; connect again and tick every box on Google's screen"
         cases = {

@@ -101,7 +101,10 @@ class LauncherSourceTests(unittest.TestCase):
         self.assertIn("WScript.Arguments", source)
 
     def test_docs_never_register_powershell_directly(self):
-        for path in (REPO_ROOT / "README.md", SCRIPTS / "run-daily.ps1"):
+        # The manual moved out of README.md into docs/guide/; a check of README.md alone would pass vacuously.
+        guide = sorted((REPO_ROOT / "docs" / "guide").glob("*.md"))
+        self.assertTrue(guide, "docs/guide/ holds the manual")
+        for path in (REPO_ROOT / "README.md", *guide, SCRIPTS / "run-daily.ps1"):
             with self.subTest(path=path.name):
                 text = path.read_text(encoding="utf-8")
                 self.assertIsNone(

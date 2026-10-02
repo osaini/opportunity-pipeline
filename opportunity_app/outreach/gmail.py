@@ -6,8 +6,11 @@ API instead. The student can also send an approved draft from the app, but
 only by pressing Send and then confirming the recipient; nothing goes out
 without both. The OAuth connection is the separate "gmail_drafts" connector, so
 its gmail.compose scope (which covers drafts and sending) is never mixed with
-the read-only monitoring connection. Its read scope, gmail.readonly, is for
-finding bounces (outreach/delivery.py). Its gmail.modify scope is only for
+the separate read-only monitoring connection (the "google" provider). Its read scope, gmail.readonly,
+is what every read of the student's outreach mailbox uses: bounce notices (outreach/delivery.py),
+replies (outreach/inbox.py), job-application mail (applications/inbox.py), sends made in Gmail
+itself (outreach/gmail_sends.py), the thread check before a thank-you (outreach/thank_you.py), and
+the read-only agent mailbox reader (scripts/pipeline_mailbox.py). Its gmail.modify scope is only for
 adding the student's label to outreach threads, sent mail and replies (outreach/labels.py); the
 app never uses it to remove a label, trash, archive or mark mail read.
 

@@ -355,7 +355,7 @@ def usajobs_jobs(source: dict[str, Any], discovery_terms: list[str]) -> Listing:
     if not api_key:
         raise ValueError(
             "USAJOBS_API_KEY not set. Register a free key at https://developer.usajobs.gov/ "
-            "and put it in .env or export it (see README)."
+            "and put it in .env or export it (see docs/guide/sources.md#api-keys)."
         )
     contact_email = source.get("contact_email") or os.environ.get("USAJOBS_CONTACT_EMAIL", "")
     if not contact_email:
@@ -459,7 +459,7 @@ def adzuna_jobs(source: dict[str, Any], discovery_terms: list[str]) -> Listing:
     if not app_id or not app_key:
         raise ValueError(
             "ADZUNA_APP_ID/ADZUNA_APP_KEY not set. Register a free application at "
-            "https://developer.adzuna.com/ and put both in .env (see README)."
+            "https://developer.adzuna.com/ and put both in .env (see docs/guide/sources.md#api-keys)."
         )
     country = source.get("country", "us")
     jobs: dict[str, dict[str, Any]] = {}
