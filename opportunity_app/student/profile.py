@@ -140,10 +140,12 @@ def _synced_repost_flags(conn: sqlite3.Connection) -> dict[str, str]:
     is the only place it survives, so it is carried forward until the next sync rewrites it.
     """
     flags: dict[str, str] = {}
-    for opportunity_id, explanation in conn.execute(
+    for row in conn.execute(
         "SELECT opportunity_id, explanation_json FROM fit_scores WHERE user_id=? ORDER BY created_at",
         (LOCAL_USER_ID,),
     ):
+        # By position: on PostgreSQL a row is a dict, so unpacking it would give the column names.
+        opportunity_id, explanation = row[0], row[1]
         flag = next((reason for reason in _reasons(explanation) if str(reason).startswith(REPOST_FLAG_PREFIX)), None)
         if flag:
             flags[str(opportunity_id)] = str(flag)

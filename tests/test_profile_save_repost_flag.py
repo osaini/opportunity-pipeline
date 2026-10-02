@@ -251,6 +251,22 @@ class RepostFlagsReadRowsByPositionTests(unittest.TestCase):
 
         self.assertEqual(scoring.repost_flags(Conn(), table="opportunities"), {"rp-new": (2, old[:10])})
 
+    def test_the_synced_flag_carry_forward_reads_dict_like_rows(self):
+        from opportunity_app.student import profile as profile_module
+
+        class DictRow(dict):
+            def __getitem__(self, key):
+                return list(self.values())[key] if isinstance(key, int) else super().__getitem__(key)
+
+        flag = profile_module.REPOST_FLAG_PREFIX + " this role has been listed under 2 different URLs since 2026-09-01"
+        rows = [DictRow(zip(("opportunity_id", "explanation_json"), ("rp-new", json.dumps(["Title fits", flag]))))]
+
+        class Conn:
+            def execute(self, *_args):
+                return iter(rows)
+
+        self.assertEqual(profile_module._synced_repost_flags(Conn()), {"rp-new": flag})
+
 
 if __name__ == "__main__":
     unittest.main()

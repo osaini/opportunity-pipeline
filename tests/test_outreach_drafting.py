@@ -822,9 +822,9 @@ class UnsupportedNumbersTests(unittest.TestCase):
         self.assertEqual(_unsupported_numbers("I cut scrap 45% and 45 percent, and met 45 people.", percentage), [])
 
     def test_the_lead_result_check_reads_numbers_the_same_way(self):
-        def lead(title, body, research=""):
+        def lead(title, body, research="", links=()):
             inputs = {
-                "student": {"experience": [{"title": title}, {"title": "Other"}]},
+                "student": {"experience": [{"title": title}, {"title": "Other"}], "links": list(links)},
                 "primary_experience": title,
                 "company_research": {"summary": research},
                 "unverified_research": {},
@@ -836,6 +836,8 @@ class UnsupportedNumbersTests(unittest.TestCase):
         self.assertTrue(lead("Held GPA 3.50", "I held a 3.5 GPA."))
         self.assertFalse(lead("Cut scrap 45%", "I cut scrap by half."))
         self.assertFalse(lead("Cut scrap 45%", "I know your 45 person team.", research="a team of 45"))
+        # The student's own link written without its scheme is a link, not the result it happens to share a digit with.
+        self.assertFalse(lead("Shipped 2 robots", "My work is at jdoe2.me.", links=["https://jdoe2.me"]))
 
     def test_numbers_inside_an_address_are_not_the_drafts_claims(self):
         body = "Write to me at student2024@example.edu or see https://example.edu/p/99."

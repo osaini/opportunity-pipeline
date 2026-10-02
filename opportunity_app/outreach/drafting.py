@@ -336,7 +336,8 @@ def _states_a_lead_result(body: str, inputs: dict[str, Any]) -> bool:
     """Whether the body gives a number from the primary experience, not one that only belongs to the company."""
     research = {**inputs["company_research"], **inputs["unverified_research"]}
     lead_numbers = _supported_numbers(_input_text(_primary_entries(inputs))) - _supported_numbers(_input_text(research))
-    return any(needed in lead_numbers for _, needed in _number_keys(ADDRESS_PATTERN.sub(" ", body)))
+    # Blank links the same way _unsupported_numbers does, so the student's own bare link (jdoe2.me) is not a stated result.
+    return any(needed in lead_numbers for _, needed in _number_keys(blank_addresses(body, input_hosts(inputs))))
 
 
 def _other_entries_named(body: str, inputs: dict[str, Any]) -> list[str]:
