@@ -485,6 +485,11 @@ class CallPrepTests(unittest.TestCase):
         self.assertEqual(outreach_call_prep._unsupported_numbers("Their site: acme360.com, linkedin.com/in/t-512.", inputs), [])
         self.assertEqual(outreach_call_prep._unsupported_numbers("A 3.5 GPA, U.S. only, Ph.D. track, 9 seconds.", inputs), ["3.5", "9"])
 
+    def test_a_number_run_into_a_lowercase_word_after_a_full_stop_is_still_checked(self):
+        # Call prep shares the draft's address pattern: "40k.users" is a missing space, not a host.
+        self.assertEqual(outreach_call_prep._unsupported_numbers("They reached 40k.users and cut latency 1.5x.overall.", {}), ["40", "1.5"])
+        self.assertEqual(outreach_call_prep._unsupported_numbers("Their site is acme360.com.", {}), [])
+
     def test_the_sent_date_reaches_the_model_as_a_day_not_a_timestamp(self):
         self.reply_and_mark()
         provider = ScriptedProvider([prep_json()])

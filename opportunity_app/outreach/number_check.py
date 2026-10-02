@@ -33,14 +33,29 @@ def number_tokens(tokens: list[str]) -> set[str]:
 
 # What a number check takes out of the text first, on both sides (the draft and the inputs): email addresses,
 # links with a scheme, and links without one (github.com/t/arm-2024, acme360.com), whose digits name a page,
-# not a fact. A scheme-less link is a dotted host ending in a 2+ letter TLD, optionally followed by a path. The
-# label before the TLD must hold a letter and the TLD must end the word, so 3.5, U.S., Ph.D., e.g. and v2.0
-# are not hosts, nor is "2024.Then" (a missing space after a full stop). Call prep's number check shares this.
+# not a fact. A scheme-less link is a dotted host ending in a lowercase TLD of 2+ letters that ends the word,
+# optionally followed by a path. The label before the TLD must hold a letter, so 3.5, U.S., Ph.D., e.g. and
+# v2.0 are not hosts, nor is "2024.Then" (a missing space after a full stop). Call prep's number check shares this.
+#
+# A host whose labels hold a digit is a link only when it ends in a TLD from this list or carries a path. A
+# lowercase word is not evidence enough: "40k.users" and "1.5x.overall" are a figure run into the next
+# sentence, and "users" is no TLD, so their digits stay numbers to check. A link that is none of these
+# (acme360.studio) keeps its digits as numbers, which only makes the check stricter. English words that are
+# also TLDs (in, it, is, me, so, to, us) are left out so "40k.in" is not hidden either.
+_LINK_TLDS = (
+    "com|org|net|edu|gov|io|ai|co|dev|app|tech|xyz|info|biz|cloud|ly|uk|ca|de|fr|eu|jp|cn|nl|au"
+)
+_HOST_WITH_DIGITS = r"(?:[A-Za-z0-9-]+\.)*[A-Za-z0-9-]*[A-Za-z][A-Za-z0-9-]*\."
+_HOST_WITHOUT_DIGITS = r"(?:[A-Za-z-]+\.)*[A-Za-z-]*[A-Za-z][A-Za-z-]*\."
 ADDRESS_PATTERN = re.compile(
     r"\S+@\S+|https?://\S+"
-    # A scheme-less host such as github.com/t/x or acme360.com. The ending must be lowercase, so a number run into the
-    # next sentence ("$2.5M.Series A", "40k.Users") stays a number rather than being taken for a domain.
-    r"|(?<![\w@.-])(?:[A-Za-z0-9-]+\.)*[A-Za-z0-9-]*[A-Za-z][A-Za-z0-9-]*\.[a-z]{2,}(?![\w-])(?:/\S*)?"
+    # A scheme-less host, which must start a word. Branch 1: any lowercase TLD, with a path. Branch 2: a known
+    # TLD, with or without a path. Branch 3: a host with no digit at all, which hides nothing.
+    rf"|(?<![\w@.-])(?:"
+    rf"{_HOST_WITH_DIGITS}[a-z]{{2,}}(?![\w-])/\S*"
+    rf"|{_HOST_WITH_DIGITS}(?:{_LINK_TLDS})(?![\w-])"
+    rf"|{_HOST_WITHOUT_DIGITS}[a-z]{{2,}}(?![\w-])"
+    rf")"
 )
 
 

@@ -853,6 +853,23 @@ class UnsupportedNumbersTests(unittest.TestCase):
         body = "Congrats on the $2.5M round and 40k users, shipping on GPT-4 after COVID-19."
         self.assertEqual(_unsupported_numbers(body, inputs), [])
 
+    def test_a_number_run_into_a_lowercase_word_after_a_full_stop_is_still_a_number(self):
+        # "40k.users" is a missing space after a full stop, not a host: no TLD is "users". The digits must still be checked.
+        inputs = self.inputs(name="Test Student")
+        self.assertEqual(_unsupported_numbers("They reached 40k.users fast.", inputs), ["40"])
+        self.assertEqual(_unsupported_numbers("We cut latency 1.5x.overall.", inputs), ["1.5"])
+        self.assertEqual(_unsupported_numbers("Revenue hit 2024.then it grew", inputs), ["2024"])
+        self.assertEqual(_unsupported_numbers("A 7k.team of 3 built it", inputs), ["7", "3"])
+        # The same numbers are fine once the inputs state them, in the text or run into a lowercase word.
+        inputs["company_research"] = {"funding": "They reached 40k.users fast and cut latency 1.5x.overall"}
+        self.assertEqual(_unsupported_numbers("They reached 40k users and cut latency 1.5x overall.", inputs), [])
+
+    def test_a_host_with_digits_is_still_removed_when_it_ends_in_a_known_tld_or_carries_a_path(self):
+        inputs = self.inputs(name="Test Student")
+        for text in ("Visit acme360.com.", "See acme360.io or x2.ai today", "Docs at acme360.dev/v2/guide", "Try acme360.co/team-512",
+                     "Try acme360.example/careers"):
+            self.assertEqual(_unsupported_numbers(text, inputs), [], text)
+
     def test_decimals_abbreviations_and_versions_are_not_taken_for_hosts(self):
         inputs = self.inputs(experience=[{"title": "Held a 3.5 GPA as a U.S. student, e.g. on v2.0 of the Ph.D. tool"}])
         # Each stays a number the draft must support: if 3.5 or v2.0 were stripped as a host, 7 and 2.5 would hide too.
