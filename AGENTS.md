@@ -129,7 +129,7 @@ documentation change); to recount, use the command in the last column.
 
 | Suite | Command | Count | Wall time | Recount with |
 | --- | --- | --- | --- | --- |
-| Unit and API (no browser) | `py -3 -m pytest -c pytest-unit.ini -n auto` | 3,274 collected | 86 seconds (3,274 passed) on a 16-core machine | `py -3 -m pytest -c pytest-unit.ini --collect-only -q` |
+| Unit and API (no browser) | `py -3 -m pytest -c pytest-unit.ini -n auto` | 3,274 collected | 65 to 86 seconds on a 16-core machine (two runs; all 3,274 passed) | `py -3 -m pytest -c pytest-unit.ini --collect-only -q` |
 | Same, serial and complete | `py -3 -m unittest discover -s tests` | 3,326 (the 3,274 plus 52 in `test_postgres` and `test_scheduled_tasks`) | about 17 minutes in 2026-09, when it was 2,189 tests; not re-timed | `py -3 -c "import unittest; print(unittest.defaultTestLoader.discover('tests').countTestCases())"` |
 | Browser (Playwright) | `.venv-ui/Scripts/python -m pytest tests/ui -q` | 397 run, 7 visual baselines deselected (404) | 12 minutes (393 passed, 4 skipped), with the unit suite running beside it | `.venv-ui/Scripts/python -m pytest tests/ui --collect-only -q` |
 | API fuzz | `py -3 scripts/run_api_fuzz.py` | 225 operations in the OpenAPI schema (190 paths); 24 are excluded in the script, 201 fuzzed | minutes; `--max-examples 20` in CI | `tests/fixtures/openapi.json` |
