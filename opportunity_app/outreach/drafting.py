@@ -313,7 +313,7 @@ def _opening(body: str) -> str:
     return paragraphs[0]
 
 
-# The number check's helpers (ADDRESS_PATTERN, number keys) live in quote_check, which the thank-you check shares.
+# The number check's helpers (ADDRESS_PATTERN, number keys) live in outreach/number_check.py, which the thank-you check shares.
 
 
 def _entry_names(entry: Any) -> set[str]:

@@ -20,7 +20,7 @@ from ..integrations import agent_providers
 from .greeting import spoken_company
 from .identity import company_key
 from .config import resolve_provider
-from .number_check import ADDRESS_PATTERN, number_keys, supported_numbers
+from .number_check import number_keys, supported_numbers
 
 # One logger for the whole thank-you feature (what its tests and the student's log filters name), whichever module logs.
 LOGGER = logging.getLogger("opportunity_app.outreach.thank_you")
@@ -93,7 +93,9 @@ def validate(body: str, inputs: dict[str, Any]) -> list[str]:
     allowed = supported_numbers(
         str(inputs.get(key) or "") for key in ("decline", "student_name", "recipient_name", "company", "company_full", "greeting")
     )
-    extra = sorted({needed for _, needed in number_keys(ADDRESS_PATTERN.sub(" ", text))} - allowed)
+    # Addresses are not blanked out first, as the drafts do: a thank-you may carry no link or address at all (below),
+    # so nothing is gained by hiding digits that sit in one, and acme.ai/2025 or H200.rollout would slip through.
+    extra = sorted({needed for _, needed in number_keys(text)} - allowed)
     if extra:
         problems.append("it states numbers found in none of the inputs: " + ", ".join(extra))
     attachment = _ATTACHMENT.search(scan)

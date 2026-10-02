@@ -237,6 +237,9 @@ class ContentTests(unittest.TestCase):
             "quarter": "the best with your Q4 launch.",
             "unit": "the best with the 5G launch.",
             "run into a word after a full stop": "the best.Then 40k users.",
+            "scheme-less link carrying a figure": "the best with acme.ai/2025 news.",
+            "figure run into a lowercase word": "the best and congrats on 40k.users so far.",
+            "model name run into a lowercase word": "the best on the H200.rollout here.",
         }.items():
             with self.subTest(name=name):
                 problems = validate(self.GOOD.replace("the best.", text), inputs())
