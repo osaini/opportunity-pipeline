@@ -5,10 +5,12 @@ it from tests/conftest.py). The tests below never touch a real database: they as
 """
 
 import ast
+import os
 import sqlite3
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -129,6 +131,94 @@ class OpeningRealDataFailsLoudlyTests(unittest.TestCase):
             self.assertEqual(dirs, (worktree / "data", main / "data"))
             self.assertTrue(realdata_guard.is_real_data_path(main / "data" / "platform.db", dirs=dirs))
             self.assertTrue(realdata_guard.is_real_data_path(worktree / "data" / "pipeline.db", dirs=dirs))
+
+
+class RealDataFilesAreRefusedTests(unittest.TestCase):
+    """The same guard covers plain files: no test may open, create, remove or rename anything under a real data directory.
+
+    The sqlite wrapper cannot see a lock file, a report or a backup; an audit hook can, whatever opens it. The refusal
+    comes before the call, so a refused create leaves nothing behind (and a file that does appear fails the test)."""
+
+    def setUp(self):
+        self.name = f"guard-probe-{uuid.uuid4().hex}"
+        self.target = DATA / f"{self.name}.txt"
+        self.addCleanup(self.cleanup)
+
+    def cleanup(self):
+        for leftover in (self.target, DATA / self.name):
+            if leftover.is_dir():
+                leftover.rmdir()
+            elif leftover.exists():
+                leftover.unlink()
+
+    def refuse(self, call):
+        with self.assertRaises(realdata_guard.RealDataAccessError):
+            call()
+        self.assertFalse(self.target.exists() or (DATA / self.name).exists(), "a refused call must create nothing")
+
+    def test_creating_writing_appending_or_updating_a_file_is_refused(self):
+        for mode in ("w", "a", "x", "wb", "ab", "r+", "rb+"):
+            with self.subTest(mode=mode):
+                self.refuse(lambda: open(self.target, mode))
+        for flags in (os.O_CREAT | os.O_WRONLY, os.O_RDWR, os.O_WRONLY | os.O_APPEND, os.O_CREAT | os.O_EXCL | os.O_WRONLY):
+            with self.subTest(flags=flags):
+                self.refuse(lambda: os.open(self.target, flags))
+        self.refuse(lambda: self.target.touch())
+        self.refuse(lambda: self.target.write_text("x", encoding="utf-8"))
+        self.refuse(lambda: open(str(DATA / ".." / "data" / self.target.name), "w"))
+
+    def test_making_removing_or_renaming_inside_the_directory_is_refused(self):
+        self.refuse(lambda: os.mkdir(DATA / self.name))
+        self.refuse(lambda: (DATA / self.name).mkdir(parents=True, exist_ok=True))
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.txt"
+            source.write_text("x", encoding="utf-8")
+            self.refuse(lambda: os.rename(source, self.target))
+            self.assertTrue(source.exists())
+            self.refuse(lambda: os.replace(source, self.target))
+        self.refuse(lambda: os.remove(self.target))
+
+    def test_the_deep_search_lock_default_is_inside_the_protected_directory_and_refused(self):
+        """The test that started this: _RunLock(REPORT_DIR / ...) on the default REPORT_DIR created a real lock in data/."""
+        from opportunity_app.outreach import discovery
+
+        lock = discovery.REPORT_DIR / "outreach-discovery.lock"
+        self.assertTrue(realdata_guard.is_real_data_path(lock))
+        held = None
+        try:
+            with self.assertRaises(realdata_guard.RealDataAccessError):
+                held = discovery._RunLock(lock).__enter__()
+        finally:
+            if held is not None:
+                held.__exit__()
+
+    def test_temp_folders_and_look_alike_names_are_untouched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for folder in (Path(tmp), Path(tmp) / "data"):
+                folder.mkdir(exist_ok=True)
+                (folder / "ok.txt").write_text("fine", encoding="utf-8")
+                self.assertEqual((folder / "ok.txt").read_text(encoding="utf-8"), "fine")
+                (folder / "ok.txt").unlink()
+        self.assertFalse(realdata_guard.is_real_data_path(ROOT / "data-not-really" / "x.txt"))
+        self.assertFalse(realdata_guard.is_real_data_path(ROOT / "tests" / "data" / "x.txt"))
+
+    def test_reading_is_let_through_because_tracked_files_live_there(self):
+        self.assertFalse(realdata_guard.audit_refuses("open", (str(self.target), "r", 0)))
+        self.assertFalse(realdata_guard.audit_refuses("open", (str(self.target), "rb", os.O_RDONLY)))
+        self.assertFalse(realdata_guard.audit_refuses("open", (self.target, None, os.O_RDONLY)))
+        with self.assertRaises(FileNotFoundError):
+            open(self.target, "r")
+        with self.assertRaises(FileNotFoundError):
+            open(self.target, "rb")
+
+    def test_the_hook_judges_only_events_that_name_a_path(self):
+        refuse = realdata_guard.audit_refuses
+        self.assertTrue(refuse("open", (str(self.target), "w", 0)))
+        self.assertTrue(refuse("open", (self.target, None, os.O_CREAT)))
+        self.assertTrue(refuse("os.rename", ("somewhere", str(self.target), None, None)))
+        self.assertFalse(refuse("open", (3, "w", 0)), "an already-open descriptor names no path")
+        self.assertFalse(refuse("open", (None, "w", 0)))
+        self.assertFalse(refuse("socket.connect", (object(), str(self.target))))
 
 
 class NormalOpensStillWorkTests(unittest.TestCase):

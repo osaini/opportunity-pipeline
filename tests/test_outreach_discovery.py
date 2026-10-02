@@ -656,18 +656,20 @@ class CommandLineTests(unittest.TestCase):
 
     def test_a_busy_lock_reports_a_temporary_failure(self):
         from opportunity_app import outreach_cli
-        from opportunity_app.outreach.discovery import REPORT_DIR, _RunLock
+        from opportunity_app.outreach.discovery import _RunLock
 
         with tempfile.TemporaryDirectory() as tmp:
             _, platform_path = build_and_migrate(Path(tmp))
-            try:
-                lock = _RunLock(REPORT_DIR / "outreach-discovery.lock").__enter__()
-            except DiscoveryBusy:
-                self.skipTest("a real deep search holds the lock right now")
-            try:
-                exit_code = outreach_cli.main(["--db", str(platform_path), "discover", "--dry-run"])
-            finally:
-                lock.__exit__()
+            # The lock lives in REPORT_DIR, which is the checkout's real data/ by default: both the lock taken here and the
+            # one the command line asks for go to this folder, so a real deep search is neither blocked nor released.
+            reports = Path(tmp) / "reports"
+            with mock.patch("opportunity_app.outreach.discovery.REPORT_DIR", reports):
+                lock = _RunLock(reports / "outreach-discovery.lock").__enter__()
+                try:
+                    exit_code = outreach_cli.main(["--db", str(platform_path), "discover", "--dry-run"])
+                finally:
+                    lock.__exit__()
+            self.assertEqual(list(reports.iterdir()), [], "the lock was released and nothing else was written")
         self.assertEqual(exit_code, outreach_cli.TEMPFAIL_EXIT)
 
 

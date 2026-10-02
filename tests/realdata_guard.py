@@ -15,6 +15,15 @@ and tests/ui) and by every tests/test_*.py module, directly or through helpers_p
 single-module run (`python -m unittest tests.test_pipeline`) is covered too. tests/test_real_data_guard.py fails when a module
 is added without one of those imports. Installing twice is harmless.
 
+`sqlite3.connect` is not the only way into data/: the deep search's lock file, its reports, the logs and dated backups are plain
+files. The same install therefore adds one audit hook (sys.addaudithook, cheap: one dict lookup for every event it does not
+care about) that refuses every write there, before the call is made, with the same RealDataAccessError: an open that can
+create or change a file (write, append, create, truncate or read-write), mkdir, remove, rmdir and rename. Reading is left alone,
+because a few tests read the tracked files in data/ (the sample jobs CSV); the databases are protected from reads by the sqlite
+wrapper above, where a read is what a migration or a lock would follow. A test that needs a folder of reports points its code at a temp directory (patch
+discovery.REPORT_DIR and the like), as it already does for the database. An audit hook cannot be removed, so uninstall() only
+turns it off.
+
 The same install also gives the process an empty CODEX_HOME and no Codex model or effort variable (isolate_codex_config), so no
 test reads the developer's own ~/.codex/config.toml. It is here because every test module already imports this file one way or
 another, which is what makes it hold for a single-module `unittest` run too.
@@ -33,6 +42,7 @@ import os
 import re
 import shutil
 import sqlite3
+import sys
 import tempfile
 import urllib.parse
 from pathlib import Path
@@ -116,6 +126,56 @@ def is_real_data_path(database, *, uri=False, dirs=None):
     return False
 
 
+# Audit events that name a path, and which of their arguments are paths.
+_WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+_PATH_EVENTS = {"open": (0,), "os.mkdir": (0,), "os.remove": (0,), "os.rmdir": (0,), "os.rename": (0, 1)}
+_audit = {"hooked": False, "on": False, "prefixes": ()}
+
+
+def _inside_prefixes(value, prefixes):
+    """Whether a path argument of an audit event (a str, bytes or path object; a file descriptor or None names no path) is in one."""
+    if not isinstance(value, (str, bytes, os.PathLike)):
+        return False
+    try:
+        text = os.path.normcase(os.path.abspath(os.fsdecode(value)))
+    except (OSError, ValueError, TypeError):
+        return False
+    return any(text == prefix or text.startswith(prefix + os.sep) for prefix in prefixes)
+
+
+def _prefixes(dirs):
+    return tuple(dict.fromkeys(os.path.normcase(os.path.abspath(str(directory))) for directory in dirs))
+
+
+def audit_refuses(event, args, dirs=None):
+    """Whether this audit event is a write to a file or folder inside a real data directory (see the module docstring)."""
+    indexes = _PATH_EVENTS.get(event)
+    if indexes is None:
+        return False
+    if event == "open":  # (path, mode, flags): a read-only open is let through
+        mode, flags = (tuple(args) + (None, None))[1:3]
+        if not ((isinstance(mode, str) and any(char in mode for char in "wax+")) or (isinstance(flags, int) and flags & _WRITE_FLAGS)):
+            return False
+    prefixes = _audit["prefixes"] if dirs is None else _prefixes(dirs)
+    return any(index < len(args) and _inside_prefixes(args[index], prefixes) for index in indexes)
+
+
+def _audit_hook(event, args):
+    if _audit["on"] and audit_refuses(event, args):
+        raise RealDataAccessError(
+            f"a test tried to use a file in a real data directory ({event} {args[0]!r}); AGENTS.md hard rule 1. Point the code "
+            "under test at a temp directory (patch discovery.REPORT_DIR and the like) and never at data/."
+        )
+
+
+def _install_audit_hook(dirs):
+    _audit["prefixes"] = _prefixes(dirs)
+    _audit["on"] = True
+    if not _audit["hooked"]:
+        _audit["hooked"] = True
+        sys.addaudithook(_audit_hook)
+
+
 _GUARD_NAME = "guarded_connect"
 _CODEX_ENV = {"PIPELINE_CODEX_MODEL": "", "PIPELINE_CODEX_REASONING_EFFORT": ""}
 _codex_home = None
@@ -139,11 +199,12 @@ def isolate_codex_config():
 
 
 def install():
-    """Wrap sqlite3.connect once for this process, and isolate the Codex settings (isolate_codex_config). Idempotent."""
+    """Wrap sqlite3.connect and add the file audit hook once for this process, and isolate the Codex settings. Idempotent."""
     isolate_codex_config()
+    dirs = real_data_dirs()
+    _install_audit_hook(dirs)
     if getattr(sqlite3.connect, "__name__", "") == _GUARD_NAME:
         return
-    dirs = real_data_dirs()
     real_connect = sqlite3.connect
 
     def guarded_connect(database=None, *args, **kwargs):
@@ -162,7 +223,8 @@ def install():
 
 
 def uninstall():
-    """Restore sqlite3.connect (used only by this guard's own tests)."""
+    """Restore sqlite3.connect and turn the audit hook off (used only by this guard's own tests)."""
+    _audit["on"] = False
     current = sqlite3.connect
     if getattr(current, "__name__", "") == _GUARD_NAME:
         sqlite3.connect = current.__wrapped__

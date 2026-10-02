@@ -690,6 +690,7 @@ class PlatformTests(unittest.TestCase):
             db_path=self.platform_path,
             access_token="prepare-secret",
             static_dir=STATIC_DIR,
+            resume_storage=self.resume_storage,
             interview_storage=self.interview_storage,
         )
         with TestClient(app) as client:
