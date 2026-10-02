@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from typing import Any
 
 
 def _normalized(text: str) -> str:
@@ -37,26 +38,58 @@ def number_tokens(tokens: list[str]) -> set[str]:
 # optionally followed by a path. The label before the TLD must hold a letter, so 3.5, U.S., Ph.D., e.g. and
 # v2.0 are not hosts, nor is "2024.Then" (a missing space after a full stop). Call prep's number check shares this.
 #
-# A host whose labels hold a digit is a link only when it ends in a TLD from this list or carries a path. A
-# lowercase word is not evidence enough: "40k.users" and "1.5x.overall" are a figure run into the next
-# sentence, and "users" is no TLD, so their digits stay numbers to check. A link that is none of these
-# (acme360.studio) keeps its digits as numbers, which only makes the check stricter. English words that are
-# also TLDs (in, it, is, me, so, to, us) are left out so "40k.in" is not hidden either.
+# A host whose labels hold a digit is a link only when it ends in a TLD from this list, with or without a path.
+# A lowercase word is not evidence enough: "40k.users" and "1.5x.overall", or "12k.signups/day", are a figure
+# run into the next word, and "users" is no TLD, so their digits stay numbers to check. A link on any other TLD
+# (acme360.studio, acme360.app) keeps its digits as numbers, which only makes the check stricter; the student's
+# own links are the exception (blank_addresses), since their hosts come from the inputs. The list leaves out
+# every TLD that is also an English word a figure can run into (in, it, is, me, so, to, us, net, app, info,
+# tech, cloud, co). A host with no digit at all hides nothing, so any lowercase TLD ends it, with or without
+# a path.
 _LINK_TLDS = (
-    "com|org|net|edu|gov|io|ai|co|dev|app|tech|xyz|info|biz|cloud|ly|uk|ca|de|fr|eu|jp|cn|nl|au"
+    "com|org|edu|gov|io|ai|dev|xyz|biz|ly|uk|ca|de|fr|eu|jp|cn|nl|au"
 )
 _HOST_WITH_DIGITS = r"(?:[A-Za-z0-9-]+\.)*[A-Za-z0-9-]*[A-Za-z][A-Za-z0-9-]*\."
 _HOST_WITHOUT_DIGITS = r"(?:[A-Za-z-]+\.)*[A-Za-z-]*[A-Za-z][A-Za-z-]*\."
 ADDRESS_PATTERN = re.compile(
     r"\S+@\S+|https?://\S+"
-    # A scheme-less host, which must start a word. Branch 1: any lowercase TLD, with a path. Branch 2: a known
-    # TLD, with or without a path. Branch 3: a host with no digit at all, which hides nothing.
+    # A scheme-less host, which must start a word: a known TLD (digits in the host allowed), or any lowercase
+    # TLD when no label holds a digit. Either may carry a path.
     rf"|(?<![\w@.-])(?:"
-    rf"{_HOST_WITH_DIGITS}[a-z]{{2,}}(?![\w-])/\S*"
-    rf"|{_HOST_WITH_DIGITS}(?:{_LINK_TLDS})(?![\w-])"
-    rf"|{_HOST_WITHOUT_DIGITS}[a-z]{{2,}}(?![\w-])"
-    rf")"
+    rf"{_HOST_WITH_DIGITS}(?:{_LINK_TLDS})"
+    rf"|{_HOST_WITHOUT_DIGITS}[a-z]{{2,}}"
+    rf")(?![\w-])(?:/\S*)?"
 )
+
+_SCHEME_HOST = re.compile(r"https?://(?:www\.)?([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)", re.IGNORECASE)
+
+
+def _strings(value: Any):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _strings(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _strings(item)
+
+
+def input_hosts(inputs: Any) -> re.Pattern[str] | None:
+    """A pattern for the hosts the inputs link to with a scheme (a profile link, the company's website, a source),
+    so the same site written without its scheme in a draft is still recognised as that link, whatever its TLD."""
+    hosts = {match.group(1).lower() for text in _strings(inputs) for match in _SCHEME_HOST.finditer(text)}
+    if not hosts:
+        return None
+    names = "|".join(re.escape(host) for host in sorted(hosts, key=len, reverse=True))
+    return re.compile(rf"(?<![\w@.-])(?:www\.)?(?:{names})(?![\w-])(?:/\S*)?", re.IGNORECASE)
+
+
+def blank_addresses(text: str, own_hosts: re.Pattern[str] | None = None) -> str:
+    """The text with its addresses and links taken out (see ADDRESS_PATTERN), and the inputs' own hosts when given."""
+    if own_hosts is not None:
+        text = own_hosts.sub(" ", text)
+    return ADDRESS_PATTERN.sub(" ", text)
 
 
 def _number_key(token: str) -> str:

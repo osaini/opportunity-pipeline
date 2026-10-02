@@ -866,9 +866,27 @@ class UnsupportedNumbersTests(unittest.TestCase):
 
     def test_a_host_with_digits_is_still_removed_when_it_ends_in_a_known_tld_or_carries_a_path(self):
         inputs = self.inputs(name="Test Student")
-        for text in ("Visit acme360.com.", "See acme360.io or x2.ai today", "Docs at acme360.dev/v2/guide", "Try acme360.co/team-512",
-                     "Try acme360.example/careers"):
+        for text in ("Visit acme360.com.", "See acme360.io or x2.ai today", "Docs at acme360.dev/v2/guide", "Try acme360.xyz/team-512",
+                     "Try acme360.com/careers?id=42", "Read notion.so/page-123 and github.com/t/arm-2024"):
             self.assertEqual(_unsupported_numbers(text, inputs), [], text)
+
+    def test_a_figure_with_a_path_or_a_word_that_is_also_a_tld_is_still_a_number(self):
+        inputs = self.inputs(name="Test Student")
+        self.assertEqual(_unsupported_numbers("They grew 12k.signups/day", inputs), ["12"])
+        self.assertEqual(_unsupported_numbers("They hit 40k.users/month", inputs), ["40"])
+        for text, number in (("grew 40k.net new users", "40"), ("launched 3x.app installs", "3"), ("40k.info sessions", "40"),
+                             ("hit 2M.tech roles", "2"), ("had 40k.co users", "40")):
+            self.assertEqual(_unsupported_numbers(text, inputs), [number], text)
+        # A digit host on a TLD that is not listed keeps its digits as numbers, so the check can only be stricter.
+        self.assertEqual(_unsupported_numbers("Try acme360.example/careers", inputs), ["360"])
+
+    def test_the_students_own_link_is_recognised_without_its_scheme_on_any_tld(self):
+        inputs = self.inputs(name="Test Student")
+        inputs["links"] = ["https://jdoe2.me", "https://www.acme360.studio/about"]
+        self.assertEqual(_unsupported_numbers("My portfolio is at jdoe2.me.", inputs), [])
+        self.assertEqual(_unsupported_numbers("See www.acme360.studio or jdoe2.me/work-2024", inputs), [])
+        # Only the hosts the inputs give: another digit host on the same TLD still counts, and the figure still must be supported.
+        self.assertEqual(_unsupported_numbers("Also jdoe3.me and 7k.me", inputs), ["3", "7"])
 
     def test_decimals_abbreviations_and_versions_are_not_taken_for_hosts(self):
         inputs = self.inputs(experience=[{"title": "Held a 3.5 GPA as a U.S. student, e.g. on v2.0 of the Ph.D. tool"}])

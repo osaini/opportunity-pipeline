@@ -110,6 +110,7 @@ from .drafting import (
     outreach_proof,
 )
 from .config import resolve_provider
+from .number_check import blank_addresses, input_hosts
 from ..student.preparation import confirmed_facts
 from ..core.database import connect_product
 from ..core.timestamps import utc_now
@@ -568,7 +569,7 @@ def _unsupported_numbers(text: str, inputs: dict[str, Any]) -> list[str]:
     allowed: set[str] = set()
     for piece in _strings(inputs):
         allowed |= quote_check.number_tokens(quote_check.word_tokens(piece))
-    found = [token for token in quote_check.word_tokens(ADDRESS_PATTERN.sub(" ", text)) if token[0].isdigit() and token not in allowed]
+    found = [token for token in quote_check.word_tokens(blank_addresses(text, input_hosts(inputs))) if token[0].isdigit() and token not in allowed]
     return list(dict.fromkeys(found))
 
 

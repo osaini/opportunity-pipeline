@@ -27,7 +27,7 @@ from .location import home_terms, location_usable, mentions_home, near_home, stu
 from .config import resolve_provider, sender_account
 from .versions import insert_version, keep_current_draft
 from ..student.preparation import confirmed_facts
-from .number_check import ADDRESS_PATTERN, number_keys as _number_keys, supported_numbers as _supported_numbers
+from .number_check import ADDRESS_PATTERN, blank_addresses, input_hosts, number_keys as _number_keys, supported_numbers as _supported_numbers
 from ..core.timestamps import utc_now
 
 ProviderFactory = Callable[[str, str], AgentProvider]
@@ -381,9 +381,10 @@ def _input_text(value: Any):
 def _unsupported_numbers(text: str, inputs: dict[str, Any], *more: str) -> list[str]:
     """Numbers in the draft's text (the body, and the subject when given as ``more``) that are no whole number in the inputs' own words (see _number_keys)."""
     allowed = _supported_numbers(_input_text(inputs))
+    own_hosts = input_hosts(inputs)
     found = []
     for piece in (text, *more):
-        for key, needed in _number_keys(ADDRESS_PATTERN.sub(" ", piece)):
+        for key, needed in _number_keys(blank_addresses(piece, own_hosts)):
             if needed not in allowed and needed not in found:
                 found.append(needed)
     return found
