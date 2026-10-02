@@ -46,7 +46,7 @@ and [the labelling worker](#the-gmail-labelling-worker-can-write-label-rows-for-
 
 ### Outreach page says "Nothing sends from here" while Gmail Send or automatic sending is on
 - **Severity:** high, send safety (notes 11)
-- **Where:** `opportunity_app/static/app-outreach.js:389` `loadOutreach()`; `opportunity_app/static/app-outreach-pane.js:1416-1420` `sendNote` in the draft pane
+- **Where:** `opportunity_app/static/app-outreach.js:389` `loadOutreach()`; `opportunity_app/static/app-outreach-pane.js:1416-1420` `sendNote` in the draft pane. The same absolute used to sit in the prose of `docs/guide/outreach.md` and `README.md`; both now name the opt-in automatic sends, so only the UI strings remain.
 - **What happens:** The page status is always set to "Nothing sends from here; approved drafts open in your own email". That is false when Gmail is connected, because approving a draft unlocks Send from Gmail. It is also false when bounce_auto_resend, decline_thank_you or form_submission is on. The Gmail-connected note, "Nothing sends on its own", is false whenever bounce_auto_resend or decline_thank_you is on. A student can approve a draft trusting a promise about outbound mail that does not hold.
 - **Suggested fix:** Write every "what sends" sentence in one helper. Build it from `gmail_drafts.connected`, the outreach automation switches and the pause state, use it for both the page status and the pane note, and drop the fixed string.
 - **Regression suite:** tests/ui (outreach journey: with Gmail connected or an automation on, the status must not say that nothing sends)
@@ -142,7 +142,7 @@ and [the labelling worker](#the-gmail-labelling-worker-can-write-label-rows-for-
 ### Send Now returns an error after the email has already gone out when cancel_send fails
 - **Severity:** medium, wrong visible state (notes 115)
 - **Where:** `opportunity_app/web/routers/outreach_delivery.py:91` `gmail_send_for_outreach()`
-- **What happens:** `cancel_send` runs inside the same try as the send. If it raises (database locked, target deleted at the same time, a ValueError), the student sees a failed send for an email that was sent, and the scheduled row stays "scheduled". A duplicate send is still blocked by `_already_sent` in `opportunity_app/outreach/gmail.py:423`.
+- **What happens:** `cancel_send` runs inside the same try as the send. If it raises (database locked, target deleted at the same time, a ValueError), the student sees a failed send for an email that was sent, and the scheduled row stays "scheduled". A duplicate send is still blocked by `_already_sent` in `opportunity_app/outreach/gmail.py:423`. That is why this stays medium and not high: the email is in Gmail Sent, and pressing Send again is refused with the already-sent notice, so no second mail goes out and the wrong state is corrected on retry. It would be high if that guard did not hold.
 - **Suggested fix:** Return the send result regardless. Run `cancel_send` in its own try that logs the failure and adds a note to the response.
 - **Regression suite:** tests/ unittest (TestClient POST `/outreach/{id}/gmail-send` with `cancel_send` patched to raise; expect a 200 carrying the sent result)
 
@@ -159,13 +159,6 @@ and [the labelling worker](#the-gmail-labelling-worker-can-write-label-rows-for-
 - **What happens:** The link opens the first signed-in Google account. Students signed into several accounts land in the wrong mailbox. The outreach links already use `gmail_web_url` with `authuser`.
 - **Suggested fix:** Build the link with `gmail_web_url(f"all/{quote(thread)}")` from `opportunity_app/outreach/config.py`. The URL shape changes, so the owner signs off.
 - **Regression suite:** tests/ unittest (`test_application_inbox`: `gmail_url` carries `authuser`)
-
-### queue_call_prep has no atomic claim, so a click and an automatic start can create two call-prep jobs
-- **Severity:** low (notes 20)
-- **Where:** `opportunity_app/outreach/call_prep.py:981-1017` `queue_call_prep()` (also via `auto_queue_call_prep` `:1020`)
-- **What happens:** The read-then-unconditional-UPDATE sequence lets both callers enqueue. One job id overwrites the other, and the orphaned job still runs a second, untracked model and research run.
-- **Suggested fix:** Use the conditional-claim pattern from `queue_research` (`opportunity_app/outreach/research.py:441-457`) and cancel the job that loses.
-- **Regression suite:** tests/ unittest (`test_outreach_call_prep`: two interleaved calls leave one active job)
 
 ### Modules compare the student's own address with different normalizations (lower, casefold, mailbox_key)
 - **Severity:** low, fails closed (notes 23, 92)
@@ -259,6 +252,13 @@ and [the labelling worker](#the-gmail-labelling-worker-can-write-label-rows-for-
 - **What happens:** Only the `elif choice:` branch checks for a pause. On the no-website, no-address and new-contact branches the bounce is logged as tried and never searched again after the student resumes, which contradicts the docstring.
 - **Suggested fix:** When `automatic` is set, run `_unless_stopped(...)()` before the final `log_event` and return `{'paused': True}`.
 - **Regression suite:** tests/ unittest (`test_outreach_automation`: pause during an empty search; `recovery_due` still lists the target)
+
+### queue_call_prep has no atomic claim, so a click and an automatic start can create two call-prep jobs
+- **Severity:** low (notes 20)
+- **Where:** `opportunity_app/outreach/call_prep.py:981-1017` `queue_call_prep()` (also via `auto_queue_call_prep` `:1020`)
+- **What happens:** The read-then-unconditional-UPDATE sequence lets both callers enqueue. One job id overwrites the other, and the orphaned job still runs a second, untracked model and research run.
+- **Suggested fix:** Use the conditional-claim pattern from `queue_research` (`opportunity_app/outreach/research.py:441-457`) and cancel the job that loses.
+- **Regression suite:** tests/ unittest (`test_outreach_call_prep`: two interleaved calls leave one active job)
 
 ## Agents and notifications
 

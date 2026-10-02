@@ -63,8 +63,9 @@ the owner (see [`AGENTS.md`](AGENTS.md), "Product invariants").
   active shortlist.
 - Outreach mail starts from an approved draft: it opens in your own email
   account, or goes out when you press **Send** in the app and confirm the
-  recipient. What the app does later on its own, such as a scheduled send, is a
-  setting under Outreach settings → Automation (see
+  recipient. What the app can send later on its own (scheduled sends, the resend
+  after a bounce, the thank-you after a decline, contact-form submission) is an
+  opt-in setting under Outreach settings → Automation (see
   [Cold outreach](docs/guide/outreach.md) and [Gmail](docs/guide/gmail.md)).
 - Every posting keeps its source, its fetch time, and an honest explanation of its
   score; an inferred value is never shown as confirmed.
@@ -80,7 +81,7 @@ section that used to be in this file.
 | Keep the dashboard running, or run the pipeline daily without a terminal | [Running it unattended](docs/guide/scheduling.md) | Keep the local web dashboard running; Running it on a schedule |
 | Tune the ranking to your situation | [Ranking and eligibility](docs/guide/ranking.md) | Personalize ranking and eligibility review; Target regions; How scores are computed |
 | Use the command line day to day | [The command-line workflow](docs/guide/cli-workflow.md) | Unified dashboard; Daily and weekly workflow; Resume and cover letter; Finding new ATS boards; Checking whether a posting is still open; Deleting expired postings |
-| Add sources, API keys, or agent-found postings | [Sources and discovery](docs/guide/sources.md) | Sources and boundaries; API keys; Federal postings (USAJOBS); Aggregator postings (Adzuna); LinkedIn job-alert emails; Agent-reached channels; Import discovered postings; Enrich thin postings |
+| Add sources, API keys, or agent-found postings | [Sources and discovery](docs/guide/sources.md) | Sources and boundaries; API keys; Federal postings (USAJOBS); Aggregator postings (Adzuna); LinkedIn job-alert emails; Two traps in raw LinkedIn output; Agent-reached channels; Import discovered postings; Enrich thin postings |
 | Understand duplicate linking | [Duplicates and re-listed roles](docs/guide/duplicates.md) | Duplicate handling; Re-listed roles |
 | Run cold outreach | [Cold outreach](docs/guide/outreach.md) | Cold outreach pipeline; Company research and call prep; Company locations and SEC Form D; Running the deep search on a schedule |
 | Connect Gmail for sending, replies and labels | [Gmail](docs/guide/gmail.md) | Sending through Gmail, with an attachment; Gmail drafts setup |

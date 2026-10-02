@@ -4,10 +4,14 @@ The Outreach tab from research to reply, call prep, company locations, and the s
 
 ## Cold outreach pipeline
 
-The Outreach tab runs cold email from research to reply. **Nothing sends on its
-own**: an approved draft opens in your own email account, where you press Send,
-or, with Gmail connected, goes out when you press **Send** in the app and then
-confirm the recipient.
+The Outreach tab runs cold email from research to reply. Every email starts from
+an approved draft: it opens in your own email account, where you press Send, or,
+with Gmail connected, goes out when you press **Send** in the app and then
+confirm the recipient. Four things can send later without another click from you,
+and each is an opt-in setting under Outreach settings → Automation: scheduled
+sends, the resend after a bounce, the thank-you after a decline, and
+contact-form submission. [Gmail](gmail.md) and the steps below say what each one
+checks first.
 
 1. **Find companies.** The deep search runs on Monday and Thursday mornings (or
    **Run deep search now**). Claude Code searches for accelerator startups
