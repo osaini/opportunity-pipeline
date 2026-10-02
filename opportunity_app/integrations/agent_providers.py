@@ -191,6 +191,8 @@ _CODEX_SWITCHES = ("--skip-git-repo-check", "--ignore-user-config", "--ignore-ru
 _CODEX_OVERRIDES = ("mcp_servers={}", "shell_environment_policy.inherit=none")
 _CODEX_WEB_SEARCH = "web_search="
 _CODEX_EFFORT = "model_reasoning_effort="
+# The student's .env opt-in for the one Codex call that carries a web tool (see codex_command). outreach.config re-exports it.
+CODEX_WEB_OPT_IN_ENV = "PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX"
 CODEX_MODEL_ENV = "PIPELINE_CODEX_MODEL"
 CODEX_EFFORT_ENV = "PIPELINE_CODEX_REASONING_EFFORT"
 CODEX_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh")
@@ -202,6 +204,11 @@ _CODEX_VALUE_FLAGS = ("--sandbox", "-c", "--disable", "-m", "--output-last-messa
 
 class CodexNotIsolated(RuntimeError):
     """A Codex command that lacks the isolation, or a Codex call the app refuses to make. Nothing was started."""
+
+
+def codex_web_opted_in() -> bool:
+    """Whether the student accepted, in .env, that Codex reads web pages for research (CODEX_WEB_OPT_IN_ENV)."""
+    return os.environ.get(CODEX_WEB_OPT_IN_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def codex_model_settings() -> tuple[str, str]:
@@ -265,10 +272,12 @@ def _unlisted_codex_options(args: list[str]) -> list[str]:
     Walks the argv the way Codex reads it: a known switch, or a known flag with its one value, and a final "-" for the
     prompt on stdin. A `-c` may carry only the settings codex_command sets, plus a valid reasoning effort, so an override
     that re-enables an MCP server, a sandbox, a web search or a profile is refused, as are `--config`, `-p`, `--add-dir`
-    and the `--flag=value` and `-cvalue` spellings of anything.
+    and the `--flag=value` and `-cvalue` spellings of anything. `web_search=live` is allowed only while the student's
+    opt-in is set, the one condition under which the research runner builds it.
     """
     problems = []
-    allowed_overrides = (*_CODEX_OVERRIDES, f"{_CODEX_WEB_SEARCH}disabled", f"{_CODEX_WEB_SEARCH}live",
+    allowed_overrides = (*_CODEX_OVERRIDES, f"{_CODEX_WEB_SEARCH}disabled",
+                         *((f"{_CODEX_WEB_SEARCH}live",) if codex_web_opted_in() else ()),
                          *(f"{_CODEX_EFFORT}{effort}" for effort in CODEX_EFFORTS))
     index = 1
     while index < len(args):

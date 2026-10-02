@@ -228,7 +228,7 @@ The entry flagged for an owner decision is
 ## Agents and notifications
 
 ### Codex web research, once the student opts in, still reaches apply_patch through code mode
-- **Severity:** medium, privacy; reachable only with the `PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX` opt-in, which is why it is not high (found fixing the Codex sandbox entry)
+- **Severity:** medium, privacy (only with the opt-in: it is reachable only when `PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX` is set; found fixing the Codex sandbox entry)
 - **Where:** `opportunity_app/outreach/agents.py` `codex_runner`; `opportunity_app/integrations/agent_providers.py` `codex_command(web_search=True)`
 - **What happens:** Codex's web tool is carried by code mode (`--disable code_mode_host` removes it), and code mode also exposes `apply_patch`. With `PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX=1` the research call keeps code mode on, so a page the agent reads could steer it into patch attempts. The read-only sandbox blocks the write, but the failure message tells the model whether the patch's context lines matched a local file, a one-bit-per-try test of file contents. Shell, MCP servers, plugins and file writes stay off, and without the opt-in the call is refused. Every Codex call that carries no web search runs with code mode off and no reachable tool. The collaboration tools (`spawn_agent`) stay listed in every call; a sub-agent starts with the same settings.
 - **Suggested fix:** Drop the opt-in path when a Codex release lets web search run without code mode (`standalone_web_search` is still under development in 0.159.2), or when a flag removes `apply_patch`; until then the opt-in is the owner's acceptance.

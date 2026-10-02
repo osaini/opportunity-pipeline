@@ -64,6 +64,25 @@ class SetupTests(unittest.TestCase):
             setup.set_env_values(self.paths.env, {"PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX": ""}, overwrite=True)
             self.assertFalse(any("ALLOW_CODEX" in warning for warning in setup.init(self.paths)["warnings"]))
 
+    def test_init_records_claude_code_for_research_when_both_agents_are_installed(self):
+        """Claude Code can be limited to web search and Codex cannot, so Codex is only recorded when it is the only one."""
+        both = {"claude": True, "codex": True}
+        for installed, recorded, warns in (
+            (both, "claude-code", False), ({"claude": False, "codex": True}, "codex-cli", True), ({"claude": False, "codex": False}, None, False),
+        ):
+            with self.subTest(installed=installed):
+                tidy = Path(tempfile.mkdtemp())
+                self.addCleanup(shutil.rmtree, tidy, True)
+                (tidy / "config").mkdir()
+                for name in (".env.example", "config/profile.example.json", "config/sources.json"):
+                    shutil.copyfile(REPO / name, tidy / name)
+                paths = setup.Paths(tidy)
+                with mock.patch.object(setup, "cli_available", lambda binary: installed["claude" if "claude" in binary.lower() else "codex"]),                         mock.patch.dict("os.environ", {"PIPELINE_CLAUDE_BIN": "", "PIPELINE_CODEX_BIN": ""}):
+                    report = setup.init(paths)
+                self.assertEqual(report["agent_cli"], recorded)
+                self.assertEqual(setup.read_env(paths.env).get("PIPELINE_OUTREACH_DISCOVERY_PROVIDER", "") or None, recorded)
+                self.assertEqual(any("PIPELINE_OUTREACH_RESEARCH_ALLOW_CODEX" in warning for warning in report["warnings"]), warns)
+
     def test_init_is_idempotent_and_never_overwrites_what_the_student_set(self):
         setup.init(self.paths)
         first = setup.read_env(self.paths.env)

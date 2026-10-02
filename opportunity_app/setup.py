@@ -198,6 +198,11 @@ def set_env_values(path: Path, updates: dict[str, str], *, overwrite: bool = Fal
 
 
 def detect_agent_cli() -> str:
+    """The research agent to record: Claude Code when installed, else Codex CLI, else "".
+
+    The order matters (CLI_CONFIG lists Claude Code first): Codex cannot be limited to web search, so it does the deep
+    search only after the student's opt-in (see init, which says so when Codex is all there is).
+    """
     for provider in CLI_CONFIG:
         if cli_available(cli_binary(provider)):
             return provider

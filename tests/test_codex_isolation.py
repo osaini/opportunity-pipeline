@@ -186,7 +186,7 @@ class AnUnisolatedCodexCommandIsRefusedTests(unittest.TestCase):
     def test_the_builders_output_is_accepted(self):
         for web in (False, True):
             done = subprocess.CompletedProcess([], 0, "ok", "")
-            with self.subTest(web=web), mock.patch.object(agent_providers.subprocess, "run", return_value=done) as run:
+            with self.subTest(web=web), mock.patch.dict("os.environ", {ALLOW_CODEX_ENV: "1"}),                     mock.patch.object(agent_providers.subprocess, "run", return_value=done) as run:
                 agent_providers.run_headless(self.good(web=web), "prompt", timeout=5, cwd=".")
             run.assert_called_once()
 
@@ -219,8 +219,20 @@ class AnUnisolatedCodexCommandIsRefusedTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assert_refused(["web_search=" + value if item == "web_search=disabled" else item for item in command], "web_search")
         # The web-research command has code mode on; the same command with web search off is a command that left it on.
-        left_on = ["web_search=disabled" if item == "web_search=live" else item for item in self.good(web=True)]
-        self.assert_refused(left_on, "code_mode_host")
+        with mock.patch.dict("os.environ", {ALLOW_CODEX_ENV: "1"}):
+            left_on = ["web_search=disabled" if item == "web_search=live" else item for item in self.good(web=True)]
+            self.assert_refused(left_on, "code_mode_host")
+
+    def test_web_search_live_is_refused_unless_the_students_opt_in_is_set(self):
+        """The research runner is the only builder of web_search=live, and only after the opt-in; any other argv with it
+        is a command somebody wrote by hand."""
+        with mock.patch.dict("os.environ", {ALLOW_CODEX_ENV: "1"}):
+            live = self.good(web=True)
+        for value in ("", "0", "no"):
+            with self.subTest(opt_in=value), mock.patch.dict("os.environ", {ALLOW_CODEX_ENV: value}):
+                self.assert_refused(live, "web_search=live")
+        with mock.patch.dict("os.environ", {ALLOW_CODEX_ENV: "1"}):
+            agent_providers.require_codex_isolation(live)
 
     def test_the_student_agent_refuses_a_command_that_lost_the_isolation(self):
         """The provider checks even when a runner is injected, so a test double cannot hide a weakened command."""
@@ -241,6 +253,8 @@ class AnUnisolatedCodexCommandIsRefusedTests(unittest.TestCase):
             ["--config=web_search=live"], ["-c", "features.shell_tool=true"], ["-cweb_search=live"],
             ["--sandbox=danger-full-access"], ["--profile=mine"], ["--add-dir=/"], ["-m", "--oss"], ["-m", ""],
             ["--model", "x"], ["--full-auto"], ["-c", "model_reasoning_effort=ludicrous"], ["--disable=code_mode_host"],
+            ["--enable=shell_tool"], ["--enable", "code_mode_host"], ["--sandbox=read-only"], ["-c", "web_search=live"],
+            ["-c", "model_reasoning_effort=high", "-c", "approval_policy=never"], ["--config", "model_reasoning_effort=low"],
         ):
             with self.subTest(extra=extra):
                 self.assert_refused([*command[:-1], *extra, "-"])
