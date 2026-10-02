@@ -5,7 +5,7 @@
   const App = window.OpportunityApp;
 
   // From app-context.js.
-  const { registerSessionPoller, state } = App;
+  const { els, registerSessionPoller, state } = App;
 
   // From app-ui.js.
   const { announce, chip, element, formatDate, optionElement, plural, showError } = App;
@@ -20,7 +20,7 @@
   const { automationFields } = App;
 
   // From app-outreach-send.js.
-  const { outreachDraftNeedsReview, outreachReachable } = App;
+  const { outreachDraftNeedsReview, outreachReachable, outreachSendStatus } = App;
 
   // Defined in files that load later; looked up when called.
   const loadOutreach = (...args) => App.loadOutreach(...args);
@@ -407,13 +407,18 @@
     return section;
   }
 
-  async function outreachSettingsPanel() {
+  // gmail and automation are the listing's, so the page status can be restated when a switch that sends changes.
+  async function outreachSettingsPanel(gmail, automationSwitches) {
     // The page's own heading ("Outreach settings") names the panel.
     const panel = element("section", "outreach-settings");
     panel.setAttribute("aria-labelledby", "result-count");
     // Per student and stored in the database, so it shows for every account.
     const automation = settingsSection("Automation", "Work the app does on its own. Every switch starts off.");
-    automation.appendChild(await automationFields());
+    automation.appendChild(await automationFields({
+      onChange: (saved) => {
+        if (state.view === "outreach") els.pageStatus.textContent = outreachSendStatus(gmail, { ...automationSwitches, ...saved });
+      },
+    }));
     const mail = settingsSection("Replies and Gmail");
     mail.appendChild(await jevInboxField());
     mail.appendChild(await gmailLabelField());

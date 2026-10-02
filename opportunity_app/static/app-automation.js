@@ -49,7 +49,9 @@
     application_mail: "Reads job-system and assessment emails in Gmail (and mail from company domains you trust below). An email that clearly confirms, rejects, or invites you moves that application forward and adds a task or a deadline; the email is shown on the application. Anything unclear, an offer, or an email from before you turned this on waits under Waiting for you, with the reason. Start it in shadow: for 48 hours it only logs what it would do, and you mark each one right or wrong before it can act. Needs Gmail connected.",
   };
 
-  async function automationFields() {
+  // onChange, when given, is called with the saved switches after each write, so a page that states what sends
+  // (the Outreach page's status line) can follow the switch.
+  async function automationFields({ onChange } = {}) {
     const field = element("div", "automation-settings");
     const status = element("p", "profile-help automation-settings-status");
     status.setAttribute("aria-live", "polite");
@@ -83,6 +85,7 @@
           refreshAutomationStatus();
           box.checked = Boolean(current[key]);
           status.textContent = `${text}: ${box.checked ? "on" : "off"}.`;
+          if (onChange) onChange(current);
         } catch (error) {
           box.checked = !box.checked;
           status.textContent = error.message;

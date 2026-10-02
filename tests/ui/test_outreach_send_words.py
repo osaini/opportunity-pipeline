@@ -18,7 +18,7 @@ from playwright.sync_api import expect
 
 from opportunity_app.automation import ledger as automation
 from opportunity_app.core.timestamps import utc_now
-from ui_helpers import card_for, db, gmail_listing, open_details, open_outreach, seed_target
+from ui_helpers import card_for, db, gmail_listing, open_details, open_outreach, open_tab, seed_target
 
 USER = "local-user"
 SWITCHES = {
@@ -147,3 +147,15 @@ def test_the_connect_gmail_panel_does_not_promise_that_nothing_sends_with_a_swit
     expect(panel).not_to_contain_text("Nothing sends")
     expect(panel).to_contain_text("a thank-you when someone declines")
     owner_page.unroute_all(behavior="ignoreErrors")
+
+def test_turning_a_sending_switch_on_in_settings_updates_the_page_status(owner_page, base_url):
+    seed_drafted(owner_page, base_url)
+    open_outreach(owner_page)
+    open_tab(owner_page, "settings")
+    status = owner_page.locator("#page-status")
+    expect(status).to_contain_text("Nothing sends from here")
+    owner_page.locator("#settings-automation-form_submission").check()
+    expect(status).not_to_contain_text("Nothing sends")
+    expect(status).to_contain_text("contact forms")
+    owner_page.locator("#settings-automation-form_submission").uncheck()
+    expect(status).to_contain_text("Nothing sends from here")

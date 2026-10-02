@@ -330,7 +330,7 @@
         els.results.appendChild(deepSearchPanel(payload.discovery));
         els.resultCount.textContent = "Deep search";
       } else if (tab.id === "settings") {
-        const panel = await outreachSettingsPanel();
+        const panel = await outreachSettingsPanel(payload.gmail_drafts, payload.automation);
         // The settings load after the list; a view switched meanwhile keeps its own page.
         if (!isCurrent()) return;
         els.results.appendChild(panel);
