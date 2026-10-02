@@ -342,6 +342,38 @@ class RealDataFilesAreRefusedTests(unittest.TestCase):
                     self.assertTrue(realdata_guard.audit_refuses("os.truncate", (str(spelled), 0), dirs=dirs))
             os.rmdir(link) if os.name == "nt" else link.unlink()
 
+    def test_a_name_relative_to_a_directory_descriptor_is_judged_in_that_directory(self):
+        """shutil.rmtree on Linux and macOS removes os.rmdir("data", dir_fd=<parent>): "data" is not the checkout's data/."""
+        real = realdata_guard.real_data_dirs()
+        elsewhere = Path(tempfile.gettempdir()).resolve() / "somewhere"
+        with mock.patch.object(realdata_guard, "_fd_directory", return_value=str(elsewhere)):
+            self.assertFalse(realdata_guard.audit_refuses("os.rmdir", ("data", 7), dirs=real))
+            self.assertFalse(realdata_guard.audit_refuses("os.remove", ("platform.db", 7), dirs=real))
+            self.assertTrue(realdata_guard.audit_refuses("os.rmdir", ("data", 7), dirs=[elsewhere / "data"]))
+            self.assertTrue(realdata_guard.audit_refuses("os.rename", ("a", "data/x", None, 7), dirs=[elsewhere / "data"]))
+        with mock.patch.object(realdata_guard, "_fd_directory", return_value=str(real[0].parent)):
+            self.assertTrue(realdata_guard.audit_refuses("os.remove", ("data/platform.db", 7), dirs=real))
+            self.assertTrue(realdata_guard.audit_refuses("os.mkdir", ("data", 0o777, 7), dirs=real))
+        absolute = str(real[0] / "platform.db")
+        self.assertTrue(realdata_guard.audit_refuses("os.remove", (absolute, 7), dirs=real), "an absolute path ignores dir_fd")
+
+    def test_removing_a_temp_tree_that_holds_a_data_folder_is_let_through_from_the_checkout(self):
+        with contextlib.chdir(ROOT), tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "data" / "nested").mkdir(parents=True)
+            (Path(tmp) / "data" / "platform.db").write_bytes(b"")
+            shutil.rmtree(Path(tmp) / "data")
+            self.assertFalse((Path(tmp) / "data").exists())
+
+    @unittest.skipIf(os.name == "nt", "Windows cannot open a directory descriptor")
+    def test_a_real_directory_descriptor_is_resolved(self):
+        fd = os.open(self.root, os.O_RDONLY)
+        try:
+            self.assertEqual(os.path.realpath(realdata_guard._fd_directory(fd)), os.path.realpath(self.root))
+            self.assertTrue(realdata_guard.audit_refuses("os.mkdir", (self.name, 0o777, fd)))
+            self.refuse(lambda: os.mkdir(self.name, dir_fd=fd))
+        finally:
+            os.close(fd)
+
     def test_the_hook_judges_only_events_that_name_a_path(self):
         refuse = realdata_guard.audit_refuses
         real = realdata_guard.real_data_dirs()
@@ -369,9 +401,10 @@ def recording_calls_into(prefixes, seen):
 
     Two kinds are recorded: the audit events (open, mkdir, remove, rename; judged by realdata_guard.audit_refuses, which the
     audit hook calls for every event in the process) and the probes that raise no audit event: stat, lstat, exists, is_dir,
-    is_file, listdir, scandir, access, iterdir. A probe made while the guard judges a path (is_real_data_path and
-    real_data_dirs resolve the path they are given) is the guard reading the path string, not a test touching the
-    directory, so it is left out; a test's own call is not.
+    is_file, listdir, scandir, access, iterdir. A probe made while the guard judges a path (is_real_data_path, real_data_dirs,
+    _prefixes and audit_refuses resolve the path they are given, and on Linux and macOS os.path.realpath lstats each part) is the guard
+    reading the path string, not a test touching the directory, so it is left out; a test's own call is not. The recorder's
+    own check counts as judging too, or its realpath would record itself without end.
     """
     judging = [0]
     judge = realdata_guard.audit_refuses
@@ -385,21 +418,43 @@ def recording_calls_into(prefixes, seen):
                 judging[0] -= 1
         return wrapper
 
+    inside = judged(realdata_guard._inside_prefixes)
+    # shutil.rmtree on Linux and macOS opens each folder as os.open("data", dir_fd=<its parent>), and the "open" audit event
+    # carries no dir_fd, so a temp tree holding a data/ folder would read as the checkout's. While a tree outside the prefixes
+    # is removed its events are left out; removing a tree inside them is recorded as such.
+    cleaning = [0]
+    real_rmtree = shutil.rmtree
+
+    def rmtree(path, *args, **kwargs):
+        if inside(path, prefixes):
+            seen.append(("shutil.rmtree", path))
+            return real_rmtree(path, *args, **kwargs)
+        cleaning[0] += 1
+        try:
+            return real_rmtree(path, *args, **kwargs)
+        finally:
+            cleaning[0] -= 1
+
+    @judged
     def recording_event(event, args, dirs=None):
-        if dirs is None and any(realdata_guard._inside_prefixes(arg, prefixes) for arg in args):
+        # The path arguments only, each joined to its dir_fd as the hook joins it: shutil.rmtree on Linux and macOS removes
+        # os.rmdir("data", dir_fd=<a temp parent>), which is not the checkout's data/.
+        paths = [realdata_guard._event_path(event, args, index) for index in realdata_guard._PATH_EVENTS.get(event, ()) if index < len(args)]
+        if dirs is None and not cleaning[0] and any(inside(path, prefixes) for path in paths):
             seen.append((event, args[0]))
         return judge(event, args, dirs)
 
     def probing(name, function):
         def wrapper(*args, **kwargs):
-            if not judging[0] and args and realdata_guard._inside_prefixes(args[0], prefixes):
+            if not judging[0] and args and inside(args[0], prefixes):
                 seen.append((name, args[0]))
             return function(*args, **kwargs)
         return wrapper
 
     with contextlib.ExitStack() as stack:
         stack.enter_context(mock.patch.object(realdata_guard, "audit_refuses", recording_event))
-        for name in ("is_real_data_path", "real_data_dirs"):
+        stack.enter_context(mock.patch.object(shutil, "rmtree", rmtree))
+        for name in ("is_real_data_path", "real_data_dirs", "_prefixes"):
             stack.enter_context(mock.patch.object(realdata_guard, name, judged(getattr(realdata_guard, name))))
         for owner, label, name in _PROBES:
             if hasattr(owner, name):

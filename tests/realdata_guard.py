@@ -130,6 +130,9 @@ def is_real_data_path(database, *, uri=False, dirs=None):
 # Audit events that name a path, and which of their arguments are paths.
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
 _PATH_EVENTS = {"open": (0,), "os.mkdir": (0,), "os.remove": (0,), "os.rmdir": (0,), "os.rename": (0, 1), "os.truncate": (0,)}
+# Where each event carries the dir_fd a relative path is resolved against (shutil.rmtree on Linux and macOS removes a tree
+# that way: os.rmdir("data", dir_fd=<its parent>)), by the index of the path argument.
+_DIR_FD_ARGS = {"os.mkdir": {0: 2}, "os.remove": {0: 1}, "os.rmdir": {0: 1}, "os.rename": {0: 2, 1: 3}}
 # A read-only open of one of these names is refused too: a database, its journal files, or a dated backup of one.
 _DATABASE_NAME = re.compile(r"\.(?:db|sqlite3?)(?:$|[-.])", re.IGNORECASE)
 _audit = {"hooked": False, "on": False, "prefixes": ()}
@@ -152,6 +155,37 @@ def _inside_prefixes(value, prefixes):
 def _prefixes(dirs):
     spellings = (spelling for directory in dirs for spelling in (os.path.abspath(str(directory)), os.path.realpath(str(directory))))
     return tuple(dict.fromkeys(os.path.normcase(spelling) for spelling in spellings))
+
+
+def _fd_directory(fd):
+    """The directory an open directory descriptor names, or None where this platform cannot say."""
+    try:
+        if sys.platform.startswith("linux"):
+            return os.readlink(f"/proc/self/fd/{fd}")
+        if sys.platform == "darwin":
+            import fcntl
+
+            return os.fsdecode(fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024)).rstrip(b"\0"))
+    except (OSError, ValueError, AttributeError):
+        pass
+    return None
+
+
+def _event_path(event, args, index):
+    """The path argument at `index`, joined to its dir_fd's directory when it is relative to one; None when it cannot be told."""
+    value = args[index]
+    fd_index = _DIR_FD_ARGS.get(event, {}).get(index)
+    fd = args[fd_index] if fd_index is not None and fd_index < len(args) else None
+    if not isinstance(fd, int) or not isinstance(value, (str, bytes, os.PathLike)):
+        return value
+    try:
+        text = os.fsdecode(value)
+    except (TypeError, ValueError):
+        return None
+    if os.path.isabs(text):
+        return text
+    directory = _fd_directory(fd)
+    return None if directory is None else os.path.join(directory, text)
 
 
 def _names_database(value):
@@ -177,7 +211,7 @@ def audit_refuses(event, args, dirs=None):
         if not writes and not _names_database(path):
             return False
     prefixes = _audit["prefixes"] if dirs is None else _prefixes(dirs)
-    return any(index < len(args) and _inside_prefixes(args[index], prefixes) for index in indexes)
+    return any(index < len(args) and _inside_prefixes(_event_path(event, args, index), prefixes) for index in indexes)
 
 
 def _audit_hook(event, args):
