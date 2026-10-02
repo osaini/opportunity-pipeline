@@ -2,8 +2,11 @@
 
 Last verified: 2026-08-23
 
+*A dated record. Test counts and module names are as of that date;
+[`AGENTS.md`](../AGENTS.md) has the current counts and layout.*
+
 This is the evidence ledger for the phases defined in
-[`2026-08-platform-build-plan.md`](plans/2026-08-platform-build-plan.md). A phase is
+the 2026-08 platform build plan (not kept in the repository). A phase is
 marked **Pass** only when its repository-owned behavior is implemented and
 exercised. External deployment, provider, policy, or human-review requirements
 remain explicit open gates rather than being inferred from scaffolding.

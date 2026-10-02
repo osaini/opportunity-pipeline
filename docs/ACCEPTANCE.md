@@ -2,6 +2,9 @@
 
 Recorded: 2026-08-10; re-verified 2026-08-23
 
+*A dated record. Test counts and module names are as of the dates given here;
+[`AGENTS.md`](../AGENTS.md) has the current counts and layout.*
+
 **Scope decision, 2026-09-17:** the gates still open below are closed as out of
 scope for how this project is actually deployed. See
 [Scope decision](#scope-decision--2026-09-17) at the end of this file.
@@ -34,7 +37,7 @@ budgets, and transport implementation.
 ## Gap-remediation acceptance update — 2026-08-22
 
 The automated portions of R-A through R-G of the remediation plan
-([2026-08-platform-build-plan.md](plans/2026-08-platform-build-plan.md) §11)
+(the 2026-08 platform build plan, not kept in the repository, §11)
 are covered by the expanded suite (208 Python tests, 88 browser tests, 5 visual
 baselines, 9 extension fixtures, and 5,940 generated API cases):
 

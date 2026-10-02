@@ -522,6 +522,51 @@ this way are listed for a week under Auto-passed this week, each with Restore.
 Run `python -m opportunity_app.setup validate` again after editing; it checks
 these fields too.
 
+## 7b. Call prep (optional)
+
+When a company replies, call prep researches the company and the person the
+student will talk to, and writes questions meant to get that person talking
+about their own work. Two things make it the student's own.
+
+**Their standing questions.** Ask: *"What do you want to ask on every call?
+Anything from your own work you'd lead with?"* Copy
+`config/call_prep.local.example.json` to `config/call_prep.local.json` and write
+their questions in their words: `ask` is the question, `lead_in` (optional) is
+what they say first, `research` names the research to have ready for it
+(`customers`, `product`, `growth`, `hiring`, `engineering`, and the other
+sections in `opportunity_app/outreach/quote_check.py`), and `blank` is a line to
+write the answer on. The file is gitignored. Without it, call prep asks four
+plain questions with no lead-ins.
+
+**LinkedIn, for notes on the interviewer.** Optional, and only with a separate
+LinkedIn test account, never the one in their everyday browser. The interviewer
+is found from their outreach inbox (who sent the calendar invitation, or who
+wrote last); their profile is then read through `mcp-server-linkedin` run by
+`mcporter`, signed in as the test account. Set it up with the student at the
+keyboard (they type the password; never ask for it):
+
+```bash
+npm install -g mcporter
+mcporter config add linkedin-scraper --scope home --stdio "uvx mcp-server-linkedin==4.26.1 --no-auto-import" --env AUTO_IMPORT_FROM_BROWSER=false
+AUTO_IMPORT_FROM_BROWSER=false uvx mcp-server-linkedin==4.26.1 --login --no-auto-import
+```
+
+The version is pinned on purpose: `@latest` would run whatever was published
+last, with the LinkedIn sign-in in reach, every time it starts. Use the same
+number in both commands. To upgrade, choose the new version yourself after
+reading its release notes, then run `mcporter config remove linkedin-scraper`
+and both commands again with it. `--scope home` keeps the entry in mcporter's
+own folder in the home directory, so no `config/mcporter.json` appears in the
+project (it would be committed by accident).
+
+Both `--no-auto-import` and `AUTO_IMPORT_FROM_BROWSER=false` must stay: without
+them the server copies the browser's LinkedIn sign-in. Then, in Outreach →
+Settings, put the test account's profile link under *LinkedIn test account*.
+Before every read the app checks that the server is signed in as exactly that
+account with browser import off, and reads nothing otherwise. It only reads, a
+few calls per interviewer, spaced 20 seconds apart. If `mcporter` is not on the
+web app's PATH, set `PIPELINE_MCPORTER` in `.env` to its full path.
+
 ## 7c. Apply for me (optional)
 
 **Apply for me** reads a saved Greenhouse role's public application form and
@@ -625,51 +670,6 @@ fields too.
    That is a guard against a stray script, not a lock against anyone who holds
    the access token (it can sign in a browser session), and the account export
    includes the stored answers. Say so if they share the machine or the token.
-
-## 7b. Call prep (optional)
-
-When a company replies, call prep researches the company and the person the
-student will talk to, and writes questions meant to get that person talking
-about their own work. Two things make it the student's own.
-
-**Their standing questions.** Ask: *"What do you want to ask on every call?
-Anything from your own work you'd lead with?"* Copy
-`config/call_prep.local.example.json` to `config/call_prep.local.json` and write
-their questions in their words: `ask` is the question, `lead_in` (optional) is
-what they say first, `research` names the research to have ready for it
-(`customers`, `product`, `growth`, `hiring`, `engineering`, and the other
-sections in `opportunity_app/outreach/quote_check.py`), and `blank` is a line to
-write the answer on. The file is gitignored. Without it, call prep asks four
-plain questions with no lead-ins.
-
-**LinkedIn, for notes on the interviewer.** Optional, and only with a separate
-LinkedIn test account, never the one in their everyday browser. The interviewer
-is found from their outreach inbox (who sent the calendar invitation, or who
-wrote last); their profile is then read through `mcp-server-linkedin` run by
-`mcporter`, signed in as the test account. Set it up with the student at the
-keyboard (they type the password; never ask for it):
-
-```bash
-npm install -g mcporter
-mcporter config add linkedin-scraper --scope home --stdio "uvx mcp-server-linkedin==4.26.1 --no-auto-import" --env AUTO_IMPORT_FROM_BROWSER=false
-AUTO_IMPORT_FROM_BROWSER=false uvx mcp-server-linkedin==4.26.1 --login --no-auto-import
-```
-
-The version is pinned on purpose: `@latest` would run whatever was published
-last, with the LinkedIn sign-in in reach, every time it starts. Use the same
-number in both commands. To upgrade, choose the new version yourself after
-reading its release notes, then run `mcporter config remove linkedin-scraper`
-and both commands again with it. `--scope home` keeps the entry in mcporter's
-own folder in the home directory, so no `config/mcporter.json` appears in the
-project (it would be committed by accident).
-
-Both `--no-auto-import` and `AUTO_IMPORT_FROM_BROWSER=false` must stay: without
-them the server copies the browser's LinkedIn sign-in. Then, in Outreach →
-Settings, put the test account's profile link under *LinkedIn test account*.
-Before every read the app checks that the server is signed in as exactly that
-account with browser import off, and reads nothing otherwise. It only reads, a
-few calls per interviewer, spaced 20 seconds apart. If `mcporter` is not on the
-web app's PATH, set `PIPELINE_MCPORTER` in `.env` to its full path.
 
 ## 8. First run and daily use
 

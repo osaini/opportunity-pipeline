@@ -31,7 +31,7 @@ Worked example from this repo:
 | 197 unittest tests | Routes, DB, auth, logic | All frontend behaviour | Uses an in-process `TestClient`; no browser, no `app.js` |
 | `node --check app.js` | That the file parses | Whether any of it runs | It is a syntax check |
 
-The seam is obvious once written down: **110KB of JavaScript that nothing
+The seam is obvious once written down: **110KB of JavaScript (its size at the time) that nothing
 executed.** And the P0 was exactly there — `app.js` dropped the CSRF header on
 every write, so Save and Pass were completely broken in the browser while every
 API test passed.
