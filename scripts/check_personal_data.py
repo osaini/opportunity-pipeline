@@ -71,7 +71,7 @@ DOCUMENT_SUFFIXES = (".db", ".sqlite", ".sqlite3", ".pdf", ".docx", ".doc")
 SHIPPED_PATHS = re.compile(
     r"""^(
         opportunity_app/ | pipeline_core/ | pipeline\.py$ | apps/ | templates/ | scripts/
-      | \.claude/ | SETUP\.md$ | README\.md$ | AGENTS\.md$ | CONTRIBUTING\.md$
+      | \.claude/ | SETUP\.md$ | README\.md$ | AGENTS\.md$ | CONTRIBUTING\.md$ | docs/guide/
       | config/[^/]*\.example\.json$
     )""",
     re.VERBOSE,

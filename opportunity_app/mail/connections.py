@@ -129,7 +129,7 @@ async def _gmail_account(client: httpx.AsyncClient, access_token: str) -> str:
         # A 403 is not always a missing permission: the Gmail API may be off in the project, or Google may be rate limiting.
         reasons = _google_reasons(profile)
         if reasons & {"accessNotConfigured", "SERVICE_DISABLED"}:
-            raise ValueError("Enable the Gmail API in your Google Cloud project (README, Gmail drafts setup), then connect again")
+            raise ValueError("Enable the Gmail API in your Google Cloud project (docs/guide/gmail.md, Gmail drafts setup), then connect again")
         if reasons & {"rateLimitExceeded", "userRateLimitExceeded", "quotaExceeded", "RESOURCE_EXHAUSTED"}:
             raise ValueError("Could not confirm which Gmail account connected; try connecting again")
         raise ValueError("Google did not grant the Gmail permissions; connect again and tick every box on Google's screen")

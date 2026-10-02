@@ -104,7 +104,7 @@ INTEGRATIONS = [
         "id": "gmail-drafts",
         "env": ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_OAUTH_CLIENT_SECRET"],
         "unlocks": "Approved outreach emails open as Gmail drafts with your resume attached. Without it they open as mailto links.",
-        "get": "Your own Google Cloud OAuth client; follow README.md, section 'Gmail drafts'.",
+        "get": "Your own Google Cloud OAuth client; follow docs/guide/gmail.md, section 'Gmail drafts setup'.",
     },
     {
         "id": "sec-edgar",

@@ -302,7 +302,7 @@ themselves (rule 3). The details:
   Outreach settings, off until they turn it on, because it sends reply and email
   text to TypeSafe.
 - **Gmail drafts**: the student needs their own Google Cloud OAuth client. Walk
-  them through README.md → "Gmail drafts with an attachment". They also set
+  them through docs/guide/gmail.md → "Gmail drafts setup". They also set
   `PIPELINE_OUTREACH_ACCOUNT` to their address and `PIPELINE_OUTREACH_COMPOSE=gmail`.
   `PIPELINE_CONNECTION_KEY` was already generated in step 2.
   Once Gmail is connected the app catches bounces and logs replies on its own.
