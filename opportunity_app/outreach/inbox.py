@@ -59,18 +59,17 @@ from ..mail.classifiers import read_reply
 from ..mail.message import (
     FULL_TEXT_LIMIT,
     MAILER_DAEMONS,
-    URL,
     answers_something,
     body_text,
     full_reply_text,
     header_map,
-    host_of,
     is_automatic,
     is_bulk_or_generated,
     kept_headers,
     link_hosts_or_none,
     mailbox_key,
     reply_text,
+    unquoted_link_hosts,
 )
 from ..mail.trust import FREEMAIL, READ_CATEGORIES, authenticate, listed, sender_lists
 from .targets import log_event, get_target, update_target
@@ -179,7 +178,7 @@ def _delivery_kind(message: EmailMessage, sender: str) -> str:
 
 
 def _link_hosts(message: EmailMessage) -> set[str]:
-    return {host for host in (host_of(url) for url in URL.findall(body_text(message, whole=False))) if host}
+    return unquoted_link_hosts(message)
 
 
 def _job_mail(message: EmailMessage, sender: str) -> bool:

@@ -28,6 +28,7 @@ from helpers_gmail import (
     INBOX_USER,
     AlwaysInTransaction,
     ReplyCaptureFixture,
+    html_mail,
     mail,
     now_ms,
     rate_limited,
@@ -806,6 +807,43 @@ class ReplyCaptureTests(ReplyCaptureFixture, unittest.TestCase):
                                   sender="Mike Chen <mike.chen@bovi.example>", subject="Quick question", headers="X-HubSpot-Sequence-Id: 7\n"))
         self.assertEqual([item["reason"] for item in self.check()["possible"]], ["mailing_tool"])
         self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_an_html_only_applicant_system_mail_is_job_mail_not_a_reply(self):
+        target = self.sent_target()
+        self.arrive("ats-html", html_mail(
+            '<p>Unfortunately we will not move forward.</p><p><a href="https://boards.greenhouse.io/bovi/jobs/1">View your application</a></p>',
+            subject="Your application"))
+        result = self.check()
+        self.assertEqual(result["replies"], [], "the link is in an href, which the text conversion drops")
+        self.assertEqual([item["reason"] for item in result["possible"]], ["job_mail"])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_an_html_only_sales_sequence_mail_is_only_a_possible_reply(self):
+        target = self.sent_target()
+        self.arrive("seq-html", html_mail(
+            '<div>Hi Sam, saw you reached out. Evaluating arms for your lab?</div><a href="https://t.hubspotlinks.com/x?a=1&amp;b=2">Book a time</a>',
+            sender="Mike Chen <mike.chen@bovi.example>", subject="Quick question"))
+        self.assertEqual([item["reason"] for item in self.check()["possible"]], ["mailing_tool"])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_an_html_link_in_the_quoted_email_does_not_make_a_reply_job_mail(self):
+        target = self.sent_target()
+        self.arrive("quoted-html", html_mail(
+            '<div>Happy to hop on a call Tuesday.</div><blockquote>Apply at <a href="https://boards.greenhouse.io/bovi/jobs/1">here</a></blockquote>'))
+        result = self.check()
+        self.assertEqual([item["target_id"] for item in result["replies"]], [target["id"]])
+        self.assertEqual(result["possible"], [])
+
+    def test_link_hosts_are_read_from_href_src_and_text_without_punctuation(self):
+        def hosts(raw):
+            return outreach_inbox._link_hosts(BytesParser(policy=policy.default).parsebytes(raw))
+
+        self.assertEqual(hosts(html_mail('<a href="https://boards.greenhouse.io/x">go</a>')), {"boards.greenhouse.io"})
+        self.assertEqual(hosts(html_mail("<a href='https://t.hubspotlinks.com/x?a=1&amp;b=2'>go</a>")), {"t.hubspotlinks.com"})
+        self.assertEqual(hosts(html_mail('<img src="https://track.mailtrack.io/p.gif"> see https://lever.co/bovi.')),
+                         {"track.mailtrack.io", "lever.co"})
+        self.assertEqual(hosts(mail("Details (https://acme.com), thanks")), {"acme.com"})
+        self.assertEqual(hosts(html_mail('<p>no links</p><blockquote><a href="https://greenhouse.io/q">old</a></blockquote>')), set())
 
     def test_a_contact_at_regional_free_mail_stands_for_nobody_else_there(self):
         self.sent_target(company="Tiny Co", contact_email="owner@yahoo.co.uk", website="")

@@ -21,7 +21,9 @@ Look-alikes that mean different things, kept apart on purpose:
   which the caller reads as "now").
 - ``hosts_in`` (every link of a plain text, a set), ``link_hosts_or_none`` (every link of every text
   part of a message, None when any cannot be read: fails closed) and ``clean_url`` (one link,
-  unescaped, with its sentence punctuation cut). application_inbox's Mail.link_hosts is a list,
+  unescaped, with its sentence punctuation cut). ``unquoted_link_hosts`` is the hosts of what the sender
+  wrote (href and src of the HTML, plus text links, quoted email left out) for judging who sent a
+  message. application_inbox's Mail.link_hosts is a list,
   never None.
 - ``header_map`` (a Gmail API message's headers by lowercased name, the last of a
   repeated header winning) and ``addresses`` and ``sender`` (a parsed
@@ -444,6 +446,32 @@ def _hosts(text: str) -> Iterable[str]:
 def hosts_in(text: str) -> set[str]:
     """The host of every link in a text. Hosts only."""
     return set(_hosts(text))
+
+
+_ATTRIBUTE_URL = re.compile(r"""(?is)\b(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""")
+
+
+def unquoted_link_hosts(message: EmailMessage) -> set[str]:
+    """The host of every link in what the sender wrote, quoted email left out. Hosts only.
+
+    The text of an HTML message has no hrefs, so they are read from the markup
+    (href and src, a tracking pixel included; the markup stops at the first
+    <blockquote>) as well as from the links written out in the text. An
+    unreadable HTML part adds nothing. link_hosts_or_none reads the quoted
+    parts too and fails closed; this is for judging who sent a message, not for
+    vouching that it has no link.
+    """
+    hosts = set(_hosts(strip_quoted(body_text(message, whole=False))))
+    part = message.get_body(preferencelist=("html",))
+    if part is not None:
+        try:
+            markup = str(part.get_content())
+        except Exception:  # noqa: BLE001 - a part that cannot be read has no links to give
+            return hosts
+        markup = re.sub(r"(?is)<blockquote\b.*", "", markup)
+        for match in _ATTRIBUTE_URL.finditer(markup):
+            hosts.update(_hosts(next(group for group in match.groups() if group is not None)))
+    return hosts
 
 
 def link_hosts_or_none(message: EmailMessage) -> list[str] | None:
