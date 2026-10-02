@@ -33,7 +33,7 @@ from urllib.parse import urlsplit
 
 from .integrations.agent_providers import CliAgentProvider
 from .contact_names import website_domain
-from .mail_trust import FREEMAIL, registrable_domain
+from .mail.trust import FREEMAIL, registrable_domain
 from .outreach_contacts import PageParser
 from .outreach_email_search import BLOCKED_HOSTS
 from .outreach_identity import LEGAL_SUFFIXES, company_key, is_institution, is_platform_host, names_host

@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import httpx
 from cryptography.fernet import Fernet
 
-from opportunity_app import connections
+from opportunity_app.mail import connections
 from opportunity_app.core.database import connect_product
 
 from opportunity_app.core.schema import LOCAL_USER_ID

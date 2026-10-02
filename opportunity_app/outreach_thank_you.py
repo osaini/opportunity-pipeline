@@ -112,9 +112,9 @@ import httpx
 from . import automation, outreach_callbacks, outreach_review
 from .background import record_health_quietly, step_error
 from .core.database import is_unique_violation, rollback_quietly
-from .inbox_classifiers import MIN_CONFIDENCE
+from .mail.classifiers import MIN_CONFIDENCE
 from .core.json_values import json_dict
-from .mail_message import FULL_TEXT_LIMIT, written_between_quotes
+from .mail.message import FULL_TEXT_LIMIT, written_between_quotes
 from .outreach import OutreachNotFoundError, log_event, get_target
 from .outreach_greeting import contact_first_name, greeting_line, greeting_style, spoken_company
 from .outreach_forms import SUBMITTED_EVENT as FORM_SUBMITTED, UNCONFIRMED_EVENT as FORM_UNCONFIRMED
@@ -144,7 +144,7 @@ from .outreach_reply_senders import (
     thank_you_blockers,
 )
 from .send_claims import SendConflictError
-from .gmail_connection import GmailClient, backoff_until
+from .mail.gmail_connection import GmailClient, backoff_until
 from .outreach_schedule import (
     GMAIL_HOLD_MARGIN,
     KindHooks,

@@ -52,9 +52,10 @@ import httpx
 
 from pipeline_core.identity import normalized
 
-from . import automation, mail_message, outreach_callbacks
-from .inbox_classifiers import read_reply
-from .mail_message import (
+from . import automation, outreach_callbacks
+from .mail import message as mail_message
+from .mail.classifiers import read_reply
+from .mail.message import (
     FULL_TEXT_LIMIT,
     MAILER_DAEMONS,
     URL,
@@ -70,7 +71,7 @@ from .mail_message import (
     mailbox_key,
     reply_text,
 )
-from .mail_trust import FREEMAIL, READ_CATEGORIES, authenticate, listed, sender_lists
+from .mail.trust import FREEMAIL, READ_CATEGORIES, authenticate, listed, sender_lists
 from .outreach import log_event, get_target, update_target
 from .outreach_replies import BOUNCED, reply_reason, suggest_reply_status
 from .integrations.gmail_client import (
@@ -82,7 +83,7 @@ from .integrations.gmail_client import (
 )
 from .outreach_delivery import headers_say_failure
 from .outreach_gmail import SENT_EVENT
-from .gmail_connection import connector_row, GmailClient
+from .mail.gmail_connection import connector_row, GmailClient
 from .outreach_config import sender_account
 from .outreach_identity import (
     company_words,

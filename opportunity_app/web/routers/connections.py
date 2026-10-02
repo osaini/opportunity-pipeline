@@ -16,7 +16,7 @@ from ..overrides import shared_router
 from ... import automation as automation_core
 from ...actions import ApplicationNotFoundError
 from ...auth import constant_time_equal
-from ...connections import (
+from ...mail.connections import (
     ConnectionNotFoundError,
     connector_owner,
     begin_oauth,
@@ -36,7 +36,7 @@ from ...connections import (
 from ...core.database import connect_product
 from ...monitored_events import decide_monitored_event
 from ...core.timestamps import utc_now
-from ...inbox_classifiers import client_for as inbox_client_for
+from ...mail.classifiers import client_for as inbox_client_for
 from ...outreach_config import sender_account
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection

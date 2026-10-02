@@ -20,7 +20,8 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import SERVER_INSTANCE, STATIC_DIR, automation, automation_health, gmail_connection, outreach_delivery, outreach_gmail
+from opportunity_app import SERVER_INSTANCE, STATIC_DIR, automation, automation_health, outreach_delivery, outreach_gmail
+from opportunity_app.mail import gmail_connection
 from opportunity_app.integrations import gmail_client
 from opportunity_app.api import create_app
 from opportunity_app.core.database import connect_product
@@ -697,7 +698,7 @@ class GmailDraftTests(unittest.TestCase):
             return httpx.Response(200, json={"access_token": "a1", "refresh_token": "r1"})
 
         real = httpx.AsyncClient
-        with mock.patch("opportunity_app.connections.httpx.AsyncClient", lambda *a, **k: real(transport=httpx.MockTransport(google))):
+        with mock.patch("opportunity_app.mail.connections.httpx.AsyncClient", lambda *a, **k: real(transport=httpx.MockTransport(google))):
             response = self.client.post("/api/v1/connections/oauth/gmail_drafts/complete", headers=AUTH, json={"state": state, "code": "code-1"})
         self.assertEqual(response.status_code, 422, response.text)
         self.assertEqual(response.json()["detail"], f"Google signed in as someone.else@elsewhere.example, but this pipeline's mailbox is {ACCOUNT}. "

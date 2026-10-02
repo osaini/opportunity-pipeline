@@ -24,9 +24,20 @@ from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
 from opportunity_app import (
-    STATIC_DIR, automation, automation_health, mail_message, outreach, outreach_decline_reading, outreach_delivery, outreach_greeting,
-    outreach_inbox, outreach_location, outreach_replies, outreach_reply_senders, outreach_thank_you,
+    STATIC_DIR,
+    automation,
+    automation_health,
+    outreach,
+    outreach_decline_reading,
+    outreach_delivery,
+    outreach_greeting,
+    outreach_inbox,
+    outreach_location,
+    outreach_replies,
+    outreach_reply_senders,
+    outreach_thank_you,
 )
+from opportunity_app.mail import message as mail_message
 from opportunity_app.api import create_app
 from opportunity_app.outreach_greeting import greeting_line
 from opportunity_app.outreach_config import resolve_provider
@@ -1144,7 +1155,7 @@ class ThankYouRulesTests(DeclineCase):
             with self.subTest(sender=sender):
                 self.assertEqual(self.blockers(raw_reply(sender=sender, delivered=gmail_headers("Dana Lee <dana@acme.com>"))), ["headers"])
         # Whatever else goes wrong reading them fails closed too, and is never raised into the worker's pass.
-        with mock.patch("opportunity_app.mail_trust.authenticate", side_effect=AttributeError("'Group' object has no attribute")):
+        with mock.patch("opportunity_app.mail.trust.authenticate", side_effect=AttributeError("'Group' object has no attribute")):
             self.assertEqual(self.blockers(), ["headers"])
         colleague = raw_reply(sender="Sam Park <sam@acme.com>", to="x:y@z.com;;")
         self.assertEqual(self.blockers(colleague, thread="t-elsewhere"), ["R1", "headers"], "the rules that read no header still say")

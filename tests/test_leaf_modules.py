@@ -113,19 +113,19 @@ LEAVES: dict[str, tuple[set[str], set[str]]] = {
     "opportunity_app/core/profile_store.py": (dotted("core.json_values"), set()),
     "opportunity_app/core/user_time.py": (set(), set()),
     # Keyword rules over an application email: pure text, split out of connections so the inbox workflow can use them.
-    "opportunity_app/monitored_classifier.py": (set(), set()),
+    "opportunity_app/mail/monitored_classifier.py": (set(), set()),
     # Workstream I: identity and the legacy boundary
     "pipeline_core/identity.py": (set(), set()),
     "pipeline_core/regions.py": ({"pipeline_core.identity"}, set()),
     "pipeline_core/env.py": (set(), set()),
     "opportunity_app/core/storage_paths.py": (set(), set()),
     # Workstream M: the mail leaves. mail_message is stdlib-only so scripts/pipeline_mailbox.py can use it without httpx.
-    "opportunity_app/mail_message.py": (set(), set()),
+    "opportunity_app/mail/message.py": (set(), set()),
     "opportunity_app/integrations/gmail_client.py": ({"httpx"}, set()),
     # Workstream B: workers, the AI CLI runner, outreach leaves
     # Not a pure leaf: automation (record_health) is imported where used, so importing background loads neither it
     # nor the mail reader. mail_message and timestamps are stdlib-only leaves.
-    "opportunity_app/background.py": (dotted("mail_message", "core.timestamps"), dotted("automation")),
+    "opportunity_app/background.py": (dotted("mail.message", "core.timestamps"), dotted("automation")),
     "opportunity_app/integrations/web_fetch.py": ({"httpx", "httpcore"}, set()),
     "opportunity_app/outreach_config.py": (dotted("integrations.agent_providers"), set()),
     "opportunity_app/contact_names.py": (set(), set()),
@@ -538,7 +538,7 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
             employer_key(None)  # type: ignore[arg-type]
 
     def test_mail_trust_company_key_still_reads_none_as_empty(self):
-        from opportunity_app import mail_trust
+        from opportunity_app.mail import trust as mail_trust
         from pipeline_core.identity import employer_key
 
         self.assertEqual(mail_trust.company_key(None), "")  # type: ignore[arg-type]
@@ -788,7 +788,7 @@ def parsed(raw: str):
 
 class MailMessageLeafTests(unittest.TestCase):
     def test_the_header_map_keeps_the_last_of_a_repeated_header_and_folds_names(self):
-        from opportunity_app.mail_message import header_map
+        from opportunity_app.mail.message import header_map
 
         message = {"payload": {"headers": [
             {"name": "Subject", "value": "first"}, {"name": "SUBJECT", "value": "second"}, {"name": "To", "value": "a@b.example"},
@@ -798,7 +798,7 @@ class MailMessageLeafTests(unittest.TestCase):
         self.assertEqual(header_map({"payload": {"headers": None}}), {})
 
     def test_the_guarded_header_map_skips_what_is_not_a_header_and_the_plain_one_does_not(self):
-        from opportunity_app.mail_message import header_map
+        from opportunity_app.mail.message import header_map
 
         message = {"payload": {"headers": [None, {"name": "From", "value": "a@b.example"}, "junk"]}}
         with self.assertRaises(AttributeError):
@@ -806,7 +806,7 @@ class MailMessageLeafTests(unittest.TestCase):
         self.assertEqual(header_map(message, guarded=True), {"from": "a@b.example"})
 
     def test_base64url_gets_its_padding_back_and_refuses_what_is_not_base64(self):
-        from opportunity_app.mail_message import decode_base64url
+        from opportunity_app.mail.message import decode_base64url
 
         self.assertEqual(decode_base64url("aGVsbG8"), b"hello")
         self.assertEqual(decode_base64url("aGVsbG8="), b"hello")
@@ -815,14 +815,14 @@ class MailMessageLeafTests(unittest.TestCase):
             decode_base64url("not base64 ☃")
 
     def test_the_two_html_readers_keep_their_different_text_retention(self):
-        from opportunity_app.mail_message import html_text_reply, html_text_spaced
+        from opportunity_app.mail.message import html_text_reply, html_text_spaced
 
         markup = "<p>Hi <b>there</b></p><style>x{}</style><blockquote>quoted words</blockquote>after"
         self.assertEqual(html_text_spaced(markup), " Hi  there \n quoted words after")
         self.assertEqual(html_text_reply(markup), "Hi there\n")
 
     def test_the_two_bulk_checks_differ_only_in_the_auto_submitted_rule(self):
-        from opportunity_app.mail_message import has_list_headers, is_bulk_or_generated
+        from opportunity_app.mail.message import has_list_headers, is_bulk_or_generated
 
         generated = parsed("From: a@b.example\nAuto-Submitted: auto-generated\n\nbody\n")
         listed = parsed("From: a@b.example\nList-Id: <news.b.example>\n\nbody\n")
@@ -837,7 +837,7 @@ class MailMessageLeafTests(unittest.TestCase):
         self.assertFalse(has_list_headers(replied))
 
     def test_the_two_received_times_fall_back_differently(self):
-        from opportunity_app.mail_message import received_or_epoch, received_or_none
+        from opportunity_app.mail.message import received_or_epoch, received_or_none
 
         dated = parsed("From: a@b.example\nDate: Tue, 01 Sep 2026 10:00:00 +0000\n\nbody\n")
         undated = parsed("From: a@b.example\n\nbody\n")
@@ -848,7 +848,7 @@ class MailMessageLeafTests(unittest.TestCase):
         self.assertIsNone(received_or_none({}, undated))
 
     def test_a_link_is_cut_to_its_host_and_a_query_is_never_kept(self):
-        from opportunity_app.mail_message import clean_url, host_of, strip_queries
+        from opportunity_app.mail.message import clean_url, host_of, strip_queries
 
         self.assertEqual(clean_url("https://Acme.com/a?x=1&amp;y=2)."), "https://Acme.com/a?x=1&y=2")
         self.assertEqual(host_of("https://Careers.Acme.com./jobs?id=1"), "careers.acme.com")
@@ -857,7 +857,7 @@ class MailMessageLeafTests(unittest.TestCase):
         self.assertEqual(strip_queries("failed for https://acme.com/a/b?token=secret#frag and more"), "failed for https://acme.com/a/b and more")
 
     def test_link_hosts_fail_closed_where_hosts_in_does_not(self):
-        from opportunity_app.mail_message import LINK_HOST_LIMIT, hosts_in, link_hosts_or_none
+        from opportunity_app.mail.message import LINK_HOST_LIMIT, hosts_in, link_hosts_or_none
 
         many = " ".join(f"https://site{number}.example/" for number in range(LINK_HOST_LIMIT + 1))
         crowded = parsed(f"From: a@b.example\nContent-Type: text/plain\n\n{many}\n")
@@ -866,7 +866,7 @@ class MailMessageLeafTests(unittest.TestCase):
         self.assertEqual(link_hosts_or_none(parsed("From: a@b.example\n\nsee https://www.acme.com/x?y=1.\n")), ["www.acme.com"])
 
     def test_a_mailbox_folds_its_tag_and_a_gmail_address_its_dots(self):
-        from opportunity_app.mail_message import mailbox_key
+        from opportunity_app.mail.message import mailbox_key
 
         self.assertEqual(mailbox_key(" Dana.Reyes+jobs@Gmail.com "), "danareyes@gmail.com")
         self.assertEqual(mailbox_key("d.reyes@googlemail.com"), "dreyes@gmail.com")
@@ -994,7 +994,7 @@ class OutreachIdentityTests(unittest.TestCase):
         loaded = set(ast.literal_eval(done.stdout.strip().splitlines()[-1]))
         heavy = dotted(
             "outreach", "outreach_contacts", "outreach_forms", "outreach_gmail", "outreach_inbox", "application_inbox",
-            "outreach_labels", "outreach_delivery", "automation", "core.schema", "integrations.gmail_client", "connections", "api",
+            "outreach_labels", "outreach_delivery", "automation", "core.schema", "integrations.gmail_client", "mail.connections", "api",
         ) | {"cryptography", "httpx"}
         self.assertEqual(loaded & heavy, set())
 

@@ -98,7 +98,7 @@ LAYER_NAMES = {
 LAYER_MEMBERS: dict[int, frozenset[str]] = {
     # L0 stdlib leaves. `opportunity_app` and `pipeline_core` are the package __init__ modules (constants and re-exports).
     0: (
-        _app(". core integrations core.timestamps core.user_time core.database core.json_values mail_message opportunity_metadata core.storage_paths contact_names core.daily_lock core.hooks monitored_classifier outreach_replies")
+        _app(". mail core integrations core.timestamps core.user_time core.database core.json_values mail.message opportunity_metadata core.storage_paths contact_names core.daily_lock core.hooks mail.monitored_classifier outreach_replies")
         | _core(". env identity visibility regions read_model paths clock text http config sources scoring artifacts store liveness retention importers discovery fetch reports cli")
         | frozenset({"pipeline"})
     ),
@@ -110,8 +110,8 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
     # L3 domain.
     3: _app(
         "actions apply_sessions auth apply_checks apply_claims apply_classify apply_greenhouse apply_policy apply_sensitive apply_schema_client "
-        "automation automation_health boards captures connections dossier employer market early_programs extension_apply mail_trust "
-        "notifications purge ingestion profile resumes resume_variants preparation document_artifacts inbox_classifiers gmail_connection "
+        "automation automation_health boards captures mail.connections dossier employer market early_programs extension_apply mail.trust "
+        "notifications purge ingestion profile resumes resume_variants preparation document_artifacts mail.classifiers mail.gmail_connection "
         "send_claims outreach outreach_agents outreach_callbacks outreach_config outreach_decline_reading outreach_identity outreach_label_name "
         "outreach_location outreach_greeting outreach_versions outreach_contacts outreach_linkedin outreach_batch "
         "outreach_thank_you_writing outreach_render"

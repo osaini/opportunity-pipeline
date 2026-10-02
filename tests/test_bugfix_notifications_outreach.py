@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from opportunity_app import notifications as notif
 from opportunity_app import outreach_location
-from opportunity_app.connections import update_preferences
+from opportunity_app.mail.connections import update_preferences
 from opportunity_app.outreach import create_target, get_target, list_targets
 from opportunity_app.outreach_location import location_region, user_regions
 from opportunity_app.outreach_drafting import INSTRUCTIONS, location_line, validate_draft

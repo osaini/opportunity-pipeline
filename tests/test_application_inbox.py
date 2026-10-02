@@ -21,23 +21,14 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import (
-    STATIC_DIR,
-    application_inbox,
-    application_mail_rules,
-    automation,
-    automation_health,
-    gmail_connection,
-    inbox_watcher,
-    internal_automation,
-    mail_trust,
-)
+from opportunity_app import STATIC_DIR, application_inbox, application_mail_rules, automation, automation_health, inbox_watcher, internal_automation
+from opportunity_app.mail import gmail_connection, trust as mail_trust
 from opportunity_app.actions import record_intent, update_application
 from opportunity_app.api import create_app
 from opportunity_app.application_mail_rules import match_application, parse_message
-from opportunity_app.connections import monitored_event
+from opportunity_app.mail.connections import monitored_event
 from opportunity_app.monitored_events import decide_monitored_event
-from opportunity_app.monitored_classifier import classify_monitored_message
+from opportunity_app.mail.monitored_classifier import classify_monitored_message
 from opportunity_app.operations import export_account
 from opportunity_app.core.database import connect_product
 from opportunity_app.core.timestamps import parse_app_instant, utc_now

@@ -35,7 +35,7 @@ from urllib.parse import quote
 import httpx
 
 from . import ROOT, automation, automation_health, outreach_callbacks
-from .connections import OAUTH_PROVIDERS
+from .mail.connections import OAUTH_PROVIDERS
 from .integrations.gmail_client import (
     MODIFY_SCOPE,
     PROVIDER,
@@ -46,8 +46,8 @@ from .integrations.gmail_client import (
     default_client_factory,
     granted_scopes,
 )
-from .gmail_connection import GmailClient, connector_row
-from .mail_message import URL_TAIL
+from .mail.gmail_connection import GmailClient, connector_row
+from .mail.message import URL_TAIL
 from .outreach import (
     DRAFT_KINDS,
     UNSENT_STATUSES,

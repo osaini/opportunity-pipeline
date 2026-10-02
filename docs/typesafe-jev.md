@@ -72,7 +72,7 @@ confidence thresholds to a new alias.
 
 ## Inbox suggestions, with a keyword-rule fallback
 
-`opportunity_app/inbox_classifiers.py` asks Jev one Choice question for each of
+`opportunity_app/mail/classifiers.py` asks Jev one Choice question for each of
 two suggestions the student already confirms by hand:
 
 - the outreach status a pasted cold-email reply points to (offer, call scheduled,

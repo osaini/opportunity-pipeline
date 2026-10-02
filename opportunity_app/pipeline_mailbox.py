@@ -33,7 +33,7 @@ import httpx
 from cryptography.fernet import Fernet, InvalidToken
 
 from . import ROOT
-from .connections import OAUTH_PROVIDERS
+from .mail.connections import OAUTH_PROVIDERS
 from .core.database import is_postgres_target, connect_product
 from .integrations.gmail_client import (
     GMAIL_API,
@@ -47,7 +47,7 @@ from .integrations.gmail_client import (
     error_reasons,
     granted_scopes,
 )
-from .mail_message import decode_base64url
+from .mail.message import decode_base64url
 from .core.schema import LOCAL_USER_ID
 from .setup import read_env
 

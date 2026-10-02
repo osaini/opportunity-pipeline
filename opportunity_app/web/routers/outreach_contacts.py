@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import Depends, HTTPException, status
 
 from ..overrides import shared_router
-from ...inbox_classifiers import client_for as inbox_client_for
+from ...mail.classifiers import client_for as inbox_client_for
 from ...outreach import (
     OutreachNotFoundError,
     confirm_research as confirm_outreach_research,

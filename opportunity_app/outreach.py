@@ -25,7 +25,7 @@ from uuid import uuid4
 
 from . import automation, outreach_callbacks
 from .core.database import is_unique_violation
-from .inbox_classifiers import read_reply
+from .mail.classifiers import read_reply
 from .contact_names import website_domain
 from .outreach_config import gmail_web_url, sender_account
 from .outreach_greeting import GENERIC_GREETINGS, contact_first_name, greeting_style, readdress_greeting, unnamed_greeting

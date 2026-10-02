@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable
 
-from .inbox_classifiers import JEV_NOT_ASKED
+from .mail.classifiers import JEV_NOT_ASKED
 from .outreach_replies import REPLY_PATTERNS
 
 

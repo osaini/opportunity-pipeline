@@ -18,9 +18,10 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, gmail_connection, outreach_delivery, outreach_inbox
+from opportunity_app import STATIC_DIR, outreach_delivery, outreach_inbox
+from opportunity_app.mail import gmail_connection
 from opportunity_app.api import create_app
-from opportunity_app.mail_trust import Authentication
+from opportunity_app.mail.trust import Authentication
 from opportunity_app.core.database import connect_product
 from opportunity_app.core.timestamps import utc_now
 

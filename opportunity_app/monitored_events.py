@@ -12,7 +12,7 @@ import sqlite3
 from typing import Any
 
 from .application_inbox import decide_event
-from .connections import decide_event_directly, monitored_event
+from .mail.connections import decide_event_directly, monitored_event
 
 
 def decide_monitored_event(conn: sqlite3.Connection, event_id: str, decision: str, application_id: str | None, *, user_id: str) -> dict[str, Any]:

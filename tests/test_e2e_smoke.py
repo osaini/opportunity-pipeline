@@ -158,7 +158,7 @@ class EndToEndSmokeTests(unittest.TestCase):
         self.assertEqual(confirmed.status_code, 200, confirmed.text)
 
         # 6. Digest delivers through a live-capable provider.
-        from opportunity_app.connections import ensure_preferences, queue_notification
+        from opportunity_app.mail.connections import ensure_preferences, queue_notification
 
         provider = FakeLiveProvider()
         user_id = session.json()["user_id"]

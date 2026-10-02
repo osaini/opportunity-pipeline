@@ -48,8 +48,8 @@ from uuid import uuid4
 
 from pipeline_core.identity import employer_key
 
-from .mail_message import host_of
-from .core.timestamps import utc_now
+from .message import host_of
+from ..core.timestamps import utc_now
 
 SENDERS_PATH = Path(__file__).resolve().parent / "data" / "application_senders.json"
 # The categories a message is read for. job_boards and reserved never make a message worth reading.

@@ -11,9 +11,10 @@ from ..overrides import shared_router
 from ... import application_inbox
 from ... import automation as automation_core
 from ... import automation_health
-from ... import auto_triage, mail_trust
+from ... import auto_triage
+from ...mail import trust as mail_trust
 from ...actions import ApplicationNotFoundError
-from ...inbox_classifiers import client_for as inbox_client_for
+from ...mail.classifiers import client_for as inbox_client_for
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection
 from ..models.automation import (
@@ -202,7 +203,7 @@ def get_auto_passed(
     return {"items": items, "total": len(items), "days": auto_triage.REVIEW_DAYS}
 
 
-# Company mail domains the student trusts for application mail (mail_trust.py).
+# Company mail domains the student trusts for application mail (mail/trust.py).
 @router.get("/api/v1/automation/employer-domains")
 def get_employer_domains(
     conn: sqlite3.Connection = Depends(writable_connection),

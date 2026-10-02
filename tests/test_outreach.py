@@ -18,7 +18,7 @@ from opportunity_app import STATIC_DIR
 from opportunity_app import outreach as outreach_module
 from opportunity_app.api import create_app
 from opportunity_app.core.database import is_unique_violation, connect_product
-from opportunity_app.connections import update_preferences
+from opportunity_app.mail.connections import update_preferences
 from opportunity_app.outreach import (
     CLAIM_DETAIL_LIMIT,
     _claim_detail,

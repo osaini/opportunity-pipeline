@@ -18,7 +18,7 @@ from typing import Any, Protocol
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from .connections import ensure_preferences
+from .mail.connections import ensure_preferences
 from .core.timestamps import utc_now
 from .core.user_time import UserTimezone, user_timezone
 

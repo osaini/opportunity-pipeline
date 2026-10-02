@@ -14,7 +14,8 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, gmail_connection, outreach_delivery, outreach_gmail_sends, outreach_inbox
+from opportunity_app import STATIC_DIR, outreach_delivery, outreach_gmail_sends, outreach_inbox
+from opportunity_app.mail import gmail_connection
 from opportunity_app.api import create_app
 from opportunity_app.outreach_automation import update_settings
 from opportunity_app.outreach_gmail_sends import capture_gmail_sends

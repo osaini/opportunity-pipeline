@@ -23,10 +23,10 @@ from typing import Any
 
 from pipeline_core.identity import identity_tokens, normalized
 
-from . import mail_trust
+from .mail import trust as mail_trust
 from .contact_names import GENERIC_LOCAL_PARTS, ROLE_INBOX_LOCAL_PARTS, ROLE_INBOX_QUALIFIERS, website_domain
 from .core.json_values import json_dict
-from .mail_message import hosts_in, is_automatic
+from .mail.message import hosts_in, is_automatic
 from .outreach_config import sender_account
 from .outreach_contacts import is_shared_inbox, made_of
 from .outreach_forms import ALWAYS_AUTOMATIC
@@ -287,7 +287,7 @@ def thank_you_blockers(conn: sqlite3.Connection, target: dict[str, Any], reply: 
     "headers" when its headers are not on record or one cannot be read:
     every rule that reads them fails closed.
     """
-    from .mail_trust import authenticate
+    from .mail.trust import authenticate
 
     data = reply["data"]
     sender = str(data.get("from") or "").strip().casefold()

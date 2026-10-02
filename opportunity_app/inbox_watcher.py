@@ -22,7 +22,7 @@ from .core.database import rollback_quietly, connect_product
 from .integrations.gmail_client import PROVIDER, ClientFactory
 from .outreach_delivery import check_deliveries
 from .outreach_gmail import gmail_notices
-from .gmail_connection import connector_row, persist_gmail_health
+from .mail.gmail_connection import connector_row, persist_gmail_health
 from .outreach_inbox import OnReply, capture_replies
 from .core.timestamps import parse_app_instant, utc_now
 from .integrations.typesafe_decisions import DecisionClient

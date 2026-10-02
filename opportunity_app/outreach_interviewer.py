@@ -58,8 +58,8 @@ from typing import Any, Callable
 from . import outreach_research as research
 from . import quote_check
 from .integrations.agent_providers import CliAgentProvider, complete_text
-from .mail_message import mailbox_key
-from .mail_trust import registrable_domain
+from .mail.message import mailbox_key
+from .mail.trust import registrable_domain
 from .outreach import log_event, get_target
 from .outreach_identity import LEGAL_SUFFIXES
 from .outreach_config import resolve_provider

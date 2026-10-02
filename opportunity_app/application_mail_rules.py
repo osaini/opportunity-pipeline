@@ -25,11 +25,12 @@ from urllib.parse import parse_qs, urlsplit
 
 from pipeline_core.identity import identity_tokens, normalized
 
-from . import internal_automation, mail_trust
-from .monitored_classifier import classify_monitored_message
+from . import internal_automation
+from .mail import trust as mail_trust
+from .mail.monitored_classifier import classify_monitored_message
 from .extension_apply import split_canonical_url
-from .inbox_classifiers import classify_email
-from .mail_message import (
+from .mail.classifiers import classify_email
+from .mail.message import (
     URL,
     clean_url,
     decode_base64url,

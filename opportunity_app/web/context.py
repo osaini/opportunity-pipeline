@@ -39,7 +39,7 @@ from ..captures import DEFAULT_CAPTURE_STORAGE
 from ..core.database import is_postgres_target
 from ..integrations.pdf import pdf_renderer
 from ..early_programs import DEFAULT_EARLY_PROGRAMS
-from ..inbox_classifiers import build_client as build_inbox_client, client_for as inbox_client_for
+from ..mail.classifiers import build_client as build_inbox_client, client_for as inbox_client_for
 from ..inbox_watcher import InboxWatcher
 from ..legacy import load_env_file
 from ..outreach_automation import AutomationWorker

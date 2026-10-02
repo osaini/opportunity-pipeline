@@ -9,7 +9,7 @@ import httpx
 from fastapi import Depends, HTTPException, status
 
 from ..overrides import shared_router
-from ...inbox_classifiers import client_for as inbox_client_for
+from ...mail.classifiers import client_for as inbox_client_for
 from ...outreach import (
     DraftChangedError,
     OutreachNotFoundError,

@@ -25,7 +25,7 @@ from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
 from opportunity_app.integrations.agent_providers import ProviderReply, ToolCall
 from opportunity_app.captures import parse_html_draft
-from opportunity_app.connections import queue_notification
+from opportunity_app.mail.connections import queue_notification
 from opportunity_app.profile import get_profile, update_profile
 from opportunity_app.core.schema import LOCAL_USER_ID
 from opportunity_app.legacy_sync import migrate_legacy_database

@@ -38,10 +38,10 @@ from .integrations.gmail_client import (
     LookSchedule,
     connection_state,
 )
-from .mail_message import header_map, received_or_epoch
+from .mail.message import header_map, received_or_epoch
 from .outreach import DRAFT_KINDS, UNSENT_STATUSES, OutreachNotFoundError, log_event, get_target, update_target
 from .outreach_gmail import DRAFT_EVENT, SENT_EVENT, SENT_STATUS, _already_sent, event_tie_order, last_bounces
-from .gmail_connection import connector_row, GmailClient
+from .mail.gmail_connection import connector_row, GmailClient
 from .core.timestamps import utc_now
 from .core.user_time import user_timezone
 

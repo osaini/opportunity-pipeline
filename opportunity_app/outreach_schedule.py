@@ -67,7 +67,7 @@ from .outreach_gmail import (
     send_thank_you,
 )
 from .send_claims import SendConflictError
-from .gmail_connection import backoff_until
+from .mail.gmail_connection import backoff_until
 from .core.settings_store import setting_updated_at
 from .core.timestamps import utc_now
 from .core.user_time import at_wall_clock, to_local, user_timezone

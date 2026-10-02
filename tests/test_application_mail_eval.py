@@ -31,8 +31,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import application_inbox, application_mail_rules, mail_trust
-from opportunity_app.mail_message import host_of
+from opportunity_app import application_inbox, application_mail_rules
+from opportunity_app.mail import trust as mail_trust
+from opportunity_app.mail.message import host_of
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "application_mail_eval.json"
 # What the rules scored on 2026-09-27: precision per predicted label (correct / predicted).

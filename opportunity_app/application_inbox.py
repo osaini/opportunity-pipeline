@@ -23,7 +23,7 @@ token, and queue, sharing the 50-message budget per pass after live mail. A
 message received before enabled_at is only ever proposed.
 
 What is read. A message is read in full when its sender's domain, or the host
-of any link in it, is on the shipped list (data/application_senders.json), or
+of any link in it, is on the shipped list (mail/data/application_senders.json), or
 its sender is at a domain suggested or trusted for a company the student has
 applied to. Anything else is recorded as skipped, with nothing about it kept.
 A message outreach holds (outreach_inbox.owned_sql: a company's reply or
@@ -146,7 +146,8 @@ from uuid import uuid4
 
 import httpx
 
-from . import automation, internal_automation, mail_trust
+from . import automation, internal_automation
+from .mail import trust as mail_trust
 from .actions import log_application_event
 from .application_mail_rules import (
     CLOSED_STAGES,
@@ -168,9 +169,9 @@ from .application_mail_rules import (
 )
 from .core.database import is_transient_error
 from .integrations.gmail_client import ClientFactory, GmailAuthError, GmailThrottled, connection_state
-from .mail_message import host_of, strip_queries
+from .mail.message import host_of, strip_queries
 from .outreach_config import sender_account
-from .gmail_connection import connector_row, GmailClient
+from .mail.gmail_connection import connector_row, GmailClient
 from .outreach_inbox import RULES, owned_sql
 from .core.settings_store import setting_updated_at
 from .core.timestamps import parse_app_instant, utc_now
@@ -1509,7 +1510,7 @@ def decide_event(
     ignoring an email is not the feature getting something wrong, so it never
     trips the breaker.
     """
-    from .connections import decide_event_directly, monitored_event
+    from .mail.connections import decide_event_directly, monitored_event
 
     gmail_id = str((event.get("payload") or {}).get("gmail_id") or "")
     actions = _message_actions(conn, user_id, gmail_id) if gmail_id else []

@@ -17,7 +17,8 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
 from opportunity_app.api import create_app
-from opportunity_app import automation, gmail_connection, outreach_schedule
+from opportunity_app import automation, outreach_schedule
+from opportunity_app.mail import gmail_connection
 from opportunity_app.outreach_automation import AutomationWorker, update_settings
 from opportunity_app.outreach_schedule import next_morning, recipient_zone, run_due_sends
 from opportunity_app.core.schema import ensure_product_schema

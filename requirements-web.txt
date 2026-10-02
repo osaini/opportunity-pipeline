@@ -15,5 +15,5 @@ starlette>=1.3.1,<2
 openai>=3.3,<4
 anthropic>=0.104,<1
 # The Public Suffix List, bundled (no network fetch): which domains are one
-# organization, for application-mail sender checks (opportunity_app/mail_trust.py).
+# organization, for application-mail sender checks (opportunity_app/mail/trust.py).
 publicsuffixlist>=1.0.2,<2

@@ -39,11 +39,11 @@ from .integrations.gmail_client import (
     LookSchedule,
     connection_state,
 )
-from .mail_message import MAILER_DAEMONS, decode_base64url, header_map
+from .mail.message import MAILER_DAEMONS, decode_base64url, header_map
 from .outreach import AWAITING_REPLY, log_event, get_target
 from .outreach_versions import keep_current_draft
 from .outreach_gmail import BOUNCE_EVENT, SENT_EVENT, event_tie_order, last_bounce
-from .gmail_connection import connector_row, GmailClient
+from .mail.gmail_connection import connector_row, GmailClient
 from .core.timestamps import utc_now
 
 # Some recipients failed and the rest were reached (a bad guess with the shared

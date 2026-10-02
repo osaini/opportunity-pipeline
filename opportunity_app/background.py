@@ -23,7 +23,7 @@ import sqlite3
 import threading
 from typing import Any, Callable
 
-from .mail_message import strip_queries
+from .mail.message import strip_queries
 from .core.timestamps import utc_now
 
 LOGGER = logging.getLogger(__name__)

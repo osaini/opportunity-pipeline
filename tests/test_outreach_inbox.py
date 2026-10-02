@@ -14,9 +14,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import httpx
 
-from opportunity_app import automation, automation_health, gmail_connection, inbox_watcher, mail_message, outreach_inbox
+from opportunity_app import automation, automation_health, inbox_watcher, outreach_inbox
+from opportunity_app.mail import gmail_connection, message as mail_message
 from opportunity_app.inbox_watcher import InboxWatcher
-from opportunity_app.mail_message import reply_text, strip_quoted
+from opportunity_app.mail.message import reply_text, strip_quoted
 from opportunity_app.core.database import connect_product
 from opportunity_app.core.timestamps import utc_now
 

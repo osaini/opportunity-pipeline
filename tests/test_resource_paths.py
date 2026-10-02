@@ -24,7 +24,7 @@ realdata_guard.install()
 
 # The only modules that may locate files through their own __file__: the package root (its constants are the anchor) and the
 # sender allowlist, which ships a data file beside itself. Paths from the repo root.
-FILE_RELATIVE_ALLOWED = ("opportunity_app/__init__.py", "opportunity_app/mail_trust.py")
+FILE_RELATIVE_ALLOWED = ("opportunity_app/__init__.py", "opportunity_app/mail/trust.py")
 
 
 class ResolvedPathTests(unittest.TestCase):
@@ -42,7 +42,7 @@ class ResolvedPathTests(unittest.TestCase):
         self.assertEqual(preparation.DEFAULT_MOCK_AUDIO_STORAGE, ROOT / "data" / "private" / "mock-interviews")
 
     def test_the_sender_allowlist_ships_beside_its_module_and_is_readable(self):
-        from opportunity_app import mail_trust
+        from opportunity_app.mail import trust as mail_trust
 
         self.assertTrue(mail_trust.SENDERS_PATH.is_file(), f"{mail_trust.SENDERS_PATH} is missing: a moved module lost its data file")
         self.assertEqual(mail_trust.SENDERS_PATH.parent, Path(mail_trust.__file__).resolve().parent / "data")

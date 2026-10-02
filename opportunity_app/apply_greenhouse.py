@@ -29,7 +29,7 @@ SUBMIT_HOST = "boards.greenhouse.io"
 GREENHOUSE_DOMAIN = "greenhouse.io"
 # Greenhouse's public Job Board API, where a posting's form listing is read.
 API_HOST = "boards-api.greenhouse.io"
-# Greenhouse's own senders (data/application_senders.json), for a confirmation the reader could not match to a role.
+# Greenhouse's own senders (mail/data/application_senders.json), for a confirmation the reader could not match to a role.
 GREENHOUSE_SENDER_DOMAINS = ("greenhouse.io", "greenhouse-mail.io")
 
 # --- Identifying the posting (4.4) --------------------------------------------------------------
