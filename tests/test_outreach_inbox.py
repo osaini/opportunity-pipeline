@@ -910,6 +910,33 @@ class ReplyCaptureTests(ReplyCaptureFixture, unittest.TestCase):
         self.assertEqual(hosts(mail("Details (https://acme.com), thanks")), {"acme.com"})
         self.assertEqual(hosts(html_mail('<p>no links</p><blockquote><a href="https://greenhouse.io/q">old</a></blockquote>')), set())
 
+    def test_a_quoted_link_in_an_ordinary_container_does_not_make_a_reply_job_mail(self):
+        target = self.sent_target()
+        self.arrive("quoted-div", html_mail(
+            '<p>Happy to chat Tuesday.</p><div class="gmail_quote"><p>On Fri, Sam wrote:</p>'
+            '<a href="https://boards.greenhouse.io/bovi/jobs/1">role</a></div>'))
+        result = self.check()
+        self.assertEqual([item["target_id"] for item in result["replies"]], [target["id"]])
+        self.assertEqual(result["possible"], [])
+
+    def test_the_text_quote_boundaries_cut_the_markup_too(self):
+        def hosts(markup):
+            return outreach_inbox._link_hosts(BytesParser(policy=policy.default).parsebytes(html_mail(markup)))
+
+        link = '<a href="https://jobs.lever.co/bovi/1">role</a>'
+        # An "On ... wrote:" line in plain containers, split over two lines, and Outlook's From:/Sent: block.
+        self.assertEqual(hosts(f'<div>Sure.</div><div>On Fri, Sam wrote:</div><div>{link}</div>'), set())
+        self.assertEqual(hosts(f'<div>Sure.</div><div>On Fri, Sep 26, 2026 at 10:02 AM Sam &lt;sam@school.example&gt;<br>wrote:</div>{link}'), set())
+        self.assertEqual(hosts(f'<div>Sure.</div><p>From: Sam</p><p>Sent: Friday</p><div>{link}</div>'), set())
+        self.assertEqual(hosts(f'<p>----- Original Message -----</p>{link}'), set())
+        # A link above the boundary is the sender's own; a quote container is cut out and what follows it is kept.
+        self.assertEqual(hosts(f'<div>See {link}</div><div>On Fri, Sam wrote:</div>'), {"jobs.lever.co"})
+        self.assertEqual(hosts(f'<p>hi</p><div class="gmail_quote"><div><div>{link}</div></div></div><img src="https://pixel.example/p.gif">'),
+                         {"pixel.example"})
+        self.assertEqual(hosts(f'<p>hi</p><div class="gmail_quote">{link}'), set())
+        # A sentence that only starts with "On" is the sender's own words.
+        self.assertEqual(hosts(f'<div>On Friday I wrote the offer: {link}</div>'), {"jobs.lever.co"})
+
     def test_a_contact_at_regional_free_mail_stands_for_nobody_else_there(self):
         self.sent_target(company="Tiny Co", contact_email="owner@yahoo.co.uk", website="")
         self.check()
