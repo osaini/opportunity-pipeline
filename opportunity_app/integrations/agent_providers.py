@@ -344,12 +344,32 @@ def _unlisted_codex_options(args: list[str]) -> list[str]:
     return problems
 
 
-def require_codex_isolation(command: list[str], env: Any = _ENV_UNCHECKED) -> None:
+def _output_file_problem(destination: str, cwd: str | None) -> str:
+    """Why Codex may not write its last message to ``destination`` ("" when it may).
+
+    Codex writes that file itself, outside its sandbox, so it must land inside the directory the call runs in: relative
+    paths are read against it, then ``..`` and symlinks or junctions are resolved, and what is left must be a path below it.
+    """
+    if cwd is None:
+        return "--output-last-message cannot be checked without the directory the call runs in"
+    try:
+        root = Path(cwd).resolve()
+        target = (root / destination).resolve()
+        inside = os.path.commonpath([os.path.normcase(str(root)), os.path.normcase(str(target))]) == os.path.normcase(str(root))
+    except (OSError, ValueError):
+        return f"--output-last-message {destination!r} cannot be resolved"
+    if not destination.strip() or not inside or os.path.normcase(str(target)) == os.path.normcase(str(root)):
+        return f"--output-last-message {destination!r} is not a file inside the call's own directory"
+    return ""
+
+
+def require_codex_isolation(command: list[str], env: Any = _ENV_UNCHECKED, cwd: str | None = None) -> None:
     """Raise CodexNotIsolated, before anything starts, when a Codex command lacks any part of codex_command's isolation.
 
     ``env`` is the environment the process will start with (None: the inherited one). When it is given, a call without web
     search must carry CODEX_NO_ENVIRONMENT in it, the part of the isolation that is not on argv (see codex_process_env).
     run_headless always passes it; the check run before an injected runner does not know it and leaves it out.
+    ``cwd`` is the directory the call runs in: an --output-last-message file must resolve to a place inside it.
     Commands for other programs pass untouched.
     """
     if not _is_codex(command):
@@ -370,6 +390,8 @@ def require_codex_isolation(command: list[str], env: Any = _ENV_UNCHECKED) -> No
     off = _values_after(args, "--disable")
     wanted = (*CODEX_OFF_FEATURES, *(() if web == [f"{_CODEX_WEB_SEARCH}live"] else (CODEX_CODE_MODE,)))
     problems += [f"--disable {feature} is missing" for feature in wanted if feature not in off]
+    problems += [problem for destination in _values_after(args, "--output-last-message")
+                 if (problem := _output_file_problem(destination, cwd))]
     if env is not _ENV_UNCHECKED and not _is_web_research(args):
         if (env or {}).get(CODEX_EXEC_SERVER_ENV) != CODEX_NO_ENVIRONMENT[CODEX_EXEC_SERVER_ENV]:
             problems.append(f"{CODEX_EXEC_SERVER_ENV}=none is missing from its environment, so apply_patch would be listed for some models")
@@ -390,7 +412,7 @@ def run_headless(command: list[str], prompt: str, *, timeout: float, cwd: str) -
     call without web search starts with the environment of codex_process_env (no apply_patch for any model).
     """
     env = codex_process_env(command)
-    require_codex_isolation(command, env)
+    require_codex_isolation(command, env, cwd)
     return subprocess.run(
         command, input=prompt, capture_output=True, text=True, encoding="utf-8", errors="replace",
         timeout=timeout, cwd=cwd, env=env, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),

@@ -443,5 +443,72 @@ class EveryNonResearchCodexCallRunsWithoutAnEnvironmentTests(unittest.TestCase):
         self.assertIn("multi_agent", values_after(agent_providers.codex_command("codex", web_search=True), "--disable"))
 
 
+
+class AnOutputFileMustStayInsideTheCallsDirectoryTests(unittest.TestCase):
+    """Codex writes --output-last-message itself, outside its sandbox, so where it points decides what the call can overwrite."""
+
+    def setUp(self):
+        self.root = tempfile.TemporaryDirectory()
+        self.addCleanup(self.root.cleanup)
+        self.work = Path(self.root.name, "work")
+        self.work.mkdir()
+        self.outside = Path(self.root.name, "outside")
+        self.outside.mkdir()
+
+    def command(self, destination):
+        return agent_providers.codex_command("codex", extra=("--output-last-message", str(destination)))
+
+    def refused(self, destination, cwd=None):
+        with mock.patch.object(agent_providers.subprocess, "run") as run, self.assertRaises(agent_providers.CodexNotIsolated) as raised:
+            agent_providers.run_headless(self.command(destination), "p", timeout=5, cwd=str(cwd or self.work))
+        run.assert_not_called()
+        self.assertIn("--output-last-message", str(raised.exception))
+
+    def accepted(self, destination):
+        done = subprocess.CompletedProcess([], 0, "ok", "")
+        with mock.patch.object(agent_providers.subprocess, "run", return_value=done) as run:
+            agent_providers.run_headless(self.command(destination), "p", timeout=5, cwd=str(self.work))
+        run.assert_called_once()
+
+    def test_a_file_inside_the_directory_is_accepted(self):
+        self.accepted(self.work / "answer.txt")
+        self.accepted("answer.txt")
+        self.accepted(Path("sub") / "answer.txt")
+
+    def test_traversal_and_other_absolute_paths_are_refused(self):
+        self.refused(self.outside / "victim.txt")
+        self.refused(Path("..") / "outside" / "victim.txt")
+        self.refused(str(self.work / ".." / "outside" / "victim.txt"))
+        self.refused(self.work.parent / "victim.txt")
+        self.refused(self.work, cwd=self.work)
+        self.refused(str(self.work) + "-sibling/answer.txt")
+
+    def test_a_symlink_or_junction_that_leaves_the_directory_is_refused(self):
+        link = self.work / "link"
+        try:
+            os.symlink(self.outside, link, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            if os.name != "nt":
+                self.skipTest("symlinks are not available")
+            made = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(self.outside)], capture_output=True)
+            if made.returncode != 0:
+                self.skipTest("neither symlinks nor junctions could be made")
+        self.refused(link / "victim.txt")
+        self.refused(Path("link") / "victim.txt")
+
+    def test_a_file_symlink_that_leaves_the_directory_is_refused(self):
+        (self.outside / "target.txt").write_text("keep", encoding="utf-8")
+        try:
+            os.symlink(self.outside / "target.txt", self.work / "answer.txt")
+        except (OSError, NotImplementedError):
+            self.skipTest("file symlinks are not available")
+        self.refused("answer.txt")
+
+    def test_without_the_calls_directory_the_destination_cannot_be_checked(self):
+        with self.assertRaises(agent_providers.CodexNotIsolated):
+            agent_providers.require_codex_isolation(self.command(self.work / "answer.txt"), env=NO_ENVIRONMENT)
+        agent_providers.require_codex_isolation(self.command(self.work / "answer.txt"), env=NO_ENVIRONMENT, cwd=str(self.work))
+
+
 if __name__ == "__main__":
     unittest.main()
