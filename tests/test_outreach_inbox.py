@@ -28,6 +28,7 @@ from helpers_gmail import (
     INBOX_USER,
     AlwaysInTransaction,
     ReplyCaptureFixture,
+    html_mail,
     mail,
     now_ms,
     rate_limited,
@@ -804,6 +805,196 @@ class ReplyCaptureTests(ReplyCaptureFixture, unittest.TestCase):
         target = self.sent_target()
         self.arrive("seq-1", mail("Hi Sam, saw you reached out. Evaluating arms for your lab? https://t.hubspotlinks.com/x",
                                   sender="Mike Chen <mike.chen@bovi.example>", subject="Quick question", headers="X-HubSpot-Sequence-Id: 7\n"))
+        self.assertEqual([item["reason"] for item in self.check()["possible"]], ["mailing_tool"])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_an_html_only_applicant_system_mail_is_job_mail_not_a_reply(self):
+        target = self.sent_target()
+        self.arrive("ats-html", html_mail(
+            '<p>Unfortunately we will not move forward.</p><p><a href="https://boards.greenhouse.io/bovi/jobs/1">View your application</a></p>',
+            subject="Your application"))
+        result = self.check()
+        self.assertEqual(result["replies"], [], "the link is in an href, which the text conversion drops")
+        self.assertEqual([item["reason"] for item in result["possible"]], ["job_mail"])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_an_html_only_sales_sequence_mail_is_only_a_possible_reply(self):
+        target = self.sent_target()
+        self.arrive("seq-html", html_mail(
+            '<div>Hi Sam, saw you reached out. Evaluating arms for your lab?</div><a href="https://t.hubspotlinks.com/x?a=1&amp;b=2">Book a time</a>',
+            sender="Mike Chen <mike.chen@bovi.example>", subject="Quick question"))
+        self.assertEqual([item["reason"] for item in self.check()["possible"]], ["mailing_tool"])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_an_html_link_in_the_quoted_email_does_not_make_a_reply_job_mail(self):
+        target = self.sent_target()
+        self.arrive("quoted-html", html_mail(
+            '<div>Happy to hop on a call Tuesday.</div><blockquote>Apply at <a href="https://boards.greenhouse.io/bovi/jobs/1">here</a></blockquote>'))
+        result = self.check()
+        self.assertEqual([item["target_id"] for item in result["replies"]], [target["id"]])
+        self.assertEqual(result["possible"], [])
+
+    def test_a_sales_tracking_pixel_after_the_quoted_email_still_makes_it_a_possible_reply(self):
+        target = self.sent_target()
+        self.arrive("seq-after-quote", html_mail(
+            '<div>Hi Sam, just bumping this to the top of your inbox.</div><blockquote class="gmail_quote">'
+            '<a href="https://t.hubspotlinks.com/x">Book</a></blockquote>'
+            '<img src="https://t.hubspotemail.net/e2t/to/abc" width="1" height="1">',
+            sender="Mike Chen <mike.chen@bovi.example>", subject="Re: Quick question"))
+        result = self.check()
+        self.assertEqual(result["replies"], [])
+        self.assertEqual([item["reason"] for item in result["possible"]], ["mailing_tool"])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_a_sequence_bump_whose_tool_link_is_only_in_the_quoted_step_is_a_possible_reply(self):
+        # Sequence tools quote the step before, tracked link and all; the new text has no link, the quote does.
+        target = self.sent_target()
+        self.arrive("seq-quoted-link", mail(
+            "Hi Sam, just bumping this to the top of your inbox.\n\n"
+            "On Mon, Sep 22, 2026 at 9:00 AM Mike Chen <mike.chen@bovi.example> wrote:\n"
+            "> Would a quick call work? https://t.hubspotlinks.com/Ctc/abc\n",
+            sender="Mike Chen <mike.chen@bovi.example>", subject="Re: Quick question"))
+        result = self.check()
+        self.assertEqual(result["replies"], [])
+        self.assertEqual([item["reason"] for item in result["possible"]], ["mailing_tool"])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    ATTRIBUTED_QUOTE_PIXEL = (
+        '<div>Hi Sam, bumping this.</div><div>On Mon, Sep 22, 2026 at 9:00 AM Mike Chen '
+        '&lt;mike.chen@bovi.example&gt; wrote:<br></div><blockquote type="cite">old</blockquote>'
+        '<img src="https://t.hubspotemail.net/e2t/to/abc" width="1" height="1">'
+    )
+
+    def assert_attributed_quote_pixel_is_possible(self, sender):
+        # Thunderbird and many sequence tools put the attribution line outside the blockquote, then append the pixel.
+        target = self.sent_target()
+        self.arrive("seq-attr", html_mail(self.ATTRIBUTED_QUOTE_PIXEL, sender=sender, subject="Re: Quick question"))
+        result = self.check()
+        self.assertEqual(result["replies"], [])
+        self.assertEqual([item["reason"] for item in result["possible"]], ["mailing_tool"])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_a_tracking_pixel_after_an_attributed_quote_from_someone_at_the_company_is_seen(self):
+        self.assert_attributed_quote_pixel_is_possible("Mike Chen <mike.chen@bovi.example>")
+
+    def test_a_tracking_pixel_after_an_attributed_quote_from_the_address_written_to_is_seen(self):
+        self.assert_attributed_quote_pixel_is_possible("Greg Lee <greg@bovi.example>")
+
+    SALES_PIXEL = (
+        '<div>Hi Sam, just bumping this to the top of your inbox.</div>'
+        '<img src="https://t.hubspotemail.net/e2t/to/abc" width="1" height="1">'
+    )
+    ATS_LINK = '<p>Unfortunately we will not move forward.</p><p><a href="https://boards.greenhouse.io/bovi/jobs/1">View</a></p>'
+
+    def test_an_html_only_sales_pixel_from_the_address_written_to_is_only_a_possible_reply(self):
+        target = self.sent_target()
+        self.arrive("seq-exact", html_mail(self.SALES_PIXEL, subject="Quick question"))
+        result = self.check()
+        self.assertEqual(result["replies"], [])
+        self.assertEqual([item["reason"] for item in result["possible"]], ["mailing_tool"])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_a_sales_tool_header_on_mail_from_the_address_written_to_is_only_a_possible_reply(self):
+        target = self.sent_target()
+        self.arrive("seq-exact-header", mail("Hi Sam, evaluating arms for your lab?", subject="Quick question",
+                                              headers="X-HubSpot-Sequence-Id: 7\n"))
+        self.assertEqual([item["reason"] for item in self.check()["possible"]], ["mailing_tool"])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_an_html_only_sales_pixel_in_a_watched_thread_is_only_a_possible_reply(self):
+        target = self.sent_target()
+        self.arrive_in_thread("seq-thread", html_mail(self.SALES_PIXEL))
+        result = self.check()
+        self.assertEqual(result["replies"], [])
+        self.assertEqual([item["reason"] for item in result["possible"]], ["mailing_tool"])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_an_html_only_applicant_system_mail_in_a_watched_thread_is_job_mail_not_a_reply(self):
+        target = self.sent_target()
+        self.arrive_in_thread("ats-thread", html_mail(self.ATS_LINK))
+        result = self.check()
+        self.assertEqual(result["replies"], [])
+        self.assertEqual([item["reason"] for item in result["possible"]], ["job_mail"])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_a_person_writing_in_a_watched_thread_with_no_such_link_is_still_a_reply(self):
+        target = self.sent_target()
+        self.arrive_in_thread("plain-thread", html_mail("<div>Happy to chat Tuesday.</div>"))
+        self.assertEqual([item["target_id"] for item in self.check()["replies"]], [target["id"]])
+
+    def test_the_quote_is_cut_out_of_the_markup_but_the_rest_is_read(self):
+        def hosts(markup):
+            return outreach_inbox._link_hosts(BytesParser(policy=policy.default).parsebytes(html_mail(markup)))
+
+        nested = '<blockquote><a href="https://a.example/1">x</a><blockquote><a href="https://b.example/2">y</a></blockquote><a href="https://c.example/3">z</a></blockquote>'
+        self.assertEqual(hosts(f'<p>hi</p>{nested}<img src="https://pixel.example/p.gif">'), {"pixel.example"})
+        self.assertEqual(hosts('<a href="https://before.example/">b</a><BLOCKQUOTE type=cite><a href="https://q.example/">q</a>'), {"before.example"})
+        self.assertEqual(hosts('<p>Sure, Tuesday works.</p><hr><div id="divRplyFwdMsg"><b>From:</b> Sam<br></div>'
+                               '<div>I applied at <a href="https://jobs.lever.co/bovi/1">your posting</a></div>'), set())
+        self.assertEqual(hosts('<div id="appendonsend"></div><hr><div id=\'divRplyFwdMsg\'><a href="https://jobs.lever.co/b">q</a></div>'), set())
+
+    def test_link_hosts_are_read_from_href_src_and_text_without_punctuation(self):
+        def hosts(raw):
+            return outreach_inbox._link_hosts(BytesParser(policy=policy.default).parsebytes(raw))
+
+        self.assertEqual(hosts(html_mail('<a href="https://boards.greenhouse.io/x">go</a>')), {"boards.greenhouse.io"})
+        self.assertEqual(hosts(html_mail("<a href='https://t.hubspotlinks.com/x?a=1&amp;b=2'>go</a>")), {"t.hubspotlinks.com"})
+        self.assertEqual(hosts(html_mail('<img src="https://track.mailtrack.io/p.gif"> see https://lever.co/bovi.')),
+                         {"track.mailtrack.io", "lever.co"})
+        self.assertEqual(hosts(mail("Details (https://acme.com), thanks")), {"acme.com"})
+        self.assertEqual(hosts(html_mail('<p>no links</p><blockquote><a href="https://greenhouse.io/q">old</a></blockquote>')), set())
+
+    def test_a_quoted_link_in_an_ordinary_container_does_not_make_a_reply_job_mail(self):
+        target = self.sent_target()
+        self.arrive("quoted-div", html_mail(
+            '<p>Happy to chat Tuesday.</p><div class="gmail_quote"><p>On Fri, Sam wrote:</p>'
+            '<a href="https://boards.greenhouse.io/bovi/jobs/1">role</a></div>'))
+        result = self.check()
+        self.assertEqual([item["target_id"] for item in result["replies"]], [target["id"]])
+        self.assertEqual(result["possible"], [])
+
+    def test_the_text_quote_boundaries_cut_the_markup_too(self):
+        def hosts(markup):
+            return outreach_inbox._link_hosts(BytesParser(policy=policy.default).parsebytes(html_mail(markup)))
+
+        link = '<a href="https://jobs.lever.co/bovi/1">role</a>'
+        # An "On ... wrote:" line in plain containers, split over two lines, and Outlook's From:/Sent: block.
+        self.assertEqual(hosts(f'<div>Sure.</div><div>On Fri, Sam wrote:</div><div>{link}</div>'), set())
+        self.assertEqual(hosts(f'<div>Sure.</div><div>On Fri, Sep 26, 2026 at 10:02 AM Sam &lt;sam@school.example&gt;<br>wrote:</div>{link}'), set())
+        self.assertEqual(hosts(f'<div>Sure.</div><p>From: Sam</p><p>Sent: Friday</p><div>{link}</div>'), set())
+        self.assertEqual(hosts(f'<p>----- Original Message -----</p>{link}'), set())
+        # A link above the boundary is the sender's own; a quote container is cut out and what follows it is kept.
+        self.assertEqual(hosts(f'<div>See {link}</div><div>On Fri, Sam wrote:</div>'), {"jobs.lever.co"})
+        self.assertEqual(hosts(f'<p>hi</p><div class="gmail_quote"><div><div>{link}</div></div></div><img src="https://pixel.example/p.gif">'),
+                         {"pixel.example"})
+        self.assertEqual(hosts(f'<p>hi</p><div class="gmail_quote">{link}'), set())
+        # A sentence that only starts with "On" is the sender's own words.
+        self.assertEqual(hosts(f'<div>On Friday I wrote the offer: {link}</div>'), {"jobs.lever.co"})
+
+    def test_a_protocol_relative_link_has_a_host(self):
+        def hosts(markup):
+            return outreach_inbox._link_hosts(BytesParser(policy=policy.default).parsebytes(html_mail(markup)))
+
+        self.assertEqual(hosts('<a href="//boards.greenhouse.io/company/jobs/1">View your application</a>'), {"boards.greenhouse.io"})
+        self.assertEqual(hosts('<img src="//t.hubspotemail.net/e2t/to/abc" width="1" height="1">'), {"t.hubspotemail.net"})
+        self.assertEqual(hosts("<a href='  //Lever.co/bovi?a=1&amp;b=2'>go</a>"), {"lever.co"})
+        # Relative links, mail links and other schemes have no host.
+        self.assertEqual(hosts('<a href="/jobs/1">x</a><a href="mailto:greg@bovi.example">m</a><img src="cid:logo">'), set())
+
+    def test_an_html_only_mail_with_a_protocol_relative_applicant_link_is_job_mail(self):
+        target = self.sent_target()
+        self.arrive("ats-rel", html_mail(
+            '<p>Unfortunately we will not move forward.</p><p><a href="//boards.greenhouse.io/bovi/jobs/1">View</a></p>'))
+        result = self.check()
+        self.assertEqual(result["replies"], [])
+        self.assertEqual([item["reason"] for item in result["possible"]], ["job_mail"])
+        self.assertEqual(self.target(target)["status"], "sent")
+
+    def test_an_html_only_mail_with_a_protocol_relative_sales_pixel_is_only_a_possible_reply(self):
+        target = self.sent_target()
+        self.arrive("seq-rel", html_mail(
+            '<div>Hi Sam, just bumping this.</div><img src="//t.hubspotemail.net/e2t/to/abc" width="1" height="1">',
+            sender="Mike Chen <mike.chen@bovi.example>", subject="Quick question"))
         self.assertEqual([item["reason"] for item in self.check()["possible"]], ["mailing_tool"])
         self.assertEqual(self.target(target)["status"], "sent")
 

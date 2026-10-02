@@ -90,6 +90,15 @@ def settings(conn: sqlite3.Connection, *, user_id: str) -> dict[str, bool]:
     return {key: current[key] == "on" for key in SETTINGS}
 
 
+def listing_switches(conn: sqlite3.Connection, *, user_id: str) -> dict[str, bool]:
+    """The switches the Outreach page reads to say what can go out without a click.
+
+    Every outreach switch (``settings``) plus decline_thank_you, which lives in the registry rather than in this
+    module's legacy list but sends a thank-you email on its own, so the page's promises about sending must know it.
+    """
+    return {**settings(conn, user_id=user_id), "decline_thank_you": automation.mode(conn, user_id, "decline_thank_you") == "on"}
+
+
 def update_settings(conn: sqlite3.Connection, changes: dict[str, Any], *, user_id: str) -> dict[str, bool]:
     unknown = set(changes) - set(SETTINGS)
     if unknown:
@@ -208,7 +217,7 @@ def resend_refusal(
         return "The new contact's basis is not one that may be sent to automatically"
     if after["contact_bounced"] or after["cc_bounced"]:
         return "An address on it bounced before"
-    if after["email_subject"] != before["email_subject"] or without_greeting(after["email_body"]) != without_greeting(before["email_body"]):
+    if after["email_subject"] != before["email_subject"] or without_greeting(after["email_body"], style) != without_greeting(before["email_body"], style):
         return "More than the greeting changed"
     if not greets_contact(after["email_body"], after["contact_name"], after["company"], style):
         return "Its greeting is not to the new contact"

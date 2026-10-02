@@ -230,6 +230,31 @@ class ContentTests(unittest.TestCase):
         long = self.GOOD.replace("the best.", "the best. " + "Thank you so much for all of it. " * 12)
         self.assertTrue(any(f"over {MAX_WORDS}" in problem for problem in validate(long, inputs())))
 
+    def test_a_number_glued_to_letters_is_still_a_number_no_input_supports(self):
+        # H200 and Q4 are figures the decline never gave; a thank-you that can go out unread must not state them.
+        for name, text in {
+            "model name": "the best with the H200 rollout.",
+            "quarter": "the best with your Q4 launch.",
+            "unit": "the best with the 5G launch.",
+            "run into a word after a full stop": "the best.Then 40k users.",
+            "scheme-less link carrying a figure": "the best with acme.ai/2025 news.",
+            "figure run into a lowercase word": "the best and congrats on 40k.users so far.",
+            "model name run into a lowercase word": "the best on the H200.rollout here.",
+        }.items():
+            with self.subTest(name=name):
+                problems = validate(self.GOOD.replace("the best.", text), inputs())
+                self.assertTrue(any("numbers found in none of the inputs" in problem for problem in problems), problems)
+
+    def test_a_number_the_decline_gave_is_supported_however_it_is_written(self):
+        said = inputs(decline="We hired 1500 interns for Q4 last year, so we cannot take you on.")
+        for text in ("the best with Q4.", "the best, and congratulations on the 1,500 interns.", "the best with Q4 and 1500."):
+            with self.subTest(text=text):
+                self.assertEqual(validate(self.GOOD.replace("the best.", text), said), [])
+        self.assertTrue(validate(self.GOOD.replace("the best.", "the best with Q3."), said), "3 is not in the decline")
+        # 1,500 in the decline supports 1500 in the thank-you, and the other way round.
+        commas = inputs(decline="We hired 1,500 interns, so we cannot take you on.")
+        self.assertEqual(validate(self.GOOD.replace("the best.", "the best with all 1500."), commas), [])
+
     def test_a_name_that_looks_like_an_ask_is_not_one(self):
         named = inputs(company="Connect Robotics", company_full="Connect Robotics", greeting="Hi Dana,")
         body = "Hi Dana,\n\nThank you for considering it. I wish you and the Connect Robotics team the best.\n\nBest,\nTest Student"

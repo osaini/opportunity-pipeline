@@ -21,7 +21,9 @@ Look-alikes that mean different things, kept apart on purpose:
   which the caller reads as "now").
 - ``hosts_in`` (every link of a plain text, a set), ``link_hosts_or_none`` (every link of every text
   part of a message, None when any cannot be read: fails closed) and ``clean_url`` (one link,
-  unescaped, with its sentence punctuation cut). application_inbox's Mail.link_hosts is a list,
+  unescaped, with its sentence punctuation cut). ``unquoted_link_hosts`` is the hosts of what the sender
+  wrote (href and src of the HTML, plus text links, quoted email left out) for judging who sent a
+  message. application_inbox's Mail.link_hosts is a list,
   never None.
 - ``header_map`` (a Gmail API message's headers by lowercased name, the last of a
   repeated header winning) and ``addresses`` and ``sender`` (a parsed
@@ -444,6 +446,150 @@ def _hosts(text: str) -> Iterable[str]:
 def hosts_in(text: str) -> set[str]:
     """The host of every link in a text. Hosts only."""
     return set(_hosts(text))
+
+
+_BLOCKQUOTE_TAG = re.compile(r"(?is)<(/?)blockquote\b[^>]*>")
+# Outlook and OWA quote the original under these markers, with no <blockquote>; everything after is the quote.
+_OUTLOOK_QUOTE = re.compile(r"""(?is)<[^<>]*\bid\s*=\s*["']?(?:divRplyFwdMsg|appendonsend)\b""")
+
+
+def _without_quoted_markup(markup: str) -> str:
+    """The markup without its quoted email: balanced <blockquote> elements are cut out and what follows them
+    (a tracking pixel the sender's tool adds after the quote) is kept; an element never closed runs to the end.
+    Outlook's reply markers cut everything after them."""
+    outlook = _OUTLOOK_QUOTE.search(markup)
+    if outlook:
+        markup = markup[:outlook.start()]
+    kept: list[str] = []
+    position = 0
+    depth = 0
+    for tag in _BLOCKQUOTE_TAG.finditer(markup):
+        if tag.group(1):
+            if depth:
+                depth -= 1
+                if not depth:
+                    position = tag.end()
+            continue
+        if not depth:
+            kept.append(markup[position:tag.start()])
+        depth += 1
+    if not depth:
+        kept.append(markup[position:])
+    return "".join(kept)
+
+
+# Gmail, Yahoo and Proton quote the original in a container (with a <blockquote> inside, or not): the element is the quote.
+_QUOTE_CONTAINER = re.compile(
+    r"""(?is)<div\b[^<>]*\bclass\s*=\s*["']?[^"'<>]*(?:gmail_quote|yahoo_quoted|protonmail_quote)[^<>]*>"""
+)
+_DIV_TAG = re.compile(r"(?is)<(/?)div\b[^<>]*>")
+_MARKUP_TAG = re.compile(r"<[^>]+>")
+
+
+def _without_quote_containers(markup: str) -> str:
+    """The markup without its quote containers: each balanced <div> element is cut out and what follows it is kept
+    (as with a <blockquote>); one never closed runs to the end."""
+    while True:
+        opening = _QUOTE_CONTAINER.search(markup)
+        if opening is None:
+            return markup
+        depth, end = 1, len(markup)
+        for tag in _DIV_TAG.finditer(markup, opening.end()):
+            depth += -1 if tag.group(1) else 1
+            if not depth:
+                end = tag.end()
+                break
+        markup = markup[:opening.start()] + markup[end:]
+
+
+def _above_text_quote(markup: str) -> str:
+    """The markup above the line where the quoted email starts in its text ("On ... wrote:", a From:/Sent: block, an
+    Original Message line, a "> " line), the same boundary strip_quoted draws for the text path; all of it when none."""
+    prepared = _line_broken(markup)
+    segments: list[tuple[int, int, int]] = []  # (start in the text, length, start in the markup) of each run of text
+    pieces: list[str] = []
+    length = position = 0
+    for tag in [*_MARKUP_TAG.finditer(prepared), None]:
+        end = tag.start() if tag else len(prepared)
+        text = html.unescape(prepared[position:end])
+        if text:
+            segments.append((length, len(text), position))
+            pieces.append(text)
+            length += len(text)
+        position = tag.end() if tag else end
+    lines = "".join(pieces).split("\n")
+    found = _quote_start(lines)
+    if found is None:
+        return markup
+    offset = sum(len(line) + 1 for line in lines[:found[0]])
+    for start, size, at in segments:
+        if start <= offset < start + size:
+            # No tag lies inside a run of text, so cutting at its start keeps every tag above the quote's first line.
+            return prepared[:at]
+    return markup
+
+
+_ATTRIBUTE_URL = re.compile(r"""(?is)\b(?:href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""")
+_ATTRIBUTE_SCHEME = re.compile(r"(?i)(?:https?:)?//")
+
+
+def _attribute_host(value: str) -> str:
+    """The host of an href or src value: an http(s) URL or a protocol-relative one (//host/path); '' for any other
+    (a relative path, mailto:, cid:). The value is parsed as the URL it is, not searched for one in text."""
+    value = re.sub(r"[\t\r\n]", "", clean_url(value.strip()))
+    return host_of(value) if _ATTRIBUTE_SCHEME.match(value) else ""
+
+
+def unquoted_link_hosts(message: EmailMessage) -> set[str]:
+    """The host of every link in what the sender wrote, quoted email left out. Hosts only.
+
+    The text of an HTML message has no hrefs, so they are read from the markup
+    (href and src, a tracking pixel included, protocol-relative links too; the
+    quoted email is cut out: <blockquote> and Gmail-style quote containers,
+    what follows Outlook's reply marker, and everything from the line where
+    the text path's strip_quoted would cut) as well as from the links written
+    out in the text. An
+    unreadable HTML part adds nothing. link_hosts_or_none reads the quoted
+    parts too and fails closed; this is for judging who sent a message, not for
+    vouching that it has no link.
+    """
+    hosts = set(_hosts(strip_quoted(body_text(message, whole=False))))
+    part = message.get_body(preferencelist=("html",))
+    if part is not None:
+        try:
+            markup = str(part.get_content())
+        except Exception:  # noqa: BLE001 - a part that cannot be read has no links to give
+            return hosts
+        markup = _above_text_quote(_without_quote_containers(_without_quoted_markup(markup)))
+        for match in _ATTRIBUTE_URL.finditer(markup):
+            host = _attribute_host(next(group for group in match.groups() if group is not None))
+            if host:
+                hosts.add(host)
+    return hosts
+
+
+def all_link_hosts(message: EmailMessage) -> set[str]:
+    """The host of every link in a message, quoted email included. Hosts only.
+
+    Links written out in the text and every href and src in the HTML (a
+    tracking pixel and protocol-relative links too), with nothing cut out. This
+    is for checks where a link anywhere is the sign, such as a sales tool whose
+    sequence step quotes the step before, tracked link and all, or appends its
+    pixel after the quote. unquoted_link_hosts is for checks where the student's
+    own quoted email must not count. An unreadable HTML part adds nothing.
+    """
+    hosts = set(_hosts(body_text(message, whole=False)))
+    part = message.get_body(preferencelist=("html",))
+    if part is not None:
+        try:
+            markup = str(part.get_content())
+        except Exception:  # noqa: BLE001 - a part that cannot be read has no links to give
+            return hosts
+        for match in _ATTRIBUTE_URL.finditer(markup):
+            host = _attribute_host(next(group for group in match.groups() if group is not None))
+            if host:
+                hosts.add(host)
+    return hosts
 
 
 def link_hosts_or_none(message: EmailMessage) -> list[str] | None:

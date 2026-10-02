@@ -15,8 +15,10 @@ writes its own: the short thank-you after a plain decline is the only email the
 app composes and sends without your approval, and only when the keyword rules and
 Jev both read the reply as a decline and it passes the sender checks (R1–R7 in
 `opportunity_app/outreach/thank_you.py`). Each is a switch under Outreach settings
-→ Automation, and pausing automation stops them all. [Gmail](gmail.md) says what
-scheduled sends and the bounce resend check first.
+→ Automation, and pausing automation stops them all. The Outreach page names the
+switches that are on, and each draft names the ones that apply to it, including
+when automation is paused. [Gmail](gmail.md) says what scheduled sends and the
+bounce resend check first.
 
 1. **Find companies.** The deep search runs on Monday and Thursday mornings (or
    **Run deep search now**). Claude Code searches for accelerator startups

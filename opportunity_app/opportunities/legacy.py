@@ -21,7 +21,7 @@ from pipeline_core.discovery import discover_ats, write_discovered_sources
 from pipeline_core.http import USER_AGENT
 from pipeline_core.paths import PROFILE_PATH, SOURCES_LOCAL_PATH, SOURCES_PATH
 from pipeline_core.retention import backup_sqlite
-from pipeline_core.scoring import degree_levels, score_job
+from pipeline_core.scoring import REPOST_FLAG_PREFIX, degree_levels, repost_flags, repost_reason, score_job
 from pipeline_core.store import connect
 
 __all__ = [
@@ -35,6 +35,9 @@ __all__ = [
     "discover_ats",
     "load_env_file",
     "load_sources",
+    "REPOST_FLAG_PREFIX",
+    "repost_flags",
+    "repost_reason",
     "score_job",
     "source_key",
     "write_discovered_sources",

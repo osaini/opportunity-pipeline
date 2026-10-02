@@ -27,7 +27,6 @@ import json
 import os
 import re
 import time
-import unicodedata
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
@@ -36,6 +35,7 @@ from .contact_names import website_domain
 from ..mail.trust import FREEMAIL, registrable_domain
 from .contacts import PageParser
 from .email_search import BLOCKED_HOSTS
+from .number_check import number_tokens, word_tokens  # noqa: F401 - word_tokens is also read as quote_check.word_tokens
 from .identity import LEGAL_SUFFIXES, company_key, is_institution, is_platform_host, names_host
 from ..integrations.web_fetch import UNVERIFIABLE_STATUSES, FetchResult, SafeFetcher, public_web_url_error
 
@@ -154,25 +154,6 @@ def safe_gap(text: str) -> bool:
         if run >= 4:
             return False
     return not _leaks(text)
-
-
-def _normalized(text: str) -> str:
-    text = unicodedata.normalize("NFKC", str(text or "")).casefold()
-    text = text.replace("’", "'").replace("‘", "'")
-    # "don't" is "do not", and 45% is "45 percent": the same words either way.
-    return re.sub(r"n't", " not", text).replace("%", " percent ")
-
-
-# A number keeps its decimals (0.1, 725.00); 1,500 and 1500 are the same number.
-_TOKEN = re.compile(r"\d+(?:[.,]\d+)*|[^\W\d_]+")
-
-
-def word_tokens(text: str) -> list[str]:
-    return [token.replace(",", "") if token[0].isdigit() else token for token in _TOKEN.findall(_normalized(text))]
-
-
-def number_tokens(tokens: list[str]) -> set[str]:
-    return {token for token in tokens if token[0].isdigit()}
 
 
 # Words that say two companies compete, in the plain forms the page's tokens have.

@@ -20,6 +20,7 @@ from ..integrations import agent_providers
 from .greeting import spoken_company
 from .identity import company_key
 from .config import resolve_provider
+from .number_check import number_keys, supported_numbers
 
 # One logger for the whole thank-you feature (what its tests and the student's log filters name), whichever module logs.
 LOGGER = logging.getLogger("opportunity_app.outreach.thank_you")
@@ -60,11 +61,6 @@ _ASKS = re.compile(
 _ATTACHMENT = re.compile(r"\b(attach\w*|enclos\w*|r[eé]sum[eé]s?|cv|portfolio|transcript)\b", re.IGNORECASE)
 _DASH = re.compile(r"[—–‒―]|\s-{1,2}\s|--|^-|-$", re.MULTILINE)
 _LINK = re.compile(r"https?://|www\.|\S@\S")
-_NUMBER = re.compile(r"(?<![\w@.])\d[\d,.]*%?")
-
-
-def _numbers(text: str) -> set[str]:
-    return {match.rstrip(".,") for match in _NUMBER.findall(text)} - {""}
 
 
 def _without(text: str, names: list[str]) -> str:
@@ -92,8 +88,14 @@ def validate(body: str, inputs: dict[str, Any]) -> list[str]:
     scan = _without("\n".join(lines[1:]), names)
     if "?" in scan:
         problems.append("it asks a question")
-    allowed = _numbers(" ".join(str(inputs.get(key) or "") for key in ("decline", "student_name", "recipient_name", "company", "company_full", "greeting")))
-    extra = sorted(_numbers(text) - allowed)
+    # The same whole-number check the email drafts get (outreach.number_check): a number glued to letters (H200, Q4) is
+    # still a number, 1,500 and 1500 are one, and a number is claimed as a percentage only if the inputs give one.
+    allowed = supported_numbers(
+        str(inputs.get(key) or "") for key in ("decline", "student_name", "recipient_name", "company", "company_full", "greeting")
+    )
+    # Addresses are not blanked out first, as the drafts do: a thank-you may carry no link or address at all (below),
+    # so nothing is gained by hiding digits that sit in one, and acme.ai/2025 or H200.rollout would slip through.
+    extra = sorted({needed for _, needed in number_keys(text)} - allowed)
     if extra:
         problems.append("it states numbers found in none of the inputs: " + ", ".join(extra))
     attachment = _ATTACHMENT.search(scan)

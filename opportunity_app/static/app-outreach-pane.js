@@ -25,7 +25,7 @@
 
   // From app-outreach-send.js.
   const {
-    CALL_PREP_ACTIVE, CALL_PREP_WRITING, CONTACT_CONFIDENCE_LABELS, DRAFT_PROVIDER_LABELS, DRAFT_STATUS_LABELS,
+    CALL_PREP_ACTIVE, CALL_PREP_WRITING, CONTACT_CONFIDENCE_LABELS, DRAFT_PROVIDER_LABELS, DRAFT_STATUS_LABELS, automaticSendWords,
     OUTREACH_STATUS_LABELS, composeControl, formHost, formSendControls, outreachChoice, outreachContactFormSection,
     outreachDraftNeedsReview, outreachField, outreachReachable, pauseWords, refocusOutreach, refuseUnsavedHandOff,
     reloadOutreachAt, scheduleText, scheduleWords, sentFolderCheck,
@@ -1407,18 +1407,22 @@
     draftAssistant(draft, item, "initial", subject, body);
     const formNote = (automatic) => `They publish no email, so this goes through the contact form on their site, as you. Approving it unlocks Send through contact form, which asks you to confirm first${automatic}.`;
     const sendNote = element("p", "outreach-note");
-    if (!item.contact_email && item.contact_form && context.automation?.form_submission) {
-      // A pause holds automatic form submissions too (automation/ledger.py).
-      pauseWords(sendNote,
-        formNote("; with sending through contact forms on in Settings, an approved draft goes on its own"),
-        formNote("; with sending through contact forms on in Settings, an approved draft goes on its own once you resume automation"));
-    } else {
-      sendNote.textContent = !item.contact_email && item.contact_form
-        ? formNote("")
-        : context.gmail?.connected
-        ? "Nothing sends on its own. Approving a draft unlocks Send, which asks you to confirm the recipient before the email goes out from your Gmail. To send at a set time with this computer off, use Open in Gmail and Gmail's Schedule send; the app marks it sent when Google sends it."
-        : "Nothing sends from here. Approving a draft unlocks a link that opens it in your own email, where you press Send.";
-    }
+    // What this note promises is built from the switches that send without a click (automaticSendWords): a
+    // thank-you after a decline can follow any company's email, a resend after a bounce an emailed first message,
+    // and a form submission a company that has only a form. A pause holds all of them (automation/ledger.py).
+    const viaForm = !item.contact_email && item.contact_form;
+    const automatic = automaticSendWords(context.automation, viaForm ? ["decline_thank_you"] : ["bounce_auto_resend", "decline_thank_you"], context.gmail);
+    const formAutomatic = viaForm && Boolean(context.automation?.form_submission);
+    const lead = viaForm
+      ? [formNote(formAutomatic ? "; with sending through contact forms on in Settings, an approved draft goes on its own" : ""),
+         formNote(formAutomatic ? "; with sending through contact forms on in Settings, an approved draft goes on its own once you resume automation" : "")]
+      : context.gmail?.connected
+      ? [`${automatic ? "" : "Nothing sends on its own. "}Approving a draft unlocks Send, which asks you to confirm the recipient before the email goes out from your Gmail. To send at a set time with this computer off, use Open in Gmail and Gmail's Schedule send; the app marks it sent when Google sends it.`]
+      : [`${automatic ? "" : "Nothing sends from here. "}Approving a draft unlocks a link that opens it in your own email, where you press Send.`];
+    const [leadRunning, leadPaused = leadRunning] = lead;
+    pauseWords(sendNote,
+      automatic ? `${leadRunning} ${automatic.running}` : leadRunning,
+      automatic ? `${leadPaused} ${automatic.paused}` : leadPaused);
     draft.appendChild(sendNote);
 
     let followUpGroup = null;

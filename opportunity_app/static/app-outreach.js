@@ -22,7 +22,7 @@
   const { createTagPicker } = App;
 
   // From app-outreach-send.js.
-  const { checkForBounces } = App;
+  const { checkForBounces, outreachSendStatus } = App;
 
   // From app-outreach-drafts.js.
   const { gmailConnectPanel } = App;
@@ -330,7 +330,7 @@
         els.results.appendChild(deepSearchPanel(payload.discovery));
         els.resultCount.textContent = "Deep search";
       } else if (tab.id === "settings") {
-        const panel = await outreachSettingsPanel();
+        const panel = await outreachSettingsPanel(payload.gmail_drafts, payload.automation);
         // The settings load after the list; a view switched meanwhile keeps its own page.
         if (!isCurrent()) return;
         els.results.appendChild(panel);
@@ -340,7 +340,7 @@
         els.resultCount.textContent = "Find people";
       } else if (tab.id === "add") {
         els.results.append(...outreachAddForm());
-        const gmailConnect = gmailConnectPanel(payload.gmail_drafts);
+        const gmailConnect = gmailConnectPanel(payload.gmail_drafts, payload.automation);
         if (gmailConnect) els.results.appendChild(gmailConnect);
         els.resultCount.textContent = "Add, import, export";
       } else {
@@ -360,7 +360,7 @@
           banner.appendChild(view);
           els.results.appendChild(banner);
         }
-        const gmailConnect = gmailConnectPanel(payload.gmail_drafts);
+        const gmailConnect = gmailConnectPanel(payload.gmail_drafts, payload.automation);
         if (gmailConnect) els.results.appendChild(gmailConnect);
 
         if (!items.length) {
@@ -386,7 +386,7 @@
         }
         els.resultCount.textContent = `${plural(items.length, "company", "companies")} · ${tab.label}`;
       }
-      els.pageStatus.textContent = "Nothing sends from here; approved drafts open in your own email";
+      els.pageStatus.textContent = outreachSendStatus(payload.gmail_drafts, payload.automation);
       if (running) scheduleDeepSearchPoll();
       if (payload.gmail_drafts?.bounce_check) checkForBounces();
       els.results.setAttribute("aria-busy", "false");

@@ -113,6 +113,17 @@ class DraftingTests(unittest.TestCase):
         self.assertNotIn("regions", prompt["student"], "only facts meant for an email reach the model")
         self.assertEqual(prompt["sender_address"], "student@example.edu")
 
+    def test_a_draft_greeting_an_invented_name_in_the_students_own_word_is_refused(self):
+        # compose_draft must hand the student's greeting style to validate_draft, or "Howdy Dana," for a contact with
+        # no name passes because only the common opening words are read.
+        nameless = create_target(self.conn, {"company": "Nameless", "contact_email": "info@nameless.example"}, user_id=USER)
+        invented = draft_json("Hello", GOOD_BODY.replace("Hi Greg,", "Howdy Dana,"), GOOD_CLAIMS)
+        provider = ScriptedProvider([invented, invented])
+        with mock.patch("opportunity_app.outreach.drafting.greeting_style", return_value={"word": "Howdy", "unnamed": "{company} team"}):
+            with self.assertRaises(DraftRejected) as caught:
+                generate_draft(self.conn, nameless["id"], user_id=USER, provider_factory=lambda *_: provider, provider="anthropic")
+        self.assertIn("the contact has no name", str(caught.exception))
+
     def test_an_invented_fact_is_retried_and_then_refused(self):
         invented = draft_json(
             "Hello", "Hi Greg,\n\nI led a team of 12 engineers at SpaceX.\n\nTest Student",
@@ -811,9 +822,9 @@ class UnsupportedNumbersTests(unittest.TestCase):
         self.assertEqual(_unsupported_numbers("I cut scrap 45% and 45 percent, and met 45 people.", percentage), [])
 
     def test_the_lead_result_check_reads_numbers_the_same_way(self):
-        def lead(title, body, research=""):
+        def lead(title, body, research="", links=()):
             inputs = {
-                "student": {"experience": [{"title": title}, {"title": "Other"}]},
+                "student": {"experience": [{"title": title}, {"title": "Other"}], "links": list(links)},
                 "primary_experience": title,
                 "company_research": {"summary": research},
                 "unverified_research": {},
@@ -825,6 +836,8 @@ class UnsupportedNumbersTests(unittest.TestCase):
         self.assertTrue(lead("Held GPA 3.50", "I held a 3.5 GPA."))
         self.assertFalse(lead("Cut scrap 45%", "I cut scrap by half."))
         self.assertFalse(lead("Cut scrap 45%", "I know your 45 person team.", research="a team of 45"))
+        # The student's own link written without its scheme is a link, not the result it happens to share a digit with.
+        self.assertFalse(lead("Shipped 2 robots", "My work is at jdoe2.me.", links=["https://jdoe2.me"]))
 
     def test_numbers_inside_an_address_are_not_the_drafts_claims(self):
         body = "Write to me at student2024@example.edu or see https://example.edu/p/99."
@@ -852,6 +865,59 @@ class UnsupportedNumbersTests(unittest.TestCase):
         }
         body = "Congrats on the $2.5M round and 40k users, shipping on GPT-4 after COVID-19."
         self.assertEqual(_unsupported_numbers(body, inputs), [])
+
+    def test_a_number_run_into_a_lowercase_word_after_a_full_stop_is_still_a_number(self):
+        # "40k.users" is a missing space after a full stop, not a host: no TLD is "users". The digits must still be checked.
+        inputs = self.inputs(name="Test Student")
+        self.assertEqual(_unsupported_numbers("They reached 40k.users fast.", inputs), ["40"])
+        self.assertEqual(_unsupported_numbers("We cut latency 1.5x.overall.", inputs), ["1.5"])
+        self.assertEqual(_unsupported_numbers("Revenue hit 2024.then it grew", inputs), ["2024"])
+        self.assertEqual(_unsupported_numbers("A 7k.team of 3 built it", inputs), ["7", "3"])
+        # The same numbers are fine once the inputs state them, in the text or run into a lowercase word.
+        inputs["company_research"] = {"funding": "They reached 40k.users fast and cut latency 1.5x.overall"}
+        self.assertEqual(_unsupported_numbers("They reached 40k users and cut latency 1.5x overall.", inputs), [])
+
+    def test_a_host_with_digits_is_still_removed_when_it_ends_in_a_known_tld_or_carries_a_path(self):
+        inputs = self.inputs(name="Test Student")
+        for text in ("Visit acme360.com.", "See acme360.io or x2.ai today", "Docs at acme360.dev/v2/guide", "Try acme360.xyz/team-512",
+                     "Try acme360.com/careers?id=42", "Read notion.so/page-123 and github.com/t/arm-2024"):
+            self.assertEqual(_unsupported_numbers(text, inputs), [], text)
+
+    def test_a_figure_with_a_path_or_a_word_that_is_also_a_tld_is_still_a_number(self):
+        inputs = self.inputs(name="Test Student")
+        self.assertEqual(_unsupported_numbers("They grew 12k.signups/day", inputs), ["12"])
+        self.assertEqual(_unsupported_numbers("They hit 40k.users/month", inputs), ["40"])
+        for text, number in (("grew 40k.net new users", "40"), ("launched 3x.app installs", "3"), ("40k.info sessions", "40"),
+                             ("hit 2M.tech roles", "2"), ("had 40k.co users", "40")):
+            self.assertEqual(_unsupported_numbers(text, inputs), [number], text)
+        # A digit host on a TLD that is not listed keeps its digits as numbers, so the check can only be stricter.
+        self.assertEqual(_unsupported_numbers("Try acme360.example/careers", inputs), ["360"])
+
+    def test_the_students_own_link_is_recognised_without_its_scheme_on_any_tld(self):
+        inputs = self.inputs(name="Test Student")
+        inputs["links"] = ["https://jdoe2.me", "https://www.acme360.studio/about"]
+        self.assertEqual(_unsupported_numbers("My portfolio is at jdoe2.me.", inputs), [])
+        self.assertEqual(_unsupported_numbers("See www.acme360.studio or jdoe2.me/work-2024", inputs), [])
+        # Only the hosts the inputs give: another digit host on the same TLD still counts, and the figure still must be supported.
+        self.assertEqual(_unsupported_numbers("Also jdoe3.me and 7k.me", inputs), ["3", "7"])
+
+    def test_a_bare_link_in_the_inputs_does_not_license_its_digits(self):
+        # Explicit link fields (the student's links, the company website) hold links whatever their TLD, so the
+        # digits in "jdoe2.me" or "acme360.net/careers" are not numbers the student earned.
+        inputs = self.inputs(name="Test Student")
+        inputs["links"] = ["jdoe2.me"]
+        inputs["company_research"] = {"website": "acme360.net/careers"}
+        self.assertEqual(_unsupported_numbers("I shipped 360 robots and 2 prototypes.", inputs), ["360", "2"])
+
+    def test_a_draft_naming_the_same_bare_link_is_not_flagged_and_dotted_prose_still_is(self):
+        inputs = self.inputs(name="Test Student")
+        inputs["links"] = ["jdoe2.me", "https://github.com/t/arm-2024"]
+        inputs["company_research"] = {"website": "acme360.net/careers"}
+        self.assertEqual(_unsupported_numbers("My work is at jdoe2.me/work-2024 and yours at www.acme360.net.", inputs), [])
+        self.assertEqual(_unsupported_numbers("They reached 40k.users fast.", inputs), ["40"])
+        # Dotted prose in a field that is not a link is not a link: its digits are the inputs' own words, so they support the draft.
+        inputs["company_research"] = {"summary": "They reached 40k.users"}
+        self.assertEqual(_unsupported_numbers("They reached 40k users", inputs), [])
 
     def test_decimals_abbreviations_and_versions_are_not_taken_for_hosts(self):
         inputs = self.inputs(experience=[{"title": "Held a 3.5 GPA as a U.S. student, e.g. on v2.0 of the Ph.D. tool"}])

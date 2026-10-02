@@ -1,6 +1,6 @@
 # Known defects
 
-This file lists defects found during the 2026-09/10 refactor audit and its phase reviews. Each one was checked against the code at `be33c50` (main after PR #64). On 2026-10-02, after the package move (PRs #65 and #66), every path and line below was re-pointed at the current tree, and each cited line was opened to confirm it still holds the code the entry names. The move changed no behaviour, so the entries still describe what the code does. None of them is fixed. The owner approved fixing only the six serious ones, and PR #60 fixed those: the email-draft number check, the student-agent CLI chat sandbox, Gmail label tables missed by account erase and export, asset versioning outside `static_dir`, pollers that kept running after sign-out, and an extension scan that carried over to another application. Two entries below (the Codex sandbox and the labelling worker) were found in review of those fixes and left for the owner to decide.
+This file lists defects found during the 2026-09/10 refactor audit and its phase reviews. Each one was checked against the code at `be33c50` (main after PR #64). On 2026-10-02, after the package move (PRs #65 and #66), every path and line below was re-pointed at the current tree, and each cited line was opened to confirm it still holds the code the entry names. The move changed no behaviour, so the entries still describe what the code does. None of the entries below is fixed. The owner approved fixing the six serious bugs first, and PR #60 fixed those: the email-draft number check, the student-agent CLI chat sandbox, Gmail label tables missed by account erase and export, asset versioning outside `static_dir`, pollers that kept running after sign-out, and an extension scan that carried over to another application. Two entries below (the Codex sandbox and the labelling worker) were found in review of those fixes and left for the owner to decide. The owner then approved fixing this file's six high-severity entries; they were fixed on 2026-10-02 and removed, and two narrower high-severity gaps those fixes left are listed in their place.
 
 Severity rules:
 
@@ -16,25 +16,26 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 
 | Area | High | Medium | Low | Total |
 | --- | ---: | ---: | ---: | ---: |
-| Frontend (web UI) | 1 | 5 | 3 | 9 |
+| Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
 | Mail, Gmail and inboxes | 1 | 4 | 6 | 11 |
-| Outreach drafting, research, forms and CLI | 3 | 4 | 2 | 9 |
+| Outreach drafting, research, forms and CLI | 0 | 4 | 2 | 6 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
 | Web API, auth and storage | 0 | 4 | 1 | 5 |
 | Scoring, scheduling and configuration | 1 | 1 | 4 | 6 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 3 | 3 |
-| **Total** | **6** | **22** | **21** | **49** |
+| **Total** | **2** | **22** | **21** | **45** |
 
-## Start here: the six high-severity entries
+## Start here: the high-severity entries
 
-- [Outreach page says "Nothing sends from here" while Gmail Send or automatic sending is on](#outreach-page-says-nothing-sends-from-here-while-gmail-send-or-automatic-sending-is-on)
-- [HTML-only mail: ATS and sales-tool links in href are never seen, so job or sequence mail counts as a confirmed reply](#html-only-mail-ats-and-sales-tool-links-in-href-are-never-seen-so-job-or-sequence-mail-counts-as-a-confirmed-reply)
-- [A thank-you that can go out automatically can contain numbers glued to letters (H200, Q4) that no input supports](#a-thank-you-that-can-go-out-automatically-can-contain-numbers-glued-to-letters-h200-q4-that-no-input-supports)
-- [The draft number check misses numbers run into a lowercase word after a full stop, because they are taken for a domain](#the-draft-number-check-misses-numbers-run-into-a-lowercase-word-after-a-full-stop-because-they-are-taken-for-a-domain)
-- [Greeting recognition ignores the student's own greeting_word, so readdressing, bounce resend and the unnamed-contact check fail](#greeting-recognition-ignores-the-students-own-greeting_word-so-readdressing-bounce-resend-and-the-unnamed-contact-check-fail)
-- [Saving the profile in the web app deletes the repost FLAG from score explanations](#saving-the-profile-in-the-web-app-deletes-the-repost-flag-from-score-explanations)
+The audit's six high-severity defects were fixed on 2026-10-02 (branch `osaini/fix-high-defects`): the Outreach page's
+send wording, HTML-only job and sequence mail counted as replies, unsupported numbers in decline thank-yous, numbers
+run into a lowercase word in drafts, the student's own greeting word, and the repost FLAG on profile save. Two narrower
+high-severity gaps remain:
+
+- [An Outlook-quoted sequence bump whose tracking pixel follows the quote is still read as a confirmed reply](#an-outlook-quoted-sequence-bump-whose-tracking-pixel-follows-the-quote-is-still-read-as-a-confirmed-reply)
+- [The repost FLAG disappears the day after the daily purge removes the retired twin](#the-repost-flag-disappears-the-day-after-the-daily-purge-removes-the-retired-twin)
 
 The two entries flagged for an owner decision are
 [the Codex sandbox](#codex-cli-calls-rely-on---sandbox-read-only-which-does-not-turn-off-codexs-own-tools-or-the-users-mcp-servers)
@@ -43,13 +44,6 @@ and [the labelling worker](#the-gmail-labelling-worker-can-write-label-rows-for-
 ---
 
 ## Frontend (web UI)
-
-### Outreach page says "Nothing sends from here" while Gmail Send or automatic sending is on
-- **Severity:** high, send safety (notes 11)
-- **Where:** `opportunity_app/static/app-outreach.js:389` `loadOutreach()`; `opportunity_app/static/app-outreach-pane.js:1416-1420` `sendNote` in the draft pane. The same absolute used to sit in the prose of `docs/guide/outreach.md` and `README.md`; both now name the opt-in automatic sends, so only the UI strings remain.
-- **What happens:** The page status is always set to "Nothing sends from here; approved drafts open in your own email". That is false when Gmail is connected, because approving a draft unlocks Send from Gmail. It is also false when bounce_auto_resend, decline_thank_you or form_submission is on. The Gmail-connected note, "Nothing sends on its own", is false whenever bounce_auto_resend or decline_thank_you is on. A student can approve a draft trusting a promise about outbound mail that does not hold.
-- **Suggested fix:** Write every "what sends" sentence in one helper. Build it from `gmail_drafts.connected`, the outreach automation switches and the pause state, use it for both the page status and the pane note, and drop the fixed string.
-- **Regression suite:** tests/ui (outreach journey: with Gmail connected or an automation on, the status must not say that nothing sends)
 
 ### A facets/stats failure after a valid sign-in shows the sign-in gate and wipes the workspace
 - **Severity:** medium (notes 7)
@@ -118,12 +112,12 @@ and [the labelling worker](#the-gmail-labelling-worker-can-write-label-rows-for-
 
 ## Mail, Gmail and inboxes
 
-### HTML-only mail: ATS and sales-tool links in href are never seen, so job or sequence mail counts as a confirmed reply
-- **Severity:** high, source integrity (notes 24)
-- **Where:** `opportunity_app/outreach/inbox.py:181` `_link_hosts()` (used by `_job_mail` `:185`, `_sales_tool` `:205`, verdicts in `_judge_match` `:517-561`); text from `opportunity_app/mail/message.py:284` `body_text(whole=False)` → `html_text_reply`
-- **What happens:** For an HTML-only message the body is converted to plain text, which drops every href, so `_link_hosts` returns an empty set. Reproduced: an HTML-only mail linking `boards.greenhouse.io` gives `set()`. An ATS email sent in the recruiter's name becomes REPLY/written_to when it should be POSSIBLE/job_mail. A HubSpot-style sequence email with no X-HubSpot header becomes REPLY/domain_person when it should be POSSIBLE/mailing_tool. The company moves to replied, follow-ups stop and call prep is queued, all on an inferred reply presented as confirmed. A smaller issue: the URL tail is not unescaped or stripped, so `acme.com)` is read as a host.
-- **Suggested fix:** Pin it with a failing test first. Take link hosts from the unquoted body only: href and src values from the HTML part with `<blockquote>` removed, plus plain-text URLs from the stripped text, all cleaned with `_hosts` and `clean_url` from `opportunity_app/mail/message.py`. Do not use `link_hosts_or_none`, because it includes quoted parts.
-- **Regression suite:** tests/ unittest (`test_outreach_inbox`: an HTML-only ATS mail and an HTML-only sales-sequence mail are both POSSIBLE)
+### An Outlook-quoted sequence bump whose tracking pixel follows the quote is still read as a confirmed reply
+- **Severity:** high, source integrity (narrow case left after the HTML-only link fix of 2026-10-02)
+- **Where:** `opportunity_app/mail/message.py:456` `_without_quoted_markup()`
+- **What happens:** HTML-only mail now has its link hosts read from `href` and `src`, with the quoted email cut out first, so job-system and sales-sequence mail becomes a possible reply instead of a confirmed one. For Gmail quotes the cut removes only the `<blockquote>`. For Outlook it removes everything after the `divRplyFwdMsg`/`appendonsend` marker, so a pixel-only sales-sequence bump (step 2+, quoting step 1, with the tool's 1x1 open-tracking pixel appended after the quoted block) loses its pixel host and is still logged as a confirmed reply that moves the company to Replied.
+- **Suggested fix:** after the Outlook cut, still scan the trailing 1x1 `<img>` `src` hosts that follow the quoted block, or bound the cut to the quoted container the way the blockquote removal does.
+- **Regression suite:** tests/test_outreach_inbox.py (the HTML-only link-host tests)
 
 ### Application inbox: a "Last, First" From name empties the sender, so the email is skipped
 - **Severity:** medium, wrong state and missed mail (notes 25)
@@ -196,27 +190,6 @@ and [the labelling worker](#the-gmail-labelling-worker-can-write-label-rows-for-
 - **Regression suite:** tests/ unittest (`test_outreach_labels` with `test_account_coverage`: a `client_factory` whose Gmail call deletes the account before the pass writes; no label row remains for that user)
 
 ## Outreach drafting, research, forms and CLI
-
-### A thank-you that can go out automatically can contain numbers glued to letters (H200, Q4) that no input supports
-- **Severity:** high, source integrity and send safety (notes 177; raised from medium because decline thank-yous send without review)
-- **Where:** `opportunity_app/outreach/thank_you_writing.py:63` `_NUMBER`, `:66` `_numbers`, used in `validate` `:95-98`
-- **What happens:** The `(?<![\w@.])` lookbehind skips any digit that follows a letter. Reproduced: `_numbers('Good luck with the H200 rollout and Q4 launch') == set()`, so an invented figure passes into an auto-sent email. In the other direction, `1,500` and `1500` are compared as raw strings, which fails closed.
-- **Suggested fix:** Reuse the word-token number keys from `opportunity_app/outreach/drafting.py` (`_number_keys` and `_supported_numbers`), which PR #60 introduced for drafts.
-- **Regression suite:** tests/ unittest (`test_decline_thank_you`: "H200", "Q4", "1,500" vs "1500")
-
-### The draft number check misses numbers run into a lowercase word after a full stop, because they are taken for a domain
-- **Severity:** high, source integrity (notes 206; raised from medium for consistency with the rule, though the trigger needs a model typo and the student reviews the draft before it goes)
-- **Where:** `opportunity_app/outreach/drafting.py:320` `ADDRESS_PATTERN` (scheme-less host branch `:324`), applied in `_unsupported_numbers()` `:420`
-- **What happens:** Reproduced: `'reached 40k.users fast'` becomes `'reached   fast'`, and `'cut latency 1.5x.overall'` is blanked, so an unsupported figure is never checked. The uppercase case (`40k.Users`) is handled and tested (`tests/test_outreach_drafting.py:851`).
-- **Suggested fix:** Let the host branch remove a token that contains a digit only when it ends in an allowlisted TLD or carries a path. A stricter option is to remove a host-like token only when the same host appears in the inputs.
-- **Regression suite:** tests/ unittest (`test_outreach_drafting`: "40k.users" and "1.5x.overall" are reported)
-
-### Greeting recognition ignores the student's own greeting_word, so readdressing, bounce resend and the unnamed-contact check fail
-- **Severity:** high, source integrity (notes 13, 17; raised from medium because the unnamed-contact validator fails open)
-- **Where:** `opportunity_app/outreach/greeting.py:22-30` `_GREETING`/`_LEADING_GREETING` (used by `readdress_greeting` `:104`, `without_greeting` `:129`, `greets_contact` `:145`); `opportunity_app/outreach/drafting.py:243` `_GREETING_LINE` (used by `_unnamed_greeting_problem` `:246`)
-- **What happens:** A student whose greeting_word is, for example, "Howdy" gets "Howdy Dana," drafts, but the recognizers match only hi, hello, hey, dear and "good X". The check that stops a draft greeting an invented name when the contact has no name fails open. A contact change never readdresses unsent drafts. Bounce auto-resend is always refused.
-- **Suggested fix:** Build the student-side greeting patterns from the defaults plus `re.escape(style['word'])`, and pass the style through. Leave `_GREETING` in `opportunity_app/outreach/decline_reading.py` alone, because it reads company mail.
-- **Regression suite:** tests/ unittest (`test_greeting_style` and `test_outreach_drafting` with greeting_word "Howdy")
 
 ### FormSubmitter does not block WebSockets, so page scripts get past the request guard
 - **Severity:** medium, privacy (notes 15, 97)
@@ -315,12 +288,12 @@ and [the labelling worker](#the-gmail-labelling-worker-can-write-label-rows-for-
 
 ## Scoring, scheduling and configuration
 
-### Saving the profile in the web app deletes the repost FLAG from score explanations
-- **Severity:** high, source integrity and freshness (notes 0; raised from medium because the explanation stops warning that a role has been relisted)
-- **Where:** `opportunity_app/student/profile.py:130` `_compute_scores()` (`score_job` only, `:142`) and `:147` `_write_scores()`, from `save_profile` and `rescore_profile`; the FLAG is added only in `pipeline_core/scoring.py:363` `score_all()` (`repost_flags` `:327`)
-- **What happens:** `opportunity_app/opportunities/legacy_sync.py` copies "FLAG: this role has been listed under N different URLs since ..." into `fit_scores.explanation_json`. A profile save re-scores with `score_job` and overwrites that row without the flag, so the posting looks fresher than it is until the next refresh. Other users never see the flag. The same posting's explanation depends on which write ran last.
-- **Suggested fix:** Make the repost check a pure function in `pipeline_core/scoring.py`, and call it from both `score_all` and `_compute_scores`. Alternatively, carry existing repost FLAG reasons forward.
-- **Regression suite:** tests/ unittest (seed a retired and a relisted posting, sync, save the profile, and the FLAG is still there)
+### The repost FLAG disappears the day after the daily purge removes the retired twin
+- **Severity:** high, source integrity and freshness (notes 0; the profile-save half was fixed on 2026-10-02)
+- **Where:** `pipeline_core/scoring.py:400` `score_all()` and `pipeline_core/retention.py:67` `purge_expired()`, with the carry-forward in `opportunity_app/student/profile.py` `_synced_repost_flags()`
+- **What happens:** a profile save now keeps the repost FLAG by carrying forward what the last refresh synced. The daily task, however, runs `purge-expired` right after `pipeline.py run`, which hard-deletes the retired twin from `jobs`. On the next day's run `score_all` finds no twin, rewrites the explanation without the FLAG, and the sync copies that over the local user's score row the carry-forward reads. So a relisted role stops warning that it was relisted about a day after the twin is purged.
+- **Suggested fix:** keep a tombstone of retired (company, role key, url, first_seen_at) for the repost window that `repost_flags` also reads, or have `score_all` carry an existing FLAG forward the way `student/profile.py` does.
+- **Regression suite:** tests/test_profile_save_repost_flag.py plus a pipeline test that runs two daily cycles across a purge
 
 ### daily.py skips the whole run, local steps included, when DNS for boards-api.greenhouse.io fails
 - **Severity:** medium (notes 40)

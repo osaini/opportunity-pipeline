@@ -455,6 +455,13 @@ def mail(body, *, sender="Greg Lee <greg@bovi.example>", subject="Re: Robotics i
     ).encode()
 
 
+def html_mail(markup, *, sender="Greg Lee <greg@bovi.example>", subject="Re: Robotics internship question", headers="",
+              to=ACCOUNT, verified=True):
+    """``mail`` for a message with only an HTML part, as Gmail stores it."""
+    return mail(markup, sender=sender, subject=subject, headers=headers, to=to, verified=verified).replace(
+        b"Content-Type: text/plain;", b"Content-Type: text/html;", 1)
+
+
 def gmail_vouches(message):
     """mail_trust.authenticate for the .example domains these tests use, which the public suffix list does not know.
 

@@ -146,7 +146,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
         | _pkg(
             "outreach",
             "targets send_claims agents batch callbacks config decline_reading identity label_name location greeting versions contacts "
-            "linkedin render thank_you_writing",
+            "linkedin render number_check thank_you_writing",
         )
     ),
     # L4 workflows. opportunities.refresh is the manual refresh/purge workflow run in a background thread; api (L5) is its only importer.

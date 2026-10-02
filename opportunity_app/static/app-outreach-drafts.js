@@ -19,7 +19,8 @@
   // From app-outreach-send.js.
   const {
     CALL_PREP_ACTIVE, CANDIDATE_METHOD_LABELS, CANDIDATE_VERIFICATION_LABELS, CONTACT_CONFIDENCE_LABELS,
-    DRAFT_PROVIDER_LABELS, OUTREACH_EVENT_LABELS, OUTREACH_STATUS_LABELS, refocusOutreach, reloadOutreachAt,
+    DRAFT_PROVIDER_LABELS, OUTREACH_EVENT_LABELS, OUTREACH_STATUS_LABELS, automaticSendWords, pauseWords, refocusOutreach,
+    reloadOutreachAt,
   } = App;
 
   // Defined in files that load later; looked up when called.
@@ -40,7 +41,7 @@
     return `Google will likely ask again by ${day}; reconnecting now avoids a gap.`;
   }
 
-  function gmailConnectPanel(gmail) {
+  function gmailConnectPanel(gmail, automation) {
     if (!gmail?.configured) return null;
     // A working connection is offered Reconnect Gmail early when Google is
     // about to ask for it again, so reply and bounce checks never stop.
@@ -53,7 +54,10 @@
     const panel = element("div", "outreach-gmail-connect");
     const what = gmail.attachment ? ` with ${gmail.attachment} attached` : "";
     const reconnect = gmail.needs_reconnect || gmail.connected;
-    panel.appendChild(element("p", "profile-help", expiring
+    // Not connected, and nothing wrong with a connection: the offer to connect, which says what sends without a click.
+    const connecting = !gmail.connected && !gmail.needs_reconnect;
+    const intro = element("p", "profile-help");
+    const reason = (expiring
       ? gmailExpiryLine(gmail.likely_expires_at)
       : wrongAccount
       ? `Gmail is connected as ${gmail.connected_as}, but your outreach address is ${gmail.account}. Reconnect Gmail and choose ${gmail.account}.`
@@ -63,7 +67,18 @@
       ? `Reconnect Gmail once so the app can catch bounces and log replies for you. It asks for permission to read mail; the app reads only delivery failure notices, mail from the companies you wrote to (Spam included), mail in the threads of the emails you sent them, and mail that names those companies or your emails' subjects. To find replies in those threads it lists recent mail by id, reading only what is in them.${gmail.label ? ` It also asks for the permission Google lists as “Read, compose, and send emails”, used only to add your “${gmail.label}” label to your outreach threads, sent emails and replies; to find the emails you send from Gmail it reads the recipients and subject (never the body) of each new email you send (it never deletes, archives, moves or marks mail as read); tick both boxes.` : ""}`
       : gmail.needs_reconnect
         ? "Gmail stopped accepting the connection. Reconnect it to keep creating drafts with attachments."
-        : `Connect Gmail to send approved emails${what} from here, or open them as drafts in Gmail first. Nothing sends until you press Send and confirm the recipient.`));
+        : "");
+    if (connecting) {
+      // What sends without a click depends on the pause, so the sentence keeps both versions and a pause or
+      // resume rewrites it in place (pauseWords), as the draft note does.
+      const lead = `Connect Gmail to send approved emails${what} from here, or open them as drafts in Gmail first.`;
+      const automatic = automaticSendWords(automation, ["bounce_auto_resend", "decline_thank_you", "form_submission"], gmail);
+      const nothing = "Nothing sends until you press Send and confirm the recipient.";
+      pauseWords(intro, `${lead} ${automatic?.running || nothing}`, `${lead} ${automatic?.paused || nothing}`);
+    } else {
+      intro.textContent = reason;
+    }
+    panel.appendChild(intro);
     const connect = element("button", "secondary-button", reconnect ? "Reconnect Gmail" : `Connect Gmail${gmail.account ? ` (${gmail.account})` : ""}`);
     connect.type = "button";
     connect.addEventListener("click", async () => {

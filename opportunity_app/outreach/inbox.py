@@ -59,18 +59,17 @@ from ..mail.classifiers import read_reply
 from ..mail.message import (
     FULL_TEXT_LIMIT,
     MAILER_DAEMONS,
-    URL,
     answers_something,
     body_text,
     full_reply_text,
     header_map,
-    host_of,
     is_automatic,
     is_bulk_or_generated,
     kept_headers,
     link_hosts_or_none,
     mailbox_key,
     reply_text,
+    unquoted_link_hosts,
 )
 from ..mail.trust import FREEMAIL, READ_CATEGORIES, authenticate, listed, sender_lists
 from .targets import log_event, get_target, update_target
@@ -179,7 +178,7 @@ def _delivery_kind(message: EmailMessage, sender: str) -> str:
 
 
 def _link_hosts(message: EmailMessage) -> set[str]:
-    return {host for host in (host_of(url) for url in URL.findall(body_text(message, whole=False))) if host}
+    return unquoted_link_hosts(message)
 
 
 def _job_mail(message: EmailMessage, sender: str) -> bool:
@@ -205,7 +204,9 @@ _SALES_HOSTS = (
 def _sales_tool(message: EmailMessage) -> bool:
     if any(str(name).casefold().startswith("x-hubspot") for name in message.keys()):
         return True
-    hosts = _link_hosts(message) | {domain_of(address) for address in mail_message.addresses(message, "Return-Path")}
+    # Every link, quoted parts included: a sequence step quotes the step before (tracked link and all) and appends its
+    # pixel after the quote, and erring here only ever makes a message a possible reply, never a confirmed one.
+    hosts = mail_message.all_link_hosts(message) | {domain_of(address) for address in mail_message.addresses(message, "Return-Path")}
     return any(marker in host for host in hosts for marker in _SALES_HOSTS)
 
 
@@ -477,6 +478,11 @@ def _judge(
                 return POSSIBLE, "auto_generated"
             if not own_person and is_machine_local(local):
                 return POSSIBLE, "automated_sender"
+            # Whatever matched it to the company, a job system's or a sales tool's mail is only ever a possible reply.
+            if _job_mail(message, sender):
+                return POSSIBLE, "job_mail"
+            if _sales_tool(message):
+                return POSSIBLE, "mailing_tool"
             return REPLY, "thread"
         automated = is_automatic(message) or (
             not person and (is_machine_local(local) or listed(domain_of(sender), tuple(sender_lists())) or not is_person(sender))
@@ -533,6 +539,9 @@ def _judge_match(
         # An applicant system writes in the name of the recruiter (and from the careers@ inbox) the student wrote to.
         if _job_mail(message, sender):
             return POSSIBLE, "job_mail"
+        # A rep's sequence email sent from the address the student wrote to reads like that person writing.
+        if _sales_tool(message):
+            return POSSIBLE, "mailing_tool"
         # A blast they blind-copied everyone on ("all positions are filled") is not an answer to the student.
         if not _addressed(message, account) and not answers_something(message):
             return POSSIBLE, "not_addressed"

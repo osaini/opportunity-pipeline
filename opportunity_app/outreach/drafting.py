@@ -22,12 +22,12 @@ from typing import Any, Callable
 
 from ..integrations.agent_providers import AgentProvider, CliAgentProvider, complete_text
 from .targets import AWAITING_REPLY, DRAFT_KINDS, DRAFT_META, cancel_schedules, log_event, draft_checks, get_target
-from .greeting import DEFAULT_GREETING, greeting_line, greeting_style
+from .greeting import DEFAULT_GREETING, greeting_line, greeting_patterns, greeting_style
 from .location import home_terms, location_usable, mentions_home, near_home, student_home, user_regions
 from .config import resolve_provider, sender_account
 from .versions import insert_version, keep_current_draft
 from ..student.preparation import confirmed_facts
-from .quote_check import word_tokens
+from .number_check import blank_addresses, input_hosts, number_keys as _number_keys, supported_numbers as _supported_numbers
 from ..core.timestamps import utc_now
 
 ProviderFactory = Callable[[str, str], AgentProvider]
@@ -239,18 +239,19 @@ def _inputs(conn: sqlite3.Connection, target: dict[str, Any], user_id: str, kind
     return payload
 
 
-# A greeting on a line of its own: "Hi Dana," or "Hello Acme team,".
-_GREETING_LINE = re.compile(r"^(?:hi|hello|hey|dear|good (?:morning|afternoon|evening))\b[^\n,]{0,80},$", re.IGNORECASE)
+def _unnamed_greeting_problem(body: str, inputs: dict[str, Any], style: dict[str, str] | None = None) -> str | None:
+    """A greeting that names someone when the contact is only an address.
 
-
-def _unnamed_greeting_problem(body: str, inputs: dict[str, Any]) -> str | None:
-    """A greeting that names someone when the contact is only an address."""
+    A greeting line is "Hi Dana," or "Hello Acme team," on a line of its own,
+    opening with a common word or the student's own greeting word (``style``).
+    """
     if inputs["company_research"].get("contact_name") or inputs["unverified_research"].get("contact_name"):
         return None
     first = next((line.strip() for line in body.split("\n") if line.strip()), "")
     # Inputs built without the student's greeting (older callers) get the default style.
-    expected = inputs.get("greeting") or greeting_line(inputs["company_research"].get("company", ""), "", DEFAULT_GREETING)
-    if not _GREETING_LINE.match(first) or first == expected:
+    expected = inputs.get("greeting") or greeting_line(inputs["company_research"].get("company", ""), "", style or DEFAULT_GREETING)
+    _alone, _leading, greeting_only = greeting_patterns(style)
+    if not greeting_only.match(first) or first == expected:
         return None
     return f"it greets {first!r}, but the contact has no name; open with {expected!r}"
 
@@ -312,17 +313,7 @@ def _opening(body: str) -> str:
     return paragraphs[0]
 
 
-# What a number check takes out of the text first, on both sides (the draft and the inputs): email addresses,
-# links with a scheme, and links without one (github.com/t/arm-2024, acme360.com), whose digits name a page,
-# not a fact. A scheme-less link is a dotted host ending in a 2+ letter TLD, optionally followed by a path. The
-# label before the TLD must hold a letter and the TLD must end the word, so 3.5, U.S., Ph.D., e.g. and v2.0
-# are not hosts, nor is "2024.Then" (a missing space after a full stop). Call prep's number check shares this.
-ADDRESS_PATTERN = re.compile(
-    r"\S+@\S+|https?://\S+"
-    # A scheme-less host such as github.com/t/x or acme360.com. The ending must be lowercase, so a number run into the
-    # next sentence ("$2.5M.Series A", "40k.Users") stays a number rather than being taken for a domain.
-    r"|(?<![\w@.-])(?:[A-Za-z0-9-]+\.)*[A-Za-z0-9-]*[A-Za-z][A-Za-z0-9-]*\.[a-z]{2,}(?![\w-])(?:/\S*)?"
-)
+# The number check's helpers (ADDRESS_PATTERN, number keys) live in outreach/number_check.py, which the thank-you check shares.
 
 
 def _entry_names(entry: Any) -> set[str]:
@@ -344,8 +335,10 @@ def _primary_entries(inputs: dict[str, Any]) -> list[Any]:
 def _states_a_lead_result(body: str, inputs: dict[str, Any]) -> bool:
     """Whether the body gives a number from the primary experience, not one that only belongs to the company."""
     research = {**inputs["company_research"], **inputs["unverified_research"]}
-    lead_numbers = _supported_numbers(_input_text(_primary_entries(inputs))) - _supported_numbers(_input_text(research))
-    return any(needed in lead_numbers for _, needed in _number_keys(ADDRESS_PATTERN.sub(" ", body)))
+    own_hosts = input_hosts(inputs)
+    lead_numbers = _supported_numbers(_input_text(_primary_entries(inputs), own_hosts)) - _supported_numbers(_input_text(research, own_hosts))
+    # Blank links the same way _unsupported_numbers does, so the student's own bare link (jdoe2.me) is not a stated result.
+    return any(needed in lead_numbers for _, needed in _number_keys(blank_addresses(body, own_hosts)))
 
 
 def _other_entries_named(body: str, inputs: dict[str, Any]) -> list[str]:
@@ -372,57 +365,28 @@ IDENTIFIER_KEYS = frozenset({"id", "source_urls"})
 _NOT_A_FACT = IDENTIFIER_KEYS | {"max_words"}
 
 
-def _input_text(value: Any):
-    """Every piece of the inputs' own words a number may come from, with addresses taken out."""
+def _input_text(value: Any, own_hosts: re.Pattern[str] | None = None):
+    """Every piece of the inputs' own words a number may come from, with addresses and the inputs' own links taken out."""
     if isinstance(value, str):
-        yield ADDRESS_PATTERN.sub(" ", value)
+        yield blank_addresses(value, own_hosts)
     elif isinstance(value, dict):
         for key, item in value.items():
             if key not in _NOT_A_FACT:
-                yield from _input_text(item)
+                yield from _input_text(item, own_hosts)
     elif isinstance(value, (list, tuple)):
         for item in value:
-            yield from _input_text(item)
+            yield from _input_text(item, own_hosts)
     elif isinstance(value, (int, float)) and not isinstance(value, bool):
         yield str(value)
 
 
-def _number_key(token: str) -> str:
-    """The number as a comparison key: 09 and 9 are one number, 3.50 and 3.5 are one, 3.5 and 5 are not."""
-    whole, point, fraction = token.partition(".")
-    whole = whole.lstrip("0") or "0"
-    fraction = fraction.rstrip("0")
-    return f"{whole}.{fraction}" if fraction else whole
-
-
-def _number_keys(text: str) -> list[tuple[str, str]]:
-    """Each number in the text as (its key, the key a draft needs to claim it).
-
-    Whole numbers, as outreach_call_prep checks them, not pieces of text: the tokenizer
-    is the quote check's (quote_check.word_tokens), so 1,500 and 1500 are one number and a range such as
-    2019-2023 is two. A number written as a percentage (45% or 45 percent) is claimed
-    as a percentage, so it needs 45% in the inputs, not a headcount of 45.
-    """
-    tokens = word_tokens(text)
-    keys = []
-    for index, token in enumerate(tokens):
-        if token[0].isdigit():
-            key = _number_key(token)
-            keys.append((key, key + "%" if tokens[index + 1:index + 2] == ["percent"] else key))
-    return keys
-
-
-def _supported_numbers(pieces) -> set[str]:
-    """What the pieces of the inputs' own words let a draft claim: a bare 45 may be a 45% too, a 45% is only a percentage."""
-    return {key for piece in pieces for pair in _number_keys(piece) for key in pair}
-
-
 def _unsupported_numbers(text: str, inputs: dict[str, Any], *more: str) -> list[str]:
     """Numbers in the draft's text (the body, and the subject when given as ``more``) that are no whole number in the inputs' own words (see _number_keys)."""
-    allowed = _supported_numbers(_input_text(inputs))
+    own_hosts = input_hosts(inputs)
+    allowed = _supported_numbers(_input_text(inputs, own_hosts))
     found = []
     for piece in (text, *more):
-        for key, needed in _number_keys(ADDRESS_PATTERN.sub(" ", piece)):
+        for key, needed in _number_keys(blank_addresses(piece, own_hosts)):
             if needed not in allowed and needed not in found:
                 found.append(needed)
     return found
@@ -442,8 +406,13 @@ def validate_draft(
     inputs: dict[str, Any],
     kind: str,
     regions: list[dict[str, Any]] | None = None,
+    style: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
-    """Parse a model reply and list every reason it cannot be stored as-is."""
+    """Parse a model reply and list every reason it cannot be stored as-is.
+
+    ``style`` is the student's greeting style (greeting.greeting_style), so a greeting
+    in their own word is recognised; None reads only the common opening words.
+    """
     try:
         parsed = CliAgentProvider.extract_json(raw)
     except ValueError as exc:
@@ -466,7 +435,7 @@ def validate_draft(
         clean_claims.append({"text": text, "basis": basis})
     if body and not clean_claims:
         problems.append("it cites no basis for any of its claims")
-    unnamed = _unnamed_greeting_problem(body, inputs)
+    unnamed = _unnamed_greeting_problem(body, inputs, style)
     if unnamed:
         problems.append(unnamed)
     numbers = _unsupported_numbers(body, inputs, subject)
@@ -639,6 +608,7 @@ def compose_draft(
             raise ValueError("A follow-up needs the original email text")
     inputs = _inputs(conn, target, user_id, kind)
     regions = user_regions(conn, user_id)
+    style = greeting_style(conn, user_id)
     provider_id, model = resolve_provider(provider, purpose=kind)
 
     if provider_id == "legacy":
@@ -653,14 +623,14 @@ def compose_draft(
         if comments:
             content += revision_request(target, kind, comments)
         raw = complete_text(agent, instructions, content)
-        draft, problems = validate_draft(raw, inputs, kind, regions)
+        draft, problems = validate_draft(raw, inputs, kind, regions, style)
         if problems:
             retry = (
                 f"{content}\n\nYour previous draft was rejected because " + "; ".join(problems)
                 + ". Write it again following every rule."
             )
             raw = complete_text(agent, instructions, retry)
-            draft, problems = validate_draft(raw, inputs, kind, regions)
+            draft, problems = validate_draft(raw, inputs, kind, regions, style)
         if problems:
             raise DraftRejected("The generated draft was not grounded in your profile and research: " + "; ".join(problems))
         generated_by = f"{provider_id}:{model}"
