@@ -16,7 +16,7 @@ import sqlite3
 from typing import Any
 from urllib.parse import urlsplit
 
-from . import actions
+from .applications import actions
 from .automation import (
     HandlerBase,
     NotApplicable,

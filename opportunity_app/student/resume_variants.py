@@ -32,7 +32,7 @@ from typing import Any
 from pipeline_core.visibility import capture_visible_sql
 
 from .. import automation
-from ..actions import OpportunityNotFoundError, intent_state
+from ..applications.actions import OpportunityNotFoundError, intent_state
 from ..core.database import rollback_quietly
 from ..core.profile_store import read_stored_profile
 from ..core.timestamps import utc_now

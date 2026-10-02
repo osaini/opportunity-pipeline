@@ -20,10 +20,10 @@ from fastapi.testclient import TestClient
 from opportunity_app import STATIC_DIR, auto_triage, automation, automation_handlers, automation_health, internal_automation, migrate, outreach_inbox
 from opportunity_app.student import resume_variants
 from opportunity_app.core import schema
-from opportunity_app.actions import record_intent, update_application
+from opportunity_app.applications.actions import record_intent, update_application
 from opportunity_app.api import create_app
 from opportunity_app.automation import Superseded
-from opportunity_app.extension_apply import apply_context
+from opportunity_app.applications.extension import apply_context
 from opportunity_app.outreach import (
     create_target, delete_target, get_target, lifecycle_suggestion, list_targets, log_reply, update_target,
 )
@@ -35,7 +35,7 @@ from opportunity_app.student.resumes import ResumeValidationError, confirm_varia
 from opportunity_app.core.schema import ensure_product_schema
 from opportunity_app.core.database import connect_product, has_column
 from opportunity_app.core.timestamps import utc_now
-from opportunity_app.urgent import urgent_queue
+from opportunity_app.applications.urgent import urgent_queue
 from opportunity_app.core.user_time import user_timezone
 
 from helpers_platform import build_and_migrate

@@ -16,8 +16,8 @@ from uuid import uuid4
 from pipeline_core.read_model import RULESET_VERSION
 
 from .actions import ApplicationNotFoundError, log_application_event, update_application
-from .accounts.auth import hash_secret
-from .core.timestamps import utc_now
+from ..accounts.auth import hash_secret
+from ..core.timestamps import utc_now
 
 
 PAIRING_TTL_MINUTES = 10
@@ -348,7 +348,7 @@ def _document_records(conn: sqlite3.Connection, user_id: str, opportunity_id: st
     The order stays as it always was (the pick is marked, not moved), so the
     side panel preselects it without anything else shifting.
     """
-    from .student.resume_variants import preferred_resume_file
+    from ..student.resume_variants import preferred_resume_file
 
     preferred = preferred_resume_file(conn, user_id, opportunity_id)
     resumes = conn.execute(

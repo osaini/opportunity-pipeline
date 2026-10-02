@@ -13,7 +13,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from opportunity_app import SERVER_INSTANCE, actions, apply_claims, apply_preflight, apply_runs, apply_sensitive, automation
+from opportunity_app import SERVER_INSTANCE, apply_claims, apply_preflight, apply_runs, apply_sensitive, automation
+from opportunity_app.applications import actions
 from opportunity_app.student import preparation
 from opportunity_app.apply_checks import question_key
 from opportunity_app.apply_policy import SchemaField, Sources, build_plan

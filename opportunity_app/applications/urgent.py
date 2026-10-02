@@ -28,11 +28,11 @@ from typing import Any
 from pipeline_core.visibility import CAPTURE_SOURCE_KEY, capture_visible_sql  # noqa: F401  (re-exported)
 
 from .actions import CLOSED_APPLICATION_STAGES
-from .opportunities.early_programs import early_programs
-from .internal_automation import silence_rows
-from .outreach import CLOSED_STATUSES as OUTREACH_CLOSED, REVISIT_STATUSES as OUTREACH_REVISIT
-from .core.timestamps import utc_now
-from .core.user_time import UserTimezone, user_timezone
+from ..opportunities.early_programs import early_programs
+from ..internal_automation import silence_rows
+from ..outreach import CLOSED_STATUSES as OUTREACH_CLOSED, REVISIT_STATUSES as OUTREACH_REVISIT
+from ..core.timestamps import utc_now
+from ..core.user_time import UserTimezone, user_timezone
 
 logger = logging.getLogger(__name__)
 

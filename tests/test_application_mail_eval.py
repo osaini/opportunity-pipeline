@@ -31,7 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import application_inbox, application_mail_rules
+from opportunity_app.applications import inbox as application_inbox, mail_rules as application_mail_rules
 from opportunity_app.mail import trust as mail_trust
 from opportunity_app.mail.message import host_of
 

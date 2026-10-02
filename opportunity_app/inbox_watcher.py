@@ -16,7 +16,8 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable
 
-from . import application_inbox, automation, outreach_labels
+from .applications import inbox as application_inbox
+from . import automation, outreach_labels
 from .background import PollingWorker, record_health_quietly, step_error
 from .core.database import rollback_quietly, connect_product
 from .integrations.gmail_client import PROVIDER, ClientFactory

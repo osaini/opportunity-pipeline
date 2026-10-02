@@ -15,7 +15,7 @@ from playwright.sync_api import expect
 
 from apply_fake_ats import JOB_URL
 from conftest import OWNER_TOKEN, wait_for_results
-from opportunity_app import actions
+from opportunity_app.applications import actions
 from ui_helpers import AXE_OPTIONS, USER, confirm_posting, db, fact, open_saved_role, prepare
 
 BEARER = {"Authorization": f"Bearer {OWNER_TOKEN}"}

@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR, apply_claims, apply_runs, automation, automation_health, outreach_schedule
 from opportunity_app.core import schema
-from opportunity_app.actions import record_intent, update_application
+from opportunity_app.applications.actions import record_intent, update_application
 from opportunity_app.api import create_app
 from opportunity_app.automation import Feature
 from opportunity_app.core.schema import MIGRATIONS_DIR, ensure_product_schema
@@ -221,7 +221,7 @@ class PostgresContractTests(unittest.TestCase):
         """Deadline UPSERT, Urgent aggregation, capture ownership and cascades on PostgreSQL."""
         from datetime import date, timedelta
 
-        from opportunity_app import urgent
+        from opportunity_app.applications import urgent
         from opportunity_app.core.schema import LOCAL_USER_ID
         from opportunity_app.core.database import connect_product
 
@@ -421,7 +421,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
         self.conn.commit()
 
     def test_migration_0038_repairs_a_half_applied_upgrade_and_application_mail_runs(self):
-        from opportunity_app import application_inbox
+        from opportunity_app.applications import inbox as application_inbox
 
         for table, column in (("application_tasks", "link"), ("monitored_events", "decided_by")):
             self.assertTrue(has_column(self.conn, table, column), f"{table}.{column}")
@@ -452,7 +452,8 @@ class PostgresAutomationContractTests(unittest.TestCase):
         self.assertEqual(remaining, 0)
 
     def test_a_job_email_reopens_only_the_automatic_archive(self):
-        from opportunity_app import application_inbox, internal_automation
+        from opportunity_app.applications import inbox as application_inbox
+        from opportunity_app import internal_automation
 
         with self.conn:
             for key in ("application_mail", "archive_silent_applications"):
@@ -485,7 +486,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
         self.assertFalse(internal_automation.automation_archived(self.conn, "app-job-b"))
         self.conn.commit()
         # The student archives it: an email's reopen is refused inside the transaction.
-        from opportunity_app.actions import update_application
+        from opportunity_app.applications.actions import update_application
 
         update_application(self.conn, "app-job-b", stage="archived", user_id=AUTOMATION_USER)
         refused = automation.perform(self.conn, user_id=AUTOMATION_USER, **email, after={"stage": "rejected"},
@@ -1126,7 +1127,7 @@ class PostgresAutomationContractTests(unittest.TestCase):
 
     def test_the_job_mail_reader_leaves_to_outreach_only_what_outreach_holds(self):
         """application_inbox._outreach_owns and _reclaim on PostgreSQL, through outreach_inbox.owned_sql (plain and aliased)."""
-        from opportunity_app import application_inbox
+        from opportunity_app.applications import inbox as application_inbox
 
         self.outreach_target("t-1", "Bovi")
         self.student("student-2")

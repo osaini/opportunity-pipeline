@@ -1192,7 +1192,7 @@ class StoreReaderScanTests(unittest.TestCase):
 
     def test_the_extension_and_the_saved_answer_library_code_never_touch_it(self):
         # Every module of these names, whether it stays one file or becomes a package (preparation/...).
-        for name in ("extension_apply", "student/preparation", "student/profile", "student/resume_variants"):
+        for name in ("applications/extension", "student/preparation", "student/profile", "student/resume_variants"):
             found = [path for path in self.package_modules() if self.in_module(path, f"opportunity_app/{name}")]
             self.assertTrue(found, f"no module found for opportunity_app/{name}")
             for path in found:

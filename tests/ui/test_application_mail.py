@@ -18,7 +18,7 @@ from playwright.sync_api import expect
 
 from conftest import wait_for_results
 from opportunity_app import automation
-from opportunity_app.actions import record_intent
+from opportunity_app.applications.actions import record_intent
 from opportunity_app.core.database import connect_product
 from opportunity_app.core.timestamps import utc_now
 from ui_helpers import assert_accessible
@@ -353,7 +353,7 @@ def test_an_email_card_decided_elsewhere_says_so_instead_of_failing_silently(own
 
 
 def test_check_now_says_when_another_check_is_already_running(owner_page, live_server):
-    from opportunity_app import application_inbox
+    from opportunity_app.applications import inbox as application_inbox
 
     with closing(connect_product(live_server.live_path)) as conn:
         switch(conn, "on")

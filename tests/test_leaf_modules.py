@@ -492,7 +492,7 @@ class LogApplicationEventTests(unittest.TestCase):
         return [dict(row) for row in self.conn.execute("SELECT * FROM application_events")]
 
     def test_the_columns_default_to_null_stages_and_json_dumps_detail(self):
-        from opportunity_app.actions import log_application_event
+        from opportunity_app.applications.actions import log_application_event
 
         log_application_event(self.conn, "a1", "task_added", {"task_id": "t", "title": "x"}, "2026-09-30T10:00:00+00:00")
         self.assertEqual(self.rows(), [{
@@ -501,7 +501,7 @@ class LogApplicationEventTests(unittest.TestCase):
         }])
 
     def test_stages_and_pre_encoded_detail_are_stored_as_given(self):
-        from opportunity_app.actions import log_application_event
+        from opportunity_app.applications.actions import log_application_event
 
         log_application_event(self.conn, "a1", "stage_changed", {"b": 1, "a": 2}, "s", from_stage="applied", to_stage="interview")
         log_application_event(self.conn, "a1", "apply_agent_submitted", None, "s", encoded='{"a": 2, "b": 1}')
@@ -725,13 +725,13 @@ class IdentityAndLegacyWorkstreamTests(unittest.TestCase):
         self.assertFalse(hasattr(schema, "RULESET_VERSION") and schema.RULESET_VERSION is not RULESET_VERSION)
         # The migration_runs key is a different concept that happens to read the same today.
         self.assertEqual(legacy_sync.LEGACY_MIGRATION_KEY, "legacy-v1")
-        for relative in ("actions.py", "extension_apply.py", "student/profile.py"):
+        for relative in ("applications/actions.py", "applications/extension.py", "student/profile.py"):
             with self.subTest(module=relative):
                 text = (ROOT / "opportunity_app" / relative).read_text(encoding="utf-8")
                 self.assertNotIn("legacy-v1", text)
 
     def test_the_closed_application_stages_are_defined_once(self):
-        from opportunity_app import actions, urgent
+        from opportunity_app.applications import actions, urgent
 
         self.assertIs(urgent.CLOSED_APPLICATION_STAGES, actions.CLOSED_APPLICATION_STAGES)
         self.assertEqual(tuple(actions.CLOSED_APPLICATION_STAGES), ("rejected", "withdrawn", "archived"))
@@ -981,7 +981,7 @@ class GmailClientLeafTests(unittest.TestCase):
 
 class OutreachIdentityTests(unittest.TestCase):
     def test_company_identity_does_not_load_the_mail_readers(self):
-        heavy = dotted("outreach_inbox", "application_inbox", "outreach_labels", "outreach_delivery", "automation", "api")
+        heavy = dotted("outreach_inbox", "applications.inbox", "outreach_labels", "outreach_delivery", "automation", "api")
         self.assertEqual(all_imports(APP / "outreach_identity.py") & heavy, set())
 
     def test_importing_it_in_a_fresh_process_loads_no_sender_gmail_or_automation(self):
@@ -994,7 +994,7 @@ class OutreachIdentityTests(unittest.TestCase):
         self.assertEqual(done.returncode, 0, done.stderr)
         loaded = set(ast.literal_eval(done.stdout.strip().splitlines()[-1]))
         heavy = dotted(
-            "outreach", "outreach_contacts", "outreach_forms", "outreach_gmail", "outreach_inbox", "application_inbox",
+            "outreach", "outreach_contacts", "outreach_forms", "outreach_gmail", "outreach_inbox", "applications.inbox",
             "outreach_labels", "outreach_delivery", "automation", "core.schema", "integrations.gmail_client", "mail.connections", "api",
         ) | {"cryptography", "httpx"}
         self.assertEqual(loaded & heavy, set())

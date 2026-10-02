@@ -14,11 +14,12 @@ from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import actions as actions_module, automation, automation_handlers, automation_health
+from opportunity_app.applications import actions as actions_module
+from opportunity_app import automation, automation_handlers, automation_health
 from opportunity_app.core import schema, timestamps
 from opportunity_app.accounts.operations import ACCOUNT_QUERIES, delete_account, export_account
 from opportunity_app.student.agent import decide_proposal
-from opportunity_app.actions import (
+from opportunity_app.applications.actions import (
     add_application_task,
     import_applications,
     record_intent,

@@ -65,7 +65,7 @@ from .apply_classify import (
     without_enumeration,
 )
 from .apply_greenhouse import ATS_GREENHOUSE
-from .extension_apply import ExtensionApplyError, confirmed_resume_file
+from .applications.extension import ExtensionApplyError, confirmed_resume_file
 from .core.json_values import json_as
 
 __all__ = [

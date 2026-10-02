@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from pipeline_core import OpportunityFilters, OpportunityRepository, capture_visible_sql
 
-from ..actions import (
+from ..applications.actions import (
     APPLICATION_STAGES,
     ApplicationNotFoundError,
     OpportunityNotFoundError,

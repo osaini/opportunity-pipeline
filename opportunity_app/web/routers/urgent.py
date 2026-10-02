@@ -10,7 +10,7 @@ from fastapi import Depends, HTTPException, Query, status
 from pipeline_core import OpportunityRepository
 from ..overrides import shared_router
 from ...opportunities.early_programs import EarlyProgramNotFoundError, early_programs, set_program_status
-from ...urgent import urgent_queue
+from ...applications.urgent import urgent_queue
 from ...core.schema import LOCAL_USER_ID
 from ..context import AppContext
 from ..dependencies import get_ctx, repository, require_auth, writable_connection

@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR, automation
-from opportunity_app.actions import update_application
+from opportunity_app.applications.actions import update_application
 from opportunity_app.api import create_app
 from opportunity_app.automation import OFF_SHADOW_ON, Feature
 from opportunity_app.core.database import connect_product

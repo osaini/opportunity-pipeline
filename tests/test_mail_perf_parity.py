@@ -15,7 +15,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import application_inbox, outreach_inbox
+from opportunity_app.applications import inbox as application_inbox
+from opportunity_app import outreach_inbox
 from opportunity_app.mail import trust as mail_trust
 from opportunity_app.mail.message import host_of
 from opportunity_app import outreach_gmail_sends as sends

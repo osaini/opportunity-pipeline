@@ -26,7 +26,7 @@ from pipeline_core import OpportunityRepository
 
 from ..accounts.auth import constant_time_equal, resolve_user_token
 from ..accounts.employer import ensure_actor
-from ..extension_apply import resolve_extension_token
+from ..applications.extension import resolve_extension_token
 from ..core.database import connect_product
 from ..core.schema import LOCAL_USER_ID
 from .context import SESSION_COOKIE, USER_SESSION_COOKIE, AppContext

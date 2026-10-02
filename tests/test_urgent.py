@@ -19,8 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
-from opportunity_app import urgent
-from opportunity_app.actions import add_application_task, application_analytics
+from opportunity_app.applications import urgent
+from opportunity_app.applications.actions import add_application_task, application_analytics
 from opportunity_app.api import create_app
 from opportunity_app.accounts.operations import delete_account, export_account
 from opportunity_app.outreach import local_today
@@ -349,7 +349,7 @@ class UrgentRuleTests(UrgentFixture):
     def test_unparseable_dates_are_reported_and_logged_once(self):
         app = self.application("job-a")
         self.task(app, "next tuesday")
-        with self.assertLogs("opportunity_app.urgent", level="WARNING") as logs:
+        with self.assertLogs("opportunity_app.applications.urgent", level="WARNING") as logs:
             first = self.queue()
             second = self.queue()
         self.assertEqual(len(logs.records), 1)
@@ -509,12 +509,12 @@ class AnalyticsOverdueTests(UrgentFixture):
         self.task(active, "2026-09-17T03:00:00+00:00")  # 22:00 on the 16th in Chicago: overdue
         closed = self.application("job-b", "withdrawn", follow_up_at="2026-09-01T09:00:00-05:00")
         self.task(closed, "2026-09-01T09:00:00-05:00")
-        with mock.patch("opportunity_app.actions.datetime") as fake:
+        with mock.patch("opportunity_app.applications.actions.datetime") as fake:
             fake.now.return_value = NOW
             fake.fromisoformat = datetime.fromisoformat
             analytics = application_analytics(self.conn, user_id=LOCAL_USER_ID)
         self.assertEqual(analytics["overdue_tasks"], 2)
-        from opportunity_app.actions import list_applications
+        from opportunity_app.applications.actions import list_applications
         with mock.patch("opportunity_app.core.user_time.datetime") as clock:
             clock.now.return_value = NOW
             clock.fromisoformat = datetime.fromisoformat
@@ -600,7 +600,7 @@ class DeadlineApiTests(unittest.TestCase):
         def failing_sql(alias="o"):
             raise sqlite3.IntegrityError("FOREIGN KEY constraint failed")
 
-        with mock.patch("opportunity_app.urgent.capture_visible_sql", side_effect=failing_sql):
+        with mock.patch("opportunity_app.applications.urgent.capture_visible_sql", side_effect=failing_sql):
             response = self.put("job-a", "2026-10-01")
         self.assertEqual(response.status_code, 404, response.text)
         self.assertIs(urgent.capture_visible_sql, original)

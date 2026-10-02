@@ -14,7 +14,7 @@ from fastapi import Depends, HTTPException, Header, Request, status
 
 from ..overrides import shared_router
 from ... import automation as automation_core
-from ...actions import ApplicationNotFoundError
+from ...applications.actions import ApplicationNotFoundError
 from ...accounts.auth import constant_time_equal
 from ...mail.connections import (
     ConnectionNotFoundError,
@@ -34,7 +34,7 @@ from ...mail.connections import (
     update_preferences,
 )
 from ...core.database import connect_product
-from ...monitored_events import decide_monitored_event
+from ...applications.monitored_events import decide_monitored_event
 from ...core.timestamps import utc_now
 from ...mail.classifiers import client_for as inbox_client_for
 from ...outreach_config import sender_account

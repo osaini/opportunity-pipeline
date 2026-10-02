@@ -16,7 +16,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from opportunity_app import urgent
+from opportunity_app.applications import urgent
 from opportunity_app.core.database import connect_product
 from opportunity_app.core.timestamps import utc_now
 

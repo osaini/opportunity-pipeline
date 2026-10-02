@@ -146,10 +146,10 @@ from uuid import uuid4
 
 import httpx
 
-from . import automation, internal_automation
-from .mail import trust as mail_trust
+from .. import automation, internal_automation
+from ..mail import trust as mail_trust
 from .actions import log_application_event
-from .application_mail_rules import (
+from .mail_rules import (
     CLOSED_STAGES,
     QUOTE_LIMIT,
     Classification,
@@ -167,16 +167,16 @@ from .application_mail_rules import (
     redact,
     stated_deadline,
 )
-from .core.database import is_transient_error
-from .integrations.gmail_client import ClientFactory, GmailAuthError, GmailThrottled, connection_state
-from .mail.message import host_of, strip_queries
-from .outreach_config import sender_account
-from .mail.gmail_connection import connector_row, GmailClient
-from .outreach_inbox import RULES, owned_sql
-from .core.settings_store import setting_updated_at
-from .core.timestamps import parse_app_instant, utc_now
-from .integrations.typesafe_decisions import DecisionClient
-from .core.user_time import user_timezone
+from ..core.database import is_transient_error
+from ..integrations.gmail_client import ClientFactory, GmailAuthError, GmailThrottled, connection_state
+from ..mail.message import host_of, strip_queries
+from ..outreach_config import sender_account
+from ..mail.gmail_connection import connector_row, GmailClient
+from ..outreach_inbox import RULES, owned_sql
+from ..core.settings_store import setting_updated_at
+from ..core.timestamps import parse_app_instant, utc_now
+from ..integrations.typesafe_decisions import DecisionClient
+from ..core.user_time import user_timezone
 
 LOGGER = logging.getLogger(__name__)
 
@@ -1510,7 +1510,7 @@ def decide_event(
     ignoring an email is not the feature getting something wrong, so it never
     trips the breaker.
     """
-    from .mail.connections import decide_event_directly, monitored_event
+    from ..mail.connections import decide_event_directly, monitored_event
 
     gmail_id = str((event.get("payload") or {}).get("gmail_id") or "")
     actions = _message_actions(conn, user_id, gmail_id) if gmail_id else []

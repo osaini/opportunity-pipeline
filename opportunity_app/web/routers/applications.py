@@ -10,8 +10,8 @@ from typing import Any, Literal
 from fastapi import Depends, File, HTTPException, Query, Response, UploadFile, status
 
 from ..overrides import shared_router
-from ... import application_inbox
-from ...actions import (
+from ...applications import inbox as application_inbox
+from ...applications.actions import (
     APPLICATION_STAGES,
     ApplicationNotFoundError,
     add_application_contact,

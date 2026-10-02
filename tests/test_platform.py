@@ -987,7 +987,7 @@ class PlatformTests(unittest.TestCase):
     def test_server_sensitive_guard_matches_the_extension_rule(self):
         import re
 
-        from opportunity_app.extension_apply import SENSITIVE_FIELD, answer_is_sensitive
+        from opportunity_app.applications.extension import SENSITIVE_FIELD, answer_is_sensitive
 
         root = Path(__file__).resolve().parents[1]
         engine = (root / "apps" / "extension" / "apply-engine.js").read_text(encoding="utf-8")

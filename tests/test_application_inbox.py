@@ -21,18 +21,19 @@ import httpx
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from opportunity_app import STATIC_DIR, application_inbox, application_mail_rules, automation, automation_health, inbox_watcher, internal_automation
+from opportunity_app import STATIC_DIR, automation, automation_health, inbox_watcher, internal_automation
+from opportunity_app.applications import inbox as application_inbox, mail_rules as application_mail_rules
 from opportunity_app.mail import gmail_connection, trust as mail_trust
-from opportunity_app.actions import record_intent, update_application
+from opportunity_app.applications.actions import record_intent, update_application
 from opportunity_app.api import create_app
-from opportunity_app.application_mail_rules import match_application, parse_message
+from opportunity_app.applications.mail_rules import match_application, parse_message
 from opportunity_app.mail.connections import monitored_event
-from opportunity_app.monitored_events import decide_monitored_event
+from opportunity_app.applications.monitored_events import decide_monitored_event
 from opportunity_app.mail.monitored_classifier import classify_monitored_message
 from opportunity_app.accounts.operations import export_account
 from opportunity_app.core.database import connect_product
 from opportunity_app.core.timestamps import parse_app_instant, utc_now
-from opportunity_app.urgent import urgent_queue
+from opportunity_app.applications.urgent import urgent_queue
 
 from helpers_platform import build_and_migrate
 from helpers_gmail import ACCOUNT, FakeGmail, forget_gmail_backoff, rate_limited
@@ -849,7 +850,7 @@ class DecisionTests(MailCase):
         proposals = self.proposed_interview()
         self.assertTrue(proposals)
         event = self.conn.execute("SELECT id FROM monitored_events WHERE external_id='gmail:m-50'").fetchone()
-        from opportunity_app.monitored_events import decide_monitored_event
+        from opportunity_app.applications.monitored_events import decide_monitored_event
 
         decided = decide_monitored_event(self.conn, event["id"], "confirm", self.acme, user_id=USER)
         self.assertEqual((decided["status"], decided["application_id"], decided["decided_by"]), ("confirmed", self.acme, "student"))
@@ -863,7 +864,7 @@ class DecisionTests(MailCase):
     def test_ignoring_the_email_card_sets_its_proposals_aside_without_the_breaker(self):
         self.proposed_interview()
         event = self.conn.execute("SELECT id FROM monitored_events WHERE external_id='gmail:m-50'").fetchone()
-        from opportunity_app.monitored_events import decide_monitored_event
+        from opportunity_app.applications.monitored_events import decide_monitored_event
 
         decide_monitored_event(self.conn, event["id"], "ignore", None, user_id=USER)
         statuses = {action["action_type"]: action["status"] for action in self.actions()}

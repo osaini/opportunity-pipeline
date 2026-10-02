@@ -687,7 +687,7 @@ class StoreNeverLeavesTests(SensitiveApiCase):
         saved = self.send("POST", f"{self.BASE}/sensitive-answers", {"category": "work_authorization", "question": self.PLANTED_QUESTION, "answer": self.PLANTED_ANSWER, "consent": True})
         self.assertEqual(saved.status_code, 200, saved.text)
         self.assertIn("ZZ-planted-answer-7731", json.dumps(self.entries()), "the owner's own settings page does show it")
-        from opportunity_app.extension_apply import apply_context
+        from opportunity_app.applications.extension import apply_context
 
         context = apply_context(self.conn, "app-job-b", user_id=USER)
         self.assertNotIn("ZZ-planted", json.dumps(context, default=str))

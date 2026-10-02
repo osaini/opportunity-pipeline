@@ -145,7 +145,7 @@ def is_apply_module(relative, exclude_store=False):
 def apply_modules(exclude_store=False):
     """{relative posix path: text} for every Apply-for-me module under opportunity_app/ (see is_apply_module).
 
-    The browser extension's server half, extension_apply.py, is not part of it on purpose: its label-pattern regexes are the very
+    The browser extension's server half, applications/extension.py, is not part of it on purpose: its label-pattern regexes are the very
     thing the agent's policy must not copy.
     """
     modules = {relative: text for relative, text in python_modules("*.py").items() if is_apply_module(relative, exclude_store)}

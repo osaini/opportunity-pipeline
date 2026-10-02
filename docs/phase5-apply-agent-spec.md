@@ -3381,17 +3381,17 @@ process id (memory note restart-web-dashboard).
 - **App code:**
   - `opportunity_app/automation.py`: FEATURES, REQUIREMENTS, `in_flight`, `unconfirmed`,
     `paused_text`;
-  - `opportunity_app/actions.py`: `ensure_application_tx`, factored out of `_record_intent_tx`;
-  - `opportunity_app/extension_apply.py`: `confirmed_resume_file`, factored out of
+  - `opportunity_app/applications/actions.py`: `ensure_application_tx`, factored out of `_record_intent_tx`;
+  - `opportunity_app/applications/extension.py`: `confirmed_resume_file`, factored out of
     `artifact_path`;
   - `opportunity_app/student/artifacts.py`: `content_sha256` and re-render on mismatch (M7);
   - `opportunity_app/student/profile.py`: `name_parts` in `ALLOWED_PROFILE_FIELDS` and
     `validate_profile_types`;
-  - `opportunity_app/application_inbox.py`: set `sender_verified` when recording a message;
+  - `opportunity_app/applications/inbox.py`: set `sender_verified` when recording a message;
   - the Gmail connect callback (with `outreach_gmail.py`): record `account_email`;
   - `opportunity_app/core/schema.py`: `_apply_apply_agent` in `_MIGRATION_STEPS`;
   - `opportunity_app/accounts/operations.py`: `run_retention`, `delete_account(apply_root=...)`, export;
-  - `opportunity_app/urgent.py`;
+  - `opportunity_app/applications/urgent.py`;
   - `opportunity_app/api.py`: routes, `require_browser_session`, the factory wiring next to
     api.py:1063-1064, and the deletion caller at :3207;
   - `opportunity_app/outreach_automation.py`: the apply worker step;

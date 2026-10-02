@@ -30,7 +30,7 @@ from opportunity_app.outreach_recontact import eligible_targets
 from opportunity_app.outreach_research import due_for_research
 from opportunity_app.outreach_thank_you import due as thank_you_due
 from opportunity_app.core.database import connect_product
-from opportunity_app.urgent import urgent_queue
+from opportunity_app.applications.urgent import urgent_queue
 
 from helpers_platform import build_and_migrate
 

@@ -18,7 +18,7 @@ from playwright.sync_api import expect
 from conftest import OWNER_TOKEN, wait_for_results
 from ui_helpers import assert_accessible, card_for, gmail_listing, open_outreach, seed_target
 from opportunity_app import automation
-from opportunity_app.actions import add_application_task, update_application
+from opportunity_app.applications.actions import add_application_task, update_application
 from opportunity_app.automation import OFF_SHADOW_ON, Feature
 from opportunity_app.core.database import connect_product
 from opportunity_app.core.timestamps import utc_now

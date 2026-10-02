@@ -13,8 +13,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pipeline_core.read_model import RULESET_VERSION
 
-from .core.timestamps import utc_now
-from .core.user_time import named_timezone, user_timezone
+from ..core.timestamps import utc_now
+from ..core.user_time import named_timezone, user_timezone
 
 
 INTENT_ACTIONS = {"seen", "saved", "passed", "apply_opened", "undo"}
@@ -80,7 +80,7 @@ def record_intent(
     if action == "saved" and not response["unchanged"]:
         # After the save has committed, in its own transaction: picking a résumé
         # variant (resume_variant_pick) can never undo or hold up the save.
-        from .student.resume_variants import safe_pick_after_save
+        from ..student.resume_variants import safe_pick_after_save
 
         safe_pick_after_save(conn, user_id, opportunity_id)
     return response

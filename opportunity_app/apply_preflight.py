@@ -27,7 +27,7 @@ from pipeline_core.visibility import capture_visible_sql
 
 from . import apply_classify, apply_greenhouse, apply_policy, apply_runs, apply_sensitive
 from .student import preparation
-from .actions import OpportunityNotFoundError
+from .applications.actions import OpportunityNotFoundError
 from .apply_schema_client import SchemaClient, SchemaUnavailable
 from .apply_checks import question_key
 

@@ -10,9 +10,9 @@ from fastapi import Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse
 
 from ..overrides import shared_router
-from ...actions import ApplicationNotFoundError
+from ...applications.actions import ApplicationNotFoundError
 from ...student.artifacts import backfill_approved_artifacts
-from ...extension_apply import (
+from ...applications.extension import (
     ExtensionApplyError,
     ExtensionAuthError,
     answer_is_sensitive,

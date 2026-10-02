@@ -335,7 +335,7 @@ def run_retention(conn: sqlite3.Connection, *, now: datetime | None = None, appl
             ).rowcount
     # Email excerpts kept as evidence go after PIPELINE_MAIL_EVIDENCE_DAYS; the ledger rows stay, with their hashes.
     # So do the words of a possible reply left waiting that long; the card still links to it in Gmail.
-    from ..application_inbox import evidence_days, purge_excerpts
+    from ..applications.inbox import evidence_days, purge_excerpts
 
     cutoff = (now - timedelta(days=evidence_days())).isoformat(timespec="seconds")
     with conn:

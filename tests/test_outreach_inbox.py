@@ -613,7 +613,7 @@ class ReplyCaptureTests(ReplyCaptureFixture, unittest.TestCase):
         self.assertEqual(self.inbox_row("careers-3")["kind"], "reply")
 
     def test_the_job_mail_reader_takes_back_what_outreach_no_longer_holds(self):
-        from opportunity_app import application_inbox
+        from opportunity_app.applications import inbox as application_inbox
 
         target = self.sent_target()
         with closing(connect_product(self.platform_path)) as conn:

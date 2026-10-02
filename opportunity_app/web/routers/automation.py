@@ -8,12 +8,12 @@ from typing import Any, Callable
 from fastapi import Depends, HTTPException, Query, status
 
 from ..overrides import shared_router
-from ... import application_inbox
+from ...applications import inbox as application_inbox
 from ... import automation as automation_core
 from ... import automation_health
 from ... import auto_triage
 from ...mail import trust as mail_trust
-from ...actions import ApplicationNotFoundError
+from ...applications.actions import ApplicationNotFoundError
 from ...mail.classifiers import client_for as inbox_client_for
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, writable_connection

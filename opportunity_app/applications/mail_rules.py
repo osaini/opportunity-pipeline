@@ -25,12 +25,12 @@ from urllib.parse import parse_qs, urlsplit
 
 from pipeline_core.identity import identity_tokens, normalized
 
-from . import internal_automation
-from .mail import trust as mail_trust
-from .mail.monitored_classifier import classify_monitored_message
-from .extension_apply import split_canonical_url
-from .mail.classifiers import classify_email
-from .mail.message import (
+from .. import internal_automation
+from ..mail import trust as mail_trust
+from ..mail.monitored_classifier import classify_monitored_message
+from .extension import split_canonical_url
+from ..mail.classifiers import classify_email
+from ..mail.message import (
     URL,
     clean_url,
     decode_base64url,
@@ -39,7 +39,7 @@ from .mail.message import (
     html_text_spaced,
     received_or_epoch,
 )
-from .integrations.typesafe_decisions import DecisionClient
+from ..integrations.typesafe_decisions import DecisionClient
 
 
 EXCERPT_LIMIT = 500

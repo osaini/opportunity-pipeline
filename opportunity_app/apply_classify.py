@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any, Iterable
 
 from pipeline_core.identity import normalized_text
 
-from .extension_apply import SENSITIVE_FIELD
+from .applications.extension import SENSITIVE_FIELD
 
 if TYPE_CHECKING:
     from .apply_policy import SchemaField

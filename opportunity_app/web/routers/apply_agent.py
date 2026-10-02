@@ -9,7 +9,7 @@ from fastapi import Depends, HTTPException, Response, status
 
 from ..overrides import shared_router
 from ... import automation as automation_core
-from ...actions import OpportunityNotFoundError
+from ...applications.actions import OpportunityNotFoundError
 from ... import apply_classify, apply_policy, apply_preflight, apply_runs, apply_sensitive
 from ...apply_schema_client import SchemaClient
 from ..context import AppContext

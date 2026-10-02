@@ -98,7 +98,7 @@ LAYER_NAMES = {
 LAYER_MEMBERS: dict[int, frozenset[str]] = {
     # L0 stdlib leaves. `opportunity_app` and `pipeline_core` are the package __init__ modules (constants and re-exports).
     0: (
-        _app(". opportunities accounts student mail core integrations core.timestamps core.user_time core.database core.json_values mail.message opportunity_metadata core.storage_paths contact_names core.daily_lock core.hooks mail.monitored_classifier outreach_replies")
+        _app(". applications opportunities accounts student mail core integrations core.timestamps core.user_time core.database core.json_values mail.message opportunity_metadata core.storage_paths contact_names core.daily_lock core.hooks mail.monitored_classifier outreach_replies")
         | _core(". env identity visibility regions read_model paths clock text http config sources scoring artifacts store liveness retention importers discovery fetch reports cli")
         | frozenset({"pipeline"})
     ),
@@ -109,8 +109,8 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
     2: _app("integrations.agent_providers integrations.web_fetch integrations.gmail_client integrations.typesafe_decisions integrations.smtp_probe integrations.pdf"),
     # L3 domain.
     3: _app(
-        "actions apply_sessions accounts.auth apply_checks apply_claims apply_classify apply_greenhouse apply_policy apply_sensitive apply_schema_client "
-        "automation automation_health opportunities.boards opportunities.captures mail.connections accounts.dossier accounts.employer opportunities.market opportunities.early_programs extension_apply mail.trust "
+        "applications.actions apply_sessions accounts.auth apply_checks apply_claims apply_classify apply_greenhouse apply_policy apply_sensitive apply_schema_client "
+        "automation automation_health opportunities.boards opportunities.captures mail.connections accounts.dossier accounts.employer opportunities.market opportunities.early_programs applications.extension mail.trust "
         "notifications opportunities.purge opportunities.ingestion student.profile student.resumes student.resume_variants student.preparation student.artifacts mail.classifiers mail.gmail_connection "
         "send_claims outreach outreach_agents outreach_callbacks outreach_config outreach_decline_reading outreach_identity outreach_label_name "
         "outreach_location outreach_greeting outreach_versions outreach_contacts outreach_linkedin outreach_batch "
@@ -118,12 +118,12 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
     ),
     # L4 workflows. refresh is the manual refresh/purge workflow run in a background thread; api (L5) is its only importer.
     4: _app(
-        "background application_inbox application_mail_rules inbox_watcher internal_automation automation_handlers auto_triage apply_runs apply_preflight "
+        "background applications.inbox applications.mail_rules inbox_watcher internal_automation automation_handlers auto_triage apply_runs apply_preflight "
         "outreach_gmail outreach_gmail_sends outreach_delivery outreach_inbox outreach_labels outreach_schedule "
         "outreach_thank_you outreach_reply_senders outreach_automation outreach_recontact outreach_review outreach_call_prep "
         "outreach_call_questions outreach_forms outreach_discovery outreach_research quote_check outreach_drafting "
         "outreach_interviewer outreach_email_search outreach_locate outreach_profile outreach_settings "
-        "opportunities.refresh desktop_notify accounts.operations accounts.backups student.agent urgent monitored_events"
+        "opportunities.refresh desktop_notify accounts.operations accounts.backups student.agent applications.urgent applications.monitored_events"
     ),
     # L5 entry points. opportunity_app.web is the FastAPI app behind api: the composition root (app), the per-app context, the
     # dependencies, middleware and asset handling, the request models, and one router module per feature.
@@ -153,7 +153,7 @@ ALLOWLIST: tuple[tuple[str, str, str], ...] = (
     (_P + "outreach_contacts", _P + "outreach_profile", "rendered_pages and record_site_location: contact search re-reads pages in a browser and records the site location"),
     (_P + "outreach_settings", _P + "setup", "set_env_values: the settings page writes .env through the setup CLI's helper"),
     # --- Same layer, but hoisting the import would close a top-level cycle. One entry per cycle edge that must stay lazy.
-    (_P + "actions", _P + "student.resume_variants", "safe_pick_after_save: resume_variants imports actions at the top"),
+    (_P + "applications.actions", _P + "student.resume_variants", "safe_pick_after_save: resume_variants imports actions at the top"),
     (_P + "launch", _P + "api", "create_app: api imports system_status, which would import launch if that were hoisted too"),
     (_P + "launch", _P + "web.context", "LOOPBACK_HOSTS: web.context imports system_status, which would import launch if that were hoisted too"),
     (_P + "student.profile", _P + "outreach_greeting", "greeting_style_error: outreach_greeting and outreach_location read confirmed facts through preparation, which imports profile"),
