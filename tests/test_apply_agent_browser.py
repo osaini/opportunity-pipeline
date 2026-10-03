@@ -12,12 +12,14 @@ Where the agent runs in its own process (the runner's way), the last class drive
 import base64
 import hashlib
 import json
+import pickle
 import socket
 import sys
 import tempfile
 import threading
 import time
 import unittest
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,15 +36,21 @@ import apply_agent_fakes as fakes
 import browser_support
 from apply_fake_ats import API_HOST, JOB_PATH, JOB_URL, LEGACY_JOB_URL, LOOKUP_OPTIONS, OFFSITE_HOST, SUBMIT_HOST, FakeGreenhouse, fixture_json
 from browser_support import requires_chromium, requires_headed
-from helpers_apply import FakePlan, answer, planned
+import helpers_apply
+from apply_fake_ats import kill_if_same_process, press_submit
+from helpers_apply import USER, ApplyCase, FakePlan, Store, answer, planned, setUpModule, tearDownModule  # noqa: F401  (the module fixtures)
 
 from opportunity_app.apply import agent as apply_agent
 from opportunity_app.apply import checks as apply_checks
 from opportunity_app.apply import policy as apply_policy
 from opportunity_app.apply import runner as apply_runner
+from opportunity_app.apply import runs as apply_runs
 from opportunity_app.apply.agent import ApplyAgent, GreenhouseAdapter
 from opportunity_app.apply import agent_types as apply_agent_types
-from opportunity_app.apply.agent_types import AgentJob, ApplyTimeouts, LookupRequest
+from opportunity_app.apply.agent_types import (
+    HANDOFF_CRASHED, HANDOFF_EARLY, HANDOFF_ELSEWHERE, HANDOFF_HIDDEN, HANDOFF_NO_LOADER, HANDOFF_NOT_SUBMITTED, HANDOFF_S3, HANDOFF_UNRECORDED, HANDOFF_UPLOAD, LEFT_COVER_LETTER,
+    WINDOW_CLOSED, AgentJob, ApplyTimeouts, LookupRequest,
+)
 
 EMAIL = "sam.rivera@example.test"
 CHECKBOX_KEYS = {"question_4000000109", "question_4000000110", "question_4000000113", "gdpr_consent_given"}
@@ -1228,6 +1236,899 @@ class LaunchTests(AgentCase):
         self.assertEqual(calls["launch"], ApplyAgent.launch_options(False))
         self.assertEqual(calls["launch"], {"headless": False, "args": list(apply_agent.LAUNCH_ARGS)}, "a visible window, and the same switches as the headless one")
         self.assertEqual(calls["context"], ApplyAgent.context_options())
+
+
+CODE = "12345678"
+TEAM = "Which team are you most interested in?"
+CODE_BOXES_JS = "() => Array.from(document.querySelectorAll('#security-code input')).map((box) => box.value)"
+
+
+def sources_without(*questions):
+    sources = fakes.full_sources()
+    sources.answers[:] = [row for row in sources.answers if row["question"] not in questions]
+    return sources
+
+
+class HandoffCase(unittest.TestCase):
+    """A handoff run in a thread, against the fictional Greenhouse, with a test standing in for the student and for the parent.
+
+    ``student`` names a hook of ``fakes.STUDENTS`` (or pass ``hook``, a callable of ``(page, step)``). ``accept`` is what the parent
+    answers to the hand-over: True, False, or "raise". After every run: no forbidden button was pressed, nothing but a POST to the
+    submit path reached the fake, the agent never asked to press Submit, and the window is closed.
+    """
+
+    def setUp(self):
+        self.tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tempdir.cleanup)
+        self.dir = Path(self.tempdir.name)
+
+    def handoff(self, scenario="confirm", *, student="complete_and_submit", hook=None, sources=None, schema=None, files="default", link="default",
+                accept=True, cancelled=None, timeouts=None, on_progress=None, beat=None, plan=None, label_checkboxes=True):
+        sources = sources or sources_without(TEAM)
+        schema = fakes.fixture_schema() if schema is None else schema
+        fake = fakes.HandoffGreenhouse(scenario)
+        link = fakes.FakeLink() if link == "default" else link
+        steps, beats, purposes = [], [], []
+        calls = SimpleNamespace(count=0, posts=[], answers=[])
+        holder = {}
+
+        def hand_over():
+            calls.count += 1
+            calls.posts.append(len(fake.submit_posts()))   # what had reached the fake when the agent asked
+            calls.answers.append(accept)
+            if accept == "raise":
+                raise RuntimeError("the parent is gone")
+            return accept is True
+
+        def progress(step, text):
+            steps.append(step)
+            if on_progress:
+                on_progress(holder["agent"], step)
+
+        def heartbeat():
+            beats.append(time.monotonic())
+            if beat:
+                beat(holder["agent"])
+
+        agent = fakes.RecordingAgent(
+            fake=fake, mode="handoff", adapter=GreenhouseAdapter(), run_id="run-test", screenshot_dir=self.dir,
+            timeouts=timeouts or fakes.HANDOFF_TIMEOUTS, lookup_endpoints=fakes.FIXTURE_LOOKUP, on_progress=progress, heartbeat=heartbeat,
+            student_hook=hook or fakes.STUDENTS[student],
+        )
+        holder["agent"] = agent
+        real_click = agent._click
+
+        def click(locator, purpose, key=""):
+            purposes.append(purpose)
+            return real_click(locator, purpose, key)
+
+        agent._click = click
+        with agent:
+            result = agent.run(
+                fakes.draft_plan(sources, schema=schema, mode="handoff") if plan is None else plan, page_url=JOB_URL, schema=schema,
+                files={"resume": fakes.resume_payload()} if files == "default" else files,
+                replan=fakes.fixture_replan(sources, schema=schema, mode="handoff", label_checkboxes=label_checkboxes), hand_over=hand_over,
+                cancelled=cancelled, link=link,
+            )
+            record = agent.record()
+        run = SimpleNamespace(result=result, record=record, steps=steps, beats=beats, link=link, fake=fake, calls=calls, agent=agent, purposes=purposes)
+        self.assertIn(record["forbidden_clicks"], (0, -1), "the agent pressed a button it must never press")
+        self.assertEqual([entry for entry in record["non_get"] if not (entry["host"] == SUBMIT_HOST and entry["path"] == JOB_PATH)], [],
+                         "a request other than the submit POST reached the fake")
+        self.assertNotIn("submit", purposes, "the agent asked to press Submit: only the student does")
+        self.assertTrue(agent._page is None or agent._page.is_closed(), "the window was left open")
+        return run
+
+    def refused(self, run, **match):
+        return [entry for entry in run.result.refused if all(entry.get(name) == value for name, value in match.items())]
+
+    def submit_posts(self, run):
+        return len(run.fake.submit_posts())
+
+    def assertSent_nothing(self, run):
+        self.assertEqual(self.submit_posts(run), 0, "a submit POST reached the fake")
+        self.assertFalse(run.result.handed_over)
+        self.assertFalse(run.result.after_click)
+
+
+@requires_chromium
+class HandoffTests(HandoffCase):
+    def test_the_student_completes_and_submits(self):
+        run = self.handoff()
+        result = run.result
+        self.assertEqual((result.outcome, result.handed_over, result.after_click, result.confirmation_seen), ("submitted", True, True, True), result.reasons)
+        self.assertEqual(run.calls.count, 1)
+        self.assertEqual(run.calls.posts, [0], "the POST had already reached Greenhouse when the app asked the parent")
+        self.assertEqual(self.submit_posts(run), 1)
+        evidence = result.evidence
+        self.assertEqual((evidence["handoff_end"], evidence["submit_continued"], evidence["submit_post"], evidence["submit_status"]), ("posted", True, True, 200))
+        self.assertTrue(evidence["browser_closed"])
+        self.assertTrue(evidence["confirmation_path"])
+        self.assertEqual(run.steps[:5], ["open", "read", "fill", "check", "picture"])
+        self.assertEqual(run.steps[5:], ["your_turn", "submitting"])
+        ready = run.link.ready_messages
+        self.assertEqual(len(ready), 1)
+        left = {item["key"]: item for item in ready[0]["left"]}
+        self.assertIn("question_4000000103", left, "the question with no saved answer is left for the student")
+        self.assertTrue(left["question_4000000103"]["reason"])
+        entries = {entry["key"]: entry for entry in result.plan}
+        self.assertEqual(entries["question_4000000103"]["disposition"], "left_for_you")
+        self.assertEqual(entries["first_name"]["disposition"], "fill")
+        self.assertEqual(ready[0]["plan_hash"], result.plan_hash)
+        self.assertTrue(ready[0]["screenshot"] and Path(ready[0]["screenshot"]["path"]).exists())
+        self.assertEqual([entry for entry in result.requests if entry["method"] == "POST" and entry["passed"] and entry["host"] == SUBMIT_HOST][0]["status"], 200)
+        for entry in result.requests:
+            self.assertEqual(set(entry), {"method", "host", "path", "status", "passed"})
+        self.assertTrue(run.beats)
+
+    def test_a_refused_hand_over_aborts_the_post(self):
+        run = self.handoff(accept=False)
+        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [HANDOFF_UNRECORDED]))
+        self.assertSent_nothing(run)
+        self.assertEqual(run.result.evidence["handoff_end"], "refused")
+        self.assertTrue(self.refused(run, rule="hand_over_refused"))
+        self.assertTrue(run.result.evidence["browser_closed"])
+
+    def test_a_hand_over_that_raises_is_refused(self):
+        run = self.handoff(accept="raise")
+        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [HANDOFF_UNRECORDED]))
+        self.assertSent_nothing(run)
+
+    def test_the_timeout_closes_the_browser_before_the_result(self):
+        holder = {}
+
+        def watch(page, step):
+            holder["page"] = page
+
+        run = self.handoff(hook=watch, timeouts=replace(fakes.HANDOFF_TIMEOUTS, handoff_s=1))
+        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [HANDOFF_NOT_SUBMITTED]))
+        self.assertSent_nothing(run)
+        self.assertEqual(run.result.evidence["handoff_end"], "timeout")
+        self.assertTrue(run.result.evidence["browser_closed"])
+        page = holder["page"]
+        self.assertTrue(page.is_closed(), "the window was still open when the result was returned")
+        with self.assertRaises(Exception):
+            press_submit(page)
+        self.assertEqual(run.calls.count, 0)
+
+    def test_closing_the_window_sends_nothing(self):
+        run = self.handoff(student="close_window")
+        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [HANDOFF_NOT_SUBMITTED]))
+        self.assertEqual(run.result.evidence["handoff_end"], "closed")
+        self.assertSent_nothing(run)
+
+    def test_stop_during_the_turn_sends_nothing(self):
+        link = fakes.FakeLink()
+        run = self.handoff(student="do_nothing", link=link, cancelled=lambda: bool(link.ready_messages))
+        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [HANDOFF_NOT_SUBMITTED]))
+        self.assertEqual(run.result.evidence["handoff_end"], "stopped")
+        self.assertSent_nothing(run)
+
+    def test_closing_the_window_during_the_fill_sends_nothing(self):
+        run = self.handoff(on_progress=lambda agent, step: agent._page.close() if step == "fill" else None)
+        self.assertEqual((run.result.outcome, run.result.reasons), ("failed", [WINDOW_CLOSED]))
+        self.assertEqual(run.result.evidence["handoff_end"], "closed")
+        self.assertSent_nothing(run)
+        self.assertEqual(run.link.ready_messages, [])
+
+    def test_stop_during_the_fill_sends_nothing(self):
+        steps = []
+        run = self.handoff(on_progress=lambda agent, step: steps.append(step), cancelled=lambda: "fill" in steps)
+        self.assertEqual((run.result.outcome, run.result.reasons), ("failed", [apply_agent.STOPPED]))
+        self.assertEqual(run.result.evidence["handoff_end"], "stopped")
+        self.assertSent_nothing(run)
+        self.assertTrue(run.result.evidence["browser_closed"])
+
+    def test_a_second_submit_is_aborted(self):
+        run = self.handoff("double_submit")
+        self.assertEqual(run.result.outcome, "submitted", run.result.reasons)
+        self.assertEqual(self.submit_posts(run), 1, "the second POST reached Greenhouse")
+        self.assertTrue(self.refused(run, rule="second_submit_post"))
+        self.assertEqual(run.calls.count, 1)
+        self.assertEqual([entry["passed"] for entry in run.result.requests if entry["host"] == SUBMIT_HOST], [True, False])
+
+    def test_a_post_elsewhere_ends_the_turn(self):
+        run = self.handoff("other_path_post")
+        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [HANDOFF_ELSEWHERE]))
+        self.assertSent_nothing(run)
+        self.assertEqual(run.calls.count, 0, "the parent was asked to commit a POST that was not the submit path's")
+        self.assertEqual(run.result.evidence["handoff_end"], "elsewhere")
+
+    def test_telemetry_does_not_end_the_turn(self):
+        run = self.handoff("telemetry")
+        self.assertEqual(run.result.outcome, "submitted", run.result.reasons)
+        telemetry = self.refused(run, rule="telemetry", host="c.spl.greenhouse.io")
+        self.assertTrue(any(entry["method"] == "POST" for entry in telemetry), run.result.refused)
+        self.assertTrue(any(entry["method"] == "GET" for entry in telemetry), run.result.refused)
+        self.assertLessEqual(len([entry for entry in run.result.refused if entry.get("rule") == "telemetry"]), apply_agent.MAX_TELEMETRY_RECORDED)
+        self.assertEqual(run.fake.requests_to("c.spl.greenhouse.io"), [])
+        self.assertEqual(self.submit_posts(run), 1)
+
+    def test_the_security_code_is_read_and_typed_once(self):
+        link = fakes.FakeLink(({"status": "waiting"}, {"status": "waiting"}, {"status": "found", "code": CODE}))
+        seen, fronts = {}, []
+
+        def peek(agent, step):
+            if step == "code_typed":
+                seen["boxes"] = agent._page.evaluate(CODE_BOXES_JS)
+                seen["posts"] = len(agent.fake.submit_posts())
+
+        run = self.handoff("security_code", student="press_when_typed", link=link, on_progress=peek)
+        result = run.result
+        self.assertEqual((result.outcome, result.evidence["security_code"]["typed"]), ("submitted", True), result.reasons)
+        self.assertEqual(seen["boxes"], list(CODE), "the eight boxes did not hold the code when the student was told to press Submit")
+        self.assertEqual(seen["posts"], 1, "the code was submitted by the app")
+        self.assertEqual(self.submit_posts(run), 2, "the 428, then the student's own press")
+        self.assertEqual(len(link.asks), 3)
+        self.assertEqual(link.reasked, 0, "the agent asked again while a reply was outstanding")
+        self.assertEqual(link.results, [(3, True, "")])
+        self.assertIn("code_typed", run.steps)
+        self.assertEqual(run.purposes.count("submit"), 0)
+        evidence = result.evidence["security_code"]
+        self.assertEqual((evidence["prompted"], evidence["posted"], evidence["rounds"], evidence["auto_submit_blocked"]), (True, True, 1, False))
+        self.assertGreater(len(run.beats), 3, "no heartbeat while the app waited for the code")
+        self.assertNotIn(CODE.encode(), pickle.dumps(result))
+        self.assertNotIn(CODE, json.dumps(result.evidence) + json.dumps(result.reasons) + repr(run.steps) + repr(link.results) + repr(link.ready_messages))
+        self.assertNotIn(CODE, repr(vars(link)))
+        self.assertEqual(run.calls.count, 1, "the second POST is the code's, not a second hand-over")
+
+    def test_the_window_is_brought_forward_for_the_turn_and_for_the_code(self):
+        calls = []
+        link = fakes.FakeLink(({"status": "found", "code": CODE},))
+        link.front_requests = 1   # the student pressed "Bring the window forward"
+
+        def watch(agent, step):
+            if not calls:
+                real = agent._to_front
+                agent._to_front = lambda: (calls.append(step), real())[1]
+
+        run = self.handoff("security_code", student="press_when_typed", link=link, on_progress=watch)
+        self.assertEqual(run.result.outcome, "submitted", run.result.reasons)
+        self.assertGreaterEqual(len(calls), 3, calls)
+        self.assertEqual(link.fronts_taken, 1)
+
+    def test_an_auto_submitting_code_widget_sends_nothing_until_the_student_presses(self):
+        link = fakes.FakeLink(({"status": "found", "code": CODE},))
+        run = self.handoff("security_code_autosubmit", student="press_when_typed", link=link)
+        result = run.result
+        self.assertEqual(result.outcome, "submitted", result.reasons)
+        self.assertTrue(self.refused(run, rule="code_post_while_typing"), "the widget's own submit was not refused")
+        evidence = result.evidence["security_code"]
+        self.assertTrue(evidence["auto_submit_blocked"])
+        self.assertEqual(evidence["reason"], "auto_submit_blocked")
+        self.assertIn("code_typed", run.steps, "the code is in the boxes: the student is told to press Submit, not to type it")
+        self.assertNotIn("code_yours", run.steps)
+        self.assertEqual(self.submit_posts(run), 2, "the 428 and exactly one code POST, the student's own")
+        self.assertEqual(link.results, [(1, True, "")])
+
+    def test_a_second_press_while_the_code_post_is_still_answering_is_refused_and_starts_no_second_prompt(self):
+        # A real submit takes one to three seconds, and the boxes stay on the page until it answers: that is one prompt, not two.
+        link = fakes.FakeLink(({"status": "found", "code": CODE},))
+        pressed = []
+
+        def student(page, step):
+            if step == "handoff":
+                fakes.complete_and_submit(page, step)
+            elif step == "security_code" and not pressed and page.locator("#security-input-0").count() and page.input_value("#security-input-0"):
+                page.wait_for_timeout(2300)          # the app's own guard against a widget that sends by itself
+                pressed.append(time.monotonic())
+                press_submit(page)
+            elif step in ("security_code", "outcome") and pressed and fakes._once(page, "impatient"):
+                press_submit(page)                   # the first answer has not come: a double click, an impatient second press
+
+        run = self.handoff("security_code_slow", hook=student, link=link)
+        result = run.result
+        self.assertEqual((result.outcome, result.after_click, result.handed_over), ("submitted", True, True), result.reasons)
+        self.assertEqual(self.submit_posts(run), 2, "the 428 and the one code POST: the second press went to Greenhouse too")
+        self.assertTrue(self.refused(run, rule="second_submit_post"), "the second press was not refused by name")
+        self.assertEqual(run.steps.count("security_code"), 1, "the boxes on the page while the code POST was on its way started a second prompt")
+        self.assertNotIn("code_yours", run.steps, "the student was told to type and press again while the first press was on its way")
+        self.assertEqual(result.evidence["security_code"]["rounds"], 1)
+        self.assertEqual(link.results, [(1, True, "")])
+
+    def test_a_press_while_the_code_settles_is_refused_and_is_not_the_widget_sending_by_itself(self):
+        link = fakes.FakeLink(({"status": "found", "code": CODE},))
+        told = {}
+
+        def arm(agent, step):
+            if step == "security_code" and fakes._once(agent._page, "arm"):
+                # The student sees the code appear and presses at once: 0.9 s after the last box is filled.
+                agent._page.evaluate("""() => { const timer = setInterval(() => {
+                  const boxes = Array.from(document.querySelectorAll('#security-code input'));
+                  if (boxes.length === 8 && boxes.every((box) => box.value)) {
+                    clearInterval(timer);
+                    setTimeout(() => document.querySelector('form#application-form button[type=submit]').click(), 900);
+                  }
+                }, 25); }""")
+            if step == "code_typed":
+                told["refused"] = len(self.refused(SimpleNamespace(result=SimpleNamespace(refused=agent._refused)), rule="code_post_while_typing"))
+
+        run = self.handoff("security_code", student="press_when_typed", link=link, on_progress=arm)
+        result = run.result
+        self.assertEqual(result.outcome, "submitted", result.reasons)
+        self.assertEqual(len(self.refused(run, rule="code_post_while_typing")), 1, "the early press was not refused")
+        self.assertEqual(told.get("refused"), 1, "the student was told to press Submit before the guard on submit POSTs had ended")
+        evidence = result.evidence["security_code"]
+        self.assertFalse(evidence["auto_submit_blocked"], "the student's own press was recorded as the widget sending by itself")
+        self.assertNotIn("code_yours", run.steps)
+        self.assertEqual(self.submit_posts(run), 2)
+
+    def test_a_security_code_left_in_the_boxes_is_covered_in_the_final_picture(self):
+        link = fakes.FakeLink(({"status": "found", "code": CODE},))
+        seen = {}
+
+        def where(agent, step):
+            if step == "code_typed":
+                seen["boxes"] = agent._page.evaluate("""() => Array.from(document.querySelectorAll('#security-code input')).map((box) => {
+                  const r = box.getBoundingClientRect();
+                  return {x: r.x + window.scrollX, y: r.y + window.scrollY, w: r.width, h: r.height};
+                })""")
+
+        run = self.handoff("security_code", student="complete_and_submit", link=link, on_progress=where,
+                           timeouts=replace(fakes.HANDOFF_TIMEOUTS, code_read_s=3, security_code_s=3))
+        result = run.result
+        self.assertEqual((result.outcome, result.reasons), ("needs_you", [apply_checks.SECURITY_CODE_NOTE]), "nobody pressed Submit with the code")
+        self.assertEqual(result.evidence["security_code"]["typed"], True)
+        final = [shot for shot in result.screenshots if shot["step"] == "final"]
+        self.assertEqual(len(final), 1, "the run ended with the code on the page and took no final picture to check")
+        self.assertEqual(len(seen["boxes"]), 8)
+        data = base64.b64encode(Path(final[0]["path"]).read_bytes()).decode()
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as driver:
+            browser = driver.chromium.launch(headless=True)
+            try:
+                reader = browser.new_page()
+                reader.set_content("<canvas></canvas>")
+                covered = reader.evaluate("""(args) => new Promise((resolve) => {
+                  const image = new Image();
+                  image.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    canvas.width = image.width; canvas.height = image.height;
+                    const context = canvas.getContext('2d');
+                    context.drawImage(image, 0, 0);
+                    const black = (x, y) => { const d = context.getImageData(Math.round(x), Math.round(y), 1, 1).data; return d[0] === 0 && d[1] === 0 && d[2] === 0 && d[3] === 255; };
+                    resolve(args.boxes.map((b) => [[0.3, 0.3], [0.7, 0.3], [0.5, 0.5], [0.3, 0.7], [0.7, 0.7]].every(([u, v]) => black(b.x + b.w * u, b.y + b.h * v))));
+                  };
+                  image.src = 'data:image/png;base64,' + args.data;
+                })""", {"data": data, "boxes": seen["boxes"]})
+            finally:
+                browser.close()
+        self.assertEqual(covered, [True] * 8, "a box that held the emailed code was not all mask colour in the final picture")
+
+    def test_a_slow_reply_is_not_lost(self):
+        link = fakes.FakeLink(((3.0, {"status": "found", "code": CODE}),))
+        run = self.handoff("security_code", student="press_when_typed", link=link,
+                           timeouts=replace(fakes.HANDOFF_TIMEOUTS, code_reply_s=1, code_read_s=5, security_code_s=8))
+        self.assertEqual((run.result.outcome, run.result.evidence["security_code"]["typed"]), ("submitted", True), run.result.reasons)
+        self.assertEqual((link.asks, link.reasked), ([1], 0), "a second ask was sent while the first had no reply")
+        self.assertEqual(link.results, [(1, True, "")])
+
+    def test_a_bad_code_is_not_typed(self):
+        link = fakes.FakeLink(({"status": "found", "code": "12 45;78"},))
+        done = []
+
+        def student(page, step):
+            if step == "handoff":
+                fakes.complete_and_submit(page, step)
+            elif step == "security_code" and "code_yours" in run_steps and fakes._once(page, "late"):
+                fakes.type_security_code(page)
+                page.wait_for_timeout(2300)
+                press_submit(page)
+
+        run_steps = []
+        run = self.handoff("security_code", hook=student, link=link, on_progress=lambda agent, step: run_steps.append(step))
+        self.assertEqual(run.result.outcome, "submitted", run.result.reasons)
+        self.assertEqual(link.results, [(1, False, "bad_code")])
+        self.assertFalse(run.result.evidence["security_code"]["typed"])
+        self.assertEqual(run.result.evidence["security_code"]["reason"], "bad_code")
+        self.assertIn("code_yours", run.steps)
+        self.assertNotIn("code_typed", run.steps)
+
+    def test_a_code_is_not_typed_over_boxes_that_hold_something(self):
+        link = fakes.FakeLink(({"status": "found", "code": CODE},))
+        steps = []
+
+        def student(page, step):
+            if step == "handoff":
+                fakes.complete_and_submit(page, step)
+            elif step == "security_code" and not steps.count("code_yours") and fakes._once(page, "early"):
+                page.fill("#security-input-0", "x")      # the page or the person got there first
+            elif step == "security_code" and "code_yours" in steps and fakes._once(page, "late"):
+                page.wait_for_timeout(2300)
+                press_submit(page)
+
+        run = self.handoff("security_code", hook=student, link=link, on_progress=lambda agent, step: steps.append(step))
+        self.assertEqual(link.results, [(1, False, "inputs_not_empty")])
+        self.assertEqual(run.result.outcome, "submitted", run.result.reasons)
+
+    def test_a_second_prompt_is_the_students_and_the_code_is_never_typed_twice(self):
+        link = fakes.FakeLink(({"status": "found", "code": CODE},))
+        run = self.handoff("security_code_twice", student="press_when_typed", link=link,
+                           timeouts=replace(fakes.HANDOFF_TIMEOUTS, security_code_s=12, code_read_s=4))
+        self.assertEqual(run.result.outcome, "submitted", run.result.reasons)
+        self.assertEqual(link.asks, [1], "round 2 asked the reader again")
+        self.assertEqual(link.results, [(1, True, "")], "the code was typed more than once")
+        self.assertEqual(run.result.evidence["security_code"]["rounds"], 2)
+        self.assertEqual(self.submit_posts(run), 3)
+        self.assertEqual(run.steps.count("security_code"), 2)
+
+    def test_a_reader_fallback_leaves_the_code_to_the_student(self):
+        link = fakes.FakeLink(({"status": "fallback", "reason": "no_mail"},))
+        steps = []
+
+        def student(page, step):
+            if step == "handoff":
+                fakes.complete_and_submit(page, step)
+            elif step == "security_code" and "code_yours" in steps and fakes._once(page, "late"):
+                fakes.type_security_code(page)
+                page.wait_for_timeout(2300)
+                press_submit(page)
+
+        run = self.handoff("security_code", hook=student, link=link, on_progress=lambda agent, step: steps.append(step))
+        self.assertEqual(run.result.outcome, "submitted", run.result.reasons)
+        evidence = run.result.evidence["security_code"]
+        self.assertEqual((evidence["typed"], evidence["fallback"]), (False, True))
+        self.assertEqual(link.results, [], "the agent reported typing a code it never took")
+        self.assertIn("code_yours", run.steps)
+
+    def test_nobody_types_the_code(self):
+        run = self.handoff("security_code", timeouts=replace(fakes.HANDOFF_TIMEOUTS, code_read_s=1, security_code_s=2))
+        self.assertEqual((run.result.outcome, run.result.after_click, run.result.handed_over), ("needs_you", True, True))
+        self.assertEqual(run.result.reasons, [apply_checks.SECURITY_CODE_NOTE])
+        self.assertEqual(self.submit_posts(run), 1)
+
+    def test_a_press_during_the_final_picture_is_aborted_and_cannot_contradict_the_outcome(self):
+        # The outcome is decided, then the final picture is taken (several round trips) and the window closed. A student who types the
+        # code and presses Submit right then must not get a POST through under an outcome that says Submit was not pressed.
+        pressed = []
+
+        def arm(agent, step):
+            if step == "submitting" and not pressed:
+                real = agent._screenshot
+
+                def shot(name):
+                    if name == "final" and not pressed:
+                        pressed.append(name)
+                        fakes.type_security_code(agent._page)
+                        press_submit(agent._page)
+                    real(name)
+
+                agent._screenshot = shot
+
+        run = self.handoff("security_code", on_progress=arm, timeouts=replace(fakes.HANDOFF_TIMEOUTS, code_read_s=1, security_code_s=2))
+        self.assertEqual(pressed, ["final"], "the press during the final picture was never made")
+        self.assertEqual(self.submit_posts(run), 1, "a code POST was continued during the final picture")
+        self.assertTrue(self.refused(run, rule="closing"), "the press during the picture was not aborted by name")
+        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [apply_checks.SECURITY_CODE_NOTE]))
+
+    def test_a_code_the_boxes_did_not_keep_is_not_reported_as_typed(self):
+        # A widget that clears what it was given on change: the boxes are empty after the app typed, so the student must be told to type.
+        link = fakes.FakeLink(({"status": "found", "code": CODE},))
+
+        def clearing_widget(agent, step):
+            if step == "security_code" and fakes._once(agent._page, "widget"):
+                agent._page.evaluate("""() => document.querySelectorAll('#security-code input').forEach(
+                  (box) => box.addEventListener('change', () => { box.value = ''; }))""")
+
+        run = self.handoff("security_code", link=link, on_progress=clearing_widget,
+                           timeouts=replace(fakes.HANDOFF_TIMEOUTS, code_read_s=3, security_code_s=2))
+        self.assertEqual(link.results, [(1, False, "typing_failed")], "the boxes were empty and the code was reported as typed")
+        evidence = run.result.evidence["security_code"]
+        self.assertEqual((evidence["typed"], evidence["fallback"], evidence["reason"]), (False, True, "typing_failed"))
+        self.assertIn("code_yours", run.steps)
+        self.assertNotIn("code_typed", run.steps)
+
+    def test_a_box_that_will_not_take_its_character_is_the_students_to_finish_not_a_crash(self):
+        link = fakes.FakeLink(({"status": "found", "code": CODE},))
+        typed = []
+
+        def failing_box(agent, step):
+            if step == "security_code" and fakes._once(agent._page, "widget"):
+                real = agent._type
+
+                def flaky(locator, value, key, **kwargs):
+                    if key == "security_code":
+                        typed.append(value)
+                        if len(typed) == 3:
+                            raise TimeoutError("the box went away")
+                    return real(locator, value, key, **kwargs)
+
+                agent._type = flaky
+
+        run = self.handoff("security_code", link=link, on_progress=failing_box,
+                           timeouts=replace(fakes.HANDOFF_TIMEOUTS, code_read_s=3, security_code_s=2))
+        self.assertEqual(link.results, [(1, False, "typing_failed")], "an exception while typing left the parent without the app's word")
+        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [apply_checks.SECURITY_CODE_NOTE]),
+                         "the window was closed mid-application instead of left to the student")
+        self.assertIn("code_yours", run.steps)
+
+    def test_a_renderer_crash_in_the_students_turn_is_not_the_student_closing_the_window(self):
+        def crash(page, step):
+            if step == "handoff" and fakes._once(page, "crash"):
+                try:
+                    page.goto("chrome://crash")
+                except Exception:  # noqa: BLE001 - the page dies under the call
+                    pass
+
+        run = self.handoff(hook=crash)
+        self.assertEqual(run.result.evidence["handoff_end"], "crashed", "a crashed window was recorded as one the student closed")
+        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [HANDOFF_CRASHED]))
+        self.assertSent_nothing(run)
+
+    def test_an_ask_the_agent_stops_waiting_for_is_abandoned_so_a_late_code_is_never_kept(self):
+        # The reader's answer is slower than the window the agent gives it: the student's turn begins, and the ask is dropped.
+        link = fakes.FakeLink(((60.0, {"status": "found", "code": CODE}),))
+        run = self.handoff("security_code", link=link, timeouts=replace(fakes.HANDOFF_TIMEOUTS, code_read_s=1, security_code_s=2))
+        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [apply_checks.SECURITY_CODE_NOTE]))
+        self.assertEqual(link.asks, [1])
+        self.assertEqual(link.abandoned, [1], "the agent stopped waiting for its ask and did not say so")
+        self.assertEqual(link.results, [], "nothing was typed")
+        self.assertIn("code_yours", run.steps)
+
+    def test_an_ask_answered_in_time_is_not_abandoned_afterwards(self):
+        link = fakes.FakeLink(({"status": "found", "code": CODE},))
+        run = self.handoff("security_code", student="press_when_typed", link=link)
+        self.assertEqual(run.result.outcome, "submitted", run.result.reasons)
+        self.assertEqual(link.abandoned, [])
+
+    def test_a_student_who_presses_with_an_ask_outstanding_abandons_it(self):
+        link = fakes.FakeLink(((60.0, {"status": "found", "code": CODE}),))
+        run = self.handoff("security_code", student="type_code_and_submit", link=link,
+                           timeouts=replace(fakes.HANDOFF_TIMEOUTS, code_read_s=8, security_code_s=8))
+        self.assertEqual(run.result.outcome, "submitted", run.result.reasons)
+        self.assertEqual(link.abandoned, [1], "the code POST was the student's, and the ask for the emailed code was left outstanding")
+        self.assertEqual(link.results, [])
+
+    def test_the_parent_gone_after_hand_over_keeps_the_window_bounded(self):
+        link = fakes.FakeLink(({"status": "waiting"},))
+        started = time.monotonic()
+
+        def student(page, step):
+            if step == "handoff":
+                fakes.complete_and_submit(page, step)
+            elif step == "security_code":
+                link.gone = True
+
+        def beat(agent):
+            if link.gone:
+                raise OSError("the pipe is closed")
+
+        run = self.handoff("security_code", hook=student, link=link, beat=beat, timeouts=replace(fakes.HANDOFF_TIMEOUTS, code_read_s=2, security_code_s=3))
+        self.assertLess(time.monotonic() - started, 40)
+        self.assertEqual((run.result.outcome, run.result.after_click), ("needs_you", True), run.result.reasons)
+        self.assertEqual(run.result.reasons, [apply_checks.SECURITY_CODE_NOTE], "an exception was reported as the outcome")
+        self.assertTrue(run.result.evidence["parent_gone"])
+        self.assertLessEqual(len(link.asks), 1, "the agent asked for a code after the parent was gone")
+        self.assertIn("code_yours", run.steps)
+
+    def test_sensitive_answers_and_an_exact_statement_are_filled_before_the_turn(self):
+        run = self.handoff(student="do_nothing", timeouts=replace(fakes.HANDOFF_TIMEOUTS, handoff_s=1))
+        self.assertEqual(run.result.reasons, [HANDOFF_NOT_SUBMITTED])
+        ready = run.link.ready_messages[0]
+        entries = {entry["key"]: entry for entry in ready["plan"]}
+        for key in ("question_4000000105", "question_4000000106", "gender", "question_4000000109", "question_4000000110"):
+            self.assertEqual((entries[key]["disposition"], entries[key]["source"]["kind"]), ("fill", "sensitive"), key)
+        left = {item["key"]: item for item in ready["left"]}
+        self.assertFalse(set(left) & {"question_4000000105", "question_4000000109", "question_4000000110", "gender"})
+        # The consent statement is on the page only: the student reads it and ticks it (D9 B), so it is theirs.
+        self.assertIn("gdpr_consent_given", left)
+        self.assertEqual(entries["gdpr_consent_given"]["disposition"], "left_for_you")
+        shot = ready["screenshot"]
+        self.assertTrue({"gender", "hispanic_ethnicity", "veteran_status", "disability_status", "question_4000000109", "question_4000000110"} <= set(shot["masked"]), shot["masked"])
+
+    def test_a_statement_that_points_to_other_documents_is_left_for_the_student(self):
+        sources = sources_without(TEAM)
+        entries = [dict(entry, links=("https://other.example.test/terms",)) if entry["id"] == "store-question_4000000109" else entry
+                   for entry in sources.sensitive_lookup.entries]
+        sources = replace(sources, sensitive_lookup=Store(*entries))
+        run = self.handoff(student="do_nothing", sources=sources, timeouts=replace(fakes.HANDOFF_TIMEOUTS, handoff_s=1))
+        ready = run.link.ready_messages[0]
+        self.assertIn("question_4000000109", {item["key"] for item in ready["left"]})
+        self.assertEqual({entry["key"]: entry["disposition"] for entry in ready["plan"]}["question_4000000109"], "left_for_you")
+
+    def test_a_field_that_does_not_take_is_left_for_the_student(self):
+        listing = fixture_json("schema_new.json")
+        team = next(field for block in listing["questions"] for field in block["fields"] if field["name"] == "question_4000000103")
+        team["values"].append({"label": "Systems", "value": 4})
+        sources = fakes.full_sources()
+        sources.answers[:] = [row for row in sources.answers if row["question"] != TEAM]
+        sources.answers.append({**sources.answers[0], "id": "a-team", "question": TEAM, "answer": "Systems"})
+        run = self.handoff(schema=apply_policy.parse_schema(listing), sources=sources)
+        self.assertEqual(run.result.outcome, "submitted", run.result.reasons)
+        left = {item["key"]: item for item in run.link.ready_messages[0]["left"]}
+        self.assertIn("question_4000000103", left)
+        self.assertEqual(left["question_4000000103"]["reason"], apply_agent.LEFT_FIELD.format(question=TEAM))
+        self.assertEqual({entry["key"]: entry["disposition"] for entry in run.result.plan}["question_4000000103"], "left_for_you")
+
+    def test_a_submit_during_the_fill_stops_the_run(self):
+        run = self.handoff("request_submit_during_fill", sources=fakes.full_sources())
+        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [HANDOFF_EARLY]))
+        self.assertSent_nothing(run)
+        self.assertEqual(run.result.evidence["handoff_end"], "early")
+        self.assertEqual(run.link.ready_messages, [])
+
+    def test_a_press_after_the_check_is_caught(self):
+        def press(agent, step):
+            if step == "check":
+                # The consent box is the student's to tick (its statement is on the form only); with it ticked the page's own check passes.
+                agent._page.evaluate("() => { document.getElementById('gdpr_consent_given').checked = true; document.getElementById('application-form').requestSubmit(); }")
+
+        run = self.handoff(sources=fakes.full_sources(), on_progress=press)
+        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [HANDOFF_EARLY]))
+        self.assertSent_nothing(run)
+        self.assertEqual(run.link.ready_messages, [])
+
+    def test_a_run_that_stopped_before_it_filled_anything_never_says_a_field_was_filled(self):
+        for scenario in ("loader_missing", "s3_upload", "request_submit_during_fill"):
+            with self.subTest(scenario=scenario):
+                run = self.handoff(scenario, student="do_nothing", sources=fakes.full_sources())
+                self.assertEqual(run.result.outcome, "needs_you")
+                self.assertTrue(run.result.plan, "the run returned no plan at all")
+                self.assertEqual([entry["key"] for entry in run.result.plan if entry["disposition"] == "fill"], [],
+                                 "a field the run never touched is described as filled")
+                untouched = [entry for entry in run.result.plan if entry.get("note") == apply_agent.NOT_FILLED]
+                typed = [entry for entry in run.result.plan if entry.get("note") == apply_agent.TYPED_NOT_CHECKED]
+                self.assertTrue(untouched, "a field the app would have filled does not say the run stopped first")
+                self.assertEqual([entry["key"] for entry in run.result.plan if entry["disposition"] == "fill"], [])
+                if scenario == "request_submit_during_fill":
+                    # The submit fires 50 ms after the first input event: at least one field had been typed by then, and "nothing was put
+                    # in it" would be false of it (the page's own scripts have seen what was typed).
+                    self.assertTrue(typed, "a field typed before the stop is described as untouched")
+                    self.assertTrue(all(entry["disposition"] == "blank" for entry in typed))
+                else:
+                    self.assertEqual(typed, [], "a run that stopped before any input claims a field was typed")
+                self.assertSent_nothing(run)
+
+    def test_the_fields_a_run_did_fill_and_read_back_are_the_only_ones_called_filled(self):
+        run = self.handoff(sources=fakes.full_sources())
+        by_key = {entry["key"]: entry for entry in run.result.plan}
+        self.assertEqual(by_key["first_name"]["disposition"], "fill")
+        self.assertEqual(by_key["email"]["disposition"], "fill")
+        self.assertEqual({entry["key"]: entry["disposition"] for entry in run.link.ready_messages[0]["plan"]},
+                         {key: entry["disposition"] for key, entry in by_key.items()}, "the list before the press and the result disagree")
+
+    def test_no_loader_or_upload_on_attach_stops_before_any_input(self):
+        for scenario, sentence in (("loader_missing", HANDOFF_NO_LOADER), ("loader_other_host", HANDOFF_NO_LOADER), ("s3_upload", HANDOFF_S3)):
+            with self.subTest(scenario=scenario):
+                run = self.handoff(scenario, student="do_nothing")
+                self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [sentence]))
+                self.assertEqual(run.steps, ["open"], "the form was read or filled")
+                self.assertSent_nothing(run)
+                self.assertEqual(run.link.ready_messages, [])
+
+    def test_an_upload_on_attach_without_the_marker_stops_the_run(self):
+        run = self.handoff("upload_on_attach_unmarked")
+        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [HANDOFF_S3]))
+        self.assertEqual(run.result.evidence["upload_refused"], {"host": "example-robotics-uploads.s3.amazonaws.com", "rule": "s3_upload"})
+        self.assertEqual(run.link.ready_messages, [])
+        self.assertSent_nothing(run)
+
+    def test_an_upload_during_the_turn_ends_it(self):
+        run = self.handoff("upload_cover_letter", student="attach_and_upload")
+        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [HANDOFF_UPLOAD]))
+        self.assertEqual(run.result.evidence["handoff_end"], "upload")
+        self.assertEqual(run.calls.count, 0)
+        self.assertSent_nothing(run)
+        self.assertEqual(len(run.link.ready_messages), 1)
+
+    def test_a_file_posted_to_a_form_address_during_the_turn_is_an_upload_not_an_unknown_address(self):
+        def upload(page, step):
+            if step == "handoff" and fakes._once(page, "parse"):
+                page.evaluate("""() => { const form = new FormData(); form.append('resume', new File(['%PDF-1.4'], 'cv.pdf', {type: 'application/pdf'}));
+                  fetch('https://boards-api.greenhouse.io/v1/parse_resume', {method: 'POST', body: form}).catch(() => {}); }""")
+                page.wait_for_timeout(800)
+
+        run = self.handoff(hook=upload)
+        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [HANDOFF_UPLOAD]))
+        self.assertEqual(run.result.evidence["handoff_end"], "upload")
+        self.assertSent_nothing(run)
+
+    def test_a_422_after_the_press_names_the_field_and_never_what_was_typed(self):
+        run = self.handoff("error_echoes_input")
+        self.assertEqual((run.result.outcome, run.result.after_click, run.result.handed_over), ("failed", True, True))
+        self.assertEqual(run.result.reasons, ['Greenhouse refused the form (HTTP 422). Greenhouse marked "Email" as wrong'])
+        self.assertNotIn("sam.rivera", json.dumps(run.result.evidence) + json.dumps(run.result.reasons) + json.dumps(run.result.requests))
+
+    def test_a_server_error_after_the_press_is_unconfirmed(self):
+        run = self.handoff("server_500")
+        self.assertEqual((run.result.outcome, run.result.after_click, run.result.handed_over), ("unconfirmed", True, True))
+        self.assertEqual(run.result.reasons, [apply_checks.UNCONFIRMED_NOTE])
+        self.assertFalse(run.result.confirmation_seen)
+
+    def test_the_page_closing_right_after_the_press_is_unconfirmed(self):
+        run = self.handoff(student="press_and_close")
+        self.assertEqual((run.result.outcome, run.result.after_click, run.result.handed_over), ("unconfirmed", True, True))
+        self.assertNotEqual(run.result.outcome, "failed")
+        self.assertEqual(run.result.reasons, [apply_checks.UNCONFIRMED_NOTE])
+
+    def test_a_cover_letter_is_left_for_the_student(self):
+        listing = fixture_json("schema_new.json")
+        block = next(block for block in listing["questions"] if block["label"] == "Cover Letter")
+        block["required"] = True
+        sources = replace(sources_without(TEAM), cover_letter=helpers_apply.LETTER_OK)
+        run = self.handoff(student="do_nothing", schema=apply_policy.parse_schema(listing), sources=sources, timeouts=replace(fakes.HANDOFF_TIMEOUTS, handoff_s=1))
+        ready = run.link.ready_messages[0]
+        for entries in (ready["plan"], run.result.plan):
+            letter = next(entry for entry in entries if entry["key"] == "cover_letter")
+            self.assertEqual((letter["disposition"], letter["problem"]), ("left_for_you", LEFT_COVER_LETTER))
+        self.assertIn(LEFT_COVER_LETTER, [item["reason"] for item in ready["left"] if item["key"] == "cover_letter"])
+
+    def test_a_hidden_field_the_app_would_have_filled_stops_before_any_input(self):
+        listing = fixture_json("schema_new.json")
+        listing["questions"].append({"description": None, "label": "Leave this empty", "required": False, "fields": [{"name": "website_url", "type": "input_text", "values": []}]})
+        sources = fakes.full_sources(extra_answers=(answer("Leave this empty", "a bot would fill this in"),))
+        run = self.handoff(student="do_nothing", schema=apply_policy.parse_schema(listing), sources=sources)
+        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [HANDOFF_HIDDEN.format(question="Leave this empty")]))
+        self.assertNotIn("fill", run.steps, "a field was typed into before the hidden one was found")
+        self.assertEqual(run.link.ready_messages, [])
+        self.assertSent_nothing(run)
+
+    def test_a_join_problem_leaves_the_field_for_the_student_with_the_join_s_own_words(self):
+        run = self.handoff(student="do_nothing", label_checkboxes=False, timeouts=replace(fakes.HANDOFF_TIMEOUTS, handoff_s=1))
+        ready = run.link.ready_messages[0]
+        left = {item["key"]: item for item in ready["left"]}
+        self.assertIn("question_4000000109", left)
+        self.assertIn("The form's wording differs", left["question_4000000109"]["reason"])
+        self.assertEqual({entry["key"]: entry["disposition"] for entry in ready["plan"]}["question_4000000109"], "left_for_you")
+
+    def test_a_late_fill_shortens_the_turn_and_never_the_time_after_the_press(self):
+        t = fakes.HANDOFF_TIMEOUTS
+        link = fakes.FakeLink()
+        link.ends_at = time.monotonic() + t.after_hand_over_s + 3 * t.outcome_s + 9    # the runner's cap, read from the link
+        started = time.monotonic()
+        run = self.handoff(student="do_nothing", link=link)
+        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [HANDOFF_NOT_SUBMITTED]))
+        self.assertEqual(run.result.evidence["handoff_end"], "timeout")
+        self.assertLess(time.monotonic() - started, 9 + 6, "the turn ran to handoff_s instead of the time the cap left")
+
+    def test_without_a_link_the_turn_and_the_code_still_run_and_the_student_types_the_code(self):
+        run = self.handoff("security_code", student="type_code_and_submit", link=None)
+        self.assertEqual(run.result.outcome, "submitted", run.result.reasons)
+        self.assertEqual((run.result.evidence["security_code"]["fallback"], run.result.evidence["security_code"]["typed"]), (True, False))
+
+    def test_a_dead_pipe_is_never_an_exception_on_the_heartbeat_path(self):
+        def beat(agent):
+            raise OSError("the pipe is closed")
+
+        run = self.handoff(student="do_nothing", beat=beat, timeouts=replace(fakes.HANDOFF_TIMEOUTS, handoff_s=1))
+        self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [HANDOFF_NOT_SUBMITTED]))
+        self.assertTrue(run.result.evidence["parent_gone"])
+
+    def test_a_challenge_after_the_press_is_waited_on_and_then_left_to_the_student(self):
+        started = time.monotonic()
+        run = self.handoff("challenge", timeouts=replace(fakes.HANDOFF_TIMEOUTS, code_read_s=1, security_code_s=2))
+        self.assertEqual((run.result.outcome, run.result.after_click, run.result.handed_over), ("needs_you", True, True))
+        self.assertEqual(run.result.reasons, [apply_checks.CHALLENGE_NOTE])
+        self.assertIn("challenge", run.steps)
+        self.assertTrue(run.result.evidence["challenge"])
+        self.assertGreaterEqual(time.monotonic() - started, 3, "the app did not wait for the student to finish the check")
+
+    def test_a_recaptcha_frame_that_is_loaded_but_invisible_is_not_a_challenge(self):
+        run = self.handoff("bframe_hidden")
+        self.assertEqual((run.result.outcome, run.result.after_click), ("failed", True))
+        self.assertTrue(run.result.reasons[0].startswith("Greenhouse refused the form (HTTP 422)"), run.result.reasons)
+        self.assertNotIn("challenge", run.steps)
+
+    def test_a_rehearsal_reports_the_optional_fields_the_page_set_itself(self):
+        sources = fakes.full_sources()
+        agent = fakes.RecordingAgent(fake=FakeGreenhouse("confirm"), mode="rehearse", adapter=GreenhouseAdapter(), timeouts=fakes.TEST_TIMEOUTS,
+                                     lookup_endpoints=fakes.FIXTURE_LOOKUP)
+        with agent:
+            result = agent.run(fakes.draft_plan(sources), page_url=JOB_URL, schema=fakes.fixture_schema(), files={"resume": fakes.resume_payload()},
+                               replan=fakes.fixture_replan(sources))
+        self.assertEqual(result.outcome, "rehearsed")
+        self.assertEqual(sorted(result.evidence["page_defaults"]), ["question_4000000108", "question_4000000113"])
+
+
+@requires_chromium
+class HandoffProcessTests(ApplyCase):
+    """A handoff in a spawned child, supervised the way the runner does it, with the hand-over committed in a real claim."""
+
+    def setUp(self):
+        super().setUp()
+        self.pictures = self.root / "pictures"
+        self.record = self.root / "record.json"
+        self.token = self.start("op-handoff", "handoff", run_id="run-" + "c" * 32)["token"]
+
+    def supervise(self, factory, *, timeouts=None, deadline_s=120, hand_over=None, sources=None):
+        sources = sources or sources_without(TEAM)
+        job = AgentJob(
+            run_id="run-" + "c" * 32, mode="handoff", page_url=JOB_URL, plan=fakes.draft_plan(sources, mode="handoff"), schema=fakes.fixture_schema(),
+            files={"resume": fakes.resume_payload()}, lookup=None, screenshot_dir=str(self.pictures), timeouts=timeouts or ApplyTimeouts(),
+        )
+        log = SimpleNamespace(calls=0, committed_at=None, state="", open_transaction=None, ready=[], progress=[])
+
+        def commit(deadline=None):
+            log.calls += 1
+            granted = apply_runs.hand_over(self.conn, self.token, user_id=USER, deadline=deadline)
+            if granted:
+                log.committed_at = time.monotonic()
+                # Through another connection: it sees only what was committed, which self.conn's own open write would hide.
+                log.state = self.committed_claim_row(self.token)["state"]
+                log.open_transaction = self.conn.in_transaction
+            return granted
+
+        handlers = apply_runner.SupervisorHandlers(
+            progress=lambda step, text: log.progress.append(step), replan=fakes.fixture_replan(sources, mode="handoff", label_checkboxes=True),
+            hand_over=hand_over or commit, handoff_ready=log.ready.append,
+        )
+        done = apply_runner.supervise(factory, job, deadline_s=deadline_s, handlers=handlers, cancel=threading.Event(), poll_s=0.1)
+        return done, log
+
+    def factory(self, student="complete_and_submit", scenario="confirm"):
+        return fakes.BrowserAgentFactory(scenario, record_path=str(self.record), mode="handoff", student=student)
+
+    def seen(self):
+        return json.loads(self.record.read_text(encoding="utf-8"))
+
+    def test_the_claim_is_clicking_before_the_post_reaches_greenhouse(self):
+        done, log = self.supervise(self.factory())
+        self.assertEqual((done.stop, done.error), ("", ""))
+        self.assertEqual(done.result.outcome, "submitted", done.result.reasons)
+        self.assertEqual((log.calls, log.state, log.open_transaction), (1, "clicking", False), "the parent was not asked once, or the claim was not committed as clicking")
+        seen = self.seen()
+        self.assertEqual(len(seen["post_times"]), 1)
+        self.assertLess(log.committed_at, seen["post_times"][0], "the POST reached Greenhouse before the hand-over was committed")
+        self.assertEqual((seen["forbidden_clicks"], len(log.ready)), (0, 1))
+        self.assertTrue(done.closed_confirmed)
+
+    def test_a_stop_pressed_before_the_press_means_the_post_never_reaches_greenhouse(self):
+        self.assertTrue(apply_runs.request_cancel(self.conn, self.token, user_id=USER))
+        done, log = self.supervise(self.factory())
+        self.assertEqual(done.result.outcome, "needs_you")
+        self.assertEqual(done.result.reasons, [HANDOFF_UNRECORDED])
+        self.assertEqual((self.seen()["post_times"], self.seen()["non_get"]), ([], []))
+        row = self.claim_row(self.token)
+        self.assertEqual((row["state"], row["handed_over_at"]), ("claimed", None))
+
+    def test_a_hand_over_that_would_be_committed_after_the_child_gave_up_is_refused(self):
+        # The child waits reply_s for the answer; the parent keeps 2 s of that for the reply itself. With 1.5 s there is no time at all.
+        done, log = self.supervise(self.factory(), timeouts=replace(fakes.HANDOFF_TIMEOUTS, reply_s=1.5))
+        self.assertEqual(done.result.reasons, [HANDOFF_UNRECORDED])
+        self.assertEqual((self.seen()["post_times"], log.state), ([], ""))
+        self.assertEqual(self.claim_row(self.token)["state"], "claimed", "a hand-over committed that the child could not wait for")
+
+    def test_a_driver_that_dies_in_the_turn_leaves_no_browser_behind(self):
+        done, log = self.supervise(self.factory(student="die_in_the_turn"))
+        self.assertEqual(done.stop, apply_runner.STOP_CHILD_DIED)
+        self.assertIsNone(done.result)
+        self.assertEqual(log.calls, 0)
+        self.assertTrue(done.pids, "no process was seen below the driver: Chromium could not be found by pid")
+        for pid in done.pids:
+            self.assertFalse(apply_runner.process_alive(pid), f"process {pid} of the run is still alive")
+        self.assertTrue(done.closed_confirmed)
+        self.assertEqual(self.claim_row(self.token)["state"], "claimed")
+
+    def test_a_browser_that_outlived_its_killed_driver_is_found_and_killed_by_pid(self):
+        # The driver is killed and Chromium's helpers are frozen where they are, so some outlive it: the parent's kill by pid is
+        # what ends them (a driver that merely dies takes Chromium down with it, and proves nothing about that kill).
+        before = {}
+        real = apply_runner._kill_survivors
+
+        def look(pids, **kwargs):
+            before["alive"] = [pid for pid in pids if apply_runner.process_alive(pid)]
+            return real(pids, **kwargs)
+
+        with mock.patch.object(apply_runner, "_kill_survivors", look):
+            done, log = self.supervise(self.factory(student="kill_the_driver_then_die"))
+        self.assertEqual((done.stop, log.calls), (apply_runner.STOP_CHILD_DIED, 0))
+        self.assertTrue(before.get("alive"), "every browser process was already gone when the parent began to kill: nothing proves the kill by pid")
+        for pid in done.pids:
+            self.assertFalse(apply_runner.process_alive(pid), f"process {pid} of the run is still alive")
+        self.assertTrue(done.closed_confirmed)
+        self.assertEqual(self.claim_row(self.token)["state"], "claimed")
+
+    def test_a_process_that_cannot_be_killed_makes_the_close_unconfirmed(self):
+        with mock.patch.object(apply_runner, "VERIFY_S", 1.0), mock.patch.object(apply_runner, "process_alive", lambda pid: True), \
+                mock.patch.object(apply_runner, "_kill_pid", lambda pid: None):
+            done, _log = self.supervise(self.factory(student="die_in_the_turn"))
+        self.assertFalse(done.closed_confirmed)
+        self.assertTrue(done.pids)
+        # Clean up what the patch pretended not to kill: only a process that is still the one first seen at its pid (a freed pid may belong
+        # to a stranger by now), and never by a bare pid.
+        for pid in done.pids:
+            kill_if_same_process(pid, done.started.get(pid))   # every process of the run is in done.pids, so no tree walk is needed
 
 
 @requires_chromium

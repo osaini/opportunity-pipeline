@@ -1000,7 +1000,7 @@ class TruthTableDatabaseRows(PolicyCase):
         result = self.run_check()
         self.assertEqual((result["status"], result["problems"]), ("ready", []))
         self.assertEqual(result["eligibility"]["rehearse"]["allowed"], True)
-        self.assertEqual(result["eligibility"]["handoff"], {"allowed": True, "needs_tick": False, "reason": ""})
+        self.assertEqual(result["eligibility"]["handoff"], {"allowed": True, "needs_tick": False, "reason": "", "ticks": []})
         self.assertEqual(result["eligibility"]["submit"], {"allowed": True, "needs_tick": False, "reason": ""})
         self.assertEqual(result["counts"]["filled"], 6)
 

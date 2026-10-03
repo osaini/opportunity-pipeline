@@ -27,6 +27,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, NamedTuple, Sequence
 from urllib.parse import parse_qs, quote, quote_plus, unquote, unquote_plus, urlsplit
@@ -36,6 +37,12 @@ from .greenhouse import BOARD_HOSTS, GREENHOUSE_DOMAIN, SUBMIT_HOST
 # Hosts and endpoints
 # ---------------------------------------------------------------------------------------------
 
+# The hosts a form of the job board could post an application to. During the student's turn an aborted non-GET to one of them is
+# the form's own submission going somewhere the app did not agree to (student_submit_elsewhere); telemetry is not.
+FORM_POST_HOSTS = frozenset({"job-boards.greenhouse.io", "boards.greenhouse.io", "boards-api.greenhouse.io"})
+# Greenhouse's page posts telemetry (Snowplow) here from a form page, on every keystroke or so (live recon, M5a). It is refused for
+# every method in submit and handoff, silently, and never ends a run. Pinned from the recon; extended only from recon evidence.
+TELEMETRY_HOSTS = frozenset({"c.spl.greenhouse.io"})
 STATIC_RESOURCE_TYPES = frozenset({"image", "font", "stylesheet", "script", "media"})
 # The hosts Greenhouse serves its own static files from (confirmed 2026-10-03, pinned in tests/fixtures/apply/greenhouse/endpoints.json):
 # the board's scripts, styles and fonts, and the logos and banners (recruiting.cdn and its numbered shards). Not every host under
@@ -193,6 +200,13 @@ class RouteState:
     submit_posts_passed: int = 0
     security_code_prompts: int = 0
     code_posts_passed: int = 0
+    # A time.monotonic() instant. The agent sets it to infinity while it types a security code into the page and to now + 2 s
+    # afterwards, so a code widget that sends by itself as the last character arrives cannot send the application (D1 B).
+    code_typing_until: float = 0.0
+
+    @property
+    def code_typing(self) -> bool:
+        return time.monotonic() < self.code_typing_until
 
     def record(self, decision: "Allow") -> None:
         """Count a request the handler let through, so the one-submit-POST rule sees it."""
@@ -405,8 +419,13 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
     )
     # The value guard. Exempt: the submit POST itself, a lookup GET for the field
     # being typed (which may carry that field's own text and nothing else), and
-    # GETs once the submit POST has passed.
-    if not is_submit_post and not (after_hand_over and method == "GET" and state.submit_posts_passed):
+    # GETs once the submit POST has passed. In a handoff that last exemption covers the board's own hosts only: the form can
+    # stay on the page for the rest of the run (a security code, a challenge), and what a script there sends to any other host
+    # in a GET is checked as before.
+    read_after_press = (
+        after_hand_over and method == "GET" and bool(state.submit_posts_passed) and (mode != "handoff" or host in BOARD_HOSTS)
+    )
+    if not is_submit_post and not read_after_press:
         leaked = leaked_field(request, state.values, exclude=state.typing_key if is_lookup else "")
         if leaked:
             return abort("value_guard", "A request carrying a filled-in answer was refused", leaked)
@@ -427,6 +446,13 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
         return abort("after_first_input", "After the first input, only the typed field's lookup and static assets may load")
 
     # submit and handoff
+    if host in TELEMETRY_HOSTS:
+        # Every method: a GET beacon can carry a value as well as a POST, and none of it is the application. Refused and recorded.
+        return abort("telemetry", "The page's own usage reporting was refused")
+    if is_submit_post and state.code_typing:
+        # The app is typing a security code, or just did: a widget that sends by itself on the last character must not send the
+        # application (D1 B). Never counted, so the student's own press of Submit keeps the prompt's allowance.
+        return abort("code_post_while_typing", "A submit request made while the app typed the security code was refused")
     if method in SAFE_METHODS:
         return Allow()
     if is_submit_post:
@@ -444,6 +470,51 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
     if phase == PHASE_AFTER_HAND_OVER:
         return abort("other_non_get", "A request to an address the app does not recognise was refused")
     return abort("non_get_before_hand_over", "Nothing that could carry the application may leave before hand-over")
+
+
+def _content_type(request: RouteRequest) -> str:
+    for name, value in request.headers.items():
+        if str(name).lower() == "content-type":
+            return str(value).lower()
+    return ""
+
+
+def is_upload(request: RouteRequest) -> bool:
+    """A non-GET that could carry a file: to an S3 host (``*.amazonaws.com``), with an octet-stream body, or a multipart body
+    that holds a file part (a part with a file name), or that cannot be read.
+
+    A form's own submission is multipart too, but a form with no file attached carries only empty file parts, so a multipart
+    body with no named file is the form posting its fields, which is not an upload. During the fill the agent also treats any
+    aborted non-GET to FORM_POST_HOSTS as fatal; during the student's turn such a POST without a file is "elsewhere".
+    """
+    if request.method.upper() in SAFE_METHODS:
+        return False
+    if _host(request.url).endswith(".amazonaws.com"):
+        return True
+    kind = _content_type(request)
+    if kind.startswith("application/octet-stream"):
+        return True
+    if kind.startswith("multipart/form-data"):
+        body = request.body
+        if body is None:
+            return True
+        text = bytes(body).decode("utf-8", errors="replace") if isinstance(body, (bytes, bytearray)) else str(body)
+        return bool(re.search(r'filename="[^"]', text))
+    return False
+
+
+def student_submit_elsewhere(request: RouteRequest, state: RouteState) -> bool:
+    """Handoff, the student's turn: an aborted non-GET that could be the form's own submission to another address (6.13 step 3).
+
+    Telemetry (TELEMETRY_HOSTS, and any other host) is not: it is refused and recorded, silently. True for a non-GET that is not a
+    CAPTCHA-endpoint request and either goes to FORM_POST_HOSTS or is a form navigation (resource type "document").
+    """
+    if request.method.upper() in SAFE_METHODS:
+        return False
+    host, path = _host(request.url), urlsplit(request.url).path
+    if host in TELEMETRY_HOSTS or _endpoint_matches(state.captcha_endpoints, host, path):
+        return False
+    return host in FORM_POST_HOSTS or request.resource_type == "document"
 
 
 # ---------------------------------------------------------------------------------------------
@@ -484,7 +555,7 @@ class Observation:
     board_token: str = ""
     job_id: str = ""
     navigated: bool = False            # any main-frame navigation after hand-over
-    first_field_error: str = ""
+    first_field_error: str = ""        # the QUESTION of the first field the form marks as wrong; never text from the page's error
 
 
 @dataclass(frozen=True)
@@ -501,13 +572,33 @@ class Outcome:
     settled: bool = True
 
 
+def new_code_prompt(obs: Observation) -> bool:
+    """After a security-code POST went out: whether Greenhouse is asking for a code again, so a new prompt may start.
+
+    True only on evidence the code was refused: a 428, or any other 4xx with the code boxes still showing. False while that POST
+    has no answer yet (the boxes stay on the page until it comes), when it was accepted (the confirmation page is on its way),
+    and for a 5xx: an edge proxy may answer 502, 503 or 504 after the origin took the code, so that POST may have been received
+    and a second one would send the application twice. One answer is never counted as two prompts.
+    """
+    submits = [seen for seen in obs.requests if seen.passed and _is_submit_post(seen, obs)]
+    if len(submits) < 2:
+        return False                    # the first POST's own 428 is the prompt that is already being answered
+    status = submits[-1].status
+    if status is None or not 400 <= status < 500:
+        return False
+    return status == 428 or obs.security_code_visible
+
+
 UNCONFIRMED_NOTE = "Your application may have been sent, but Greenhouse did not show its confirmation page. Look for its email"
 UNRECOGNIZED_ADDRESS_NOTE = (
     "The form tried to send to an address the app doesn't recognize, so the app stopped it. "
     "Nothing was sent. Apply from the posting instead"
 )
-SECURITY_CODE_NOTE = "Greenhouse asked for the emailed security code, and it was not entered. Look for Greenhouse's email"
-CHALLENGE_NOTE = "Greenhouse showed a challenge the app does not touch. Finish it in the window, or look for Greenhouse's email"
+SECURITY_CODE_NOTE = ("Greenhouse asked for the emailed security code, and Submit application was not pressed after it. "
+                      "Look for Greenhouse's email")
+CODE_REFUSED_NOTE = ("Greenhouse did not accept the security code, and Submit application was not pressed again after that. "
+                     "Look for Greenhouse's email")
+CHALLENGE_NOTE = "Greenhouse showed a check that wasn't finished. Look for Greenhouse's email"
 
 
 def _is_submit_post(seen: SeenRequest, obs: Observation) -> bool:
@@ -555,7 +646,19 @@ def decide_outcome(obs: Observation, *, code_wait_over: bool = False) -> Outcome
 
     # 2. The emailed security code: wait for the student, then apply the table again.
     if obs.security_code_visible or last_status == 428:
+        code_posted = len(submits) > 1
+        if code_posted and last_status is not None and last_status >= 500:
+            # An edge may answer 502, 503 or 504 after the origin took the code: the application may have been sent, so this is
+            # row 6 whether or not the boxes are still on the page, and no second POST is wanted. It does not wait for the clock.
+            return Outcome("unconfirmed", 1, UNCONFIRMED_NOTE, evidence=evidence, settled=False)
         if code_wait_over:
+            if code_posted and (last_status is None or 200 <= last_status < 400):
+                # A code POST went out and its answer never came, or was accepted without the confirmation page: the application
+                # may have been sent, so the note that says Submit was not pressed after the code would be untrue.
+                return Outcome("unconfirmed", 1, UNCONFIRMED_NOTE, evidence=evidence, settled=False)
+            if code_posted:
+                # The code POST was answered 428 or 4xx: Greenhouse refused the code. Submit was pressed; it was not pressed again.
+                return Outcome("needs_you", 1, CODE_REFUSED_NOTE, detail={"security_code": True}, evidence=evidence)
             return Outcome("needs_you", 1, SECURITY_CODE_NOTE, detail={"security_code": True}, evidence=evidence)
         return Outcome("waiting", 1, detail={"waiting": "security_code"}, evidence=evidence)
 
@@ -567,7 +670,7 @@ def decide_outcome(obs: Observation, *, code_wait_over: bool = False) -> Outcome
     if last_status is not None and 400 <= last_status < 500 and obs.form_present:
         note = f"Greenhouse refused the form (HTTP {last_status})"
         if obs.first_field_error:
-            note += f": {obs.first_field_error}"
+            note += f'. Greenhouse marked "{obs.first_field_error}" as wrong'
         return Outcome("failed", 1, note, evidence=evidence)
 
     # 5. No submit POST passed the route and nothing navigated: nothing that could carry the application left.
@@ -577,7 +680,7 @@ def decide_outcome(obs: Observation, *, code_wait_over: bool = False) -> Outcome
         else:
             note = "The form did not send, so nothing was sent"
             if obs.first_field_error:
-                note += f". The form says: {obs.first_field_error}"
+                note += f'. Greenhouse marked "{obs.first_field_error}" as wrong'
         return Outcome("failed", 0, note, evidence=evidence, settled=False)
 
     # 6. Anything else: the POST answered 5xx or never answered, a navigation without a POST, a "thank you" with the form still there.
