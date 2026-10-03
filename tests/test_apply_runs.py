@@ -979,7 +979,9 @@ class WorkerStepTests(ApplyCase):
             (dict(state="released", mode="handoff", handed_over_at=old, after_click=1), False),
             (dict(state="needs_you", mode="handoff", after_click=0), False),
             (dict(state="submitted", mode="handoff", handed_over_at=recent, verification="awaiting_email", submitted_at=recent, stage_recorded=1), True),
-            (dict(state="submitted", mode="handoff", handed_over_at=old, verification="awaiting_email", submitted_at=old, stage_recorded=1), False),
+            # Still awaiting its email after 14 days: the worker comes once more so the watch can end it as not watched.
+            (dict(state="submitted", mode="handoff", handed_over_at=old, verification="awaiting_email", submitted_at=old, stage_recorded=1), True),
+            (dict(state="submitted", mode="handoff", handed_over_at=old, verification="no_email_24h", submitted_at=old, stage_recorded=1), False),
             (dict(state="submitted", mode="one_click", handed_over_at=old, submitted_at=old, stage_policy="record", stage_recorded=0), True),
             (dict(state="submitted", mode="handoff", handed_over_at=old, submitted_at=old, stage_policy="ask", stage_recorded=0), False),
         ]

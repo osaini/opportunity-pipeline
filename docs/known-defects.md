@@ -19,14 +19,14 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
 | Apply for me | 0 | 3 | 0 | 3 |
-| Mail, Gmail and inboxes | 0 | 4 | 6 | 10 |
+| Mail, Gmail and inboxes | 0 | 4 | 9 | 13 |
 | Outreach drafting, research, forms and CLI | 0 | 4 | 2 | 6 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
 | Web API, auth and storage | 0 | 4 | 1 | 5 |
 | Scoring, scheduling and configuration | 1 | 1 | 4 | 6 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **25** | **20** | **46** |
+| **Total** | **1** | **25** | **23** | **49** |
 
 ## Start here: the high-severity entries
 
@@ -199,6 +199,27 @@ These three were left open by PR #54 (the fail-closed net) and recorded here on 
 - **What happens:** A list or dict reason is unhashable when tested against the frozenset, so the script reports "failed (TypeError)" instead of CANNOT_READ or WAIT.
 - **Suggested fix:** Reuse `is_throttle` from `opportunity_app/integrations/gmail_client.py`.
 - **Regression suite:** tests/ unittest (`test_pipeline_mailbox`)
+
+### Apply for me's confirmation watch compares the Gmail account read now, not the address the application used
+- **Severity:** low (found in review of the confirmation watch, M5b part 1)
+- **Where:** `opportunity_app/apply/watch.py` `reader_health()` (the `mailbox_reason` check) and `watch_for()`; the claim carries no record of the address it was submitted with
+- **What happens:** The watch pauses whenever the Gmail account the app reads is not the email in the profile, which is safe (a pause never writes "no email came") but imprecise. A student who edits the profile email after submitting, when the old address is still the connected account, sees a correct watch paused until the 13-day give-up turns it into not watched. A student who reconnects as another account and then back inside the window is not told the reader was in the wrong mailbox for part of it, because only the account read at each pass is compared.
+- **Suggested fix:** Record the address (or a hash of it) the application used on the claim at hand-over, and compare the connected account against that, not against the profile at each pass. The hand-over is `runs.py`, which the browser-driver milestone edits.
+- **Regression suite:** tests/ unittest (`test_apply_watch`: edit the profile email after the submission and expect the watch to keep running; switch the account and expect a pause)
+
+### An email the Phase 1 reader set aside as an error stalls every Apply for me watch for the rest of its window
+- **Severity:** low (found in review of the confirmation watch, M5b part 1)
+- **Where:** `opportunity_app/applications/inbox.py` `_decide_safely()` and `_rescan()` (only `awaiting_resume` rows are read again); `opportunity_app/apply/watch.py` `reader_health()` (`READER_SET_ASIDE`)
+- **What happens:** A message whose decision raised is stored with state `error` and never read again. The watch now treats such a row received at or after the oldest watched hand-over (minus five minutes) as a stall, because the email that failed may be the confirmation. Nothing clears the row, so the watch stays paused until the 13-day give-up ends it as not watched, and the error row also pauses watches for unrelated applications handed over before it.
+- **Suggested fix:** Let the reader retry `error` rows a bounded number of times (or record the sender's domain on them), so the watch can tell an unrelated failure from the confirmation's.
+- **Regression suite:** tests/ unittest (`test_application_inbox`: an error row is retried; `test_apply_watch`: a retried row clears the pause)
+
+### apply/watch.py keeps its own copy of runs.py's time helpers
+- **Severity:** low, latent (found in review of the confirmation watch, M5b part 1)
+- **Where:** `opportunity_app/apply/watch.py` `_at()`, `stamp_now()`, `iso_utc()` against `opportunity_app/apply/runs.py` `_at()`, `_stamp()`, `_iso()`; `opportunity_app/apply/security_code.py` calls the watch's copy
+- **What happens:** The bodies match today, so stamps compare correctly as strings. If one copy drifts (for example the "never repeated" `utc_now` rule), claims, events and notices get differently formatted stamps, and the string comparisons in `_WATCHED` and `students_to_watch` misorder them. The copy exists because the browser-driver milestone edits `runs.py` in parallel and a rename there would conflict; AGENTS.md section 8 rules 3 and 6 want one copy with a public name. The Greenhouse sender check is already shared (`greenhouse.is_greenhouse_sender`).
+- **Suggested fix:** After both milestones merge, rename `runs._at`, `_stamp` and `_iso` to public names, import them in `watch.py` and `security_code.py`, and delete the copies.
+- **Regression suite:** tests/ unittest (a test that both modules format the same instant identically, or that `watch.py` defines none of these)
 
 ### The Gmail labelling worker can write label rows for an account that was just deleted
 - **Severity:** medium, privacy; left by design for an owner decision (found in review of the PR #60 erase fix, which closed the missing-tables gap but not this race)

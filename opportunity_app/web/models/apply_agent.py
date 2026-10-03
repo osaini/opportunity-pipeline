@@ -38,3 +38,8 @@ class ApplySensitiveEntryRequest(BaseModel):
 
 class ApplySensitiveCategoriesRequest(BaseModel):
     categories: list[str] = Field(max_length=20)
+
+
+class ApplyClaimResolveRequest(BaseModel):
+    # The card's answer for an attempt that may have reached Greenhouse: It went through, or It didn't go through.
+    went_through: bool

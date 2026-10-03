@@ -794,6 +794,12 @@
         limits,
         element("p", "profile-help", `Screenshots of a filled form would be kept for ${settings.evidence_days} days, then deleted. Their fingerprints stay.`),
       );
+      (settings.ats_statistics || []).forEach((entry) => {
+        host.appendChild(element("h5", "", "How Apply for me has gone"));
+        const stats = element("ul", "reason-list apply-stats");
+        entry.lines.forEach((line) => stats.appendChild(element("li", "", line)));
+        host.appendChild(stats);
+      });
       host.appendChild(element("h5", "", "Exact options for lists the form owns"));
       host.appendChild(element("p", "profile-help", "Some fields, such as school and location, are lists whose wording only the form knows. Save the exact option once and the app uses it word for word."));
       const labels = Object.entries(settings.ats_labels);

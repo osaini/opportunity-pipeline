@@ -32,6 +32,12 @@ API_HOST = "boards-api.greenhouse.io"
 # Greenhouse's own senders (mail/data/application_senders.json), for a confirmation the reader could not match to a role.
 GREENHOUSE_SENDER_DOMAINS = ("greenhouse.io", "greenhouse-mail.io")
 
+
+def is_greenhouse_sender(domain: str) -> bool:
+    """Whether a sender domain is Greenhouse's or a subdomain of it."""
+    domain = (domain or "").lower().rstrip(".")
+    return any(domain == known or domain.endswith(f".{known}") for known in GREENHOUSE_SENDER_DOMAINS)
+
 # --- Identifying the posting (4.4) --------------------------------------------------------------
 
 _TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")

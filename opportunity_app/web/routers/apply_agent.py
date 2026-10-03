@@ -16,12 +16,14 @@ from ...apply import (
     preflight as apply_preflight,
     runs as apply_runs,
     sensitive as apply_sensitive,
+    watch as apply_watch,
 )
 from ...apply.schema_client import SchemaClient
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, require_browser_session, writable_connection
 from ..models.apply_agent import (
     ApplyAnswerRequest,
+    ApplyClaimResolveRequest,
     ApplyLabelRequest,
     ApplySensitiveAnswerRequest,
     ApplySensitiveCategoriesRequest,
@@ -128,6 +130,7 @@ def apply_agent_settings(
         "ats_labels": apply_runs.list_ats_labels(conn, user_id),
         "label_fields": list(apply_policy.ALLOWED_ATS_LABEL_FIELDS),
         "evidence_days": apply_runs.evidence_days(),
+        "ats_statistics": [apply_watch.ats_statistics(conn, user_id)],
     }
 
 
@@ -229,3 +232,39 @@ def apply_agent_sensitive_answer(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Opportunity not found") from exc
     except apply_preflight.AnswerRefused as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+
+
+# The card's two answers and its Mark as applied? button. They need the student's own browser session, like the sensitive
+# answers: an attempt that may have reached Greenhouse is settled by the student looking, never by a script. They do not need
+# Apply for me to be on: a student who turned it off still has attempts to settle.
+@router.post("/api/v1/apply-agent/claims/{token}/resolve")
+def resolve_apply_claim(
+    token: str,
+    payload: ApplyClaimResolveRequest,
+    user_id: str = Depends(require_browser_session),
+    conn: sqlite3.Connection = Depends(writable_connection),
+) -> dict[str, Any]:
+    """It went through / It didn't go through, for an attempt that may have reached Greenhouse."""
+    try:
+        return {"claim": apply_watch.resolve_by_student(conn, token, user_id=user_id, went_through=payload.went_through)}
+    except apply_runs.ClaimNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This attempt was not found") from exc
+    except apply_runs.ClaimHeldError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This application is still being submitted") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This attempt does not need an answer") from exc
+
+
+@router.post("/api/v1/apply-agent/claims/{token}/mark-applied")
+def mark_apply_claim_applied(
+    token: str,
+    user_id: str = Depends(require_browser_session),
+    conn: sqlite3.Connection = Depends(writable_connection),
+) -> dict[str, Any]:
+    """Mark as applied?: move the application forward after a Finish in browser submission, which never moves it by itself."""
+    try:
+        return {"claim": apply_watch.mark_applied(conn, token, user_id=user_id)}
+    except apply_runs.ClaimNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This attempt was not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This attempt has nothing to mark") from exc

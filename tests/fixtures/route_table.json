@@ -434,6 +434,30 @@
       "status_code": null
     },
     {
+      "endpoint": "resolve_apply_claim",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "resolve_apply_claim_api_v1_apply_agent_claims__token__resolve_post",
+      "path": "/api/v1/apply-agent/claims/{token}/resolve",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "mark_apply_claim_applied",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "mark_apply_claim_applied_api_v1_apply_agent_claims__token__mark_applied_post",
+      "path": "/api/v1/apply-agent/claims/{token}/mark-applied",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
       "endpoint": "get_urgent",
       "include_in_schema": true,
       "kind": "route",

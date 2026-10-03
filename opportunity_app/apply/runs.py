@@ -45,7 +45,7 @@ from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from time import monotonic
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 from uuid import uuid4
 
 from pipeline_core.identity import normalized
@@ -60,7 +60,7 @@ from ..core.profile_store import read_stored_profile
 from ..core.settings_store import get_setting, put_setting, setting_updated_at
 from ..core.timestamps import parse_app_instant, utc_now
 from ..core.user_time import UserTimezone, user_timezone
-from .greenhouse import ADAPTER_VERSION, ATS_GREENHOUSE, GREENHOUSE_SENDER_DOMAINS
+from .greenhouse import ADAPTER_VERSION, ATS_GREENHOUSE, is_greenhouse_sender
 from .claims import HELD_HEARTBEAT, RUNNING, claim_held, forget
 
 LOGGER = logging.getLogger(__name__)
@@ -87,6 +87,8 @@ BREAKER_WINDOW = 5
 RUNNER_COMPONENT = "apply_agent.runner"
 # The daily evidence purge's own health row, so a failed purge is not mixed with the runner's status.
 RETENTION_COMPONENT = "apply_agent.retention"
+# The confirmation watch's own health row (apply/watch.py), so a failing watch is not mixed with the runner's status.
+WATCH_COMPONENT = "apply_agent.watch"
 
 # Per-student limits: defaults here, overridable in the profile under "apply_agent", read the way
 # internal_automation.follow_up_days reads its day count. A value that is not an integer in range is the default.
@@ -413,8 +415,7 @@ def _unmatched_confirmation(conn: sqlite3.Connection, user_id: str, opportunity_
         "WHERE user_id=? AND kind='application_confirmation' AND application_id='' AND received_at>=? ORDER BY received_at",
         (user_id, saved[0]),
     ).fetchall():
-        domain = str(row["sender_domain"] or "").lower()
-        if not any(domain == known or domain.endswith(f".{known}") for known in GREENHOUSE_SENDER_DOMAINS):
+        if not is_greenhouse_sender(str(row["sender_domain"] or "")):
             continue
         if set(tokens) <= set(normalized(str(row["subject"] or "")).split()):
             return str(row["received_at"])
@@ -1166,14 +1167,16 @@ def students_to_watch(conn: sqlite3.Connection, now: datetime | None = None) -> 
     """The students the worker's apply step works for, whether or not Apply for me is on (5.6).
 
     A claim in 'claimed' or 'clicking'; an uncertain attempt or a tombstone handed over in the last 14 days; a
-    submitted claim still being watched (or whose stage is not recorded yet); or a run still 'running'.
+    submitted claim still being watched, however old (the watch ends one past its 14 days as not watched), or whose
+    stage is not recorded yet; or a run still 'running'.
     """
     since = _iso(_at(now) - timedelta(days=WATCH_DAYS))
     rows = conn.execute(
         """
         SELECT user_id FROM application_submit_claims WHERE state IN ('claimed', 'clicking')
            OR (handed_over_at>=? AND (state IN ('unconfirmed', 'released') OR (state IN ('needs_you', 'failed') AND after_click=1)))
-           OR (state='submitted' AND ((verification IN ('awaiting_email', 'no_email_24h') AND submitted_at>=?)
+           OR (state='submitted' AND (verification='awaiting_email'
+                                      OR (verification='no_email_24h' AND submitted_at>=?)
                                       OR (stage_recorded=0 AND stage_policy IN ('record', 'ledger'))))
         UNION SELECT user_id FROM apply_runs WHERE status='running'
         ORDER BY user_id
@@ -1183,14 +1186,19 @@ def students_to_watch(conn: sqlite3.Connection, now: datetime | None = None) -> 
     return [str(row[0]) for row in rows]
 
 
-def run_worker_step(conn: sqlite3.Connection, *, apply_root: Path | None = None, now: datetime | None = None) -> dict[str, Any]:
+def run_worker_step(
+    conn: sqlite3.Connection, *, apply_root: Path | None = None, now: datetime | None = None,
+    watch: Callable[[sqlite3.Connection, str, datetime | None], dict[str, int]] | None = None,
+) -> dict[str, Any]:
     """The AutomationWorker's apply step (5.6): independent of every switch.
 
     For each student students_to_watch returns, recover_stale (a student who turned Apply for me off still gets their
-    open claims finished). Once per local day, for every student, purge_evidence when an ``apply_root`` is given.
-    One student's failure is recorded (apply_agent.runner) and never stops the next.
+    open claims finished), then ``watch`` (apply_watch.watch, passed by the AutomationWorker; run_worker_step cannot
+    import it, since the watch imports this module). Once per local day, for every student, purge_evidence when an
+    ``apply_root`` is given. One student's failure is recorded (apply_agent.runner, or apply_agent.watch for the
+    watch) and never stops the next.
     """
-    report: dict[str, Any] = {"recovered": {}, "purged": []}
+    report: dict[str, Any] = {"recovered": {}, "purged": [], "watched": {}}
     for user_id in students_to_watch(conn, now):
         try:
             counts = recover_stale(conn, now, user_id=user_id)
@@ -1198,10 +1206,24 @@ def run_worker_step(conn: sqlite3.Connection, *, apply_root: Path | None = None,
             LOGGER.exception("Apply for me recovery failed for one student")
             _rollback(conn)
             _record_runner(conn, user_id, ok=False, error=exc)
+        else:
+            if any(counts.values()):
+                report["recovered"][user_id] = counts
+            _record_runner(conn, user_id, ok=True)
+        # The watch runs whether or not recovery did: one claim that keeps failing to recover must not stop the others
+        # from being watched (5.6 names them as two steps).
+        if watch is None:
             continue
-        if any(counts.values()):
-            report["recovered"][user_id] = counts
-        _record_runner(conn, user_id, ok=True)
+        try:
+            seen = watch(conn, user_id, now)
+        except Exception as exc:  # noqa: BLE001 - recorded, and the next student still runs
+            LOGGER.exception("The Apply for me confirmation watch failed for one student")
+            _rollback(conn)
+            _record_runner(conn, user_id, ok=False, error=exc, component=WATCH_COMPONENT)
+            continue
+        if any(seen.values()):
+            report["watched"][user_id] = seen
+        _record_runner(conn, user_id, ok=True, component=WATCH_COMPONENT)
     if apply_root is not None:
         for row in conn.execute("SELECT id FROM users ORDER BY id").fetchall():
             user_id = str(row[0])

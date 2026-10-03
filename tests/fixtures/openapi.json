@@ -197,6 +197,19 @@
         "title": "ApplyAnswerRequest",
         "type": "object"
       },
+      "ApplyClaimResolveRequest": {
+        "properties": {
+          "went_through": {
+            "title": "Went Through",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "went_through"
+        ],
+        "title": "ApplyClaimResolveRequest",
+        "type": "object"
+      },
       "ApplyLabelRequest": {
         "properties": {
           "label": {
@@ -5753,6 +5766,196 @@
           }
         },
         "summary": "Put Apply Ats Label"
+      }
+    },
+    "/api/v1/apply-agent/claims/{token}/mark-applied": {
+      "post": {
+        "description": "Mark as applied?: move the application forward after a Finish in browser submission, which never moves it by itself.",
+        "operationId": "mark_apply_claim_applied_api_v1_apply_agent_claims__token__mark_applied_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_user_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline User Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Mark Apply Claim Applied Api V1 Apply Agent Claims  Token  Mark Applied Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mark Apply Claim Applied"
+      }
+    },
+    "/api/v1/apply-agent/claims/{token}/resolve": {
+      "post": {
+        "description": "It went through / It didn't go through, for an attempt that may have reached Greenhouse.",
+        "operationId": "resolve_apply_claim_api_v1_apply_agent_claims__token__resolve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "title": "Token",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_user_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline User Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyClaimResolveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Resolve Apply Claim Api V1 Apply Agent Claims  Token  Resolve Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve Apply Claim"
       }
     },
     "/api/v1/apply-agent/opportunities/{opportunity_id}/answers": {
