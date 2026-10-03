@@ -257,8 +257,9 @@ def test_switching_two_kinds_quickly_keeps_both_changes(apply_ready, owner_page,
         owner_page.wait_for_timeout(100)
         allowed = allowed_now()
     expect(block.locator('.apply-kinds input[type="checkbox"]:checked')).to_have_count(4)
-    expect(block.get_by_label("18 or older")).not_to_be_checked()
-    expect(block.get_by_label("Legal acknowledgments, word for word")).not_to_be_checked()
+    # By their own attribute: the add-answer Kind select's accessible name also holds "18 or older" until it repaints.
+    expect(block.locator('[data-focus="kind-age_18"]')).not_to_be_checked()
+    expect(block.locator('[data-focus="kind-acknowledgment"]')).not_to_be_checked()
     assert "age_18" not in allowed and "acknowledgment" not in allowed
     assert {"work_authorization", "sponsorship", "consent"} <= allowed
 
