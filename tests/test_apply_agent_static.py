@@ -180,6 +180,10 @@ FORBIDDEN_DRIVER_ATTRS = frozenset({
 ALLOWED_DRIVER_ATTRS = {
     ("apply/preflight.py", "fetch", "client"): "the schema client's read of Greenhouse's public listing: Python's urllib, no browser",
 }
+# ``.request`` on a receiver that is not Playwright, by (module, receiver name): each sends from Python, never from the browser.
+ALLOWED_REQUEST_RECEIVERS = {
+    ("apply/security_code.py", "gmail"): "the Gmail REST client (integrations.gmail_client over httpx) reading Greenhouse's security-code email",
+}
 # The one function of the agent that may call each of Playwright's ways to start a browser or a browser context.
 LAUNCHERS = {"launch": "_launch_browser", "new_context": "_new_context", "launch_persistent_context": "", "connect_over_cdp": "", "new_browser_context": ""}
 # ``getattr`` with a name that is not written in the source, by (module, enclosing function): reading a plan or a schema field by attribute.
@@ -218,7 +222,7 @@ def unsafe_driver_calls(modules: dict[str, str]) -> tuple[list[str], int]:
                 name = node.attr
                 if name == "request":
                     seen += 1
-                    if receiver not in ("route", "urllib"):
+                    if receiver not in ("route", "urllib") and (relative, receiver) not in ALLOWED_REQUEST_RECEIVERS:
                         found.append(f"{where} .request on something that is not the route's own request: an APIRequestContext sends from the driver")
                 elif name in FORBIDDEN_DRIVER_ATTRS:
                     seen += 1
