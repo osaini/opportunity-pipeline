@@ -1255,7 +1255,8 @@ class FinishInBrowserKeepsD1B(unittest.TestCase):
         agent = self.handoff_agent()
         agent._ends_at = time.monotonic() + 5
         self.assertLessEqual(agent._cap(time.monotonic() + 3600), agent._ends_at)
-        self.assertEqual(agent._cap(100.0), 100.0)
+        earlier = agent._ends_at - 1.0      # relative to the cap: a fresh CI machine's monotonic clock can be under 100 s
+        self.assertEqual(agent._cap(earlier), earlier)
         agent._ends_at = 0.0
         self.assertEqual(agent._cap(1e12), 1e12)
 
