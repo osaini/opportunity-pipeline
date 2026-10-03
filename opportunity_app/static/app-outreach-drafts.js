@@ -9,8 +9,8 @@
 
   // From app-ui.js.
   const {
-    WEEKDAY_DAY_FORMAT, announce, chip, element, externalLink, formatDate, formatDateTime, plural, safeExternalUrl,
-    showError,
+    WEEKDAY_DAY_FORMAT, announce, autoSaveSelect, chip, element, externalLink, formatDate, formatDateTime, optionElement,
+    plural, safeExternalUrl, showError,
   } = App;
 
   // From app-http.js.
@@ -430,7 +430,133 @@
     return history;
   }
 
-  function outreachContactsSection(item) {
+  const RECIPIENT_CONFIDENCE_WORDS = { confirmed: "confirmed", unverified: "unverified", unknown: "not confirmed" };
+
+  // The draft's To and Cc, each a dropdown of the company's contacts. Choosing a
+  // To applies that contact, so its name, its confidence and the draft's greeting
+  // follow it; the Cc is written as chosen. The address picked in one is disabled
+  // in the other, so the email never goes To and Cc the same address. The selects
+  // carry no name, so the pane's Save changes never sends them.
+  function outreachRecipients(item) {
+    const wrap = element("div", "outreach-recipients is-wide");
+    const field = (labelText, className) => {
+      const label = element("label", "profile-field");
+      label.appendChild(element("span", "", labelText));
+      const select = document.createElement("select");
+      select.className = className;
+      label.appendChild(select);
+      wrap.appendChild(label);
+      return select;
+    };
+    const to = field("To", "outreach-recipient-to");
+    const cc = field("Cc", "outreach-recipient-cc");
+    const status = element("p", "form-status");
+    status.setAttribute("aria-live", "polite");
+    wrap.appendChild(status);
+
+    const key = (address) => (address || "").trim().toLowerCase();
+    const bounced = new Set((item.bounced_addresses || []).map(key));
+    const savedTo = () => key(item.contact_email);
+    const savedCc = () => key(item.contact_cc);
+    let byKey = new Map();
+    let known = [];
+
+    const describe = (entry, otherKey, other) => {
+      const words = [entry.name ? `${entry.name} <${entry.email}>` : entry.email];
+      if (RECIPIENT_CONFIDENCE_WORDS[entry.confidence]) words.push(RECIPIENT_CONFIDENCE_WORDS[entry.confidence]);
+      if (bounced.has(entry.key)) words.push("bounced");
+      if (entry.key === otherKey) words.push(`in ${other}`);
+      return words.join(" · ");
+    };
+    // A bounced address stays listed while it is the one on record, so the
+    // select still shows the truth, but it cannot be chosen again.
+    const fill = (select, entries, savedKey, otherKey, other) => {
+      entries.forEach((entry) => {
+        const option = optionElement(entry.key, describe(entry, otherKey, other), entry.key === savedKey);
+        option.disabled = entry.key !== savedKey && (entry.key === otherKey || bounced.has(entry.key) || !entry.id);
+        select.appendChild(option);
+      });
+    };
+
+    const update = (candidates) => {
+      known = candidates;
+      byKey = new Map();
+      const add = (entry) => {
+        const entryKey = key(entry.email);
+        if (entryKey && !byKey.has(entryKey)) byKey.set(entryKey, { ...entry, key: entryKey });
+      };
+      // What is on record describes the current To, ahead of any candidate with the same address.
+      if (item.contact_email) {
+        const match = candidates.find((candidate) => key(candidate.email) === savedTo());
+        add({ email: item.contact_email, name: item.contact_name, confidence: item.contact_confidence, id: match?.id || null });
+      }
+      candidates.filter((candidate) => candidate.email).forEach((candidate) => add(candidate));
+      // A Cc typed under Contact may be no candidate; it is listed so the select shows it.
+      if (item.contact_cc) add({ email: item.contact_cc, name: "", confidence: "", id: null });
+      const entries = [...byKey.values()];
+
+      to.replaceChildren();
+      if (!item.contact_email) to.appendChild(optionElement("", entries.length ? "Choose an address" : "No address yet. Find one under Contact", true));
+      fill(to, entries, savedTo(), savedCc(), "Cc");
+      to.disabled = !entries.some((entry) => entry.id);
+      cc.replaceChildren(optionElement("", "No Cc", !item.contact_cc));
+      // Anything but the To may be in Cc, a typed address too.
+      fill(cc, entries.map((entry) => ({ ...entry, id: entry.id || entry.key })), savedCc(), savedTo(), "To");
+      cc.disabled = !item.contact_email;
+    };
+
+    autoSaveSelect(to, {
+      saved: savedTo,
+      commit: async (value) => {
+        const entry = byKey.get(value);
+        if (!entry?.id) return;
+        to.disabled = cc.disabled = true;
+        status.textContent = "";
+        // Applying a contact clears the Cc; the chosen one stays unless it is the new To.
+        const keepCc = item.contact_cc && savedCc() !== value ? item.contact_cc : "";
+        let applied = false;
+        try {
+          await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/contacts/${encodeURIComponent(entry.id)}/apply`, { method: "POST" });
+          applied = true;
+          if (keepCc) {
+            await api(`/api/v1/outreach/${encodeURIComponent(item.id)}`, { method: "PATCH", body: JSON.stringify({ contact_cc: keepCc }) });
+          }
+        } catch (error) {
+          if (!applied) {
+            status.textContent = error.message;
+            update(known);
+            return;
+          }
+          showError(`${entry.email} is in To now, but ${keepCc} could not stay in Cc: ${error.message}`);
+        }
+        const review = item.draft_status === "approved" ? " The draft goes back for review." : "";
+        announce(`${entry.email} is now in To for ${item.company}${entry.confidence === "confirmed" ? "" : ", marked unverified"}.${review}`);
+        await reloadOutreachAt(item.id, ".outreach-recipient-to");
+      },
+    });
+
+    autoSaveSelect(cc, {
+      saved: savedCc,
+      commit: async (value) => {
+        const address = byKey.get(value)?.email || "";
+        to.disabled = cc.disabled = true;
+        status.textContent = "";
+        const review = item.draft_status === "approved" ? " The draft goes back for review." : "";
+        try {
+          await patchOutreach(item, { contact_cc: address },
+            `${address ? `${address} is in Cc` : "Removed the Cc"} for ${item.company}.${review}`, ".outreach-recipient-cc");
+        } catch (error) {
+          status.textContent = error.message;
+          update(known);
+        }
+      },
+    });
+
+    update([]);
+    return { element: wrap, update };
+  }
+
+  function outreachContactsSection(item, { onCandidates } = {}) {
     const section = element("section", "tracker-subsection outreach-contacts");
     section.appendChild(element("h4", "", "Contacts found"));
     const intro = element("p", "outreach-note", item.website
@@ -445,6 +571,7 @@
     section.append(intro, find, status, list);
 
     const render = (candidates) => {
+      onCandidates?.(candidates);
       list.replaceChildren();
       candidates.forEach((candidate) => {
         const row = element("li", "outreach-candidate");
@@ -706,6 +833,6 @@
 
   Object.assign(App, {
     draftAssistant, gmailConnectPanel, loadOutreachTimeline, outreachContactsSection, outreachManualContactSection,
-    outreachReplySection, renderDraftChecks,
+    outreachRecipients, outreachReplySection, renderDraftChecks,
   });
 })();

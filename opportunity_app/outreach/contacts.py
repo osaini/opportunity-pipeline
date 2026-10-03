@@ -780,7 +780,7 @@ def apply_candidate(
     cc = ""
     if cc_candidate_id:
         cc_row = load(cc_candidate_id)
-        if cc_row["email"] and cc_row["email"] != row["email"]:
+        if cc_row["email"] and cc_row["email"].casefold() != row["email"].casefold():
             cc = cc_row["email"]
     changes: dict[str, Any] = {
         "contact_email": row["email"],

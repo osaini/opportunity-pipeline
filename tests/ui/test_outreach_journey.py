@@ -75,6 +75,48 @@ def test_find_a_contact_draft_approve_and_hand_off_to_gmail(owner_page, base_url
     expect(compose).to_have_attribute("target", "_blank")
 
 
+@pytest.mark.allow_page_errors
+def test_the_draft_picks_to_and_cc_from_the_contacts_never_the_same_address(owner_page, base_url):
+    bovi = seed_target(owner_page, base_url)
+    open_outreach(owner_page)
+    details = open_details(card_for(owner_page, "Bovi"), "Contact")
+    details.get_by_role("button", name="Find contacts").click()
+    jane = details.locator(".outreach-candidate").filter(has_text="jane@bovi.example")
+    jane.get_by_role("button", name="Use jane@bovi.example as the contact").click()
+
+    details = open_details(card_for(owner_page, "Bovi"), "Draft")
+    to, cc = details.locator("select.outreach-recipient-to"), details.locator("select.outreach-recipient-cc")
+    expect(to).to_have_value("jane@bovi.example")
+    expect(to.locator("option", has_text="hello@bovi.example")).to_have_js_property("disabled", False)
+    expect(cc).to_have_value("")
+    expect(cc.locator("option", has_text="jane@bovi.example")).to_have_js_property("disabled", True)
+    expect(cc.locator("option", has_text="jane@bovi.example")).to_contain_text("in To")
+    assert details.locator(".outreach-recipients select[name]").count() == 0, "Save changes must not send the dropdowns"
+
+    cc.select_option("hello@bovi.example")
+    details = open_details(card_for(owner_page, "Bovi"), "Draft")
+    to, cc = details.locator("select.outreach-recipient-to"), details.locator("select.outreach-recipient-cc")
+    expect(cc).to_have_value("hello@bovi.example")
+    expect(to.locator("option", has_text="hello@bovi.example")).to_have_js_property("disabled", True)
+
+    # A new To keeps the Cc, and its name follows it.
+    to.select_option("sam@bovi.example")
+    details = open_details(card_for(owner_page, "Bovi"), "Draft")
+    to, cc = details.locator("select.outreach-recipient-to"), details.locator("select.outreach-recipient-cc")
+    expect(to).to_have_value("sam@bovi.example")
+    expect(cc).to_have_value("hello@bovi.example")
+    expect(cc.locator("option", has_text="sam@bovi.example")).to_have_js_property("disabled", True)
+    expect(cc.locator("option", has_text="jane@bovi.example")).to_have_js_property("disabled", False)
+    target = owner_page.request.get(f"{base_url}/api/v1/outreach/{bovi['id']}", headers=BEARER).json()
+    assert (target["contact_email"], target["contact_cc"]) == ("sam@bovi.example", "hello@bovi.example")
+
+    # Typing the To address into Cc under Contact is refused too.
+    details = open_details(card_for(owner_page, "Bovi"), "Contact")
+    details.locator('input[name="contact_cc"]').fill("SAM@bovi.example")
+    details.get_by_role("button", name="Save changes").click()
+    expect(details.locator(".outreach-form-actions .form-status")).to_contain_text("already in To")
+
+
 def test_connected_gmail_creates_the_draft_with_the_attachment(owner_page, base_url):
     """With Gmail connected, the button asks the server for a Gmail draft and opens it.
 
