@@ -126,6 +126,50 @@ class ApplicationMailEvalTests(unittest.TestCase):
         lowest = next(value for value in confidences if not false_auto_acts(both, value))
         self.assertEqual(application_inbox.AUTO_ACT_MIN_CONFIDENCE, max(lowest, application_inbox.AUTO_ACT_FLOOR))
 
+    def test_the_security_code_email_is_never_read_as_a_confirmation(self):
+        """Spec R4: Greenhouse's "Security code for your application to ..." waits for a code, so it confirms nothing."""
+        rows = examples("security_code")
+        self.assertEqual([row["id"] for row in rows], ["s01", "s02"])
+        for row in rows:
+            with self.subTest(email=row["id"]):
+                self.assertEqual((row["truth"], row["label"]), ("unknown", "unknown"))
+                self.assertLess(row["confidence"], application_inbox.AUTO_ACT_MIN_CONFIDENCE)
+        for item in json.loads(FIXTURE.read_text(encoding="utf-8"))["security_code"]:
+            with self.subTest(rule=item["id"]):
+                domain = item["sender"].rsplit("@", 1)[1].rstrip(">").strip().lower()
+                self.assertEqual(
+                    application_mail_rules.classify_rules(item["subject"], item["body"], domain, [], RECEIVED)[2], "security_code",
+                )
+                self.assertTrue(application_mail_rules.SECURITY_CODE_SUBJECT.search(item["subject"]))
+        # The blind set is untouched by it.
+        self.assertEqual(len(self.rows), 60)
+
+    def test_the_security_code_rule_is_greenhouses_wording_from_greenhouses_senders_only(self):
+        """A role titled "Security Code ..." or another platform's code email keeps the label the rules always gave it."""
+        from opportunity_app.apply.greenhouse import GREENHOUSE_SENDER_DOMAINS
+
+        self.assertEqual(application_mail_rules.GREENHOUSE_MAIL_DOMAINS, GREENHOUSE_SENDER_DOMAINS, "one list of Greenhouse's domains")
+        cases = [
+            ("Offer: Security Code Review Intern at Acme Robotics", "We are pleased to offer you the Security Code Review Intern position.", "acme.example", "offer"),
+            ("Interview invitation - Security Code Analyst", "We would like to invite you to interview for the Security Code Analyst role.", "acme.example", "interview"),
+            ("Interview invitation - Security Code Analyst", "We would like to invite you to interview for the Security Code Analyst role.", "us.greenhouse-mail.io", "interview"),
+            ("Your security code for the HackerRank assessment", "Use this code to start your Acme coding assessment.", "hackerrank.com", "assessment"),
+        ]
+        for subject, body, domain, expected in cases:
+            with self.subTest(subject=subject, domain=domain):
+                label, _confidence, prior = application_mail_rules.classify_rules(subject, body, domain, [], RECEIVED)
+                self.assertEqual((label, prior == "security_code"), (expected, False))
+        # Greenhouse's own wording from another sender is not Greenhouse's email either.
+        self.assertNotEqual(
+            application_mail_rules.classify_rules("Security code for your application to Acme", "Thank you for applying. We received your application.", "hire.lever.co", [], RECEIVED)[2],
+            "security_code",
+        )
+        for domain in ("greenhouse.io", "us.greenhouse-mail.io", "GREENHOUSE-MAIL.IO."):
+            self.assertTrue(application_mail_rules.is_security_code_email("Security code for your application to Acme", domain), domain)
+        self.assertFalse(application_mail_rules.is_security_code_email("Security code for your application to Acme", "notgreenhouse.io"))
+        # The watch and the reader keep the broad subject check: they only decline to count an email.
+        self.assertTrue(application_mail_rules.SECURITY_CODE_SUBJECT.search("Your Security Code"))
+
 
 if __name__ == "__main__":
     unittest.main()

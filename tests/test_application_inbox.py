@@ -461,6 +461,30 @@ class LiveMailTests(MailCase):
         timeline = self.conn.execute("SELECT detail_json FROM application_events WHERE application_id=? AND event_type='stage_changed'", (self.acme,)).fetchall()
         self.assertEqual(json.loads(timeline[-1]["detail_json"])["source"], f"automation:{action['id']}")
 
+    def test_a_verified_sender_is_recorded_as_verified(self):
+        self.started()
+        self.deliver("m-v", acme_confirmation())
+        self.pass_once()
+        row = self.message_row("m-v")
+        self.assertEqual((row["state"], row["kind"], row["sender_verified"]), ("done", "application_confirmation", 1))
+
+    def test_a_forged_sender_is_recorded_as_unverified(self):
+        self.started()
+        self.deliver("m-f", acme_confirmation(headers=""))
+        self.pass_once()
+        row = self.message_row("m-f")
+        self.assertEqual((row["kind"], row["sender_verified"]), ("application_confirmation", 0), "no Gmail sender check, no vouching")
+
+    def test_a_message_read_while_paused_keeps_its_sender_check(self):
+        self.started()
+        automation.set_paused(self.conn, USER, True)
+        self.deliver("m-p1", acme_confirmation())
+        self.pass_once()
+        self.assertEqual(tuple(self.message_row("m-p1")[key] for key in ("state", "sender_verified")), ("awaiting_resume", 1))
+        automation.set_paused(self.conn, USER, False)
+        self.pass_once()
+        self.assertEqual(tuple(self.message_row("m-p1")[key] for key in ("state", "sender_verified")), ("done", 1))
+
     def test_one_email_makes_a_stage_change_and_a_task_each_exactly_once(self):
         self.started()
         invite = orbit_mail("Interview invitation: Orbit Systems",
@@ -1655,6 +1679,42 @@ class JevTests(MailCase):
         self.assertEqual(self.stage(self.orbit)[0], "applied")
         event = self.conn.execute("SELECT event_type, status FROM monitored_events WHERE external_id='gmail:m-160'").fetchone()
         self.assertEqual(tuple(event), ("rejected", "pending"))
+
+    def test_greenhouses_security_code_email_never_reaches_jev_and_leaves_no_code_behind(self):
+        """Spec R4: the code email waits for a code, so no model is asked and nothing is stored or proposed from it."""
+        from helpers_outreach import FakeJev
+
+        code = "X7KQ2M9P"
+        raw = job_mail(
+            subject="Security code for your application to Acme Robotics",
+            body=f"Hi Sam,\n\nThank you for applying to Acme Robotics. To complete your application, enter this security code: {code}.",
+        )
+        jev = FakeJev("application_confirmation", 0.99)
+        self.started()
+        self.deliver("m-code", raw)
+        self.pass_once(decisions=jev)
+        self.assertEqual(jev.calls, [], "the email, one-time code and all, is not sent to TypeSafe")
+        row = self.message_row("m-code")
+        self.assertEqual((row["state"], row["kind"]), ("done", "unknown"), "never an application confirmation, whatever Jev would say")
+        self.assertEqual(self.actions(action_type="application.stage"), [])
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM monitored_events WHERE external_id='gmail:m-code'").fetchone()[0], 0)
+        everything = []
+        for (name,) in self.conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+            everything += [str(value) for found in self.conn.execute(f'SELECT * FROM "{name}"').fetchall() for value in tuple(found)]
+        self.assertNotIn(code, "\n".join(everything), "the code is in no table")
+
+    def test_a_security_code_subject_from_anyone_else_is_classified_as_usual(self):
+        """The rule is Greenhouse's own wording from Greenhouse's own senders, not every email that says "security code"."""
+        from helpers_outreach import FakeJev
+
+        invite = orbit_mail("Interview invitation: Security Code Analyst at Orbit Systems",
+                            "Hi Sam,\n\nWe'd like to invite you to interview for the Security Code Analyst role at Orbit Systems.")
+        jev = FakeJev("interview", 0.9)
+        self.started()
+        self.deliver("m-sc", invite)
+        self.pass_once(decisions=jev)
+        self.assertEqual(len(jev.calls), 1, "asked as usual")
+        self.assertEqual(self.message_row("m-sc")["kind"], "interview")
 
     def test_jev_disagreeing_with_an_actionable_label_proposes(self):
         invite = orbit_mail("Interview invitation: Orbit Systems", "Hi Sam,\n\nWe'd like to invite you to interview for the Controls Co-op role at Orbit Systems.")

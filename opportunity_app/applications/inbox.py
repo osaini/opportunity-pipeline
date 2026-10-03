@@ -243,6 +243,8 @@ class Outcome:
     event_id: str = ""
     action_id: str = ""
     counts: dict[str, int] = field(default_factory=dict)
+    # Whether Gmail vouched for the sender (mail_trust.authenticate). Recorded as application_mail_messages.sender_verified.
+    verified: bool = False
 
 
 def _is_candidate(conn: sqlite3.Connection, user_id: str, mail: Mail) -> bool:
@@ -597,6 +599,7 @@ def decide(
     kind = acting_label(classification)
     if kind not in ACTIONABLE:
         return Outcome("done", classification.label, linked, match.tier)
+    auth = mail_trust.authenticate(mail.message)
     if kind == "offer":
         # Always, whatever the match and the stage: the most consequential email never passes quietly.
         automation.notice(
@@ -604,8 +607,7 @@ def decide(
             title=f"{match.company or named_company(mail) or 'A company'} may have sent an offer", body="Open Automation to review it.",
         )
     if automation.paused(conn, user_id):
-        return Outcome("awaiting_resume", kind, linked, match.tier)
-    auth = mail_trust.authenticate(mail.message)
+        return Outcome("awaiting_resume", kind, linked, match.tier, verified=auth.ok)
     enabled_at = _enabled_at(sync)
     planned, common = plan(conn, user_id, mail, classification, match, auth, enabled_at=enabled_at, now=now, label=kind)
     if origin == RECLAIMED:
@@ -613,7 +615,7 @@ def decide(
     # Made only when there is something for the card: a change, or an email no application matched.
     existing_event = _event_id(conn, user_id, mail.gmail_id)
     event_id = existing_event or f"event-{uuid4().hex}"
-    outcome = Outcome("done", kind, linked, match.tier, "", counts={"applied": 0, "proposed": 0, "shadow": 0})
+    outcome = Outcome("done", kind, linked, match.tier, "", counts={"applied": 0, "proposed": 0, "shadow": 0}, verified=auth.ok)
     backfill = enabled_at is None or mail.received_at < enabled_at
     basis_parts = [f"classify:{classification.classified_by.get('source', 'rules')}", f"match:{match.tier}"]
     if classification.prior:
@@ -760,11 +762,11 @@ def _record_outcome(conn: sqlite3.Connection, user_id: str, mail: Mail | None, g
         conn.execute(
             """
             INSERT INTO application_mail_messages(user_id, gmail_id, thread_id, application_id, event_id, action_id, kind,
-                matched_by, state, origin, subject, sender_domain, received_at, recorded_at)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                matched_by, state, origin, subject, sender_domain, received_at, recorded_at, sender_verified)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(user_id, gmail_id) DO UPDATE SET application_id=excluded.application_id, event_id=excluded.event_id,
                 action_id=excluded.action_id, kind=excluded.kind, matched_by=excluded.matched_by, state=excluded.state,
-                recorded_at=excluded.recorded_at,
+                recorded_at=excluded.recorded_at, sender_verified=excluded.sender_verified,
                 thread_id=CASE WHEN ? THEN excluded.thread_id ELSE application_mail_messages.thread_id END,
                 subject=CASE WHEN ? THEN excluded.subject ELSE application_mail_messages.subject END,
                 sender_domain=CASE WHEN ? THEN excluded.sender_domain ELSE application_mail_messages.sender_domain END,
@@ -777,6 +779,7 @@ def _record_outcome(conn: sqlite3.Connection, user_id: str, mail: Mail | None, g
                 outcome.state, origin, redact(mail.subject)[:300] if mail and keep else "",
                 (mail_trust.registrable_domain(mail.sender_domain) or mail.sender_domain) if mail and keep else "",
                 mail.received_at.isoformat(timespec="seconds") if mail else (received_at or utc_now()), utc_now(),
+                1 if (mail is not None and keep and outcome.verified) else 0,
                 # A row set aside unread (left to outreach, read while paused) gets what reading it found.
                 bool(mail and keep), bool(mail and keep), bool(mail and keep), mail is not None,
             ),

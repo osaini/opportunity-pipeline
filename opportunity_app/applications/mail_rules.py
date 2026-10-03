@@ -170,11 +170,38 @@ class Classification:
 # A deadline the text states, when the rules found nothing more specific: never sure enough to act alone.
 STATED_DATE_CONFIDENCE = 0.65
 
+# Greenhouse's "Security code for your application to ..." (spec 6.16, R4): the application is waiting for the
+# code, so the email is never a confirmation, whatever its body says.
+#
+# The Apply for me watch and the code reader (apply/watch.py, apply/security_code.py) are wary of any "security code"
+# subject, which is harmless there: they only decline to count an email. The classifier is not: a role titled "Security
+# Code Review Intern" must keep its offer, interview and rejection labels, and an assessment platform's code email its
+# own. So the classifier acts only on Greenhouse's own wording from Greenhouse's own senders.
+SECURITY_CODE_SUBJECT = re.compile(r"security code", re.IGNORECASE)
+_GREENHOUSE_CODE_SUBJECT = re.compile(r"^\s*(?:re:\s*)?security code for your application\b", re.IGNORECASE)
+# The same two domains as apply/greenhouse.GREENHOUSE_SENDER_DOMAINS (a test pins them equal); this module sits below apply.
+GREENHOUSE_MAIL_DOMAINS = ("greenhouse.io", "greenhouse-mail.io")
+
+
+def is_security_code_email(subject: str, sender_domain: str) -> bool:
+    """Whether this is Greenhouse's "Security code for your application to ..." email: its wording, from its senders."""
+    domain = (sender_domain or "").lower().rstrip(".")
+    return bool(_GREENHOUSE_CODE_SUBJECT.search(subject or "")) and any(
+        domain == known or domain.endswith(f".{known}") for known in GREENHOUSE_MAIL_DOMAINS
+    )
+
+
+SECURITY_CODE_CONFIDENCE = 0.2
+
 
 def classify_rules(
     subject: str, text: str, sender_domain: str, link_hosts: list[str], received: datetime | None = None,
 ) -> tuple[str, float, str]:
     """(label, confidence, prior): the keyword rules, then what the sender, the links, and a stated date say."""
+    if is_security_code_email(subject, sender_domain):
+        # Greenhouse's "Security code for your application to ..." (spec R4): the application is waiting for the code,
+        # not received, so it is never a confirmation, whatever the body says.
+        return "unknown", SECURITY_CODE_CONFIDENCE, "security_code"
     label, confidence = classify_monitored_message(subject, text)
     lowered = f"{subject}\n{text}".lower()
     sender_category = mail_trust.listed(sender_domain)
@@ -195,6 +222,14 @@ def classify_rules(
 
 
 def classify(mail: Mail, decisions: DecisionClient | None) -> Classification:
+    if is_security_code_email(mail.subject, mail.sender_domain):
+        # Decided here, before any model is asked: the email holds a one-time code that never leaves the mailbox (it is
+        # not sent to TypeSafe), and nothing in it can be read as a confirmation, whoever answers.
+        how = {"source": "rules", "model": "", "fallback_reason": "security_code"}
+        return Classification(
+            label="unknown", confidence=SECURITY_CODE_CONFIDENCE, rules_label="unknown", rules_confidence=SECURITY_CODE_CONFIDENCE,
+            prior="security_code", classified_by={**how, "rules_label": "unknown", "rules_confidence": SECURITY_CODE_CONFIDENCE, "prior": "security_code"},
+        )
     rules_label, rules_confidence, prior = classify_rules(mail.subject, mail.text, mail.sender_domain, mail.link_hosts, mail.received_at)
     label, confidence, how = classify_email(mail.subject, mail.text, lambda _s, _b: (rules_label, rules_confidence), decisions)
     return Classification(
