@@ -2085,6 +2085,35 @@ Phase 1's confirmation handling then plans `stage_change(current)`, and `_next_a
 the earlier time (applications/actions.py:544-566). So the email changes nothing, and no ledger row is
 written. The corroboration can only be read from `application_mail_messages`.
 
+**As built (M5b part 1).** `opportunity_app/apply/watch.py` holds the watch, the card states, the statistics and the
+card's two answers; `apply/security_code.py` holds the D10 B reader. Decisions the spec left open:
+
+- The watch is passed to `apply_runs.run_worker_step(watch=...)` by the AutomationWorker, because the watch imports
+  `apply_runs`. Its health row is `apply_agent.watch`.
+- Phase 1 now writes `application_mail_messages.sender_verified` (inbox.py), which the strong match needs. Greenhouse's
+  "Security code for your application to ..." from Greenhouse's own senders is never read as a confirmation, and never
+  sent to a model: `mail_rules.classify` decides it as `unknown` before TypeSafe is asked, so the code in its body is
+  not sent or stored (R4; pinned in `tests/fixtures/application_mail_eval.json`, `security_code`). The classifier rule
+  is that narrow on purpose (a role titled "Security Code ..." keeps its offer or interview label); the watch's own
+  exclusion is the broad `/security code/i`.
+- A stall is added to `watch_until` when it ends, not minute by minute, so `last_ok_at >= watch_until` can hold.
+  `no_email_24h` also needs a pass that began after the deadline to have finished. A watch whose reader stays stalled
+  until 13 days after the submission, or whose extended deadline would pass day 13, becomes `not_watched`
+  (`detail.watch_stopped = 'reader_stalled'`); one still awaiting its email when its 14 days end becomes `not_watched`
+  too (`'window_ended'`). Neither counts. The reader is not "working" while an email it set aside unread (state `error`)
+  falls in the window, or while the Gmail account read is not the application's address: the watch pauses.
+- One email confirms one attempt (`detail.email_gmail_id`), the newest attempt first. A tombstone whose application or
+  job has a newer live attempt is not flipped; the student gets a notice instead.
+- Weak evidence also covers a strong-tier email from an unverified sender.
+- The Urgent kinds are the code's `apply_needs_you` and `apply_no_email`.
+- The security-code reader reads Gmail directly (Phase 1 passes are ten minutes apart), at most every 15 seconds, and
+  needs the read scope and the address match of D12, not the `application_mail` switch. Handing the code to the child is
+  recorded as `handed`; only the child's `{"op": "security_code_typed"}` acknowledgement records `typed` (and the
+  notice and the statistic). A repeat request for a handed, never-acknowledged code falls back to the student
+  (`not_confirmed`), and a window that ends while Gmail could not be read says so (`gmail_unreachable`), not "no email".
+- The reader's record is `detail.security_code_reader`; `detail.security_code` stays the boolean 6.14 settles with, so
+  the shallow merge in `runs.settle` cannot erase the count. The statistics count a prompt from either.
+
 ---
 
 ## 7. Eligibility policy
@@ -2504,7 +2533,7 @@ Read-only GETs of the public Job Board API (`boards-api.greenhouse.io/v1/boards/
 1. **No solvers, no stealth, no disguise.** A real headed Chromium, honest about what it is, with
    no user-agent, locale or timezone overrides, no automation-hiding flags, and no human-mimicking
    input (4.3). A picture CAPTCHA goes to the student. A CAPTCHA checkbox goes to the student
-   unless they chose D14 B. The security code is typed by the student (D10 A).
+   unless they chose D14 B. The security code is read from Gmail under the reader rules in section 3 (D10 B), and typed by the student (D10 A) when it cannot be.
 2. **Local only.** The agent runs on the student's computer, behind its normal connection. The
    SETUP step says to turn off a VPN before using Apply for me, since VPN exits are often
    data-center addresses. The app cannot detect this reliably, so it is guidance, not a check.
