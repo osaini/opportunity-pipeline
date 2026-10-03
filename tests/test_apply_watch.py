@@ -686,6 +686,25 @@ class NoValuesTests(WatchCase):
 
 
 class CardTests(WatchCase):
+    def test_a_held_handoff_claim_waiting_for_the_security_code_is_not_called_submitting(self):
+        waiting = {"waiting": "security_code", "security_code_reader": {"reader": "fallback", "prompted_at": iso(self.at(minutes=-1))}}
+        asked = self.raw_claim(state="clicking", mode="handoff", handed_over_at=iso(self.at(minutes=-2)), detail=waiting)
+        pressed = self.raw_claim(state="clicking", mode="handoff", handed_over_at=iso(self.at(minutes=-2)), detail={"waiting": ""})
+        other = self.raw_claim(state="clicking", mode="one_click", handed_over_at=iso(self.at(minutes=-2)), detail=waiting)
+        stale = self.raw_claim(state="clicking", mode="handoff", handed_over_at=iso(self.at(minutes=-30)), detail=waiting,
+                               instance="another-process", heartbeat_at=iso(self.at(minutes=-30)))
+        for token in (asked, pressed, other):
+            apply_claims.RUNNING.add(token)
+            self.addCleanup(apply_claims.RUNNING.discard, token)
+        states = {state["token"]: state for state in apply_watch.card_states(self.conn, USER, now=self.at()).values()}
+        self.assertEqual(
+            {token: states[token]["status"] for token in (asked, pressed, other, stale)},
+            {asked: "security_code", pressed: "submitting", other: "submitting", stale: "may_have_been_sent"},
+        )
+        script = (Path(__file__).resolve().parents[1] / "opportunity_app" / "static" / "app-applications.js").read_text(encoding="utf-8")
+        self.assertIn('apply.status === "security_code"', script, "the tracker card has words for the status")
+        self.assertIn('["filling", "your_turn", "security_code"].includes(apply.status)', script, "and offers Open, as for the other turns of the window")
+
     def test_card_states_cover_every_10_5_status(self):
         held = self.raw_claim(state="clicking", mode="one_click", handed_over_at=iso(self.at(minutes=-1)))
         apply_claims.RUNNING.add(held)

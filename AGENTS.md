@@ -153,7 +153,7 @@ keyboard and focus, responsive matrix, and the feature journeys. They need the s
 it works in any shell and sidesteps execution policy.
 
 Two more checks run only in CI unless you set them up: the Python browser tests
-(`xvfb-run python -m unittest tests.test_outreach_forms tests.test_apply_fixtures`, which skip
+(`xvfb-run python -m unittest tests.test_outreach_forms tests.test_apply_fixtures tests.test_apply_agent_browser tests.test_apply_handoff_e2e`, which skip
 silently under plain `unittest` without Playwright) and the extension's real-Chromium suite
 (`npm ci`, then `npm run test:extension:browser`). `npm run check` (or
 `node scripts/check-js-syntax.mjs`) parses every browser, extension, Node-test and script file.
@@ -172,8 +172,8 @@ When you are asked "is this covered?", answer with the row, not the test count.
 | --- | --- | --- |
 | `tests/` (unittest, `pytest-unit.ini`) | Routes, DB, auth, business logic, and the source-text guards below. Authenticates with a bearer token, so it never exercises the CSRF path, which only applies to cookie-authenticated browser requests. | Anything in the browser scripts (`app*.js`) or `styles.css` beyond what a guard reads as text. |
 | `tests/ui/` (Playwright) | Real rendering, real event handlers, real cookies, console and network | Server internals; anything behind a feature flag or credential it does not have |
-| `browser-python` (`tests.test_outreach_forms`, `tests.test_apply_fixtures`) | The contact-form submitter and the Apply for me fixtures and fake Greenhouse, in a real Chromium | Anything not reachable from those fixtures; it skips silently where Playwright is missing (CI sets `PIPELINE_REQUIRE_BROWSER_TESTS=1` so it cannot) |
-| `scripts/run_api_fuzz.py` | Every operation in the schema, with generated input | Anything requiring a valid multi-step sequence; connector routes, admin routes, the outreach draft, call-prep, find-contacts and contact-form submit routes, and Apply for me check, answers and sensitive-answers are excluded (the list is in the script) |
+| `browser-python` (`tests.test_outreach_forms`, `tests.test_apply_fixtures`, `tests.test_apply_agent_browser`, `tests.test_apply_handoff_e2e`) | The contact-form submitter, the Apply for me fixtures and fake Greenhouse, the apply agent and Finish in browser end to end (the real runner, a spawned child and the real driver), in a real Chromium | Anything not reachable from those fixtures; it skips silently where Playwright is missing (CI sets `PIPELINE_REQUIRE_BROWSER_TESTS=1` so it cannot) |
+| `scripts/run_api_fuzz.py` | Every operation in the schema, with generated input | Anything requiring a valid multi-step sequence; connector routes, admin routes, the outreach draft, call-prep, find-contacts and contact-form submit routes, and Apply for me check, answers and sensitive-answers are excluded (the list is in the script). Routes that need the student's browser session (`require_browser_session`: Apply for me's Finish in browser start, front, values, screenshots, review, cancel, claim resolve and mark-applied, and the sensitive-answer routes) answer 403 to the fuzzer's bearer token, which is not a server error, so no generated input reaches their bodies, validation or `preview_values`: `tests/test_apply_handoff.py` and `tests/test_apply_api.py` are the only cover for those |
 | `node tests/extension/run_tests.mjs` | The extension's engine, side panel and answer matching against hand-rolled DOM stubs | A real browser, real permission prompts, real pages |
 | `npm run test:extension:browser` | The MV3 extension in a persistent Chromium against a loopback ATS fixture | Real employer sites; the harness pre-grants the one optional permission headless Chromium cannot prompt for |
 | `node scripts/check-js-syntax.mjs` | That every browser, extension, Node-test, script and hook file parses | Whether any of it runs |
@@ -193,7 +193,7 @@ to `main`, except `portability`:
 | --- | --- | --- |
 | `test` | `compileall`; the unit suite in parallel; `tests.test_scheduled_tasks` and `tests.test_postgres` serially (postgres skips here); `check-js-syntax.mjs`; the extension unit tests; `pip-audit` | every run |
 | `ui` | `tests/ui` in Chromium, the `visual` marker deselected (baselines are per platform), traces kept on failure | every run |
-| `browser-python` | the two Playwright-driven unittest modules under `xvfb-run`, browser tests required, 20 minute limit | every run |
+| `browser-python` | the four Playwright-driven unittest modules under `xvfb-run`, browser tests required, 40 minute limit | every run |
 | `extension-browser` | `npm ci`, then `npm run test:extension:browser` | every run |
 | `api-fuzz` | `run_api_fuzz.py --max-examples 20` with the two virtualenvs | every run |
 | `postgres` | `tests.test_postgres` against a `postgres:17` service | every run |
@@ -269,7 +269,8 @@ py -3 scripts/serve_for_testing.py
 With `PIPELINE_SANDBOX_FAKE_APPLY=1` the sandbox also turns Apply for me on with a fictional
 Greenhouse listing and an agent that opens no browser: Acme Robotics (saved) becomes a Greenhouse role, and
 its page shows what is missing. A rehearsal or an option lookup there returns a canned result (and a canned picture) after a few
-seconds, with no browser. Nothing reaches Greenhouse.
+seconds, with no browser. Nothing reaches Greenhouse. **Finish in browser** returns a canned handoff there (no window): the Your turn panel, the
+student's own press, and the result, with the knobs in `apply_fake_ats.CANNED`.
 
 It seeds a throwaway database from the same fixture the unittest suite uses,
 prints fixed tokens, and serves `http://127.0.0.1:8799`. Sign in by pasting

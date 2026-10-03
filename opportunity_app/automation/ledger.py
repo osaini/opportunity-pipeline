@@ -532,12 +532,17 @@ FORM_HANDED_OVER = "clicking"
 def in_flight(conn: sqlite3.Connection, user_id: str, *, now: datetime | None = None) -> list[dict[str, Any]]:
     """What is past stopping: emails handed to Gmail, contact forms whose button is being pressed, and applications handed to Greenhouse.
 
-    Each item's action is 'send', 'form' or 'application'. A Gmail draft being
+    Each item's action is 'send', 'form', 'application' or 'window'. A Gmail draft being
     saved is not a send, and a form still being filled in can still be stopped
     by a pause (for an automatic one), so neither is listed. An application is
     listed while its claim is 'clicking' and held (apply_claims.claim_held): by
     its heartbeat, not its age, since a Finish in browser claim can be
     minutes old at hand-over and still be running.
+
+    A 'window' item is a Finish in browser window that is open for the student's own turn (a held 'claimed' handoff
+    claim whose detail says the student is working). It is not past stopping, and a pause does not stop it either: the
+    student's own press of Submit is the confirm, and Stop ends it. It is listed so the pause reply and the health card
+    say so instead of staying silent about a window that is still open.
     """
     items = []
     for row in conn.execute(
@@ -586,6 +591,24 @@ def in_flight(conn: sqlite3.Connection, user_id: str, *, now: datetime | None = 
             items.append({
                 "source": "apply_claim", "target_id": row["application_id"], "company": row["company"] or "",
                 "kind": row["mode"], "action": "application", "label": "", "at": row["handed_over_at"],
+            })
+    for row in conn.execute(
+        """
+        SELECT c.application_id, c.token, c.instance, c.heartbeat_at, c.detail_json, c.updated_at, o.company
+        FROM application_submit_claims c LEFT JOIN opportunities o ON o.id=c.opportunity_id
+        WHERE c.user_id=? AND c.state='claimed' AND c.mode='handoff' ORDER BY c.created_at
+        """,
+        (user_id,),
+    ).fetchall():
+        try:
+            waiting = (json.loads(row["detail_json"] or "{}") or {}).get("waiting")
+        except (TypeError, ValueError, AttributeError):
+            waiting = None
+        if waiting == "student" and claim_held(row, now=now):
+            items.append({
+                "source": "apply_claim", "target_id": row["application_id"], "company": row["company"] or "",
+                "kind": "handoff", "action": "window", "at": row["updated_at"],
+                "label": "A Finish in browser window is open. Pausing doesn't stop your own Submit; press Stop to end it.",
             })
     return items
 

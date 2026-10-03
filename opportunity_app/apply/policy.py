@@ -70,8 +70,8 @@ from ..core.json_values import json_as
 
 __all__ = [
     "ALLOWED_ATS_LABEL_FIELDS", "Plan", "PlanField", "SchemaField", "Source", "Sources", "build_plan", "company_matches", "control_of",
-    "cover_letter_for", "mac_key", "match_options", "name_parts", "parse_schema", "plan_entries", "plan_hash", "question_key", "resume_for",
-    "sources_for", "stored_sensitive_answer", "value_mac", "with_page_labels",
+    "cover_letter_for", "current_source", "mac_key", "match_options", "name_parts", "parse_schema", "plan_entries", "plan_hash", "preview_values", "profile_value_for",
+    "question_key", "resume_for", "sources_for", "stored_sensitive_answer", "value_mac", "with_page_labels",
 ]
 
 
@@ -405,7 +405,7 @@ def cover_letter_for(conn: sqlite3.Connection, user_id: str, opportunity_id: str
         "ORDER BY version DESC LIMIT 1", (user_id, opportunity_id),
     ).fetchone()
     if latest is None:
-        return {"problem_kind": "cover_letter_missing", "problem": "No cover letter is approved for this role. Draft one"}
+        return {"problem_kind": "cover_letter_missing", "problem": "No cover letter is approved for this role."}
     if latest["status"] != "approved":
         return {"problem_kind": "cover_letter_draft",
                 "problem": "Your cover letter for this role has a newer draft. Approve it or discard it"}
@@ -539,6 +539,20 @@ def name_parts(facts: Mapping[str, Any]) -> tuple[str, str, str]:
     return (words[0], words[1], preferred) if len(words) == 2 else ("", "", preferred)
 
 
+def profile_value_for(facts: Mapping[str, Any], ref: str) -> str:
+    """The confirmed profile fact a source ref names (``name_parts.first``, ``contact.email``, ...), or "" when there is none.
+
+    The one place a profile ref is turned into a value: build_plan fills with it, and the run's preview asks it again.
+    """
+    group, _, part = ref.partition(".")
+    if group == "name_parts":
+        first, last, preferred = name_parts(facts)
+        return {"first": first, "last": last, "preferred": preferred}.get(part, "")
+    if group == "contact" and part:
+        return _contact(facts, part)
+    return ""
+
+
 def label_field_of(item: SchemaField) -> str:
     """Which typeahead list a field is (5.5), or ''."""
     name = item.name.lower()
@@ -648,6 +662,14 @@ def posting_difference(company: str, title: str, listing: Mapping[str, Any]) -> 
     return ""
 
 
+def _answer_rows(answers: Iterable[Mapping[str, Any]], text: str, company: str) -> tuple[list[Any], list[Any]]:
+    """The saved answers for this exact question: (those saved for this company, those saved for another). The one selection."""
+    key = question_key(text)
+    rows = [row for row in answers if question_key(row["question"]) == key and str(row["answer"]).strip()]
+    usable = [row for row in rows if company_matches(str(row["company"] or ""), company)]
+    return usable, [row for row in rows if row not in usable]
+
+
 def _saved_answer(item: SchemaField, text: str, ctx: _Context) -> tuple[dict[str, Any] | None, str, str]:
     """(the usable saved answer, problem_kind, problem): only a row saved for this company, and only one answer for it (7.1).
 
@@ -657,10 +679,7 @@ def _saved_answer(item: SchemaField, text: str, ctx: _Context) -> tuple[dict[str
     other company it is one saved elsewhere. The student's own browser extension still proposes a reusable answer for
     review; the agent does not.
     """
-    key = question_key(text)
-    rows = [row for row in ctx.sources.answers if question_key(row["question"]) == key and str(row["answer"]).strip()]
-    usable = [row for row in rows if company_matches(str(row["company"] or ""), ctx.company)]
-    elsewhere = [row for row in rows if row not in usable]
+    usable, elsewhere = _answer_rows(ctx.sources.answers, text, ctx.company)
     answers = {str(row["answer"]).strip() for row in usable}
     if len(answers) > 1:
         return None, "conflicting_answers", f'You have two different saved answers for "{item.label}". Keep one'
@@ -700,6 +719,35 @@ def _plan_file(item: SchemaField, entry: PlanField, ctx: _Context) -> PlanField:
         entry.defer = True
         entry.note = "This board uploads a file as soon as it is attached, so the app can't attach it without sending it"
     return entry
+
+
+def _stored_value(
+    stored: Mapping[str, Any], control: str, options: Sequence[str], *, boxlike: bool, links: Sequence[str],
+) -> tuple[Any, str]:
+    """What a stored sensitive answer puts in this control, as (value, "") or (None, why it does not fit). The one rule.
+
+    ``boxlike`` is a tick box, or a Yes/No question that asks for agreement: only a statement the student ticked fills it,
+    and only when the form links to the same documents the student agreed to. ``_plan_sensitive`` fills with it and the
+    run's preview asks it again.
+    """
+    kind = str(stored.get("answer_kind") or "")
+    answer = str(stored.get("answer") or "")
+    stored_links = tuple(stored.get("links") or ())
+    if not boxlike:
+        return _choice_value(control, answer, options)
+    if kind != "checkbox" or _norm(answer) != "checked":
+        return None, "This box needs a statement you ticked, and the answer you stored is not one. Remove it in Apply agent settings, or tick it here"
+    if control == "checkbox":
+        value, why = True, ""
+    else:
+        # A Yes/No question that asks for agreement: a statement stored as ticked is the form's one "Yes".
+        yes = [option for option in options if _norm(option) == "yes"]
+        value, why = (yes[0], "") if len(yes) == 1 else (None, "This question has no single Yes option")
+    # The words are the same, but a notice is its document: a form that links to other documents than the ones the
+    # student agreed to, or to none, is not agreed to. No links on either side is a value too.
+    if value is not None and set(stored_links) != set(links):
+        return None, "The document this statement links to is not the one you agreed to. Read it again, then add it again"
+    return value, why
 
 
 def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Context, *, follows: bool = False) -> PlanField:
@@ -760,24 +808,7 @@ def _plan_sensitive(item: SchemaField, entry: PlanField, category: str, ctx: _Co
         entry.problem_kind = "sensitive_missing"
         entry.problem = f"You haven't added an answer for this ({words}) in Apply agent settings"
         return entry
-    kind = str(stored.get("answer_kind") or "")
-    answer = str(stored.get("answer") or "")
-    stored_links = tuple(stored.get("links") or ())
-    if boxlike:
-        if kind != "checkbox" or _norm(answer) != "checked":
-            value, why = None, "This box needs a statement you ticked, and the answer you stored is not one. Remove it in Apply agent settings, or tick it here"
-        elif checkbox:
-            value, why = True, ""
-        else:
-            # A Yes/No question that asks for agreement: a statement stored as ticked is the form's one "Yes".
-            yes = [option for option in entry.options if _norm(option) == "yes"]
-            value, why = (yes[0], "") if len(yes) == 1 else (None, "This question has no single Yes option")
-        # The words are the same, but a notice is its document: a form that links to other documents than the ones the
-        # student agreed to, or to none, is not agreed to. No links on either side is a value too.
-        if value is not None and set(stored_links) != set(entry.links):
-            value, why = None, "The document this statement links to is not the one you agreed to. Read it again, then add it again"
-    else:
-        value, why = _choice_value(entry.control, answer, entry.options)
+    value, why = _stored_value(stored, entry.control, entry.options, boxlike=boxlike, links=entry.links)
     if value is None:
         entry.problem_kind, entry.problem = "sensitive_mismatch", f"Your stored answer doesn't fit this form. {why}"
         return entry
@@ -796,27 +827,29 @@ def _plan_value(item: SchemaField, entry: PlanField, text: str, ctx: _Context) -
     control, name = entry.control, item.name
     profile_value, profile_ref = "", ""
     if name in ("first_name", "last_name"):
-        first, last, _preferred = name_parts(facts)
-        profile_value = first if name == "first_name" else last
         profile_ref = f"name_parts.{'first' if name == 'first_name' else 'last'}"
+        profile_value = profile_value_for(facts, profile_ref)
         if not profile_value:
             entry.problem_kind, entry.problem = "name", _NAME_PROBLEM
             return entry
     elif name == "preferred_name":
-        profile_value, profile_ref = name_parts(facts)[2], "name_parts.preferred"
+        profile_ref = "name_parts.preferred"
+        profile_value = profile_value_for(facts, profile_ref)
     elif name == "email":
-        profile_value, profile_ref = _contact(facts, "email"), "contact.email"
+        profile_ref = "contact.email"
+        profile_value = profile_value_for(facts, profile_ref)
         if not profile_value:
             entry.problem_kind, entry.problem = "profile_fact", "Add your email to your profile"
             return entry
     elif name == "phone":
-        profile_value, profile_ref = _contact(facts, "phone"), "contact.phone"
+        profile_ref = "contact.phone"
+        profile_value = profile_value_for(facts, profile_ref)
         if not profile_value:
             entry.problem_kind, entry.problem = "profile_fact", "Add your phone number to your profile"
             return entry
     elif item.section == "custom" and control == "text" and key in _PROFILE_KEYS:
-        fact = _PROFILE_KEYS[key]
-        profile_value, profile_ref = _contact(facts, fact), f"contact.{fact}"
+        profile_ref = f"contact.{_PROFILE_KEYS[key]}"
+        profile_value = profile_value_for(facts, profile_ref)
     if profile_value:
         entry.source, entry.value = Source("profile", profile_ref, label="Profile"), profile_value
         return entry
@@ -1021,12 +1054,140 @@ def plan_hash(plan: Plan, canonical_url: str = "", adapter_version: str = "") ->
 
 
 def plan_entries(plan: Plan) -> list[dict[str, Any]]:
-    """The value-free entries a run stores as ``plan_json`` (5.3): no value, only its MAC and where it came from."""
+    """The value-free entries a run stores as ``plan_json`` (5.3): no value, only its MAC and where it came from.
+
+    ``note`` is why an optional field was left blank. ``answer_key``, ``statement`` and ``company_only`` are the form's own
+    words and flags that the source selection was made from, kept so the preview (``preview_values``) can ask the same
+    question again later; none of them is a value. They are not in ``plan_hash``.
+    """
     return [
         {"key": item.key, "question": item.question, "control": item.control, "required": bool(item.required),
          "options": list(item.options), "sensitive": item.sensitive, "disposition": item.disposition,
          "source": {"kind": item.source.kind, "ref": item.source.ref, "company": item.source.company, "reusable": item.source.reusable,
                     "links": list(item.source.links)},
-         "value_mac": item.value_mac, "file_sha256": item.file_sha256, "problem": item.problem}
+         "value_mac": item.value_mac, "file_sha256": item.file_sha256, "problem": item.problem, "note": item.note,
+         "answer_key": item.answer_key, "statement": item.statement, "company_only": bool(item.company_only)}
         for item in plan.fields
     ]
+
+
+# --- The preview: today's source for a stored plan entry (10.4) -----------------------------------------------
+
+# How much of a long answer the preview shows.
+PREVIEW_CHARS = 120
+
+
+def current_source(
+    conn: sqlite3.Connection, user_id: str, entry: Mapping[str, Any], *, key: bytes, storage_root: Path | None,
+    sources: Sources | None = None, company: str = "", opportunity_id: str = "", mode: str = "handoff",
+) -> tuple[str, str, str, Any] | None:
+    """(source kind, ref, MAC or file hash, value) that today's source selection would choose for a stored plan entry, or None.
+
+    It asks the same questions build_plan asks, of the same readers (``sources_for``, ``profile_value_for``,
+    ``_answer_rows``, ``stored_sensitive_answer`` through ``Sources``, ``_stored_value``, ``resume_for``,
+    ``cover_letter_for``): no second copy of the rules. None when nothing answers the entry now (a fact removed, a saved
+    answer deleted or in conflict, a stored answer that no longer fits, a résumé with no readable file). ``sources`` and
+    ``company`` may be passed so one preview reads the student's data once. The value is held in memory and returned to
+    the caller only; the MAC is keyed like the plan's.
+    """
+    source = entry.get("source") if isinstance(entry.get("source"), Mapping) else {}
+    kind = str(source.get("kind") or "none")
+    control = str(entry.get("control") or "")
+    options = tuple(str(item) for item in entry.get("options") or ())
+    if sources is None:
+        sources = sources_for(conn, user_id, opportunity_id, company=company, storage_root=storage_root, key=key)
+    if kind == "profile":
+        ref = str(source.get("ref") or "")
+        value = profile_value_for(sources.facts, ref)
+        return ("profile", ref, value_mac(key, value), value) if value else None
+    if kind == "ats_label":
+        ref = str(source.get("ref") or "")
+        value = sources.ats_labels.get(ref, "")
+        return ("ats_label", ref, value_mac(key, value), value) if value else None
+    if kind == "answer":
+        usable, _elsewhere = _answer_rows(sources.answers, str(entry.get("answer_key") or entry.get("question") or ""), company)
+        if not usable or len({str(row["answer"]).strip() for row in usable}) > 1:
+            return None
+        value, _why = _choice_value(control, str(usable[0]["answer"]), options)
+        return ("answer", str(usable[0]["id"]), value_mac(key, value), value) if value is not None else None
+    if kind == "sensitive":
+        category = str(entry.get("sensitive") or "")
+        statement = str(entry.get("statement") or "")
+        if category not in sources.sensitive_allowed or not statement:
+            return None
+        stored = sources.sensitive_lookup(
+            category=category, question_key=question_key(statement), company_key=employer_key(company), mode=mode,
+            company_only=bool(entry.get("company_only")),
+        )
+        if not stored:
+            return None
+        boxlike = control == "checkbox" or (category in STATEMENT_CATEGORIES and statement_control(control, options))
+        value, _why = _stored_value(stored, control, options, boxlike=boxlike, links=tuple(source.get("links") or ()))
+        return ("sensitive", str(stored.get("id") or ""), value_mac(key, value), value) if value is not None else None
+    if kind == "resume":
+        resume = sources.resume
+        if resume.get("problem_kind") or not resume.get("version_id"):
+            return None
+        return "resume", str(resume["version_id"]), str(resume.get("sha256") or ""), str(resume.get("original_name") or "")
+    if kind == "cover_letter":
+        letter = sources.cover_letter
+        if letter.get("problem_kind"):
+            return None
+        return "cover_letter", f'{letter["document_id"]}@{letter["version"]}', str(letter["content_sha256"]), ""
+    return None
+
+
+def _preview_text(value: Any) -> str:
+    """One value as the preview words it: Ticked, the options joined, or the text cut to PREVIEW_CHARS."""
+    if value is True:
+        return "Ticked"
+    if value is False:
+        return "Not ticked"
+    if isinstance(value, (list, tuple)):
+        value = "; ".join(str(item) for item in value)
+    text = " ".join(str(value if value is not None else "").split())
+    return text if len(text) <= PREVIEW_CHARS else f"{text[:PREVIEW_CHARS].rstrip()}…"
+
+
+def preview_values(
+    conn: sqlite3.Connection, user_id: str, run: Mapping[str, Any], *, key: bytes, storage_root: Path | None,
+) -> dict[str, dict[str, Any]]:
+    """The values behind a finished run's stored plan, for the student's own browser session only: {key: {text, changed, available, shown}}.
+
+    Only for entries with disposition ``fill`` (and ``deferred`` in a rehearsal); never for ``left_for_you`` or ``blank``.
+    ``changed`` says today's source differs from the one the run used: another kind or ref (a newer saved answer, another
+    résumé version), another MAC (or file hash), or nothing answers it now (``available`` False, ``text`` empty).
+
+    A rehearsal shows today's value (``shown`` True), so the student sees what Finish in browser would use. A Finish in
+    browser run shows the value only where it provably equals what the app filled (``changed`` False); otherwise ``text`` is
+    empty and ``shown`` False, because the app never claims to know what Greenhouse received (the student could also
+    have changed any field in the window).
+    """
+    kind = str(run.get("kind") or "")
+    handoff = kind == "handoff"
+    company = ""
+    row = conn.execute("SELECT company FROM opportunities WHERE id=?", (run.get("opportunity_id"),)).fetchone()
+    if row is not None:
+        company = str(row["company"] or "")
+    sources = sources_for(conn, user_id, str(run.get("opportunity_id") or ""), company=company, storage_root=storage_root, key=key)
+    wanted = ("fill",) if handoff else ("fill", "deferred")
+    result: dict[str, dict[str, Any]] = {}
+    for entry in json_as(run.get("plan_json"), []):
+        if not isinstance(entry, dict) or entry.get("disposition") not in wanted:
+            continue
+        stored = entry.get("source") if isinstance(entry.get("source"), dict) else {}
+        found = current_source(
+            conn, user_id, entry, key=key, storage_root=storage_root, sources=sources, company=company,
+            mode="handoff" if handoff else "rehearse",
+        )
+        if found is None:
+            result[str(entry.get("key") or "")] = {"text": "", "changed": True, "available": False, "shown": False}
+            continue
+        found_kind, ref, mac, value = found
+        was = str(entry.get("file_sha256") or "") if found_kind in ("resume", "cover_letter") else str(entry.get("value_mac") or "")
+        changed = found_kind != stored.get("kind") or ref != str(stored.get("ref") or "") or (bool(was) and mac != was)
+        shown = (not changed) if handoff else True
+        result[str(entry.get("key") or "")] = {
+            "text": _preview_text(value) if shown else "", "changed": bool(changed), "available": True, "shown": bool(shown),
+        }
+    return result

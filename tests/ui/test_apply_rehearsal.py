@@ -104,7 +104,8 @@ def test_a_rehearsal_runs_in_front_of_the_student_and_ends_in_a_result_that_chan
     expect(result.locator(".apply-result-title")).to_contain_text("Your application has not been submitted.")
     expect(result.locator(".apply-measured")).to_contain_text("blocked 1 request")
     expect(result.locator("table.apply-plan caption")).to_have_text("What the rehearsal did with each field")
-    expect(result.locator("table.apply-plan thead th")).to_have_text(["Question", "What the rehearsal did", "From"])
+    # The Answer column joins once the student's own browser session has read the values (Finish in browser, M5b part 2).
+    expect(result.locator("table.apply-plan thead th")).to_have_text(["Question", "Answer", "What the rehearsal did", "From"], timeout=15_000)
     assert result.locator("table.apply-plan tbody tr").count() >= 1
     picture = result.locator(".apply-shot img")
     picture.scroll_into_view_if_needed()

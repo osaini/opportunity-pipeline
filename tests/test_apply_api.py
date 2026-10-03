@@ -770,7 +770,7 @@ class RunApiCase(ApplyApiCase):
 
 RUN_KEYS = {"id", "opportunity_id", "kind", "status", "outcome", "clean", "started_at", "finished_at", "heartbeat_at", "deadline_at", "stalled", "summary",
             "measured", "progress", "reasons", "problems", "fields", "options", "lookup", "screenshots", "refused_count", "review", "review_note",
-            "reviewed_at", "can_review", "can_cancel"}
+            "reviewed_at", "can_review", "can_cancel", "phase", "handed_over", "left_for_you", "handoff_until", "page_defaults", "claim", "can_front"}
 
 
 class StartRouteTests(RunApiCase):
@@ -841,12 +841,18 @@ class StartRouteTests(RunApiCase):
     def test_the_picture_is_served_to_the_student_only_and_never_cached(self):
         view = self.finished(self.rehearse().json()["id"])
         url = view["screenshots"][0]["url"]
-        picture = self.get(url)
+        # The picture shows every value the form holds except the covered sensitive ones, so it is the student's own browser's: an
+        # <img> sends the session cookie, and an access token (which a script holds) is refused.
+        picture = self.browser.get(url)
         self.assertEqual(picture.status_code, 200)
         self.assertEqual((picture.headers["content-type"], picture.headers["cache-control"]), ("image/png", "no-store"))
         self.assertEqual(picture.content, canned_png())
         self.assertEqual(self.client.get(url).status_code, 401)
-        self.assertEqual(self.browser.get(url).status_code, 200, "an <img> sends the session cookie, not a header")
+        refused = self.get(url)
+        self.assertEqual(refused.status_code, 403, refused.text)
+        self.assertIn("browser", refused.json()["detail"])
+        both = self.browser.get(url, headers=AUTH)
+        self.assertEqual(both.status_code, 403, "a cookie next to the header does not make a script the student")
 
     def test_a_lookup_is_accepted_and_returns_the_options(self):
         response = self.lookup()
@@ -965,6 +971,8 @@ class StartRouteTests(RunApiCase):
             ("get", "/api/v1/apply-agent/opportunities/{opportunity_id}/runs"), ("get", "/api/v1/apply-agent/runs/{run_id}"),
             ("post", "/api/v1/apply-agent/runs/{run_id}/cancel"), ("post", "/api/v1/apply-agent/runs/{run_id}/review"),
             ("get", "/api/v1/apply-agent/runs/{run_id}/screenshots/{index}"),
+            ("post", "/api/v1/apply-agent/opportunities/{opportunity_id}/handoffs"), ("post", "/api/v1/apply-agent/runs/{run_id}/front"),
+            ("get", "/api/v1/apply-agent/runs/{run_id}/values"),
         ):
             self.assertIn(method, paths[path], path)
         self.assertIn("202", paths["/api/v1/apply-agent/opportunities/{opportunity_id}/rehearsals"]["post"]["responses"])
@@ -1013,8 +1021,8 @@ class RunReadTests(RunApiCase):
 
     def test_another_students_run_is_404_everywhere(self):
         run_id = self.other_students_run()
-        for method, path in (("GET", f"/runs/{run_id}"), ("GET", f"/runs/{run_id}/screenshots/0")):
-            response = self.get(f"{self.BASE}{path}")
+        for method, path in (("GET", f"/runs/{run_id}"), ("GET", f"/runs/{run_id}/screenshots/0"), ("GET", f"/runs/{run_id}/values")):
+            response = self.browser.get(f"{self.BASE}{path}")
             self.assertEqual((response.status_code, response.json()["detail"]), (404, "No run with that id"), path)
         for path, body in ((f"/runs/{run_id}/cancel", None), (f"/runs/{run_id}/review", {"verdict": "right"})):
             response = self.send("POST", f"{self.BASE}{path}", body)
@@ -1037,11 +1045,11 @@ class RunReadTests(RunApiCase):
             with self.subTest(name):
                 with self.conn:
                     self.conn.execute("UPDATE apply_runs SET screenshots_json=? WHERE id=?", (json.dumps([{**real[0], "path": stored}]), run_id))
-                response = self.get(url)
+                response = self.browser.get(url)
                 self.assertEqual((response.status_code, response.json()["detail"]), (404, "This picture is no longer kept"))
-        self.assertEqual(self.get(url.replace("/0", "/7")).status_code, 404)
-        self.assertEqual(self.get(url.replace("/0", "/-1")).status_code, 404)
-        self.assertEqual(self.get(url.replace("/0", "/abc")).status_code, 422)
+        self.assertEqual(self.browser.get(url.replace("/0", "/7")).status_code, 404)
+        self.assertEqual(self.browser.get(url.replace("/0", "/-1")).status_code, 404)
+        self.assertEqual(self.browser.get(url.replace("/0", "/abc")).status_code, 422)
 
 
 class RunMarkTests(RunApiCase):
@@ -1136,7 +1144,7 @@ class RunMarkTests(RunApiCase):
         view = self.finished(run_id)
         self.assertEqual((view["status"], view["outcome"], view["reasons"]), ("finished", "failed", ["You stopped this run. No application was sent."]))
         again = self.send("POST", f"{self.BASE}/runs/{run_id}/cancel")
-        self.assertEqual((again.status_code, again.json()["detail"]), (409, "This run has already finished"))
+        self.assertEqual((again.status_code, again.json()["detail"]), (409, "This run has already finished."))
 
     def orphan(self, *, seconds_ago=600, beat_seconds_ago=3):
         """A row a stopped server left 'running': started long ago, with the heartbeat it wrote just before it was killed."""

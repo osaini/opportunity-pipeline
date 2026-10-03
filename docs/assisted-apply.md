@@ -163,17 +163,61 @@ value-free progress. The extension never receives the editable profile draft.
 5. One session follows each application while each ATS page has an idempotent
    step record. Records contain outcomes, not proposed or observed values.
 6. The tracker moves to `applied` only through the panel's explicit
-   `confirm-submitted` action. There is no success-page inference.
+   `confirm-submitted` action, or the student's own **Mark as applied** after
+   Finish in browser. There is no success-page inference.
 
 Workday, Greenhouse, Lever, Ashby, SmartRecruiters, and conservative generic
 HTML forms are recognized. iCIMS and Workable are detected as experimental and
 remain manual for unsupported widgets. LinkedIn is out of scope.
 
+## Finish in browser (Apply for me)
+
+**Apply for me** is the app's own filler for saved Greenhouse roles. It is off until the student turns it on, and **Finish
+in browser** is the part of it that fills a real form. The student presses Submit; the app never does.
+
+1. The app opens the employer's Greenhouse form in its own Chromium window, with a fresh profile and no cookies, and fills it
+   from confirmed facts, the answers saved for that company, the confirmed résumé, and the stored sensitive answers the
+   student switched on. A consent or acknowledgment box is ticked only on an exact stored statement with the same
+   documents, and the **Your turn** panel lists every box the app ticked, with the addresses the statement links to, before
+   the student presses Submit. Everything else is left for the student: cover letters (the app attaches none yet), any
+   CAPTCHA box, and any field it could not fill or read back. The panel lists those under **Left for you**.
+2. The student completes the form in the window and presses **Submit application** there. Before that press nothing that could
+   carry the application leaves the window: every request that is not a plain read is refused, except the CAPTCHA
+   service's own requests, which may carry no answer, and Greenhouse's telemetry is refused outright. The press goes
+   through only after the app has recorded the attempt, so a submission can never be sent without a record of it. Once typed,
+   the employer's page scripts can read your answers, including sensitive ones; the app blocks any request that carries
+   a value it filled to any other address, before and after the press (spec 11). It checks only what the app itself put in
+   the form: an answer you type in the window is not known to the app, so it is not watched for. After the press the
+   confirmation page's own requests to Greenhouse's board addresses are not checked, and every other address still is.
+3. A second press, a file upload, or a send to an address the app does not recognize is stopped. **Stop**, closing the window,
+   or 20 minutes with no press close the window and send nothing. After the press Stop is gone: the app can no longer
+   say that nothing was sent, and it tells the student what it saw.
+4. If Greenhouse asks for its emailed security code, the app reads the code from Gmail (read-only, a verified Greenhouse
+   sender, after the press, for the same company, once) and types it into the same window. It does not press Submit
+   again: the student does, and the app tells the student to press only after two seconds in which it refuses any send, so a
+   page that sends the code by itself as it is typed sends nothing (a page that waits longer than that is not stopped).
+   If the app cannot read it, the student types it. The code is never stored or logged, and the picture taken at the end
+   covers the code boxes.
+5. Pausing automation does not stop a window the student opened (their own Submit is the confirm), and the pause reply
+   says so.
+6. The tracker never moves by itself. When Greenhouse shows its confirmation page, the application card asks "Greenhouse
+   showed its confirmation page. Mark as applied?" and only the student's click moves it to `applied`. An attempt that may
+   have reached Greenhouse says so and asks **It went through** or **It didn't go through**; the app also looks for
+   Greenhouse's confirmation email for 24 hours when Gmail is connected.
+7. Screenshots of the filled form, with sensitive fields covered, are kept 90 days under `data/private/apply/` and shown
+   only in the student's own signed-in browser.
+
+Every application goes out under the student's own name and is the student's own act. In a rehearsal the **Answer**
+column shows the answer the app would use today, which is what Finish in browser would fill, and marks one that changed
+since the rehearsal. After Finish in browser the **What the app filled** column shows a value only when it is provably the
+one the app filled; after the student edits a field in the window the app does not claim to know what Greenhouse received.
+
 ## Verification gates
 
 The implementation is guarded at the API/DB boundary by
 `tests/test_extension_apply.py` and at the field-mutation boundary by
-`tests/extension/run_tests.mjs`. Normal release verification also runs the
+`tests/extension/run_tests.mjs`; Finish in browser by `tests/test_apply_handoff.py`,
+`tests/test_apply_agent_browser.py` and `tests/ui/test_apply_handoff.py`. Normal release verification also runs the
 Python API suite, Playwright UI suite, API fuzzer, visual checks, and PostgreSQL
 contracts. Never point any test at `data/platform.db`; browser and API tests use
 throwaway seeded databases.

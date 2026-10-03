@@ -155,7 +155,7 @@ class FoundTests(CodeCase):
         self.assertEqual((record["reader"], set(record)), ("typed", {"prompted_at", "reader", "handed_at", "typed_at"}))
         self.assertEqual(self.notices(), ["Apply for me entered the security code Greenhouse emailed you for Bluefin Robotics"])
         self.assertEqual(apply_watch.ats_statistics(self.conn, USER)["security_code_typed"], 1)
-        self.assertNotIn(CODE, self.everywhere(), "the code is in the pipe reply and nowhere else")
+        self.assertNotIn(CODE, self.everywhere(), "the code is in the pipe reply and nowhere else, nor after it was typed")
         [query] = self.gmail.queries
         self.assertIn('from:(greenhouse.io OR greenhouse-mail.io) subject:"security code" after:', query)
         self.assertTrue(all(request.method == "GET" for request in self.gmail.requests))
@@ -198,6 +198,57 @@ class FoundTests(CodeCase):
         with self.conn:
             self.conn.execute("UPDATE application_submit_claims SET state='submitted', verification='not_watched' WHERE token=?", (self.token,))
         self.assertFalse(self.typed(), "the claim is no longer ours to answer")
+
+    def test_the_pipe_acknowledgement_is_confirm_typed_and_a_request_after_it_falls_back(self):
+        self.code_mail()
+        self.assertEqual(self.ask().status, "found")
+        self.assertEqual(len(self.gmail.queries), 1)
+        self.reader.confirm(self.conn, user_id=USER, token=self.token, typed=True, now=self.at(seconds=25))
+        record = self.security()
+        self.assertEqual((record["reader"], set(record)), ("typed", {"prompted_at", "reader", "handed_at", "typed_at"}))
+        self.assertEqual(self.notices(), ["Apply for me entered the security code Greenhouse emailed you for Bluefin Robotics"])
+        again = self.ask(seconds=30)
+        self.assertEqual((again.status, again.reason, again.code), ("fallback", "already_used", ""))
+        restarted = security_code.SecurityCodeReader(self.factory).answer(self.conn, user_id=USER, token=self.token, now=self.at(seconds=40))
+        self.assertEqual((restarted.status, restarted.reason), ("fallback", "already_used"), "the claim remembers it, not only the process")
+        self.assertEqual(len(self.notices()), 1, "no notice for a repeat")
+        self.assertNotIn(CODE, self.everywhere())
+
+    def test_a_code_the_agent_could_not_type_is_a_fallback_with_its_reason_and_no_typed_notice(self):
+        self.code_mail()
+        self.assertEqual(self.ask().status, "found")
+        self.reader.confirm(self.conn, user_id=USER, token=self.token, typed=False, reason="inputs_not_empty", now=self.at(seconds=5))
+        record = self.security()
+        self.assertEqual((record["reader"], record["reason"]), ("fallback", "inputs_not_empty"))
+        [notice] = automation.list_notices(self.conn, USER)
+        self.assertEqual(notice["title"], "Bluefin Robotics: Greenhouse emailed you a security code. Type it into the Chromium window.")
+        self.assertEqual(notice["body"], "The app read the code but couldn't type it: the code boxes in the window already had something in them.")
+        self.assertEqual(apply_watch.ats_statistics(self.conn, USER)["security_code_typed"], 0)
+        again = self.ask(seconds=20)
+        self.assertEqual((again.status, again.reason, again.code), ("fallback", "inputs_not_empty", ""), "the code is gone from memory")
+        self.assertNotIn(CODE, self.everywhere())
+
+    def test_a_reason_the_reader_does_not_know_is_still_a_typing_fallback(self):
+        self.code_mail()
+        self.ask()
+        self.reader.confirm(self.conn, user_id=USER, token=self.token, typed=False, reason="something new", now=self.at(seconds=5))
+        self.assertEqual(self.security()["reason"], "typing_failed")
+        [notice] = automation.list_notices(self.conn, USER)
+        self.assertIn("couldn't type it", notice["body"])
+
+    def test_forget_drops_the_handed_out_code(self):
+        self.code_mail()
+        self.assertEqual(self.ask().status, "found")
+        self.reader.forget(self.token)
+        self.assertEqual(self.ask(seconds=20).status, "fallback")
+
+    def test_confirm_on_a_claim_that_is_not_clicking_writes_nothing(self):
+        self.code_mail()
+        self.ask()
+        with self.conn:
+            self.conn.execute("UPDATE application_submit_claims SET state='submitted', verification='not_watched' WHERE token=?", (self.token,))
+        self.reader.confirm(self.conn, user_id=USER, token=self.token, typed=True)
+        self.assertEqual((self.security()["reader"], self.notices()), ("handed", []))
 
     def test_the_pipe_message_carries_the_code_only_when_found(self):
         self.assertEqual(security_code.CodeAnswer("waiting").message(), {"op": "security_code", "status": "waiting", "reason": ""})
@@ -413,6 +464,109 @@ class CurrentClaimTests(CodeCase):
         self.assertEqual(apply_watch.ats_statistics(self.conn, USER)["recent"]["security_code_prompts"], 1)
         self.assertEqual(self.claim_row(token)["state"], "submitted")
 
+
+class LateAnswerTests(CodeCase):
+    """What the reader keeps (in memory only) once the run is over or the agent has stopped waiting for its ask."""
+
+    def test_a_code_found_after_the_claim_moved_on_is_not_kept(self):
+        # The lookup is still reading Gmail when the run ends: the claim is settled, forget() has run, then it finds the code.
+        real = security_code.find_code
+
+        def late(conn, user_id, **kwargs):
+            found = real(conn, user_id, **kwargs)
+            with conn:
+                conn.execute("UPDATE application_submit_claims SET state='submitted' WHERE token=?", (self.token,))
+            return found
+
+        self.code_mail()
+        with mock.patch.object(security_code, "find_code", late):
+            answer = self.ask()
+        self.assertEqual((answer.status, answer.reason, answer.code), ("fallback", "not_current", ""))
+        self.assertEqual(self.reader._handed, set(), "the code of a settled claim stays in the reader's memory")
+        self.assertNotIn(CODE, repr(vars(self.reader)))
+        self.assertNotIn(CODE, self.everywhere())
+
+    def test_the_agent_giving_up_on_its_ask_drops_the_code_and_records_that_the_student_took_over(self):
+        self.code_mail()
+        self.assertEqual(self.ask().status, "found")
+        self.assertIn(self.token, self.reader._handed)
+        self.reader.confirm(self.conn, user_id=USER, token=self.token, typed=False, reason="abandoned", now=self.at(seconds=5))
+        self.assertEqual(self.reader._handed, set(), "the code the agent never took is still held")
+        record = self.security()
+        self.assertEqual((record["reader"], record["reason"]), ("fallback", "abandoned"),
+                         "an ask the agent stopped waiting for is not 'no email arrived within 10 minutes'")
+        self.assertEqual(self.notices(), [], "the window was brought forward for the student already: no second notice")
+        self.assertEqual(apply_watch.ats_statistics(self.conn, USER)["security_code_typed"], 0)
+        self.assertNotIn(CODE, self.everywhere())
+        self.assertEqual(self.ask(seconds=6).status, "fallback", "a request after that is a fallback, not the code again")
+
+    def test_an_ask_abandoned_while_gmail_is_being_read_keeps_neither_the_code_nor_a_handed_out_record(self):
+        real = security_code.find_code
+
+        def abandoned_meanwhile(conn, user_id, **kwargs):
+            found = real(conn, user_id, **kwargs)
+            self.reader.confirm(self.conn, user_id=USER, token=self.token, typed=False, reason="abandoned", now=self.at(seconds=5))
+            return found
+
+        self.code_mail()
+        with mock.patch.object(security_code, "find_code", abandoned_meanwhile):
+            answer = self.ask()
+        self.assertEqual((answer.status, answer.code), ("fallback", ""), "a code nobody waits for was handed out")
+        record = self.security()
+        self.assertEqual((record["reader"], record["reason"]), ("fallback", "abandoned"), "the late code overwrote the fallback with handed")
+        self.assertEqual(self.reader._handed, set(), "the code of an abandoned ask stays in the reader's memory until the run ends")
+        self.assertNotIn(CODE, repr(vars(self.reader)))
+        self.assertNotIn(CODE, self.everywhere())
+        self.assertEqual(self.ask(seconds=60).status, "fallback")
+        self.reader.forget(self.token)
+        self.assertEqual(self.reader._abandoned, set())
+
+    def test_a_late_handed_out_record_never_replaces_a_fallback_or_a_typed_code(self):
+        self.code_mail()
+        self.ask()
+        for reader in ("fallback", "typed"):
+            with self.subTest(reader=reader):
+                security_code._record(self.conn, USER, self.token, {"reader": reader}, now=self.at(seconds=1))
+                self.assertFalse(security_code._record(self.conn, USER, self.token, {"reader": "handed"}, now=self.at(seconds=2),
+                                                       not_reader=("fallback", "typed")))
+                self.assertEqual(self.security()["reader"], reader)
+
+    def test_abandoning_never_overwrites_a_code_that_was_typed_or_a_fallback_already_recorded(self):
+        self.code_mail()
+        self.ask()
+        self.reader.confirm(self.conn, user_id=USER, token=self.token, typed=True, now=self.at(seconds=5))
+        self.reader.confirm(self.conn, user_id=USER, token=self.token, typed=False, reason="abandoned", now=self.at(seconds=6))
+        self.assertEqual(self.security()["reader"], "typed")
+
+    def test_a_lookup_still_running_when_the_run_ends_is_forgotten_when_it_finishes(self):
+        import threading
+        from opportunity_app.apply import runner as apply_runner
+
+        started, release = threading.Event(), threading.Event()
+
+        class Slow:
+            forgotten = []
+
+            def answer(self, conn, *, user_id, token, now=None):
+                started.set()
+                release.wait(20)
+                return security_code.CodeAnswer("found", code=CODE)
+
+            def forget(self, token):
+                self.forgotten.append(token)
+
+        reader = Slow()
+        answers = apply_runner._CodeAnswers(reader, self.path, USER, self.token)
+        answers.ask(1)
+        self.assertTrue(started.wait(10))
+        answers.close()
+        reader.forget(self.token)      # what the supervisor thread does as the run ends
+        self.assertEqual(reader.forgotten, [self.token])
+        release.set()
+        deadline = datetime.now() + timedelta(seconds=10)
+        while len(reader.forgotten) < 2 and datetime.now() < deadline:
+            threading.Event().wait(0.05)
+        self.assertEqual(reader.forgotten, [self.token, self.token], "what the lookup found after the run ended was not forgotten again")
 
 class ExtractCodeTests(unittest.TestCase):
     def test_extract_code(self):

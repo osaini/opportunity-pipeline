@@ -18,7 +18,7 @@ AGENT_MODES = ("lookup", "rehearse", "submit", "handoff")
 # Which agent mode each apply_runs.kind runs in.
 MODE_FOR_KIND = {"lookup": "lookup", "rehearsal": "rehearse", "submit": "submit", "handoff": "handoff"}
 # The modes built so far. The others return a failed RunResult and open no browser.
-BUILT_MODES = ("lookup", "rehearse")
+BUILT_MODES = ("lookup", "rehearse", "handoff")
 OUTCOMES = ("looked_up", "rehearsed", "submitted", "unconfirmed", "needs_you", "failed")
 ISOLATIONS = ("process", "thread")
 
@@ -31,6 +31,13 @@ PROGRESS_STEPS = {
     "fill": "Filling {n} fields",
     "check": "Checking every required field",
     "picture": "Taking a picture of the filled form",
+    "your_turn": "Your turn: complete the form in the window, then press Submit application there",
+    "submitting": "Submitting to Greenhouse…",
+    "security_code": ("Greenhouse emailed you a security code. The app is looking for it in your Gmail; "
+                      "you can also type it into the window yourself"),
+    "code_typed": "The app typed the security code from your email. Press Submit application in the window",
+    "code_yours": "Type the security code Greenhouse emailed you into the window, then press Submit application",
+    "challenge": "Greenhouse showed a check in the window. Finish it there",
 }
 MAX_LOOKUP_OPTIONS = 20
 # The one sentence for a run the student stopped. The agent says it, the runner stops a run with it, and the runner's summary
@@ -48,6 +55,49 @@ OP_CANCEL = "cancel"                # parent -> child: {"op"}
 OP_RESULT = "result"                # child -> parent: {"op", "result": RunResult}
 OP_ERROR = "error"                  # child -> parent: {"op", "error": exception type name only, never its message}
 
+# M5b part 2: Finish in browser.
+OP_HANDOFF_READY = "handoff_ready"     # child -> parent, one-way: {"op", "plan": [value-free entries], "plan_hash",
+                                       #   "left": [{"key", "question", "reason"}], "screenshot": {...} | None,
+                                       #   "captcha_widget": bool, "page_defaults": [keys],
+                                       #   "handoff_in_s": seconds the agent will really keep the window for the student}
+OP_SECURITY_CODE = "security_code"     # child -> parent: {"op", "id"}. The parent answers for its own run's claim,
+                                       #   never for a token the child names. Sent again only after the last ask's
+                                       #   reply arrived (never while one is outstanding).
+OP_SECURITY_CODE_REPLY = "security_code_reply"   # parent -> child: {"op", "id", "status": "waiting" | "found" |
+                                       #   "fallback", "reason"} plus "code" only when found. Never logged or stored.
+OP_SECURITY_CODE_RESULT = "security_code_result" # child -> parent, one-way: {"op", "id", "typed": bool,
+                                       #   "reason": "" | "inputs_not_empty" | "inputs_missing" | "bad_code" |
+                                       #   "page_closed" | "already_typed"}. Only this makes the parent record "typed".
+OP_FRONT = "front"                     # parent -> child, one-way: bring the window to the front
+# OP_HAND_OVER (M5a) gains "expires": time.monotonic() + timeouts.reply_s, stamped by the child when it sends.
+
+# The handoff's sentences. The runner uses some when it stops a run itself; the UI never parses them.
+HANDOFF_NOT_SUBMITTED = "You didn't submit it in the window. Your application was not sent."
+HANDOFF_CRASHED = ("The browser window stopped working before you submitted. Your application was not sent. "
+                   "Try again.")
+HANDOFF_UNRECORDED = "The app couldn't record this submission, so it stopped it. Nothing was sent. Try again."
+HANDOFF_ELSEWHERE = ("The form tried to send to an address the app doesn't recognize, so the app stopped it. "
+                     "Nothing was sent. Apply from the posting instead.")
+HANDOFF_EARLY = ("The form tried to send before the app finished filling it, so the app stopped it and closed the "
+                 "window. Nothing was sent. Try again.")
+HANDOFF_NO_LOADER = ("The app couldn't find where this form sends applications, so it can't keep track of your "
+                     "Submit. Apply from the posting instead.")
+HANDOFF_S3 = ("This board uploads files as soon as they are attached, which the app does not support yet. "
+              "Nothing was sent. Apply from the posting instead.")
+HANDOFF_UPLOAD = ("The form tried to upload a file, which the app does not allow yet, so the app stopped it and closed "
+                  "the window. Nothing was sent. Apply from the posting instead.")
+HANDOFF_HIDDEN = ('The form has a hidden field where the app expected "{question}", so the app stopped before filling '
+                  "it. Nothing was sent. Apply from the posting instead.")
+WINDOW_CLOSED = "You closed the window. No application was sent."
+WINDOW_UNCONFIRMED = ("The app couldn't confirm the Chromium window closed, so it can't be sure nothing was sent. "
+                      "Check your email for a confirmation from Greenhouse.")
+YOUR_TURN = "The form is filled in the Chromium window. Complete the fields below, then press Submit application there."
+YOUR_TURN_NONE_LEFT = "The form is filled in the Chromium window. Check the form, then press Submit application there."
+LEFT_FIELD = 'The app could not fill "{question}". Fill it in yourself.'
+LEFT_CAPTCHA = "Tick the CAPTCHA box in the window yourself before you press Submit application."
+LEFT_COVER_LETTER = "The app doesn't attach cover letters yet. Attach yours in the window."
+LEFT_UNPLANNED = "The page put something in \"{question}\" that the app didn't. Check it before you press Submit application."
+
 
 @dataclass(frozen=True)
 class ApplyTimeouts:
@@ -63,6 +113,15 @@ class ApplyTimeouts:
     reply_s: float = 10.0            # how long the child waits for a hand-over answer
     replan_s: float = 30.0           # how long the child waits for a plan
     orphan_s: float = 10.0           # a child process whose runner is gone (or whose deadline passed) ends itself this long after, however stuck its page is
+    fill_s: float = 5 * 60           # the fill before the student's turn (the rehearsal budget); the deadline counts it
+    code_read_s: float = 10 * 60     # D10 B: how long the parent's reader looks for the code email (= security_code.CODE_WINDOW)
+    code_poll_s: float = 15.0        # between two asks while the reader says waiting (= security_code.POLL_EVERY)
+    code_reply_s: float = 45.0       # an ask with no reply after this is SHOWN as waiting; it stays pending (= REPLY_TIMEOUT_S)
+    heartbeat_s: float = 20.0        # every wait loop heartbeats at least this often (spec 5.2 rule 4: 30 s)
+
+    @property
+    def after_hand_over_s(self) -> float:   # one budget shared by every wait after hand-over except the outcome windows
+        return self.code_read_s + self.security_code_s
 
 
 @dataclass(frozen=True)
@@ -102,6 +161,7 @@ class AgentJob:
     screenshot_dir: str               # absolute; "" means take no screenshot
     timeouts: ApplyTimeouts = ApplyTimeouts()
     deadline_s: float = 0.0           # the run's deadline in seconds from its start; a child process ends itself ``timeouts.orphan_s`` after it. 0 means none.
+    ends_at: float = 0.0              # a time.monotonic() instant (system-wide); every agent wait is capped by it; 0 = no cap
 
 
 @dataclass
@@ -121,6 +181,7 @@ class RunResult:
     evidence: dict[str, Any] = field(default_factory=dict)          # see plan section 3.4
     handed_over: bool = False
     after_click: bool = False
+    confirmation_seen: bool = False   # True only when decide_outcome gave "submitted" with resolved_by == "page"
 
 
 def problem_dict(problem: Any) -> dict[str, Any]:
@@ -134,6 +195,18 @@ def problem_dict(problem: Any) -> dict[str, Any]:
     }
 
 
+class HandoffLink(Protocol):
+    """The handoff's extra half of the pipe. None outside handoff (and in tests that play the parent themselves)."""
+
+    def ready(self, message: dict[str, Any]) -> None: ...          # sends OP_HANDOFF_READY
+    def ask_code(self) -> int: ...                                 # sends OP_SECURITY_CODE; returns its id; never blocks
+    def code_reply(self, ident: int) -> dict[str, Any] | None: ... # the reply if it arrived, else None; never blocks
+    def code_result(self, ident: int, typed: bool, reason: str = "") -> None: ...  # sends OP_SECURITY_CODE_RESULT
+    def abandon_code(self) -> None: ...                            # the agent stops waiting for its ask: a reply that comes later is dropped
+    def front_requested(self) -> bool: ...                         # True once for each OP_FRONT
+    def parent_gone(self) -> bool: ...                             # the pipe hit end-of-file or a bad frame
+
+
 class ApplyAgentLike(Protocol):
     def __enter__(self) -> "ApplyAgentLike": ...
     def __exit__(self, *exc: Any) -> None: ...
@@ -143,6 +216,7 @@ class ApplyAgentLike(Protocol):
         replan: Callable[[list[dict[str, Any]], bool], Any] | None = None,
         hand_over: Callable[[], bool] | None = None,
         cancelled: Callable[[], bool] | None = None,
+        link: "HandoffLink | None" = None,
     ) -> RunResult: ...
 
 

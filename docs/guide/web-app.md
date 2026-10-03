@@ -65,6 +65,7 @@ Important properties:
 - Apply Mode in `apps/extension` uses transient `activeTab` access, inventories
   Workday/Greenhouse/Lever/Ashby/SmartRecruiters/generic fields, requires review
   for sensitive fields, and has no final-submit capability.
+- **Apply for me** (opt-in, Greenhouse only): rehearses a saved role's form in a window and sends nothing; **Finish in browser** fills it and leaves Submit to you. See `docs/assisted-apply.md`.
 - Connections default to sandbox suppression. Optional Google/Microsoft OAuth
   uses PKCE, least-privilege read scopes, encrypted tokens, signed webhooks,
   preview/confirm tracker updates, quiet hours, verified phone state, and STOP.

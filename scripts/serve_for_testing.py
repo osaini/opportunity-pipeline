@@ -16,7 +16,12 @@ and printed on startup.
 PIPELINE_SANDBOX_FAKE_APPLY=1 also turns Apply for me on for the seeded student, with a fake Greenhouse
 listing and a fake agent: Acme Robotics (saved) becomes a Greenhouse role, so the "what's missing" view has
 something to show. A rehearsal or an option lookup returns a canned result after a few seconds, with a canned
-picture. Nothing reaches Greenhouse and no browser opens.
+picture. Finish in browser returns a canned handoff the same way, with no window: the fictional student's turn lasts
+``apply_fake_ats.CANNED["handoff"]["wait"]`` seconds (1.5 by default), then the canned form answers by
+``CANNED["handoff"]["outcome"]`` (submitted, unconfirmed, security_code, refused, failed_4xx or hang_after_hand_over).
+The sandbox's fake board is not Acme's, so a start needs the student's word that the posting is right
+(``posting_confirmed``). Stop and Bring the window forward work as in the real thing. Nothing reaches Greenhouse and no
+browser opens.
 
 Stop it with Ctrl+C; the temporary directory is removed on exit.
 """

@@ -591,12 +591,13 @@ for any company" tick there. A **rehearsal** opens a Chromium window and fills t
 form to check it, sends nothing (the app blocks every request that could submit
 the form), and takes a picture of the filled form with the sensitive fields
 covered; the pictures are kept 90 days. A form that does not look like the saved
-role (another company or title) is rehearsed only after the student ticks "This is
-the right posting". Tell the student to turn a VPN off before
-a rehearsal, since a form can refuse a visit that comes through one. The student
-always presses Submit themselves, and nothing here sends an application. It is
-off until they turn it on under Profile › Automation. Ask before turning it on
-for them, and set up these things with the student:
+role (another company or title) is rehearsed, or filled for **Finish in browser**,
+only after the student ticks "This is the right posting". Tell the student to turn
+a VPN off before a rehearsal or Finish in browser, since a form can refuse a visit
+that comes through one. Every application goes out under the student's own name and
+is their own act: the app only fills the form, and they press Submit. It is off
+until they turn it on under Profile › Automation. Ask before turning it on for
+them, and set up these things with the student:
 
 1. **Their name on an application.** Ask how they write it and set
    `name_parts` (see step 3), or fill in **Name for applications** on the
@@ -630,8 +631,8 @@ for them, and set up these things with the student:
 The limits in force are listed, read only, under Profile › Automation › Apply
 for me settings. That page also keeps the **exact options** the student picks
 for lists only the form knows (school, location, degree): the app uses such an
-option word for word and never guesses one. Screenshots of a filled form,
-when a later step takes them, are deleted after 90 days
+option word for word and never guesses one. Screenshots of a filled form
+are deleted after 90 days
 (`PIPELINE_APPLY_EVIDENCE_DAYS` in `.env` changes that). Run
 `python -m opportunity_app.setup validate` after editing; it checks these
 fields too.
@@ -688,6 +689,28 @@ fields too.
    That is a guard against a stray script, not a lock against anyone who holds
    the access token (it can sign in a browser session), and the account export
    includes the stored answers. Say so if they share the machine or the token.
+
+6. **Finish in browser.** On a saved role a **Finish in browser** button sits next to
+   the rehearsal. It opens a Chromium window and fills the form; what the app
+   cannot fill (cover letters, any CAPTCHA box, a field it could not read back)
+   is listed as **Left for you**, and every consent box it ticked is listed with
+   the addresses the statement links to. The student finishes the form in the
+   window and presses **Submit application** there themselves. Tell them: the
+   application is not sent until they press it (to find the options for typeahead
+   fields such as location and school, the app sends the text typed there to
+   Greenhouse's lookup service, and it does not watch what they type in the window
+   themselves); **Stop**, closing the window, or 20
+   minutes without a press closes it and sends nothing; if the window doesn't
+   come forward, click Chromium in the taskbar; and the app never moves the
+   tracker by itself: when Greenhouse shows its confirmation page the card asks
+   **Mark as applied?**, and only their click does it. If Greenhouse asks for its
+   emailed security code, the app reads it from Gmail (read-only, after they
+   press Submit) and types it into the window, and they press Submit again; that
+   needs the email on their applications to be the Gmail account the app reads
+   (Profile › Email for applications), otherwise they type the code themselves.
+   The confirmation-email watch is optional for Finish in browser: without Gmail
+   connected the card says the app isn't checking for a confirmation email.
+   Pausing automation does not close a window they opened; Stop does.
 
 ## 8. First run and daily use
 

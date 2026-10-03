@@ -9,6 +9,7 @@ import base64
 import json
 import re
 import sys
+import time
 import unittest
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,10 +35,12 @@ from opportunity_app.apply.checks import (
     check_required,
     clean_rehearsal,
     decide_outcome,
+    is_upload,
     join,
     leaked_field,
     question_key,
     route_decision,
+    student_submit_elsewhere,
 )
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from helpers_apply import FakePlan, planned  # noqa: E402  (also installs tests/realdata_guard.py)
@@ -134,10 +137,10 @@ class DecideOutcomeTests(unittest.TestCase):
         self.assertNotEqual(decide_outcome(obs).outcome, "submitted")
 
     def test_no_submit_post_and_no_navigation_is_failed_with_nothing_sent(self):
-        outcome = decide_outcome(seen(first_field_error="Please complete the required fields."))
+        outcome = decide_outcome(seen(first_field_error="Email"))
         self.assertEqual((outcome.outcome, outcome.after_click), ("failed", 0))
         self.assertIn("nothing was sent", outcome.note.lower())
-        self.assertIn("Please complete the required fields.", outcome.note)
+        self.assertEqual(outcome.note, 'The form did not send, so nothing was sent. Greenhouse marked "Email" as wrong')
         self.assertFalse(outcome.settled)
         self.assertEqual(decide_outcome(seen()).outcome, "failed")
 
@@ -177,16 +180,74 @@ class DecideOutcomeTests(unittest.TestCase):
         # 428, the student's code, then a 500: no longer waiting for a code.
         self.assertEqual(decide_outcome(seen(post(428), post(500))).outcome, "unconfirmed")
 
+    def test_a_code_post_that_has_no_answer_is_not_a_second_prompt(self):
+        # The boxes stay on the page while the code POST is on its way: one answer, never two prompts.
+        in_flight = seen(post(428), post(None), security_code_visible=True)
+        self.assertEqual(decide_outcome(in_flight).outcome, "waiting")
+        self.assertFalse(apply_checks.new_code_prompt(in_flight))
+        accepted = seen(post(428), post(200), security_code_visible=True)
+        self.assertEqual(decide_outcome(accepted).outcome, "waiting")
+        self.assertFalse(apply_checks.new_code_prompt(accepted), "an accepted code is the confirmation page's to come, not a prompt")
+        self.assertFalse(apply_checks.new_code_prompt(seen()), "no submit POST, no prompt")
+        self.assertFalse(apply_checks.new_code_prompt(seen(post(428), security_code_visible=True)), "the first 428 is the prompt being answered")
+
+    def test_a_new_prompt_is_a_new_428_or_the_boxes_again_after_a_refusal(self):
+        self.assertTrue(apply_checks.new_code_prompt(seen(post(428), post(428), security_code_visible=True)))
+        self.assertTrue(apply_checks.new_code_prompt(seen(post(428), post(428))))
+        self.assertTrue(apply_checks.new_code_prompt(seen(post(428), post(422), security_code_visible=True)))
+        self.assertFalse(apply_checks.new_code_prompt(seen(post(428), post(422))), "a refusal with no boxes is not a prompt")
+        self.assertFalse(apply_checks.new_code_prompt(seen(post(428), post(None, passed=False), security_code_visible=True)),
+                         "a POST the route refused has no answer to read")
+
+    def test_a_code_post_with_no_answer_when_the_wait_is_over_may_have_been_sent(self):
+        for last in (None, 200, 303):
+            with self.subTest(status=last):
+                outcome = decide_outcome(seen(post(428), post(last), security_code_visible=True), code_wait_over=True)
+                self.assertEqual((outcome.outcome, outcome.after_click, outcome.note), ("unconfirmed", 1, apply_checks.UNCONFIRMED_NOTE))
+        # A second 428 is a real prompt the student did not answer, and a code never pressed is the note that says so.
+        for obs in (seen(post(428), post(428), security_code_visible=True), seen(post(428), security_code_visible=True)):
+            self.assertEqual(decide_outcome(obs, code_wait_over=True).outcome, "needs_you")
+
+    def test_a_5xx_answer_to_the_code_post_is_never_a_new_prompt_and_may_have_been_sent(self):
+        # An edge proxy may answer 502, 503 or 504 after the origin took the code. The boxes stay on the page after a 5xx.
+        for status in (500, 502, 503, 504):
+            for boxes in (True, False):
+                obs = seen(post(428), post(status), security_code_visible=boxes)
+                with self.subTest(status=status, boxes=boxes):
+                    self.assertFalse(apply_checks.new_code_prompt(obs), "a second application POST would be allowed after one that may have been received")
+                    for over in (False, True):
+                        outcome = decide_outcome(obs, code_wait_over=over)
+                        self.assertEqual((outcome.outcome, outcome.after_click, outcome.note), ("unconfirmed", 1, apply_checks.UNCONFIRMED_NOTE))
+
+    def test_a_refused_code_is_called_refused_not_unpressed(self):
+        for last in (428, 422):
+            with self.subTest(status=last):
+                outcome = decide_outcome(seen(post(428), post(last), security_code_visible=True), code_wait_over=True)
+                self.assertEqual((outcome.outcome, outcome.note), ("needs_you", apply_checks.CODE_REFUSED_NOTE))
+                self.assertNotIn("was not pressed after it", outcome.note)
+        # The first prompt, never answered: Submit really was not pressed after it.
+        self.assertEqual(decide_outcome(seen(post(428), security_code_visible=True), code_wait_over=True).note, apply_checks.SECURITY_CODE_NOTE)
+
     def test_a_challenge_frame_is_needs_you_with_the_click_made(self):
         outcome = decide_outcome(seen(challenge_frame=True))
         self.assertEqual((outcome.outcome, outcome.after_click), ("needs_you", 1))
 
     def test_a_refusal_with_the_form_still_present_is_failed_after_the_click(self):
-        outcome = decide_outcome(seen(post(422), first_field_error="Email is invalid"))
+        outcome = decide_outcome(seen(post(422), first_field_error="Email"))
         self.assertEqual((outcome.outcome, outcome.after_click), ("failed", 1))
-        self.assertIn("HTTP 422", outcome.note)
-        self.assertIn("Email is invalid", outcome.note)
+        self.assertEqual(outcome.note, 'Greenhouse refused the form (HTTP 422). Greenhouse marked "Email" as wrong')
         self.assertTrue(outcome.settled)
+        # No named field, no clause: the note never carries text from the page.
+        self.assertEqual(decide_outcome(seen(post(422))).note, "Greenhouse refused the form (HTTP 422)")
+
+    def test_the_two_notes_that_wait_on_the_student_say_what_was_not_done(self):
+        self.assertEqual(
+            apply_checks.SECURITY_CODE_NOTE,
+            "Greenhouse asked for the emailed security code, and Submit application was not pressed after it. Look for Greenhouse's email",
+        )
+        self.assertEqual(apply_checks.CHALLENGE_NOTE, "Greenhouse showed a check that wasn't finished. Look for Greenhouse's email")
+        self.assertEqual(decide_outcome(seen(post(428), security_code_visible=True), code_wait_over=True).note, apply_checks.SECURITY_CODE_NOTE)
+        self.assertEqual(decide_outcome(seen(challenge_frame=True)).note, apply_checks.CHALLENGE_NOTE)
 
     def test_a_4xx_with_the_form_gone_is_not_called_a_refusal(self):
         self.assertEqual(decide_outcome(seen(post(422), form_present=False, navigated=True)).outcome, "unconfirmed")
@@ -411,6 +472,25 @@ class ValueGuardTests(unittest.TestCase):
         beacon = request(url=f"https://job-boards.greenhouse.io/x?v={EMAIL}", resource_type="fetch")
         self.assertEqual(self.guard(beacon, mode="submit", phase=PHASE_AFTER_HAND_OVER).rule, "value_guard")
         self.assertIsInstance(self.guard(beacon, mode="submit", phase=PHASE_AFTER_HAND_OVER, submit_posts_passed=1), Allow)
+
+    def test_in_a_handoff_a_get_to_another_host_is_guarded_after_the_press_too(self):
+        # The form stays on the page through a security code or a challenge: a script there may send what was typed in a GET.
+        values = {"race": "Hispanic or Latino", "email": EMAIL}
+        for label, url in (
+            ("analytics pixel", "https://www.google-analytics.com/collect?el=Hispanic%20or%20Latino"),
+            ("an embedded third party", f"https://widget.example-robotics.test/p.gif?v={EMAIL}"),
+            ("a Greenhouse host that is not a board", f"https://boards-api.greenhouse.io/v1/x?v={EMAIL}"),
+        ):
+            with self.subTest(label):
+                beacon = request(url=url, resource_type="image")
+                for phase in (PHASE_STUDENT, PHASE_AFTER_HAND_OVER):
+                    decision = self.guard(beacon, mode="handoff", phase=phase, submit_posts_passed=1, values=values)
+                    self.assertEqual(decision.rule, "value_guard", f"{phase}: a value left in a GET after the press")
+        # Greenhouse's own board hosts still load the confirmation page and its parts, and submit mode keeps its exemption.
+        board = request(url=f"https://job-boards.greenhouse.io/x?v={EMAIL}", resource_type="fetch")
+        self.assertIsInstance(self.guard(board, mode="handoff", phase=PHASE_AFTER_HAND_OVER, submit_posts_passed=1, values=values), Allow)
+        other = request(url=f"https://widget.example-robotics.test/p.gif?v={EMAIL}", resource_type="image")
+        self.assertIsInstance(self.guard(other, mode="submit", phase=PHASE_AFTER_HAND_OVER, submit_posts_passed=1, values=values), Allow)
 
     def test_a_multi_value_answer_is_guarded_by_each_of_its_parts(self):
         decision = self.guard(request(url=f"{BEACON}Rust", resource_type="image"), values={"langs": ["Python", "Rust"]})
@@ -658,6 +738,147 @@ class SubmitAndHandoffTableTests(unittest.TestCase):
 
 
 CONFIRMATION_PATH_URL = f"https://job-boards.greenhouse.io{CONFIRMATION_PATH}"
+TELEMETRY_URL = "https://c.spl.greenhouse.io/com.snowplowanalytics.snowplow/tp2"
+S3_URL = "https://example-robotics-uploads.s3.amazonaws.com/resume"
+MULTIPART = {"content-type": "multipart/form-data; boundary=----x"}
+WITH_FILE = '------x\r\nContent-Disposition: form-data; name="resume"; filename="Sam Rivera Resume.pdf"\r\nContent-Type: application/pdf\r\n\r\n%PDF\r\n------x--'
+WITHOUT_FILE = '------x\r\nContent-Disposition: form-data; name="first_name"\r\n\r\nSam\r\n------x\r\nContent-Disposition: form-data; name="cover_letter"; filename=""\r\nContent-Type: application/octet-stream\r\n\r\n\r\n------x--'
+
+
+class TelemetryAndCodeGuardTests(unittest.TestCase):
+    """What a handoff does about Greenhouse's usage reporting, and about a code widget that submits by itself."""
+
+    def test_every_method_to_a_telemetry_host_is_refused_by_name_in_submit_and_handoff(self):
+        self.assertEqual(apply_checks.TELEMETRY_HOSTS, frozenset({"c.spl.greenhouse.io"}))
+        for mode, phases in (("submit", (PHASE_FILL, PHASE_AFTER_HAND_OVER)), ("handoff", (PHASE_FILL, PHASE_STUDENT, PHASE_AFTER_HAND_OVER))):
+            for phase in phases:
+                for method in ("GET", "POST", "PUT", "OPTIONS"):
+                    with self.subTest(mode=mode, phase=phase, method=method):
+                        decision = route_decision(mode, phase, request(method, TELEMETRY_URL + "?e=pv"), state(submit_posts_passed=1))
+                        self.assertEqual(decision.rule, "telemetry")
+                        self.assertEqual(decision.host, "c.spl.greenhouse.io")
+                        self.assertEqual(decision.record(method), {"method": method, "host": "c.spl.greenhouse.io", "rule": "telemetry"})
+
+    def test_a_telemetry_host_is_the_exact_host_only(self):
+        for url in ("https://spl.greenhouse.io/x", "https://c.spl.greenhouse.io.example.test/x", "https://greenhouse.io/x"):
+            with self.subTest(url=url):
+                self.assertNotEqual(getattr(route_decision("handoff", PHASE_STUDENT, request("GET", url), state()), "rule", ""), "telemetry")
+
+    def test_a_submit_post_while_the_app_types_the_code_is_refused_without_spending_the_prompt(self):
+        run = state()
+        run.record(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run))
+        run.note_security_code_prompt()
+        run.code_typing_until = float("inf")
+        self.assertTrue(run.code_typing)
+        refused = route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run)
+        self.assertEqual(refused.rule, "code_post_while_typing")
+        self.assertEqual((run.code_posts_passed, run.security_code_prompts), (0, 1))
+        # A refusal is not recorded as a pass, so the student's own press, after the guard, still gets the prompt's one POST.
+        run.code_typing_until = time.monotonic() + 0.05
+        self.assertEqual(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run).rule, "code_post_while_typing")
+        time.sleep(0.08)
+        self.assertFalse(run.code_typing)
+        allowed = route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", SUBMIT_URL), run)
+        self.assertEqual(allowed, Allow("security_code", code_post=True))
+        run.record(allowed)
+        self.assertEqual(run.code_posts_passed, 1)
+
+    def test_the_guard_covers_only_the_submit_post(self):
+        run = state(code_typing_until=float("inf"))
+        self.assertIsInstance(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("GET"), run), Allow)
+        self.assertEqual(route_decision("handoff", PHASE_AFTER_HAND_OVER, request("POST", "https://boards.greenhouse.io/x/other"), run).rule, "other_non_get")
+
+    def test_the_code_guard_is_off_unless_the_agent_turned_it_on(self):
+        self.assertFalse(RouteState().code_typing)
+        self.assertEqual(RouteState().code_typing_until, 0.0)
+
+
+class StudentSubmitElsewhereAndUploadTests(unittest.TestCase):
+    def test_student_submit_elsewhere_table(self):
+        cases = (
+            (request("POST", "https://boards.greenhouse.io/examplerobotics/jobs/4000000001/apply-v2"), True),
+            (request("PUT", "https://boards-api.greenhouse.io/v1/boards/x/apply"), True),
+            (request("POST", "https://job-boards.greenhouse.io/x", resource_type="fetch"), True),
+            (request("POST", TELEMETRY_URL), False),
+            (request("POST", "https://analytics.example-robotics.test/collect"), False),
+            (request("POST", "https://www.google.com/recaptcha/api2/reload"), False),
+            (request("POST", "https://hcaptcha.com/checkcaptcha"), False),
+            (request("POST", "https://careers.example-robotics.test/apply", resource_type="document"), True),
+            (request("GET", "https://boards.greenhouse.io/x"), False),
+            (request("HEAD", "https://boards.greenhouse.io/x", resource_type="document"), False),
+        )
+        for asked, expected in cases:
+            with self.subTest(method=asked.method, url=asked.url):
+                self.assertEqual(student_submit_elsewhere(asked, state()), expected)
+
+    def test_is_upload_table(self):
+        cases = (
+            (request("PUT", S3_URL), True),
+            (request("POST", "https://example-uploads.s3.amazonaws.com/"), True),
+            (request("POST", "https://example.test/u", headers=MULTIPART, body=WITH_FILE), True),
+            (request("POST", "https://example.test/u", headers=MULTIPART, body=WITH_FILE.encode()), True),
+            (request("POST", "https://example.test/u", headers=MULTIPART), True),          # a body that cannot be read could hold a file
+            (request("PUT", "https://example.test/u", headers={"Content-Type": "application/octet-stream"}, body=b"x"), True),
+            (request("POST", SUBMIT_URL, headers=MULTIPART, body=WITHOUT_FILE), False),     # the form's own fields: empty file parts
+            (request("POST", SUBMIT_URL, headers={"content-type": "application/json"}, body="{}"), False),
+            (request("POST", "https://analytics.example-robotics.test/collect", body="{}"), False),
+            (request("GET", S3_URL), False),
+            (request("GET", "https://example.test/u", headers=MULTIPART), False),
+        )
+        for asked, expected in cases:
+            with self.subTest(method=asked.method, url=asked.url, headers=dict(asked.headers)):
+                self.assertEqual(is_upload(asked), expected)
+
+
+class Base64ValueGuardTests(unittest.TestCase):
+    """A script that wraps a field in base64 (Snowplow's ue_px and cx) at an offset the value's own base64 would miss."""
+
+    VALUE = "sam.rivera@example.test"
+
+    def payloads(self, urlsafe):
+        encode = base64.urlsafe_b64encode if urlsafe else base64.b64encode
+        for before in range(0, 6):
+            for after in range(0, 4):
+                yield before, after, encode(("x" * before + self.VALUE + "y" * after).encode()).decode()
+
+    def test_a_planned_value_inside_a_base64_payload_is_caught_at_every_alignment(self):
+        for urlsafe in (False, True):
+            for before, after, payload in self.payloads(urlsafe):
+                for place in ("body", "query", "header"):
+                    with self.subTest(urlsafe=urlsafe, before=before, after=after, place=place):
+                        asked = (request("POST", TELEMETRY_URL, body="ue_px=" + payload) if place == "body"
+                                 else request("GET", "https://pixel.example.test/p?cx=" + quote(payload, safe="")) if place == "query"
+                                 else request("GET", "https://pixel.example.test/p", headers={"x-payload": payload}))
+                        self.assertEqual(leaked_field(asked, {"email": self.VALUE}), "email")
+
+    def test_a_json_document_holding_the_value_then_base64d_is_caught(self):
+        document = json.dumps({"schema": "iglu:com.snowplowanalytics/unstruct_event", "data": {"field": "email", "value": self.VALUE}})
+        for payload in (base64.b64encode(document.encode()).decode(), base64.urlsafe_b64encode(document.encode()).decode().rstrip("=")):
+            self.assertEqual(leaked_field(request("POST", TELEMETRY_URL, body='{"ue_px":"%s"}' % payload), {"email": self.VALUE}), "email")
+
+    def test_other_text_and_short_values_are_not_caught(self):
+        blob = base64.urlsafe_b64encode(b"nothing here but the page's own address and a counter 123456").decode()
+        self.assertEqual(leaked_field(request("POST", TELEMETRY_URL, body="ue_px=" + blob), {"email": self.VALUE}), "")
+        # "Yes" is three characters: its base64 is everywhere, so it is never searched for.
+        self.assertEqual(leaked_field(request("POST", TELEMETRY_URL, body="ue_px=" + base64.b64encode(b"Yes please").decode()), {"answer": "Yes"}), "")
+
+    def test_a_core_is_never_shorter_than_the_floor(self):
+        for value in ("abcd", "Sam1", "Rivera", self.VALUE, "x" * 40):
+            for urlsafe in (False, True):
+                for core in apply_checks._stable_base64(value.encode(), urlsafe):
+                    self.assertGreaterEqual(len(core), apply_checks.MIN_GUARDED_VALUE)
+
+
+class TheFormHostsAreTheSubmitHostsFamily(unittest.TestCase):
+    def test_form_post_hosts(self):
+        self.assertEqual(apply_checks.FORM_POST_HOSTS, frozenset({"job-boards.greenhouse.io", "boards.greenhouse.io", "boards-api.greenhouse.io"}))
+
+
+# The handoff phases belong to the table tests above: a student's Submit during a code typing is a refusal, never a hand-over.
+class StudentPhaseAndCodeTypingTests(unittest.TestCase):
+    def test_a_submit_in_the_students_turn_is_still_a_hand_over_when_no_code_is_being_typed(self):
+        decision = route_decision("handoff", PHASE_STUDENT, request("POST", SUBMIT_URL), state())
+        self.assertEqual(decision, Allow("hand_over", requires_hand_over=True, submit_post=True))
 
 
 # --- join (spec 6.5) --------------------------------------------------------------------------

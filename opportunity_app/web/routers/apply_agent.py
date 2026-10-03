@@ -26,6 +26,7 @@ from ..dependencies import get_ctx, require_auth, require_browser_session, writa
 from ..models.apply_agent import (
     ApplyAnswerRequest,
     ApplyClaimResolveRequest,
+    ApplyHandoffRequest,
     ApplyLabelRequest,
     ApplyLookupRequest,
     ApplyRehearsalRequest,
@@ -250,6 +251,12 @@ def apply_agent_sensitive_answer(
 
 
 # --- Rehearsals and option lookups (M5a). Neither ever submits: the agent's request policy aborts anything that could. ---
+# --- Finish in browser (M5b): the app fills the form and the student presses Submit in the window themselves. ---
+
+
+def _view(conn: sqlite3.Connection, ctx: AppContext, row: dict[str, Any]) -> dict[str, Any]:
+    """A run as the page shows it; the window can be brought forward only for the run this app is running."""
+    return apply_runner.run_view(conn, row, _live_runs(ctx), local=ctx.runtime.apply_runner.busy())
 
 
 def _own_run(conn: sqlite3.Connection, user_id: str, run_id: str) -> dict[str, Any]:
@@ -261,9 +268,9 @@ def _own_run(conn: sqlite3.Connection, user_id: str, run_id: str) -> dict[str, A
 
 def _start_run(
     kind: str, opportunity_id: str, conn: sqlite3.Connection, user_id: str, ctx: AppContext, *, key: str = "", text: str = "",
-    posting_confirmed: bool = False,
+    acknowledged: tuple[str, ...] = (), posting_confirmed: bool = False,
 ) -> dict[str, Any]:
-    """Start a rehearsal or a lookup and answer with its (running) run view."""
+    """Start a rehearsal, a lookup or a Finish in browser run and answer with its (running) run view."""
     client = apply_schema_client(ctx)
     if ctx.config.apply_storage is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=apply_runs.NOT_HERE)
@@ -276,15 +283,17 @@ def _start_run(
         run_id = ctx.runtime.apply_runner.start(
             conn, database_target=ctx.config.database_target, user_id=user_id, opportunity_id=opportunity_id, kind=kind,
             agent_factory=factory, schema_client=client, apply_root=ctx.config.apply_storage, resume_root=ctx.config.resume_storage,
-            lookup_key=key, lookup_text=text, posting_confirmed=posting_confirmed,
+            lookup_key=key, lookup_text=text, acknowledged=acknowledged, posting_confirmed=posting_confirmed,
         )
     except OpportunityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Opportunity not found") from exc
     except apply_runner.RunnerBusy as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except apply_runner.RunRefused as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
-    return apply_runner.run_view(conn, _own_run(conn, user_id, run_id))
+        # A refusal with a code carries it (the page adds the tick the code names, or the posting's confirmation); one without is the sentence.
+        detail: Any = {"message": exc.message, "code": exc.code, "ask": exc.ask} if exc.code else exc.message
+        raise HTTPException(status_code=exc.status_code, detail=detail) from exc
+    return _view(conn, ctx, _own_run(conn, user_id, run_id))
 
 
 @router.post("/api/v1/apply-agent/opportunities/{opportunity_id}/rehearsals", status_code=status.HTTP_202_ACCEPTED)
@@ -314,24 +323,49 @@ def start_apply_lookup(
     return _start_run("lookup", opportunity_id, conn, user_id, ctx, key=payload.key, text=payload.text)
 
 
+@router.post("/api/v1/apply-agent/opportunities/{opportunity_id}/handoffs", status_code=status.HTTP_202_ACCEPTED)
+def start_apply_handoff(
+    opportunity_id: str,
+    payload: ApplyHandoffRequest,
+    conn: sqlite3.Connection = Depends(writable_connection),
+    user_id: str = Depends(require_browser_session),
+    ctx: AppContext = Depends(get_ctx),
+) -> dict[str, Any]:
+    """Finish in browser: fill this Greenhouse form in a window and leave the Submit button to the student.
+
+    Needs the student's own browser session: starting one is the student's act, and the application goes out under their
+    name only when they press Submit application in the window. The ticks the student gave (an earlier application, a
+    released attempt, an old row) are named by their codes, and ``posting_confirmed`` says they checked a posting that
+    does not look like the saved role.
+    """
+    return _start_run(
+        "handoff", opportunity_id, conn, user_id, ctx, acknowledged=tuple(payload.acknowledged), posting_confirmed=payload.posting_confirmed,
+    )
+
+
 @router.get("/api/v1/apply-agent/opportunities/{opportunity_id}/runs")
 def list_apply_runs(
     opportunity_id: str,
-    kind: Literal["lookup", "rehearsal"] | None = None,
+    kind: Literal["lookup", "rehearsal", "handoff"] | None = None,
+    run_id: str | None = Query(default=None, max_length=80),
     limit: int = Query(default=5, ge=1, le=20),
     conn: sqlite3.Connection = Depends(writable_connection),
     user_id: str = Depends(require_auth),
     ctx: AppContext = Depends(get_ctx),
 ) -> dict[str, Any]:
-    """This role's lookups and rehearsals, newest first, and whether the app is busy with one."""
+    """This role's lookups, rehearsals and Finish in browser runs, newest first (or the one ``run_id``), and whether the app is busy."""
     try:
         apply_preflight.require_opportunity(conn, user_id, opportunity_id)
     except OpportunityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Opportunity not found") from exc
-    return {
-        "runs": apply_runner.run_views(conn, user_id, opportunity_id, kind=kind or "", limit=limit, live=_live_runs(ctx)),
-        "busy": ctx.runtime.apply_runner.busy() is not None,
-    }
+    local = ctx.runtime.apply_runner.busy()
+    live = _live_runs(ctx)
+    if run_id:
+        row = apply_runs.get_run(conn, run_id, user_id=user_id)
+        runs = [apply_runner.run_view(conn, row, live, local=local)] if row is not None and row["opportunity_id"] == opportunity_id else []
+    else:
+        runs = apply_runner.run_views(conn, user_id, opportunity_id, kind=kind or "", limit=limit, live=live, local=local)
+    return {"runs": runs, "busy": local is not None}
 
 
 @router.get("/api/v1/apply-agent/runs/{run_id}")
@@ -341,7 +375,7 @@ def get_apply_run(
     user_id: str = Depends(require_auth),
     ctx: AppContext = Depends(get_ctx),
 ) -> dict[str, Any]:
-    return apply_runner.run_view(conn, _own_run(conn, user_id, run_id), _live_runs(ctx))
+    return _view(conn, ctx, _own_run(conn, user_id, run_id))
 
 
 @router.post("/api/v1/apply-agent/runs/{run_id}/cancel")
@@ -351,18 +385,69 @@ def cancel_apply_run(
     conn: sqlite3.Connection = Depends(writable_connection),
     ctx: AppContext = Depends(get_ctx),
 ) -> dict[str, Any]:
-    """Stop: the run is asked to end, and its browser is killed if it does not."""
+    """Stop: the run is asked to end, and its browser is killed if it does not.
+
+    A Finish in browser run's claim is asked first, in the database (``request_cancel``): from then on the hand-over is
+    refused, so a Submit the student presses while the stop travels to the window goes nowhere. Once the student has pressed
+    Submit the application is out of the app's hands, and the answer says so.
+    """
     row = _own_run(conn, user_id, run_id)
     if row["status"] == "finished":
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=apply_runner.FINISHED_ALREADY)
-    live = _live_runs(ctx)
+    token = str(row["claim_token"] or "")
+    if token and not apply_runs.request_cancel(conn, token, user_id=user_id):
+        claim = apply_runs.get_claim(conn, token, user_id=user_id)
+        handed = claim is not None and claim["state"] in ("clicking", "submitted", "unconfirmed")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=apply_runner.HANDED_OVER if handed else apply_runner.FINISHED_ALREADY,
+        )
     if not ctx.runtime.apply_runner.cancel(run_id):
-        if not apply_runner.orphaned(row, live):
+        if not apply_runner.orphaned(row, _live_runs(ctx)):
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=apply_runner.NOT_RUNNING)
         # A server that was stopped mid-run left this row 'running', and nothing here is working on it: end it now, instead of
         # showing a Stop button that cannot work until its heartbeat goes stale.
         apply_runs.finish_run(conn, run_id, outcome="failed", clean=False, reasons=[apply_runner.SERVER_STOPPED])
-    return apply_runner.run_view(conn, _own_run(conn, user_id, run_id), live)
+    return _view(conn, ctx, _own_run(conn, user_id, run_id))
+
+
+@router.post("/api/v1/apply-agent/runs/{run_id}/front")
+def front_apply_run(
+    run_id: str,
+    user_id: str = Depends(require_browser_session),
+    conn: sqlite3.Connection = Depends(writable_connection),
+    ctx: AppContext = Depends(get_ctx),
+) -> dict[str, Any]:
+    """Bring the Finish in browser window to the front (the student could not find it behind other windows)."""
+    row = _own_run(conn, user_id, run_id)
+    if row["kind"] != "handoff":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=apply_runner.NOT_HANDOFF)
+    if row["status"] != "running" or not ctx.runtime.apply_runner.front(run_id):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=apply_runner.NOT_RUNNING)
+    return _view(conn, ctx, _own_run(conn, user_id, run_id))
+
+
+@router.get("/api/v1/apply-agent/runs/{run_id}/values")
+def get_apply_run_values(
+    run_id: str,
+    response: Response,
+    user_id: str = Depends(require_browser_session),
+    conn: sqlite3.Connection = Depends(writable_connection),
+    ctx: AppContext = Depends(get_ctx),
+) -> dict[str, Any]:
+    """What the app would use (a rehearsal) or filled (Finish in browser) for each field of this run, for the student's own browser only.
+
+    The values are today's source for each stored plan entry: they are read here, from the student's data, and never stored on the
+    run. Each says whether it ``changed`` since the run and, for a Finish in browser run, is shown only where it provably equals
+    what was filled. Never cached.
+    """
+    row = _own_run(conn, user_id, run_id)
+    root = ctx.config.apply_storage
+    if root is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=apply_runs.NOT_HERE)
+    response.headers["Cache-Control"] = "no-store"
+    return {"values": apply_policy.preview_values(
+        conn, user_id, row, key=apply_policy.mac_key(root), storage_root=ctx.config.resume_storage,
+    )}
 
 
 @router.post("/api/v1/apply-agent/runs/{run_id}/review")
@@ -371,6 +456,7 @@ def review_apply_run(
     payload: ApplyReviewRequest,
     user_id: str = Depends(require_browser_session),
     conn: sqlite3.Connection = Depends(writable_connection),
+    ctx: AppContext = Depends(get_ctx),
 ) -> dict[str, Any]:
     """The student marks a finished rehearsal right or wrong. Marks open the gate and trip the breaker, so they need the browser session."""
     row = _own_run(conn, user_id, run_id)
@@ -383,7 +469,7 @@ def review_apply_run(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=apply_runner.NO_RUN) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    return {**apply_runner.run_view(conn, _own_run(conn, user_id, run_id)), "breaker_tripped": marked["breaker_tripped"]}
+    return {**_view(conn, ctx, _own_run(conn, user_id, run_id)), "breaker_tripped": marked["breaker_tripped"]}
 
 
 @router.get("/api/v1/apply-agent/runs/{run_id}/screenshots/{index}")
@@ -391,10 +477,14 @@ def get_apply_screenshot(
     run_id: str,
     index: int,
     conn: sqlite3.Connection = Depends(writable_connection),
-    user_id: str = Depends(require_auth),
+    user_id: str = Depends(require_browser_session),
     ctx: AppContext = Depends(get_ctx),
 ) -> FileResponse:
-    """One picture of a filled form, with sensitive fields covered. Served only from the student's own folder, never cached."""
+    """One picture of a filled form, with sensitive fields covered. Served only from the student's own folder, never cached.
+
+    The covering hides every sensitive answer, not the rest: the picture shows each other value the form holds, so it needs the
+    student's own browser session (the same protection as ``values``), not an access token a script holds.
+    """
     row = _own_run(conn, user_id, run_id)
     root = ctx.config.apply_storage
     path = apply_runner.screenshot_path(root, user_id, row, index) if root is not None else None

@@ -46,7 +46,7 @@ def test_a_saved_greenhouse_role_shows_what_is_missing_and_changes_nothing_in_th
     sensitive = section.locator('[data-apply-key="question_4000000105"]')
     expect(sensitive).to_contain_text("The app doesn't answer this kind of question for you")
     expect(sensitive.locator("textarea, select, input")).to_have_count(0)
-    expect(section.locator(".apply-note")).to_contain_text("Nothing in your tracker has changed")
+    expect(section.locator(".apply-note")).to_contain_text("A rehearsal changes nothing in your tracker")
     assert tracker_rows(live_server) == before, "opening the section wrote nothing"
 
 

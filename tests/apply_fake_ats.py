@@ -128,12 +128,12 @@ _SCRIPTS = {
       return "https://boards-api.greenhouse.io/fake-lookup/" + kind + "?q=" + encodeURIComponent(text)
         + "&e=" + encodeURIComponent(document.getElementById("email").value);
     };""",
-    "double_submit": """var realFetch = window.fetch;
-    window.fetch = function (url, options) {
-      var first = realFetch(url, options);
-      if (options && options.method === "POST") realFetch(url, options).catch(function () {});
-      return first;
-    };""",
+    # The agent's init script makes window.fetch read-only (it strips keepalive), so the second POST comes from a submit listener of its
+    # own that runs right after the form's: the same address, the same body, while the first is still in flight.
+    "double_submit": _FORM + """.addEventListener("submit", function () {
+      if (window.grValidate()) return;
+      fetch("https://boards.greenhouse.io" + window.__loader.submitPath, {method: "POST", body: new FormData(""" + _FORM + """)}).catch(function () {});
+    });""",
     "captcha_body_leak": _FORM + """.addEventListener("input", function (e) {
       if (e.target.value) fetch("https://www.google.com/recaptcha/api2/reload?k=fixture", {method: "POST", body: e.target.value}).catch(function () {});
     });""",
@@ -378,7 +378,11 @@ class FakeSchemaClient:
 
 
 # Knobs the in-process UI suite may change between tests (a thread-isolated fake reads them when a run starts).
-CANNED: dict[str, Any] = {"hang": False, "outcome": "rehearsed", "step_delay": 0.3}
+# "handoff" is Finish in browser's canned run: "wait" is how long the fictional student takes before pressing Submit
+# application (seconds), and "outcome" is what the form then does: submitted, unconfirmed, security_code, refused (the
+# app says no to the hand-over), failed_4xx, or hang_after_hand_over.
+CANNED: dict[str, Any] = {"hang": False, "outcome": "rehearsed", "step_delay": 0.3, "handoff": {"wait": 1.5, "outcome": "submitted"}}
+HANDOFF_OUTCOMES = ("submitted", "unconfirmed", "security_code", "refused", "failed_4xx", "hang_after_hand_over")
 STOPPED_TEXT = STOPPED
 NO_OPTIONS_TEXT = "No options came back for what you typed"
 
@@ -405,12 +409,13 @@ class FakeApplyAgentFactory:
     """
 
     def __init__(self, missing: str = "", *, isolation: str = "thread", step_delay: float | None = None,
-                 outcome: str | None = None, hang: bool | None = None) -> None:
+                 outcome: str | None = None, hang: bool | None = None, handoff: dict[str, Any] | None = None) -> None:
         self.missing = missing
         self.isolation = isolation
         self.step_delay = step_delay
         self.outcome = outcome
         self.hang = hang
+        self.handoff = handoff
 
     def available(self) -> str:
         return self.missing
@@ -420,6 +425,7 @@ class FakeApplyAgentFactory:
             step_delay=CANNED["step_delay"] if self.step_delay is None else self.step_delay,
             outcome=CANNED["outcome"] if self.outcome is None else self.outcome,
             hang=CANNED["hang"] if self.hang is None else self.hang,
+            handoff=dict(CANNED["handoff"] if self.handoff is None else self.handoff),
             **kwargs,
         )
 
@@ -428,15 +434,20 @@ class CannedAgent:
     """A fictional rehearsal or lookup: no browser, no socket, every sentence value-free."""
 
     def __init__(self, *, mode: str, run_id: str, screenshot_dir: Path | None, timeouts: Any, on_progress: Any, heartbeat: Any,
-                 step_delay: float, outcome: str, hang: bool) -> None:
+                 step_delay: float, outcome: str, hang: bool, handoff: dict[str, Any] | None = None) -> None:
         self.mode, self.run_id, self.screenshot_dir = mode, run_id, screenshot_dir
         self.on_progress, self.heartbeat = on_progress, heartbeat
         self.step_delay, self.outcome, self.hang = step_delay, outcome, hang
+        self.handoff = handoff or {"wait": 1.5, "outcome": "submitted"}
+        self.timeouts = timeouts
+        self.extra_cleanup: Any = None
 
     def __enter__(self) -> "CannedAgent":
         return self
 
     def __exit__(self, *exc: Any) -> None:
+        if self.extra_cleanup is not None:
+            self.extra_cleanup()
         return None
 
     def _pause(self, cancelled: Any) -> bool:
@@ -455,12 +466,14 @@ class CannedAgent:
         return self._pause(cancelled)
 
     def run(self, plan: Any, *, page_url: str, schema: list[Any], files: dict[str, Any], lookup: Any = None, replan: Any = None,
-            hand_over: Any = None, cancelled: Any = None) -> Any:
+            hand_over: Any = None, cancelled: Any = None, link: Any = None) -> Any:
         from opportunity_app.apply import policy as apply_policy
         from opportunity_app.apply.agent_types import PROGRESS_STEPS, RunResult
 
         cancelled = cancelled or (lambda: False)
         stopped = RunResult("failed", [STOPPED_TEXT])
+        if self.mode == "handoff":
+            return self._handoff(plan, hand_over, cancelled, link)
         self.on_progress("open", PROGRESS_STEPS["open"])
         while self.hang:
             if cancelled():
@@ -498,6 +511,203 @@ class CannedAgent:
                       "filled_keys": [entry["key"] for entry in entries if entry["disposition"] == "fill" and entry.get("control") != "file"],
                       "checked_keys": [entry["key"] for entry in entries if entry["disposition"] == "deferred" and entry.get("control") != "file"]},
         )
+
+
+    # --- Finish in browser: a fictional student who takes a moment and presses Submit application ---------------------------------
+
+    def _handoff(self, plan: Any, hand_over: Any, cancelled: Any, link: Any) -> Any:
+        """The handoff script (no browser, no socket): fill, say ready, wait for the student, hand over, then one of the outcomes."""
+        from opportunity_app.apply import policy as apply_policy
+        from opportunity_app.apply.agent_types import (
+            HANDOFF_NOT_SUBMITTED, HANDOFF_UNRECORDED, LEFT_FIELD, PROGRESS_STEPS, RunResult,
+        )
+        from opportunity_app.apply.checks import UNCONFIRMED_NOTE
+
+        entries = apply_policy.plan_entries(plan)
+        left = [
+            {"key": entry["key"], "question": entry["question"], "reason": entry["problem"] or LEFT_FIELD.format(question=entry["question"])}
+            for entry in entries if entry["disposition"] == "left_for_you"
+        ]
+        plan_hash = getattr(plan, "plan_hash", "")
+        evidence: dict[str, Any] = {
+            "page": "application_form_new", "loader": {"submit_path": True, "confirmation_path": True}, "uploads_on_attach": False,
+            "captcha_widget": False, "lookups": [], "submit_path_hit": False, "refused_total": 0, "left_for_you": left, "page_defaults": [],
+            "handoff_end": "", "browser_closed": True, "parent_gone": False, "submit_post": False, "submit_continued": False,
+        }
+        stopped = RunResult("needs_you", [HANDOFF_NOT_SUBMITTED], plan=entries, plan_hash=plan_hash, handed_over=False, after_click=False,
+                            evidence={**evidence, "handoff_end": "stopped"})
+        self.on_progress("open", PROGRESS_STEPS["open"])
+        filling = sum(1 for entry in entries if entry["disposition"] == "fill")
+        for step, text in (("read", PROGRESS_STEPS["read"]), ("fill", PROGRESS_STEPS["fill"].format(n=filling)),
+                           ("check", PROGRESS_STEPS["check"]), ("picture", PROGRESS_STEPS["picture"])):
+            if self._step(step, text, cancelled):
+                return stopped
+        masked = [entry["key"] for entry in entries if entry.get("sensitive")]
+        shots: list[dict[str, Any]] = []
+        if self.screenshot_dir is not None:
+            self.screenshot_dir.mkdir(parents=True, exist_ok=True)
+            path = self.screenshot_dir / f"{self.run_id}-filled.png"
+            data = canned_png()
+            path.write_bytes(data)
+            shots.append({"step": "filled", "path": str(path), "sha256": hashlib.sha256(data).hexdigest(), "masked": masked})
+        if link is not None:
+            message = {"plan": entries, "plan_hash": plan_hash, "left": left, "screenshot": shots[0] if shots else None,
+                       "captcha_widget": False, "page_defaults": []}
+            if "in_s" in self.handoff:
+                message["handoff_in_s"] = self.handoff["in_s"]   # how long the window really stays the student's (the real agent says it)
+            link.ready(message)
+        self.on_progress("your_turn", PROGRESS_STEPS["your_turn"])
+        self._after_ready()
+        waited, beat = 0.0, 0.0
+        wait = float(self.handoff.get("wait", 1.5))
+        fronts = 0
+        while waited < wait:
+            if cancelled():
+                return stopped
+            time.sleep(0.1)
+            waited += 0.1
+            if link is not None and link.front_requested():
+                fronts += 1
+            if waited - beat >= 1.0:
+                self.heartbeat()
+                beat = waited
+        evidence["fronts"] = fronts
+        granted = bool(hand_over()) if hand_over is not None else False
+        kind = str(self.handoff.get("outcome", "submitted"))
+        if kind == "refused" or not granted:
+            # The app said no (or we pretend it did): the POST would be aborted, and nothing the agent says may call it sent.
+            return RunResult("needs_you", [HANDOFF_UNRECORDED], plan=entries, plan_hash=plan_hash, screenshots=shots, handed_over=False,
+                             after_click=False, evidence={**evidence, "handoff_end": "refused"})
+        self.on_progress("submitting", PROGRESS_STEPS["submitting"])
+        evidence.update(handoff_end="posted", submit_post=True, submit_continued=True, submit_status=200,
+                        confirmation_path="/examplerobotics/jobs/4000000001/confirmation")
+        if kind == "hang_after_hand_over":
+            while not cancelled():   # a process is killed; a thread is told to stop when the run ends
+                time.sleep(0.2)
+            return RunResult("unconfirmed", [UNCONFIRMED_NOTE], plan=entries, plan_hash=plan_hash, screenshots=shots, handed_over=True,
+                             after_click=True, evidence=evidence)
+        if kind == "unconfirmed":
+            evidence["submit_status"] = None
+            return RunResult("unconfirmed", [UNCONFIRMED_NOTE], plan=entries, plan_hash=plan_hash, screenshots=shots, handed_over=True,
+                             after_click=True, evidence=evidence)
+        if kind == "failed_4xx":
+            evidence.update(submit_status=422)
+            return RunResult("failed", ['Greenhouse marked "Why do you want to work here?" as wrong'], plan=entries, plan_hash=plan_hash,
+                             screenshots=shots, handed_over=True, after_click=True, evidence=evidence)
+        code = {"prompted": False, "typed": False, "fallback": False, "posted": False, "rounds": 0, "auto_submit_blocked": False, "reason": ""}
+        if kind == "security_code":
+            code.update(prompted=True, rounds=1)
+            self.on_progress("security_code", PROGRESS_STEPS["security_code"])
+            typed = self._ask_for_the_code(link, cancelled, typed_ok=bool(self.handoff.get("code_typed", True)),
+                                           reason=str(self.handoff.get("code_reason", "")))
+            code.update(typed=typed, fallback=not typed, posted=True, reason="" if typed else str(self.handoff.get("code_reason", "")))
+            self.on_progress("code_typed" if typed else "code_yours", PROGRESS_STEPS["code_typed" if typed else "code_yours"])
+            time.sleep(0.2)
+        evidence["security_code"] = code
+        return RunResult("submitted", [], plan=entries, plan_hash=plan_hash, screenshots=shots, handed_over=True, after_click=True,
+                         confirmation_seen=True, evidence=evidence)
+
+    def _after_ready(self) -> None:
+        """A hook for the process variant (it starts its stand-in for Chromium before the student's turn)."""
+
+    @staticmethod
+    def _ask_for_the_code(link: Any, cancelled: Any, *, typed_ok: bool = True, reason: str = "") -> bool:
+        """Ask the parent for the code without blocking and never again while an ask is outstanding. True when it was found and 'typed'.
+
+        ``typed_ok`` False plays an agent that was handed the code and could not put it in (``reason`` says why)."""
+        if link is None:
+            return False
+        ident = link.ask_code()
+        waited = 0.0
+        while waited < 30.0 and not cancelled():
+            reply = link.code_reply(ident)
+            if reply is None:
+                time.sleep(0.05)
+                waited += 0.05
+                continue
+            status = reply.get("status")
+            if status == "found":
+                link.code_result(ident, typed_ok, "" if typed_ok else reason)   # the code itself is dropped here: nothing is typed
+                return typed_ok
+            if status == "fallback":
+                return False
+            time.sleep(0.3)
+            waited += 0.3
+            ident = link.ask_code()
+        return False
+
+
+class ProcessCannedFactory:
+    """Finish in browser's canned run in a REAL child process, with a sleeping grandchild standing in for Chromium.
+
+    Module-level and picklable (``isolation = "process"``), opens no browser and no socket, and is importable as
+    ``apply_fake_ats`` from the spawned child. The grandchild is started before the student's turn (the runner snapshots the
+    child's descendants when it sees the agent is ready), its pid is written to ``pid_file``, and the child's own exit
+    stops it unless ``leak`` is True (a browser that outlives its driver), so the kill-ordering tests see real pids.
+    ``outcome`` and ``wait`` are the same knobs as ``CANNED["handoff"]``.
+    """
+
+    isolation = "process"
+
+    def __init__(self, *, outcome: str = "submitted", wait: float = 0.5, spawn_grandchild: bool = True, pid_file: str = "",
+                 leak: bool = False, step_delay: float = 0.0, crash_at: str = "") -> None:
+        self.outcome = outcome
+        self.wait = wait
+        self.spawn_grandchild = spawn_grandchild
+        self.pid_file = pid_file
+        self.leak = leak
+        self.step_delay = step_delay
+        self.crash_at = crash_at
+
+    def available(self) -> str:
+        return ""
+
+    def __call__(self, **kwargs: Any) -> "ProcessCannedAgent":
+        return ProcessCannedAgent(
+            step_delay=self.step_delay, outcome="rehearsed", hang=False, handoff={"wait": self.wait, "outcome": self.outcome}, factory=self, **kwargs,
+        )
+
+
+class ProcessCannedAgent(CannedAgent):
+    def __init__(self, *, factory: ProcessCannedFactory, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.factory = factory
+        self.grandchild: subprocess.Popen[bytes] | None = None
+
+    def _after_ready(self) -> None:
+        if self.factory.crash_at == "turn":
+            os._exit(3)   # the driver dies during the student's turn, whatever the browser does
+        if self.factory.crash_at == "after_hand_over":
+            self.crash_after_hand_over = True
+
+    def _handoff(self, plan: Any, hand_over: Any, cancelled: Any, link: Any) -> Any:
+        if self.factory.spawn_grandchild:
+            self.grandchild = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(600)"], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if self.factory.pid_file:
+                Path(self.factory.pid_file).write_text(f"{os.getpid()} {self.grandchild.pid}", encoding="utf-8")
+            if not self.factory.leak:
+                self.extra_cleanup = self._stop_grandchild
+        if self.factory.crash_at == "after_hand_over":
+            original = hand_over
+
+            def hand_over_then_die() -> bool:
+                granted = bool(original())
+                if granted:
+                    os._exit(4)   # the driver dies right after the parent committed the hand-over
+                return granted
+
+            hand_over = hand_over_then_die
+        return super()._handoff(plan, hand_over, cancelled, link)
+
+    def _stop_grandchild(self) -> None:
+        if self.grandchild is not None and self.grandchild.poll() is None:
+            self.grandchild.kill()
+            try:
+                self.grandchild.wait(timeout=10)
+            except subprocess.SubprocessError:
+                pass
 
 
 class HangingAgentFactory:
@@ -582,3 +792,17 @@ def press_submit(page: Any) -> None:
 def type_security_code(page: Any, code: str = "12345678") -> None:
     for index, character in enumerate(code):
         page.fill(f"#security-input-{index}", character)
+
+
+def kill_if_same_process(pid: int, started: str | None) -> bool:
+    """Kill ``pid`` only if it is still the process first seen there (``started`` is what ``process_start`` read then). True if killed.
+
+    A cleanup that kills by a bare pid after the process is gone can end a stranger's program, because the pid is handed out again
+    (quickly, on Windows). With no recorded start nothing is killed.
+    """
+    from opportunity_app.apply import runner as apply_runner
+
+    if not started or not apply_runner.process_alive(pid) or apply_runner.process_start(pid) != started:
+        return False
+    apply_runner._kill_pid(pid)
+    return True

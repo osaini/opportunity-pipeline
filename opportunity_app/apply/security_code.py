@@ -18,11 +18,14 @@ The reader rules, as built (each is a test in tests/test_apply_security_code.py)
 - The code is the one eight character token after the word "code" that has a digit or stands alone on its line. Two
   candidate messages, or a message with no single such token, mean no code: the reader never guesses. Nothing within
   ten minutes of the prompt means no code either. In each of those cases the answer is a fallback to D10 A.
-- A code is handed out once per claim. A second request, even after a restart, is a fallback.
-- Handing the code out is not typing it. The claim records "handed" and says so to nobody; only the child's
-  acknowledgement ({"op": "security_code_typed"}, see below) records "typed", counts as typed in the statistics and
-  posts the notice. A repeat request for a code that was handed out and never acknowledged falls back to D10 A with a
-  reason that tells the student to type it, because the app cannot know what became of it.
+- A code is handed out once per claim, and handing it out is not typing it. Finding the code records only
+  ``reader: handed`` (the code itself is never kept, not even in memory). Only the child's acknowledgement that it typed
+  the code (``confirm_typed``, or ``confirm`` with ``typed=True``) records "typed", counts as typed in the statistics and
+  posts the notice; ``confirm`` with ``typed=False`` records the fallback and its reason (the notice says the app read the
+  code and could not type it). A repeat request for a code that was handed out and never acknowledged falls back to D10 A
+  with a reason that tells the student to type it (``not_confirmed``), because the app cannot know what became of it. A
+  request after "typed" is a fallback (``already_used``). An ask the agent stopped waiting for (``abandoned``) drops
+  whatever a look still running finds.
 - A silent Gmail is not "no email": when the last look could not read the mailbox, the window's end says the app could
   not reach Gmail, not that no security code email arrived.
 - The code is never logged, stored, or put in a notice, a progress line, an event, a run or a claim: only the pipe reply
@@ -30,18 +33,20 @@ The reader rules, as built (each is a test in tests/test_apply_security_code.py)
   and when (``detail.security_code_reader`` on the claim; ``detail.security_code`` stays the boolean 6.14 settles with,
   and watch.ats_statistics counts either).
 
-The pipe interface (the browser driver is another milestone's; this is the contract it calls):
+The pipe interface (the runner carries it; apply/agent_types.py names the ops):
 
-  child  -> parent  {"op": "security_code", "token": "<claim token>"}   when the security-code field first appears
-  parent -> child   {"op": "security_code", "status": "waiting" | "found" | "fallback", "reason": "<key>", "code": "..."}
-  child  -> parent  {"op": "security_code_typed", "token": "<claim token>"}   after it typed the code into the fields
+  child  -> parent  {"op": "security_code", "id": n}      when the security-code field appears (no token: the parent
+                                                          answers for its own run's claim, never one the child names)
+  parent -> child   {"op": "security_code_reply", "id": n, "status": "waiting" | "found" | "fallback", "reason": "<key>",
+                     "code": "..."}
+  child  -> parent  {"op": "security_code_result", "id": n, "typed": bool, "reason": "<why not>"}   once per "found"
 
-``code`` is present only when the status is "found". The child repeats the request every POLL_EVERY while the status
-is "waiting", waits at most REPLY_TIMEOUT_S for each reply (no reply counts as waiting), and keeps heartbeating the
-claim. On "found" it types the code once into the same window's empty fields, sends the acknowledgement (the parent's
-``confirm_typed``) and presses Greenhouse's second Submit; on "fallback" it brings the window to the front and waits for
-the student (D10 A). The runner must not log, persist or forward the reply of this op. Its waits add CODE_WINDOW to the
-student's own wait.
+``code`` is present only when the status is "found". The child asks without blocking, never asks again while a reply is
+outstanding, and asks every POLL_EVERY while the status is "waiting" (a reply later than REPLY_TIMEOUT_S is shown as
+waiting; the same id stays pending). On "found" it types the code once into the same window's empty boxes and **never
+presses Submit**: the student presses it (D1 B, "Never auto-apply"). On "fallback" it brings the window to the front and
+waits for the student (D10 A). The runner must not log, persist or forward the reply of this op, and answers on a thread
+of its own so a slow Gmail never holds the pipe or the heartbeats. Its waits add CODE_WINDOW to the student's own wait.
 """
 
 from __future__ import annotations
@@ -98,6 +103,17 @@ FALLBACK_REASONS = {
     "two_candidates": "more than one security code email arrived",
     "unclear_code": "the code in the email couldn't be read with certainty",
     "timed_out": "no security code email arrived within 10 minutes",
+    "abandoned": "",       # the agent stopped waiting for its ask: not a reason to tell the student, and not "no email arrived"
+}
+# The child read the code and could not put it in (confirm with typed=False): said as "couldn't type it", not "couldn't read it".
+TYPING_REASONS = {
+    "inputs_not_empty": "the code boxes in the window already had something in them",
+    "inputs_missing": "the window no longer showed the eight code boxes",
+    "bad_code": "the code in the email wasn't eight letters and digits",
+    "page_closed": "the window had left the application form",
+    "already_typed": "the app had already typed a code into this window",
+    "auto_submit_blocked": "the form tried to send the code by itself, which the app blocks",
+    "typing_failed": "it could not be typed into the window",
 }
 
 _CODE_WORD = re.compile(r"code", re.IGNORECASE)
@@ -192,7 +208,7 @@ def _reader_client() -> httpx.Client:
 
 
 class SecurityCodeReader:
-    """The one reader of a server process: it keeps, per claim token, when it last looked and which codes were handed out."""
+    """The one reader of a server process: it keeps, per claim token, when it last looked and whether it handed a code out."""
 
     def __init__(self, client_factory: ClientFactory = _reader_client, *, poll_every: timedelta = POLL_EVERY, window: timedelta = CODE_WINDOW):
         self.client_factory = client_factory
@@ -200,6 +216,9 @@ class SecurityCodeReader:
         self.window = window
         self._looked: dict[str, datetime] = {}
         self._handed: set[str] = set()
+        # Tokens whose ask the agent stopped waiting for. A look in Gmail that was still running then finds a code nobody waits
+        # for: it is dropped, never recorded as handed out (the marker goes with forget()).
+        self._abandoned: set[str] = set()
         self._lock = threading.Lock()
 
     def forget(self, token: str) -> None:
@@ -207,6 +226,7 @@ class SecurityCodeReader:
         with self._lock:
             self._looked.pop(token, None)
             self._handed.discard(token)
+            self._abandoned.discard(token)
 
     def answer(self, conn: sqlite3.Connection, *, user_id: str, token: str, now: datetime | None = None) -> CodeAnswer:
         """One request from the child for the claim ``token``. Never raises for what Gmail or an email contains."""
@@ -223,7 +243,11 @@ class SecurityCodeReader:
             record = {"prompted_at": apply_watch.iso_utc(moment), "reader": "waiting"}
         if record.get("reader") == "typed":
             return _fallback("already_used")
-        if record.get("reader") == "handed" or token in self._handed:
+        with self._lock:
+            abandoned, handed_here = token in self._abandoned, token in self._handed
+        if abandoned:
+            return _fallback("abandoned")
+        if record.get("reader") == "handed" or handed_here:
             # Handed out and never acknowledged: it may not have been typed (a reply lost, a window gone). The student is told.
             return self._give_up(conn, user_id, claim, "not_confirmed", moment, now)
         if record.get("reader") == "fallback":
@@ -244,9 +268,22 @@ class SecurityCodeReader:
         if found.status == "fallback":
             return self._give_up(conn, user_id, claim, found.reason, moment, now)
         if found.status == "found":
+            # Handed out is not typed: nothing is counted and no notice is written until the child says it typed it. The run may
+            # have ended while Gmail was being read (forget() has run): then the claim is no longer 'clicking' and the child is
+            # told nothing is current. The agent may have stopped waiting for this ask while Gmail was read (confirm(...,
+            # abandoned) ran): nobody is waiting for the code, so it is not recorded as handed out over the fallback.
             with self._lock:
+                if token in self._abandoned:
+                    return _fallback("abandoned")
+            if not _record(
+                conn, user_id, token, {"reader": "handed", "handed_at": apply_watch.iso_utc(moment)}, now=now,
+                not_reader=("fallback", "typed"),
+            ):
+                return _fallback("not_current")
+            with self._lock:
+                if token in self._abandoned:        # abandoned between the record and here: the code goes no further
+                    return _fallback("abandoned")
                 self._handed.add(token)
-            _record(conn, user_id, token, {"reader": "handed", "handed_at": apply_watch.iso_utc(moment)}, now=now)
         elif bool(record.get("last_look_ok")) != found.reached:
             _record(conn, user_id, token, {"last_look_ok": found.reached}, now=now)
         return found
@@ -271,6 +308,38 @@ class SecurityCodeReader:
         )
         return True
 
+    def confirm(
+        self, conn: sqlite3.Connection, *, user_id: str, token: str, typed: bool, reason: str = "", now: datetime | None = None,
+    ) -> None:
+        """The child's word on the code it was handed (the pipe's security_code_result): typed, or not and why.
+
+        Typed is ``confirm_typed``. Not typed records the fallback with its reason and tells the student to type the code
+        themselves; ``abandoned`` (the agent stopped waiting for its ask) records only that. Nothing here ever holds the code,
+        and only a claim that is still 'clicking' is touched.
+        """
+        if typed:
+            self.confirm_typed(conn, user_id=user_id, token=token, now=now)
+            return
+        moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        with self._lock:
+            self._handed.discard(token)
+            if reason == "abandoned":
+                self._abandoned.add(token)
+        claim = conn.execute("SELECT * FROM application_submit_claims WHERE token=? AND user_id=?", (token, user_id)).fetchone()
+        if claim is None or claim["state"] != "clicking":
+            return
+        if reason == "abandoned":
+            # The agent stopped waiting for its ask (the student took the code over, the read window ended, the page moved on): whatever
+            # the reader found is dropped, and the claim says the agent stopped waiting. It says "abandoned" and nothing more:
+            # not "no email arrived", which may not be what happened. No notice: the window was already brought forward for them.
+            _record(
+                conn, user_id, token, {"reader": "fallback", "reason": "abandoned", "fell_back_at": apply_watch.iso_utc(moment)}, now=now,
+                not_reader=("fallback", "typed"),
+            )
+            return
+        key = reason if reason in TYPING_REASONS else "typing_failed"
+        self._give_up(conn, user_id, claim, key, moment, now, typing=True)
+
     def _unable(self, conn: sqlite3.Connection, user_id: str) -> str:
         """The fallback reason when the app cannot read this student's mail at all, else ''. Database reads only."""
         row = connector_row(conn, user_id)
@@ -286,16 +355,27 @@ class SecurityCodeReader:
             return ""
         return "unknown_address" if problem == apply_watch.WATCH_NEEDS_ADDRESS else "other_address"
 
-    def _give_up(self, conn: sqlite3.Connection, user_id: str, claim: Any, reason: str, moment: datetime, now: datetime | None) -> CodeAnswer:
-        """D10 A: record the fallback once and tell the student, with the reason in words and never a value."""
+    def _give_up(
+        self, conn: sqlite3.Connection, user_id: str, claim: Any, reason: str, moment: datetime, now: datetime | None,
+        *, typing: bool = False,
+    ) -> CodeAnswer:
+        """D10 A: record the fallback once and tell the student, with the reason in words and never a value.
+
+        ``typing`` is a fallback after the code was read but could not be put in (the notice says so, not "couldn't read it").
+        """
         token = claim["token"]
         _record(conn, user_id, token, {"reader": "fallback", "reason": reason, "fell_back_at": apply_watch.iso_utc(moment)}, now=now)
-        sentence = FALLBACK_REASONS.get(reason, "")
+        if typing:
+            sentence = TYPING_REASONS.get(reason, TYPING_REASONS["typing_failed"])
+            lead = "The app read the code but couldn't type it"
+        else:
+            sentence = FALLBACK_REASONS.get(reason, "")
+            lead = "The app couldn't read it from your email"
         if sentence:
             automation.notice(
                 conn, user_id, event_key=f"apply-security-code:{token}", level="warning",
                 title=f"{_company(conn, claim['opportunity_id'])}: Greenhouse emailed you a security code. Type it into the Chromium window.",
-                body=f"The app couldn't read it from your email: {sentence}.",
+                body=f"{lead}: {sentence}.",
             )
         return _fallback(reason)
 
@@ -308,10 +388,12 @@ def _company(conn: sqlite3.Connection, opportunity_id: str) -> str:
 def _record(
     conn: sqlite3.Connection, user_id: str, token: str, changes: dict[str, Any], *, waiting: bool = False, now: datetime | None = None,
     only_if_reader: str = "",
+    not_reader: tuple[str, ...] = (),
 ) -> bool:
     """Merge into the claim's detail.security_code_reader, in one transaction, while the claim is still 'clicking'. Never a code.
 
-    ``only_if_reader`` makes it conditional on the record being in that reader state (the acknowledgement's rule).
+    ``only_if_reader`` makes it conditional on the record being in that reader state (the acknowledgement's rule);
+    ``not_reader`` names readers the record must not overwrite (a late "handed" never replaces a fallback or a typed code).
     """
     with conn:
         apply_runs.lock_user(conn, user_id)
@@ -324,6 +406,8 @@ def _record(
         current = detail.get(RECORD_KEY)
         current = current if isinstance(current, dict) else {}
         if only_if_reader and current.get("reader") != only_if_reader:
+            return False
+        if current.get("reader") in not_reader:
             return False
         detail[RECORD_KEY] = {**current, **changes}
         if waiting:
