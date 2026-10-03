@@ -30,10 +30,13 @@
     return !item.sent_at && ["not_started", "drafted"].includes(item.status);
   }
 
-  // A company the student marked not interested is kept, never deleted, and
-  // shows only under Not interested: every other tab, All companies included,
-  // leaves it out.
-  const outreachNotInterested = (item) => Boolean(item.not_interested_at);
+  // A company the student set aside is kept, never deleted, and automation leaves it alone. Not interested
+  // files it under its own tab and out of every other one, All companies included. Applied directly (they
+  // filled in the company's own application form) files it under its own tab and out of every working tab,
+  // but All companies still lists it.
+  const outreachSetAside = (item) => Boolean(item.not_interested_at);
+  const outreachAppliedDirectly = (item) => outreachSetAside(item) && Boolean(item.applied_directly);
+  const outreachNotInterested = (item) => outreachSetAside(item) && !item.applied_directly;
 
   // The rail's outreach tabs. The server returns every company once; each tab
   // narrows that list here, so every count stays in step with the cards.
@@ -52,12 +55,17 @@
     { id: "replied", label: "Replied", group: "Contacted", tone: "is-good", test: (item) => ["replied", "call_scheduled", "offer"].includes(item.status) },
     { id: "closed", label: "Closed or paused", group: "Contacted", test: (item) => ["declined", "no_response", "paused"].includes(item.status) },
     { id: "all", label: "All companies", group: "Everything", test: () => true },
+    { id: "applied-directly", label: "Applied directly", group: "Everything", test: outreachAppliedDirectly },
     { id: "not-interested", label: "Not interested", group: "Everything", test: outreachNotInterested },
     { id: "deep-search", label: "Deep search", group: "Tools", tool: true },
     { id: "find-people", label: "Find people", group: "Tools", tool: true },
     { id: "add", label: "Add, import, export", group: "Tools", tool: true },
     { id: "settings", label: "Settings", group: "Tools", tool: true },
-  ].map((tab) => (tab.tool || tab.id === "not-interested" ? tab : { ...tab, test: (item) => !outreachNotInterested(item) && tab.test(item) }));
+  ].map((tab) => {
+    if (tab.tool || tab.id === "not-interested" || tab.id === "applied-directly") return tab;
+    const left = tab.id === "all" ? outreachNotInterested : outreachSetAside;
+    return { ...tab, test: (item) => !left(item) && tab.test(item) };
+  });
 
   const OUTREACH_SORTS = {
     contact: ["Confirmed email first", () => 0],
@@ -708,7 +716,7 @@
   }
 
   Object.assign(App, {
-    OUTREACH_SORTS, OUTREACH_TABS, deepSearchPanel, installOutreachTools, outreachMatchesQuery, outreachNotInterested,
+    OUTREACH_SORTS, OUTREACH_TABS, deepSearchPanel, installOutreachTools, outreachAppliedDirectly, outreachMatchesQuery, outreachSetAside,
     outreachSettingsPanel, recontactPanel, scheduleDeepSearchPoll,
   });
 })();

@@ -38,7 +38,7 @@
   } = App;
 
   // From app-outreach-tools.js.
-  const { outreachNotInterested } = App;
+  const { outreachAppliedDirectly, outreachSetAside } = App;
 
   // Defined in files that load later; looked up when called.
   const loadOutreach = (...args) => App.loadOutreach(...args);
@@ -105,7 +105,10 @@
   // The one thing to do next, in the words the bar and the list row use.
   // `tab` is where that work happens; the bar offers to go there.
   function outreachNextStep(item) {
-    if (outreachNotInterested(item)) {
+    if (outreachAppliedDirectly(item)) {
+      return { label: "Applied directly", hint: "You applied through their own site. It is kept here, and nothing automatic goes to it. Move it back to outreach to pick it up again.", tab: null };
+    }
+    if (outreachSetAside(item)) {
       return { label: "Nothing while not interested", hint: "It is kept here, and nothing automatic goes to it. Move it back to outreach to pick it up again.", tab: null };
     }
     if (item.possible_reply_count) {
@@ -1059,28 +1062,37 @@
     }
     const side = element("div", "outreach-head-side");
     side.appendChild(chip(OUTREACH_STATUS_LABELS[item.status] || item.status, item.status === "replied" || item.status === "call_scheduled" || item.status === "offer" ? "is-region" : ""));
-    const setAside = outreachNotInterested(item);
-    if (setAside) side.appendChild(chip(`Not interested since ${formatDate(item.not_interested_at)}`, "is-warning"));
+    const setAside = outreachSetAside(item);
+    const applied = outreachAppliedDirectly(item);
+    if (setAside) side.appendChild(chip(`${applied ? "Applied directly, marked" : "Not interested since"} ${formatDate(item.not_interested_at)}`, applied ? "is-region" : "is-warning"));
     const link = safeExternalUrl(item.website) || item.source_urls.map(safeExternalUrl).find(Boolean);
     if (link) {
       const site = externalLink(link, "Research source ↗", { className: "secondary-button" });
       side.appendChild(site);
     }
-    // Filed under Not interested, never deleted; automation leaves it alone until it is moved back.
-    const interest = element("button", "secondary-button outreach-interest", setAside ? "Move back to outreach" : "Not interested");
-    interest.type = "button";
-    interest.addEventListener("click", async () => {
-      interest.disabled = true;
-      try {
-        await patchOutreach(item, { not_interested: !setAside }, setAside
-          ? `${item.company} moved back into your outreach.`
-          : `${item.company} moved to Not interested. It is kept there, and nothing automatic goes to it.`, ".outreach-interest");
-      } catch (error) {
-        showError(error.message);
-        interest.disabled = false;
-      }
-    });
-    side.appendChild(interest);
+    // Filed under Not interested or Applied directly, never deleted; automation leaves it alone until it is moved back.
+    const setAsideButton = (label, payload, message) => {
+      const button = element("button", "secondary-button outreach-interest", label);
+      button.type = "button";
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        try {
+          await patchOutreach(item, payload, message, ".outreach-interest");
+        } catch (error) {
+          showError(error.message);
+          button.disabled = false;
+        }
+      });
+      side.appendChild(button);
+    };
+    if (setAside) {
+      setAsideButton("Move back to outreach", { not_interested: false }, `${item.company} moved back into your outreach.`);
+    } else {
+      setAsideButton("Applied directly", { applied_directly: true },
+        `${item.company} moved to Applied directly. It is kept there, and nothing automatic goes to it.`);
+      setAsideButton("Not interested", { not_interested: true },
+        `${item.company} moved to Not interested. It is kept there, and nothing automatic goes to it.`);
+    }
     heading.append(identity, side);
 
     const facts = element("div", "application-facts");
@@ -1494,7 +1506,7 @@
     save.type = "submit";
     const remove = element("button", "danger-button", "Remove company");
     remove.type = "button";
-    remove.hidden = outreachNotInterested(item);
+    remove.hidden = outreachSetAside(item);
     const formStatus = element("p", "form-status");
     formStatus.setAttribute("aria-live", "polite");
     footer.append(save, remove, formStatus);

@@ -283,6 +283,14 @@ _OUTREACH_NOT_INTERESTED_COLUMNS = (
 _apply_outreach_not_interested = _columns_step(_OUTREACH_NOT_INTERESTED_COLUMNS)
 
 
+# Why an outreach company is set aside: '' not interested, 'applied_directly' the student applied on its own site.
+_OUTREACH_APPLIED_DIRECTLY_COLUMNS = (
+    ("outreach_targets", "set_aside_reason", "TEXT NOT NULL DEFAULT ''"),
+)
+
+_apply_outreach_applied_directly = _columns_step(_OUTREACH_APPLIED_DIRECTLY_COLUMNS)
+
+
 # Which agent ran a deep search when it was not the one the student chose ('' when it ran as chosen).
 _OUTREACH_DISCOVERY_AGENT_NOTE_COLUMNS = (
     ("outreach_discovery_runs", "agent_note", "TEXT NOT NULL DEFAULT ''"),
@@ -308,6 +316,7 @@ _MIGRATION_STEPS: dict[str, Callable[[Any, str], None]] = {
     "0046_apply_sensitive_company_name.sql": _apply_apply_sensitive_company_name,
     "0047_outreach_not_interested.sql": _apply_outreach_not_interested,
     "0049_outreach_discovery_agent_note.sql": _apply_outreach_discovery_agent_note,
+    "0050_outreach_applied_directly.sql": _apply_outreach_applied_directly,
 }
 
 
