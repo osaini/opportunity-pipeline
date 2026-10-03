@@ -32,6 +32,8 @@ import httpx
 
 from .. import APPLY_ROOT, DEFAULT_PLATFORM_DB, DEFAULT_PROFILE, STATIC_DIR
 from ..apply import preflight as apply_preflight, runs as apply_runs
+from ..apply.agent import DefaultApplyAgentFactory
+from ..apply.runner import ApplyRunner
 from ..integrations.agent_providers import AgentProvider, build_provider
 from ..apply.schema_client import SchemaClient, default_schema_client_factory
 from ..opportunities.boards import BoardTracker
@@ -226,6 +228,8 @@ class AppRuntime:
     # (static_dir resolved, its mtime_ns, the names it lists, name -> resolves inside it): see web/assets.py.
     asset_listing: tuple[Any, int, frozenset[str], dict[str, bool]] | None = None
     apply_schema_cache: apply_preflight.SchemaCache = field(default_factory=apply_preflight.SchemaCache)
+    # Apply for me's single slot for a rehearsal or an option lookup. One per app, which in the real server is one per process.
+    apply_runner: ApplyRunner = field(default_factory=ApplyRunner)
 
 
 @dataclass(frozen=True)
@@ -325,7 +329,7 @@ def build_context(options: AppOptions) -> AppContext:
     # the real app. A sandbox or a test may opt in with fakes (no network, no browser); without them the check and
     # the start routes answer 503 at once, which is also what the fuzzer sees.
     resolved_apply_schema_client_factory = options.apply_schema_client_factory or (default_schema_client_factory if real_product_db else None)
-    resolved_apply_agent_factory = options.apply_agent_factory or (apply_runs.PlaywrightProbe() if real_product_db else None)
+    resolved_apply_agent_factory = options.apply_agent_factory or (DefaultApplyAgentFactory() if real_product_db else None)
     apply_runs.configure_agent_factory(resolved_apply_agent_factory)
     # The status panel reads this machine's scheduler, daily-run state and
     # data/pipeline.db, which only describe the real product database.

@@ -434,6 +434,90 @@
       "status_code": null
     },
     {
+      "endpoint": "start_apply_rehearsal",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "start_apply_rehearsal_api_v1_apply_agent_opportunities__opportunity_id__rehearsals_post",
+      "path": "/api/v1/apply-agent/opportunities/{opportunity_id}/rehearsals",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 202
+    },
+    {
+      "endpoint": "start_apply_lookup",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "start_apply_lookup_api_v1_apply_agent_opportunities__opportunity_id__lookups_post",
+      "path": "/api/v1/apply-agent/opportunities/{opportunity_id}/lookups",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 202
+    },
+    {
+      "endpoint": "list_apply_runs",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "list_apply_runs_api_v1_apply_agent_opportunities__opportunity_id__runs_get",
+      "path": "/api/v1/apply-agent/opportunities/{opportunity_id}/runs",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "get_apply_run",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_apply_run_api_v1_apply_agent_runs__run_id__get",
+      "path": "/api/v1/apply-agent/runs/{run_id}",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "cancel_apply_run",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "cancel_apply_run_api_v1_apply_agent_runs__run_id__cancel_post",
+      "path": "/api/v1/apply-agent/runs/{run_id}/cancel",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "review_apply_run",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "review_apply_run_api_v1_apply_agent_runs__run_id__review_post",
+      "path": "/api/v1/apply-agent/runs/{run_id}/review",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "get_apply_screenshot",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_apply_screenshot_api_v1_apply_agent_runs__run_id__screenshots__index__get",
+      "path": "/api/v1/apply-agent/runs/{run_id}/screenshots/{index}",
+      "response_model": null,
+      "status_code": null
+    },
+    {
       "endpoint": "resolve_apply_claim",
       "include_in_schema": true,
       "kind": "route",
