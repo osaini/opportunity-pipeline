@@ -1249,7 +1249,7 @@ def recover_stale(conn: sqlite3.Connection, now: datetime | None = None, *, user
             fresh = conn.execute("SELECT detail_json FROM application_submit_claims WHERE token=?", (row["token"],)).fetchone()
             detail = {**json_as(fresh["detail_json"] if fresh else "", {}), "waiting": ""}
             changed = conn.execute(
-                "UPDATE application_submit_claims SET state=?, note=?, updated_at=?, detail_json=?, after_click=CASE WHEN ? THEN 1 ELSE after_click END "
+                "UPDATE application_submit_claims SET state=?, note=?, updated_at=?, detail_json=?, after_click=CASE WHEN ? = 1 THEN 1 ELSE after_click END "
                 "WHERE token=? AND state=?",
                 ("failed" if stopped else "unconfirmed", note, _stamp(now), _dumps(detail), 0 if stopped else 1, row["token"], row["state"]),
             ).rowcount

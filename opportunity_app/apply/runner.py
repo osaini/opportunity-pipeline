@@ -459,8 +459,15 @@ def process_alive(pid: int) -> bool:
     try:
         with open(f"/proc/{pid}/stat", encoding="utf-8") as stat:
             return stat.read().rsplit(")", 1)[-1].split()[0] != "Z"
+    except FileNotFoundError:
+        pass       # no /proc (macOS): ask ps, which shows an unreaped child as Z
     except (OSError, IndexError):
         return True
+    try:
+        state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return bool(state) and not state.startswith("Z")
 
 
 # --- Supervising one child ---------------------------------------------------------------------------------------

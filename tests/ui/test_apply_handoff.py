@@ -557,7 +557,8 @@ def test_the_rehearsal_shows_the_answer_column_then_what_changed_and_not_now_fol
     expect(section.locator(".apply-values-note")).to_contain_text("Some answers changed since this rehearsal. Rehearse again to see the new plan; Finish in browser uses your current answers.")
     # Not now folds the result back into the starters, with no request.
     sent = []
-    owner_page.on("request", lambda request: sent.append(request.url) if "/apply-agent/" in request.url else None)
+    # The masked screenshot of the reloaded result may still be loading; an <img> fetch is not a question to the server.
+    owner_page.on("request", lambda request: sent.append(request.url) if "/apply-agent/" in request.url and request.resource_type != "image" else None)
     section.get_by_role("button", name="Not now").click()
     expect(section.locator(".apply-result")).to_have_count(0)
     expect(section.get_by_role("button", name="Rehearse in a window")).to_be_visible()

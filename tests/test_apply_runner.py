@@ -651,6 +651,19 @@ class TreeTests(unittest.TestCase):
         child.wait(timeout=20)
         self.assertTrue(wait_until(lambda: not apply_runner.process_alive(child.pid), 10))
 
+    @unittest.skipIf(os.name == "nt", "POSIX only: Windows reads the process table instead")
+    def test_without_proc_an_unreaped_zombie_is_not_alive_and_ps_decides(self):
+        # macOS has no /proc: a killed child that its parent has not reaped yet still answers os.kill(pid, 0), so ps's state decides.
+        def ps(state):
+            return mock.patch.object(apply_runner.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=state, stderr=""))
+        with mock.patch("builtins.open", side_effect=FileNotFoundError):
+            with ps("Z+"):
+                self.assertFalse(apply_runner.process_alive(os.getpid()))
+            with ps(""):
+                self.assertFalse(apply_runner.process_alive(os.getpid()))
+            with ps("S+"):
+                self.assertTrue(apply_runner.process_alive(os.getpid()))
+
     def test_descendants_lists_a_grandchild_and_kill_tree_ends_it_too(self):
         script = "import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(600)']); time.sleep(600)"
         child = subprocess.Popen([sys.executable, "-c", script], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
