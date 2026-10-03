@@ -570,6 +570,89 @@
     return button;
   }
 
+  // A draft waiting for review that could be scheduled once approved: true when
+  // one press can confirm the research, approve the draft and schedule it.
+  function canApproveAndSchedule(context, item) {
+    const schedule = item.scheduled?.initial;
+    return outreachDraftNeedsReview(item, "initial")
+      && Boolean(item.email_subject && item.email_body && item.contact_email)
+      && !item.contact_bounced && !item.cc_bounced
+      && Boolean(context.gmail?.connected && context.gmail.bounce_check && context.automation?.scheduled_sending)
+      && !["scheduled", "sending", "transmitting"].includes(schedule?.state);
+  }
+
+  // The three steps the separate buttons take, in order, after one confirmed
+  // press: Confirm research (when unverified), Approve draft, then Schedule for
+  // their morning. Each step is the same request its own button makes, so
+  // every check still applies, and a step that stops leaves the earlier ones done.
+  function approveAndScheduleButton(item) {
+    const recipients = item.contact_cc ? `${item.contact_email} (Cc ${item.contact_cc})` : item.contact_email;
+    const unverified = item.research_confidence === "unverified";
+    const label = unverified ? "Confirm research, approve and schedule" : "Approve and schedule for their morning";
+    const steps = unverified ? "confirm the research, approve the draft, and schedule it" : "approve the draft and schedule it";
+    const button = element("button", "secondary-button outreach-approve-schedule", label);
+    button.type = "button";
+    const id = encodeURIComponent(item.id);
+    const reset = armConfirm(button, {
+      idleLabel: () => label,
+      armedLabel: () => `Schedule to ${recipients}?`,
+      prompt: () => `Press again to ${steps} to ${recipients} for their next weekday morning.`,
+      beforeClick: () => {
+        if (!unsavedDraftEdits(button, "initial")) return false;
+        showError("The draft text box has unsaved edits. Save them, then try again, so what is approved is what you see.");
+        return true;
+      },
+      onConfirm: async () => {
+        button.disabled = true;
+        const done = [];
+        try {
+          if (unverified) {
+            await api(`/api/v1/outreach/${id}/confirm-research`, { method: "POST" });
+            done.push("confirmed the research");
+          }
+          const approve = (acknowledge) => api(`/api/v1/outreach/${id}/approve`, {
+            method: "POST",
+            body: JSON.stringify({ kind: "initial", fingerprint: item.draft_fingerprint, acknowledge_warnings: acknowledge }),
+          });
+          let approved;
+          try {
+            approved = await approve(false);
+          } catch (error) {
+            if (error.status !== 422 || !String(error.message).startsWith("Review these warnings")) throw error;
+            if (!window.confirm(`${error.message}\n\nApprove anyway and schedule it?`)) {
+              await reloadOutreachAt(item.id);
+              announce(done.length ? `Confirmed the research for ${item.company}. The draft is not approved.` : `The ${item.company} draft is not approved.`);
+              return;
+            }
+            approved = await approve(true);
+          }
+          done.push("approved the draft");
+          const scheduled = await api(`/api/v1/outreach/${id}/schedule`, {
+            method: "POST",
+            body: JSON.stringify({ kind: "initial", fingerprint: approved.draft_fingerprint }),
+          });
+          state.outreachKeep.add(item.id);
+          await reloadOutreachAt(item.id, ".outreach-next .tracker-exports button");
+          announce(`${unverified ? "Confirmed the research, approved" : "Approved"} the ${item.company} draft. ${automationPaused()
+            ? `Scheduled for ${scheduled.label}. Automation is paused, so it goes out after you resume.`
+            : `Scheduled: goes out ${scheduled.label}.`}`);
+        } catch (error) {
+          reset();
+          button.disabled = false;
+          if (!done.length) {
+            showError(error.message);
+            return;
+          }
+          // Reload so the card shows what did happen; the message says where it stopped.
+          await reloadOutreachAt(item.id).catch(() => {});
+          const what = done.join(" and ");
+          showError(`${what.charAt(0).toUpperCase()}${what.slice(1)} for ${item.company}, but it is not scheduled: ${error.message}`);
+        }
+      },
+    });
+    return button;
+  }
+
   function cancelScheduleButton(item, kind, text = "Cancel") {
     const button = element("button", "secondary-button", text);
     button.type = "button";
@@ -743,7 +826,7 @@
   Object.assign(App, {
     CALL_PREP_ACTIVE, CALL_PREP_WRITING, CANDIDATE_METHOD_LABELS, CANDIDATE_VERIFICATION_LABELS,
     CONTACT_CONFIDENCE_LABELS, DRAFT_PROVIDER_LABELS, DRAFT_STATUS_LABELS, OUTREACH_EVENT_LABELS, OUTREACH_STATUS_LABELS,
-    automaticSendWords, checkForBounces, composeControl, formHost, formSendControls, installOutreachSend, outreachChoice,
+    approveAndScheduleButton, automaticSendWords, canApproveAndSchedule, checkForBounces, composeControl, formHost, formSendControls, installOutreachSend, outreachChoice,
     outreachContactFormSection, outreachDraftNeedsReview, outreachField, outreachReachable, outreachSendStatus, pauseWords, refocusOutreach,
     refuseUnsavedHandOff, reloadOutreachAt, repaintPauseWords, scheduleText, scheduleWords, sentFolderCheck,
   });

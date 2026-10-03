@@ -105,6 +105,14 @@ it runs. Editing the draft or changing the recipient cancels it, and the card
 keeps **Cancel** and **Send now**. A send that could not go (Gmail unreachable
 three times, the draft sent some other way) is shown on the card with why.
 
+While a draft is waiting for review, the card also offers **Confirm research,
+approve and schedule** (or **Approve and schedule for their morning** when the
+research is already confirmed). After a second press naming the recipient, it
+does what **Confirm research**, **Approve draft** and **Schedule for their
+morning** do, in that order, with the same checks; approval warnings still ask
+first. If a step stops, the earlier ones stay done and the message says where
+it stopped. The separate buttons are still there.
+
 The app sends scheduled email only while this computer is awake, and the Gmail
 API cannot schedule a send. A scheduled email that missed its morning by more
 than two hours (the computer was asleep or off) is never sent late: it moves to

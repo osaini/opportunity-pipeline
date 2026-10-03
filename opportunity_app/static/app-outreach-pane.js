@@ -25,8 +25,8 @@
 
   // From app-outreach-send.js.
   const {
-    CALL_PREP_ACTIVE, CALL_PREP_WRITING, CONTACT_CONFIDENCE_LABELS, DRAFT_PROVIDER_LABELS, DRAFT_STATUS_LABELS, automaticSendWords,
-    OUTREACH_STATUS_LABELS, composeControl, formHost, formSendControls, outreachChoice, outreachContactFormSection,
+    CALL_PREP_ACTIVE, CALL_PREP_WRITING, CONTACT_CONFIDENCE_LABELS, DRAFT_PROVIDER_LABELS, DRAFT_STATUS_LABELS, approveAndScheduleButton,
+    automaticSendWords, canApproveAndSchedule, OUTREACH_STATUS_LABELS, composeControl, formHost, formSendControls, outreachChoice, outreachContactFormSection,
     outreachDraftNeedsReview, outreachField, outreachReachable, pauseWords, refocusOutreach, refuseUnsavedHandOff,
     reloadOutreachAt, scheduleText, scheduleWords, sentFolderCheck,
   } = App;
@@ -1223,6 +1223,8 @@
       });
       actions.appendChild(confirmResearch);
     }
+    // One press for the usual path; the separate buttons above and in the Draft tab stay.
+    if (canApproveAndSchedule(context, item)) actions.appendChild(approveAndScheduleButton(item));
     const awaitingReply = item.status === "sent" || item.status === "followed_up";
     const deliverable = !item.contact_bounced && !item.cc_bounced;
     if (item.contact_email && deliverable && item.draft_status === "approved" && !awaitingReply && !["replied", "call_scheduled", "offer", "declined", "no_response"].includes(item.status)) {
