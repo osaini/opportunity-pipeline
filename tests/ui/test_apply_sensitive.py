@@ -8,6 +8,7 @@ app type into a form, so these tests check what the page refuses as much as what
 from __future__ import annotations
 
 import re
+import time
 
 import pytest
 from axe_core_python.sync_playwright import Axe
@@ -244,12 +245,20 @@ def test_switching_two_kinds_quickly_keeps_both_changes(apply_ready, owner_page,
     block.evaluate("""(host) => {
         for (const key of ["age_18", "acknowledgment"]) host.querySelector(`[data-focus="kind-${key}"]`).click();
     }""")
-    owner_page.wait_for_timeout(1000)
+
+    def allowed_now():
+        with db(live_server) as conn:
+            return apply_sensitive.allowed_categories(conn, USER)
+
+    # The second PUT may still be in flight after the first repaint, so wait for the database rather than a fixed time.
+    deadline = time.monotonic() + 10
+    allowed = allowed_now()
+    while ("age_18" in allowed or "acknowledgment" in allowed) and time.monotonic() < deadline:
+        owner_page.wait_for_timeout(100)
+        allowed = allowed_now()
     expect(block.locator('.apply-kinds input[type="checkbox"]:checked')).to_have_count(4)
     expect(block.get_by_label("18 or older")).not_to_be_checked()
     expect(block.get_by_label("Legal acknowledgments, word for word")).not_to_be_checked()
-    with db(live_server) as conn:
-        allowed = apply_sensitive.allowed_categories(conn, USER)
     assert "age_18" not in allowed and "acknowledgment" not in allowed
     assert {"work_authorization", "sponsorship", "consent"} <= allowed
 

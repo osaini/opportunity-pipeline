@@ -18,14 +18,15 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
+| Apply for me | 0 | 3 | 0 | 3 |
 | Mail, Gmail and inboxes | 0 | 4 | 6 | 10 |
 | Outreach drafting, research, forms and CLI | 0 | 4 | 2 | 6 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
 | Web API, auth and storage | 0 | 4 | 1 | 5 |
 | Scoring, scheduling and configuration | 1 | 1 | 4 | 6 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
-| Test tooling | 0 | 0 | 3 | 3 |
-| **Total** | **1** | **22** | **21** | **44** |
+| Test tooling | 0 | 0 | 2 | 2 |
+| **Total** | **1** | **25** | **20** | **46** |
 
 ## Start here: the high-severity entries
 
@@ -108,6 +109,31 @@ The entry flagged for an owner decision is
 - **What happens:** `permissions.request` needs a user gesture. On panel open, the startup flush runs without one and without a `.catch`, so metadata queued while offline is never flushed and the rejection goes unhandled. Late calls such as `syncStep` after a long scan can fail the same way. The harness stubs `request` to always succeed (`tests/extension/sidepanel_harness.mjs:185`). Chrome's exact gesture behaviour still needs confirming in real Chrome.
 - **Suggested fix:** Check `chrome.permissions.contains` first, and call `request` only from the Pair click. Add a `.catch` to the startup flush.
 - **Regression suite:** `node tests/extension/run_tests.mjs` (a permissions stub that rejects without a gesture, plus a stored pending queue); confirm once in real Chrome
+
+## Apply for me
+
+These three were left open by PR #54 (the fail-closed net) and recorded here on 2026-10-03. Apply for me never carries an answer across companies, so each can at worst affect one company's own saved answer, and the student still presses Submit (D1 B).
+
+### Agreement-shaped choices and signatures outside the word list still fill from a same-company saved answer
+- **Severity:** medium (PR #54 review)
+- **Where:** `opportunity_app/apply/classify.py` `field_net()` (the `agreement` mark: `_AGREEMENT_OPTION`, `_SIGNATURE`, the `agree` net words); `opportunity_app/apply/policy.py` `_saved_answer()`
+- **What happens:** A select, radio or text field that agrees to something in words the lists miss (for example a one-option select that works as a tick box, or a signature line worded unusually) gets no `agreement` mark, so a saved answer the student gave at the same company for another posting fills it. Only an exact stored statement should tick or choose an agreement (D9 B).
+- **Suggested fix:** Treat any one-option select as a tick box, and leave a select or text field for the student whenever its options or heading hit the broad net's agreement topic, not only the narrow lists.
+- **Regression suite:** tests/ unittest (`test_apply_policy`, `test_apply_broad_net`)
+
+### The Python net chain stops at a child that does not continue by its wording, so a grandchild of a never-storable question gets a save form
+- **Severity:** medium (PR #54 review)
+- **Where:** `opportunity_app/apply/policy.py` `build_plan()` (the `net_chain` / `continues` logic for custom follow-ups)
+- **What happens:** Under a never-storable question (a criminal-history question, say), a child whose wording does not read as a follow-up breaks the chain, so its own child (the grandchild) is treated as ordinary: the Needs you view offers to save it and a same-company row can fill it. The extension marks the same field `never_storable`, so the two disagree.
+- **Suggested fix:** Carry the never-storable topics down every custom child of a never-storable parent, as the extension does, and pin the three-level chain with a shared vector.
+- **Regression suite:** tests/ unittest (`test_apply_policy`), node tests/extension/run_tests.mjs
+
+### The broad never-storable net misses most fresh wordings
+- **Severity:** medium (PR #54 review)
+- **Where:** `opportunity_app/apply/classify.py` `NET_TOPICS` / `net_topics()`; `apps/extension/apply-engine.js` `netTopics`
+- **What happens:** In the PR #54 review, 29 of 30 newly written never-storable wordings (criminal history, demographics, money, security clearance phrased in other words) were not caught, and two wordings from confirmed finding 0 still are not. A missed question is treated as ordinary, so the student can save its answer for that company and a later posting at the same company fills it.
+- **Suggested fix:** Widen the net from a labelled set of real Greenhouse questions, or treat every custom question in a demographic, compliance or background section as never storable.
+- **Regression suite:** tests/ unittest (`test_apply_broad_net`, `tests/fixtures/apply/broad_net.json`)
 
 ## Mail, Gmail and inboxes
 
@@ -360,10 +386,3 @@ The entry flagged for an owner decision is
 - **What happens:** `shutil.copyfile` truncates and rewrites the live file in place, so a request still in flight can open an empty or half-written database. The observed "no such table: users" setup error in `test_responsive` fits this, but there is no traceback to confirm it.
 - **Suggested fix:** Copy to a temporary file in the same directory and `os.replace` it over the live file, retrying on Windows PermissionError.
 - **Regression suite:** tests/ui (full run with no flake)
-
-### test_switching_two_kinds_quickly_keeps_both_changes asserts database state after a fixed 1000 ms wait
-- **Severity:** low (notes 157)
-- **Where:** `tests/ui/test_apply_sensitive.py:247`
-- **What happens:** On a loaded machine the second PUT may not have committed when the database is read, so the test fails intermittently. The other flaky tests named in the note did not reproduce.
-- **Suggested fix:** Poll for the database condition, or wait for both responses with `page.expect_response`.
-- **Regression suite:** tests/ui
