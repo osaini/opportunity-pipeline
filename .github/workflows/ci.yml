@@ -116,8 +116,9 @@ jobs:
 
   browser-python:
     # The Python tests that drive a real Chromium through Playwright: the contact-form
-    # submitter (tests.test_outreach_forms) and the apply agent's fixtures and fake
-    # Greenhouse (tests.test_apply_fixtures). The `test` job has no Playwright, so these
+    # submitter (tests.test_outreach_forms), the apply agent's fixtures and fake
+    # Greenhouse (tests.test_apply_fixtures), and the apply agent itself run against that
+    # fake (tests.test_apply_agent_browser). The `test` job has no Playwright, so these
     # skip there, and the `ui` job runs only tests/ui: before this job the contact-form
     # browser tests never ran in CI. PIPELINE_REQUIRE_BROWSER_TESTS=1 turns a missing or
     # broken Chromium into an error that shows the launch exception (tests/browser_support.py),
@@ -142,7 +143,7 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('requirements-ui.txt') }}
       - run: python -m playwright install --with-deps chromium
-      - run: xvfb-run -a python -m unittest tests.test_outreach_forms tests.test_apply_fixtures -v
+      - run: xvfb-run -a python -m unittest tests.test_outreach_forms tests.test_apply_fixtures tests.test_apply_agent_browser -v
         env:
           PIPELINE_REQUIRE_BROWSER_TESTS: "1"
           PIPELINE_HEADED_TESTS: "1"
