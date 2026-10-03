@@ -192,9 +192,11 @@ FORBIDDEN_DRIVER_ATTRS = frozenset({
 ALLOWED_DRIVER_ATTRS = {
     ("apply/preflight.py", "fetch", "client"): "the schema client's read of Greenhouse's public listing: Python's urllib, no browser",
 }
-# ``.request`` on a receiver that is not Playwright, by (module, receiver name): each sends from Python, never from the browser.
+# ``.request`` on a receiver that is not an APIRequestContext, by (module, receiver name): each sends from Python, never from the
+# browser, or (a Response) sends nothing at all.
 ALLOWED_REQUEST_RECEIVERS = {
     ("apply/security_code.py", "gmail"): "the Gmail REST client (integrations.gmail_client over httpx) reading Greenhouse's security-code email",
+    ("apply/agent.py", "response"): "a Playwright Response's own request, read to file its status under the request the route saw; it sends nothing",
 }
 # The one function of the agent that may call each of Playwright's ways to start a browser or a browser context.
 LAUNCHERS = {"launch": "_launch_browser", "new_context": "_new_context", "launch_persistent_context": "", "connect_over_cdp": "", "new_browser_context": ""}

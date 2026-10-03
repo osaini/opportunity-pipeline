@@ -30,7 +30,7 @@ from opportunity_app.apply import checks as apply_checks, policy as apply_policy
 from opportunity_app.apply import runner_child as apply_runner_child
 from opportunity_app.apply import security_code as apply_security_code
 from opportunity_app.apply.agent_types import AgentJob, ApplyTimeouts, RunResult
-from opportunity_app.apply.agent_types import OP_CANCEL
+from opportunity_app.apply.agent_types import OP_CANCEL, OP_HAND_OVER, OP_HAND_OVER_REPLY
 from opportunity_app.apply.runner import ApplyRunner, RunnerBusy, RunRefused, SupervisorHandlers, deadline_for, supervise
 from opportunity_app.core.database import connect_product
 from opportunity_app.core.timestamps import utc_now
@@ -402,6 +402,25 @@ if __name__ == "__main__":
 """
 
 
+class StopTimeDrainTests(unittest.TestCase):
+    """M5a reads a result already waiting in the pipe when the deadline or the server's shutdown stops a run; a hand-over asked for in
+    that same moment must not be committed, since the child is about to be killed (part 2's Finish in browser)."""
+
+    def test_a_hand_over_waiting_in_the_pipe_at_the_stop_is_refused_without_asking_the_handler(self):
+        outbox_recv, outbox_send = multiprocessing.Pipe(duplex=False)
+        inbox_recv, inbox_send = multiprocessing.Pipe(duplex=False)
+        asked = []
+        handlers = SupervisorHandlers(hand_over=lambda: asked.append(True) or True)
+        outbox_send.send({"op": OP_HAND_OVER, "id": 7, "expires": time.monotonic() + 10})
+        outbox_send.send({"op": "result", "result": RunResult("needs_you", ["late"])})
+        late = apply_runner._drain_terminal(outbox_recv, handlers, inbox_send)
+        self.assertIsNotNone(late)
+        self.assertEqual(late[0].reasons, ["late"], "the result that was already waiting is kept")
+        self.assertEqual(asked, [], "the hand-over was asked of the handler while the run was being stopped")
+        self.assertTrue(inbox_recv.poll(1))
+        self.assertEqual(inbox_recv.recv(), {"op": OP_HAND_OVER_REPLY, "id": 7, "ok": False})
+
+
 class OrphanedChildTests(unittest.TestCase):
     """The watchdog lives in the server. A child that outlives the server (or its deadline) must end itself, whatever its page is doing."""
 
@@ -463,6 +482,34 @@ class OrphanedChildTests(unittest.TestCase):
     def test_end_of_file_on_the_inbox_ends_a_process_child_after_the_grace_and_never_a_thread_child(self):
         self.assertTrue(self.channel_after_eof(end_process_when_orphaned=True))
         self.assertFalse(self.channel_after_eof(end_process_when_orphaned=False), "a thread child shares the server's process: ending it would end the server")
+
+    def orphan_grace_after(self, *, handed_over):
+        """The grace a process child's channel arms when its runner's pipe closes, after a committed hand-over or before any."""
+        inbox_recv, inbox_send = multiprocessing.Pipe(duplex=False)
+        outbox_recv, outbox_send = multiprocessing.Pipe(duplex=False)
+        with mock.patch.object(apply_runner_child, "_end_process_in") as end_in:
+            channel = apply_runner_child.ChildChannel(inbox_recv, outbox_send, ApplyTimeouts(orphan_s=2.0, reply_s=5.0), end_process_when_orphaned=True)
+            channel.ends_at = time.monotonic() + 100.0
+            if handed_over:
+                def parent():
+                    asked = outbox_recv.recv()
+                    self.assertEqual(asked["op"], OP_HAND_OVER)
+                    inbox_send.send({"op": OP_HAND_OVER_REPLY, "id": asked["id"], "ok": True})
+
+                answering = threading.Thread(target=parent, daemon=True)
+                answering.start()
+                self.assertTrue(channel.hand_over())
+                answering.join(5)
+            inbox_send.close()
+            self.assertTrue(wait_until(lambda: end_in.called, 5), "end-of-file never armed the exit")
+            return end_in.call_args.args[0]
+
+    def test_an_orphaned_child_keeps_the_handed_over_window_until_the_agents_cap_and_no_longer(self):
+        """M5a ends an orphaned child after orphan_s; once the student's Submit was handed over, the agent keeps the window (part 2)."""
+        self.assertEqual(self.orphan_grace_after(handed_over=False), 2.0)
+        grace = self.orphan_grace_after(handed_over=True)
+        self.assertGreater(grace, 95.0, "the window was cut off while the student may still be pressing Submit")
+        self.assertLessEqual(grace, 102.0, "and it ends orphan_s after the agent's own cap, not later")
 
     def test_a_thread_child_never_arms_the_process_exit(self):
         seen = []
