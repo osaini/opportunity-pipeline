@@ -40,6 +40,7 @@ from opportunity_app.outreach.contacts import (
     find_contacts,
     guess_strength,
     list_candidates,
+    store_candidate,
 )
 from opportunity_app.outreach.discovery import run_discovery
 from opportunity_app.outreach.email_search import check_person, search_emails
@@ -606,6 +607,30 @@ class StoredContactTests(DatabaseCase):
         target = create_target(self.conn, {"company": "Acme"}, user_id=USER)
         with self.assertRaisesRegex(ValueError, "Cc"):
             update_target(self.conn, target["id"], {"contact_cc": "not an address"}, user_id=USER)
+
+    def test_the_cc_cannot_be_the_to_address(self):
+        with self.assertRaisesRegex(ValueError, "already in To"):
+            create_target(self.conn, {"company": "Beta", "contact_email": "sam@beta.test", "contact_cc": "Sam@Beta.test"}, user_id=USER)
+        target = create_target(self.conn, {"company": "Acme", "contact_email": "sam@acme.test", "contact_cc": "hello@acme.test"}, user_id=USER)
+        with self.assertRaisesRegex(ValueError, "already in To"):
+            update_target(self.conn, target["id"], {"contact_cc": "SAM@acme.test"}, user_id=USER)
+        with self.assertRaisesRegex(ValueError, "already in To"):
+            update_target(self.conn, target["id"], {"contact_email": "hello@acme.test"}, user_id=USER)
+        unchanged = get_target(self.conn, target["id"], user_id=USER)
+        self.assertEqual((unchanged["contact_email"], unchanged["contact_cc"]), ("sam@acme.test", "hello@acme.test"))
+        # Swapping the two in one change is fine, and so is any edit that leaves them alone.
+        swapped = update_target(self.conn, target["id"], {"contact_email": "hello@acme.test", "contact_cc": "sam@acme.test"}, user_id=USER)
+        self.assertEqual((swapped["contact_email"], swapped["contact_cc"]), ("hello@acme.test", "sam@acme.test"))
+        self.assertEqual(update_target(self.conn, target["id"], {"notes": "n"}, user_id=USER)["notes"], "n")
+
+    def test_applying_a_cc_candidate_with_the_same_address_in_other_case_sets_no_cc(self):
+        target = create_target(self.conn, {"company": "Acme"}, user_id=USER)
+        store_candidate(self.conn, target["id"], USER, candidate("sam@acme.test", name="Sam Lee"), "2026-10-03T00:00:00Z")
+        store_candidate(self.conn, target["id"], USER, candidate("SAM@acme.test", method="site_published", confidence="confirmed"), "2026-10-03T00:00:00Z")
+        rows = {row["email"]: row["id"] for row in list_candidates(self.conn, target["id"], user_id=USER)}
+        applied = apply_candidate(self.conn, target["id"], rows["sam@acme.test"], user_id=USER, cc_candidate_id=rows["SAM@acme.test"])
+        self.assertEqual(applied["contact_email"], "sam@acme.test")
+        self.assertEqual(applied["contact_cc"], "")
 
     def test_the_gmail_draft_carries_the_cc(self):
         raw = _mime("student@example.edu", "sam@acme.test", "Hi", "Body", None, cc="hello@acme.test")
