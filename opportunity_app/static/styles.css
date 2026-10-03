@@ -733,6 +733,47 @@ input.settings-switch:disabled { opacity: .6; cursor: progress; }
 .apply-review-note { display: grid; gap: var(--space-2); justify-items: start; width: 100%; max-width: 520px; }
 .apply-review-note[hidden] { display: none; }
 .apply-review-note textarea { width: 100%; }
+/* Apply for me: Finish in browser. The student's turn, what was left and ticked for them, the Answer column, and the plan groups. */
+.apply-start-block { display: grid; gap: var(--space-4); }
+.apply-start-block > .apply-handoff-start { padding-top: var(--space-4); border-top: 1px solid var(--line); }
+.apply-ticks { display: grid; gap: var(--space-2); justify-items: start; min-width: 0; max-width: 100%; margin: 0; padding: var(--space-3) var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); }
+.apply-ticks[hidden] { display: none; }
+.apply-ticks > legend { padding: 0 6px; color: var(--ink-soft); font-size: 11px; font-weight: 750; }
+.apply-ticks-rows { display: grid; gap: var(--space-2); min-width: 0; }
+.apply-ticks .confirmation-row, .apply-posting-tick { overflow-wrap: anywhere; }
+.apply-turn { display: grid; justify-items: start; gap: var(--space-3); min-width: 0; max-width: 100%; }
+.apply-turn > * { margin: 0; max-width: 100%; }
+.apply-turn [hidden] { display: none; }
+.apply-turn-until:empty, .apply-turn-soon:empty, .apply-turn .form-status:empty { min-height: 0; }
+.apply-turn-soon { color: var(--warn-ink); font-weight: 700; }
+.apply-turn-lists { display: grid; gap: var(--space-3); width: 100%; min-width: 0; }
+.apply-turn-lists:empty { display: none; }
+.apply-left, .apply-ticked { display: grid; gap: var(--space-2); padding: var(--space-3) var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); min-width: 0; }
+.apply-left { border-color: var(--warn-line); background: var(--warn-soft); }
+.apply-left h5, .apply-ticked h5 { margin: 0; color: var(--ink); font-size: 12px; }
+.apply-left .reason-list, .apply-ticked .reason-list { margin: 0; }
+.apply-left-item > strong, .apply-ticked-item > strong { display: block; color: var(--ink); font-size: 12px; overflow-wrap: anywhere; }
+.apply-left-item > .profile-help, .apply-ticked-item > .profile-help { margin: 2px 0 0; overflow-wrap: anywhere; }
+.apply-turn-actions { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--space-4); }
+.apply-turn-action { display: grid; justify-items: start; gap: 4px; max-width: 20rem; }
+.apply-turn-action > * { margin: 0; }
+.apply-turn-action[hidden] { display: none; }
+.apply-turn-actions[hidden] { display: none; }
+.apply-claim { display: grid; justify-items: start; gap: var(--space-2); width: 100%; min-width: 0; }
+.apply-claim > * { margin: 0; }
+.apply-claim-line { color: var(--ink); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.apply-claim-actions, .apply-result-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: flex-start; }
+.apply-plan-box { display: grid; gap: var(--space-3); width: 100%; min-width: 0; }
+.apply-plan-box:empty { display: none; }
+.apply-plan-box > * { margin: 0; max-width: 100%; }
+.apply-values-note { font-size: 12px; line-height: 1.5; }
+.apply-plan-answer { min-width: 7rem; }
+.apply-plan-changed { display: block; color: var(--warn-ink); font-size: 11px; }
+details.apply-plan-group { width: 100%; padding: var(--space-2) var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); color: var(--ink-soft); font-size: 12px; }
+details.apply-plan-group > summary { cursor: pointer; color: var(--ink); font-weight: 700; }
+details.apply-plan-group .reason-list { margin: var(--space-2) 0 0; }
+details.apply-plan-group .reason-list .profile-help { margin: 2px 0 0; }
+.apply-see-run { margin-left: var(--space-2); text-decoration: underline; }
 .apply-lookup { display: grid; justify-items: start; gap: 6px; }
 .apply-lookup > * { margin: 0; }
 .apply-lookup-choices { display: grid; justify-items: start; gap: var(--space-2); max-width: 100%; }

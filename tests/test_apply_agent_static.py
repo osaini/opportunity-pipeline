@@ -17,6 +17,7 @@ import json
 import re
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -49,6 +50,8 @@ from opportunity_app.apply.agent import (
     bind_endpoints,
     board_token,
 )
+from opportunity_app.apply import agent_types
+from opportunity_app.apply import runner as apply_runner
 from opportunity_app.apply.agent_types import BUILT_MODES, ApplyTimeouts
 from opportunity_app.apply.checks import REQUIRED_CHECK_SCRIPT, Endpoint
 from opportunity_app.apply.greenhouse import BOARD_HOSTS
@@ -913,8 +916,9 @@ class PinnedRules(unittest.TestCase):
         self.assertFalse(apply_agent.LEGACY_ENABLED)
         self.assertEqual(apply_agent.SCREENSHOT_MASK_COLOR, "#000000")
 
-    def test_only_lookup_and_rehearse_are_built(self):
-        self.assertEqual(BUILT_MODES, ("lookup", "rehearse"))
+    def test_only_lookup_rehearse_and_handoff_are_built(self):
+        self.assertEqual(BUILT_MODES, ("lookup", "rehearse", "handoff"))
+        self.assertNotIn("submit", BUILT_MODES)
 
     def test_the_engine_source_is_the_three_files_in_order(self):
         self.assertEqual(ENGINE_FILES, ("adapters.js", "field-engine.js", "apply-engine.js"))
@@ -979,19 +983,26 @@ class PinnedEndpoints(unittest.TestCase):
 
 
 class LoaderPaths(unittest.TestCase):
-    def test_the_fixture_form_gives_both_paths(self):
+    def test_the_fixture_form_gives_both_paths_and_the_submit_host(self):
         html = apply_fake_ats.fixture_text("new_form.html")
-        self.assertEqual(GreenhouseAdapter.loader_paths(html), (apply_fake_ats.JOB_PATH, apply_fake_ats.CONFIRMATION_PATH))
+        self.assertEqual(GreenhouseAdapter.loader_paths(html), ("boards.greenhouse.io", apply_fake_ats.JOB_PATH, apply_fake_ats.CONFIRMATION_PATH))
 
     def test_a_page_without_the_loader_gives_neither(self):
-        self.assertEqual(GreenhouseAdapter.loader_paths("<html><body>no loader</body></html>"), ("", ""))
-        self.assertEqual(GreenhouseAdapter.loader_paths(""), ("", ""))
+        self.assertEqual(GreenhouseAdapter.loader_paths("<html><body>no loader</body></html>"), ("", "", ""))
+        self.assertEqual(GreenhouseAdapter.loader_paths(""), ("", "", ""))
+
+    def test_a_submit_path_on_the_job_board_host_is_kept_with_that_host_so_a_handoff_can_refuse_it(self):
+        other = '{"submitPath":"https://job-boards.greenhouse.io/x/jobs/1","confirmationPath":"/x/jobs/1/confirmation"}'
+        self.assertEqual(GreenhouseAdapter.loader_paths(other), ("job-boards.greenhouse.io", "/x/jobs/1", "/x/jobs/1/confirmation"))
 
     def test_a_full_address_on_the_submit_host_is_read_as_its_path_and_one_elsewhere_is_not(self):
         live = '{"submitPath":"https:\\u002F\\u002Fboards.greenhouse.io\\u002Fexamplerobotics\\u002Fjobs\\u002F4000000001","confirmationPath":"\\/examplerobotics\\/jobs\\/4000000001\\/confirmation"}'
-        self.assertEqual(GreenhouseAdapter.loader_paths(live), ("/examplerobotics/jobs/4000000001", "/examplerobotics/jobs/4000000001/confirmation"))
+        self.assertEqual(
+            GreenhouseAdapter.loader_paths(live),
+            ("boards.greenhouse.io", "/examplerobotics/jobs/4000000001", "/examplerobotics/jobs/4000000001/confirmation"),
+        )
         elsewhere = '{"submitPath":"https://collect.example.test/apply","confirmationPath":"/x/jobs/1/confirmation"}'
-        self.assertEqual(GreenhouseAdapter.loader_paths(elsewhere), ("", "/x/jobs/1/confirmation"))
+        self.assertEqual(GreenhouseAdapter.loader_paths(elsewhere), ("", "", "/x/jobs/1/confirmation"))
 
 
 class UnbuiltAndRefusedRunsOpenNoBrowser(unittest.TestCase):
@@ -1000,13 +1011,11 @@ class UnbuiltAndRefusedRunsOpenNoBrowser(unittest.TestCase):
         with mock.patch.object(ApplyAgent, "_start", side_effect=AssertionError("a browser was started")):
             return agent.run(FakePlan([planned("first_name", "First Name", "Sam")]), page_url=url, schema=[], files={})
 
-    def test_submit_and_handoff_fail_without_starting_a_browser(self):
-        for mode in ("submit", "handoff"):
-            with self.subTest(mode=mode):
-                result = self.run_agent(mode)
-                self.assertEqual((result.outcome, result.reasons), ("failed", [NOT_BUILT]))
-                self.assertFalse(result.handed_over)
-                self.assertEqual(result.requests, [])
+    def test_submit_fails_without_starting_a_browser(self):
+        result = self.run_agent("submit")
+        self.assertEqual((result.outcome, result.reasons), ("failed", [NOT_BUILT]))
+        self.assertFalse(result.handed_over)
+        self.assertEqual(result.requests, [])
 
     def test_a_page_that_is_not_a_greenhouse_board_is_never_opened(self):
         for url in ("https://careers.example.test/apply", "https://my.greenhouse.io/jobs/1", "http://127.0.0.1:8799/x"):
@@ -1031,6 +1040,427 @@ class UnbuiltAndRefusedRunsOpenNoBrowser(unittest.TestCase):
     def test_the_agent_never_imports_the_policy_or_the_web_app_at_the_top(self):
         text = helpers_source.apply_modules()[AGENT_PATH]
         self.assertEqual(forbidden_top_imports(text), [], "the plan arrives pickled and is read by attribute")
+
+
+class Stub:
+    """A page that can answer the few questions the helpers ask, and counts what it was told."""
+
+    def __init__(self):
+        self.timeouts = []
+
+    def wait_for_timeout(self, milliseconds):
+        self.timeouts.append(milliseconds)
+
+
+class FinishInBrowserKeepsD1B(unittest.TestCase):
+    """The student presses Submit. Nothing in the driver can, in any mode, and the window is raised in exactly one place."""
+
+    def handoff_agent(self):
+        agent = ApplyAgent(mode="handoff", adapter=GreenhouseAdapter())
+        agent._page = Stub()
+        return agent
+
+    def test_click_refuses_submit_in_every_mode_including_handoff(self):
+        for mode in ("lookup", "rehearse", "handoff", "submit"):
+            with self.subTest(mode=mode):
+                agent = ApplyAgent(mode=mode, adapter=GreenhouseAdapter())
+                with self.assertRaises(apply_agent.ClickRefused):
+                    agent._click(mock.Mock(), "submit", "first_name")
+
+    def test_the_driver_holds_nothing_that_presses_a_key_or_submits_a_form(self):
+        pattern = re.compile(r"\.press\(|keyboard\.|requestSubmit|\.submit\(|\.tap\(|mouse\.")
+        for relative, text in helpers_source.apply_modules().items():
+            for number, line in enumerate(text.splitlines(), 1):
+                # The runner hands the security-code read to a worker thread: a concurrent.futures executor, not a form.
+                found = pattern.search(line.replace("executor.submit(", ""))
+                with self.subTest(module=relative, line=number):
+                    self.assertIsNone(found, f"{relative}:{number}: {line.strip()}")
+
+    def test_bring_to_front_is_called_in_one_place_and_it_is_not_one_of_the_five_helpers(self):
+        found = []
+        for relative, text in helpers_source.apply_modules().items():
+            tree = ast.parse(text)
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for call in ast.walk(node):
+                        if isinstance(call, ast.Attribute) and call.attr == "bring_to_front":
+                            found.append((relative, node.name))
+        self.assertEqual(set(found), {(AGENT_PATH, "_to_front")}, found)
+        self.assertNotIn("_to_front", MUTATORS)
+
+    def test_the_security_code_is_typed_only_while_the_agent_is_typing_it(self):
+        agent = self.handoff_agent()
+        box = mock.Mock()
+        with self.assertRaises(apply_agent.ClickRefused):
+            agent._type(box, "1", "security_code")
+        box.fill.assert_not_called()
+        agent._state.code_typing_until = float("inf")
+        agent._type(box, "1", "security_code")
+        box.fill.assert_called_once()
+        agent._state.code_typing_until = 0.0
+        with self.assertRaises(apply_agent.ClickRefused):
+            agent._type(box, "2", "security_code")
+
+    def test_the_code_guard_runs_for_two_seconds_after_the_last_box(self):
+        self.assertEqual(apply_agent.CODE_GUARD_S, 2.0)
+        source = inspect.getsource(ApplyAgent._type_security_code)
+        self.assertIn("code_typing_until = math.inf", source)
+        self.assertIn("time.monotonic() + CODE_GUARD_S", source)
+        self.assertRegex(source, r"finally:\s+self\._state\.code_typing_until")
+
+    def test_a_cancel_after_hand_over_is_not_a_stop(self):
+        agent = self.handoff_agent()
+        agent._cancelled = lambda: True
+        agent._phase = apply_checks.PHASE_STUDENT
+        with self.assertRaises(apply_agent._Stop):
+            agent._begin("first_name")
+        agent._phase = apply_checks.PHASE_AFTER_HAND_OVER
+        agent._begin("first_name")   # does not raise: cancel after hand-over means the parent is gone, never "nothing was sent"
+        self.assertEqual(agent._phase, apply_checks.PHASE_AFTER_HAND_OVER)
+
+    def test_no_handoff_path_sets_the_rehearsal_phase_and_the_phase_starts_at_fill(self):
+        for mode, phase in (("lookup", apply_checks.PHASE_BEFORE_INPUT), ("rehearse", apply_checks.PHASE_BEFORE_INPUT),
+                            ("handoff", apply_checks.PHASE_FILL), ("submit", apply_checks.PHASE_FILL)):
+            self.assertEqual(ApplyAgent(mode=mode, adapter=GreenhouseAdapter())._phase, phase, mode)
+        text = helpers_source.apply_modules()[AGENT_PATH]
+        uses = [number for number, line in enumerate(text.splitlines(), 1) if "PHASE_AFTER_INPUT" in line and "import" not in line and not line.strip().startswith("PHASE_AFTER_INPUT,")]
+        self.assertEqual(len(uses), 1, uses)
+        lines = text.splitlines()
+        self.assertIn('self.mode in ("lookup", "rehearse")', lines[uses[0] - 2])
+        agent = self.handoff_agent()
+        agent._begin("first_name")
+        self.assertEqual(agent._phase, apply_checks.PHASE_FILL, "typing in a handoff must not leave the handoff's phases")
+
+    def test_finish_takes_handed_over_from_the_run_not_from_a_constant(self):
+        source = inspect.getsource(ApplyAgent._finish)
+        self.assertNotIn("handed_over=False", source)
+        self.assertNotIn("after_click=False", source)
+        agent = self.handoff_agent()
+        self.assertEqual((agent._finish("needs_you").handed_over, agent._finish("needs_you").after_click), (False, False))
+        agent._handed_over = True
+        result = agent._finish("unconfirmed")
+        self.assertEqual((result.handed_over, result.after_click, result.confirmation_seen), (True, True, False))
+
+    def test_a_field_the_agent_left_for_the_student_reads_as_left_in_every_view_of_the_plan(self):
+        agent = self.handoff_agent()
+        agent._plan = FakePlan([planned("first_name", "First Name", "Sam"), planned("last_name", "Last Name", "Rivera")])
+        agent._leave("first_name", "left_for_you", "for this reason")
+        agent._filled.add("last_name")            # typed and read back: only such a field is described as filled
+        by_key = {entry["key"]: entry for entry in agent._plan_entries()[0]}
+        self.assertEqual((by_key["first_name"]["disposition"], by_key["first_name"]["problem"]), ("left_for_you", "for this reason"))
+        self.assertEqual(by_key["last_name"]["disposition"], "fill")
+        self.assertEqual([entry["key"] for entry in agent._fill_entries()], ["last_name"])
+        self.assertEqual({item["key"]: item["reason"] for item in agent._left_items()}, {"first_name": "for this reason"})
+        # The plan the pipe and the check read is the same one, and the original is untouched.
+        self.assertEqual([_attr_of(item, "disposition") for item in agent._check_view().fields], ["left_for_you", "fill"])
+        self.assertEqual(agent._raw_fields()[0]["disposition"], "fill")
+
+    def test_a_stop_before_the_turn_closes_the_door_before_it_touches_the_page(self):
+        agent = self.handoff_agent()
+        agent._loaded = True
+        agent._closed = lambda: False
+        order = []
+        agent._screenshot = lambda step: order.append(("picture", agent._closing))
+        agent._close_browser = lambda: order.append(("close", agent._closing)) or True
+        result = agent._stopped("needs_you", "a reason", "early")
+        self.assertEqual(order, [("picture", True), ("close", True)], "a call into the page ran while a Submit could still be handed over")
+        self.assertEqual((result.outcome, result.handed_over, result.after_click), ("needs_you", False, False))
+
+    def test_a_stop_in_the_students_turn_takes_no_picture(self):
+        for phase in (apply_checks.PHASE_STUDENT, apply_checks.PHASE_AFTER_HAND_OVER):
+            with self.subTest(phase=phase):
+                agent = self.handoff_agent()
+                agent._loaded = True
+                agent._phase = phase
+                agent._closed = lambda: False
+                agent._screenshot = lambda step: self.fail("a picture was taken while the window was the student's")
+                agent._close_browser = lambda: True
+                agent._step = "turn"
+                result = agent._crashed()
+                self.assertEqual(result.outcome, "needs_you")
+
+    def test_a_press_handed_over_during_the_picture_is_never_called_not_sent(self):
+        agent = self.handoff_agent()
+        agent._loaded = True
+        agent._closed = lambda: False
+        agent._close_browser = lambda: True
+
+        def picture(step):
+            agent._handed_over = True        # what a Submit pressed during the call would have done, had the door been open
+
+        agent._screenshot = picture
+        result = agent._stopped("needs_you", apply_agent.HANDOFF_NOT_SUBMITTED, "early")
+        self.assertEqual((result.outcome, result.handed_over, result.after_click), ("unconfirmed", True, True))
+        self.assertEqual(result.reasons, [apply_agent.UNCONFIRMED_NOTE])
+
+    def test_a_field_the_agent_never_filled_is_never_described_as_filled(self):
+        agent = self.handoff_agent()
+        agent._plan = FakePlan([planned("first_name", "First Name", "Sam"), planned("last_name", "Last Name", "Rivera")])
+        agent._filled.add("first_name")
+        by_key = {entry["key"]: entry for entry in agent._plan_entries()[0]}
+        self.assertEqual(by_key["first_name"]["disposition"], "fill")
+        self.assertEqual((by_key["last_name"]["disposition"], by_key["last_name"]["note"]), ("blank", apply_agent.NOT_FILLED))
+        self.assertEqual(agent._raw_fields()[1]["disposition"], "fill", "the plan the agent was given is untouched")
+        # A rehearsal's plan is the plan of what it checked: only a handoff holds what was typed to account for.
+        rehearsal = self.handoff_agent()
+        rehearsal.mode = "rehearse"
+        rehearsal._plan = agent._plan
+        self.assertEqual({entry["disposition"] for entry in rehearsal._plan_entries()[0]}, {"fill"})
+
+    def test_a_field_the_agent_typed_but_never_read_back_is_not_called_untouched(self):
+        agent = self.handoff_agent()
+        agent._plan = FakePlan([planned("first_name", "First Name", "Sam"), planned("last_name", "Last Name", "Rivera"), planned("email", "Email", "sam@example.test")])
+        agent._filled.add("first_name")
+        agent._begin("last_name")          # the action on it started (what _type, _tick, _choose and _attach all do first)
+        by_key = {entry["key"]: entry for entry in agent._plan_entries()[0]}
+        self.assertEqual(by_key["first_name"]["disposition"], "fill")
+        self.assertEqual((by_key["last_name"]["disposition"], by_key["last_name"]["note"]), ("blank", apply_agent.TYPED_NOT_CHECKED))
+        self.assertNotIn("nothing was put in it", by_key["last_name"]["note"], "a typed field is not described as empty")
+        self.assertEqual((by_key["email"]["disposition"], by_key["email"]["note"]), ("blank", apply_agent.NOT_FILLED), "a field never acted on still is")
+
+    def test_only_a_handoff_keeps_the_keys_it_acted_on(self):
+        rehearsal = self.handoff_agent()
+        rehearsal.mode = "rehearse"
+        rehearsal._begin("last_name")
+        self.assertEqual(rehearsal._typed, set())
+
+    def test_the_final_picture_covers_the_questions_the_student_answers_in_the_window_that_the_app_never_answers(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as folder:
+            for mode, expected in (("handoff", ["gender", "charged", "tied"]), ("rehearse", ["gender"])):
+                with self.subTest(mode=mode):
+                    agent = ApplyAgent(mode=mode, adapter=mock.Mock(), run_id="run-shot", screenshot_dir=Path(folder))
+                    page = mock.Mock()
+                    page.screenshot.return_value = b"png"
+                    agent._page = page
+                    agent._frame = mock.Mock()
+                    covered = []
+                    agent.adapter.control.return_value.count.return_value = 1
+                    agent.adapter.field_container.side_effect = lambda frame, key: covered.append(key) or key
+                    agent._plan = FakePlan([
+                        planned("gender", "Gender", None, disposition="fill", sensitive="gender"),
+                        # Caught only by the broad net (never a precisely sensitive question): left for the student to type in the window.
+                        planned("charged", "Have you ever been charged in court?", None, disposition="blank", net_never=("criminal",)),
+                        planned("tied", "Anything else about it", None, disposition="left_for_you", problem_kind="sensitive_never"),
+                        planned("first_name", "First Name", "Sam"),
+                    ])
+                    agent._screenshot("final")
+                    self.assertEqual(covered, expected)
+                    self.assertEqual(agent._screenshots[-1]["masked"], expected)
+
+    def test_a_wait_never_ends_after_the_runners_cap(self):
+        agent = self.handoff_agent()
+        agent._ends_at = time.monotonic() + 5
+        self.assertLessEqual(agent._cap(time.monotonic() + 3600), agent._ends_at)
+        self.assertEqual(agent._cap(100.0), 100.0)
+        agent._ends_at = 0.0
+        self.assertEqual(agent._cap(1e12), 1e12)
+
+    def test_the_cap_reaches_the_agent_from_an_argument_or_from_the_link(self):
+        class Link:
+            ends_at = 123.0
+
+        agent = self.handoff_agent()
+        with mock.patch.object(ApplyAgent, "_run", return_value="done"):
+            agent.run(FakePlan([]), page_url=apply_fake_ats.JOB_URL, schema=[], files={}, link=Link())
+            self.assertEqual(agent._ends_at, 123.0)
+            agent.run(FakePlan([]), page_url=apply_fake_ats.JOB_URL, schema=[], files={}, link=Link(), ends_at=456.0)
+            self.assertEqual(agent._ends_at, 456.0)
+            agent.run(FakePlan([]), page_url=apply_fake_ats.JOB_URL, schema=[], files={})
+            self.assertEqual(agent._ends_at, 0.0)
+
+    def test_the_longest_path_after_the_press_fits_inside_the_watchdog_with_room_to_spare(self):
+        t = ApplyTimeouts()
+        self.assertEqual(t.after_hand_over_s, t.code_read_s + t.security_code_s)
+        longest = t.fill_s + t.handoff_s + t.after_hand_over_s + 3 * t.outcome_s
+        self.assertLess(longest, apply_runner.deadline_for("handoff") - 60)
+
+
+class WhatAnAbortedRequestMeansInAHandoff(unittest.TestCase):
+    """The route handler's classification of a request it aborted, with no browser: what ends the fill, what ends the turn, what is only noise."""
+
+    SUBMIT = f"https://boards.greenhouse.io{apply_fake_ats.JOB_PATH}"
+    MULTIPART = {"content-type": "multipart/form-data; boundary=x"}
+    FILE = 'Content-Disposition: form-data; name="resume"; filename="a.pdf"\r\n\r\n%PDF'
+
+    def agent(self, phase):
+        agent = ApplyAgent(mode="handoff", adapter=GreenhouseAdapter())
+        agent._state.submit_path = apply_fake_ats.JOB_PATH
+        agent._phase = phase
+        agent._observer = apply_agent._Observer(mock.Mock(), lambda: True)
+        return agent
+
+    def abort(self, agent, method, url, *, headers=None, body=None, resource_type="fetch"):
+        request = mock.Mock(method=method, url=url, headers=headers or {}, resource_type=resource_type)
+        facts = apply_checks.RouteRequest(method, url, resource_type=resource_type, headers=headers or {}, body=body, public=True)
+        decision = apply_checks.route_decision("handoff", agent._phase, facts, agent._state)
+        self.assertIsInstance(decision, apply_checks.Abort, (method, url))
+        route = mock.Mock()
+        agent._abort_request(route, request, facts, decision)
+        route.abort.assert_called_once_with("blockedbyclient")
+        return decision
+
+    def test_during_the_fill_a_submit_is_early_and_an_upload_or_a_post_to_a_form_address_is_fatal(self):
+        agent = self.agent(apply_checks.PHASE_FILL)
+        self.assertEqual(self.abort(agent, "POST", self.SUBMIT).rule, "before_hand_over")
+        self.assertTrue(agent._early)
+        self.assertIsNone(agent._upload_refused)
+        for method, url, kwargs in (
+            ("PUT", "https://example-uploads.s3.amazonaws.com/resume", {}),
+            ("POST", "https://boards-api.greenhouse.io/v1/boards/x/drafts", {}),
+            ("POST", "https://example.test/u", {"headers": self.MULTIPART, "body": self.FILE}),
+        ):
+            with self.subTest(url=url):
+                agent = self.agent(apply_checks.PHASE_FILL)
+                self.abort(agent, method, url, **kwargs)
+                self.assertEqual(agent._upload_refused["host"], apply_agent._host_of(url))
+                self.assertFalse(agent._early)
+
+    def test_during_the_fill_usage_reporting_and_an_unrelated_post_are_only_refused(self):
+        for url, kwargs in (
+            ("https://c.spl.greenhouse.io/com.snowplowanalytics.snowplow/tp2", {"headers": {"content-type": "application/octet-stream"}, "body": b"x"}),
+            ("https://analytics.example-robotics.test/collect", {"body": "{}"}),
+        ):
+            with self.subTest(url=url):
+                agent = self.agent(apply_checks.PHASE_FILL)
+                self.abort(agent, "POST", url, **kwargs)
+                self.assertEqual((agent._early, agent._upload_refused, agent._closing), (False, None, False))
+
+    def test_during_the_turn_a_post_to_a_form_address_is_elsewhere_and_an_upload_elsewhere_is_an_upload(self):
+        for method, url, kwargs, why in (
+            ("POST", f"{self.SUBMIT}/apply-v2", {"headers": self.MULTIPART, "body": self.FILE}, "elsewhere"),   # the form's own submission carries the résumé
+            ("POST", "https://boards-api.greenhouse.io/v1/x", {"body": "{}"}, "elsewhere"),
+            # A file going to any other form address (a résumé or cover letter parse) is a file leaving, not an unknown address.
+            ("POST", "https://boards-api.greenhouse.io/v1/parse_resume", {"headers": self.MULTIPART, "body": self.FILE}, "upload"),
+            ("POST", "https://job-boards.greenhouse.io/examplerobotics/parse", {"headers": self.MULTIPART, "body": self.FILE}, "upload"),
+            ("PUT", "https://example-uploads.s3.amazonaws.com/cover", {"body": b"%PDF"}, "upload"),
+            ("POST", "https://example.test/u", {"headers": self.MULTIPART, "body": self.FILE}, "upload"),
+        ):
+            with self.subTest(url=url):
+                agent = self.agent(apply_checks.PHASE_STUDENT)
+                self.abort(agent, method, url, **kwargs)
+                self.assertEqual((agent._closing, agent._why_closing), (True, why))
+
+    def test_during_the_turn_usage_reporting_and_other_noise_never_end_it(self):
+        for url, kwargs in (
+            ("https://c.spl.greenhouse.io/com.snowplowanalytics.snowplow/tp2", {"body": "{}"}),
+            ("https://c.spl.greenhouse.io/x", {"headers": {"content-type": "application/octet-stream"}, "body": b"x"}),
+            ("https://analytics.example-robotics.test/collect", {"body": "{}"}),
+            ("https://www.google.com/recaptcha/api2/reload", {"body": "c=" + "x" * 8}),   # allowed, so never aborted for this reason
+        ):
+            with self.subTest(url=url):
+                agent = self.agent(apply_checks.PHASE_STUDENT)
+                request = mock.Mock(method="POST", url=url, headers=kwargs.get("headers", {}), resource_type="fetch")
+                facts = apply_checks.RouteRequest("POST", url, resource_type="fetch", headers=kwargs.get("headers", {}), body=kwargs.get("body"), public=True)
+                decision = apply_checks.route_decision("handoff", agent._phase, facts, agent._state)
+                if isinstance(decision, apply_checks.Abort):
+                    agent._abort_request(mock.Mock(), request, facts, decision)
+                self.assertEqual((agent._closing, agent._early, agent._upload_refused), (False, False, None))
+
+    def test_after_hand_over_every_refused_non_get_is_tracked_as_not_passed_and_a_code_post_while_typing_is_marked(self):
+        agent = self.agent(apply_checks.PHASE_AFTER_HAND_OVER)
+        agent._state.submit_posts_passed = 1
+        self.abort(agent, "POST", "https://c.spl.greenhouse.io/x", body="{}")
+        agent._state.security_code_prompts = 1
+        agent._state.code_typing_until = float("inf")
+        agent._code_auto_until = float("inf")      # while the app types, and CODE_SETTLE_S after it
+        self.assertEqual(self.abort(agent, "POST", self.SUBMIT, body="x").rule, "code_post_while_typing")
+        self.assertTrue(agent._evidence_code["auto_submit_blocked"])
+        self.assertEqual([(host, passed) for _request, _method, host, _path, passed in agent._observer.tracked],
+                         [("c.spl.greenhouse.io", False), ("boards.greenhouse.io", False)])
+        self.assertEqual(agent._closing, False, "a refused request after the press must not look like a stop")
+
+    def test_a_press_refused_after_the_settle_point_is_not_the_widget_sending_by_itself(self):
+        agent = self.agent(apply_checks.PHASE_AFTER_HAND_OVER)
+        agent._state.submit_posts_passed = 1
+        agent._state.security_code_prompts = 1
+        agent._state.code_typing_until = time.monotonic() + 1.5     # still inside the 2 s guard
+        agent._code_auto_until = time.monotonic() - 0.2             # but past the point where the widget would have sent
+        self.assertEqual(self.abort(agent, "POST", self.SUBMIT, body="x").rule, "code_post_while_typing")
+        self.assertFalse(agent._evidence_code["auto_submit_blocked"], "the student's own early press was recorded as the widget's")
+
+    def test_telemetry_is_recorded_a_few_times_and_counted_always(self):
+        agent = self.agent(apply_checks.PHASE_STUDENT)
+        for _ in range(apply_agent.MAX_TELEMETRY_RECORDED + 30):
+            agent._refuse({"method": "POST", "host": "c.spl.greenhouse.io", "rule": "telemetry"})
+        agent._refuse({"method": "POST", "host": "x.example.test", "rule": "value_guard"})
+        self.assertEqual(len(agent._refused), apply_agent.MAX_TELEMETRY_RECORDED + 1)
+        self.assertEqual(agent._refused_total, apply_agent.MAX_TELEMETRY_RECORDED + 31)
+
+
+class TheObserverIsAppendOnly(unittest.TestCase):
+    def test_what_passed_is_always_kept_and_what_was_refused_is_capped(self):
+        observer = apply_agent._Observer(mock.Mock(), lambda: True)
+        request = mock.Mock(url="https://boards.greenhouse.io/x", method="post")
+        for _ in range(apply_agent.MAX_REQUESTS + 50):
+            observer.track(request, passed=False)
+        self.assertEqual(len(observer.tracked), apply_agent.MAX_REQUESTS)
+        observer.track(request, passed=True)
+        self.assertEqual(len(observer.tracked), apply_agent.MAX_REQUESTS + 1)
+        self.assertEqual(observer.records()[-1], {"method": "POST", "host": "boards.greenhouse.io", "path": "/x", "status": None, "passed": True})
+        observer.statuses[id(request)] = 200
+        self.assertEqual(observer.seen()[-1].status, 200)
+        self.assertEqual(set(observer.records()[0]), {"method", "host", "path", "status", "passed"}, "a record is never a query or a body")
+
+    def test_a_navigation_counts_only_after_the_hand_over(self):
+        page = mock.Mock()
+        active = {"on": False}
+        observer = apply_agent._Observer(page, lambda: active["on"])
+        observer._navigated(page.main_frame)
+        self.assertFalse(observer.navigated)
+        active["on"] = True
+        observer._navigated(mock.Mock())          # a sub-frame
+        self.assertFalse(observer.navigated)
+        observer._navigated(page.main_frame)
+        self.assertTrue(observer.navigated)
+
+
+class HandoffSentencesAreTheSpecs(unittest.TestCase):
+    """The words the student reads when a handoff ends, pinned: a sentence that says "nothing was sent" is a claim."""
+
+    def test_the_sentences_are_exactly_these(self):
+        self.assertEqual(agent_types.HANDOFF_NOT_SUBMITTED, "You didn't submit it in the window. Your application was not sent.")
+        self.assertEqual(agent_types.HANDOFF_UNRECORDED, "The app couldn't record this submission, so it stopped it. Nothing was sent. Try again.")
+        self.assertEqual(agent_types.HANDOFF_ELSEWHERE, "The form tried to send to an address the app doesn't recognize, so the app stopped it. Nothing was sent. Apply from the posting instead.")
+        self.assertEqual(agent_types.HANDOFF_EARLY, "The form tried to send before the app finished filling it, so the app stopped it and closed the window. Nothing was sent. Try again.")
+        self.assertEqual(agent_types.HANDOFF_NO_LOADER, "The app couldn't find where this form sends applications, so it can't keep track of your Submit. Apply from the posting instead.")
+        self.assertEqual(agent_types.HANDOFF_S3, "This board uploads files as soon as they are attached, which the app does not support yet. Nothing was sent. Apply from the posting instead.")
+        self.assertEqual(agent_types.HANDOFF_UPLOAD, "The form tried to upload a file, which the app does not allow yet, so the app stopped it and closed the window. Nothing was sent. Apply from the posting instead.")
+        self.assertEqual(agent_types.HANDOFF_HIDDEN, 'The form has a hidden field where the app expected "{question}", so the app stopped before filling it. Nothing was sent. Apply from the posting instead.')
+        self.assertEqual(agent_types.WINDOW_CLOSED, "You closed the window. No application was sent.")
+        self.assertEqual(agent_types.WINDOW_UNCONFIRMED, "The app couldn't confirm the Chromium window closed, so it can't be sure nothing was sent. Check your email for a confirmation from Greenhouse.")
+        self.assertEqual(agent_types.YOUR_TURN, "The form is filled in the Chromium window. Complete the fields below, then press Submit application there.")
+        self.assertEqual(agent_types.YOUR_TURN_NONE_LEFT, "The form is filled in the Chromium window. Check the form, then press Submit application there.")
+        self.assertEqual(agent_types.LEFT_FIELD, 'The app could not fill "{question}". Fill it in yourself.')
+        self.assertEqual(agent_types.LEFT_CAPTCHA, "Tick the CAPTCHA box in the window yourself before you press Submit application.")
+        self.assertEqual(agent_types.LEFT_COVER_LETTER, "The app doesn't attach cover letters yet. Attach yours in the window.")
+        self.assertEqual(agent_types.LEFT_UNPLANNED, 'The page put something in "{question}" that the app didn\'t. Check it before you press Submit application.')
+
+    def test_the_progress_steps_of_the_turn_and_the_code(self):
+        steps = agent_types.PROGRESS_STEPS
+        self.assertEqual(steps["your_turn"], "Your turn: complete the form in the window, then press Submit application there")
+        self.assertEqual(steps["submitting"], "Submitting to Greenhouse…")
+        self.assertEqual(steps["code_typed"], "The app typed the security code from your email. Press Submit application in the window")
+        self.assertEqual(steps["code_yours"], "Type the security code Greenhouse emailed you into the window, then press Submit application")
+        self.assertEqual(steps["challenge"], "Greenhouse showed a check in the window. Finish it there")
+        self.assertIn("looking for it in your Gmail", steps["security_code"])
+        for key in ("your_turn", "submitting", "security_code", "code_typed", "code_yours", "challenge"):
+            self.assertNotIn("{", steps[key])
+
+    def test_the_pipe_has_the_ops_of_a_handoff(self):
+        self.assertEqual(
+            (agent_types.OP_HANDOFF_READY, agent_types.OP_SECURITY_CODE, agent_types.OP_SECURITY_CODE_REPLY, agent_types.OP_SECURITY_CODE_RESULT, agent_types.OP_FRONT),
+            ("handoff_ready", "security_code", "security_code_reply", "security_code_result", "front"),
+        )
+        self.assertEqual(
+            {name for name in dir(agent_types.HandoffLink) if not name.startswith("_")},
+            {"ready", "ask_code", "code_reply", "code_result", "abandon_code", "front_requested", "parent_gone"},
+        )
+
+
+def _attr_of(item, name):
+    return item.get(name) if isinstance(item, dict) else getattr(item, name)
 
 
 if __name__ == "__main__":

@@ -26,13 +26,38 @@
   // From app-nav.js.
   const { renderSubnav, runViewLoad } = App;
 
+  // Defined in files that load later; looked up when called.
+  const openDetail = (...args) => App.openDetail(...args);
+
   // What the timeline calls the events Apply for me writes; any other event keeps its own name with the underscores taken out.
   const EVENT_WORDS = {
     apply_agent_started: "Apply for me started",
     apply_agent_submitted: "Submitted with Apply for me",
     apply_agent_verification: "Confirmation email watch",
     apply_agent_resolved: "Apply for me attempt settled",
+    apply_agent_unconfirmed: "Apply for me: may have been sent",
   };
+
+  // Finish in browser's events say whose act each step was: the app only filled the form, the student pressed Submit.
+  function applyEventWords(event) {
+    const detail = event.detail || {};
+    if (detail.mode === "handoff" && event.event_type === "apply_agent_started") return "Finish in browser started";
+    if (detail.mode === "handoff" && event.event_type === "apply_agent_submitted") {
+      return `You submitted in the window${detail.confirmation_path ? " · Greenhouse showed its confirmation page" : ""}`;
+    }
+    return EVENT_WORDS[event.event_type] || event.event_type.replaceAll("_", " ");
+  }
+
+  // Opens the role with the run an event names, so the student can read what that run did.
+  function seeRunButton(opportunityId, runId) {
+    const button = element("button", "text-button apply-see-run", "See the run");
+    button.type = "button";
+    button.addEventListener("click", () => {
+      state.applyRunRequest = { opportunityId, runId, at: Date.now() };
+      openDetail(opportunityId);
+    });
+    return button;
+  }
 
   // 10.5: what Apply for me did for this application, from item.apply (null when it never touched it). Wording is
   // careful on purpose: only a seen confirmation page, a confirmation email or the student's own word says "applied",
@@ -49,6 +74,8 @@
     if (submitted) title = apply.application_stage === "applied" ? "Applied with Apply for me" : "Submitted with Apply for me";
     else if (apply.status === "submitting") title = `Submitting to ${ats}…`;
     else if (apply.status === "may_have_been_sent") title = `May have been sent. Check your email or the ${ats} portal`;
+    else if (apply.status === "filling") title = "Apply for me is filling the form in a window";
+    else if (apply.status === "your_turn") title = "Your turn: finish the form in the Chromium window and press Submit application";
     else title = apply.note || "Apply for me stopped before anything was sent";
     box.appendChild(element("p", "apply-badge-title", title));
     const lines = [];
@@ -106,6 +133,14 @@
           });
           actions.appendChild(button);
         });
+    }
+    // A run in a window is read in the role it belongs to.
+    if ((apply.status === "filling" || apply.status === "your_turn") && item.opportunity_id) {
+      const open = element("button", "secondary-button", "Open");
+      open.type = "button";
+      open.setAttribute("aria-label", `Open ${item.title} at ${item.company}`);
+      open.addEventListener("click", () => openDetail(item.opportunity_id));
+      actions.appendChild(open);
     }
     if (actions.children.length) box.appendChild(actions);
     return box;
@@ -230,6 +265,7 @@
     detail.appendChild(element("summary", "", "Tasks, contacts, and timeline"));
     const detailBody = element("div", "tracker-detail-body");
     detail.appendChild(detailBody);
+    detail.dataset.opportunityId = item.opportunity_id || "";
     detail.addEventListener("toggle", () => {
       if (detail.open && !detail.dataset.loaded) loadApplicationDetail(item.id, detailBody, detail);
     });
@@ -381,13 +417,15 @@
       const automatic = new Map();
       (payload.events || []).forEach((event) => {
         const row = element("li", "");
-        row.appendChild(element("strong", "", EVENT_WORDS[event.event_type] || event.event_type.replaceAll("_", " ")));
+        row.appendChild(element("strong", "", applyEventWords(event)));
         row.appendChild(element("span", "", formatDate(event.created_at)));
         if (event.from_stage || event.to_stage) row.appendChild(element("p", "", `${event.from_stage || "start"} → ${event.to_stage || "unchanged"}`));
         const source = typeof event.detail?.source === "string" ? event.detail.source : "";
         const who = element("p", "timeline-who");
         who.appendChild(element("span", "timeline-author", changeAuthor(source)));
         row.appendChild(who);
+        const runId = event.event_type.startsWith("apply_agent_") ? event.detail?.run_id : "";
+        if (typeof runId === "string" && runId && owner.dataset.opportunityId) row.appendChild(seeRunButton(owner.dataset.opportunityId, runId));
         const actionId = /^automation:(.+)$/.exec(source)?.[1];
         if (actionId) automatic.set(actionId, [...(automatic.get(actionId) || []), who]);
         eventList.appendChild(row);

@@ -238,7 +238,12 @@
   // pressed, and an 'application' one handed to Greenhouse (Apply for me).
   // Nothing else is past stopping (a Gmail draft being saved sends
   // nothing), so any other action is left out rather than called an email.
+  // A Finish in browser window (action 'window') is not on its way anywhere: the student's own Submit is what sends, so it says
+  // what it is in its own words, from the server's label.
+  const WINDOW_OPEN = "A Finish in browser window is open. Pausing doesn't stop your own Submit; press Stop to end it.";
+
   function inFlightItem(item) {
+    if (item?.action === "window") return { window: true, label: String(item.label || WINDOW_OPEN) };
     if (item?.action !== "send" && item?.action !== "form" && item?.action !== "application") return null;
     const form = item.action === "form";
     const application = item.action === "application";
@@ -255,7 +260,13 @@
 
   // What a pause could not stop, said plainly: an email Gmail already has goes.
   function inFlightSentence(items) {
-    const described = (Array.isArray(items) ? items : []).map(inFlightItem).filter(Boolean);
+    const all = (Array.isArray(items) ? items : []).map(inFlightItem).filter(Boolean);
+    const windows = [...new Set(all.filter((entry) => entry.window).map((entry) => entry.label))].join(" ");
+    const sent = inFlightSentenceOf(all.filter((entry) => !entry.window));
+    return [sent, windows].filter(Boolean).join(" ");
+  }
+
+  function inFlightSentenceOf(described) {
     if (!described.length) return "";
     if (described.length === 1) {
       const [only] = described;
@@ -413,6 +424,11 @@
       const described = inFlightItem(item);
       if (!described) return;
       const row = element("li");
+      if (described.window) {
+        row.append(element("strong", "", "Window open"), element("span", "", described.label));
+        list.appendChild(row);
+        return;
+      }
       row.append(
         element("strong", "", "On its way"),
         element("span", "", `${described.article[0].toUpperCase()}${described.article.slice(1)}${described.to}: ${described.detail}. It can't be stopped.`),
