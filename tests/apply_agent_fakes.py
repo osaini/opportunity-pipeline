@@ -248,13 +248,13 @@ _HANDOFF_SCRIPTS = {
     };""",
     "challenge": """window.grAfterSubmit = function () {
       var frame = document.createElement("iframe");
-      frame.src = "https://www.google.com/recaptcha/enterprise/bframe?hl=en";
+      frame.src = "https://www.recaptcha.net/recaptcha/enterprise/bframe?hl=en";
       frame.style.width = "300px"; frame.style.height = "300px";
       document.body.appendChild(frame);
     };""",
     "bframe_hidden": """(function () {
       var frame = document.createElement("iframe");
-      frame.src = "https://www.google.com/recaptcha/enterprise/bframe?hl=en";
+      frame.src = "https://www.recaptcha.net/recaptcha/enterprise/bframe?hl=en";
       frame.style.cssText = "visibility:hidden;width:300px;height:300px";
       document.body.appendChild(frame);
     })();""",

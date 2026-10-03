@@ -580,7 +580,9 @@ def card_state(row: Any, now: datetime | None = None) -> dict[str, Any]:
             status, note = "may_have_been_sent", UNCONFIRMED_UNWRITTEN.get(row["token"]) or note
     elif state == "clicking":
         if claim_held(row, now=now):
-            status = "submitting"
+            # After the student's Submit Greenhouse may ask for the emailed code: the reader sets waiting once it has been asked about it
+            # (and it stays, through a typed code, a fallback and an abandoned ask), and from then the window is the student's again.
+            status = "security_code" if row["mode"] == "handoff" and detail.get("waiting") == "security_code" else "submitting"
         else:
             status, can_resolve = "may_have_been_sent", True
     elif state == "unconfirmed" or (state in ("needs_you", "failed") and row["after_click"]):

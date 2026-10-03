@@ -1180,7 +1180,7 @@
 
     // The button that starts a rehearsal, with its words. Only one run is allowed at a time, so a busy app says so here.
     function startControls(label, { help = true } = {}) {
-      const box = element("div", "apply-rehearse-start");
+      const box = element("div", "apply-start-box apply-rehearse-start");
       const button = element("button", "secondary-button", label);
       button.type = "button";
       const reason = element("p", "apply-limit");
@@ -1219,7 +1219,7 @@
     // Finish in browser: the app fills the form in a window and the student presses Submit there. Anything the app wants the
     // student to agree to first (a recent application to the company, a role Greenhouse took down) is a box to tick, never a default.
     function handoffControls(label, { help = true } = {}) {
-      const box = element("div", "apply-rehearse-start apply-handoff-start");
+      const box = element("div", "apply-start-box apply-handoff-start");
       const group = element("fieldset", "apply-ticks");
       group.hidden = true;
       group.appendChild(element("legend", "", "Before you go on"));

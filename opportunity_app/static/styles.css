@@ -694,8 +694,8 @@ input.settings-switch:disabled { opacity: .6; cursor: progress; }
 /* Apply for me: rehearsal and lookup (apply/runner.py). A rehearsal fills the form in a window and sends nothing; a lookup reads a list's options. */
 .apply-rehearse { margin: 0 0 var(--space-4); padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-sunken); }
 .apply-rehearse[hidden], .apply-lookup-actions [hidden] { display: none; }
-.apply-rehearse-start { display: grid; justify-items: start; gap: 6px; }
-.apply-rehearse-start .profile-help, .apply-rehearse-start .apply-limit, .apply-rehearse-start .form-status { margin: 0; }
+.apply-start-box { display: grid; justify-items: start; gap: 6px; }
+.apply-start-box .profile-help, .apply-start-box .apply-limit, .apply-start-box .form-status { margin: 0; }
 .apply-rehearse .form-status:empty, .apply-rehearse .apply-limit:empty, .apply-lookup .form-status:empty { min-height: 0; margin: 0; }
 .apply-run { display: grid; justify-items: start; gap: var(--space-2); }
 .apply-run > * { margin: 0; }

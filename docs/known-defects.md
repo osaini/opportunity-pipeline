@@ -112,7 +112,7 @@ The entry flagged for an owner decision is
 
 ## Apply for me
 
-The first three were left open by PR #54 (the fail-closed net) and recorded here on 2026-10-03. Apply for me never carries an answer across companies, so each of those can at worst affect one company's own saved answer, and the student still presses Submit (D1 B). The others were found while building the rehearsal engine (M5a) and were not fixed there.
+The first three were left open by PR #54 (the fail-closed net) and recorded here on 2026-10-03. Apply for me never carries an answer across companies, so each of those can at worst affect one company's own saved answer, and the student still presses Submit (D1 B). The next six were found while building the rehearsal engine (M5a), and the last four while building Finish in browser (M5b part 2); none was fixed there.
 
 ### Agreement-shaped choices and signatures outside the word list still fill from a same-company saved answer
 - **Severity:** medium (PR #54 review)

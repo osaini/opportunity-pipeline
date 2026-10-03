@@ -1418,6 +1418,107 @@ class TheObserverIsAppendOnly(unittest.TestCase):
         self.assertTrue(observer.navigated)
 
 
+class AHandoffRecordCarriesNoValueThroughAHostOrAPath(unittest.TestCase):
+    """What crosses the pipe and is written to apply_runs (refused, evidence, requests) is value-free by construction, in every phase."""
+
+    VALUES = {"last_name": "Rivera", "email": "jane.student@example.edu", "phone": "5125550123"}
+    SECRET_HOSTS = (
+        "https://jane.student%40example.edu.collector.example/p",
+        "https://rivera.collector.example/p",
+        "https://5125550123.example-uploads.s3.amazonaws.com/p",
+    )
+
+    def agent(self, phase, asked=None):
+        def resolve(host):
+            if asked is not None:
+                asked.append(host)
+            return ["93.184.216.34"]
+
+        agent = ApplyAgent(mode="handoff", adapter=GreenhouseAdapter(), resolve=resolve)
+        agent._state.values = dict(self.VALUES)
+        agent._state.submit_path = "/acme/jobs/1"
+        agent._phase = phase
+        agent._observer = apply_agent._Observer(mock.Mock(), lambda: True, lambda: agent._state.values, lambda: agent._state.submit_path)
+        return agent
+
+    def assert_no_value(self, *documents):
+        text = json.dumps(documents).casefold()
+        for needle in ("rivera", "jane.student", "5125550123"):
+            self.assertNotIn(needle, text)
+
+    def test_while_the_window_is_closing_a_refused_post_names_no_host_that_holds_a_value(self):
+        agent = self.agent(apply_checks.PHASE_STUDENT)
+        agent._closing = True
+        for url in self.SECRET_HOSTS:
+            route = RouteHandlerResolvesLast.route(url, method="POST", resource_type="fetch", navigation=False)
+            agent._route(route)
+            route.abort.assert_called_once()
+        self.assertEqual({record["host"] for record in agent._refused}, {apply_checks.HOST_WITHHELD})
+        self.assertEqual({record["rule"] for record in agent._refused}, {"closing"})
+        self.assert_no_value(agent._refused)
+
+    def test_a_refused_upload_during_the_fill_names_no_host_that_holds_a_value(self):
+        agent = self.agent(apply_checks.PHASE_FILL)
+        url = "https://5125550123.example-uploads.s3.amazonaws.com/resume"
+        route = RouteHandlerResolvesLast.route(url, method="PUT", resource_type="fetch", navigation=False)
+        agent._route(route)
+        route.abort.assert_called_once()
+        self.assertEqual(agent._upload_refused["host"], apply_checks.HOST_WITHHELD)
+        self.assert_no_value(agent._upload_refused, agent._refused, agent._evidence())
+
+    def test_after_the_press_the_requests_written_hold_no_value_in_a_host_or_a_path(self):
+        agent = self.agent(apply_checks.PHASE_AFTER_HAND_OVER)
+        for url in (
+            "https://jane.student@example.edu.collector.example/p/jane.student%40example.edu",
+            "https://rivera.collector.example/p/rivera",
+            "https://boards.greenhouse.io/acme/AB12CD34",
+            "https://boards.greenhouse.io/acme/5125550123",
+            "https://job-boards.greenhouse.io/acme/rivera",
+        ):
+            route = RouteHandlerResolvesLast.route(url, method="POST", resource_type="fetch", navigation=False)
+            agent._route(route)
+            route.abort.assert_called_once()
+        records = agent._observer.records()
+        self.assertEqual(len(records), 5)
+        self.assertEqual(records[1]["host"], apply_checks.HOST_WITHHELD)    # (the first one's user-info is not part of the host name Chromium uses)
+        self.assertTrue(all(record["path"] == apply_agent.PATH_WITHHELD for record in records), records)
+        self.assert_no_value(records, agent._refused)
+        # The submit address is the one path the app can name, and a request that passed keeps its real host and path.
+        observer = agent._observer
+        other = mock.Mock(url="https://boards.greenhouse.io/acme/jobs/2", method="POST")
+        observer.track(other, passed=False)
+        self.assertEqual(observer.records()[-1]["path"], apply_agent.PATH_WITHHELD, "a refused request on the board is not the submit path")
+        submit = mock.Mock(url="https://boards.greenhouse.io/acme/jobs/1", method="POST")
+        observer.track(submit, passed=False)
+        self.assertEqual(observer.records()[-1], {"method": "POST", "host": "boards.greenhouse.io", "path": "/acme/jobs/1", "status": None, "passed": False})
+
+    def test_no_name_outside_the_resolvable_list_is_ever_given_to_the_resolver_in_a_handoff(self):
+        # The resolver runs in this process, outside Chromium's --host-resolver-rules, so a name made from a value would be a DNS query.
+        for phase in (apply_checks.PHASE_FILL, apply_checks.PHASE_STUDENT, apply_checks.PHASE_AFTER_HAND_OVER):
+            asked = []
+            agent = self.agent(phase, asked)
+            for url in (
+                "https://3132333435.attacker.example/x.png",
+                "https://6e61687361.collector.example/x.png",
+                "https://rivera.collector.example/x.png",
+                "https://typed-by-the-student.example.test/p.gif",
+                "https://93.184.216.34/x.png",
+                "https://s1234x-recruiting.cdn.greenhouse.io/x.png",
+            ):
+                route = RouteHandlerResolvesLast.route(url, resource_type="image", navigation=False)
+                agent._route(route)
+                with self.subTest(phase=phase, url=url):
+                    route.abort.assert_called_once()
+                    route.continue_.assert_not_called()
+            self.assertEqual(asked, [], f"{phase}: a name outside RESOLVABLE_HOSTS went to the resolver")
+            self.assertEqual({record["rule"] for record in agent._refused} <= {"unlisted_host", "value_guard"}, True)
+            self.assert_no_value(agent._refused)
+            route = RouteHandlerResolvesLast.route("https://s12-recruiting.cdn.greenhouse.io/x.png", resource_type="image", navigation=False)
+            agent._route(route)
+            self.assertEqual(asked, ["s12-recruiting.cdn.greenhouse.io"], "a listed name (a ? pattern) is still resolved and let through")
+            route.continue_.assert_called_once()
+
+
 class HandoffSentencesAreTheSpecs(unittest.TestCase):
     """The words the student reads when a handoff ends, pinned: a sentence that says "nothing was sent" is a claim."""
 

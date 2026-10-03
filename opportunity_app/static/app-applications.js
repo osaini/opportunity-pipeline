@@ -73,6 +73,7 @@
     let title = "";
     if (submitted) title = apply.application_stage === "applied" ? "Applied with Apply for me" : "Submitted with Apply for me";
     else if (apply.status === "submitting") title = `Submitting to ${ats}…`;
+    else if (apply.status === "security_code") title = `${ats} asked for a security code: finish in the window`;
     else if (apply.status === "may_have_been_sent") title = `May have been sent. Check your email or the ${ats} portal`;
     else if (apply.status === "filling") title = "Apply for me is filling the form in a window";
     else if (apply.status === "your_turn") title = "Your turn: finish the form in the Chromium window and press Submit application";
@@ -135,7 +136,7 @@
         });
     }
     // A run in a window is read in the role it belongs to.
-    if ((apply.status === "filling" || apply.status === "your_turn") && item.opportunity_id) {
+    if (["filling", "your_turn", "security_code"].includes(apply.status) && item.opportunity_id) {
       const open = element("button", "secondary-button", "Open");
       open.type = "button";
       open.setAttribute("aria-label", `Open ${item.title} at ${item.company}`);

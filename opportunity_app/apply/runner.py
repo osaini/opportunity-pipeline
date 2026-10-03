@@ -17,7 +17,7 @@ thread ever sends on the pipe to the child.
 
 The watchdog is the point of the process boundary. At the deadline, on a stop request that is not heard within the
 grace, and when the server shuts down, ``kill_tree`` ends the child and every process it started (Chromium and its
-helpers): the descendants are listed first, then ``taskkill /T /F`` on Windows, or on POSIX each descendant, the child
+helpers): the descendants are listed first, then on Windows each one by pid (never ``taskkill /T``, which walks by parent pid with no identity check), or on POSIX each descendant, the child
 itself and its process group, because Playwright starts Chromium in a session of its own. For a handoff the browser is also
 confirmed gone by pid (``supervise`` snapshots the child's descendants while it runs and again before it kills, kills every
 survivor, and re-checks each with ``process_alive``) before the claim may be settled as "nothing was sent" (invariant I3). A
@@ -332,16 +332,16 @@ def _kill_pid(pid: int) -> None:
 
 
 def kill_tree(pid: int) -> list[int]:
-    """End ``pid`` and everything it started, and return the pids targeted (so a caller can check each is gone). Never raises."""
+    """End ``pid`` and everything it started, and return the pids targeted (so a caller can check each is gone). Never raises.
+
+    On Windows no ``taskkill /T`` is used: it walks the tree by parent pid alone, and a freed pid that an unrelated older process names
+    as its parent would be killed with it. Every pid of the identity-checked listing (its creation
+    time is no older than its parent's) is killed by pid, the child last; what a later look finds is left to ``_kill_survivors``.
+    """
     below = descendants(pid)
     if os.name == "nt":
-        try:
-            subprocess.run(
-                ["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True, timeout=30,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-        except (OSError, subprocess.SubprocessError):
-            LOGGER.warning("taskkill did not answer for a run's browser")
+        for target in (*below, pid):
+            _kill_pid(target)
         return [pid, *below]
     # The descendants go first. Then the process itself, always by pid: a child that has not yet called setsid shares the
     # runner's process group and has none of its own, so a group kill alone would miss it. Then its group, when it leads one,
@@ -537,6 +537,7 @@ class _Pump:
     reply_s: float
     outcome: Supervised
     last_snapshot: float = 0.0
+    abort: threading.Event | None = None     # set when the server is shutting down or the account is being deleted: nothing is committed
 
 
 def _snapshot(pump: _Pump, *, force: bool = False) -> None:
@@ -587,6 +588,10 @@ def _dispatch(message: Any, handlers: SupervisorHandlers, inbox: Any, pump: _Pum
         except Exception as exc:  # noqa: BLE001 - the child is told the type name only
             reply = {"op": OP_REPLAN_REPLY, "id": ident, "plan": None, "error": type(exc).__name__}
         _answer(inbox, reply)
+    elif op == OP_HAND_OVER and pump is not None and pump.abort is not None and pump.abort.is_set():
+        # The run is about to be killed (the supervise loop only looks at ``abort`` at the top of an iteration): the student's Submit is
+        # not committed, so the child aborts the POST instead of continuing one the next iteration would cut off.
+        _answer(inbox, {"op": OP_HAND_OVER_REPLY, "id": message.get("id"), "ok": False})
     elif op == OP_HAND_OVER:
         received = time.monotonic()
         reply_s = pump.reply_s if pump is not None else ApplyTimeouts().reply_s
@@ -682,7 +687,7 @@ def supervise(
     outcome = Supervised(None)
     if in_process and worker.pid:
         outcome.started[worker.pid] = process_start(worker.pid)
-    pump = _Pump(worker=worker, in_process=in_process, reply_s=job.timeouts.reply_s, outcome=outcome)
+    pump = _Pump(worker=worker, in_process=in_process, reply_s=job.timeouts.reply_s, outcome=outcome, abort=abort)
     fronts_sent = 0
     try:
         while True:
@@ -1277,6 +1282,8 @@ class ApplyRunner:
                 codes = _CodeAnswers(self._reader, work.database_target, user_id, work.token)
 
                 def hand_over(deadline: float | None = None) -> bool:
+                    if active.abort.is_set():
+                        return False     # shutting down or deleting the account: a commit now would be followed by a kill mid-submit
                     try:
                         handed = bool(apply_runs.hand_over(conn, work.token, user_id=user_id, deadline=deadline))
                         if handed:
@@ -1330,7 +1337,8 @@ class ApplyRunner:
         # own shutdown starts. It is the server stopping, not a browser that broke.
         interrupted = outcome.stop == STOP_ERROR and outcome.error == "KeyboardInterrupt"
         shutting_down = active.shutting_down or interrupted
-        final = self._finish_handoff(conn, work, outcome, shutting_down=shutting_down) if handoff             else self._finish(conn, work, outcome, shutting_down=shutting_down)
+        final = self._finish_handoff(conn, work, outcome, shutting_down=shutting_down) if handoff \
+            else self._finish(conn, work, outcome, shutting_down=shutting_down)
         self._last_outcomes[user_id] = final
         died = outcome.stop in (STOP_CHILD_DIED, STOP_ERROR) and not interrupted
         self._health(
@@ -1526,6 +1534,10 @@ class ApplyRunner:
             if isinstance(evidence.get("security_code"), dict) else False, "by": "student_in_window",
         }
         claim_detail: dict[str, Any] = {"waiting": ""}
+        if event_detail["security_code"]:
+            # 6.14's boolean: the statistics count a prompt from the reader's record or from this, so a prompt the reader never recorded
+            # (its first answer failed, or the child never asked) is still counted.
+            claim_detail["security_code"] = True
         if settlement.stopped_by:
             claim_detail["stopped_by"] = settlement.stopped_by
         try:

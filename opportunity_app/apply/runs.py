@@ -61,7 +61,7 @@ from ..core.settings_store import get_setting, put_setting, setting_updated_at
 from ..core.timestamps import parse_app_instant, utc_now
 from ..core.user_time import UserTimezone, user_timezone
 from .greenhouse import ADAPTER_VERSION, ATS_GREENHOUSE, is_greenhouse_sender
-from .claims import HELD_HEARTBEAT, RUNNING, claim_held, forget, take_unconfirmed
+from .claims import HELD_HEARTBEAT, RUNNING, claim_held, forget, peek_unconfirmed, take_unconfirmed
 
 LOGGER = logging.getLogger(__name__)
 
@@ -1237,7 +1237,9 @@ def recover_stale(conn: sqlite3.Connection, now: datetime | None = None, *, user
         # note decided then: the window was never confirmed closed, or a request passed. Never as "Nothing was sent".
         # A mark kept for a claim that turned out to be 'clicking' (the claim could not be read when it was made) is dropped unused: that
         # state is settled as unconfirmed anyway.
-        decided = take_unconfirmed(row["token"])
+        # The mark is only read here and used up after the write is committed: a write that fails (the database is busy) must leave it in
+        # place, or the next pass would settle the claim as "Nothing was sent", which the run had decided it could not say.
+        decided = peek_unconfirmed(row["token"])
         if row["state"] != "claimed":
             decided = None
         stopped = row["state"] == "claimed" and decided is None
@@ -1257,6 +1259,7 @@ def recover_stale(conn: sqlite3.Connection, now: datetime | None = None, *, user
                     conn, row["application_id"], "apply_agent_unconfirmed", None, _stamp(now),
                     encoded=_dumps({"run_id": row["run_id"], "mode": row["mode"], "state": "unconfirmed", "note": note, "by": "recovery", "source": APP_SOURCE}),
                 )
+        take_unconfirmed(row["token"])      # committed: the claim says it now (or another writer settled it, and the mark has no use)
         if not changed:
             continue
         counts["failed" if stopped else "unconfirmed"] += 1

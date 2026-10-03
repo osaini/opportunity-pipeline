@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import types
 import time
 import unittest
 from pathlib import Path
@@ -511,6 +512,26 @@ class OrphanedChildTests(unittest.TestCase):
         self.assertGreater(grace, 95.0, "the window was cut off while the student may still be pressing Submit")
         self.assertLessEqual(grace, 102.0, "and it ends orphan_s after the agent's own cap, not later")
 
+    def test_a_parent_that_answers_ok_and_dies_at_once_still_hands_the_window_to_the_student(self):
+        # The reader thread files the ok and reads end-of-file before the agent's thread wakes to set anything: the filing itself must count.
+        inbox_recv, inbox_send = multiprocessing.Pipe(duplex=False)
+        _outbox_recv, outbox_send = multiprocessing.Pipe(duplex=False)
+        gate = threading.Event()
+        real = apply_runner_child.ChildChannel._file
+
+        def file_then_hold(channel, message):
+            real(channel, message)
+            gate.wait(5)         # the agent's own thread never runs in this test: only the reader has acted
+
+        with mock.patch.object(apply_runner_child, "_end_process_in") as end_in, mock.patch.object(apply_runner_child.ChildChannel, "_file", file_then_hold):
+            channel = apply_runner_child.ChildChannel(inbox_recv, outbox_send, ApplyTimeouts(orphan_s=2.0, reply_s=5.0), end_process_when_orphaned=True)
+            channel.ends_at = time.monotonic() + 100.0
+            inbox_send.send({"op": OP_HAND_OVER_REPLY, "id": 1, "ok": True})
+            inbox_send.close()
+            gate.set()
+            self.assertTrue(wait_until(lambda: end_in.called, 5), "end-of-file never armed the exit")
+        self.assertGreater(end_in.call_args.args[0], 95.0, "the window was cut off seconds after the student's POST was continued")
+
     def test_a_thread_child_never_arms_the_process_exit(self):
         seen = []
 
@@ -640,6 +661,15 @@ class TreeTests(unittest.TestCase):
         self.assertGreaterEqual(len(killed), 2, "the grandchild is among the pids targeted, on Windows as well")
         self.assertEqual(killed[0], child.pid)
         self.assertTrue(all(wait_until(lambda pid=pid: not apply_runner.process_alive(pid), 10) for pid in killed))
+
+    def test_on_windows_closing_never_uses_taskkill_by_tree_only_by_each_verified_pid(self):
+        # taskkill /T walks by parent pid alone: a freed pid named as the parent of an unrelated older process would take that process too.
+        calls = []
+        with mock.patch.object(apply_runner, "os", types.SimpleNamespace(name="nt")),                 mock.patch.object(apply_runner, "descendants", return_value=[300, 200]),                 mock.patch.object(apply_runner.subprocess, "run", side_effect=lambda command, **_kw: calls.append(list(command))):
+            killed = apply_runner.kill_tree(100)
+        self.assertEqual(killed, [100, 300, 200])
+        self.assertTrue(all("/T" not in command for command in calls), calls)
+        self.assertEqual(calls, [["taskkill", "/F", "/PID", str(pid)] for pid in (300, 200, 100)], "each verified pid by itself, the child last")
 
     @unittest.skipUnless(os.name == "nt", "Windows only: POSIX lists processes with ps")
     def test_on_windows_the_process_table_comes_from_a_snapshot_and_not_a_powershell_query(self):

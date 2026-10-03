@@ -131,6 +131,10 @@ class ChildChannel:
         elif op in (OP_REPLAN_REPLY, OP_HAND_OVER_REPLY):
             with self._arrived:
                 self._replies[int(message["id"])] = message
+                if op == OP_HAND_OVER_REPLY and message.get("ok") is True:
+                    # Set here, where the reply is filed, and not when the agent's thread wakes: the parent may commit, answer and die
+                    # at once, and the reader would then see end-of-file and work out the grace before that thread ran.
+                    self._handed_over = True
                 self._arrived.notify_all()
         elif op == OP_SECURITY_CODE_REPLY:
             with self._state_lock:

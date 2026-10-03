@@ -52,6 +52,11 @@ def mark_unconfirmed(token: str, note: str) -> None:
     UNCONFIRMED_UNWRITTEN[token] = note
 
 
+def peek_unconfirmed(token: str) -> str | None:
+    """The note kept for this claim by ``mark_unconfirmed``, left in place: a reader that has not yet written it down must not use it up."""
+    return UNCONFIRMED_UNWRITTEN.get(token)
+
+
 def take_unconfirmed(token: str) -> str | None:
     """The note kept for this claim by ``mark_unconfirmed`` (and forgotten), or None."""
     return UNCONFIRMED_UNWRITTEN.pop(token, None)

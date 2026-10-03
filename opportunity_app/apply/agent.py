@@ -25,6 +25,7 @@ from ``checks``, and an exception's message is never kept, since it may quote wh
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import math
@@ -292,7 +293,8 @@ NO_SIDE_CHANNELS = """(() => {
 # not resolve is certain to stop it: not Greenhouse's analytics collector (c.spl), my.greenhouse.io, www.google.com, or a CAPTCHA service a
 # Greenhouse form has not been seen to use.
 # A hint (dns-prefetch, preconnect), a prefetch, an interest-group owner or a script's own request to a host it names then goes nowhere,
-# whatever channel it takes, and a value put in a host name is never looked up. The third-party widgets a board may load (Google Drive,
+# whatever channel it takes, and a value put in a host name is never looked up: not by Chromium, and not by this process either, since the
+# route handler refuses a name outside the list (``unlisted_host``) before its own resolver is asked about it, in every mode and phase. The third-party widgets a board may load (Google Drive,
 # Dropbox, a recruiting-analytics script) do not load either: the app presses none of them.
 RESOLVABLE_HOSTS: tuple[str, ...] = tuple(sorted({
     *BOARD_HOSTS, *(endpoint.host for endpoint in GREENHOUSE_LOOKUP_ENDPOINTS), *STATIC_ASSET_HOSTS,
@@ -424,6 +426,13 @@ def _host_of(url: str) -> str:
         return ""
 
 
+PATH_WITHHELD = "[path withheld]"
+
+
+def _captcha_path(host: str, path: str) -> bool:
+    return any(endpoint.host == host and path.startswith(endpoint.path_prefix) for endpoint in CAPTCHA_ENDPOINTS)
+
+
 def _job_id(page_url: str) -> str:
     """The numeric job id of a posting address, or the embed's ``token``, or ""."""
     try:
@@ -486,9 +495,14 @@ class _Observer:
     from page events, which only set values here; every decision is made in the agent's own loop.
     """
 
-    def __init__(self, page: Any, active: Callable[[], bool]) -> None:
+    def __init__(
+        self, page: Any, active: Callable[[], bool], values: Callable[[], Mapping[str, Any]] = lambda: {},
+        submit_path: Callable[[], str] = lambda: "",
+    ) -> None:
         self.page = page
         self._active = active
+        self._values = values
+        self._submit_path = submit_path
         self.tracked: list[tuple[Any, str, str, str, bool]] = []
         self.statuses: dict[int, int] = {}
         self.navigated = False
@@ -517,11 +531,26 @@ class _Observer:
         return tuple(SeenRequest(method, host, path, self.statuses.get(id(request)), passed) for request, method, host, path, passed in self.tracked)
 
     def records(self) -> list[dict[str, Any]]:
-        """Every non-GET after hand-over, value-free: method, host, path (never a query or a body), status, whether it passed."""
-        return [
-            {"method": method, "host": host, "path": path, "status": self.statuses.get(id(request)), "passed": passed}
-            for request, method, host, path, passed in self.tracked
-        ]
+        """Every non-GET after hand-over, value-free: method, host, path (never a query or a body), status, whether it passed.
+
+        These cross the pipe and are written to the database, so they follow the rule every refused-request record follows: a host that
+        holds a planned value is withheld, and the path of a request is kept only when it is the one the app can name (the submit address
+        on the board, a CAPTCHA service's) or when nothing planned is in it and the request passed. A script chooses both of a refused
+        request's host and path.
+        """
+        values = self._values()
+        submit_path = self._submit_path()
+        records = []
+        for request, method, host, path, passed in self.tracked:
+            shown = safe_host(host, values)
+            if host == SUBMIT_HOST and submit_path and path == submit_path:
+                kept = path
+            elif host in (*BOARD_HOSTS, SUBMIT_HOST) or _captcha_path(host, path):
+                kept = path if passed and not (values and leaked_field(RouteRequest(method="GET", url=path), values)) else PATH_WITHHELD
+            else:
+                kept = PATH_WITHHELD
+            records.append({"method": method, "host": shown, "path": kept, "status": self.statuses.get(id(request)), "passed": passed})
+        return records
 
 
 # --- The Greenhouse adapter -------------------------------------------------------------------------------------------
@@ -921,7 +950,7 @@ class ApplyAgent:
             method = request.method.upper()
             if self._closing and method not in SAFE_METHODS:
                 # The run is ending and the browser is about to be closed: nothing that could carry anything leaves.
-                self._refuse({"method": method, "host": _host_of(request.url), "rule": "closing"})
+                self._refuse({"method": method, "host": safe_host(_host_of(request.url), self._state.values), "rule": "closing"})
                 route.abort("blockedbyclient")
                 return
             try:
@@ -941,6 +970,10 @@ class ApplyAgent:
             decision = route_decision(self.mode, self._phase, facts, self._state)
             # Resolved last, and only for a request the policy would let through: the name of a request that is refused anyway
             # (after the first input, anything but Greenhouse's own hosts) is never sent to a resolver, since a hostname can carry a value.
+            # A name the browser itself could not look up is not looked up here either: the resolver below runs in this process, outside the
+            # --host-resolver-rules switch, so a name made up from something typed would leave the machine as a DNS query. Every mode, every phase.
+            if not isinstance(decision, Abort) and not self._resolvable(_host_of(request.url)):
+                decision = Abort("unlisted_host", "The address is not one this form uses", safe_host(_host_of(request.url), self._state.values))
             if not isinstance(decision, Abort) and self._route_hook is None and not request_allowed(request.url, self._resolve, self._allowed):
                 decision = Abort(
                     "non_public_address", "The address is not a public one",
@@ -971,6 +1004,13 @@ class ApplyAgent:
             except Exception:  # noqa: BLE001 - already handled
                 pass
 
+    def _resolvable(self, host: str) -> bool:
+        """Whether this host is one of the names the browser may look up (``RESOLVABLE_HOSTS`` and a test's own lookup endpoints)."""
+        if not host:
+            return False
+        patterns = (*RESOLVABLE_HOSTS, *(endpoint.host for endpoint in self._endpoints))
+        return any(fnmatch.fnmatchcase(host, pattern) for pattern in patterns)
+
     def _abort_request(self, route: Any, request: Any, facts: RouteRequest, decision: Abort, *, own_page: bool = False) -> None:
         record = decision.record(request.method)
         if decision.rule == "offsite_navigation":
@@ -997,7 +1037,7 @@ class ApplyAgent:
                 elif _host_of(request.url) not in TELEMETRY_HOSTS and (is_upload(facts) or _host_of(request.url) in FORM_POST_HOSTS):
                     # During the fill either one is fatal: a page that uploads or posts as it is filled is not one the app can leave alone.
                     # (The page's own usage reporting is neither: it is refused, recorded a few times, and the fill goes on.)
-                    self._upload_refused = {"host": _host_of(request.url), "rule": decision.rule}
+                    self._upload_refused = {"host": safe_host(_host_of(request.url), self._state.values), "rule": decision.rule}
             elif unsafe and self._phase == PHASE_STUDENT:
                 # A POST to a form address (with or without a file in it) is the form sending somewhere the app did not agree to;
                 # an upload to any other address is a file leaving. Either ends the turn: the window is closed, nothing was sent.
@@ -1017,7 +1057,7 @@ class ApplyAgent:
     def _hand_over_and_continue(self, route: Any, request: Any, decision: Any) -> None:
         """The student's own Submit. It goes on only if the parent committed the hand-over first (I1)."""
         if self._cancel_requested():
-            self._refuse({"method": "POST", "host": _host_of(request.url), "rule": "stopped"})
+            self._refuse({"method": "POST", "host": safe_host(_host_of(request.url), self._state.values), "rule": "stopped"})
             self._closing, self._why_closing = True, "stopped"
             route.abort("blockedbyclient")
             return
@@ -1027,7 +1067,7 @@ class ApplyAgent:
         except Exception:  # noqa: BLE001 - no answer is no
             accepted = False
         if not accepted:
-            self._refuse({"method": "POST", "host": _host_of(request.url), "rule": "hand_over_refused"})
+            self._refuse({"method": "POST", "host": safe_host(_host_of(request.url), self._state.values), "rule": "hand_over_refused"})
             self._closing, self._why_closing = True, "refused"
             route.abort("blockedbyclient")
             return
@@ -2124,7 +2164,7 @@ class ApplyAgent:
         self._step = "turn"
         entries, plan_hash = self._plan_entries()
         shot = next((item for item in reversed(self._screenshots) if item["step"] == "filled"), None)
-        self._observer = _Observer(self._page, lambda: self._handed_over)
+        self._observer = _Observer(self._page, lambda: self._handed_over, lambda: self._state.values, lambda: self._state.submit_path)
         self._observer.start()
         # One last look before the turn: a press in the gap after the check is caught here, with the observer already listening.
         self._between()

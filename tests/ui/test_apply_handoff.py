@@ -324,6 +324,7 @@ def test_the_rehearsal_preview_shows_the_address_a_stored_statement_would_agree_
     allow(live_server, "acknowledgment")
     section = open_section(owner_page)
     store_statements(section)
+    confirm_posting(section)
     section.get_by_role("button", name="Rehearse in a window").click()
     result = section.locator(".apply-result")
     expect(result).to_be_visible(timeout=30_000)
@@ -535,6 +536,7 @@ def test_a_run_still_going_is_picked_up_again_by_phase(apply_ready, owner_page, 
 
 def rehearsal_result(page):
     section = open_section(page)
+    confirm_posting(section)       # the fake board always serves Example Robotics' listing, so a rehearsal refuses the saved role until the tick
     section.get_by_role("button", name="Rehearse in a window").click()
     expect(section.locator(".apply-result")).to_be_visible(timeout=30_000)
     return section
@@ -722,6 +724,7 @@ def test_a_values_answer_that_arrives_after_sign_out_paints_nothing(apply_ready,
 
     owner_page.route(re.compile(rf".*{API}/runs/[^/]+/values$"), hold)
     section = open_section(owner_page)
+    confirm_posting(section)
     section.get_by_role("button", name="Rehearse in a window").click()
     expect(section.locator(".apply-result")).to_be_visible(timeout=30_000)
     deadline = time.monotonic() + 10

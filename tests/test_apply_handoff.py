@@ -575,6 +575,20 @@ class StopAndEndTests(HandoffCase):
             self.finished(run_id)
         self.assert_recovery_does_not_say_nothing_was_sent(run_id)
 
+    def test_a_recovery_whose_own_write_fails_keeps_the_decision_for_the_next_pass(self):
+        with mock.patch.object(apply_runner, "handoff_settlement", side_effect=self.window_unconfirmed),                 mock.patch.object(apply_runs, "record_result", side_effect=sqlite3.OperationalError("database is locked")):
+            run_id = self.handoff(CrashingAgentFactory())
+            self.finished(run_id)
+        token = self.claim_of(run_id)["token"]
+        self.assertIn(token, apply_claims.UNCONFIRMED_UNWRITTEN)
+        with mock.patch.object(apply_runs, "lock_user", side_effect=sqlite3.OperationalError("database is locked")):
+            with self.assertRaises(sqlite3.OperationalError):
+                apply_runs.recover_stale(self.conn)
+        self.conn.rollback()
+        self.assertEqual(self.claim_of(run_id)["state"], "claimed")
+        self.assertEqual(apply_claims.UNCONFIRMED_UNWRITTEN.get(token), WINDOW_UNCONFIRMED, "the failed write used the decision up")
+        self.assert_recovery_does_not_say_nothing_was_sent(run_id)
+
     def test_a_claim_that_could_not_be_read_is_not_turned_into_nothing_was_sent_by_recovery(self):
         def busy(conn, token, user_id):
             raise sqlite3.OperationalError("database is locked")
@@ -996,6 +1010,24 @@ class SecurityCodeRunnerTests(HandoffCase):
         self.assertEqual(self.claim_of(run_id)["state"], "submitted")
         self.assertNotIn("a message that must not cross", self.everywhere())
 
+    def assert_prompt_counted_without_a_reader_record(self, reader):
+        run_id = self.code_run(reader)
+        self.finished(run_id)
+        detail = self.detail(run_id)
+        self.assertFalse((detail.get(apply_security_code.RECORD_KEY) or {}).get("prompted_at"), "the reader recorded no prompt")
+        self.assertIs(detail.get("security_code"), True, "6.14's boolean is written when the child saw the prompt")
+        self.assertEqual(apply_watch.ats_statistics(self.conn, USER)["security_code_prompts"], 1)
+
+    def test_a_prompt_whose_first_reader_answer_failed_is_still_counted_by_the_statistics(self):
+        class Broken(FakeReader):
+            def answer(self, conn, *, user_id, token, now=None):
+                raise RuntimeError("the database was busy")
+
+        self.assert_prompt_counted_without_a_reader_record(Broken())
+
+    def test_a_prompt_the_reader_recorded_nothing_for_is_still_counted_by_the_statistics(self):
+        self.assert_prompt_counted_without_a_reader_record(FakeReader())
+
     def test_a_slow_gmail_does_not_stop_the_heartbeats(self):
         beats = set()
         reader = FakeReader(delay=3.5)
@@ -1254,6 +1286,53 @@ class HandOverDeadlineTests(ApplyCase):
 
         apply_runner._dispatch({"op": "hand_over", "id": 2}, SupervisorHandlers(hand_over=boom), inbox)
         self.assertEqual(inbox.sent, [True, False])
+
+
+class AbortNeverCommitsAHandOverTests(ApplyCase):
+    """A run that is being aborted (server shutdown, account deletion) never commits the student's Submit, whenever the press arrives."""
+
+    def setUp(self):
+        super().setUp()
+        self.claim = self.start("hand-over-abort-1")
+        self.token = self.claim["token"]
+
+    def test_the_pump_refuses_a_hand_over_asked_once_abort_is_set_without_asking_the_handler(self):
+        class Inbox:
+            sent = []
+
+            def send(self, message):
+                self.sent.append(message)
+
+        abort = threading.Event()
+        pump = apply_runner._Pump(worker=mock.Mock(), in_process=False, reply_s=10.0, outcome=apply_runner.Supervised(None), abort=abort)
+        asked = []
+        handlers = SupervisorHandlers(hand_over=lambda deadline=None: asked.append(1) or apply_runs.hand_over(self.conn, self.token, user_id=USER, deadline=deadline))
+        inbox = Inbox()
+        abort.set()
+        apply_runner._dispatch({"op": "hand_over", "id": 3, "expires": time.monotonic() + 30}, handlers, inbox, pump)
+        self.assertEqual(inbox.sent, [{"op": OP_HAND_OVER_REPLY, "id": 3, "ok": False}])
+        self.assertEqual(asked, [], "the handler was asked although the run was being aborted")
+        self.assertEqual(ApplyCase.committed_claim_row(self, self.token)["state"], "claimed")
+        abort.clear()
+        apply_runner._dispatch({"op": "hand_over", "id": 4, "expires": time.monotonic() + 30}, handlers, inbox, pump)
+        self.assertEqual(inbox.sent[-1], {"op": OP_HAND_OVER_REPLY, "id": 4, "ok": True}, "without an abort the same press commits (the control)")
+
+
+class AbortReachesTheRunnersHandOverTests(HandoffCase):
+    def test_the_runners_own_hand_over_checks_abort_just_before_it_commits(self):
+        seen = {}
+
+        def supervise_that_aborts(factory, job, *, handlers, abort, **_kwargs):
+            abort.set()          # shutdown arrives between the pump's look and the handler
+            seen["granted"] = handlers.hand_over()
+            seen["state"] = self.conn.execute("SELECT state FROM application_submit_claims").fetchone()[0]
+            return apply_runner.Supervised(None, stop=apply_runner.STOP_ERROR, error="Stopped")
+
+        with mock.patch.object(apply_runner, "supervise", supervise_that_aborts):
+            run_id = self.handoff()
+            self.finished(run_id)
+        self.assertFalse(seen["granted"])
+        self.assertEqual(seen["state"], "claimed", "the hand-over was committed while the run was being aborted")
 
 
 class KillOrderingTests(HandoffCase):
