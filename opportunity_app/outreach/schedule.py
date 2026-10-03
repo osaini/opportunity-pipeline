@@ -51,7 +51,7 @@ import httpx
 from ..automation import ledger as automation
 from ..integrations.gmail_client import ClientFactory, GmailAuthError
 from .targets import (
-    NOT_INTERESTED, DraftChangedError, OutreachNotFoundError, UNSENT_STATUSES, get_target, heard_back, log_event,
+    DraftChangedError, OutreachNotFoundError, UNSENT_STATUSES, get_target, heard_back, log_event, set_aside_why,
     withdraw_auto_approval,
 )
 from .location import city_state
@@ -361,8 +361,9 @@ def _gate(
 
     target_id, user_id = row["target_id"], row["user_id"]
     # Marking a company not interested stops what it has queued; this catches a send that was already being checked.
-    if get_target(conn, target_id, user_id=user_id).get("not_interested_at"):
-        finish_send(conn, row, "cancelled", f"{NOT_INTERESTED}, so it was not sent")
+    aside = get_target(conn, target_id, user_id=user_id)
+    if aside.get("not_interested_at"):
+        finish_send(conn, row, "cancelled", f"{set_aside_why(aside.get('set_aside_reason'))}, so it was not sent")
         return "cancelled"
     if row["kind"] == "follow_up":
         stopped = _answered(conn, row, get_target(conn, target_id, user_id=user_id), now)

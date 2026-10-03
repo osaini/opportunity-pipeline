@@ -71,6 +71,14 @@ searches, or research, and an email already scheduled for it is cancelled.
 Replies from it are still recorded on its card. **Move back to outreach**
 returns it to the tab its status puts it in.
 
+**Applied directly.** A company whose own application form you filled in
+yourself, with no email or contact form from here, gets **Applied directly** on
+its card. It moves to the Applied directly tab and leaves every working tab
+(To contact, Ready to send, and the rest), but All companies still lists it.
+It is kept and left alone exactly as under Not interested: nothing automatic
+writes to it, and Remove company stays hidden until you move it back. The card
+shows the day you marked it, not the day you applied.
+
 Settings in `.env`:
 
 ```text

@@ -377,7 +377,9 @@
                 ? "Every company has been contacted. Run a deep search or add one under Tools."
                 : tab.id === "not-interested"
                   ? "Mark a company Not interested on its card to file it here. It is kept, and left out of every other tab."
-                  : "Pick another tab beside the page."));
+                  : tab.id === "applied-directly"
+                    ? "Mark a company Applied directly on its card when you applied through its own site. It is kept, and nothing automatic goes to it."
+                    : "Pick another tab beside the page."));
           els.results.appendChild(empty);
         } else {
           els.results.appendChild(outreachSplitView(items, tab, {
