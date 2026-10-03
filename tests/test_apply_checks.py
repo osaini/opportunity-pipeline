@@ -5,6 +5,7 @@ No browser and no database: this runs in the default suite. The browser tests
 observations these functions read are gathered correctly.
 """
 
+import base64
 import json
 import re
 import sys
@@ -292,6 +293,33 @@ class ValueGuardTests(unittest.TestCase):
                 self.assertIsInstance(decision, Abort)
                 self.assertEqual(decision.rule, "value_guard")
 
+    def test_a_refused_record_never_holds_a_value_even_when_the_value_is_in_the_host(self):
+        values = {"last_name": "Rivera", "email": EMAIL}
+        for host in ("sam-rivera.collector.example", "73616d2e726976657261.rivera.exfil.test", "RIVERA.example"):
+            with self.subTest(host=host):
+                decision = self.guard(request(url=f"https://{host}/p.gif", resource_type="image"), values=values)
+                self.assertEqual((decision.rule, decision.field_key), ("value_guard", "last_name"))
+                self.assertEqual(decision.host, apply_checks.HOST_WITHHELD)
+                self.assertEqual(decision.record("get"), {"method": "GET", "host": "[host withheld]", "rule": "value_guard", "field_key": "last_name"})
+        # A host with no value in it is recorded as it is, and so is a refusal for another reason.
+        clear = self.guard(request(url=f"https://pixel.example-robotics.test/p.gif?v={EMAIL}", resource_type="image"), values=values)
+        self.assertEqual(clear.host, "pixel.example-robotics.test")
+        other = self.guard(request(url="https://rivera.example/page", resource_type="image", is_navigation=True), values=values)
+        self.assertEqual((other.rule, other.host), ("offsite_navigation", apply_checks.HOST_WITHHELD))
+
+    def test_a_host_that_holds_a_non_ascii_value_as_punycode_is_withheld_too(self):
+        # Chromium writes an international host name as punycode before Playwright reports the request.
+        self.assertEqual(apply_checks.safe_host("xn--rene-dpa.collector.example", {"first_name": "Ren\u00e9e"}), apply_checks.HOST_WITHHELD)
+        # Any xn-- host is withheld while a planned value is not plain ASCII (the value may be in it in a form no search finds).
+        self.assertEqual(apply_checks.safe_host("xn--zo-ija.evil.example", {"first_name": "Zo\u00eb Quinn"}), apply_checks.HOST_WITHHELD)
+        # Nothing to withhold: an ordinary host, a punycode host with only ASCII values, no values at all.
+        self.assertEqual(apply_checks.safe_host("collector.example", {"first_name": "Ren\u00e9e"}), "collector.example")
+        self.assertEqual(apply_checks.safe_host("xn--zo-ija.evil.example", {"first_name": "Sam Rivera"}), "xn--zo-ija.evil.example")
+        self.assertEqual(apply_checks.safe_host("xn--zo-ija.evil.example", {}), "xn--zo-ija.evil.example")
+        decision = route_decision("rehearse", PHASE_AFTER_INPUT, request(url="https://xn--rene-dpa.collector.example/p.gif", resource_type="image", is_navigation=True),
+                                  state(values={"first_name": "Ren\u00e9e"}))
+        self.assertEqual((decision.rule, decision.host), ("offsite_navigation", apply_checks.HOST_WITHHELD))
+
     def test_a_planned_value_in_a_header_or_a_body_is_found(self):
         by_header = self.guard(request("GET", "https://job-boards.greenhouse.io/x", headers={"x-note": f"hello {EMAIL}"}, resource_type="fetch"))
         self.assertEqual((by_header.rule, by_header.field_key), ("value_guard", "email"))
@@ -322,8 +350,32 @@ class ValueGuardTests(unittest.TestCase):
 
     def test_a_short_value_is_not_searched_for(self):
         # "Yes" would match almost anything, so values under four characters are not guarded.
-        decision = self.guard(request(url="https://job-boards.greenhouse.io/logo.png?yes=Yes", resource_type="image"))
+        decision = self.guard(request(url="https://job-boards.cdn.greenhouse.io/logo.png?yes=Yes", resource_type="image"))
         self.assertIsInstance(decision, Allow)
+
+    def test_a_value_an_analytics_beacon_base64_encodes_is_found_at_any_offset(self):
+        # Snowplow's GET transport sends its event, JSON with the field values in it, as base64 in the query string.
+        email, name = EMAIL, "Mu\u00f1oz-Garc\u00eda"
+        for document in ('{"e":"%s"}', 'xx{"e":"%s"}', 'x{"e":"%s","z":1}', "%s"):
+            for value in (email, name):
+                payload = (document % value).encode("utf-8")
+                for encoder in (base64.b64encode, base64.urlsafe_b64encode):
+                    with self.subTest(document=document, value=value, encoder=encoder.__name__):
+                        url = "https://c.spl.greenhouse.io/i?e=ue&ue_px=" + encoder(payload).decode("ascii")
+                        self.assertNotEqual(leaked_field(request(url=url, resource_type="image"), {"email": email, "last_name": name}), "")
+        unrelated = base64.b64encode(b'{"e":"nothing of the student"}').decode("ascii")
+        self.assertEqual(leaked_field(request(url="https://c.spl.greenhouse.io/i?ue_px=" + unrelated), {"email": email}), "")
+
+    def test_a_value_sent_as_latin_1_or_percent_u_is_found(self):
+        values = {"last_name": "Mu\u00f1oz-Garc\u00eda"}
+        for label, url in (
+            ("latin-1 percent", "https://x.example/?n=Mu%F1oz-Garc%EDa"),
+            ("latin-1 percent, lower case", "https://x.example/?n=mu%f1oz-garc%eda"),
+            ("percent-u (escape())", "https://x.example/?n=Mu%u00F1oz-Garc%u00EDa"),
+            ("utf-8 percent", "https://x.example/?n=Mu%C3%B1oz-Garc%C3%ADa"),
+        ):
+            with self.subTest(label):
+                self.assertEqual(leaked_field(request(url=url), values), "last_name")
 
     def test_it_applies_on_greenhouse_hosts_and_captcha_endpoints_too(self):
         for url in ("https://job-boards.greenhouse.io/pixel.gif?v=" + EMAIL, "https://www.google.com/recaptcha/api2/reload?v=" + EMAIL):
@@ -387,11 +439,23 @@ class LookupAndRehearseTableTests(unittest.TestCase):
             self.assertIsInstance(route_decision("rehearse", phase, request("POST", url), state()), Abort)
         self.assertEqual(route_decision("submit", PHASE_FILL, request("POST", url), state()), Allow("captcha"))
 
-    def test_after_the_first_input_static_assets_on_greenhouse_hosts_pass(self):
-        for resource in ("image", "font", "stylesheet", "script", "media"):
-            with self.subTest(resource=resource):
-                decision = route_decision("rehearse", PHASE_AFTER_INPUT, request(url="https://job-boards.greenhouse.io/assets/a.bin", resource_type=resource), state())
-                self.assertEqual(decision, Allow("static_asset"))
+    def test_after_the_first_input_static_assets_on_greenhouses_static_hosts_pass(self):
+        for host in ("job-boards.cdn.greenhouse.io", "recruiting.cdn.greenhouse.io", "s2-recruiting.cdn.greenhouse.io", "s7-recruiting.cdn.greenhouse.io"):
+            for resource in ("image", "font", "stylesheet", "script", "media"):
+                with self.subTest(host=host, resource=resource):
+                    decision = route_decision("rehearse", PHASE_AFTER_INPUT, request(url=f"https://{host}/assets/a.bin", resource_type=resource), state())
+                    self.assertEqual(decision, Allow("static_asset"))
+
+    def test_a_static_asset_request_to_any_other_greenhouse_host_is_refused(self):
+        # c.spl.greenhouse.io is Greenhouse's analytics collector: an image request to it is an event, not a logo.
+        for host in ("c.spl.greenhouse.io", "job-boards.greenhouse.io", "boards.greenhouse.io", "my.greenhouse.io", "cdn.greenhouse.io",
+                     "job-boards.cdn.greenhouse.io.example.test", "sx-recruiting.cdn.greenhouse.io", "s1234-recruiting.cdn.greenhouse.io"):
+            with self.subTest(host=host):
+                url = f"https://{host}/i?e=ue&ue_px=" + base64.b64encode(f'{{"e":"{EMAIL}"}}'.encode()).decode()
+                decision = route_decision("rehearse", PHASE_AFTER_INPUT, request(url=url, resource_type="image"), state(values={"email": EMAIL}))
+                self.assertIsInstance(decision, Abort)
+                clear = route_decision("rehearse", PHASE_AFTER_INPUT, request(url=f"https://{host}/i.gif", resource_type="image"), state())
+                self.assertEqual(clear.rule, "after_first_input")
 
     def test_after_the_first_input_every_other_get_is_refused(self):
         cases = (
@@ -425,8 +489,8 @@ class LookupAndRehearseTableTests(unittest.TestCase):
         req = request(url=url, resource_type="fetch")
         self.assertEqual(route_decision("lookup", PHASE_AFTER_INPUT, req, state(typing_key="city", typing_lookup="location")), Allow("lookup"))
         self.assertEqual(route_decision("lookup", PHASE_AFTER_INPUT, req, state(typing_key="city", typing_lookup="location", lookup_endpoints=())).rule, "after_first_input")
-        # The shipped list is empty until M5a confirms the real endpoints on a live board.
-        self.assertEqual(apply_checks.GREENHOUSE_LOOKUP_ENDPOINTS, ())
+        # The shipped list names Greenhouse's own lookup hosts, not the fictional fixture endpoint, so the fake's path is not let through by default.
+        self.assertTrue(apply_checks.GREENHOUSE_LOOKUP_ENDPOINTS)
         self.assertEqual(route_decision("lookup", PHASE_AFTER_INPUT, req, RouteState(submit_path=SUBMIT_PATH, typing_key="city", typing_lookup="location")).rule, "after_first_input")
 
     def test_a_lookup_endpoint_is_an_exact_host_and_a_path_prefix(self):
@@ -631,6 +695,23 @@ class JoinTests(unittest.TestCase):
         self.assertEqual(join(schema, []), [])
         problems = join(schema, [scan_of("phone", "Phone", required_any=False), scan_of("phone", "Phone", required_any=False)])
         self.assertEqual([(p.kind, p.required) for p in problems], [("listing_mismatch", False)])
+
+    def test_an_optional_field_the_page_does_not_draw_is_not_a_disagreement_with_the_listing(self):
+        # Not a join problem (the agent copies only those, and any of them makes a rehearsal unclean): spec 6.5 and 9.2.
+        self.assertNotIn(apply_checks.OPTIONAL_NOT_DRAWN, {"listing_mismatch", "wording_mismatch", "hidden_control", "unlisted_required"})
+
+    def test_an_optional_field_the_plan_would_fill_but_the_page_does_not_draw_is_reported_so_the_plan_can_blank_it(self):
+        schema = [field_of("portfolio", "Portfolio or project link", required=False)]
+        problems = join(schema, [], ["portfolio"])
+        self.assertEqual([(p.kind, p.key, p.required) for p in problems], [("optional_not_drawn", "portfolio", False)])
+        self.assertEqual(problems[0].message, 'The form does not show the optional field "Portfolio or project link", so the app left it blank')
+        self.assertEqual(join(schema, [], ["job_application[portfolio]"]), problems, "the key is read the way the page spells it")
+        # Nothing to fill into it, or no plan yet: an optional field with no control is no problem.
+        self.assertEqual(join(schema, [], []), [])
+        self.assertEqual(join(schema, [], ["something_else"]), [])
+        self.assertEqual(join(schema, []), [])
+        # Drawn once, it agrees; the plan's own key list makes no difference then.
+        self.assertEqual(join(schema, [scan_of("portfolio", "Portfolio or project link", required_any=False)], ["portfolio"]), [])
 
     def test_a_radio_or_checkbox_group_counts_as_one_control(self):
         schema = [field_of("question_1", "Have you worked here?", type="multi_value_single_select")]

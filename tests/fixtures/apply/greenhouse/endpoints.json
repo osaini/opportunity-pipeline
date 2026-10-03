@@ -1,0 +1,21 @@
+{
+  "checked_on": "2026-10-03",
+  "note": "Seen on public Greenhouse job-board application forms, opened read-only with a browser that refused every request but GET, HEAD and OPTIONS; nine postings on nine different boards behaved the same, and no employer is named here. A path prefix may hold {token}: the board's own token, which the agent fills in from the posting's address (a prefix cannot name every board).",
+  "lookup_endpoints": [
+    {"host": "api-geocode-earth-proxy.greenhouse.io", "path_prefix": "/v1/autocomplete", "kind": "location", "receives": "the text typed into the Location field (query parameter text), asked only after typing"},
+    {"host": "boards.greenhouse.io", "path_prefix": "/v1/boards/{token}/education/schools", "kind": "school", "receives": "the text typed into the School field (query parameter term), also with no text when the field is opened"},
+    {"host": "boards.greenhouse.io", "path_prefix": "/v1/boards/{token}/education/degrees", "kind": "degree", "receives": "nothing typed: the whole list, fetched once when the field is first opened"},
+    {"host": "boards.greenhouse.io", "path_prefix": "/v1/boards/{token}/education/disciplines", "kind": "discipline", "receives": "nothing typed: the whole list, fetched once when the field is first opened"}
+  ],
+  "static_asset_hosts": ["job-boards.cdn.greenhouse.io", "recruiting.cdn.greenhouse.io"],
+  "static_asset_shard_pattern": "s\\d{1,3}-recruiting\\.cdn\\.greenhouse\\.io",
+  "static_asset_note": "The hosts that served Greenhouse's own scripts, styles, fonts and pictures on those forms (job-boards.cdn: JS, CSS, fonts and locale files; recruiting.cdn and its numbered shards: logos and banners). Greenhouse's analytics collector (c.spl.greenhouse.io) served none: it only took POSTs, so an image request to it is refused.",
+  "captcha_endpoints": [
+    {"host": "www.recaptcha.net", "path_prefix": "/recaptcha/enterprise", "confirmed": true},
+    {"host": "www.gstatic.com", "path_prefix": "/recaptcha/", "confirmed": true},
+    {"host": "www.google.com", "path_prefix": "/recaptcha/", "confirmed": false},
+    {"host": "hcaptcha.com", "path_prefix": "/", "confirmed": false},
+    {"host": "api.hcaptcha.com", "path_prefix": "/", "confirmed": false},
+    {"host": "challenges.cloudflare.com", "path_prefix": "/", "confirmed": false}
+  ]
+}

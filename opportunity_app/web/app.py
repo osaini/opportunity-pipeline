@@ -81,6 +81,8 @@ async def lifespan(application: FastAPI):
     try:
         yield
     finally:
+        # A rehearsal still running is stopped and its browser killed before the workers go.
+        ctx.runtime.apply_runner.shutdown()
         services.call_prep_worker.stop()
         services.inbox_watcher.stop()
         services.automation_worker.stop()

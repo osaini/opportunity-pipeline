@@ -18,7 +18,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Apply for me | 0 | 3 | 0 | 3 |
+| Apply for me | 0 | 6 | 3 | 9 |
 | Mail, Gmail and inboxes | 0 | 4 | 9 | 13 |
 | Outreach drafting, research, forms and CLI | 0 | 4 | 2 | 6 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
@@ -26,7 +26,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Scoring, scheduling and configuration | 1 | 1 | 4 | 6 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **25** | **23** | **49** |
+| **Total** | **1** | **28** | **26** | **55** |
 
 ## Start here: the high-severity entries
 
@@ -112,7 +112,7 @@ The entry flagged for an owner decision is
 
 ## Apply for me
 
-These three were left open by PR #54 (the fail-closed net) and recorded here on 2026-10-03. Apply for me never carries an answer across companies, so each can at worst affect one company's own saved answer, and the student still presses Submit (D1 B).
+The first three were left open by PR #54 (the fail-closed net) and recorded here on 2026-10-03. Apply for me never carries an answer across companies, so each of those can at worst affect one company's own saved answer, and the student still presses Submit (D1 B). The others were found while building the rehearsal engine (M5a) and were not fixed there.
 
 ### Agreement-shaped choices and signatures outside the word list still fill from a same-company saved answer
 - **Severity:** medium (PR #54 review)
@@ -134,6 +134,48 @@ These three were left open by PR #54 (the fail-closed net) and recorded here on 
 - **What happens:** In the PR #54 review, 29 of 30 newly written never-storable wordings (criminal history, demographics, money, security clearance phrased in other words) were not caught, and two wordings from confirmed finding 0 still are not. A missed question is treated as ordinary, so the student can save its answer for that company and a later posting at the same company fills it.
 - **Suggested fix:** Widen the net from a labelled set of real Greenhouse questions, or treat every custom question in a demographic, compliance or background section as never storable.
 - **Regression suite:** tests/ unittest (`test_apply_broad_net`, `tests/fixtures/apply/broad_net.json`)
+
+### A rehearsal does not notice a multi-page Greenhouse form, so it can call a form it only half read "rehearsed"
+- **Severity:** medium (found 2026-10-02, while building the rehearsal engine, M5a)
+- **Where:** `opportunity_app/apply/agent.py` `ApplyAgent.run` (step 4 reads the page, step 11 checks it), and the `runner` view's summary sentence for `rehearsed`
+- **What happens:** The agent reads one page of the form. A Greenhouse form that shows a second page after the first is filled (or that reveals further required questions on Next) has no fixture here, so nothing detects it. The rehearsal checks the fields it can see, reports `rehearsed`, and says "Here is what the app would send", although the later pages were never read or checked.
+- **Suggested fix:** Record a multi-page fixture from a board that has one, then end such a rehearsal as `needs_you` with a sentence ("This form has more pages than the app can check yet") whenever a second page, a Next button or a step indicator is present after the first page is filled. Until then, do not offer a one-click submit for a form the rehearsal did not fully read.
+- **Regression suite:** tests/test_apply_agent_browser.py (a fixture with a Next button) and tests/test_apply_runner.py (the view's wording)
+
+### Every lone checkbox on a form reads as a wording mismatch, so a form with a consent box is never a clean rehearsal
+- **Severity:** medium (found 2026-10-03, by the rehearsal driver tests, M5a)
+- **Where:** `apps/extension/apply-engine.js` `rawQuestion` (a radio or checkbox reports its group's question, and "" when there is no fieldset legend) with `opportunity_app/apply/checks.py` `join` (`heard is not None and question_key(heard) != question_key(label)`)
+- **What happens:** On a form whose consent or acknowledgment box is a bare label-wrapped input, the scan's question for the box is "". `join` reports `wording_mismatch` for it, `build_plan` blanks the box (even a required consent the student stored an answer for), and `clean_rehearsal` is False. The fictional form shows it for `question_4000000109`, `question_4000000110`, `question_4000000113` and `gdpr_consent_given`.
+- **Suggested fix:** In `join`, skip the wording comparison when `heard` is empty for a radio or checkbox control, or have the engine report the wrapping label's own text for a lone checkbox. Then tighten the browser test to `join_problems == []`.
+- **Regression suite:** tests/test_apply_agent_browser.py (`RehearsalTests.test_a_clean_run_fills_reads_back_and_stops_without_sending_anything`)
+
+### A request a page makes while its window is closing skips the route handler, so a hostile script can carry a typed value to one of the allowed hosts
+- **Severity:** medium, privacy (found 2026-10-03, in the M5a recheck)
+- **Where:** `opportunity_app/apply/agent.py` `NO_SIDE_CHANNELS` (the dismissal listeners, `sendBeacon`, keepalive) and `RESOLVABLE_HOSTS`; Playwright's `Page._onRoute` (stalls every request once `page.close()` has been called) with Chromium (lets a stalled request go when the page's session ends)
+- **What happens:** Measured on Playwright 1.62's Chromium: an image, a plain fetch, an XHR, a stylesheet link, a beacon and a keepalive fetch made from a `pagehide`, `unload` or `visibilitychange` handler all reached a listener with no route handler call, with a route that refuses everything. The init script now stops that: the events never reach a page script, `sendBeacon` returns false, `keepalive` is always false, and the resolver rule lists only the hosts a rehearsal needs (not the analytics collector, my.greenhouse.io, www.google.com or the unconfirmed CAPTCHA hosts). What is left: a hostile page script that sends a request carrying a value on a timer, so that one is in flight when the window closes, still has that request released; it can only reach `RESOLVABLE_HOSTS` (Greenhouse's board, lookup and static hosts, fonts.googleapis.com, fonts.gstatic.com, www.recaptcha.net and www.gstatic.com), and the value guard refuses every one of its earlier requests. The preview's "nothing leaves the browser" is true of every request the handler judged.
+- **Suggested fix:** Take the page offline before closing it: navigate to `about:blank` and wait while the route handler is still being asked (the agent's own closes), and for a window the student closes, load the form through a proxy the agent runs that sees every request, or cut the board hosts out of the resolver rule once the form is loaded.
+- **Regression suite:** tests/test_apply_agent_browser.py (`SideChannelTests`: a page that sends one request every 20 ms with its value, closed with `page.close()`, with the listener on an allowed host name mapped to loopback)
+
+### A prerender link in a visible window loads a page of Greenhouse's own with no request the request policy sees
+- **Severity:** low (found 2026-10-03, in review of the rehearsal engine, M5a)
+- **Where:** `opportunity_app/apply/agent.py` `NO_SIDE_CHANNELS` (its speculation sweep) and `LAUNCH_ARGS` (the resolver rule)
+- **What happens:** A script on the board can add `<link rel="prerender" href="...">` after it reads a filled field. A visible Chromium (the build the app uses; the headless one ignores it) starts the load as the element is inserted, before the sweep that removes speculation rules can run, and no request reaches the route handler. The resolver rule (`resolver_rule`) means the target has to be one of Greenhouse's own board, lookup and static hosts, so a value in the URL can reach Greenhouse and nothing else: another site, a name made up from a value and an IP address all fail inside Chromium. `<script type="speculationrules">`, the Protected Audience calls, Shared Storage and the DNS and preconnect hints are closed (`SideChannelTests`). The preview still says "the app saw nothing else you entered leave the browser" only after a lookup, and says nothing about this.
+- **Suggested fix:** A Chromium switch or profile preference that turns link prerendering off (none of `Prerender2`, `NoStatePrefetch` or `--disable-prerender` did on Playwright 1.62's Chromium; the preference `net.network_prediction_options` needs a profile directory the launcher does not take), or load the form through a proxy that sees every request.
+- **Regression suite:** tests/test_apply_agent_browser.py (a headed run that adds a prerender link to a page of the board's own host, asserting the listener hears nothing)
+
+### A second app on the same database can close the first one's running rehearsal
+- **Severity:** low (found 2026-10-03, in review of the rehearsal engine, M5a)
+- **Where:** `opportunity_app/apply/runner.py` `orphaned` and `ApplyRunner._finish`, `opportunity_app/web/routers/apply_agent.py` the cancel route, `opportunity_app/apply/runs.py` `recover_stale`
+- **What happens:** `orphaned` decides a "running" row is dead because this process holds no run of that id, on the reasoning that only this server runs rehearsals. Two servers on one database (`python -m opportunity_app.api` on another port beside the launcher's) break that: the second shows the first's live run as stopped after 15 seconds, its Stop closes the row as "The app stopped during this run", and `recover_stale` can do the same after two minutes of failed heartbeat writes. When the first run ends, its result is not stored (the runner now logs that and reports the row's outcome, not its own).
+- **Suggested fix:** Write a server instance id on the run row when it starts, and let `orphaned`, the cancel route and `recover_stale` close only rows that carry this server's id (or none).
+- **Regression suite:** tests/test_apply_runner.py (two runners on one database; the second does not close the first's running row)
+
+### LAUNCH_ARGS passes a second --disable-features switch, which replaces Playwright's own list
+- **Severity:** low (found 2026-10-03, in review of the rehearsal engine, M5a)
+- **Where:** `opportunity_app/apply/agent.py` `LAUNCH_ARGS` and `ApplyAgent.launch_options`
+- **What happens:** Playwright starts Chromium with its own `--disable-features=...` (HttpsUpgrades, Translate, OptimizationHints and others), and the agent's `--disable-features=FedCm` follows it on the command line. Chromium reads one value of a repeated switch, the last, so Playwright's list is not in effect (the process's command line shows both). Nothing the app relies on is known to change, but the browser is not the one Playwright's defaults describe.
+- **Suggested fix:** Put FedCm into one `--disable-features` that also names every feature Playwright's list does (read from the installed Playwright at launch, or pinned and tested against it), or close FedCM by the init script alone.
+- **Regression suite:** tests/test_apply_agent_static.py (the launch arguments carry one `--disable-features`, and it names Playwright's list)
 
 ## Mail, Gmail and inboxes
 

@@ -587,8 +587,13 @@ shows the student what it would fill from their confirmed facts and saved
 answers, and which questions it cannot answer yet. The student answers a
 missing question once, on the role, and it is saved for that company only: Apply
 for me never carries an answer from one company to another, so there is no "use
-for any company" tick there. Later
-steps will fill the form in a window that the student watches; the student
+for any company" tick there. A **rehearsal** opens a Chromium window and fills the
+form to check it, sends nothing (the app blocks every request that could submit
+the form), and takes a picture of the filled form with the sensitive fields
+covered; the pictures are kept 90 days. A form that does not look like the saved
+role (another company or title) is rehearsed only after the student ticks "This is
+the right posting". Tell the student to turn a VPN off before
+a rehearsal, since a form can refuse a visit that comes through one. The student
 always presses Submit themselves, and nothing here sends an application. It is
 off until they turn it on under Profile › Automation. Ask before turning it on
 for them, and set up these things with the student:

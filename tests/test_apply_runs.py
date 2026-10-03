@@ -1106,6 +1106,30 @@ class RetentionTests(ApplyCase):
         self.assertEqual((apply_root / "hash-key").read_bytes(), b"k" * 32)
         self.assertTrue((elsewhere / "note.txt").exists())
 
+    def test_the_empty_folder_of_a_role_with_a_run_working_is_kept_so_its_picture_has_somewhere_to_go(self):
+        # The runner makes the folder before the run and the agent never makes it again; the daily purge must not take it mid-run.
+        apply_root = self.root / "apply"
+        working = apply_root / apply_runs.user_folder(USER) / "op-working"
+        idle = apply_root / apply_runs.user_folder(USER) / "op-idle"
+        for folder in (working, idle):
+            folder.mkdir(parents=True)
+        self.make_run(opportunity_id="op-working", started=self.at(-3))   # status 'running'
+        apply_runs.purge_evidence(self.conn, apply_root=apply_root, now=self.at())
+        self.assertTrue(working.is_dir(), "a run is working in it")
+        self.assertFalse(idle.exists(), "nothing is working in this one, and it is empty")
+        # Once that run has finished, the next purge may take the folder if nothing is in it.
+        self.conn.execute("UPDATE apply_runs SET status='finished', outcome='failed', finished_at=? WHERE opportunity_id='op-working'", (apply_runs._iso(self.at()),))
+        self.conn.commit()
+        apply_runs.purge_evidence(self.conn, apply_root=apply_root, now=self.at())
+        self.assertFalse(working.exists())
+
+    def test_the_folder_name_of_a_role_is_one_plain_name_that_cannot_climb_out(self):
+        self.assertEqual(apply_runs.opportunity_folder("job-a"), "job-a")
+        self.assertEqual(apply_runs.opportunity_folder("../../etc/passwd"), "_.._etc_passwd")
+        self.assertNotIn("/", apply_runs.opportunity_folder("a/b\\c"))
+        self.assertEqual(apply_runs.opportunity_folder("..."), "role")
+        self.assertEqual(len(apply_runs.opportunity_folder("x" * 500)), 120)
+
     def test_a_file_made_moments_ago_is_left_even_when_no_run_names_it_yet(self):
         # A run can save a screenshot and finish between the two reads of the sweep; a fresh file is never a crash orphan.
         apply_root = self.root / "apply"

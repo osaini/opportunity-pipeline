@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ApplyAnswerRequest(BaseModel):
@@ -39,6 +41,23 @@ class ApplySensitiveEntryRequest(BaseModel):
 class ApplySensitiveCategoriesRequest(BaseModel):
     categories: list[str] = Field(max_length=20)
 
+
+class ApplyLookupRequest(BaseModel):
+    # The text the student typed into one typeahead, to be looked up on the form. It is sent to Greenhouse's lookup service only.
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    key: str = Field(min_length=1, max_length=200)
+    text: str = Field(min_length=1, max_length=100)
+
+
+class ApplyRehearsalRequest(BaseModel):
+    # The body is optional. A form that does not look like the saved role is rehearsed only when the student has said it is the right posting.
+    posting_confirmed: bool = False
+
+
+class ApplyReviewRequest(BaseModel):
+    verdict: Literal["right", "wrong"]
+    note: str = Field(default="", max_length=500)
 
 class ApplyClaimResolveRequest(BaseModel):
     # The card's answer for an attempt that may have reached Greenhouse: It went through, or It didn't go through.

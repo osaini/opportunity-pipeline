@@ -24,6 +24,7 @@ apply_runs keep their own types.
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 from dataclasses import dataclass, field
@@ -36,6 +37,12 @@ from .greenhouse import BOARD_HOSTS, GREENHOUSE_DOMAIN, SUBMIT_HOST
 # ---------------------------------------------------------------------------------------------
 
 STATIC_RESOURCE_TYPES = frozenset({"image", "font", "stylesheet", "script", "media"})
+# The hosts Greenhouse serves its own static files from (confirmed 2026-10-03, pinned in tests/fixtures/apply/greenhouse/endpoints.json):
+# the board's scripts, styles and fonts, and the logos and banners (recruiting.cdn and its numbered shards). Not every host under
+# greenhouse.io: its analytics collector is one, and an image request to it can carry an event.
+STATIC_ASSET_HOSTS = ("job-boards.cdn.greenhouse.io", "recruiting.cdn.greenhouse.io")
+STATIC_ASSET_SHARD_PATTERN = r"s\d{1,3}-recruiting\.cdn\.greenhouse\.io"
+_STATIC_ASSET_SHARD = re.compile(STATIC_ASSET_SHARD_PATTERN)
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 # A planned value shorter than this ("Yes", "No") is not searched for in a
 # request: it would match almost anything.
@@ -58,21 +65,35 @@ class Endpoint(NamedTuple):
     kind: str = ""
 
 
-# The typeahead lookups a form calls (location, school, degree, discipline),
-# each tied to the field it serves. Empty until they are confirmed against a
-# live board before M5a; until then those fields are left unfilled.
-GREENHOUSE_LOOKUP_ENDPOINTS: tuple[Endpoint, ...] = ()
+# The typeahead lookups a form calls (location, school, degree, discipline), each tied to the field it serves. Confirmed on
+# 2026-10-03 against nine live job-board forms and pinned in tests/fixtures/apply/greenhouse/endpoints.json (a test makes the
+# two agree). Only location and school send what was typed (the query parameters ``text`` and ``term``); degree and discipline
+# are whole lists fetched when the field is first opened. ``{token}`` is the board's own token: a prefix cannot name every
+# board, so the agent fills it in from the posting's address (apply.agent.bind_endpoints) and an unfilled one never matches.
+GREENHOUSE_LOOKUP_ENDPOINTS: tuple[Endpoint, ...] = (
+    Endpoint("api-geocode-earth-proxy.greenhouse.io", "/v1/autocomplete", "location"),
+    Endpoint("boards.greenhouse.io", "/v1/boards/{token}/education/schools", "school"),
+    Endpoint("boards.greenhouse.io", "/v1/boards/{token}/education/degrees", "degree"),
+    Endpoint("boards.greenhouse.io", "/v1/boards/{token}/education/disciplines", "discipline"),
+)
 
-# Checkbox CAPTCHA services. Provisional: M5a confirms them on a live board and
-# pins them in a fixture. Nothing that carries a planned value may go to them.
+# The lookup kinds whose request carries what the student typed (the others fetch a whole list when the field is opened).
+TYPED_LOOKUP_KINDS = frozenset({"location", "school"})
+
+# CAPTCHA services. Greenhouse's is reCAPTCHA Enterprise, invisible, served from www.recaptcha.net and www.gstatic.com
+# (confirmed 2026-10-03, no POST to either before Submit); the other four are not seen on a Greenhouse form and are kept
+# unconfirmed until M6 decides whether a board that embeds one is supported. Nothing that carries a planned value may go to them.
 CAPTCHA_ENDPOINTS: tuple[Endpoint, ...] = (
-    Endpoint("www.google.com", "/recaptcha/"),
-    Endpoint("www.recaptcha.net", "/recaptcha/"),
+    Endpoint("www.recaptcha.net", "/recaptcha/enterprise"),
     Endpoint("www.gstatic.com", "/recaptcha/"),
+    Endpoint("www.google.com", "/recaptcha/"),
     Endpoint("hcaptcha.com", "/"),
     Endpoint("api.hcaptcha.com", "/"),
     Endpoint("challenges.cloudflare.com", "/"),
 )
+
+# The two of them a Greenhouse form was seen to load from (the browser can look up no other CAPTCHA host: apply.agent.RESOLVABLE_HOSTS).
+CONFIRMED_CAPTCHA_HOSTS = ("www.recaptcha.net", "www.gstatic.com")
 
 MODES = ("lookup", "rehearse", "submit", "handoff")
 PHASE_BEFORE_INPUT = "before_input"      # lookup, rehearse: the agent has not typed anything yet
@@ -102,6 +123,11 @@ def is_greenhouse_host(host: str) -> bool:
     return host == GREENHOUSE_DOMAIN or host.endswith("." + GREENHOUSE_DOMAIN)
 
 
+def is_static_asset_host(host: str) -> bool:
+    """One of the hosts Greenhouse's own scripts, styles, fonts and pictures load from (``STATIC_ASSET_HOSTS`` and its shards)."""
+    return host in STATIC_ASSET_HOSTS or _STATIC_ASSET_SHARD.fullmatch(host) is not None
+
+
 def question_key(text: Any) -> str:
     """The key a question is saved and matched under: lowercase, runs of anything but a-z, 0-9 and ' become one space.
 
@@ -115,6 +141,12 @@ def question_key(text: Any) -> str:
 # ---------------------------------------------------------------------------------------------
 # What went wrong, in words for the student. Never a field's value.
 # ---------------------------------------------------------------------------------------------
+
+# An optional listed field the plan would fill and the page does not draw: the plan leaves it blank. Not a disagreement between the form
+# and its listing (an optional question may be drawn only after a parent answer), so it is not a join problem and never makes a run unclean.
+OPTIONAL_NOT_DRAWN = "optional_not_drawn"
+OPTIONAL_NOT_DRAWN_MESSAGE = 'The form does not show the optional field "{question}", so the app left it blank'
+
 
 @dataclass(frozen=True)
 class Problem:
@@ -224,18 +256,59 @@ def _guarded_values(values: Mapping[str, Any]) -> list[tuple[str, str]]:
 CRLF, LF, BACKSLASH = chr(13) + chr(10), chr(10), chr(92)
 
 
+def _stable_base64(data: bytes, urlsafe: bool) -> set[str]:
+    """The characters of ``data``'s base64 that do not depend on the bytes around it, for each of the three offsets it can sit at.
+
+    A script that base64-encodes a JSON document puts the value at any offset modulo three, so the whole form (with its padding) is
+    not what appears: a piece in the middle is. Padding and the characters shared with a neighbouring byte are left out.
+    """
+    forms: set[str] = set()
+    for lead, skip in ((0, 0), (1, 2), (2, 3)):
+        encoded = base64.urlsafe_b64encode(bytes(lead) + data) if urlsafe else base64.b64encode(bytes(lead) + data)
+        text = encoded.decode("ascii").rstrip("=")
+        rest = (lead + len(data)) % 3
+        stable = text[skip:len(text) - 1] if rest else text[skip:]   # the last character of a partial group is shared with the next byte
+        if len(stable) >= MIN_GUARDED_VALUE:
+            forms.add(stable)
+    return forms
+
+
+def _legacy_escapes(text: str) -> set[str]:
+    """Latin-1 percent-encoding (a legacy form, or ``escape()``) and ``%uXXXX``, which UTF-8 percent-encoding does not give."""
+    forms: set[str] = set()
+    if text.isascii():
+        return forms
+    try:
+        forms.add(quote(text, safe="", encoding="latin-1", errors="strict"))
+        forms.add(quote_plus(text, encoding="latin-1", errors="strict"))
+    except UnicodeEncodeError:
+        pass   # a character Latin-1 cannot hold is only ever sent as UTF-8 or %uXXXX
+    forms.add("".join(
+        quote(char, safe="@*_+-./") if char.isascii() else f"%u{ord(char):04X}" if ord(char) < 0x10000 else quote(char, safe="") for char in text
+    ))
+    return forms
+
+
 def _encodings(value: str) -> set[str]:
-    """The ways a value is likely to appear in a request: raw, URL-encoded, JSON-escaped, and with CRLF line breaks."""
+    """The ways a value is likely to appear in a request: raw, URL-encoded (UTF-8, Latin-1 and %uXXXX), JSON-escaped, base64, and with CRLF line breaks."""
     lf = value.replace(CRLF, LF)
     forms = {value}
+    plain = set()   # the forms a script has in hand before it encodes them for a URL
     for text in (value, lf, lf.replace(LF, CRLF)):
         forms.add(text)
+        plain.add(text)
         forms.add(quote(text, safe=""))
         forms.add(quote_plus(text))
+        forms |= _legacy_escapes(text)
         for ascii_only in (True, False):
             escaped = json.dumps(text, ensure_ascii=ascii_only)[1:-1]
             forms.add(escaped)
             forms.add(escaped.replace("/", BACKSLASH + "/"))
+            plain.add(escaped)
+    # An analytics beacon sends its payload as base64 (standard or URL-safe), and the value is somewhere inside it.
+    for text in plain:
+        data = text.encode("utf-8", errors="replace")
+        forms |= _stable_base64(data, False) | _stable_base64(data, True)
     return forms
 
 
@@ -262,6 +335,39 @@ def leaked_field(request: RouteRequest, values: Mapping[str, Any], *, exclude: s
     return ""
 
 
+HOST_WITHHELD = "[host withheld]"
+
+
+def _unicode_host(host: str) -> str:
+    """The host with each ``xn--`` label turned back into the text it stands for ("" when there is none)."""
+    if "xn--" not in host:
+        return ""
+    labels = []
+    for label in host.split("."):
+        try:
+            labels.append(label.encode("ascii").decode("idna") if label.startswith("xn--") else label)
+        except (UnicodeError, ValueError):
+            labels.append(label)
+    return ".".join(labels)
+
+
+def safe_host(host: str, values: Mapping[str, Any]) -> str:
+    """The host to write in a refused-request record: a host that holds a planned value (a script can put one in a subdomain) is withheld.
+
+    Chromium writes an international host name as punycode before anything sees it, so the host is searched as written and as the text
+    its ``xn--`` labels stand for; and when any planned value is not plain ASCII, a host with an ``xn--`` label is withheld whole.
+    """
+    if not host or not values:
+        return host
+    unicode_host = _unicode_host(host)
+    for form in (host, unicode_host):
+        if form and leaked_field(RouteRequest(method="GET", url=form), values):
+            return HOST_WITHHELD
+    if unicode_host and any(not text.isascii() for _key, text in _guarded_values(values)):
+        return HOST_WITHHELD
+    return host
+
+
 def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteState) -> Allow | Abort:
     """Whether the agent's browser may make this request. The route handler applies the answer and nothing else.
 
@@ -277,7 +383,8 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
     path = parts.path
 
     def abort(rule: str, reason: str, field_key: str = "") -> Abort:
-        return Abort(rule, reason, host, field_key)
+        # A record never carries a value, and the host of a request is the one place a script can put one into a refused URL.
+        return Abort(rule, reason, safe_host(host, state.values), field_key)
 
     if mode not in PHASES or phase not in PHASES[mode]:
         return abort("unknown_phase", "The app did not recognise this stage of the run, so it refused the request")
@@ -315,7 +422,7 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
             return abort("non_get", "A rehearsal sends nothing but GET requests")
         if is_lookup:
             return Allow("lookup")
-        if method == "GET" and not request.is_navigation and is_greenhouse_host(host) and request.resource_type in STATIC_RESOURCE_TYPES:
+        if method == "GET" and not request.is_navigation and is_static_asset_host(host) and request.resource_type in STATIC_RESOURCE_TYPES:
             return Allow("static_asset")
         return abort("after_first_input", "After the first input, only the typed field's lookup and static assets may load")
 
@@ -513,7 +620,9 @@ def join(schema_fields: Iterable[Any], scan_fields: Iterable[Any], fill_keys: It
     plan, so with none given every hidden listed control is reported (the
     cautious reading). Once the plan exists, pass its keys and a hidden control
     that the plan leaves blank, such as an optional sub-question the page shows
-    only after its parent is answered, is not a problem.
+    only after its parent is answered, is not a problem. A key the plan would
+    fill that has no control at all is reported under its own kind (``optional_not_drawn``, not required, and not
+    a join problem), so the plan blanks it instead of the run stopping on a field the page does not draw.
     """
     fills = None if fill_keys is None else {_canonical_key(key) for key in fill_keys}
     schema = [item for item in schema_fields]
@@ -535,11 +644,19 @@ def join(schema_fields: Iterable[Any], scan_fields: Iterable[Any], fill_keys: It
             continue
         controls = {("group", name) if _get(scans[i], "type") in CHOICE_TYPES else ("control", i): i for i in found}
         if len(controls) != 1:
+            # A listed field the page does not draw is a problem when it is required, when the page draws it twice, and (once there is
+            # a plan) when the plan would fill it: the plan then leaves it blank, and the rescan after a choice brings it back if the
+            # page only draws it once a parent question is answered. An optional field nothing fills needs no control.
+            planned_to_fill = not controls and fills is not None and _canonical_key(name) in fills
             if required or len(controls) > 1:
                 problems.append(Problem(
                     "listing_mismatch", name,
                     f"The form does not match what Greenhouse's own listing describes ({label})", label, required,
                 ))
+            elif planned_to_fill:
+                # Not a disagreement between the form and its listing (6.5, 9.2): an optional question the page draws only after a
+                # parent answer is no sign the form is wrong. Its own kind, so the plan blanks the field and the run still counts as clean.
+                problems.append(Problem(OPTIONAL_NOT_DRAWN, name, OPTIONAL_NOT_DRAWN_MESSAGE.format(question=label), label, False))
             continue
         scan = scans[next(iter(controls.values()))]
         heard = _get(scan, "question")

@@ -23,14 +23,14 @@ from fastapi.testclient import TestClient
 
 from opportunity_app import STATIC_DIR
 from opportunity_app.automation import ledger as automation
-from opportunity_app.apply import runs as apply_runs, schema_client as apply_schema_client, sensitive as apply_sensitive
+from opportunity_app.apply import runner as apply_runner, runs as apply_runs, schema_client as apply_schema_client, sensitive as apply_sensitive
 from opportunity_app.api import create_app
 from opportunity_app.apply.schema_client import GreenhouseSchemaClient, SchemaUnavailable
 from opportunity_app.student.profile import update_profile
 from opportunity_app.core.database import connect_product
 from opportunity_app.core.timestamps import utc_now
 
-from apply_fake_ats import FakeApplyAgentFactory, FakeSchemaClient, JOB_URL
+from apply_fake_ats import FakeApplyAgentFactory, FakeSchemaClient, JOB_URL, canned_png
 from helpers_platform import build_and_migrate
 
 USER = "local-user"
@@ -65,8 +65,11 @@ class ApplyApiCase(unittest.TestCase):
         _, self.path = build_and_migrate(self.root)
         self.addCleanup(apply_runs.configure_agent_factory, None)
         self.schema = FakeSchemaClient(any_job=True)
-        kwargs = {"apply_schema_client_factory": lambda: self.schema, "apply_agent_factory": FakeApplyAgentFactory()} if self.with_factories else {}
-        app = create_app(db_path=self.path, access_token=TOKEN, static_dir=STATIC_DIR, resume_storage=self.root / "resumes", **kwargs)
+        # The canned agent's steps take a few hundredths of a second here; a test that needs a run to stay running sets .hang.
+        self.factory = FakeApplyAgentFactory(step_delay=0.02)
+        kwargs = {"apply_schema_client_factory": lambda: self.schema, "apply_agent_factory": self.factory} if self.with_factories else {}
+        app = create_app(db_path=self.path, access_token=TOKEN, static_dir=STATIC_DIR, resume_storage=self.root / "resumes",
+                         apply_storage=self.root / "apply", **kwargs)
         self.app = app
         self.client = self.enterContext(TestClient(app))
         self.conn = connect_product(self.path)
@@ -718,6 +721,503 @@ class StoreNeverLeavesTests(SensitiveApiCase):
         self.allow("work_authorization")
         self.needs("question_4000000105", "Yes")
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM answer_library").fetchone()[0], 0)
+
+
+class RunApiCase(ApplyApiCase):
+    """Rehearsals and option lookups over HTTP, with the canned agent: no browser, no network."""
+
+    BASE = "/api/v1/apply-agent"
+
+    def setUp(self):
+        super().setUp()
+        self.greenhouse_role()
+        self.turn_on()
+        self.browser = self.enterContext(TestClient(self.app))
+        signed = self.browser.post("/api/v1/session", json={"token": TOKEN})
+        self.assertEqual(signed.status_code, 200, signed.text)
+        self.csrf = {"X-CSRF-Token": self.browser.cookies.get("pipeline_csrf")}
+        self.runner = self.app.state.ctx.runtime.apply_runner
+        self.addCleanup(self.runner.shutdown, 10)
+
+    def rehearse(self, opportunity_id=ACME, confirmed=True):
+        """Start a rehearsal. The fictional board answers every role with Example Robotics' listing, so the saved Acme role differs from it
+        and the student has to say it is the right posting; ``confirmed=None`` sends no body at all."""
+        body = None if confirmed is None else {"posting_confirmed": confirmed}
+        return self.client.post(f"{self.BASE}/opportunities/{opportunity_id}/rehearsals", headers=AUTH, json=body)
+
+    def lookup(self, key="location_city", text="Spring", opportunity_id=ACME):
+        return self.client.post(f"{self.BASE}/opportunities/{opportunity_id}/lookups", headers=AUTH, json={"key": key, "text": text})
+
+    def finished(self, run_id):
+        self.assertTrue(self.runner.wait(run_id, 60), "the run did not finish")
+        return self.get(f"{self.BASE}/runs/{run_id}").json()
+
+    def send(self, method, path, body=None, headers=None):
+        return self.browser.request(method, path, json=body, headers=self.csrf if headers is None else headers)
+
+    def counts(self, *tables):
+        return {name: self.conn.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0] for name in tables}
+
+    def other_students_run(self):
+        stamp = utc_now()
+        with self.conn:
+            self.conn.execute("INSERT INTO users(id, email, display_name, role, created_at, updated_at) VALUES('student-b', 'b@example.com', 'B', 'student', ?, ?)", (stamp, stamp))
+        return apply_runs.create_run(
+            self.conn, user_id="student-b", opportunity_id=ACME, kind="rehearsal", started_by="student", ats="greenhouse", board_token="b",
+            page_url=JOB_URL, company="acme", deadline_seconds=300,
+        )
+
+
+RUN_KEYS = {"id", "opportunity_id", "kind", "status", "outcome", "clean", "started_at", "finished_at", "heartbeat_at", "deadline_at", "stalled", "summary",
+            "measured", "progress", "reasons", "problems", "fields", "options", "lookup", "screenshots", "refused_count", "review", "review_note",
+            "reviewed_at", "can_review", "can_cancel"}
+
+
+class StartRouteTests(RunApiCase):
+    def test_a_rehearsal_is_accepted_runs_and_leaves_a_finished_view(self):
+        response = self.rehearse()
+        self.assertEqual(response.status_code, 202, response.text)
+        started = response.json()
+        self.assertEqual(set(started), RUN_KEYS)
+        self.assertEqual((started["kind"], started["opportunity_id"], started["can_cancel"]), ("rehearsal", ACME, True))
+        view = self.finished(started["id"])
+        self.assertEqual(set(view), RUN_KEYS)
+        self.assertEqual((view["status"], view["outcome"], view["can_cancel"], view["can_review"]), ("finished", "rehearsed", False, True))
+        self.assertTrue(view["summary"].startswith("Here is what the app would send to Example Robotics for Robotics Software Intern."), view["summary"])
+        self.assertIn("blocked 1 request", view["measured"])
+        self.assertEqual([item["step"] for item in view["progress"]], ["start", "open", "read", "fill", "check", "picture"])
+        self.assertTrue(view["fields"])
+        self.assertEqual(len(view["screenshots"]), 1)
+        self.assertNotIn("Sam", json.dumps(view))
+        self.assertNotIn("value_mac", json.dumps(view))
+
+    def test_a_form_that_looks_like_another_role_is_refused_until_the_student_says_it_is_theirs(self):
+        for response in (self.rehearse(confirmed=None), self.rehearse(confirmed=False)):
+            self.assertEqual(response.status_code, 409, response.text)
+            self.assertEqual(response.json()["detail"], "Check the posting first. Greenhouse's form is for Robotics Software Intern at Example Robotics, not Acme Robotics")
+        self.assertEqual(self.counts("apply_runs")["apply_runs"], 0, "nothing was started, filed or counted")
+        self.assertEqual(self.finished(self.rehearse(confirmed=True).json()["id"])["outcome"], "rehearsed")
+        # A saved role that matches the listing needs no word from the student, and no body.
+        with self.conn:
+            self.conn.execute("UPDATE opportunities SET company='Example Robotics, Inc.', title='Robotics Intern' WHERE id=?", (ACME,))
+            self.conn.execute("DELETE FROM apply_runs")
+        self.assertEqual(self.finished(self.rehearse(confirmed=None).json()["id"])["outcome"], "rehearsed")
+
+    def test_deleting_the_account_ends_a_rehearsal_first_and_leaves_no_folder_behind(self):
+        self.factory.hang = True
+        run_id = self.rehearse().json()["id"]
+        folder = self.app.state.ctx.config.apply_storage / apply_runs.user_folder(USER)
+        self.assertTrue(folder.exists(), "the run's picture folder was made when it started")
+        deleted = self.client.delete("/api/v1/account", headers={**AUTH, "X-Confirm-Delete": "DELETE"})
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertIsNone(self.runner.busy(), "the run was ended before the account went")
+        self.assertFalse(folder.exists())
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM apply_runs WHERE id=?", (run_id,)).fetchone()[0], 0)
+
+    def test_a_rehearsal_cannot_start_while_the_account_is_being_deleted(self):
+        import threading
+
+        from opportunity_app.web.routers import account as account_router
+
+        real_delete, outcome = account_router.delete_account, {}
+
+        def delete_while_a_second_tab_starts_a_rehearsal(*args, **kwargs):
+            def second_tab():
+                outcome["response"] = self.rehearse()
+
+            tab = threading.Thread(target=second_tab)
+            tab.start()
+            tab.join(60)
+            return real_delete(*args, **kwargs)
+
+        folder = self.app.state.ctx.config.apply_storage / apply_runs.user_folder(USER)
+        with mock.patch.object(account_router, "delete_account", delete_while_a_second_tab_starts_a_rehearsal):
+            deleted = self.client.delete("/api/v1/account", headers={**AUTH, "X-Confirm-Delete": "DELETE"})
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertEqual((outcome["response"].status_code, outcome["response"].json()["detail"]), (409, apply_runner.ACCOUNT_ENDING))
+        self.assertFalse(folder.exists(), "the refused start did not make the folder the deletion had just removed")
+        self.assertIsNone(self.runner.busy())
+
+    def test_the_picture_is_served_to_the_student_only_and_never_cached(self):
+        view = self.finished(self.rehearse().json()["id"])
+        url = view["screenshots"][0]["url"]
+        picture = self.get(url)
+        self.assertEqual(picture.status_code, 200)
+        self.assertEqual((picture.headers["content-type"], picture.headers["cache-control"]), ("image/png", "no-store"))
+        self.assertEqual(picture.content, canned_png())
+        self.assertEqual(self.client.get(url).status_code, 401)
+        self.assertEqual(self.browser.get(url).status_code, 200, "an <img> sends the session cookie, not a header")
+
+    def test_a_lookup_is_accepted_and_returns_the_options(self):
+        response = self.lookup()
+        self.assertEqual(response.status_code, 202, response.text)
+        view = self.finished(response.json()["id"])
+        self.assertEqual((view["kind"], view["outcome"]), ("lookup", "looked_up"))
+        self.assertEqual(view["options"], {"location": ["Springfield, Example State, United States", "Springdale, Example State, United States"]})
+        self.assertEqual(view["lookup"], {"key": "location_city", "field": "location", "question": "Location (City)"})
+        self.assertEqual(view["summary"], "Greenhouse listed 2 options for what you typed. Pick the one that is yours.")
+        self.assertFalse(view["can_review"])
+
+    def test_a_lookup_that_finds_nothing_says_so(self):
+        view = self.finished(self.lookup(text="zzz").json()["id"])
+        self.assertEqual(view["options"], {"location": []})
+        self.assertEqual(view["summary"], "No options came back for what you typed. Try fewer letters, or check the spelling.")
+
+    def test_the_routes_need_a_sign_in(self):
+        for method, path, body in (
+            ("POST", f"{self.BASE}/opportunities/{ACME}/rehearsals", None),
+            ("POST", f"{self.BASE}/opportunities/{ACME}/lookups", {"key": "location_city", "text": "x"}),
+            ("GET", f"{self.BASE}/opportunities/{ACME}/runs", None),
+            ("GET", f"{self.BASE}/runs/run-x", None),
+            ("GET", f"{self.BASE}/runs/run-x/screenshots/0", None),
+        ):
+            self.assertEqual(self.client.request(method, path, json=body).status_code, 401, path)
+
+    def test_it_is_refused_while_the_switch_is_off(self):
+        self.client.put("/api/v1/automation/settings", headers=AUTH, json={"modes": {"apply_agent": "off"}})
+        for response in (self.rehearse(), self.lookup()):
+            self.assertEqual((response.status_code, response.json()["detail"]), (409, "Apply for me is off. Turn it on under Automation"))
+        self.assertEqual(self.counts("apply_runs")["apply_runs"], 0)
+
+    def test_it_is_refused_when_the_window_could_not_open(self):
+        self.factory.missing = "Could not start the browser. Install Playwright and Chromium: python -m playwright install chromium"
+        response = self.rehearse()
+        self.assertEqual((response.status_code, response.json()["detail"]), (409, self.factory.missing))
+        self.assertEqual(self.counts("apply_runs")["apply_runs"], 0)
+
+    def test_a_second_start_while_one_runs_is_a_409_and_a_stop_frees_the_slot(self):
+        self.factory.hang = True
+        first = self.rehearse().json()["id"]
+        for response in (self.rehearse(), self.lookup()):
+            self.assertEqual((response.status_code, response.json()["detail"]), (409, "Another application is being filled. Wait for it to finish."))
+        self.assertEqual(self.counts("apply_runs")["apply_runs"], 1)
+        listed = self.get(f"{self.BASE}/opportunities/{ACME}/runs").json()
+        self.assertTrue(listed["busy"])
+        self.assertEqual([item["id"] for item in listed["runs"]], [first])
+        stopped = self.send("POST", f"{self.BASE}/runs/{first}/cancel")
+        self.assertEqual(stopped.status_code, 200, stopped.text)
+        view = self.finished(first)
+        self.assertEqual((view["outcome"], view["summary"]), ("failed", "You stopped this run. No application was sent."))
+        self.assertFalse(self.get(f"{self.BASE}/opportunities/{ACME}/runs").json()["busy"])
+        self.factory.hang = False
+        self.assertEqual(self.rehearse().status_code, 202)
+
+    def test_a_role_that_is_not_greenhouse_is_a_409_with_the_checks_sentence(self):
+        for response in (self.rehearse("job-b"), self.lookup(opportunity_id="job-b")):
+            self.assertEqual((response.status_code, response.json()["detail"]), (409, "Apply for me works with Greenhouse postings only, for now"))
+        self.assertEqual(self.counts("apply_runs")["apply_runs"], 0)
+
+    def test_a_closed_posting_is_a_409_and_greenhouse_being_down_is_told_apart(self):
+        self.schema.closed = True
+        self.assertEqual(self.rehearse().json()["detail"], "The app couldn't find this posting on Greenhouse. It may be closed")
+        self.schema.closed = False
+
+        def down(board, job):
+            raise SchemaUnavailable("down")
+
+        self.schema.fetch = down
+        self.assertEqual(self.rehearse().json()["detail"], "Greenhouse did not answer. Try again later")
+
+    def test_the_daily_limit_is_a_409_with_its_sentence(self):
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO profiles(user_id, profile_json, created_at, updated_at) VALUES(?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET profile_json=excluded.profile_json",
+                (USER, json.dumps({"apply_agent": {"rehearsals_per_day": 1}}), utc_now(), utc_now()),
+            )
+        self.finished(self.rehearse().json()["id"])
+        response = self.lookup()
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("today's limit of 1 rehearsals and option lookups", response.json()["detail"])
+
+    def test_a_lookup_key_that_is_not_a_list_and_a_bad_body_are_422(self):
+        for key in ("first_name", "no_such_field"):
+            response = self.lookup(key=key)
+            self.assertEqual((response.status_code, response.json()["detail"]), (422, "That field has no list of options to look up"), key)
+        for body in ({"key": "location_city", "text": ""}, {"key": "location_city", "text": "   "}, {"key": "location_city", "text": "x" * 101},
+                     {"key": "", "text": "a"}, {"text": "a"}, {"key": "location_city"}):
+            response = self.client.post(f"{self.BASE}/opportunities/{ACME}/lookups", headers=AUTH, json=body)
+            self.assertEqual(response.status_code, 422, body)
+        self.assertEqual(self.counts("apply_runs")["apply_runs"], 0)
+
+    def test_an_unknown_role_is_404(self):
+        for response in (self.rehearse("no-such-role"), self.lookup(opportunity_id="no-such-role"), self.get(f"{self.BASE}/opportunities/no-such-role/runs")):
+            self.assertEqual((response.status_code, response.json()["detail"]), (404, "Opportunity not found"))
+
+    def test_a_rehearsal_and_a_lookup_leave_the_tracker_alone_and_add_one_run_each(self):
+        tables = ("applications", "opportunity_interactions", "application_events", "application_submit_claims")
+        before = self.counts(*tables, "apply_runs")
+        self.finished(self.rehearse().json()["id"])
+        self.finished(self.lookup().json()["id"])
+        after = self.counts(*tables, "apply_runs")
+        self.assertEqual({name: after[name] - before[name] for name in after}, {**{name: 0 for name in tables}, "apply_runs": 2})
+
+    def test_no_socket_is_opened_by_a_rehearsal_or_a_lookup(self):
+        boom = AssertionError("a run reached for the network")
+        with mock.patch("socket.socket.connect", side_effect=boom), mock.patch("socket.create_connection", side_effect=boom), \
+                mock.patch("urllib.request.urlopen", side_effect=boom):
+            self.assertEqual(self.finished(self.rehearse().json()["id"])["outcome"], "rehearsed")
+            self.assertEqual(self.finished(self.lookup().json()["id"])["outcome"], "looked_up")
+
+    def test_the_routes_are_in_the_openapi_schema(self):
+        paths = self.client.get("/openapi.json").json()["paths"]
+        for method, path in (
+            ("post", "/api/v1/apply-agent/opportunities/{opportunity_id}/rehearsals"), ("post", "/api/v1/apply-agent/opportunities/{opportunity_id}/lookups"),
+            ("get", "/api/v1/apply-agent/opportunities/{opportunity_id}/runs"), ("get", "/api/v1/apply-agent/runs/{run_id}"),
+            ("post", "/api/v1/apply-agent/runs/{run_id}/cancel"), ("post", "/api/v1/apply-agent/runs/{run_id}/review"),
+            ("get", "/api/v1/apply-agent/runs/{run_id}/screenshots/{index}"),
+        ):
+            self.assertIn(method, paths[path], path)
+        self.assertIn("202", paths["/api/v1/apply-agent/opportunities/{opportunity_id}/rehearsals"]["post"]["responses"])
+
+
+class NoStorageTests(ApplyApiCase):
+    with_factories = False
+
+    def test_both_start_routes_answer_503_with_no_factories(self):
+        self.greenhouse_role()
+        for response in (
+            self.client.post(f"/api/v1/apply-agent/opportunities/{ACME}/rehearsals", headers=AUTH),
+            self.client.post(f"/api/v1/apply-agent/opportunities/{ACME}/lookups", headers=AUTH, json={"key": "location_city", "text": "x"}),
+        ):
+            self.assertEqual((response.status_code, response.json()["detail"]), (503, apply_runs.NOT_HERE))
+        self.assertEqual(self.schema.calls, [], "no request was made")
+
+    def test_both_answer_503_with_factories_but_no_folder_for_pictures(self):
+        self.addCleanup(apply_runs.configure_agent_factory, None)
+        app = create_app(db_path=self.path, access_token=TOKEN, static_dir=STATIC_DIR, resume_storage=self.root / "resumes",
+                         apply_schema_client_factory=lambda: self.schema, apply_agent_factory=FakeApplyAgentFactory())
+        with TestClient(app) as client:
+            for response in (
+                client.post(f"/api/v1/apply-agent/opportunities/{ACME}/rehearsals", headers=AUTH),
+                client.post(f"/api/v1/apply-agent/opportunities/{ACME}/lookups", headers=AUTH, json={"key": "location_city", "text": "x"}),
+            ):
+                self.assertEqual((response.status_code, response.json()["detail"]), (503, apply_runs.NOT_HERE))
+        self.assertEqual(self.schema.calls, [])
+
+
+class RunReadTests(RunApiCase):
+    def test_a_roles_runs_are_listed_newest_first_and_filtered_by_kind(self):
+        first = self.rehearse().json()["id"]
+        self.finished(first)
+        second = self.lookup().json()["id"]
+        self.finished(second)
+        listed = self.get(f"{self.BASE}/opportunities/{ACME}/runs").json()
+        self.assertEqual(([item["id"] for item in listed["runs"]], listed["busy"]), ([second, first], False))
+        self.assertEqual([item["id"] for item in self.get(f"{self.BASE}/opportunities/{ACME}/runs?kind=rehearsal").json()["runs"]], [first])
+        self.assertEqual([item["id"] for item in self.get(f"{self.BASE}/opportunities/{ACME}/runs?kind=lookup&limit=1").json()["runs"]], [second])
+        self.assertEqual(len(self.get(f"{self.BASE}/opportunities/{ACME}/runs?limit=1").json()["runs"]), 1)
+
+    def test_the_query_is_validated(self):
+        for query in ("kind=submit", "limit=0", "limit=21", "limit=abc"):
+            self.assertEqual(self.get(f"{self.BASE}/opportunities/{ACME}/runs?{query}").status_code, 422, query)
+
+    def test_another_students_run_is_404_everywhere(self):
+        run_id = self.other_students_run()
+        for method, path in (("GET", f"/runs/{run_id}"), ("GET", f"/runs/{run_id}/screenshots/0")):
+            response = self.get(f"{self.BASE}{path}")
+            self.assertEqual((response.status_code, response.json()["detail"]), (404, "No run with that id"), path)
+        for path, body in ((f"/runs/{run_id}/cancel", None), (f"/runs/{run_id}/review", {"verdict": "right"})):
+            response = self.send("POST", f"{self.BASE}{path}", body)
+            self.assertEqual((response.status_code, response.json()["detail"]), (404, "No run with that id"), path)
+        self.assertEqual(self.get(f"{self.BASE}/runs/run-{'0' * 32}").status_code, 404)
+
+    def test_a_picture_that_is_gone_or_not_the_students_is_404(self):
+        run_id = self.rehearse().json()["id"]
+        view = self.finished(run_id)
+        url = view["screenshots"][0]["url"]
+        real = json.loads(self.conn.execute("SELECT screenshots_json FROM apply_runs WHERE id=?", (run_id,)).fetchone()[0])
+        outside = self.root / "x.png"
+        outside.write_bytes(canned_png())
+        self.assertFalse(Path(real[0]["path"]).is_absolute())
+        cases = {
+            "climbs out": "../../x.png", "absolute elsewhere": str(outside), "another folder": "0123456789abcdef/x.png", "purged": "",
+            "missing file": real[0]["path"] + ".gone",
+        }
+        for name, stored in cases.items():
+            with self.subTest(name):
+                with self.conn:
+                    self.conn.execute("UPDATE apply_runs SET screenshots_json=? WHERE id=?", (json.dumps([{**real[0], "path": stored}]), run_id))
+                response = self.get(url)
+                self.assertEqual((response.status_code, response.json()["detail"]), (404, "This picture is no longer kept"))
+        self.assertEqual(self.get(url.replace("/0", "/7")).status_code, 404)
+        self.assertEqual(self.get(url.replace("/0", "/-1")).status_code, 404)
+        self.assertEqual(self.get(url.replace("/0", "/abc")).status_code, 422)
+
+
+class RunMarkTests(RunApiCase):
+    """Stop and the review marks open the gate or stop a run, so they need the student's own browser session."""
+
+    def test_the_owner_access_token_is_refused_on_cancel_and_review_with_or_without_a_cookie(self):
+        run_id = self.rehearse().json()["id"]
+        self.finished(run_id)
+        for path, body in ((f"/runs/{run_id}/cancel", None), (f"/runs/{run_id}/review", {"verdict": "right"})):
+            bearer = self.client.post(f"{self.BASE}{path}", headers=AUTH, json=body)
+            self.assertEqual(bearer.status_code, 403, bearer.text)
+            self.assertIn("browser", bearer.json()["detail"])
+            both = self.browser.post(f"{self.BASE}{path}", headers={**AUTH, **self.csrf}, json=body)
+            self.assertEqual(both.status_code, 403, both.text)
+            self.assertEqual(self.client.post(f"{self.BASE}{path}", json=body).status_code, 401)
+        self.assertEqual(self.get(f"{self.BASE}/runs/{run_id}").json()["review"], "")
+
+    def test_a_cookie_write_without_the_csrf_header_is_refused_even_with_no_origin_header(self):
+        run_id = self.rehearse().json()["id"]
+        self.finished(run_id)
+        for path, body in ((f"/runs/{run_id}/cancel", None), (f"/runs/{run_id}/review", {"verdict": "right"})):
+            bare = self.browser.post(f"{self.BASE}{path}", json=body)
+            self.assertEqual((bare.status_code, bare.json()["detail"]), (403, "CSRF validation failed"))
+            wrong = self.browser.post(f"{self.BASE}{path}", json=body, headers={"X-CSRF-Token": "not-the-token"})
+            self.assertEqual(wrong.status_code, 403)
+        self.assertEqual(self.get(f"{self.BASE}/runs/{run_id}").json()["review"], "")
+
+    def test_a_finished_rehearsal_is_marked_right_and_then_wrong_with_a_note(self):
+        run_id = self.rehearse().json()["id"]
+        self.finished(run_id)
+        right = self.send("POST", f"{self.BASE}/runs/{run_id}/review", {"verdict": "right"})
+        self.assertEqual(right.status_code, 200, right.text)
+        body = right.json()
+        self.assertEqual(set(body), RUN_KEYS | {"breaker_tripped"})
+        self.assertEqual((body["review"], body["review_note"], body["breaker_tripped"]), ("right", "", False))
+        self.assertTrue(body["reviewed_at"])
+        wrong = self.send("POST", f"{self.BASE}/runs/{run_id}/review", {"verdict": "wrong", "note": "The location was not filled"}).json()
+        self.assertEqual((wrong["review"], wrong["review_note"]), ("wrong", "The location was not filled"))
+        self.assertEqual(self.get(f"{self.BASE}/runs/{run_id}").json()["review"], "wrong", "the mark is kept")
+
+    def test_the_breaker_trips_on_two_wrong_marks_and_says_so(self):
+        marks = []
+        for _ in range(2):
+            run_id = self.rehearse().json()["id"]
+            self.finished(run_id)
+            marks.append(self.send("POST", f"{self.BASE}/runs/{run_id}/review", {"verdict": "wrong"}).json()["breaker_tripped"])
+        self.assertEqual(marks, [False, True])
+
+    def test_a_running_run_or_a_lookup_cannot_be_marked(self):
+        self.factory.hang = True
+        running = self.rehearse().json()["id"]
+        refused = self.send("POST", f"{self.BASE}/runs/{running}/review", {"verdict": "right"})
+        self.assertEqual((refused.status_code, refused.json()["detail"]), (409, apply_runner.NOT_REVIEWABLE))
+        self.send("POST", f"{self.BASE}/runs/{running}/cancel")
+        self.finished(running)
+        self.factory.hang = False
+        looked = self.lookup().json()["id"]
+        self.finished(looked)
+        again = self.send("POST", f"{self.BASE}/runs/{looked}/review", {"verdict": "right"})
+        self.assertEqual((again.status_code, again.json()["detail"]), (409, apply_runner.NOT_REVIEWABLE))
+
+    def test_a_rehearsal_that_failed_cannot_be_marked_because_the_page_never_offers_it_and_a_wrong_would_count_toward_the_breaker(self):
+        self.factory.hang = True
+        stopped = self.rehearse().json()["id"]
+        self.send("POST", f"{self.BASE}/runs/{stopped}/cancel")
+        view = self.finished(stopped)
+        self.assertEqual((view["outcome"], view["can_review"]), ("failed", False))
+        for _ in range(2):
+            refused = self.send("POST", f"{self.BASE}/runs/{stopped}/review", {"verdict": "wrong"})
+            self.assertEqual((refused.status_code, refused.json()["detail"]), (409, apply_runner.NOT_REVIEWABLE))
+        self.assertEqual(self.get(f"{self.BASE}/runs/{stopped}").json()["review"], "")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM apply_runs WHERE review<>''").fetchone()[0], 0, "no mark was stored, so none counts")
+        # What the page offers a mark on is what the route takes one on: a rehearsal that stopped with something for the student.
+        self.factory.hang = False
+        self.factory.outcome = "needs_you"
+        needs = self.rehearse().json()["id"]
+        self.assertEqual(self.finished(needs)["can_review"], True)
+        self.assertEqual(self.send("POST", f"{self.BASE}/runs/{needs}/review", {"verdict": "wrong"}).status_code, 200)
+
+    def test_the_review_body_is_validated(self):
+        run_id = self.rehearse().json()["id"]
+        self.finished(run_id)
+        for body in ({"verdict": "maybe"}, {}, {"verdict": "right", "note": "x" * 501}):
+            self.assertEqual(self.send("POST", f"{self.BASE}/runs/{run_id}/review", body).status_code, 422, body)
+
+    def test_stop_ends_a_running_run_once_and_says_when_there_is_nothing_to_stop(self):
+        self.factory.hang = True
+        run_id = self.rehearse().json()["id"]
+        stopped = self.send("POST", f"{self.BASE}/runs/{run_id}/cancel")
+        self.assertEqual(stopped.status_code, 200, stopped.text)
+        self.assertEqual(set(stopped.json()), RUN_KEYS)
+        view = self.finished(run_id)
+        self.assertEqual((view["status"], view["outcome"], view["reasons"]), ("finished", "failed", ["You stopped this run. No application was sent."]))
+        again = self.send("POST", f"{self.BASE}/runs/{run_id}/cancel")
+        self.assertEqual((again.status_code, again.json()["detail"]), (409, "This run has already finished"))
+
+    def orphan(self, *, seconds_ago=600, beat_seconds_ago=3):
+        """A row a stopped server left 'running': started long ago, with the heartbeat it wrote just before it was killed."""
+        from datetime import datetime, timedelta, timezone
+
+        run_id = apply_runs.create_run(
+            self.conn, user_id=USER, opportunity_id=ACME, kind="rehearsal", started_by="student", ats="greenhouse", board_token="b",
+            page_url=JOB_URL, company="acme", deadline_seconds=300,
+        )
+
+        def stamp(ago):
+            return (datetime.now(timezone.utc) - timedelta(seconds=ago)).isoformat()
+
+        with self.conn:
+            self.conn.execute("UPDATE apply_runs SET started_at=?, heartbeat_at=? WHERE id=?", (stamp(seconds_ago), stamp(beat_seconds_ago), run_id))
+        return run_id
+
+    def test_a_row_a_stopped_server_left_running_is_shown_as_stopped_and_its_stop_button_ends_it(self):
+        run_id = self.orphan()
+        view = self.get(f"{self.BASE}/runs/{run_id}").json()
+        self.assertEqual((view["status"], view["stalled"], view["can_cancel"], view["summary"]), ("running", True, False, "The app stopped during this run"))
+        listed = self.get(f"{self.BASE}/opportunities/{ACME}/runs").json()["runs"]
+        self.assertEqual([(item["id"], item["stalled"], item["can_cancel"]) for item in listed], [(run_id, True, False)])
+        response = self.send("POST", f"{self.BASE}/runs/{run_id}/cancel")
+        self.assertEqual(response.status_code, 200, response.text)
+        done = response.json()
+        self.assertEqual((done["status"], done["outcome"], done["reasons"]), ("finished", "failed", [apply_runner.SERVER_STOPPED]))
+        self.assertEqual(self.send("POST", f"{self.BASE}/runs/{run_id}/cancel").status_code, 409, "it ended once")
+
+    def test_a_run_this_server_is_working_on_is_not_taken_for_an_orphan(self):
+        self.factory.hang = True
+        run_id = self.rehearse().json()["id"]
+        with self.conn:
+            self.conn.execute("UPDATE apply_runs SET started_at='2020-01-01T00:00:00+00:00' WHERE id=?", (run_id,))
+        view = self.get(f"{self.BASE}/runs/{run_id}").json()
+        self.assertEqual((view["stalled"], view["can_cancel"]), (False, True))
+        self.assertEqual(self.send("POST", f"{self.BASE}/runs/{run_id}/cancel").status_code, 200)
+        self.assertEqual(self.finished(run_id)["reasons"], ["You stopped this run. No application was sent."])
+
+    def test_a_run_this_app_is_not_running_cannot_be_stopped_from_here(self):
+        run_id = apply_runs.create_run(
+            self.conn, user_id=USER, opportunity_id=ACME, kind="rehearsal", started_by="student", ats="greenhouse", board_token="b",
+            page_url=JOB_URL, company="acme", deadline_seconds=300,
+        )
+        response = self.send("POST", f"{self.BASE}/runs/{run_id}/cancel")
+        self.assertEqual((response.status_code, response.json()["detail"]), (409, "This run is not running in this app"))
+        view = self.get(f"{self.BASE}/runs/{run_id}").json()
+        self.assertEqual((view["status"], view["can_cancel"]), ("running", True))
+
+
+class ServerShutdownTests(unittest.TestCase):
+    """Leaving the app's lifespan ends a running rehearsal. Nothing here shuts the runner down by hand first: the point is the lifespan's own call."""
+
+    def test_stopping_the_server_mid_rehearsal_finishes_the_row_as_stopped_by_the_app_and_frees_the_slot(self):
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        root = Path(tempdir.name)
+        _, path = build_and_migrate(root)
+        self.addCleanup(apply_runs.configure_agent_factory, None)
+        factory = FakeApplyAgentFactory(hang=True)
+        app = create_app(db_path=path, access_token=TOKEN, static_dir=STATIC_DIR, resume_storage=root / "resumes", apply_storage=root / "apply",
+                         apply_schema_client_factory=lambda: FakeSchemaClient(any_job=True), apply_agent_factory=factory)
+        conn = connect_product(path)
+        self.addCleanup(conn.close)
+        with conn:
+            conn.execute("UPDATE opportunities SET url=? WHERE id=?", (JOB_URL, ACME))
+        seed_student(conn, root / "resumes")
+        runner = app.state.ctx.runtime.apply_runner
+        with TestClient(app) as client:
+            on = client.put("/api/v1/automation/settings", headers=AUTH, json={"modes": {"apply_agent": "on"}})
+            self.assertEqual(on.status_code, 200, on.text)
+            started = client.post(f"/api/v1/apply-agent/opportunities/{ACME}/rehearsals", headers=AUTH, json={"posting_confirmed": True})
+            self.assertEqual(started.status_code, 202, started.text)
+            run_id = started.json()["id"]
+            self.assertEqual(conn.execute("SELECT status FROM apply_runs WHERE id=?", (run_id,)).fetchone()[0], "running")
+            self.assertEqual(runner.busy(), run_id)
+        # Out of the with block: the lifespan's shutdown ran, and it is the only thing that could have stopped the run.
+        row = conn.execute("SELECT status, outcome, reasons_json FROM apply_runs WHERE id=?", (run_id,)).fetchone()
+        self.assertEqual((row["status"], row["outcome"]), ("finished", "failed"))
+        self.assertEqual(json.loads(row["reasons_json"])[0], apply_runner.SERVER_STOPPED)
+        self.assertIsNone(runner.busy())
 
 
 class SandboxWiringTests(unittest.TestCase):

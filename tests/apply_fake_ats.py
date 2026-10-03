@@ -32,12 +32,21 @@ fails without Playwright.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+import os
 import re
+import struct
+import subprocess
+import sys
+import time
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
+
+from opportunity_app.apply.agent_types import STOPPED
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "apply" / "greenhouse"
 
@@ -48,7 +57,9 @@ JOB_HOST = "job-boards.greenhouse.io"
 SUBMIT_HOST = "boards.greenhouse.io"
 API_HOST = "boards-api.greenhouse.io"
 OFFSITE_HOST = "careers.example-robotics.test"
+OTHER_JOB_ID = "4000000099"
 JOB_PATH = f"/{BOARD_TOKEN}/jobs/{JOB_ID}"
+OTHER_JOB_PATH = f"/{BOARD_TOKEN}/jobs/{OTHER_JOB_ID}"
 CONFIRMATION_PATH = f"{JOB_PATH}/confirmation"
 LEGACY_JOB_PATH = f"/{BOARD_TOKEN}/jobs/{LEGACY_JOB_ID}"
 LEGACY_CONFIRMATION_PATH = f"{LEGACY_JOB_PATH}/confirmation"
@@ -76,6 +87,10 @@ SCENARIOS = (
     "other_path_post",              # the form posts to a path other than submitPath
     "request_submit_during_fill",   # a page script calls requestSubmit() while the agent fills
     "redirect_offsite",             # the posting sends applicants to the employer's own site
+    "redirect_other_posting",       # the board sends the posting's address on to another posting of the same board
+    "popup_offsite",                # a page script opens the employer's own site in a popup as the page loads
+    "navigate_offsite_after_input", # a page script sends the main frame to the employer's own site once the first field is typed into
+    "no_portfolio",                 # the optional "Portfolio or project link" field is not drawn
     "closed",                       # the posting is closed: the schema gives 404
     "loader_missing",               # no submitPath in the HTML
     "eager_script",                 # a page script POSTs on every keystroke, like lead-capture scripts
@@ -141,6 +156,10 @@ _SCRIPTS = {
       window.location.assign(window.__loader.confirmationPath);
     }, true);""",
     "other_path_post": """window.__loader.submitPath = "/examplerobotics/jobs/4000000001/apply-v2";""",
+    "popup_offsite": """window.open("https://careers.example-robotics.test/apply");""",
+    "navigate_offsite_after_input": _FORM + """.addEventListener("input", function () {
+      setTimeout(function () { window.location.assign("https://careers.example-robotics.test/apply"); }, 30);
+    }, {once: true});""",
     "hang_evaluate": """setTimeout(function () { for (;;) {} }, 1500);""",
     "text_only_thanks": """window.grAfterSubmit = function () { window.location.reload(); };""",
 }
@@ -262,9 +281,13 @@ class FakeGreenhouse:
             if self.scenario == "redirect_offsite":
                 # A script, not a 302: the hop after a fulfilled redirect is not routed (see _submit).
                 return Reply(200, f'<html><body><script>window.location.replace("https://{OFFSITE_HOST}/apply");</script></body></html>')
+            if self.scenario == "redirect_other_posting":
+                return Reply(200, f'<html><body><script>window.location.replace("{OTHER_JOB_PATH}");</script></body></html>')
             if self.scenario == "text_only_thanks" and self.thanks_shown:
                 return Reply(200, fixture_text("text_only_thanks.html"))
             return Reply(200, self._form_html())
+        if path == OTHER_JOB_PATH and self.scenario == "redirect_other_posting":
+            return Reply(200, self._form_html())   # the same questions under another posting
         if path == CONFIRMATION_PATH:
             return Reply(200, fixture_text("new_confirmation.html"))
         if path == LEGACY_JOB_PATH:
@@ -279,6 +302,10 @@ class FakeGreenhouse:
             html = html.replace('"submitPath":"/examplerobotics/jobs/4000000001",', "")
         if self.scenario == "s3_upload":
             html = html.replace('data-allow-s3="false"', 'data-allow-s3="true"')
+        if self.scenario == "no_portfolio":
+            field_block = re.search(r'[ \t]*<div class="field">\s*<label for="question_4000000102">.*?</div>\s*?\n', html, flags=re.S)
+            assert field_block, "the fixture's Portfolio field moved"
+            html = html.replace(field_block.group(0), "")
         script = _SCRIPTS.get(self.scenario, "")
         return html.replace("<!--FAKE_SCENARIO-->", f"<script>{script}</script>" if script else "")
 
@@ -350,19 +377,177 @@ class FakeSchemaClient:
         return self.fetch(match.group(1), match.group(2)) if match else None
 
 
+# Knobs the in-process UI suite may change between tests (a thread-isolated fake reads them when a run starts).
+CANNED: dict[str, Any] = {"hang": False, "outcome": "rehearsed", "step_delay": 0.3}
+STOPPED_TEXT = STOPPED
+NO_OPTIONS_TEXT = "No options came back for what you typed"
+
+
+def canned_png(width: int = 480, height: int = 320) -> bytes:
+    """A small PNG (grey, with a darker band) for the canned rehearsal's picture, built with zlib and struct only."""
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+
+    rows = b"".join(b"\x00" + bytes([70 if 120 <= y < 170 else 215]) * (width * 3) for y in range(height))
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
+
+
 class FakeApplyAgentFactory:
-    """The agent factory of a test or the sandbox: it says a window could open, and starts nothing.
+    """The agent factory of a test or the sandbox: it says a window could open, and its runs are canned.
 
     ``available()`` is the probe the apply_agent switch's requirement asks (apply_runs.setup_requirement): "" when
     Playwright and Chromium are present, else a sentence. The fake always says they are, so the same tests pass
-    with or without Playwright installed. The runs themselves arrive with the rehearsal engine (M5a).
+    with or without Playwright installed. A run opens no browser and no socket: ``CannedAgent`` reports its steps and
+    answers from the draft plan. It runs in a thread (``isolation="thread"``) so API and UI tests stay fast; pass
+    ``isolation="process"`` to test the spawned child. A knob left as None is read from ``CANNED`` when the run starts.
     """
 
-    def __init__(self, missing: str = "") -> None:
+    def __init__(self, missing: str = "", *, isolation: str = "thread", step_delay: float | None = None,
+                 outcome: str | None = None, hang: bool | None = None) -> None:
         self.missing = missing
+        self.isolation = isolation
+        self.step_delay = step_delay
+        self.outcome = outcome
+        self.hang = hang
 
     def available(self) -> str:
         return self.missing
+
+    def __call__(self, **kwargs: Any) -> "CannedAgent":
+        return CannedAgent(
+            step_delay=CANNED["step_delay"] if self.step_delay is None else self.step_delay,
+            outcome=CANNED["outcome"] if self.outcome is None else self.outcome,
+            hang=CANNED["hang"] if self.hang is None else self.hang,
+            **kwargs,
+        )
+
+
+class CannedAgent:
+    """A fictional rehearsal or lookup: no browser, no socket, every sentence value-free."""
+
+    def __init__(self, *, mode: str, run_id: str, screenshot_dir: Path | None, timeouts: Any, on_progress: Any, heartbeat: Any,
+                 step_delay: float, outcome: str, hang: bool) -> None:
+        self.mode, self.run_id, self.screenshot_dir = mode, run_id, screenshot_dir
+        self.on_progress, self.heartbeat = on_progress, heartbeat
+        self.step_delay, self.outcome, self.hang = step_delay, outcome, hang
+
+    def __enter__(self) -> "CannedAgent":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        return None
+
+    def _pause(self, cancelled: Any) -> bool:
+        """Wait one step's delay. True when the run was stopped meanwhile."""
+        waited = 0.0
+        while waited < self.step_delay:
+            if cancelled():
+                return True
+            time.sleep(0.05)
+            waited += 0.05
+        self.heartbeat()
+        return bool(cancelled())
+
+    def _step(self, step: str, text: str, cancelled: Any) -> bool:
+        self.on_progress(step, text)
+        return self._pause(cancelled)
+
+    def run(self, plan: Any, *, page_url: str, schema: list[Any], files: dict[str, Any], lookup: Any = None, replan: Any = None,
+            hand_over: Any = None, cancelled: Any = None) -> Any:
+        from opportunity_app.apply import policy as apply_policy
+        from opportunity_app.apply.agent_types import PROGRESS_STEPS, RunResult
+
+        cancelled = cancelled or (lambda: False)
+        stopped = RunResult("failed", [STOPPED_TEXT])
+        self.on_progress("open", PROGRESS_STEPS["open"])
+        while self.hang:
+            if cancelled():
+                return stopped
+            time.sleep(0.1)
+        if self._pause(cancelled):
+            return stopped
+        if lookup is not None:
+            if self._step("lookup", PROGRESS_STEPS["lookup"].format(question=lookup.question), cancelled):
+                return stopped
+            found = [option for option in LOOKUP_OPTIONS if lookup.text.casefold() in option.casefold()][:20]
+            return RunResult(
+                "looked_up", [] if found else [NO_OPTIONS_TEXT], options={lookup.field: found},
+                evidence={"page": "application_form_new", "lookups": [{"key": lookup.key, "question": lookup.question}], "refused_total": 0},
+            )
+        entries = apply_policy.plan_entries(plan)
+        filling = sum(1 for entry in entries if entry["disposition"] == "fill")
+        for step, text in (("read", PROGRESS_STEPS["read"]), ("fill", PROGRESS_STEPS["fill"].format(n=filling)),
+                           ("check", PROGRESS_STEPS["check"]), ("picture", PROGRESS_STEPS["picture"])):
+            if self._step(step, text, cancelled):
+                return stopped
+        masked = [entry["key"] for entry in entries if entry.get("sensitive")]
+        shots: list[dict[str, Any]] = []
+        if self.screenshot_dir is not None:
+            self.screenshot_dir.mkdir(parents=True, exist_ok=True)
+            path = self.screenshot_dir / f"{self.run_id}-filled.png"
+            data = canned_png()
+            path.write_bytes(data)
+            shots.append({"step": "filled", "path": str(path), "sha256": hashlib.sha256(data).hexdigest(), "masked": masked})
+        return RunResult(
+            self.outcome, [], plan=entries, plan_hash=getattr(plan, "plan_hash", ""), join_problems=[], check_problems=[],
+            screenshots=shots, refused=[{"method": "POST", "host": "analytics.example-robotics.test", "rule": "non_get"}],
+            evidence={"page": "application_form_new", "loader": {"submit_path": True, "confirmation_path": True}, "uploads_on_attach": False,
+                      "captcha_widget": False, "lookups": [], "submit_path_hit": False, "refused_total": 1,
+                      "filled_keys": [entry["key"] for entry in entries if entry["disposition"] == "fill" and entry.get("control") != "file"],
+                      "checked_keys": [entry["key"] for entry in entries if entry["disposition"] == "deferred" and entry.get("control") != "file"]},
+        )
+
+
+class HangingAgentFactory:
+    """A process-isolated agent that starts a grandchild process and then never yields: only the watchdog can end it."""
+
+    isolation = "process"
+
+    def __init__(self, pid_file: str, *, driver: bool = False) -> None:
+        self.pid_file = pid_file
+        self.driver = driver   # the grandchild behaves like Playwright's driver: it ends when its stdin closes, that is, when the child dies
+
+    def available(self) -> str:
+        return ""
+
+    def __call__(self, **kwargs: Any) -> "HangingAgent":
+        return HangingAgent(self.pid_file, self.driver)
+
+
+class HangingAgent:
+    def __init__(self, pid_file: str, driver: bool = False) -> None:
+        self.pid_file = pid_file
+        self.driver = driver
+
+    def __enter__(self) -> "HangingAgent":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        return None
+
+    def run(self, plan: Any, **kwargs: Any) -> Any:
+        code = "import sys; sys.stdin.read()" if self.driver else "import time; time.sleep(600)"
+        grandchild = subprocess.Popen(
+            [sys.executable, "-c", code], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), stdin=subprocess.PIPE if self.driver else None,
+        )
+        Path(self.pid_file).write_text(f"{os.getpid()} {grandchild.pid}", encoding="utf-8")
+        while True:   # no heartbeat, no cancel check, never sleeps
+            pass
+
+
+class CrashingAgentFactory:
+    """An agent factory that raises, to see that the runner reports the type name and never the message."""
+
+    def __init__(self, isolation: str = "thread") -> None:
+        self.isolation = isolation
+
+    def available(self) -> str:
+        return ""
+
+    def __call__(self, **kwargs: Any) -> Any:
+        raise RuntimeError("boom")
 
 
 # --- playing the student, for tests that drive a page (and, in M5a, for ``student_hook``) -----------

@@ -103,6 +103,10 @@ def dotted(*names: str) -> set[str]:
 # Leaf (path from the repository root) -> (what it may import when imported, what it may import inside a function).
 # Everything else must be the standard library. Not every entry is a pure leaf; each one that is not says why.
 LEAVES: dict[str, tuple[set[str], set[str]]] = {
+    # The Apply for me agent and its runner share these two with nothing first-party but each other: the runner's child process reads
+    # the pipe through them. (A job it unpickles names the agent factory and a policy.Plan, which import more: see agent_types.py.)
+    "opportunity_app/apply/agent_types.py": (set(), set()),
+    "opportunity_app/apply/runner_child.py": (dotted("apply.agent_types"), set()),
     # Workstream T: time, database, settings, JSON, stored profile
     "opportunity_app/core/timestamps.py": (set(), set()),
     # PostgreSQL support imports psycopg inside PostgresConnection, so SQLite-only installs never need it. The connection

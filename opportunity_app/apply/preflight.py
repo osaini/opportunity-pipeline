@@ -18,6 +18,7 @@ import json
 import sqlite3
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -80,6 +81,11 @@ def _opportunity(conn: sqlite3.Connection, user_id: str, opportunity_id: str) ->
     if row is None:
         raise OpportunityNotFoundError(opportunity_id)
     return row
+
+
+def require_opportunity(conn: sqlite3.Connection, user_id: str, opportunity_id: str) -> None:
+    """Raise OpportunityNotFoundError unless this student can see the role (an unknown id, or another student's capture)."""
+    _opportunity(conn, user_id, opportunity_id)
 
 
 def _listing(
@@ -236,9 +242,11 @@ def _view(plan: apply_policy.Plan, facts: dict[str, Any]) -> tuple[list[dict[str
 
 def _prepare(
     conn: sqlite3.Connection, user_id: str, opportunity_id: str, *, client: SchemaClient, cache: SchemaCache | None,
-    resume_root: Path | None, moment: datetime,
-) -> tuple[dict[str, Any], apply_policy.Plan | None, apply_policy.Sources | None]:
-    """6.0 steps 2 to 6: the answer so far, and the plan when there is one (None when the check ends earlier). Writes nothing."""
+    resume_root: Path | None, moment: datetime, mode: str = "check", key: bytes | None = None,
+) -> tuple[dict[str, Any], apply_policy.Plan | None, apply_policy.Sources | None, list[apply_policy.SchemaField] | None]:
+    """6.0 steps 2 to 6: the answer so far, the plan when there is one (None when the check ends earlier), and the parsed
+    listing it was built from. Writes nothing. ``mode`` is the plan's ("check", or "rehearse" for a run); ``key`` is the
+    install's value-MAC key (None: a fresh one, which only the check can do with)."""
     opportunity = _opportunity(conn, user_id, opportunity_id)
     company = str(opportunity["company"] or "")
     result: dict[str, Any] = {
@@ -249,7 +257,7 @@ def _prepare(
     }
     ident = apply_greenhouse.identify(conn, opportunity_id)
     if ident is None:
-        return result, None, None
+        return result, None, None, None
     token, job = ident
     result.update(ats=apply_greenhouse.ATS_GREENHOUSE, board_token=token, job_id=job, canonical_url=apply_greenhouse.canonical_url(token, job))
     application = conn.execute("SELECT stage FROM applications WHERE opportunity_id=? AND user_id=?", (opportunity_id, user_id)).fetchone()
@@ -258,10 +266,10 @@ def _prepare(
     block, asks = _asks(conn, user_id, opportunity_id, ident, company, moment)
     result["asks"] = asks
     if block is not None:
-        return {**result, "status": "failed", "message": block.message}, None, None
+        return {**result, "status": "failed", "message": block.message}, None, None, None
     listing, sentence, cached = _listing(client, cache, token, job)
     if listing is None:
-        return {**result, "status": "failed", "message": sentence}, None, None
+        return {**result, "status": "failed", "message": sentence}, None, None, None
     result["from_cache"] = cached
     # Which posting was read, so the student can see it, and whether it looks like the role they saved (source integrity).
     difference = apply_policy.posting_difference(company, str(opportunity["title"] or ""), listing)
@@ -269,12 +277,13 @@ def _prepare(
         "title": str(listing.get("title") or ""), "company": str(listing.get("company_name") or ""), "url": result["canonical_url"],
         "differs": bool(difference), "difference": difference,
     }
-    sources =apply_policy.sources_for(conn, user_id, opportunity_id, company=company, storage_root=resume_root)
+    sources = apply_policy.sources_for(conn, user_id, opportunity_id, company=company, storage_root=resume_root, key=key)
+    schema = apply_policy.parse_schema(listing)
     plan = apply_policy.build_plan(
-        apply_policy.parse_schema(listing), None, sources, company, "check",
+        schema, None, sources, company, mode,
         canonical_url=result["canonical_url"], adapter_version=apply_greenhouse.ADAPTER_VERSION,
     )
-    return result, plan, sources
+    return result, plan, sources, schema
 
 
 def _eligibility(
@@ -322,7 +331,7 @@ def check(
     has no such posting), needs_you (questions the app cannot answer yet, listed with an action each) or ready.
     """
     moment = _now(now)
-    result, plan, sources = _prepare(conn, user_id, opportunity_id, client=client, cache=cache, resume_root=resume_root, moment=moment)
+    result, plan, sources, _schema = _prepare(conn, user_id, opportunity_id, client=client, cache=cache, resume_root=resume_root, moment=moment)
     if plan is None or sources is None:
         if result["ats"]:
             result["eligibility"] = _eligibility(conn, user_id, result, moment)
@@ -360,6 +369,35 @@ def check(
         result.update(status="ready", message=f"Ready: {filled} field{'s' if filled != 1 else ''} from your profile and saved answers{tail}")
     result["eligibility"] = _eligibility(conn, user_id, result, moment)
     return result
+
+
+@dataclass
+class RunInputs:
+    """What a rehearsal or a lookup starts from: the answer so far, the parsed listing, and the draft plan from the listing alone."""
+
+    result: dict[str, Any]                           # the check's early keys: title, company, status, message, board_token, job_id, canonical_url, asks, posting
+    schema: list[apply_policy.SchemaField] | None
+    plan: apply_policy.Plan | None
+
+
+def run_inputs(
+    conn: sqlite3.Connection, user_id: str, opportunity_id: str, *, client: SchemaClient, mode: str = "rehearse",
+    resume_root: Path | None = None, apply_root: Path | None = None, now: datetime | None = None,
+) -> RunInputs:
+    """6.0 steps 2 to 6 for a run: always a fresh listing (no cache), the plan in ``mode``, the install's MAC key. Writes nothing.
+
+    ``result["status"]`` is unavailable or failed when the role cannot be run (then ``schema`` and ``plan`` are None), else
+    ready or needs_you. A role with questions left open may still be rehearsed: the rehearsal says what it could not fill.
+    """
+    moment = _now(now)
+    key = apply_policy.mac_key(apply_root) if apply_root is not None else None
+    result, plan, _sources, schema = _prepare(
+        conn, user_id, opportunity_id, client=client, cache=None, resume_root=resume_root, moment=moment, mode=mode, key=key,
+    )
+    if plan is None or schema is None:
+        return RunInputs(result, None, None)
+    result.update(status="ready" if plan.ready else "needs_you", message="")
+    return RunInputs(result, schema, plan)
 
 
 def _existing_row(conn: sqlite3.Connection, user_id: str, text: str, company: str) -> Any:
@@ -411,7 +449,7 @@ def answer_missing(
     role's company. Returns the fresh check.
     """
     moment = _now(now)
-    result, plan, _sources = _prepare(conn, user_id, opportunity_id, client=client, cache=cache, resume_root=resume_root, moment=moment)
+    result, plan, _sources, _schema = _prepare(conn, user_id, opportunity_id, client=client, cache=cache, resume_root=resume_root, moment=moment)
     if plan is None:
         raise AnswerRefused(result["message"])
     if result["posting"]["differs"] and not posting_confirmed:
@@ -454,7 +492,7 @@ def answer_sensitive(
     Returns the fresh check.
     """
     moment = _now(now)
-    result, plan, sources = _prepare(conn, user_id, opportunity_id, client=client, cache=cache, resume_root=resume_root, moment=moment)
+    result, plan, sources, _schema = _prepare(conn, user_id, opportunity_id, client=client, cache=cache, resume_root=resume_root, moment=moment)
     if plan is None:
         raise AnswerRefused(result["message"])
     if result["posting"]["differs"] and not posting_confirmed:

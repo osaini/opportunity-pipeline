@@ -193,6 +193,12 @@ def user_folder(user_id: str) -> str:
     return hashlib.sha256(user_id.encode()).hexdigest()[:16]
 
 
+def opportunity_folder(opportunity_id: str) -> str:
+    """An opportunity id as one folder name under the student's folder (ids are plain, but a name must never climb out of it)."""
+    cleaned = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in opportunity_id).strip(".")
+    return cleaned[:120] or "role"
+
+
 def _local_day_start(zone: UserTimezone, now: datetime) -> str:
     """The start of today in the student's timezone, as the UTC stamp claims and runs are compared with."""
     return _iso(zone.localize(datetime.combine(zone.today(now), time.min)))
@@ -1343,7 +1349,11 @@ def _remove_orphans(conn: sqlite3.Connection, root: Path, user_id: str | None, n
     # Read the working runs first: one that records its screenshots and finishes between the two reads is then in
     # 'referenced' (read second) and cannot fall in neither set. A file made moments ago is left as well; a crash
     # orphan is old by definition.
-    working = {str(row[0]) for row in conn.execute("SELECT id FROM apply_runs WHERE status='running'").fetchall()}
+    working_rows = conn.execute("SELECT id, user_id, opportunity_id FROM apply_runs WHERE status='running'").fetchall()
+    working = {str(row[0]) for row in working_rows}
+    # A run makes its folder before it starts and puts nothing in it until its picture, minutes later, and the agent never makes the
+    # folder again: the folder of a role with a run working is not removed while it is empty.
+    busy_folders = {(user_folder(str(row[1])), opportunity_folder(str(row[2]))) for row in working_rows}
     referenced: set[Path] = set()
     for row in conn.execute("SELECT screenshots_json FROM apply_runs WHERE screenshots_json<>'[]'").fetchall():
         for shot in json_as(row["screenshots_json"], []):
@@ -1358,7 +1368,8 @@ def _remove_orphans(conn: sqlite3.Connection, root: Path, user_id: str | None, n
         for path in sorted(folder.rglob("*"), reverse=True):
             if path.is_dir():
                 try:
-                    path.rmdir()  # only if it is empty now
+                    if (folder.name, path.name) not in busy_folders or path.parent != folder:
+                        path.rmdir()  # only if it is empty now
                 except OSError:
                     pass
                 continue
