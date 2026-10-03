@@ -48,6 +48,8 @@ def build_sandbox_app(
         static_dir=STATIC_DIR,
         # Uploads must land in the temp tree, never in the repo's data/ directory.
         resume_storage=root / "resumes",
+        # Apply for me's pictures land here (a rehearsal needs a folder; without the fake apply nothing writes to it).
+        apply_storage=root / "apply",
         capture_storage=root / "captures",
         interview_storage=root / "mock-interviews",
         # The Programs tab reads a student's own list; this one is invented.

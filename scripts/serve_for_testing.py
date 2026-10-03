@@ -15,7 +15,8 @@ and printed on startup.
 
 PIPELINE_SANDBOX_FAKE_APPLY=1 also turns Apply for me on for the seeded student, with a fake Greenhouse
 listing and a fake agent: Acme Robotics (saved) becomes a Greenhouse role, so the "what's missing" view has
-something to show. Nothing reaches Greenhouse and no browser opens.
+something to show. A rehearsal or an option lookup returns a canned result after a few seconds, with a canned
+picture. Nothing reaches Greenhouse and no browser opens.
 
 Stop it with Ctrl+C; the temporary directory is removed on exit.
 """

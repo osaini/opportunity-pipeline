@@ -5,7 +5,7 @@
   const App = window.OpportunityApp;
 
   // From app-context.js.
-  const { els, state } = App;
+  const { els, registerSessionPoller, state } = App;
 
   // From app-ui.js.
   const {
@@ -24,7 +24,11 @@
   // Apply for me (apply/policy.py, apply/preflight.py): what the app would fill on a saved Greenhouse role, and what it
   // still needs from you. It only reads: opening this section changes nothing in your tracker, and it shows no answer
   // you gave, only the questions, where each answer would come from, and what is missing.
-  const APPLY_NOTE = "Nothing in your tracker has changed. Filling the form in a window comes in a later step.";
+  const APPLY_NOTE = "Nothing in your tracker has changed. A rehearsal fills the form in a window to check it, and never sends it.";
+  const APPLY_API = "/api/v1/apply-agent";
+  const REHEARSE_HELP = "Opens a Chromium window and fills this form to check it. Nothing is sent: the app never presses Submit, and it refuses every request it can see that could send the form.";
+  const WINDOW_NOTE = "A Chromium window is open. You can watch, but please don't type in it.";
+  const RUN_POLL_MS = 1000;
 
   function applyAnswerForm(problem, company, onSaved) {
     const action = problem.action;
@@ -129,7 +133,7 @@
     save.type = "submit";
     const status = element("p", "form-status");
     status.setAttribute("role", "status");
-    form.append(label, element("p", "profile-help", "You typed this, so the app has not checked it against the form yet. It only uses an option the form really lists, word for word."), save, status);
+    form.append(label, element("p", "profile-help", "You typed this, so the app has not checked it against the form yet. It only uses an option the form really lists, word for word."), applyLookup(problem, input, onSaved), save, status);
     // Kept across a rebuild of the list, but only when the student changed it from the suggestion.
     form.applyDraft = {
       read: () => (input.value !== (action.suggestion || "") ? { answer: input.value } : null),
@@ -374,6 +378,417 @@
     body.appendChild(warning);
   }
 
+  // Rehearsals and option lookups (apply/runner.py): a run is started with one POST and read by polling its row. Every poll
+  // belongs to the session that started it, so each registers one stop with the session (a poll left running after sign-out
+  // would get a 401 each time), and each checks the session and its own page after every await.
+  const activeWatches = new Set();
+  let watchersRegistered = false;
+
+  // Calls onView(view) with the run's row every second until it is finished or stalled, or until alive() says the page that
+  // wanted it is gone. Returns the function that stops it.
+  function watchRun(runId, { alive, onView, onFail }) {
+    if (!watchersRegistered) {
+      watchersRegistered = true;
+      registerSessionPoller(() => [...activeWatches].forEach((stopOne) => stopOne()));
+    }
+    const epoch = state.sessionEpoch;
+    let timer = 0;
+    let stopped = false;
+    let failures = 0;
+    const stop = () => {
+      stopped = true;
+      window.clearTimeout(timer);
+      activeWatches.delete(stop);
+    };
+    activeWatches.add(stop);
+    async function tick() {
+      let view;
+      try {
+        view = await api(`${APPLY_API}/runs/${encodeURIComponent(runId)}`);
+      } catch (error) {
+        if (stopped) return;
+        if (isAuthError(error) || state.sessionEpoch !== epoch || !alive()) {
+          stop();
+          return;
+        }
+        failures += 1;
+        // A run that is gone, or a server that keeps failing, ends the wait; one lost request does not.
+        if (error.status === 404 || failures >= 5) {
+          stop();
+          onFail(error);
+          return;
+        }
+        timer = window.setTimeout(tick, RUN_POLL_MS * 2);
+        return;
+      }
+      if (stopped) return;
+      if (state.sessionEpoch !== epoch || !alive()) {
+        stop();
+        return;
+      }
+      failures = 0;
+      const done = runIsOver(view);
+      if (done) stop();
+      onView(view);
+      if (!done) timer = window.setTimeout(tick, RUN_POLL_MS);
+    }
+    timer = window.setTimeout(tick, RUN_POLL_MS);
+    return stop;
+  }
+
+  const runIsOver = (view) => view.status === "finished" || Boolean(view.stalled);
+
+  // The Look up options part of a typeahead question's form (a list only Greenhouse knows, such as location): the student types
+  // a few letters, the app types them into the form in a window and reads the options it offers, and the student picks theirs.
+  // What was found is kept in problem.lookups, so the list being rebuilt (another answer saved) does not lose it.
+  function applyLookup(problem, input, onSaved) {
+    const action = problem.action;
+    const memory = problem.lookups;
+    const block = element("div", "apply-lookup");
+    const find = element("button", "secondary-button", "Look up options");
+    find.type = "button";
+    const stopButton = element("button", "secondary-button", "Stop");
+    stopButton.type = "button";
+    stopButton.hidden = true;
+    const actions = element("div", "apply-lookup-actions");
+    actions.append(find, stopButton);
+    const status = element("p", "form-status apply-lookup-status");
+    status.setAttribute("role", "status");
+    const choices = element("div", "apply-lookup-choices");
+    block.append(
+      actions,
+      element("p", "profile-help", "This sends what you typed to Greenhouse's lookup service."),
+      status,
+      choices,
+    );
+    const alive = () => block.isConnected;
+    let stopWatch = null;
+    let busy = false;
+    let runId = "";
+
+    function setBusy(on) {
+      busy = on;
+      if (on) find.setAttribute("aria-disabled", "true");
+      else find.removeAttribute("aria-disabled");
+    }
+
+    function showOptions(view) {
+      choices.replaceChildren();
+      const options = view.options?.[action.field] || [];
+      if (!options.length) return;
+      const group = element("fieldset", "apply-options");
+      group.appendChild(element("legend", "", "Options the form lists"));
+      const name = `apply-lookup-${problem.key}`;
+      const radios = options.map((option) => {
+        const row = element("label", "confirmation-row");
+        const radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = name;
+        radio.value = option;
+        row.append(radio, element("span", "", option));
+        group.appendChild(row);
+        return radio;
+      });
+      const use = element("button", "secondary-button", "Use this one from now on");
+      use.type = "button";
+      let saving = false;
+      use.addEventListener("click", async () => {
+        if (saving) return;
+        const chosen = radios.find((radio) => radio.checked);
+        if (!chosen) {
+          status.textContent = "Pick one of the options first.";
+          return;
+        }
+        saving = true;
+        use.setAttribute("aria-disabled", "true");
+        status.textContent = "Saving…";
+        const epoch = state.sessionEpoch;
+        try {
+          await api(`${APPLY_API}/ats-labels/${encodeURIComponent(action.field)}`, { method: "PUT", body: JSON.stringify({ label: chosen.value }) });
+          if (state.sessionEpoch !== epoch) return;
+          memory?.delete(problem.key);
+          onSaved(null, "Saved.");
+        } catch (error) {
+          saving = false;
+          use.removeAttribute("aria-disabled");
+          if (!isAuthError(error)) status.textContent = error.message;
+        }
+      });
+      choices.append(group, use);
+    }
+
+    function receive(view) {
+      runId = view.id;
+      memory?.set(problem.key, view);
+      status.textContent = view.summary;
+      if (!runIsOver(view)) {
+        stopButton.hidden = false;
+        return;
+      }
+      stopWatch?.();
+      stopWatch = null;
+      stopButton.hidden = true;
+      setBusy(false);
+      showOptions(view);
+    }
+
+    function follow(view) {
+      receive(view);
+      if (runIsOver(view)) return;
+      setBusy(true);
+      stopWatch?.();
+      stopWatch = watchRun(view.id, {
+        alive,
+        onView: receive,
+        onFail: (error) => {
+          setBusy(false);
+          stopButton.hidden = true;
+          status.textContent = error.message;
+        },
+      });
+    }
+
+    find.addEventListener("click", async () => {
+      if (busy) return;
+      const text = input.value.trim();
+      if (!text) {
+        status.textContent = "Type a few letters of the option first.";
+        return;
+      }
+      if (text.length > 100) {
+        status.textContent = "Type at most 100 letters to look up.";
+        return;
+      }
+      setBusy(true);
+      choices.replaceChildren();
+      status.textContent = "Starting…";
+      const epoch = state.sessionEpoch;
+      try {
+        const view = await api(`${APPLY_API}/opportunities/${encodeURIComponent(problem.opportunityId)}/lookups`, {
+          method: "POST",
+          body: JSON.stringify({ key: problem.key, text }),
+        });
+        if (state.sessionEpoch !== epoch || !alive()) return;
+        follow(view);
+      } catch (error) {
+        setBusy(false);
+        if (state.sessionEpoch === epoch && !isAuthError(error)) status.textContent = error.message;
+      }
+    });
+
+    stopButton.addEventListener("click", async () => {
+      if (!runId || stopButton.getAttribute("aria-disabled") === "true") return;
+      stopButton.setAttribute("aria-disabled", "true");
+      stopButton.textContent = "Stopping…";
+      const epoch = state.sessionEpoch;
+      try {
+        const view = await api(`${APPLY_API}/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
+        if (state.sessionEpoch === epoch && alive()) receive(view);
+      } catch (error) {
+        if (!isAuthError(error) && state.sessionEpoch === epoch) status.textContent = error.message;
+      }
+      stopButton.removeAttribute("aria-disabled");
+      stopButton.textContent = "Stop";
+    });
+
+    // The list was rebuilt while a lookup was running or after one finished: pick it up where it was.
+    const earlier = memory?.get(problem.key);
+    if (earlier) follow(earlier);
+    return block;
+  }
+
+  // The window and the steps of a rehearsal that is running. update() takes each new row of the run.
+  function applyRunPanel(view, onStop) {
+    const node = element("div", "apply-run");
+    const step = element("p", "apply-run-step");
+    step.setAttribute("role", "status");
+    step.tabIndex = -1;
+    const steps = element("ol", "apply-run-steps");
+    const stop = element("button", "secondary-button", "Stop");
+    stop.type = "button";
+    const note = element("p", "profile-help", WINDOW_NOTE);
+    const status = element("p", "form-status");
+    status.setAttribute("role", "status");
+    node.append(step, steps, note, stop, status);
+    stop.addEventListener("click", async () => {
+      if (stop.getAttribute("aria-disabled") === "true") return;
+      stop.setAttribute("aria-disabled", "true");
+      stop.textContent = "Stopping…";
+      status.textContent = "";
+      try {
+        await onStop();
+      } catch (error) {
+        stop.removeAttribute("aria-disabled");
+        stop.textContent = "Stop";
+        if (!isAuthError(error)) status.textContent = error.message;
+      }
+    });
+    function update(fresh) {
+      step.textContent = fresh.summary;
+      const texts = (fresh.progress || []).map((entry) => entry.text).filter((text, index, all) => text && text !== all[index - 1]);
+      steps.replaceChildren(...texts.map((text, index) => {
+        const line = element("li", index === texts.length - 1 ? "is-current" : "", text);
+        if (index === texts.length - 1) line.setAttribute("aria-current", "step");
+        return line;
+      }));
+    }
+    update(view);
+    return { node, update, focus: () => step.focus({ preventScroll: true }), fail: (message) => { status.textContent = message; } };
+  }
+
+  // "Was this rehearsal right?" for a finished rehearsal, or the student's mark once it is given. A mark is the student's own
+  // word on whether the app's rehearsal matched the form; it changes nothing else.
+  function applyReviewBlock(view, onMarked, stale) {
+    const block = element("div", "apply-review");
+    block.setAttribute("role", "group");
+    if (view.review) {
+      const mark = element("p", "apply-review-mark", `You marked this rehearsal ${view.review === "right" ? "right" : "wrong"}.`);
+      mark.tabIndex = -1;
+      block.appendChild(mark);
+      if (view.review_note) block.appendChild(element("p", "profile-help", view.review_note));
+      return block;
+    }
+    if (!view.can_review) return null;
+    const question = element("p", "apply-review-question", "Was this rehearsal right?");
+    question.id = `apply-review-${view.id}`;
+    block.setAttribute("aria-labelledby", question.id);
+    const row = element("div", "apply-review-actions");
+    const right = element("button", "secondary-button", "Right");
+    right.type = "button";
+    const wrong = element("button", "secondary-button", "Something's wrong");
+    wrong.type = "button";
+    row.append(right, wrong);
+    const status = element("p", "form-status");
+    status.setAttribute("role", "status");
+    const noteForm = element("form", "apply-review-note");
+    noteForm.hidden = true;
+    const noteLabel = element("label", "profile-field");
+    noteLabel.appendChild(element("span", "", "What was wrong? (optional)"));
+    const note = document.createElement("textarea");
+    note.rows = 3;
+    note.maxLength = 500;
+    noteLabel.appendChild(note);
+    const send = element("button", "secondary-button", "Send");
+    send.type = "submit";
+    noteForm.append(noteLabel, send);
+    let sending = false;
+    async function mark(verdict, text) {
+      if (sending) return;
+      sending = true;
+      for (const button of [right, wrong, send]) button.setAttribute("aria-disabled", "true");
+      status.textContent = "Saving…";
+      const epoch = state.sessionEpoch;
+      try {
+        const fresh = await api(`${APPLY_API}/runs/${encodeURIComponent(view.id)}/review`, {
+          method: "POST",
+          body: JSON.stringify({ verdict, note: text }),
+        });
+        if (state.sessionEpoch !== epoch || stale()) return;
+        onMarked(fresh);
+      } catch (error) {
+        sending = false;
+        for (const button of [right, wrong, send]) button.removeAttribute("aria-disabled");
+        status.textContent = isAuthError(error) ? "" : error.message;
+      }
+    }
+    right.addEventListener("click", () => mark("right", ""));
+    wrong.setAttribute("aria-expanded", "false");
+    wrong.addEventListener("click", () => {
+      noteForm.hidden = false;
+      wrong.setAttribute("aria-expanded", "true");
+      note.focus();
+    });
+    noteForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      mark("wrong", note.value.trim());
+    });
+    block.append(question, row, noteForm, status);
+    return block;
+  }
+
+  // What a finished (or stalled) rehearsal found: in words, from the run's row. Nothing here is a value the student typed or
+  // stored: the table says what the rehearsal did with each question and where the answer came from, never the answer.
+  function applyResultPanel(view, { startAgain, onMarked, stale }) {
+    const node = element("div", "apply-result");
+    const title = element("h4", "apply-result-title", view.summary);
+    title.tabIndex = -1;
+    node.appendChild(title);
+    const when = view.finished_at ? formatWeekdayDateTime(view.finished_at) : "";
+    if (when) node.appendChild(element("p", "profile-help apply-result-when", `Rehearsed ${when}.`));
+    if (view.measured) node.appendChild(element("p", "apply-measured", view.measured));
+    if (view.outcome === "rehearsed") {
+      node.appendChild(element("p", `apply-clean ${view.clean ? "is-clean" : "is-gaps"}`, view.clean ? "Clean rehearsal" : "Not clean: the gaps below"));
+    }
+    const problems = view.problems || [];
+    if (problems.length) {
+      const list = element("ul", "apply-problems apply-result-problems");
+      problems.forEach((problem) => {
+        const row = element("li", "apply-result-problem");
+        const question = problem.question || problem.key;
+        row.appendChild(element("strong", "", problem.required ? question : `${question} (optional)`));
+        if (problem.message) row.appendChild(element("p", "profile-help", problem.message));
+        list.appendChild(row);
+      });
+      node.appendChild(list);
+    }
+    const fields = view.fields || [];
+    if (fields.length) {
+      const scroll = element("div", "apply-plan-scroll");
+      scroll.tabIndex = 0;
+      scroll.setAttribute("role", "region");
+      scroll.setAttribute("aria-label", "What the rehearsal did with each field");
+      const table = element("table", "apply-plan");
+      table.appendChild(element("caption", "", "What the rehearsal did with each field"));
+      const head = element("tr");
+      ["Question", "What the rehearsal did", "From"].forEach((words) => {
+        const cell = element("th", "", words);
+        cell.scope = "col";
+        head.appendChild(cell);
+      });
+      table.appendChild(element("thead")).appendChild(head);
+      const rows = element("tbody");
+      fields.forEach((field) => {
+        const row = element("tr");
+        const question = element("th", "", `${field.question}${field.required ? " (required)" : ""}`);
+        question.scope = "row";
+        const did = element("td", "", field.disposition_text);
+        if (field.problem) did.appendChild(element("span", "apply-plan-problem", field.problem));
+        row.append(question, did, element("td", "", field.source_text));
+        rows.appendChild(row);
+      });
+      table.appendChild(rows);
+      scroll.appendChild(table);
+      node.appendChild(scroll);
+    }
+    (view.screenshots || []).filter((picture) => picture.available).forEach((picture) => {
+      const frame = element("div", "apply-shot");
+      const link = document.createElement("a");
+      link.href = picture.url;
+      link.target = "_blank";
+      link.rel = "noopener";
+      const image = document.createElement("img");
+      image.loading = "lazy";
+      image.src = picture.url;
+      image.alt = picture.step === "needs-you"
+        ? "The form where the rehearsal stopped, with sensitive fields covered"
+        : "The filled form, with sensitive fields covered";
+      link.appendChild(image);
+      frame.appendChild(link);
+      node.appendChild(frame);
+    });
+    // Sentences the summary does not already say (the first reason is the stop sentence of a run that stopped).
+    const reasons = (view.reasons || []).filter((reason) => !view.summary.includes(reason));
+    if (reasons.length) {
+      const list = element("ul", "reason-list apply-reasons");
+      reasons.forEach((reason) => list.appendChild(element("li", "", reason)));
+      node.appendChild(list);
+    }
+    const review = applyReviewBlock(view, onMarked, stale);
+    if (review) node.appendChild(review);
+    node.appendChild(startAgain());
+    return { node, focus: () => title.focus({ preventScroll: true }) };
+  }
+
   function applyForMeSection(item) {
     // Only a saved role, and only for a student who turned Apply for me on: nobody else's page asks Greenhouse anything.
     if (item.intent_state !== "saved" || savedAutomationMode("apply_agent") !== "on") return null;
@@ -384,9 +799,156 @@
     section.appendChild(element("p", "eyebrow", "Apply for me"));
     const summary = element("p", "apply-summary", "Checking the Greenhouse form…");
     summary.setAttribute("role", "status");
+    // The rehearsal (a run in a window, never sent) sits above the questions and keeps its state while they are rebuilt.
+    const rehearse = element("div", "apply-rehearse");
+    rehearse.hidden = true;
     const body = element("div", "apply-body");
-    section.append(summary, body);
+    section.append(summary, rehearse, body);
     const stale = () => state.detailItem !== item || !section.isConnected;
+    // What a Look up options asked for, by question, so a rebuilt list keeps it.
+    const lookups = new Map();
+    // The latest check, the rehearsal on screen, and the poll that follows it while it runs.
+    let checked = null;
+    let current = null;
+    let running = null;
+    let stopWatch = null;
+    let resumed = false;
+    let other = "";
+    const starters = new Set();
+    let starterCount = 0;
+
+    function syncStarters() {
+      const eligibility = checked?.eligibility?.rehearse;
+      const blocked = eligibility && eligibility.allowed === false ? (eligibility.reason || "") : "";
+      starters.forEach((starter) => {
+        if (!starter.button.isConnected) {
+          starters.delete(starter);
+          return;
+        }
+        const off = Boolean(blocked) || starter.busy;
+        if (off) starter.button.setAttribute("aria-disabled", "true");
+        else starter.button.removeAttribute("aria-disabled");
+        const note = blocked || (starter.busy ? "" : other);
+        starter.reason.textContent = note;
+        if (note) starter.button.setAttribute("aria-describedby", starter.reason.id);
+        else starter.button.removeAttribute("aria-describedby");
+      });
+    }
+
+    // The button that starts a rehearsal, with its words. Only one run is allowed at a time, so a busy app says so here.
+    function startControls(label, { help = true } = {}) {
+      const box = element("div", "apply-rehearse-start");
+      const button = element("button", "secondary-button", label);
+      button.type = "button";
+      const reason = element("p", "apply-limit");
+      reason.id = `apply-rehearse-reason-${starterCount += 1}`;
+      const status = element("p", "form-status");
+      status.setAttribute("role", "status");
+      box.appendChild(button);
+      if (help) box.appendChild(element("p", "profile-help", REHEARSE_HELP));
+      box.append(reason, status);
+      const starter = { button, reason, busy: false };
+      starters.add(starter);
+      button.addEventListener("click", async () => {
+        if (button.getAttribute("aria-disabled") === "true") return;
+        starter.busy = true;
+        other = "";
+        syncStarters();
+        status.textContent = "Starting…";
+        const epoch = state.sessionEpoch;
+        try {
+          const view = await api(`${APPLY_API}/opportunities/${encodeURIComponent(item.id)}/rehearsals`, {
+            method: "POST",
+            body: JSON.stringify({ posting_confirmed: postingConfirmed }),
+          });
+          if (state.sessionEpoch !== epoch || stale()) return;
+          show(view, true);
+        } catch (error) {
+          starter.busy = false;
+          syncStarters();
+          status.textContent = state.sessionEpoch === epoch && !isAuthError(error) ? error.message : "";
+        }
+      });
+      syncStarters();
+      return box;
+    }
+
+    // A new row of the run on screen: still running, or over.
+    function receive(view) {
+      current = view;
+      if (runIsOver(view)) {
+        stopWatch?.();
+        stopWatch = null;
+        running = null;
+        show(view, true);
+        return;
+      }
+      running?.update(view);
+    }
+
+    function show(view, focus) {
+      stopWatch?.();
+      stopWatch = null;
+      running = null;
+      current = view;
+      starters.clear();
+      rehearse.replaceChildren();
+      rehearse.hidden = false;
+      if (runIsOver(view)) {
+        const result = applyResultPanel(view, {
+          startAgain: () => startControls("Rehearse again", { help: false }),
+          onMarked: (fresh) => show(fresh, false),
+          stale,
+        });
+        rehearse.appendChild(result.node);
+        if (focus) result.focus();
+        return;
+      }
+      running = applyRunPanel(view, async () => {
+        const epoch = state.sessionEpoch;
+        const fresh = await api(`${APPLY_API}/runs/${encodeURIComponent(view.id)}/cancel`, { method: "POST" });
+        if (state.sessionEpoch === epoch && !stale()) receive(fresh);
+      });
+      rehearse.appendChild(running.node);
+      if (focus) running.focus();
+      stopWatch = watchRun(view.id, {
+        alive: () => !stale(),
+        onView: receive,
+        onFail: (error) => running?.fail(error.message),
+      });
+    }
+
+    // Opened again: a rehearsal that is still running is followed, and the last one that finished is shown with its result.
+    async function resume() {
+      resumed = true;
+      const epoch = state.sessionEpoch;
+      try {
+        const listed = await api(`${APPLY_API}/opportunities/${encodeURIComponent(item.id)}/runs?kind=rehearsal&limit=1`);
+        if (state.sessionEpoch !== epoch || stale() || current) return;
+        const latest = (listed.runs || [])[0];
+        if (latest) {
+          show(latest, false);
+        } else if (listed.busy) {
+          other = "Another application is being filled. Wait for it to finish.";
+          syncStarters();
+        }
+      } catch (error) {
+        // The rehearsal button works without it: nothing to say about a list that did not load.
+      }
+    }
+
+    function paintRehearse(result) {
+      checked = result;
+      const offered = ["ready", "needs_you"].includes(result.status);
+      if (!offered && !current) {
+        rehearse.hidden = true;
+        return;
+      }
+      rehearse.hidden = false;
+      if (!current && !rehearse.firstChild) rehearse.appendChild(startControls("Rehearse in a window"));
+      syncStarters();
+      if (!resumed && offered) resume();
+    }
     let settled = false;
     const slow = setTimeout(() => { if (!settled && !stale()) section.hidden = false; }, 400);
     // The student's word that the form Greenhouse returned is this role's, when it did not look like it.
@@ -408,6 +970,7 @@
         if (draft) drafts.set(row.dataset.applyKey, draft);
       });
       body.replaceChildren();
+      paintRehearse(result);
       if (result.status === "unavailable" || result.status === "failed") return;
       (result.asks || []).forEach((ask) => body.appendChild(element("p", "apply-limit", `Before you go on: ${ask.message}`)));
       const stopped = result.eligibility?.handoff;
@@ -427,7 +990,7 @@
           row.appendChild(element("p", "profile-help", problem.message));
           // A kind of question the student could let the app answer says where, so it is not mistaken for a never.
           if (problem.action?.allowable) row.appendChild(element("p", "profile-help", "You can let the app answer this kind of question, once you add the answer yourself, in Apply for me settings under Automation."));
-          const control = applyProblemAction({ ...problem, opportunityId: item.id, postingConfirmed: () => postingConfirmed }, result.company, (fresh, message) => {
+          const control = applyProblemAction({ ...problem, opportunityId: item.id, postingConfirmed: () => postingConfirmed, lookups }, result.company, (fresh, message) => {
             if (fresh) paint(fresh, message);
             else load(message);
           });
