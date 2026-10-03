@@ -210,6 +210,31 @@
         "title": "ApplyClaimResolveRequest",
         "type": "object"
       },
+      "ApplyHandoffRequest": {
+        "properties": {
+          "acknowledged": {
+            "items": {
+              "enum": [
+                "company_limit",
+                "released_job",
+                "unmatched_confirmation",
+                "applying_old"
+              ],
+              "type": "string"
+            },
+            "maxItems": 4,
+            "title": "Acknowledged",
+            "type": "array"
+          },
+          "posting_confirmed": {
+            "default": false,
+            "title": "Posting Confirmed",
+            "type": "boolean"
+          }
+        },
+        "title": "ApplyHandoffRequest",
+        "type": "object"
+      },
       "ApplyLabelRequest": {
         "properties": {
           "label": {
@@ -6204,6 +6229,106 @@
         "summary": "Apply Agent Check"
       }
     },
+    "/api/v1/apply-agent/opportunities/{opportunity_id}/handoffs": {
+      "post": {
+        "description": "Finish in browser: fill this Greenhouse form in a window and leave the Submit button to the student.\n\nNeeds the student's own browser session: starting one is the student's act, and the application goes out under their\nname only when they press Submit application in the window. The ticks the student gave (an earlier application, a\nreleased attempt, an old row) are named by their codes, and ``posting_confirmed`` says they checked a posting that\ndoes not look like the saved role.",
+        "operationId": "start_apply_handoff_api_v1_apply_agent_opportunities__opportunity_id__handoffs_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "opportunity_id",
+            "required": true,
+            "schema": {
+              "title": "Opportunity Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_user_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline User Session"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyHandoffRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Start Apply Handoff Api V1 Apply Agent Opportunities  Opportunity Id  Handoffs Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Start Apply Handoff"
+      }
+    },
     "/api/v1/apply-agent/opportunities/{opportunity_id}/lookups": {
       "post": {
         "description": "Type this text into one of the form's lists and read the options Greenhouse offers. The text goes to Greenhouse's lookup service.",
@@ -6413,7 +6538,7 @@
     },
     "/api/v1/apply-agent/opportunities/{opportunity_id}/runs": {
       "get": {
-        "description": "This role's lookups and rehearsals, newest first, and whether the app is busy with one.",
+        "description": "This role's lookups, rehearsals and Finish in browser runs, newest first (or the one ``run_id``), and whether the app is busy.",
         "operationId": "list_apply_runs_api_v1_apply_agent_opportunities__opportunity_id__runs_get",
         "parameters": [
           {
@@ -6434,7 +6559,8 @@
                 {
                   "enum": [
                     "lookup",
-                    "rehearsal"
+                    "rehearsal",
+                    "handoff"
                   ],
                   "type": "string"
                 },
@@ -6443,6 +6569,23 @@
                 }
               ],
               "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "run_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 80,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Run Id"
             }
           },
           {
@@ -6724,7 +6867,7 @@
     },
     "/api/v1/apply-agent/runs/{run_id}/cancel": {
       "post": {
-        "description": "Stop: the run is asked to end, and its browser is killed if it does not.",
+        "description": "Stop: the run is asked to end, and its browser is killed if it does not.\n\nA Finish in browser run's claim is asked first, in the database (``request_cancel``): from then on the hand-over is\nrefused, so a Submit the student presses while the stop travels to the window goes nowhere. Once the student has pressed\nSubmit the application is out of the app's hands, and the answer says so.",
         "operationId": "cancel_apply_run_api_v1_apply_agent_runs__run_id__cancel_post",
         "parameters": [
           {
@@ -6810,6 +6953,96 @@
           }
         },
         "summary": "Cancel Apply Run"
+      }
+    },
+    "/api/v1/apply-agent/runs/{run_id}/front": {
+      "post": {
+        "description": "Bring the Finish in browser window to the front (the student could not find it behind other windows).",
+        "operationId": "front_apply_run_api_v1_apply_agent_runs__run_id__front_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_user_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline User Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Front Apply Run Api V1 Apply Agent Runs  Run Id  Front Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Front Apply Run"
       }
     },
     "/api/v1/apply-agent/runs/{run_id}/review": {
@@ -6914,7 +7147,7 @@
     },
     "/api/v1/apply-agent/runs/{run_id}/screenshots/{index}": {
       "get": {
-        "description": "One picture of a filled form, with sensitive fields covered. Served only from the student's own folder, never cached.",
+        "description": "One picture of a filled form, with sensitive fields covered. Served only from the student's own folder, never cached.\n\nThe covering hides every sensitive answer, not the rest: the picture shows each other value the form holds, so it needs the\nstudent's own browser session (the same protection as ``values``), not an access token a script holds.",
         "operationId": "get_apply_screenshot_api_v1_apply_agent_runs__run_id__screenshots__index__get",
         "parameters": [
           {
@@ -7005,6 +7238,96 @@
           }
         },
         "summary": "Get Apply Screenshot"
+      }
+    },
+    "/api/v1/apply-agent/runs/{run_id}/values": {
+      "get": {
+        "description": "What the app would use (a rehearsal) or filled (Finish in browser) for each field of this run, for the student's own browser only.\n\nThe values are today's source for each stored plan entry: they are read here, from the student's data, and never stored on the\nrun. Each says whether it ``changed`` since the run and, for a Finish in browser run, is shown only where it provably equals\nwhat was filled. Never cached.",
+        "operationId": "get_apply_run_values_api_v1_apply_agent_runs__run_id__values_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_user_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline User Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Apply Run Values Api V1 Apply Agent Runs  Run Id  Values Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Apply Run Values"
       }
     },
     "/api/v1/apply-agent/sensitive-answers": {

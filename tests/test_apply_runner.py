@@ -28,6 +28,7 @@ realdata_guard.install()
 
 from opportunity_app.apply import checks as apply_checks, policy as apply_policy, preflight as apply_preflight, runner as apply_runner, runs as apply_runs
 from opportunity_app.apply import runner_child as apply_runner_child
+from opportunity_app.apply import security_code as apply_security_code
 from opportunity_app.apply.agent_types import AgentJob, ApplyTimeouts, RunResult
 from opportunity_app.apply.agent_types import OP_CANCEL
 from opportunity_app.apply.runner import ApplyRunner, RunnerBusy, RunRefused, SupervisorHandlers, deadline_for, supervise
@@ -374,7 +375,9 @@ class SuperviseTests(unittest.TestCase):
     def test_the_deadlines_by_kind(self):
         self.assertEqual((deadline_for("lookup"), deadline_for("rehearsal")), (120.0, 300.0))
         self.assertEqual(deadline_for("submit"), 300 + 5 * 60 + 10 * 60)
-        self.assertEqual(deadline_for("handoff"), 20 * 60 + 10 * 60 + 120)
+        # The fill, the student's turn, one budget for everything after the press, three outcome windows, two minutes.
+        self.assertEqual(deadline_for("handoff"), 300 + 1200 + 1200 + 90 + 120)
+        self.assertEqual(deadline_for("handoff"), 2910.0)
         with self.assertRaises(ValueError):
             deadline_for("nonsense")
 
@@ -486,6 +489,89 @@ class OrphanedChildTests(unittest.TestCase):
         with mock.patch.object(apply_runner_child, "_end_process_in", side_effect=lambda seconds: seen.append(seconds)):
             run_supervised(Spy(), deadline_s=77)
         self.assertEqual(seen, [], "a thread child never arms the process exit")
+
+
+class LinkProbeFactory:
+    """A thread-isolated agent that records whether it was given the handoff link, and what that link says about its deadline."""
+
+    isolation = "thread"
+
+    def __init__(self):
+        self.seen = {}
+
+    def available(self):
+        return ""
+
+    def __call__(self, **kwargs):
+        factory = self
+
+        class Agent:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return None
+
+            def run(self, plan, *, page_url, schema, files, lookup=None, replan=None, hand_over=None, cancelled=None, link=None):
+                factory.seen.update(mode=kwargs["mode"], link=type(link).__name__, ends_at=getattr(link, "ends_at", None), at=time.monotonic())
+                return RunResult("needs_you", ["probe"], evidence={"handoff_end": "stopped", "browser_closed": True})
+
+        return Agent()
+
+
+class HandoffWiringTests(unittest.TestCase):
+    """What a Finish in browser child is given, and the arithmetic of how long it may take (spec 6.0, 4.6)."""
+
+    def test_only_a_handoff_child_is_given_the_link_and_it_carries_the_cap_on_every_wait(self):
+        for mode, expected in (("handoff", "ChildChannel"), ("rehearse", "NoneType"), ("lookup", "NoneType")):
+            with self.subTest(mode=mode):
+                factory = LinkProbeFactory()
+                outcome = run_supervised(factory, job=job(mode=mode, ends_at=time.monotonic() + 1234.0))
+                self.assertEqual(outcome.stop, "")
+                self.assertEqual(factory.seen["link"], expected)
+                if mode == "handoff":
+                    self.assertAlmostEqual(factory.seen["ends_at"] - factory.seen["at"], 1234.0, delta=5)
+
+    def test_the_deadline_is_the_sum_of_every_wait_and_the_agents_longest_path_ends_a_minute_before_it(self):
+        timeouts = ApplyTimeouts()
+        self.assertEqual(deadline_for("handoff"), timeouts.fill_s + timeouts.handoff_s + timeouts.after_hand_over_s + 3 * timeouts.outcome_s + 120.0)
+        longest = timeouts.fill_s + timeouts.handoff_s + timeouts.after_hand_over_s + 3 * timeouts.outcome_s
+        self.assertLess(longest, deadline_for("handoff") - 60)
+        self.assertEqual(timeouts.after_hand_over_s, timeouts.code_read_s + timeouts.security_code_s)
+        small = ApplyTimeouts(fill_s=10, handoff_s=20, code_read_s=5, security_code_s=5, outcome_s=2)
+        self.assertEqual(deadline_for("handoff", small), 10 + 20 + 10 + 6 + 120)
+
+    def test_the_timeouts_equal_the_reader_constants_of_the_security_code_module(self):
+        timeouts = ApplyTimeouts()
+        self.assertEqual(timeouts.code_read_s, apply_security_code.CODE_WINDOW.total_seconds())
+        self.assertEqual(timeouts.code_poll_s, apply_security_code.POLL_EVERY.total_seconds())
+        self.assertEqual(timeouts.code_reply_s, apply_security_code.REPLY_TIMEOUT_S)
+        self.assertLessEqual(timeouts.heartbeat_s, 30, "spec 5.2 rule 4: every wait loop beats at least every 30 seconds")
+        self.assertLess(timeouts.heartbeat_s, apply_runner.HELD_HEARTBEAT.total_seconds(), "and well inside the time a claim stays held")
+
+    def test_the_runner_stamps_ends_at_a_minute_before_its_deadline(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            _, path = build_and_migrate(root)
+            conn = connect_product(path)
+            try:
+                seed_student(conn, root / "resumes")
+                with conn:
+                    conn.execute("UPDATE opportunities SET url=? WHERE id=?", (JOB_URL, ACME))
+                factory = LinkProbeFactory()
+                runner = ApplyRunner(cancel_grace_s=GRACE)
+                before = time.monotonic()
+                run_id = runner.start(
+                    conn, database_target=path, user_id=USER, opportunity_id=ACME, kind="handoff", agent_factory=factory,
+                    schema_client=FakeSchemaClient(any_job=True), apply_root=root / "apply", resume_root=root / "resumes", posting_confirmed=True,
+                )
+                self.assertTrue(runner.wait(run_id, 60))
+                self.assertAlmostEqual(factory.seen["ends_at"] - before, deadline_for("handoff") - 60, delta=30)
+                self.assertEqual(factory.seen["mode"], "handoff")
+                self.assertEqual(runner.deadline_s("handoff"), 2910.0)
+                self.assertEqual(ApplyRunner(deadlines={"handoff": 100}).deadline_s("handoff"), 100.0)
+            finally:
+                conn.close()
 
 
 class TreeTests(unittest.TestCase):
@@ -1029,7 +1115,8 @@ class ViewTests(RunnerCase):
     def test_every_key_is_always_there(self):
         keys = {"id", "opportunity_id", "kind", "status", "outcome", "clean", "started_at", "finished_at", "heartbeat_at", "deadline_at", "stalled",
                 "summary", "measured", "progress", "reasons", "problems", "fields", "options", "lookup", "screenshots", "refused_count",
-                "review", "review_note", "reviewed_at", "can_review", "can_cancel"}
+                "review", "review_note", "reviewed_at", "can_review", "can_cancel",
+                "phase", "handed_over", "left_for_you", "handoff_until", "page_defaults", "claim", "can_front"}
         for view in (self.make(), self.make(outcome="rehearsed"), self.make("lookup", outcome="looked_up")):
             self.assertEqual(set(view), keys)
 
@@ -1108,6 +1195,65 @@ class ViewTests(RunnerCase):
              "source": {"kind": "none"}, "value_mac": "", "file_sha256": "", "problem": ""},
         ]
 
+    def statements(self):
+        base = {"required": True, "options": [], "value_mac": "m", "file_sha256": "", "problem": ""}
+        stored = {"kind": "sensitive", "ref": "store-1", "company": "", "reusable": False, "links": ["https://example.test/privacy"]}
+        return [
+            {**base, "key": "privacy", "question": "I agree to the privacy notice", "control": "checkbox", "sensitive": "acknowledgment", "disposition": "fill", "source": stored},
+            {**base, "key": "agree", "question": "Do you agree to the privacy notice at https://example.test/privacy?", "control": "select", "options": ["Yes", "No"],
+             "sensitive": "consent", "disposition": "fill", "source": stored},
+            {**base, "key": "gender", "question": "Gender", "control": "select", "options": ["Female"], "sensitive": "eeo_gender", "disposition": "fill",
+             "source": {"kind": "sensitive", "ref": "store-2", "company": "", "reusable": False, "links": []}},
+            {**base, "key": "agree_later", "question": "Do you agree to the terms?", "control": "select", "options": ["Yes", "No"], "sensitive": "consent",
+             "disposition": "deferred", "source": stored},
+            {**base, "key": "note", "question": "A note", "control": "text", "sensitive": None, "disposition": "fill", "source": {"kind": "answer", "company": "Acme"}},
+            # A tick box the app ticked from a stored work-authorization, sponsorship or age statement, with a document it links to.
+            {**base, "key": "authorized", "question": "I am authorized to work in the US (see https://example.test/notice)", "control": "checkbox",
+             "sensitive": "work_authorization", "disposition": "fill", "source": {**stored, "ref": "store-3", "links": ["https://example.test/notice"]}},
+            {**base, "key": "adult", "question": "I am 18 or older", "control": "checkbox", "sensitive": "age_18", "disposition": "fill",
+             "source": {**stored, "ref": "store-4", "links": []}},
+        ]
+
+    def test_a_box_ticked_from_a_work_authorization_or_age_statement_is_listed_with_its_documents(self):
+        view = self.make("handoff", outcome="submitted", plan=self.statements(), evidence={"handoff_end": "posted"})
+        by_key = {item["key"]: item for item in view["fields"]}
+        for key in ("authorized", "adult"):
+            self.assertTrue(by_key[key]["statement"], f"{key} was ticked by the app and is missing from 'Ticked for you'")
+            self.assertEqual(by_key[key]["disposition_text"], "Ticked from your stored statement")
+            self.assertEqual(by_key[key]["source_text"], "Your stored answer", "not 'Your consent': it is neither an acknowledgment nor a consent")
+        self.assertEqual(by_key["authorized"]["links"], ["https://example.test/notice"])
+        # A select of the same category is an answer, not a box the app ticked.
+        self.assertFalse(apply_runner._is_statement({"source": {"kind": "sensitive"}, "sensitive": "work_authorization", "control": "select"}))
+
+    def test_a_statement_is_marked_whatever_its_control_so_the_page_can_list_it_with_its_documents(self):
+        view = self.make("handoff", outcome="submitted", plan=self.statements(), evidence={"handoff_end": "posted"})
+        by_key = {item["key"]: item for item in view["fields"]}
+        self.assertEqual({key: item["statement"] for key, item in by_key.items()},
+                         {"privacy": True, "agree": True, "gender": False, "agree_later": True, "note": False, "authorized": True, "adult": True})
+        self.assertEqual(by_key["privacy"]["disposition_text"], "Ticked from your stored statement")
+        self.assertEqual(by_key["agree"]["disposition_text"], "Answered from your stored statement", "a Yes/No question is answered, not ticked")
+        self.assertEqual(by_key["gender"]["disposition_text"], "Filled from your stored answer")
+        self.assertEqual(by_key["agree"]["links"], ["https://example.test/privacy"])
+        self.assertEqual(by_key["agree"]["source_text"], "Your consent for Acme Robotics")
+        self.assertEqual(by_key["privacy"]["source_text"], "Your acknowledgment for Acme Robotics")
+        self.assertEqual(by_key["gender"]["source_text"], "Your stored answer")
+
+    def test_a_rehearsal_marks_a_statement_it_only_checked(self):
+        view = self.make(outcome="rehearsed", plan=self.statements())
+        by_key = {item["key"]: item for item in view["fields"]}
+        self.assertEqual((by_key["agree_later"]["statement"], by_key["agree_later"]["disposition"], by_key["agree_later"]["links"]),
+                         (True, "deferred", ["https://example.test/privacy"]))
+
+    def test_a_handoff_was_handed_over_only_when_the_press_went_on(self):
+        plan = self.plan()
+        for outcome, evidence, expected in (
+            ("needs_you", {"handoff_end": "timeout"}, False), ("needs_you", {"handoff_end": "stopped"}, False), ("failed", {"handoff_end": "closed"}, False),
+            ("submitted", {"handoff_end": "posted"}, True), ("unconfirmed", {"handoff_end": "posted"}, True),
+        ):
+            with self.subTest(outcome=outcome, end=evidence["handoff_end"]):
+                self.assertEqual(self.make("handoff", outcome=outcome, plan=plan, evidence=evidence)["handed_over"], expected)
+        self.assertFalse(self.make(outcome="rehearsed", plan=plan)["handed_over"])
+
     def test_a_rehearsal_reads_with_its_sentences_its_problems_and_a_value_free_table(self):
         join = [{"kind": "hidden_control", "key": "spam", "message": "The form hides this field", "question": "Spam", "required": False}]
         check = [{"kind": "not_filled", "key": "question_2", "message": "The field did not take the answer", "question": "Team", "required": True}]
@@ -1117,7 +1263,8 @@ class ViewTests(RunnerCase):
         self.assertEqual(view["summary"], "Here is what the app would send to Acme Robotics for Mechanical Engineering Intern. Your application has not been submitted.")
         self.assertEqual(view["measured"], (
             "During the rehearsal the app blocked 3 requests that could have submitted the form or carried a filled-in answer, to Greenhouse or "
-            "anywhere else. Sensitive answers were not put in the page; they go in only when you submit. To find the options for Location (City) "
+            "anywhere else. Sensitive answers were not put in the page; they go in only if you choose Finish in browser, before you press Submit "
+            "application. To find the options for Location (City) "
             "and School, the app sent the text typed into those fields to Greenhouse's lookup service. The app saw nothing else you entered leave the browser."))
         self.assertEqual([(item["key"], item["kind"], item["required"]) for item in view["problems"]],
                          [("question_1", "plan", True), ("extra", "plan", False), ("spam", "hidden_control", False), ("question_2", "not_filled", True)])
@@ -1127,7 +1274,7 @@ class ViewTests(RunnerCase):
         self.assertEqual(by_key["first_name"]["source_text"], "Your profile")
         self.assertEqual(by_key["question_1"]["disposition_text"], "Left blank")
         self.assertEqual(by_key["question_2"]["source_text"], "Your saved answer for Acme Robotics")
-        self.assertEqual(by_key["question_3"]["disposition_text"], "Checked against the form; filled only when you submit")
+        self.assertEqual(by_key["question_3"]["disposition_text"], "Checked against the form; filled when you choose Finish in browser")
         self.assertTrue(by_key["question_3"]["sensitive"])
         self.assertEqual(by_key["question_3"]["source_text"], "Your stored answer")
         self.assertEqual(by_key["resume"]["disposition_text"], "Not attached: this board uploads files as soon as they are attached")
@@ -1163,7 +1310,8 @@ class ViewTests(RunnerCase):
         measured = self.make(outcome="rehearsed", plan=[], evidence={"refused_total": 4, "lookups": []}, refused=[])["measured"]
         self.assertEqual(measured, (
             "During the rehearsal the app blocked 4 requests that could have submitted the form or carried a filled-in answer, to Greenhouse or "
-            "anywhere else. Sensitive answers were not put in the page; they go in only when you submit."))
+            "anywhere else. Sensitive answers were not put in the page; they go in only if you choose Finish in browser, before you press Submit "
+            "application."))
         self.assertNotIn("nothing else", measured.lower())
         self.assertNotIn("anything else", measured.lower())
         with_lookup = self.make(outcome="rehearsed", plan=[], evidence={"lookups": [{"key": "loc", "question": "Location (City)", "kind": "location", "typed": True}]}, refused=[])
@@ -1196,8 +1344,8 @@ class ViewTests(RunnerCase):
                     "check_problems": [{"kind": "deferred", "key": "work_authorization", "message": "The form does not offer the answer", "question": "work_authorization", "required": True}]}
         view = self.make(outcome="needs_you", plan=plan, evidence=evidence)
         texts = {item["key"]: item["disposition_text"] for item in view["fields"]}
-        self.assertEqual(texts["gender"], "Checked against the form; filled only when you submit")
-        self.assertNotIn("filled only when you submit", texts["work_authorization"])
+        self.assertEqual(texts["gender"], "Checked against the form; filled when you choose Finish in browser")
+        self.assertNotIn("filled when you choose", texts["work_authorization"])
         self.assertEqual(texts["work_authorization"], "Checked against the form: the app could not confirm it offers this answer, so it would not be filled")
 
     def test_the_table_says_filled_only_for_what_the_rehearsal_filled_and_read_back(self):
@@ -1240,12 +1388,12 @@ class ViewTests(RunnerCase):
         # Stopped part-way through the comparisons: only the keys it got to are checked.
         part = self.make(outcome="needs_you", plan=plan, evidence={"checked_keys": ["work_authorization"]})
         texts = {item["key"]: item["disposition_text"] for item in part["fields"]}
-        self.assertEqual(texts["work_authorization"], "Checked against the form; filled only when you submit")
+        self.assertEqual(texts["work_authorization"], "Checked against the form; filled when you choose Finish in browser")
         self.assertEqual(texts["gender"], "Not checked: the rehearsal stopped before this was compared with the form")
         self.assertEqual(texts["team"], "Not checked: the rehearsal stopped before this was compared with the form")
         done = self.make(outcome="rehearsed", plan=plan, evidence={"checked_keys": ["work_authorization", "gender", "team"]})
         texts = {item["key"]: item["disposition_text"] for item in done["fields"]}
-        self.assertEqual(texts["gender"], "Checked against the form; filled only when you submit")
+        self.assertEqual(texts["gender"], "Checked against the form; filled when you choose Finish in browser")
         self.assertEqual(texts["team"], "Checked against the form")
         # A row with no record of what was compared claims nothing.
         silent = self.make(outcome="rehearsed", plan=plan, evidence={})

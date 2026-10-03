@@ -115,7 +115,7 @@ def _asks(conn: sqlite3.Connection, user_id: str, opportunity_id: str, ident: tu
     while True:
         block = apply_runs.duplicate_block(
             conn, user_id, opportunity_id=opportunity_id, ats=apply_greenhouse.ATS_GREENHOUSE, job_ref=f"{token}/{job}",
-            company=employer_key(company), acknowledged=acknowledged, now=now,
+            company=employer_key(company), acknowledged=acknowledged, now=now, reading=True,
         )
         if block is None or block.kind != "ask":
             return block, asks
@@ -298,7 +298,7 @@ def _eligibility(
     """
     if result["status"] in ("unavailable", "failed"):
         closed = {"allowed": False, "needs_tick": False, "reason": result["message"]}
-        return {"rehearse": dict(closed), "handoff": dict(closed), "submit": dict(closed)}
+        return {"rehearse": dict(closed), "handoff": {**closed, "ticks": []}, "submit": dict(closed)}
     company_words = employer_key(result["company"])
     token = result["board_token"]
     tick = bool(result["asks"])
@@ -313,6 +313,17 @@ def _eligibility(
             "allowed": not blocked, "needs_tick": ticked and not blocked,
             "reason": "; ".join(part for part in ((block.message if block else ""), ask_reason if not blocked else "") if part),
         }
+        if name == "handoff":
+            # The ticks Finish in browser asks for, each one a code the start request carries (D4): the ask's own sentence,
+            # and for the company limit the date of the application it is about, so the tick says what it agrees to.
+            ticks = [{"code": item["code"], "label": item["message"]} for item in result["asks"]]
+            if block is not None and block.kind == "ask" and block.code == apply_runs.ASK_COMPANY_LIMIT:
+                ticks.append({"code": block.code, "label": (
+                    # Worded from what the record shows: the claim counts from the hand-over, and an attempt Greenhouse refused, one that
+                    # ended unconfirmed or one the student released still counts, so it is never stated as an application made.
+                    f"I know Apply for me handed an application to {result['company']} to Greenhouse on {block.date} (it may not have gone through). Apply anyway."
+                )})
+            rows[name]["ticks"] = [] if blocked else ticks
     met, count, needed = apply_runs.gate(conn, user_id, apply_greenhouse.ATS_GREENHOUSE)
     if result["status"] != "ready":
         rows["submit"].update(allowed=False, reason=result["message"])

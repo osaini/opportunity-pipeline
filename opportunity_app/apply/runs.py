@@ -61,7 +61,7 @@ from ..core.settings_store import get_setting, put_setting, setting_updated_at
 from ..core.timestamps import parse_app_instant, utc_now
 from ..core.user_time import UserTimezone, user_timezone
 from .greenhouse import ADAPTER_VERSION, ATS_GREENHOUSE, is_greenhouse_sender
-from .claims import HELD_HEARTBEAT, RUNNING, claim_held, forget
+from .claims import HELD_HEARTBEAT, RUNNING, claim_held, forget, take_unconfirmed
 
 LOGGER = logging.getLogger(__name__)
 
@@ -108,6 +108,8 @@ LIMIT_MAXIMUM = {
 }
 
 LIVE_APPLICATION = "This application is already being submitted, or was submitted."
+HANDOFF_OPEN = "Finish in browser is already open for this role. Stop it, or finish in its window, before starting another."
+CLAIMED_RUNNING = "Apply for me is already working on this application."
 STOPPED_EARLIER = "An earlier attempt stopped before anything was sent. Retry it."
 # A claim that stopped for the student before the hand-over: nothing left the app, so it blocks nothing.
 _STOPPED_UNSENT = "(c.state IN ('needs_you', 'failed') AND c.after_click=0)"
@@ -118,6 +120,7 @@ ASK_UNMATCHED_CONFIRMATION = "unmatched_confirmation"
 ASK_APPLYING_OLD = "applying_old"
 
 RUNNING_RUNS: set[str] = set()
+RUN_ID = re.compile(r"run-[0-9a-f]{32}")
 
 
 class ClaimRefused(Exception):
@@ -248,6 +251,8 @@ class Block:
     kind: str
     code: str
     message: str
+    # The company limit only: the student's local date of the latest hand-over ("April 3"), for the tick's own words.
+    date: str = ""
 
 
 def _limit_check(
@@ -299,7 +304,7 @@ def _limit_check(
             days = max(0, (now - handed).days)
             name = recent["company"] or "this company"
             return Block("ask", ASK_COMPANY_LIMIT, f"You applied to {name} with Apply for me {days} days ago" if days != 1
-                         else f"You applied to {name} with Apply for me 1 day ago")
+                         else f"You applied to {name} with Apply for me 1 day ago", date=_day_text(zone, recent["handed_over_at"]))
     return None
 
 
@@ -341,8 +346,12 @@ def rehearsal_block(conn: sqlite3.Connection, user_id: str, now: datetime | None
 def duplicate_block(
     conn: sqlite3.Connection, user_id: str, *, opportunity_id: str, ats: str, job_ref: str, company: str,
     application_id: str | None = None, acknowledged: tuple[str, ...] | list[str] = (), now: datetime | None = None,
+    reading: bool = False,
 ) -> Block | None:
     """The first reason this posting should not be submitted for the student, from what the app already holds.
+
+    ``reading`` is the read-only check the page shows: a live claim that has handed nothing over is described as what it is (a window
+    that is open) instead of "being submitted, or was submitted". A start that is refused keeps the shorter sentence.
 
     Reads only, and never creates the application (looking changes nothing). A 'failed' block cannot be
     overridden; an 'ask' one is skipped when its code is in ``acknowledged``.
@@ -373,7 +382,7 @@ def duplicate_block(
     # (the next attempt releases it, rule 2).
     for row in conn.execute(
         """
-        SELECT c.application_id, c.note, c.opportunity_id FROM application_submit_claims c
+        SELECT c.application_id, c.note, c.opportunity_id, c.state, c.mode FROM application_submit_claims c
         WHERE c.user_id=? AND (c.application_id=? OR (c.ats=? AND c.job_ref=?))
           AND (c.state IN ('claimed', 'clicking', 'submitted', 'unconfirmed') OR (c.state IN ('needs_you', 'failed') AND c.after_click=1))
         ORDER BY c.created_at
@@ -381,7 +390,7 @@ def duplicate_block(
         (user_id, application_id or "", ats, job_ref),
     ).fetchall():
         if application_id and row["application_id"] == application_id:
-            return Block("failed", "application", row["note"] or LIVE_APPLICATION)
+            return Block("failed", "application", row["note"] or (_live_words(row["state"], row["mode"]) if reading else LIVE_APPLICATION))
         return Block("failed", "job", _other_copy(conn, row["opportunity_id"]))
     released = conn.execute(
         "SELECT handed_over_at FROM application_submit_claims WHERE user_id=? AND ats=? AND job_ref=? AND state='released' "
@@ -397,9 +406,34 @@ def duplicate_block(
                      f"An application confirmation from {name} arrived on {_day_text(zone, unmatched)} that the app couldn't match to a role. "
                      "I haven't applied to this role.")
     created = parse_app_instant(application["created_at"]) if application is not None else None
-    if created is not None and moment - created > timedelta(days=1) and ASK_APPLYING_OLD not in acknowledged:
+    if created is not None and moment - created > timedelta(days=1) and ASK_APPLYING_OLD not in acknowledged \
+            and not _made_by_the_app(conn, str(application["id"]), str(application["created_at"])):
         return Block("ask", ASK_APPLYING_OLD, "Did you already apply to this by hand? I haven't applied yet.")
     return None
+
+
+def _live_words(state: str, mode: str) -> str:
+    """What the read-only check says of a live claim that has no note of its own.
+
+    A claim in 'claimed' has handed nothing over (a Finish in browser run spends its fill and the student's turn here), so it is never
+    said to be "submitted"; "submitted or being submitted" is only for a claim that was handed over or settled.
+    """
+    if state == "claimed":
+        return HANDOFF_OPEN if mode == "handoff" else CLAIMED_RUNNING
+    return LIVE_APPLICATION
+
+
+def _made_by_the_app(conn: sqlite3.Connection, application_id: str, created_at: str) -> bool:
+    """Whether the application row was made by an Apply for me start (R11), not by hand.
+
+    ensure_application_tx writes the row and the apply_agent_started event with one timestamp in one transaction, so an
+    event with the row's own created_at is the start that made it. A first attempt that stopped keeps that row at
+    'applying'; asking the student whether they applied by hand would be asking about the app's own row.
+    """
+    return conn.execute(
+        "SELECT 1 FROM application_events WHERE application_id=? AND event_type='apply_agent_started' AND created_at=? LIMIT 1",
+        (application_id, created_at),
+    ).fetchone() is not None
 
 
 def _other_copy(conn: sqlite3.Connection, opportunity_id: str) -> str:
@@ -586,7 +620,9 @@ def request_cancel(conn: sqlite3.Connection, token: str, *, user_id: str) -> boo
         ).rowcount)
 
 
-def hand_over(conn: sqlite3.Connection, token: str, *, user_id: str, now: datetime | None = None) -> bool:
+def hand_over(
+    conn: sqlite3.Connection, token: str, *, user_id: str, now: datetime | None = None, deadline: float | None = None,
+) -> bool:
     """Just before the click (submit) or inside the route that sees the student's POST (handoff): 5.2 rule 3.
 
     One transaction, after the lock and pause_guard. False, with nothing changed, when the claim is not ours as it
@@ -594,6 +630,12 @@ def hand_over(conn: sqlite3.Connection, token: str, *, user_id: str, now: dateti
     one-click claim when a pause began after the student confirmed (D6 B: the newer intent wins; a pause already on
     at the confirm does not stop it), or when the rehearsal it confirmed is 15 minutes old. Finish in browser is
     not refused by a pause: the student's own press of Submit is the confirm. When unsure, nothing is sent.
+
+    ``deadline`` is a time.monotonic() instant: the child gave up waiting for this answer then (it stamps the instant
+    into its request), so a commit after it would leave a claim 'clicking' with the POST already aborted. It is
+    compared after the lock and the claim read, immediately before the UPDATE, and a later one returns False with the
+    claim still 'claimed'. The same UPDATE clears detail.waiting, so a clicking row never says the student is still
+    working on the form.
     """
     moment = _at(now)
     stamp = _stamp(now)
@@ -621,10 +663,13 @@ def hand_over(conn: sqlite3.Connection, token: str, *, user_id: str, now: dateti
             rehearsed = parse_app_instant(rehearsal["finished_at"] or rehearsal["started_at"]) if rehearsal is not None else None
             if rehearsed is None or moment - rehearsed >= CONFIRM_MAX_AGE:
                 return False
+        if deadline is not None and monotonic() > deadline:
+            return False
+        detail = {**json_as(row["detail_json"], {}), "waiting": ""}
         return bool(conn.execute(
-            "UPDATE application_submit_claims SET state='clicking', after_click=1, handed_over_at=?, heartbeat_at=?, updated_at=? "
-            "WHERE token=? AND user_id=? AND state='claimed'",
-            (stamp, stamp, stamp, token, user_id),
+            "UPDATE application_submit_claims SET state='clicking', after_click=1, handed_over_at=?, heartbeat_at=?, updated_at=?, "
+            "detail_json=? WHERE token=? AND user_id=? AND state='claimed'",
+            (stamp, stamp, stamp, _dumps(detail), token, user_id),
         ).rowcount == 1)
 
 
@@ -647,12 +692,21 @@ def _watch_fields(stamp: str, watch: bool) -> tuple[str, str | None]:
 def _settle_tx(
     conn: sqlite3.Connection, token: str, user_id: str, *, state: str, note: str, after_click: bool | None,
     submitted_at: str | None, resolved_by: str, detail: dict[str, Any] | None, confirmation_seen: bool, watch: bool, stamp: str,
+    expected_states: tuple[str, ...] | None = None,
 ) -> bool:
-    """5.2 rule 5's conditional update, inside a transaction the caller owns."""
+    """5.2 rule 5's conditional update, inside a transaction the caller owns.
+
+    ``expected_states`` names the states the caller decided from (the claim row it read): the write happens only if the
+    claim is still in one of them, so a decision made on 'claimed' never lands on a row that has since been handed over.
+    """
     if state not in ("submitted", "unconfirmed", "needs_you", "failed"):
         raise ValueError(f"A claim is settled to submitted, unconfirmed, needs_you or failed, not {state}")
     # The confirmation page is stronger evidence than a crash recovery, so it may move an unconfirmed row.
     sources = ("claimed", "clicking", "unconfirmed") if state == "submitted" and confirmation_seen else ("claimed", "clicking")
+    if expected_states is not None:
+        if not expected_states or any(item not in CLAIM_STATES for item in expected_states):
+            raise ValueError("expected_states names claim states")
+        sources = tuple(expected_states)
     sets = ["state=?", "note=?", "updated_at=?"]
     params: list[Any] = [state, note, stamp]
     if after_click is not None:
@@ -781,6 +835,9 @@ def resolve_uncertain(
     return dict(_claim_row(conn, token, user_id))
 
 
+# The author of an event the app wrote on its own (a settle after a crash, a recovery): the timeline says "The app, on its own".
+APP_SOURCE = "apply_agent:watch"
+
 # What settled a submission, said in the stage event and the ledger row: (event source, ledger basis, sentence).
 _SETTLED_BY = {
     "page": ("apply_agent:confirmation_page", "confirmation_page", "Greenhouse showed its confirmation page"),
@@ -877,13 +934,21 @@ def create_run(
     adapter_version: str = ADAPTER_VERSION,
     application_id: str | None = None,
     claim_token: str = "",
+    run_id: str | None = None,
     now: datetime | None = None,
 ) -> str:
-    """The row of a run that has started (lookups and rehearsals have no application: they are keyed by opportunity)."""
+    """The row of a run that has started (lookups and rehearsals have no application: they are keyed by opportunity).
+
+    ``run_id`` is given when the claim was made first and carries it (claim(run_id=...)): the runner mints the id, takes
+    the claim, and only then makes the row, so a refused start leaves neither. It must be ``run-`` and 32 hex characters.
+    """
     if kind not in RUN_KINDS:
         raise ValueError(f"Unsupported run kind: {kind}")
     stamp = _stamp(now)
-    run_id = f"run-{uuid4().hex}"
+    if run_id is None:
+        run_id = f"run-{uuid4().hex}"
+    elif not RUN_ID.fullmatch(run_id):
+        raise ValueError("A run id is run- and 32 hex characters")
     with conn:
         conn.execute(
             """
@@ -975,16 +1040,33 @@ def record_result(
     requests: list[dict[str, Any]] | None = None,
     refused: list[dict[str, Any]] | None = None,
     event_detail: dict[str, Any] | None = None,
+    plan: list[dict[str, Any]] | None = None,
+    plan_hash: str | None = None,
+    detail: dict[str, Any] | None = None,
+    notify: bool = True,
+    expected_states: tuple[str, ...] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """6.15: settle the claim and finish the run in one transaction, then the stage change and the notice.
 
-    Returns {"settled", "stage_recorded"}. The stage moves only on 'submitted', by the claim's stage_policy, and
-    only forward (record_stage). A result that arrives for a claim no longer ours (released meanwhile) is not
-    applied to it; after a seen confirmation page it is still reported (settle). Notices carry no field values.
+    Returns {"settled", "stage_recorded"} (and "state_now", the claim's state, when it was not settled). The stage moves only on 'submitted', by the claim's
+    stage_policy, and only forward (record_stage). A result that arrives for a claim no longer ours (released
+    meanwhile) is not applied to it; after a seen confirmation page it is still reported (settle). Notices carry no
+    field values.
+
+    Finish in browser adds, all optional: ``plan`` and ``plan_hash`` (stored on the run), ``detail`` (merged into the
+    claim's detail; {"waiting": ""} clears the student's-turn flag), ``notify=False`` (the student's own Stop or
+    closed window writes no notice) and ``expected_states``: the claim states the caller decided from. When the claim
+    has moved on since (a crash recovery, another process), nothing is written to the claim or the run and the answer
+    is {"settled": False, "state_now": <its state>}, so the caller decides again from what is there now.
+
+    An attempt that may have reached Greenhouse (the claim ends 'unconfirmed', or 'needs_you'/'failed' with after_click
+    set on the row) leaves an apply_agent_unconfirmed event in the same transaction (10.5), decided from the row as it
+    is after the settle, so a result that says after_click=None on a row that already has 1 still writes it.
     """
     stamp = _stamp(now)
     settled = False
+    state_now = ""
     # Only a submission whose confirmation page was seen was settled by the page (5.2, 6.14). A stop for the
     # student, a failure or an uncertain attempt is settled by no one yet: only the email or the student resolves it.
     resolved_by = "page" if state == "submitted" and confirmation_seen else ""
@@ -993,32 +1075,77 @@ def record_result(
             lock_user(conn, user_id)
             settled = _settle_tx(
                 conn, token, user_id, state=state, note=note, after_click=after_click, submitted_at=submitted_at,
-                resolved_by=resolved_by, detail=None, confirmation_seen=confirmation_seen, watch=watch, stamp=stamp,
+                resolved_by=resolved_by, detail=detail, confirmation_seen=confirmation_seen, watch=watch, stamp=stamp,
+                expected_states=expected_states,
             )
-            if run_id:
-                _finish_run_tx(
-                    conn, run_id, outcome=outcome, clean=False, plan_hash=None, stamp=stamp, reasons=reasons or [],
-                    evidence=evidence, screenshots=screenshots, requests=requests, refused=refused,
-                )
             row = _claim_row(conn, token, user_id)
+            state_now = str(row["state"]) if row is not None else ""
+            # Without expected_states the run is finished whatever became of the claim (a released claim, M5a); with it,
+            # a claim that moved is left to the caller's second decision, and its run stays running until then.
+            if run_id and (settled or expected_states is None):
+                _finish_run_tx(
+                    conn, run_id, outcome=outcome, clean=False, plan_hash=plan_hash, stamp=stamp, reasons=reasons or [],
+                    evidence=evidence, screenshots=screenshots, requests=requests, refused=refused, plan=plan,
+                )
             if settled and state == "submitted":
                 _submitted_event(conn, row["application_id"], event_detail, stamp)
+            if settled and (state == "unconfirmed" or (state in ("needs_you", "failed") and row["after_click"])):
+                actions.log_application_event(
+                    conn, row["application_id"], "apply_agent_unconfirmed", None, stamp,
+                    encoded=_dumps({"run_id": run_id or row["run_id"], "mode": row["mode"], "state": state, "note": note, "source": APP_SOURCE}),
+                )
     finally:
         forget(token)
     if not settled:
         if state == "submitted" and confirmation_seen:
             _after_missed_settle(conn, token, user_id, event_detail, stamp)
-        return {"settled": False, "stage_recorded": False}
+        return {"settled": False, "stage_recorded": False, "state_now": state_now}
     stage_recorded = record_stage(conn, token, user_id=user_id, now=now) if state == "submitted" else False
-    title, company = _title_of(conn, row["opportunity_id"])
-    if state == "submitted":
-        text = f"Greenhouse showed its confirmation page for your application to {title} at {company}"
-    elif state == "unconfirmed":
-        text = f"{company}: your application may or may not have gone through"
-    else:
-        text = f"{company}: your application needs you"
-    automation.notice(conn, user_id, event_key=f"apply-result:{token}:{state}", level="info" if state == "submitted" else "warning", title=text)
+    if notify:
+        title, company = _title_of(conn, row["opportunity_id"])
+        if state == "submitted":
+            text = f"Greenhouse showed its confirmation page for your application to {title} at {company}"
+        elif state == "unconfirmed":
+            text = f"{company}: your application may or may not have gone through"
+        else:
+            text = f"{company}: your application needs you"
+        automation.notice(conn, user_id, event_key=f"apply-result:{token}:{state}", level="info" if state == "submitted" else "warning", title=text)
     return {"settled": True, "stage_recorded": stage_recorded}
+
+
+def record_handoff_ready(
+    conn: sqlite3.Connection, *, user_id: str, run_id: str, token: str, plan: list[dict[str, Any]], plan_hash: str,
+    screenshots: list[dict[str, Any]], evidence: dict[str, Any], handoff_until: str = "", now: datetime | None = None,
+) -> bool:
+    """The form is filled and the student's turn begins: store what the page shows for it, in one transaction.
+
+    The run gets the plan the agent actually filled (value-free), the filled picture and the evidence (what is left for
+    the student); the claim gets that plan's hash and detail.waiting = 'student' (the card says Your turn) with the
+    time the window closes. True only when both rows matched: the run is still running and the claim still 'claimed'.
+    """
+    stamp = _stamp(now)
+    with conn:
+        lock_user(conn, user_id)
+        claim = conn.execute(
+            "SELECT detail_json FROM application_submit_claims WHERE token=? AND user_id=? AND state='claimed'", (token, user_id),
+        ).fetchone()
+        if claim is None:
+            return False
+        ran = conn.execute(
+            "UPDATE apply_runs SET plan_json=?, plan_hash=?, screenshots_json=?, evidence_json=?, heartbeat_at=? "
+            "WHERE id=? AND user_id=? AND status='running'",
+            (_dumps(plan), plan_hash, _dumps(screenshots), _dumps(evidence), stamp, run_id, user_id),
+        ).rowcount
+        if not ran:
+            return False
+        detail = {**json_as(claim["detail_json"], {}), "waiting": "student"}
+        if handoff_until:
+            detail["handoff_until"] = handoff_until
+        return bool(conn.execute(
+            "UPDATE application_submit_claims SET plan_hash=?, detail_json=?, heartbeat_at=?, updated_at=? "
+            "WHERE token=? AND user_id=? AND state='claimed'",
+            (plan_hash, _dumps(detail), stamp, stamp, token, user_id),
+        ).rowcount)
 
 
 # --- Reviews, the rehearsal gate and its breaker ------------------------------------------
@@ -1106,13 +1233,30 @@ def recover_stale(conn: sqlite3.Connection, now: datetime | None = None, *, user
     ).fetchall():
         if claim_held(row, now=moment):
             continue
-        stopped = row["state"] == "claimed"
+        # A 'claimed' claim whose settlement was decided as "may have been sent" and could not be written is settled that way, with the
+        # note decided then: the window was never confirmed closed, or a request passed. Never as "Nothing was sent".
+        # A mark kept for a claim that turned out to be 'clicking' (the claim could not be read when it was made) is dropped unused: that
+        # state is settled as unconfirmed anyway.
+        decided = take_unconfirmed(row["token"])
+        if row["state"] != "claimed":
+            decided = None
+        stopped = row["state"] == "claimed" and decided is None
+        note = _STOPPED_BEFORE if stopped else (decided or _STOPPED_DURING)
         with conn:
             lock_user(conn, row["user_id"])
+            fresh = conn.execute("SELECT detail_json FROM application_submit_claims WHERE token=?", (row["token"],)).fetchone()
+            detail = {**json_as(fresh["detail_json"] if fresh else "", {}), "waiting": ""}
             changed = conn.execute(
-                "UPDATE application_submit_claims SET state=?, note=?, updated_at=? WHERE token=? AND state=?",
-                ("failed" if stopped else "unconfirmed", _STOPPED_BEFORE if stopped else _STOPPED_DURING, _stamp(now), row["token"], row["state"]),
+                "UPDATE application_submit_claims SET state=?, note=?, updated_at=?, detail_json=?, after_click=CASE WHEN ? THEN 1 ELSE after_click END "
+                "WHERE token=? AND state=?",
+                ("failed" if stopped else "unconfirmed", note, _stamp(now), _dumps(detail), 0 if stopped else 1, row["token"], row["state"]),
             ).rowcount
+            if changed and not stopped:
+                # Written with the UPDATE, so a student who sees may-have-been-sent also finds it on the timeline (10.5).
+                actions.log_application_event(
+                    conn, row["application_id"], "apply_agent_unconfirmed", None, _stamp(now),
+                    encoded=_dumps({"run_id": row["run_id"], "mode": row["mode"], "state": "unconfirmed", "note": note, "by": "recovery", "source": APP_SOURCE}),
+                )
         if not changed:
             continue
         counts["failed" if stopped else "unconfirmed"] += 1

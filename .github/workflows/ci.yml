@@ -117,15 +117,20 @@ jobs:
   browser-python:
     # The Python tests that drive a real Chromium through Playwright: the contact-form
     # submitter (tests.test_outreach_forms), the apply agent's fixtures and fake
-    # Greenhouse (tests.test_apply_fixtures), and the apply agent itself run against that
-    # fake (tests.test_apply_agent_browser). The `test` job has no Playwright, so these
+    # Greenhouse (tests.test_apply_fixtures), the apply agent itself run against that
+    # fake (tests.test_apply_agent_browser), and Finish in browser end to end through the
+    # real runner, a spawned child and the real driver (tests.test_apply_handoff_e2e: the
+    # POST passes only after a committed hand-over, a timeout closes the browser before the
+    # claim is settled, the security code crosses the pipe once). The `test` job has no Playwright, so these
     # skip there, and the `ui` job runs only tests/ui: before this job the contact-form
     # browser tests never ran in CI. PIPELINE_REQUIRE_BROWSER_TESTS=1 turns a missing or
     # broken Chromium into an error that shows the launch exception (tests/browser_support.py),
     # so this job cannot go green by skipping every browser test. PIPELINE_HEADED_TESTS=1
     # lets the one headed launch test run for real under a virtual display. A hung
     # Playwright call would otherwise run to GitHub's six-hour limit.
-    timeout-minutes: 20
+    # The handoff modules sit out real waits (the guard after a typed code, the outcome window): measured locally
+    # at about 11 minutes for the agent and e2e modules alone, so 20 minutes was not enough once they were all here.
+    timeout-minutes: 40
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -143,7 +148,7 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('requirements-ui.txt') }}
       - run: python -m playwright install --with-deps chromium
-      - run: xvfb-run -a python -m unittest tests.test_outreach_forms tests.test_apply_fixtures tests.test_apply_agent_browser -v
+      - run: xvfb-run -a python -m unittest tests.test_outreach_forms tests.test_apply_fixtures tests.test_apply_agent_browser tests.test_apply_handoff_e2e -v
         env:
           PIPELINE_REQUIRE_BROWSER_TESTS: "1"
           PIPELINE_HEADED_TESTS: "1"

@@ -8,6 +8,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -125,6 +126,15 @@ class ApplyCase(unittest.TestCase):
 
     def claim_row(self, token):
         return dict(self.conn.execute("SELECT * FROM application_submit_claims WHERE token=?", (token,)).fetchone())
+
+    def committed_claim_row(self, token):
+        """The claim as ANOTHER connection sees it: only what the writing connection has committed.
+
+        ``claim_row`` reads through ``self.conn``, which sees its own uncommitted writes, so it cannot tell a commit from a write
+        that is still open. A test that says "after the commit" reads through this.
+        """
+        with closing(connect_product(self.path)) as other:
+            return dict(other.execute("SELECT * FROM application_submit_claims WHERE token=?", (token,)).fetchone())
 
     def stage(self, opportunity_id):
         row = self.conn.execute("SELECT stage, applied_at FROM applications WHERE opportunity_id=?", (opportunity_id,)).fetchone()

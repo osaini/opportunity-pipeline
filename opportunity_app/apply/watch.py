@@ -44,7 +44,7 @@ from ..core.timestamps import parse_app_instant, utc_now
 from ..integrations.gmail_client import connection_state
 from ..mail.gmail_connection import connector_row
 from ..student import preparation
-from .claims import claim_held
+from .claims import UNCONFIRMED_UNWRITTEN, claim_held
 from .greenhouse import ATS_GREENHOUSE, is_greenhouse_sender
 
 LOGGER = logging.getLogger(__name__)
@@ -558,7 +558,7 @@ SELECT c.*, a.stage AS application_stage, o.company AS company_name
 FROM application_submit_claims c
 JOIN applications a ON a.id = c.application_id
 JOIN opportunities o ON o.id = c.opportunity_id
-WHERE c.user_id = ? AND c.state NOT IN ('released', 'claimed')
+WHERE c.user_id = ? AND c.state <> 'released'
 """
 
 
@@ -568,7 +568,17 @@ def card_state(row: Any, now: datetime | None = None) -> dict[str, Any]:
     state, verification = row["state"], row["verification"]
     status = "stopped"
     can_resolve = False
-    if state == "clicking":
+    note = row["note"] or ""
+    if state == "claimed":
+        # Finish in browser spends its fill and the student's turn here (up to 20 minutes). A claim nobody holds any more is
+        # a run that ended without settling: recover_stale finishes it, and until then it is a stopped attempt.
+        if claim_held(row, now=now):
+            status = "your_turn" if detail.get("waiting") == "student" else "filling"
+        elif row["token"] in UNCONFIRMED_UNWRITTEN:
+            # The runner decided the application may have been sent and could not write it (a busy database). Recovery will settle it
+            # that way; until then the card must not say nothing was sent. Read without taking it: recovery takes it.
+            status, note = "may_have_been_sent", UNCONFIRMED_UNWRITTEN.get(row["token"]) or note
+    elif state == "clicking":
         if claim_held(row, now=now):
             status = "submitting"
         else:
@@ -586,10 +596,10 @@ def card_state(row: Any, now: datetime | None = None) -> dict[str, Any]:
             status = "watch_paused" if detail.get("watch_paused_since") else "watching"
     ats = row["ats"]
     return {
-        "token": row["token"], "mode": row["mode"], "state": state, "verification": verification,
+        "token": row["token"], "mode": row["mode"], "state": state, "verification": verification, "run_id": str(row["run_id"] or ""),
         "stage_policy": row["stage_policy"], "stage_recorded": bool(row["stage_recorded"]), "resolved_by": row["resolved_by"],
         "ats": ats, "ats_name": ATS_NAMES.get(ats, ats.title() if isinstance(ats, str) else ""),
-        "company": row["company_name"] or "", "application_stage": row["application_stage"], "note": row["note"] or "",
+        "company": row["company_name"] or "", "application_stage": row["application_stage"], "note": note,
         "status": status, "submitted_at": row["submitted_at"], "watch_until": row["watch_until"],
         "email_received_at": detail.get("email_received_at") or (row["verified_at"] if verification == "email_confirmed" else None),
         "possible_email_at": detail.get("possible_email_at"),
@@ -598,12 +608,23 @@ def card_state(row: Any, now: datetime | None = None) -> dict[str, Any]:
             state == "submitted" and row["stage_policy"] == "ask" and not row["stage_recorded"] and row["application_stage"] == "applying"
         ),
         "can_resolve": can_resolve,
+        # Whether the claim was ever handed over (the student pressed Submit in the window). A released claim that was not had its
+        # release written by a later start, not by the student's own word, so no page says the student said anything about it.
+        "handed_over": bool(row["handed_over_at"]),
     }
 
 
 def card_states(conn: sqlite3.Connection, user_id: str, *, now: datetime | None = None) -> dict[str, dict[str, Any]]:
     """application_id -> the Apply for me state its card shows, for the one live claim of each application."""
     return {str(row["application_id"]): card_state(row, now) for row in conn.execute(_CARD, (user_id,)).fetchall()}
+
+
+def claim_card(conn: sqlite3.Connection, user_id: str, token: str, now: datetime | None = None) -> dict[str, Any] | None:
+    """One claim of any state as its card shows it, with the run that made it in ``run_id`` (the run view embeds this), or None."""
+    row = _card_row(conn, user_id, token)
+    if row is None:
+        return None
+    return card_state(row, now)
 
 
 def _card_row(conn: sqlite3.Connection, user_id: str, token: str) -> Any:

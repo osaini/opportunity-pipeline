@@ -458,6 +458,18 @@
       "status_code": 202
     },
     {
+      "endpoint": "start_apply_handoff",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "start_apply_handoff_api_v1_apply_agent_opportunities__opportunity_id__handoffs_post",
+      "path": "/api/v1/apply-agent/opportunities/{opportunity_id}/handoffs",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": 202
+    },
+    {
       "endpoint": "list_apply_runs",
       "include_in_schema": true,
       "kind": "route",
@@ -490,6 +502,30 @@
       ],
       "operation_id": "cancel_apply_run_api_v1_apply_agent_runs__run_id__cancel_post",
       "path": "/api/v1/apply-agent/runs/{run_id}/cancel",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "front_apply_run",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "front_apply_run_api_v1_apply_agent_runs__run_id__front_post",
+      "path": "/api/v1/apply-agent/runs/{run_id}/front",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
+      "endpoint": "get_apply_run_values",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "GET"
+      ],
+      "operation_id": "get_apply_run_values_api_v1_apply_agent_runs__run_id__values_get",
+      "path": "/api/v1/apply-agent/runs/{run_id}/values",
       "response_model": "dict[str, typing.Any]",
       "status_code": null
     },
