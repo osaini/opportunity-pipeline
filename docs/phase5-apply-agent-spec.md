@@ -311,7 +311,7 @@ Finish in browser needs no gate, because the student presses Submit.
 | --- | --- | --- |
 | Time between two agent submissions | 5 / 10 / 30 minutes | **10 minutes** |
 | Agent submissions per day (one-click and unattended) | 3 / 5 / 10 | **5** |
-| Agent submissions per company | 1 per 30 days / 1 per 90 days / none | **1 per 30 days**. One-click and Finish in browser may override it for a single application with an explicit tick: "I know I applied to {company} on {date}. Apply anyway." |
+| Agent submissions per company | 1 per 30 days / 1 per 90 days / none | **1 per 30 days**. One-click and Finish in browser may override it for a single application with an explicit tick: "I know Apply for me handed an application to {company} to Greenhouse on {date} (it may not have gone through). Apply anyway." |
 | Rehearsals and option lookups per day | 10 / 20 / 40 | **20** |
 | Unattended only (if ever, D2) | 1 per hour and 3 per day / 1 per hour and 1 per day | **1 per hour, 3 per day** |
 
@@ -1958,6 +1958,40 @@ From step 4 on, any exception gives **unconfirmed**, as in outreach/forms.py:101
 
 After hand-over both modes continue with 6.14.
 
+**As built (M5b part 2).** Finish in browser (handoff) works end to end. Where it differs from the text above, or the
+spec left a choice open:
+
+- **D1 B holds everywhere.** The agent never presses Submit, including the second Submit after a security code. While the
+  agent types a code, and for 2 seconds after, the route aborts every submit-path POST without spending the prompt's
+  allowance.
+- **Telemetry.** Greenhouse posts Snowplow telemetry to `c.spl.greenhouse.io`, so step 3 above ("a POST from the page to
+  any other Greenhouse address") cannot be read literally. Only an aborted non-GET to a form host (`job-boards`, `boards`,
+  `boards-api.greenhouse.io`), or any aborted form navigation, ends the turn. Telemetry hosts are refused for every method,
+  silently, and the value guard also checks base64 forms.
+- **The parent answers the security-code op for its own claim**, never a token the child names, and the child types the
+  code only after an `id`-matched reply; "typed" is recorded only on the child's acknowledgment.
+- **Deadline.** `fill_s + handoff_s + code_read_s + security_code_s + 3 x outcome_s + 120` (2910 s), one shared budget for
+  every wait after the press, and every agent wait capped by `job.ends_at`. The watchdog is a backstop for hangs.
+- **Hand-over.** The child stamps a monotonic `expires`; the parent refuses a late commit. Any claim in `clicking` is at
+  most `unconfirmed`, never "nothing was sent". The window is confirmed closed by process id before a claim that is
+  still `claimed` settles with `after_click` 0.
+- **Field failures are cleared and left for the student**, except a select holding a wrong option, which stops the run
+  (`FIELD_TOOK`). A submit POST or an upload refused during the fill ends the run. A challenge frame after the press waits
+  for the student, within the shared budget. No final screenshot after Stop, a closed window, or the timeout.
+- **Cover letters** are never attached (M7): a required one is left for the student, an optional one blank. The "Draft
+  one" hint is dropped until then.
+- **A student-stopped handoff** is `needs_you`, `detail.stopped_by = 'student'`, with no notice and no Urgent row.
+- **Screenshots and values need the browser session.** The masked pictures show every non-sensitive filled value (D8 (i)),
+  so they and `GET .../values` need the student's own browser session. A handoff result shows only provably unchanged
+  values ("What the app filled").
+- **A posting that differs from the saved role** needs the student's tick (`posting_confirmed`) before Finish in browser.
+- **A pause does not stop a Finish in browser window**, and the pause reply and the health card say so.
+- **Failed outcomes name the field, never the page's error text**, so a value the student typed cannot reach a note.
+- **Open question Q4** (the plan called it Q1, but Q1 in section 13 was already taken; Q4 is listed there too). Does Greenhouse's security-code widget submit
+  by itself when its eighth character is typed? No recording of the live widget exists. If it does, the app refuses that
+  POST and the student presses Submit; the owner decides whether D10 B's "type it in" should then stop typing the code.
+  The first real Finish in browser that asks for a code answers it (known-defects: the security-code widget).
+
 ### 6.14 Decide the outcome
 
 `apply_checks.decide_outcome` decides from the observation. The window is `outcome_s` (30 s),
@@ -2108,9 +2142,11 @@ card's two answers; `apply/security_code.py` holds the D10 B reader. Decisions t
 - The Urgent kinds are the code's `apply_needs_you` and `apply_no_email`.
 - The security-code reader reads Gmail directly (Phase 1 passes are ten minutes apart), at most every 15 seconds, and
   needs the read scope and the address match of D12, not the `application_mail` switch. Handing the code to the child is
-  recorded as `handed`; only the child's `{"op": "security_code_typed"}` acknowledgement records `typed` (and the
-  notice and the statistic). A repeat request for a handed, never-acknowledged code falls back to the student
-  (`not_confirmed`), and a window that ends while Gmail could not be read says so (`gmail_unreachable`), not "no email".
+  recorded as `handed`; only the child's acknowledgement that it typed it (`{"op": "security_code_result", "typed": true}`,
+  the reader's `confirm_typed`) records `typed` (and the notice and the statistic). A result with `typed: false` records
+  the fallback with its reason, and `abandoned` (the agent stopped waiting) drops whatever a look still running finds. A
+  repeat request for a handed, never-acknowledged code falls back to the student (`not_confirmed`), and a window that
+  ends while Gmail could not be read says so (`gmail_unreachable`), not "no email".
 - The reader's record is `detail.security_code_reader`; `detail.security_code` stays the boolean 6.14 settles with, so
   the shallow merge in `runs.settle` cannot erase the count. The statistics count a prompt from either.
 
@@ -3300,6 +3336,11 @@ except one the student hook caused.
   was not one.
 - **Open question Q1.** Does Greenhouse ever require an email verification step *before* submit
   for new candidates? No evidence was found. If it appears, it is `needs_you`.
+- **Open question Q4. The emailed security code's widget.** Does it submit by itself when its eighth character is typed? No
+  recording of the live widget exists. See section 6.13 (as built) and the known-defects entry "The security-code widget has not
+  been seen live". The app refuses a submit POST while it types the code and for two seconds after, and tells the student to press
+  Submit only then; a widget that sends later than that is not stopped, and the owner decides whether the code POST should wait for a
+  press by the student.
 - **Open question Q2.** Should the bundled Chromium be replaced by the student's installed Google
   Chrome binary (`channel="chrome"`) with a fresh profile? It is not disguise, and it may score
   differently. Evaluate after R1 data exists.
