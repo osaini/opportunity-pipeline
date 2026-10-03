@@ -198,7 +198,8 @@ def missing_location_message(target: dict[str, Any]) -> str:
     return (
         f"This draft never says you live in {target['draft_location']['phrase']}, though "
         f"{target['company']} is in {target['location']}. "
-        f"Regenerate it, or add '(live in {target['draft_location']['phrase']})' after your school."
+        f"Press Add the location line under the draft, regenerate it, or add "
+        f"'(live in {target['draft_location']['phrase']})' after your school yourself."
     )
 
 

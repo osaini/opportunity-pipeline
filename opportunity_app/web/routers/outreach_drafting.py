@@ -1,4 +1,4 @@
-"""Outreach drafts: generate, history, restore and approve."""
+"""Outreach drafts: generate, history, restore, the location line and approve."""
 
 from __future__ import annotations
 
@@ -8,8 +8,14 @@ from typing import Any, Literal
 from fastapi import Depends, HTTPException, Query, status
 
 from ..overrides import shared_router
-from ...outreach.targets import DraftChangedError, OutreachNotFoundError, approve_draft as approve_outreach_draft
+from ...outreach.targets import (
+    DraftChangedError,
+    OutreachNotFoundError,
+    approve_draft as approve_outreach_draft,
+    get_target as get_outreach_target,
+)
 from ...outreach.drafting import generate_draft as generate_outreach_draft
+from ...outreach.draft_location import sync_location_line
 from ...outreach.versions import (
     DraftVersionNotFoundError,
     draft_versions as outreach_draft_versions,
@@ -74,6 +80,29 @@ def restore_outreach_draft(
         raise outreach_not_found() from exc
     except DraftVersionNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="That earlier draft was not found") from exc
+
+
+@history_router.post("/api/v1/outreach/{target_id}/location-line")
+def add_outreach_location_line(
+    target_id: str,
+    conn: sqlite3.Connection = Depends(writable_connection),
+    user_id: str = Depends(require_auth),
+) -> dict[str, Any]:
+    """Put the "(live in ...)" line into the draft after the school's name, approved or not; an approval is taken back."""
+    try:
+        sync_location_line(conn, target_id, user_id=user_id, approved=True)
+        target = get_outreach_target(conn, target_id, user_id=user_id)
+    except OutreachNotFoundError as exc:
+        raise outreach_not_found() from exc
+    if target["draft_location"]["missing"] and not target["sent_at"]:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                "The opening never names your school as your profile has it, so the line has nowhere exact to go. "
+                f"Add '(live in {target['draft_location']['phrase']})' after your school yourself, or regenerate the draft."
+            ),
+        )
+    return target
 
 
 @history_router.post("/api/v1/outreach/{target_id}/approve")

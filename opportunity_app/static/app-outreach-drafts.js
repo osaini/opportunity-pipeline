@@ -110,7 +110,7 @@
     const flat = body.replace(/\s+/g, " ");
     const saysHome = (term) => new RegExp(`\\bin ${term.replace(/\s+/g, " ").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(flat);
     if (place && place.terms && place.terms.length && body.trim() && !place.terms.some(saysHome)) {
-      host.appendChild(chip(`Doesn't say you live in ${place.phrase}; regenerate`, "is-warning"));
+      host.appendChild(chip(`Doesn't say you live in ${place.phrase}; add the location line or regenerate`, "is-warning"));
     }
   }
 
@@ -261,6 +261,30 @@
       }
     });
 
+    // The saved draft never says the student lives near this company: the app's own
+    // "(live in ...)" line goes in after the school's name, nothing else changes
+    // (outreach/draft_location.py). An approved draft is approved again afterwards.
+    if (kind === "initial" && bodyText && !item.sent_at && item.draft_location?.missing) {
+      const addLine = element("button", "secondary-button", "Add the location line");
+      addLine.type = "button";
+      addLine.dataset.draftLocationLine = "";
+      addLine.addEventListener("click", async () => {
+        if (unsaved() && !window.confirm("Replace your unsaved edits with the saved draft plus the location line?")) return;
+        addLine.disabled = true;
+        try {
+          await api(`/api/v1/outreach/${encodeURIComponent(item.id)}/location-line`, { method: "POST" });
+          state.outreachOpen = item.id;
+          state.outreachDiscardEdits = true;
+          announce(`Added "(live in ${item.draft_location.phrase})" to the ${item.company} draft.${status === "approved" ? " Approve it again to send it." : ""}`);
+          await loadOutreach();
+          refocusOutreach(item.id, `[data-draft-kind="${kind}"] [data-draft-approve]`);
+        } catch (error) {
+          message.textContent = error.message;
+          addLine.disabled = false;
+        }
+      });
+      buttons.appendChild(addLine);
+    }
     buttons.append(generate, approve);
     // Right under the buttons: a message pushed below the claims and the
     // provenance note reads as nothing having happened at all.

@@ -1,8 +1,13 @@
 """Outreach work the app does on its own, each behind the student's own switch.
 
-- auto_drafts: a company with a usable contact and location but no draft gets
-  one written, whatever brought it in (added by hand, imported, a new contact
-  found later, a deep search draft that failed). It waits for approval.
+- auto_drafts: a company not yet contacted with no draft gets one written,
+  whatever brought it in (added by hand, imported, a deep search draft that
+  failed), even before it has a contact or a checked location. With no contact
+  it greets the company's team, and the greeting follows a contact found later
+  (targets._readdress_drafts); with no checked location it says nothing about
+  where the student lives (drafting.location_line). It waits for approval.
+  When a location is checked later, the "(live in ...)" line goes into an
+  unapproved draft, or comes out, without writing it again (draft_location).
 - bounce_recovery: after an email bounces, the company's site is searched
   again and the best other contact applied (choose_contact, never an address
   that bounced). The greeting follows (outreach._readdress_drafts) and the draft
@@ -261,20 +266,24 @@ def resend_after_bounce(
 
 
 def draft_due(conn: sqlite3.Connection, *, user_id: str, now: datetime | None = None) -> list[str]:
-    """Companies ready for a first draft: a contact (an address that has not bounced, or a contact form), a location, no draft, nothing sent."""
+    """Companies due a first draft: no draft and nothing sent, with or without a contact or a checked location.
+
+    The student asked (2026-10-02) for drafts under Needs a contact and Needs a
+    location too. Those that are ready to send once approved (an address that
+    has not bounced, or a contact form, and a checked location) come first.
+    """
     now = now or datetime.now(timezone.utc)
     due = []
     for item in list_targets(conn, user_id=user_id, interested_only=True, statuses=("not_started", "drafted")):
         if item["email_body"] or item["sent_at"] or item["status"] not in {"not_started", "drafted"}:
             continue
-        reachable = item["contact_email"] or item["contact_form"]
-        if not reachable or item["contact_bounced"] or item["cc_bounced"] or not item["location_verified"]:
-            continue
         failed = _latest(conn, item["id"], user_id, AUTO_DRAFT_FAILED)
         if failed is not None and now - failed < DRAFT_RETRY_AFTER:
             continue
-        due.append(item["id"])
-    return due
+        reachable = (item["contact_email"] or item["contact_form"]) and not item["contact_bounced"] and not item["cc_bounced"]
+        due.append((not (reachable and item["location_verified"]), item["id"]))
+    # A stable sort, so each group keeps list_targets' order.
+    return [target_id for _waiting, target_id in sorted(due, key=lambda entry: entry[0])]
 
 
 def auto_draft(
@@ -519,6 +528,16 @@ class AutomationWorker(PollingWorker):
                     report["sent"].extend(run_due_sends(
                         conn, client_factory=self._gmail_client_factory, decisions_for=self._decisions_for, on_reply=self._on_reply,
                     ))
+        if automation.is_enabled(conn, user_id, "auto_drafts"):
+            from .draft_location import sync_location_lines  # imported here: it imports drafting, which pulls in the model providers
+
+            try:
+                # No model and no page: a location checked since a draft was written puts the line in, or takes it out.
+                lines = sync_location_lines(conn, user_id=user_id, before_write=_unless_stopped(conn, user_id, "auto_drafts"))
+            except automation.AutomationPaused:
+                lines = []
+            if lines:
+                report.setdefault("location_lines", []).extend(lines)
         if self._provider_factory is not None and not report["drafted"] and automation.is_enabled(conn, user_id, "auto_drafts"):
             due = draft_due(conn, user_id=user_id)
             if due:

@@ -160,7 +160,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
         | _pkg(
             "outreach",
             "gmail gmail_sends delivery inbox labels schedule thank_you reply_senders automation recontact review call_prep "
-            "call_questions forms discovery research quote_check drafting interviewer email_search locate company_profile settings",
+            "call_questions forms discovery research quote_check drafting draft_location interviewer email_search locate company_profile settings",
         )
     ),
     # L5 entry points: the top-level commands and the composition root (api, bootstrap, launch, worker, daily, migrate, ops_cli,

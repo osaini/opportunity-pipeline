@@ -126,13 +126,22 @@ class AutomationTests(unittest.TestCase):
         self.assertIsNone(result["to"])
         self.assertEqual(get_target(self.conn, target["id"], user_id=USER)["contact_email"], "sam@bovi.test")
 
-    def test_draft_due_needs_a_contact_a_location_and_no_draft(self):
-        ready = self.target()
-        self.target(company="NoLocation", location="", website="https://noloc.test")
-        self.target(company="NoContact", contact_email="", website="https://nocontact.test")
+    def test_draft_due_takes_every_company_without_a_draft_ready_ones_first(self):
+        ready = self.target(company="Zeta", website="https://zeta.test", contact_email="info@zeta.test")
+        no_location = self.target(company="Alpha", location="", website="https://alpha.test", contact_email="info@alpha.test")
+        no_contact = self.target(company="NoContact", contact_email="", website="https://nocontact.test")
         self.target(company="HasDraft", email_body="Hi,\n\nA note.", website="https://hasdraft.test")
         self.target(company="Sent", status="sent", website="https://sent.test")
-        self.assertEqual(draft_due(self.conn, user_id=USER), [ready["id"]])
+        self.assertEqual(draft_due(self.conn, user_id=USER), [ready["id"], no_location["id"], no_contact["id"]],
+                         "Zeta can be sent once approved, so it goes ahead of Alpha though Alpha sorts first")
+
+    def test_a_draft_without_a_contact_greets_the_team_until_one_is_found(self):
+        target = self.target(company="NoContact", contact_email="", location="", website="https://nocontact.test")
+        self.assertTrue(auto_draft(self.conn, target["id"], user_id=USER, provider_factory=legacy, draft_provider="legacy")["drafted"])
+        after = get_target(self.conn, target["id"], user_id=USER)
+        self.assertEqual((after["draft_status"], after["email_body"].splitlines()[0]), ("generated", "Hi NoContact team,"))
+        update_target(self.conn, target["id"], {"contact_email": "dana@nocontact.test", "contact_name": "Dana Ruiz"}, user_id=USER)
+        self.assertEqual(get_target(self.conn, target["id"], user_id=USER)["email_body"].splitlines()[0], "Hi Dana,")
 
     def test_a_failed_draft_waits_before_it_is_tried_again(self):
         ready = self.target()
