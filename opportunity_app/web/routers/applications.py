@@ -11,6 +11,7 @@ from fastapi import Depends, File, HTTPException, Query, Response, UploadFile, s
 
 from ..overrides import shared_router
 from ...applications import inbox as application_inbox
+from ...apply import watch as apply_watch
 from ...applications.actions import (
     APPLICATION_STAGES,
     ApplicationNotFoundError,
@@ -39,6 +40,10 @@ def applications(
     user_id: str = Depends(require_auth),
 ) -> dict[str, Any]:
     items = list_applications(conn, user_id=user_id)
+    # What Apply for me did for each card (10.5): its state, null for an application it never touched. Not in the export.
+    states = apply_watch.card_states(conn, user_id)
+    for item in items:
+        item["apply"] = states.get(item["id"])
     return {"items": items, "total": len(items), "stages": sorted(APPLICATION_STAGES)}
 
 

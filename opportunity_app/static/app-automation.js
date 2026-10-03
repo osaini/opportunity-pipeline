@@ -1192,6 +1192,10 @@
     if (value.startsWith("monitored_event:")) return "From an email (you confirmed)";
     if (value.startsWith("agent_proposal:")) return "Agent (you approved)";
     if (value === "application_import") return "Imported";
+    if (value === "apply_agent:confirmation_email") return "The confirmation email";
+    if (value === "apply_agent:student_confirmed") return "You confirmed";
+    if (value === "apply_agent:confirmation_page") return "Greenhouse's confirmation page";
+    if (value === "apply_agent:watch") return "The app, on its own";
     return humanizeKey(value.split(":")[0]);
   }
 
