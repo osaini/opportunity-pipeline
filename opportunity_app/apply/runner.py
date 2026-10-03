@@ -32,7 +32,7 @@ import subprocess
 import threading
 import time
 from contextlib import closing, contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
@@ -338,6 +338,8 @@ def supervise(
     if isolation not in ISOLATIONS:
         raise ValueError(f"Unsupported agent isolation: {isolation!r}")
     in_process = isolation != "thread"   # only the exact word "thread" runs the agent where the watchdog cannot kill it
+    if in_process:
+        job = replace(job, deadline_s=deadline_s)   # the child bounds itself by it too, for the day this watchdog is gone
     context = multiprocessing.get_context("spawn")
     inbox_recv, inbox_send = context.Pipe(duplex=False)      # parent -> child
     outbox_recv, outbox_send = context.Pipe(duplex=False)    # child -> parent

@@ -62,6 +62,7 @@ class ApplyTimeouts:
     security_code_s: float = 10 * 60
     reply_s: float = 10.0            # how long the child waits for a hand-over answer
     replan_s: float = 30.0           # how long the child waits for a plan
+    orphan_s: float = 10.0           # a child process whose runner is gone (or whose deadline passed) ends itself this long after, however stuck its page is
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,7 @@ class AgentJob:
     lookup: LookupRequest | None
     screenshot_dir: str               # absolute; "" means take no screenshot
     timeouts: ApplyTimeouts = ApplyTimeouts()
+    deadline_s: float = 0.0           # the run's deadline in seconds from its start; a child process ends itself ``timeouts.orphan_s`` after it. 0 means none.
 
 
 @dataclass

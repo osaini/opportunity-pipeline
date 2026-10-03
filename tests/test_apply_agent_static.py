@@ -117,9 +117,18 @@ def forbidden_strings(modules: dict[str, str]) -> list[str]:
     strings = [REQUIRED_CHECK_SCRIPT]
     for text in modules.values():
         strings.extend(node.value for node in ast.walk(ast.parse(text)) if isinstance(node, ast.Constant) and isinstance(node.value, str))
-    found = [f"{needle!r} in {value[:60]!r}" for needle in FORBIDDEN_IN_STRINGS for value in strings if needle in value]
+    found = [f"{needle!r} in {value[:60]!r}" for needle in FORBIDDEN_IN_STRINGS for value in strings if needle in value and not _blocker_mention(needle, value)]
     found.extend(f"{pattern.pattern!r} in {value[:60]!r}" for pattern in FORBIDDEN_PATTERNS for value in strings if pattern.search(value))
     return found
+
+
+# The init script removes beacons: the one string that may name sendBeacon, and only to replace it with a function that returns false.
+BEACON_BLOCKER = "'sendBeacon', function () { return false; }"
+
+
+def _blocker_mention(needle: str, value: str) -> bool:
+    """Whether ``needle`` in ``value`` is only the init script naming the beacon it replaces (and nothing in it sends one)."""
+    return needle == "sendBeacon" and value == apply_agent.NO_SIDE_CHANNELS and value.count("sendBeacon") == 1 and BEACON_BLOCKER in value
 
 
 def _is_constant_script(node: ast.AST) -> bool:
@@ -510,11 +519,13 @@ class LaunchIsPlain(unittest.TestCase):
     # The resolver rule leaves the browser able to look up only these names (Greenhouse's boards, lookups, static files, fonts and CAPTCHA),
     # written out here so that adding a host is a decision someone reads. "s?-recruiting" stands for the numbered logo and banner shards.
     RESOLVABLE = [
-        "api-geocode-earth-proxy.greenhouse.io", "api.hcaptcha.com", "boards.greenhouse.io", "c.spl.greenhouse.io", "challenges.cloudflare.com",
-        "fonts.googleapis.com", "fonts.gstatic.com", "hcaptcha.com", "job-boards.cdn.greenhouse.io", "job-boards.greenhouse.io", "my.greenhouse.io",
-        "recruiting.cdn.greenhouse.io", "s?-recruiting.cdn.greenhouse.io", "s??-recruiting.cdn.greenhouse.io", "s???-recruiting.cdn.greenhouse.io",
-        "www.google.com", "www.gstatic.com", "www.recaptcha.net",
+        "api-geocode-earth-proxy.greenhouse.io", "boards.greenhouse.io", "fonts.googleapis.com", "fonts.gstatic.com", "job-boards.cdn.greenhouse.io",
+        "job-boards.greenhouse.io", "recruiting.cdn.greenhouse.io", "s?-recruiting.cdn.greenhouse.io", "s??-recruiting.cdn.greenhouse.io",
+        "s???-recruiting.cdn.greenhouse.io", "www.gstatic.com", "www.recaptcha.net",
     ]
+    # What a closing page can send without the route handler being asked is limited by this list alone, so it holds only what a rehearsal
+    # needs before Submit: not Greenhouse's analytics collector or my.greenhouse.io, and no CAPTCHA service a Greenhouse form was not seen to use.
+    LEFT_OUT = ["c.spl.greenhouse.io", "my.greenhouse.io", "www.google.com", "hcaptcha.com", "api.hcaptcha.com", "challenges.cloudflare.com"]
     ARGS = [
         "--disable-blink-features=FetchLaterAPI,WebSocketStream", "--disable-features=FedCm",
         "--host-resolver-rules=MAP * ~NOTFOUND , " + " , ".join(f"EXCLUDE {host}" for host in RESOLVABLE),
@@ -526,8 +537,15 @@ class LaunchIsPlain(unittest.TestCase):
         self.assertNotIn("*.", " ".join(self.RESOLVABLE), "no wildcard host: a name a script makes up (a value in a subdomain) must not resolve")
         with_loopback = apply_agent.resolver_rule(("127.0.0.1",))
         self.assertTrue(with_loopback.endswith(" , EXCLUDE 127.0.0.1"))
-        for endpoint in (*apply_checks.GREENHOUSE_LOOKUP_ENDPOINTS, *apply_checks.CAPTCHA_ENDPOINTS):
+        for endpoint in apply_checks.GREENHOUSE_LOOKUP_ENDPOINTS:
             self.assertIn(endpoint.host, self.RESOLVABLE)
+        for host in apply_checks.CONFIRMED_CAPTCHA_HOSTS:
+            self.assertIn(host, self.RESOLVABLE)
+        for host in self.LEFT_OUT:
+            self.assertNotIn(host, self.RESOLVABLE)
+        self.assertEqual(
+            {endpoint.host for endpoint in apply_checks.CAPTCHA_ENDPOINTS} - set(self.RESOLVABLE), {"www.google.com", "hcaptcha.com", "api.hcaptcha.com", "challenges.cloudflare.com"},
+            "the policy still allows the unconfirmed CAPTCHA hosts; only their names no longer resolve")
         for host in (*apply_checks.STATIC_ASSET_HOSTS, *BOARD_HOSTS):
             self.assertIn(host, self.RESOLVABLE)
 
@@ -577,6 +595,17 @@ class LaunchIsPlain(unittest.TestCase):
         self.assertIn("options.identity", apply_agent.NO_SIDE_CHANNELS, "a FedCM request through navigator.credentials is refused")
         for needle in ("speculationrules", "prerender", "MutationObserver", "attachShadow"):
             self.assertIn(needle, apply_agent.NO_SIDE_CHANNELS, "speculation rules are taken out of every document and shadow root")
+        for needle in ("'sendBeacon'", "keepalive", "'pagehide'", "'unload'", "'visibilitychange'", "stopImmediatePropagation"):
+            self.assertIn(needle, apply_agent.NO_SIDE_CHANNELS, "a request made as the page closes is not routed, so a script must not be able to make one")
+
+    def test_the_init_script_uses_only_copies_of_the_built_ins_it_took_before_any_page_script_ran(self):
+        # A page that overwrites Element.prototype.remove, querySelectorAll, NodeList.prototype.forEach or Function.prototype.call must not be
+        # able to turn the sweep into a no-op: after the opening lines, nothing calls a method of the page's objects through the live prototype.
+        script = apply_agent.NO_SIDE_CHANNELS
+        self.assertNotRegex(script, r"\.(?:forEach|remove|querySelectorAll|apply|call|observe|stopImmediatePropagation|addEventListener)\s*\(", "a live method of the page's objects")
+        self.assertIn("Function.prototype.call.bind(Function.prototype.call)", script)
+        for saved in ("Element.prototype.remove", "NodeList.prototype.item", "Document.prototype.querySelectorAll", "DocumentFragment.prototype.querySelectorAll", "MutationObserver.prototype.observe"):
+            self.assertIn(saved, script)
 
 
 class RouteHandlerResolvesLast(unittest.TestCase):

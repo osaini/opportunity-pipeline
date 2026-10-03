@@ -92,6 +92,9 @@ CAPTCHA_ENDPOINTS: tuple[Endpoint, ...] = (
     Endpoint("challenges.cloudflare.com", "/"),
 )
 
+# The two of them a Greenhouse form was seen to load from (the browser can look up no other CAPTCHA host: apply.agent.RESOLVABLE_HOSTS).
+CONFIRMED_CAPTCHA_HOSTS = ("www.recaptcha.net", "www.gstatic.com")
+
 MODES = ("lookup", "rehearse", "submit", "handoff")
 PHASE_BEFORE_INPUT = "before_input"      # lookup, rehearse: the agent has not typed anything yet
 PHASE_AFTER_INPUT = "after_input"        # lookup, rehearse: from the first input on

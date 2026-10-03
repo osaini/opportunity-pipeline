@@ -4,6 +4,12 @@ The runner (apply/runner.py) starts ``child_main`` in a process of its own (or, 
 thread), so a browser that hangs can be killed with its whole process tree and a crash in it cannot take the web app
 down. The two sides talk over two one-way pipes, with the messages named in apply/agent_types.py.
 
+A child process also bounds itself. The runner's watchdog is the usual way a hung run ends, but a runner that dies without its shutdown
+(Stop-Process, a crash, launchd's SIGKILL) takes the watchdog with it, and a page that never yields never reads the cancel flag. So when
+the pipe from the runner reaches end-of-file, and when the job's own deadline passes, the child gives the agent ``ApplyTimeouts.orphan_s``
+to finish and then ends the process with ``os._exit``. Its Playwright driver sees its stdin close and takes Chromium down with it. A
+thread child (a fake that opens no browser) shares the server's process and never does this.
+
 Standard library and ``agent_types`` only (tests/test_leaf_modules.py holds it to that). This module imports no web app
 and no database code. The job it is handed does: it names the agent's factory and carries a ``policy.Plan``, so unpickling
 the job in the child imports apply/agent.py and apply/policy.py and what they import. That is import time only, and no
@@ -29,6 +35,21 @@ from .agent_types import (
 )
 
 
+ORPHAN_EXIT_CODE = 3
+
+
+def _exit_now() -> None:
+    os._exit(ORPHAN_EXIT_CODE)
+
+
+def _end_process_in(seconds: float) -> threading.Timer:
+    """End this process in ``seconds`` (a daemon timer: it never keeps a finished child alive)."""
+    timer = threading.Timer(max(0.0, seconds), lambda: _exit_now())
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
 class ReplanFailed(RuntimeError):
     """The parent gave no plan: it did not answer in time, it could not plan, or the pipe closed."""
 
@@ -36,8 +57,9 @@ class ReplanFailed(RuntimeError):
 class ChildChannel:
     """The child's end of the pipe. Starts a daemon thread that reads the inbox (cancel flag and replies by id)."""
 
-    def __init__(self, inbox: Any, outbox: Any, timeouts: ApplyTimeouts) -> None:
+    def __init__(self, inbox: Any, outbox: Any, timeouts: ApplyTimeouts, *, end_process_when_orphaned: bool = False) -> None:
         self._inbox = inbox
+        self._end_process_when_orphaned = end_process_when_orphaned
         self._outbox = outbox
         self._timeouts = timeouts
         self._cancel = threading.Event()
@@ -66,8 +88,11 @@ class ChildChannel:
                 with self._arrived:
                     self._replies[int(message.get("id", 0))] = message
                     self._arrived.notify_all()
-        # The runner went away (it closed its end, or died): nobody is left to hear this run, so stop it.
+        # The runner went away (it closed its end, or died): nobody is left to hear this run, so stop it. A page that never yields never
+        # reads the flag, so a process child also ends itself after the grace (the cancel flag is the polite way, this is the one that works).
         self._cancel.set()
+        if self._end_process_when_orphaned:
+            _end_process_in(self._timeouts.orphan_s)
         with self._arrived:
             self._closed = True
             self._arrived.notify_all()
@@ -155,7 +180,9 @@ def child_main(factory: Any, job: AgentJob, inbox: Any, outbox: Any, new_session
     channel: ChildChannel | None = None
     result: RunResult | None = None
     try:
-        channel = ChildChannel(inbox, outbox, job.timeouts)
+        channel = ChildChannel(inbox, outbox, job.timeouts, end_process_when_orphaned=new_session)
+        if new_session and job.deadline_s > 0:
+            _end_process_in(job.deadline_s + job.timeouts.orphan_s)
         agent = factory(
             mode=job.mode, run_id=job.run_id, screenshot_dir=Path(job.screenshot_dir) if job.screenshot_dir else None,
             timeouts=job.timeouts, on_progress=channel.progress, heartbeat=channel.heartbeat,

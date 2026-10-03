@@ -505,19 +505,21 @@ class HangingAgentFactory:
 
     isolation = "process"
 
-    def __init__(self, pid_file: str) -> None:
+    def __init__(self, pid_file: str, *, driver: bool = False) -> None:
         self.pid_file = pid_file
+        self.driver = driver   # the grandchild behaves like Playwright's driver: it ends when its stdin closes, that is, when the child dies
 
     def available(self) -> str:
         return ""
 
     def __call__(self, **kwargs: Any) -> "HangingAgent":
-        return HangingAgent(self.pid_file)
+        return HangingAgent(self.pid_file, self.driver)
 
 
 class HangingAgent:
-    def __init__(self, pid_file: str) -> None:
+    def __init__(self, pid_file: str, driver: bool = False) -> None:
         self.pid_file = pid_file
+        self.driver = driver
 
     def __enter__(self) -> "HangingAgent":
         return self
@@ -526,8 +528,9 @@ class HangingAgent:
         return None
 
     def run(self, plan: Any, **kwargs: Any) -> Any:
+        code = "import sys; sys.stdin.read()" if self.driver else "import time; time.sleep(600)"
         grandchild = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(600)"], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            [sys.executable, "-c", code], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), stdin=subprocess.PIPE if self.driver else None,
         )
         Path(self.pid_file).write_text(f"{os.getpid()} {grandchild.pid}", encoding="utf-8")
         while True:   # no heartbeat, no cancel check, never sleeps

@@ -47,6 +47,7 @@ from .agent_types import (
 )
 from .checks import (
     CAPTCHA_ENDPOINTS,
+    CONFIRMED_CAPTCHA_HOSTS,
     GREENHOUSE_LOOKUP_ENDPOINTS,
     STATIC_ASSET_HOSTS,
     TYPED_LOOKUP_KINDS,
@@ -129,16 +130,23 @@ ACTION_TIMEOUT_MS = 10_000
 MAX_REFUSED = 500
 
 # Things in Chromium that send bytes without any request the route handler sees, so a script on the board could carry a
-# filled-in answer out through them: WebRTC (STUN and TURN traffic, and a DNS lookup for the server's name), fetchLater (a
-# request queued now and sent when the page goes away), FedCM (the browser itself fetches a well-known file and a config from a
-# host the script names), WebTransport (QUIC), WebSocketStream, and any dedicated or shared worker (Playwright's WebSocket guard
-# patches the page's own WebSocket only, and an init script does not run inside a worker, so a worker's WebSocket and
-# WebTransport are out of reach). Speculation rules and a prerender link make the browser itself fetch (or load) a page, a
-# prefetch to any site a script names; the Protected Audience calls (joinAdInterestGroup and the rest) make it look up and call
-# the owner's host; Shared Storage fetches a module. Nothing on a Greenhouse form needs one of them, so each is removed in every
-# frame before the page's own scripts run, and some are also switched off at launch (LAUNCH_ARGS), which covers a realm this script
-# missed. It hides nothing about the browser: a page can tell they are not there.
+# filled-in answer out through them: WebRTC (STUN and TURN traffic over sockets of its own, to an ICE server named by an IP address
+# too, which no name lookup stops), fetchLater (a request queued now and sent when the page goes away), a beacon and a keepalive fetch (the
+# same: a request the browser sends as the page closes, after the route handler is no longer asked), FedCM (the browser itself fetches a
+# well-known file and a config from a host the script names), WebTransport (QUIC), WebSocketStream, and any dedicated or shared worker
+# (Playwright's WebSocket guard patches the page's own WebSocket only, and an init script does not run inside a worker, so a worker's
+# WebSocket and WebTransport are out of reach). Speculation rules and a prerender link make the browser itself fetch (or load) a page, a
+# prefetch to any site a script names; the Protected Audience calls (joinAdInterestGroup and the rest) make it look up and call the
+# owner's host; Shared Storage fetches a module. Nothing on a Greenhouse form needs one of them, so each is removed in every frame before
+# the page's own scripts run, and some are also switched off at launch (LAUNCH_ARGS), which covers a realm this script missed. It hides
+# nothing about the browser: a page can tell they are not there.
+#
+# Everything this script does later (the sweep, the shadow-root hook, the fetch wrapper) uses copies of the page's built-ins that it took
+# first, and calls them through ``call``, a bound copy of Function.prototype.call: a page that overwrites Element.prototype.remove,
+# querySelectorAll, NodeList.prototype.forEach, Function.prototype.call and the rest cannot turn a sweep into a no-op.
 NO_SIDE_CHANNELS = """(() => {
+  const call = Function.prototype.call.bind(Function.prototype.call);
+  const apply = Reflect.apply, construct = Reflect.construct, reflectGet = Reflect.get, define = Object.defineProperty;
   const names = [
     'RTCPeerConnection', 'webkitRTCPeerConnection', 'RTCDataChannel', 'RTCSessionDescription', 'RTCIceCandidate',
     'fetchLater', 'FetchLaterResult', 'IdentityCredential', 'IdentityProvider', 'IdentityCredentialError',
@@ -147,7 +155,7 @@ NO_SIDE_CHANNELS = """(() => {
   ];
   for (const name of names) {
     try { delete window[name]; } catch (error) { /* already gone */ }
-    try { Object.defineProperty(window, name, {value: undefined, configurable: false, writable: false}); } catch (error) { /* kept as it is */ }
+    try { define(window, name, {value: undefined, configurable: false, writable: false}); } catch (error) { /* kept as it is */ }
   }
   const navigatorCalls = [
     'joinAdInterestGroup', 'leaveAdInterestGroup', 'clearOriginJoinedAdInterestGroups', 'updateAdInterestGroups', 'runAdAuction',
@@ -155,30 +163,72 @@ NO_SIDE_CHANNELS = """(() => {
   ];
   for (const name of navigatorCalls) {
     try { delete Navigator.prototype[name]; } catch (error) { /* already gone */ }
-    try { Object.defineProperty(Navigator.prototype, name, {value: undefined, configurable: false, writable: false}); } catch (error) { /* kept as it is */ }
+    try { define(Navigator.prototype, name, {value: undefined, configurable: false, writable: false}); } catch (error) { /* kept as it is */ }
   }
+  const fix = (target, name, value) => { try { define(target, name, {value, configurable: false, writable: false, enumerable: false}); } catch (error) { /* kept as it is */ } };
   try {
     const get = CredentialsContainer.prototype.get;
-    CredentialsContainer.prototype.get = function (options) {
+    fix(CredentialsContainer.prototype, 'get', function get_(options) {
       if (options && options.identity) return Promise.reject(new DOMException('Not supported', 'NotSupportedError'));
-      return get.apply(this, arguments);
-    };
+      return apply(get, this, arguments);
+    });
   } catch (error) { /* no credentials container */ }
+  // What a page sends as it closes is sent after the route handler is no longer asked: a beacon, and a fetch that is kept alive past the
+  // page. Neither is needed here, so a beacon is refused (as the browser does when it cannot queue one) and keepalive is always false.
+  // A request a closing page makes without keepalive is cancelled by the browser, so a value cannot ride on one.
+  try {
+    fix(Navigator.prototype, 'sendBeacon', function () { return false; });
+  } catch (error) { /* no beacons */ }
+  try {
+    const plain = (init) => (init !== null && typeof init === 'object')
+      ? new Proxy(init, {get: (target, key) => (key === 'keepalive' ? false : reflectGet(target, key, target))}) : init;
+    const nativeFetch = window.fetch, NativeRequest = window.Request;
+    fix(window, 'fetch', function (input, init) { return apply(nativeFetch, this, [input, plain(init)]); });
+    const WrappedRequest = new Proxy(NativeRequest, {
+      construct: (target, args, newTarget) => construct(target, [args[0], plain(args[1])], newTarget),
+    });
+    fix(NativeRequest.prototype, 'constructor', WrappedRequest);
+    fix(window, 'Request', WrappedRequest);
+  } catch (error) { /* no fetch */ }
+  // The page gets to run for a moment as it is closed, and what it asks the browser to send then is not routed: Playwright stalls every
+  // request once the page is closing, and Chromium lets a stalled one go when the page's session ends (measured: an image, a plain fetch,
+  // an XHR and a stylesheet link made from a pagehide, unload or visibilitychange handler all reached a listener, with a route that
+  // refuses everything). So the events that announce it never reach a page script: this listener is registered first, on the window,
+  // in the capture phase, and stops the event for every listener after it. Nothing a Greenhouse form needs listens for one.
+  try {
+    const addListener = EventTarget.prototype.addEventListener, stopNow = Event.prototype.stopImmediatePropagation;
+    const swallow = (event) => { call(stopNow, event); };
+    for (const type of ['pagehide', 'unload', 'beforeunload', 'visibilitychange', 'freeze', 'pageswap']) call(addListener, window, type, swallow, true);
+  } catch (error) { /* no events */ }
   // Speculation rules (a script of that type) and a prerender link are acted on by the browser with no request the route handler
   // sees. A rule set is read when its element is inserted and the candidates are worked out a microtask later, and this observer's
   // microtask is queued first, so the element is gone before the browser has anything to fetch. Nothing the form needs is one.
   const SPECULATION = 'script[type="speculationrules" i], link[rel~="prerender" i]';
-  const sweep = (root) => { try { root.querySelectorAll(SPECULATION).forEach((node) => node.remove()); } catch (error) { /* gone */ } };
-  const watch = (root) => {
+  const Observer = MutationObserver, observe = MutationObserver.prototype.observe;
+  const removeNode = Element.prototype.remove, itemOf = NodeList.prototype.item;
+  const lengthOf = Object.getOwnPropertyDescriptor(NodeList.prototype, 'length').get;
+  const findIn = {document: Document.prototype.querySelectorAll, fragment: DocumentFragment.prototype.querySelectorAll};
+  const sweep = (root, find) => {
     try {
-      new MutationObserver(() => sweep(root)).observe(root, {childList: true, subtree: true, attributes: true, characterData: true});
-      sweep(root);
+      const found = call(find, root, SPECULATION);
+      const count = call(lengthOf, found);
+      for (let index = 0; index < count; index += 1) call(removeNode, call(itemOf, found, index));
+    } catch (error) { /* gone */ }
+  };
+  const watch = (root, find) => {
+    try {
+      call(observe, new Observer(() => sweep(root, find)), root, {childList: true, subtree: true, attributes: true, characterData: true});
+      sweep(root, find);
     } catch (error) { /* not observable */ }
   };
-  watch(document);
+  watch(document, findIn.document);
   try {
     const attach = Element.prototype.attachShadow;
-    Element.prototype.attachShadow = function (init) { const root = attach.call(this, init); watch(root); return root; };
+    fix(Element.prototype, 'attachShadow', function attachShadow(init) {
+      const root = apply(attach, this, arguments);
+      watch(root, findIn.fragment);
+      return root;
+    });
   } catch (error) { /* no shadow roots */ }
 })();"""
 # Chromium switches that turn some of those features off, and one that closes the rest at the network layer. None changes how the browser
@@ -187,14 +237,21 @@ NO_SIDE_CHANNELS = """(() => {
 # reach one, is closed by the init script alone, in every realm a page can make (tests/test_apply_agent_browser.py names each one).
 #
 # The resolver rule is the catch-all: the browser can look up only the hosts a Greenhouse form and its fonts, lookups, static files and
-# CAPTCHA use (``RESOLVABLE_HOSTS``), and any other name, an IP address included, fails inside Chromium with no query leaving the machine.
+# CAPTCHA use (``RESOLVABLE_HOSTS``), and any other name, an IP address included, fails inside Chromium with no query leaving the machine
+# (WebRTC to an ICE server given as an IP address is not a name lookup: the init script is the only thing that stops it. Measured on
+# Playwright 1.62's Chromium, the resolver rule left ten packets reaching a loopback listener, and no switch silenced both STUN over UDP
+# and TURN over TCP: ``--force-webrtc-ip-handling-policy=disable_non_proxied_udp`` stops the UDP and not the TCP, and the blink and
+# feature names tried did nothing. tests/test_apply_agent_browser.py pins that, so a Chromium that gains a switch shows up there.)
+# The list is only what a rehearsal needs before Submit, because a request a closing page makes is not routed, and only a name that does
+# not resolve is certain to stop it: not Greenhouse's analytics collector (c.spl), my.greenhouse.io, www.google.com, or a CAPTCHA service a
+# Greenhouse form has not been seen to use.
 # A hint (dns-prefetch, preconnect), a prefetch, an interest-group owner or a script's own request to a host it names then goes nowhere,
 # whatever channel it takes, and a value put in a host name is never looked up. The third-party widgets a board may load (Google Drive,
 # Dropbox, a recruiting-analytics script) do not load either: the app presses none of them.
 RESOLVABLE_HOSTS: tuple[str, ...] = tuple(sorted({
     *BOARD_HOSTS, *(endpoint.host for endpoint in GREENHOUSE_LOOKUP_ENDPOINTS), *STATIC_ASSET_HOSTS,
     "s?-recruiting.cdn.greenhouse.io", "s??-recruiting.cdn.greenhouse.io", "s???-recruiting.cdn.greenhouse.io",
-    *(endpoint.host for endpoint in CAPTCHA_ENDPOINTS), "fonts.googleapis.com", "fonts.gstatic.com", "my.greenhouse.io", "c.spl.greenhouse.io",
+    *CONFIRMED_CAPTCHA_HOSTS, "fonts.googleapis.com", "fonts.gstatic.com",
 }))
 
 

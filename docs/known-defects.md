@@ -18,7 +18,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Apply for me | 0 | 5 | 3 | 8 |
+| Apply for me | 0 | 6 | 3 | 9 |
 | Mail, Gmail and inboxes | 0 | 4 | 9 | 13 |
 | Outreach drafting, research, forms and CLI | 0 | 4 | 2 | 6 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
@@ -26,7 +26,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Scoring, scheduling and configuration | 1 | 1 | 4 | 6 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **27** | **26** | **54** |
+| **Total** | **1** | **28** | **26** | **55** |
 
 ## Start here: the high-severity entries
 
@@ -112,7 +112,7 @@ The entry flagged for an owner decision is
 
 ## Apply for me
 
-The first three were left open by PR #54 (the fail-closed net) and recorded here on 2026-10-03. Apply for me never carries an answer across companies, so each of those can at worst affect one company's own saved answer, and the student still presses Submit (D1 B). The other five were found while building the rehearsal engine (M5a) and were not fixed there.
+The first three were left open by PR #54 (the fail-closed net) and recorded here on 2026-10-03. Apply for me never carries an answer across companies, so each of those can at worst affect one company's own saved answer, and the student still presses Submit (D1 B). The others were found while building the rehearsal engine (M5a) and were not fixed there.
 
 ### Agreement-shaped choices and signatures outside the word list still fill from a same-company saved answer
 - **Severity:** medium (PR #54 review)
@@ -148,6 +148,13 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **What happens:** On a form whose consent or acknowledgment box is a bare label-wrapped input, the scan's question for the box is "". `join` reports `wording_mismatch` for it, `build_plan` blanks the box (even a required consent the student stored an answer for), and `clean_rehearsal` is False. The fictional form shows it for `question_4000000109`, `question_4000000110`, `question_4000000113` and `gdpr_consent_given`.
 - **Suggested fix:** In `join`, skip the wording comparison when `heard` is empty for a radio or checkbox control, or have the engine report the wrapping label's own text for a lone checkbox. Then tighten the browser test to `join_problems == []`.
 - **Regression suite:** tests/test_apply_agent_browser.py (`RehearsalTests.test_a_clean_run_fills_reads_back_and_stops_without_sending_anything`)
+
+### A request a page makes while its window is closing skips the route handler, so a hostile script can carry a typed value to one of the allowed hosts
+- **Severity:** medium, privacy (found 2026-10-03, in the M5a recheck)
+- **Where:** `opportunity_app/apply/agent.py` `NO_SIDE_CHANNELS` (the dismissal listeners, `sendBeacon`, keepalive) and `RESOLVABLE_HOSTS`; Playwright's `Page._onRoute` (stalls every request once `page.close()` has been called) with Chromium (lets a stalled request go when the page's session ends)
+- **What happens:** Measured on Playwright 1.62's Chromium: an image, a plain fetch, an XHR, a stylesheet link, a beacon and a keepalive fetch made from a `pagehide`, `unload` or `visibilitychange` handler all reached a listener with no route handler call, with a route that refuses everything. The init script now stops that: the events never reach a page script, `sendBeacon` returns false, `keepalive` is always false, and the resolver rule lists only the hosts a rehearsal needs (not the analytics collector, my.greenhouse.io, www.google.com or the unconfirmed CAPTCHA hosts). What is left: a hostile page script that sends a request carrying a value on a timer, so that one is in flight when the window closes, still has that request released; it can only reach `RESOLVABLE_HOSTS` (Greenhouse's board, lookup and static hosts, fonts.googleapis.com, fonts.gstatic.com, www.recaptcha.net and www.gstatic.com), and the value guard refuses every one of its earlier requests. The preview's "nothing leaves the browser" is true of every request the handler judged.
+- **Suggested fix:** Take the page offline before closing it: navigate to `about:blank` and wait while the route handler is still being asked (the agent's own closes), and for a window the student closes, load the form through a proxy the agent runs that sees every request, or cut the board hosts out of the resolver rule once the form is loaded.
+- **Regression suite:** tests/test_apply_agent_browser.py (`SideChannelTests`: a page that sends one request every 20 ms with its value, closed with `page.close()`, with the listener on an allowed host name mapped to loopback)
 
 ### A prerender link in a visible window loads a page of Greenhouse's own with no request the request policy sees
 - **Severity:** low (found 2026-10-03, in review of the rehearsal engine, M5a)

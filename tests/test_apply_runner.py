@@ -9,6 +9,7 @@ rehearsal or a lookup never touches an application.
 
 import hashlib
 import json
+import multiprocessing
 import os
 import subprocess
 import sys
@@ -26,7 +27,8 @@ import realdata_guard
 realdata_guard.install()
 
 from opportunity_app.apply import checks as apply_checks, policy as apply_policy, preflight as apply_preflight, runner as apply_runner, runs as apply_runs
-from opportunity_app.apply.agent_types import AgentJob, RunResult
+from opportunity_app.apply import runner_child as apply_runner_child
+from opportunity_app.apply.agent_types import AgentJob, ApplyTimeouts, RunResult
 from opportunity_app.apply.agent_types import OP_CANCEL
 from opportunity_app.apply.runner import ApplyRunner, RunnerBusy, RunRefused, SupervisorHandlers, deadline_for, supervise
 from opportunity_app.core.database import connect_product
@@ -375,6 +377,115 @@ class SuperviseTests(unittest.TestCase):
         self.assertEqual(deadline_for("handoff"), 20 * 60 + 10 * 60 + 120)
         with self.assertRaises(ValueError):
             deadline_for("nonsense")
+
+
+ORPHANED_PARENT = """
+import sys
+from pathlib import Path
+
+sys.path[:0] = [{tests!r}, {root!r}]
+
+if __name__ == "__main__":
+    import threading
+    from apply_fake_ats import HangingAgentFactory
+    from opportunity_app.apply.agent_types import ApplyTimeouts
+    from opportunity_app.apply.runner import SupervisorHandlers, supervise
+    from test_apply_runner import job
+
+    supervise(
+        HangingAgentFactory(sys.argv[1], driver=True), job(timeouts=ApplyTimeouts(orphan_s=2.0)), deadline_s=600,
+        handlers=SupervisorHandlers(progress=lambda step, text: None), cancel=threading.Event(), poll_s=0.05,
+    )
+"""
+
+
+class OrphanedChildTests(unittest.TestCase):
+    """The watchdog lives in the server. A child that outlives the server (or its deadline) must end itself, whatever its page is doing."""
+
+    def started_pids(self, pid_file):
+        self.assertTrue(wait_until(lambda: pid_file.exists() and len(pid_file.read_text().split()) == 2, 60), "the child never started its grandchild")
+        return read_pids(pid_file)
+
+    def test_a_child_whose_server_is_killed_hard_ends_itself_and_what_it_started(self):
+        with tempfile.TemporaryDirectory() as folder:
+            pid_file = Path(folder) / "pids.txt"
+            script = Path(folder) / "parent.py"
+            script.write_text(ORPHANED_PARENT.format(tests=str(Path(__file__).resolve().parent), root=str(Path(__file__).resolve().parent.parent)), encoding="utf-8")
+            parent = subprocess.Popen([sys.executable, str(script), str(pid_file)])
+            pids = []
+            try:
+                pids = self.started_pids(pid_file)
+                parent.kill()   # Stop-Process, a crash or launchd's SIGKILL: no shutdown handler runs, so the watchdog is gone
+                parent.wait(30)
+                for pid in pids:
+                    self.assertTrue(wait_until(lambda pid=pid: not apply_runner.process_alive(pid), 30), f"process {pid} is still running after its server was killed")
+            finally:
+                parent.kill()
+                for pid in pids:
+                    if apply_runner.process_alive(pid):
+                        apply_runner.kill_tree(pid)
+
+    def test_a_child_ends_itself_when_its_own_deadline_has_passed_even_if_nobody_stopped_it(self):
+        with tempfile.TemporaryDirectory() as folder:
+            pid_file = Path(folder) / "pids.txt"
+            context = multiprocessing.get_context("spawn")
+            inbox_recv, inbox_send = context.Pipe(duplex=False)
+            outbox_recv, outbox_send = context.Pipe(duplex=False)   # both ends stay open here: this child is not orphaned, only late
+            mine = job(timeouts=ApplyTimeouts(orphan_s=2.0), deadline_s=3.0)
+            child = context.Process(target=apply_runner_child.child_main, args=(HangingAgentFactory(str(pid_file), driver=True), mine, inbox_recv, outbox_send, True), daemon=True)
+            child.start()
+            try:
+                pids = self.started_pids(pid_file)
+                child.join(40)
+                self.assertFalse(child.is_alive(), "the child outlived its deadline and the grace")
+                self.assertEqual(child.exitcode, apply_runner_child.ORPHAN_EXIT_CODE)
+                self.assertTrue(wait_until(lambda: not apply_runner.process_alive(pids[1]), 30), "what the child started outlived it")
+            finally:
+                if child.is_alive() and child.pid:
+                    apply_runner.kill_tree(child.pid)
+                for end in (inbox_send, outbox_recv):
+                    end.close()
+
+    def channel_after_eof(self, *, end_process_when_orphaned):
+        """A ChildChannel whose runner end closed: whether it asked to end the process."""
+        inbox_recv, inbox_send = multiprocessing.Pipe(duplex=False)
+        _outbox_recv, outbox_send = multiprocessing.Pipe(duplex=False)
+        with mock.patch.object(apply_runner_child, "_exit_now") as exit_now:
+            channel = apply_runner_child.ChildChannel(inbox_recv, outbox_send, ApplyTimeouts(orphan_s=0.2), end_process_when_orphaned=end_process_when_orphaned)
+            inbox_send.close()
+            self.assertTrue(wait_until(channel.cancelled, 5), "end-of-file on the inbox still sets the cancel flag")
+            time.sleep(0.8)
+            return exit_now.called
+
+    def test_end_of_file_on_the_inbox_ends_a_process_child_after_the_grace_and_never_a_thread_child(self):
+        self.assertTrue(self.channel_after_eof(end_process_when_orphaned=True))
+        self.assertFalse(self.channel_after_eof(end_process_when_orphaned=False), "a thread child shares the server's process: ending it would end the server")
+
+    def test_a_thread_child_never_arms_the_process_exit(self):
+        seen = []
+
+        class Spy:
+            isolation = "thread"
+
+            def available(self):
+                return ""
+
+            def __call__(self, **kwargs):
+                class Agent:
+                    def __enter__(self_inner):
+                        return self_inner
+
+                    def __exit__(self_inner, *exc):
+                        return None
+
+                    def run(self_inner, plan, **kw):
+                        return RunResult("rehearsed", [])
+
+                return Agent()
+
+        with mock.patch.object(apply_runner_child, "_end_process_in", side_effect=lambda seconds: seen.append(seconds)):
+            run_supervised(Spy(), deadline_s=77)
+        self.assertEqual(seen, [], "a thread child never arms the process exit")
 
 
 class TreeTests(unittest.TestCase):
