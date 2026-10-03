@@ -18651,6 +18651,96 @@
         "summary": "Gmail Send For Outreach"
       }
     },
+    "/api/v1/outreach/{target_id}/location-line": {
+      "post": {
+        "description": "Put the \"(live in ...)\" line into the draft after the school's name, approved or not; an approval is taken back.",
+        "operationId": "add_outreach_location_line_api_v1_outreach__target_id__location_line_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "target_id",
+            "required": true,
+            "schema": {
+              "title": "Target Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "authorization",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline Session"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "pipeline_user_session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Pipeline User Session"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Add Outreach Location Line Api V1 Outreach  Target Id  Location Line Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Outreach Location Line"
+      }
+    },
     "/api/v1/outreach/{target_id}/possible-replies/{gmail_id}": {
       "post": {
         "description": "The student says whether an email from the company that may be a reply is one.",

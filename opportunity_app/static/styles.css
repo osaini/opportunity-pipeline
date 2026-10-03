@@ -1337,6 +1337,13 @@ details.apply-plan-group .reason-list .profile-help { margin: 2px 0 0; }
 .outreach-draft-main { display: grid; gap: 16px; min-width: 0; }
 .outreach-to { margin: 0; color: var(--ink-soft); font-size: 13px; overflow-wrap: anywhere; }
 .outreach-to strong { color: var(--ink); }
+/* The draft's To and Cc dropdowns, side by side. */
+.outreach-recipients { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; min-width: 0; }
+.outreach-recipients select { cursor: pointer; }
+.outreach-recipients select:disabled { opacity: 0.6; cursor: default; }
+.outreach-recipients .form-status { grid-column: 1 / -1; margin: 0; }
+.outreach-recipients .form-status:empty { display: none; }
+@media (max-width: 720px) { .outreach-recipients { grid-template-columns: 1fr; } }
 .outreach-guess { padding: 6px var(--field-pad-x); border: 1px solid var(--warn-line); border-radius: var(--radius-md); background: var(--warn-panel); color: var(--warn-ink); font-size: 12px; }
 .outreach-aside { display: grid; gap: 10px; }
 .outreach-aside-card { display: grid; gap: 5px; padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-sunken); font-size: 13px; overflow-wrap: anywhere; }

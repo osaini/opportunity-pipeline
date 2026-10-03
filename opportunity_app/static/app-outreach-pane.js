@@ -33,8 +33,8 @@
 
   // From app-outreach-drafts.js.
   const {
-    draftAssistant, loadOutreachTimeline, outreachContactsSection, outreachManualContactSection, outreachReplySection,
-    renderDraftChecks,
+    draftAssistant, loadOutreachTimeline, outreachContactsSection, outreachManualContactSection, outreachRecipients,
+    outreachReplySection, renderDraftChecks,
   } = App;
 
   // From app-outreach-tools.js.
@@ -1390,15 +1390,10 @@
       to.append(element("strong", "", "To "), document.createTextNode(`${item.company}'s contact form (${formHost(item)})`));
       draft.appendChild(to);
     }
+    // A company reached only through its form has no To to choose until an address turns up.
+    const recipients = item.contact_email || !item.contact_form ? outreachRecipients(item) : null;
+    if (recipients) draft.appendChild(recipients.element);
     if (item.contact_email) {
-      const to = element("p", "outreach-to is-wide");
-      to.append(element("strong", "", "To "), document.createTextNode(item.contact_name ? `${item.contact_name} <${item.contact_email}>` : item.contact_email));
-      draft.appendChild(to);
-      if (item.contact_cc) {
-        const cc = element("p", "outreach-to is-wide");
-        cc.append(element("strong", "", "Cc "), document.createTextNode(item.contact_cc));
-        draft.appendChild(cc);
-      }
       if (item.contact_confidence === "unverified") {
         draft.appendChild(element("p", "outreach-note outreach-guess is-wide", item.contact_cc
           ? `${item.contact_email} is a guessed address, not confirmed. ${item.contact_cc} is in Cc, so a wrong guess still reaches the company.`
@@ -1486,7 +1481,7 @@
 
     const researchPanel = panel("research");
     researchPanel.append(research, outreachTechBrief(item, context), notesGroup);
-    const contactsSection = outreachContactsSection(item);
+    const contactsSection = outreachContactsSection(item, { onCandidates: recipients?.update });
     const contactPanel = panel("contact");
     contactPanel.append(contact, outreachManualContactSection(item), outreachContactFormSection(item), contactsSection.element);
     const timingPanel = panel("timing");

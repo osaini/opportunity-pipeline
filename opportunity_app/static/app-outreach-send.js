@@ -122,6 +122,8 @@
     // an import file claimed and the tracker refused, not what it accepted.
     location_import_claim: "Import file's unverified location claim",
     location_entered: "Location entered",
+    location_line_added: "Location line added to the draft",
+    location_line_removed: "Location line taken out of the draft",
     not_interested: "Marked not interested",
     applied_directly: "Marked applied directly",
     interested_again: "Moved back into outreach",

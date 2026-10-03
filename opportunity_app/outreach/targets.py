@@ -225,6 +225,7 @@ def _normalize(payload: dict[str, Any], *, partial: bool) -> dict[str, Any]:
         raise ValueError("Contact email does not look like an email address")
     if values.get("contact_cc") and not EMAIL_ADDRESS.match(values["contact_cc"]):
         raise ValueError("Cc does not look like an email address")
+    _refuse_cc_matching_to(values.get("contact_email", ""), values.get("contact_cc", ""))
     for field in ("website", "contact_linkedin", "contact_evidence_url"):
         if values.get(field):
             validate_web_url(values[field], field)
@@ -256,6 +257,12 @@ def _normalize(payload: dict[str, Any], *, partial: bool) -> dict[str, Any]:
             reason = str(payload["set_aside_reason"] or "").strip()
             values["set_aside_reason"] = reason if reason in SET_ASIDE_REASONS else ""
     return values
+
+
+def _refuse_cc_matching_to(to: str, cc: str) -> None:
+    """One address cannot be both To and Cc: the email would go to it twice and reach no one else."""
+    if cc and to and cc.casefold() == to.casefold():
+        raise ValueError(f"{cc} is already in To. Choose a different Cc or remove it")
 
 
 def _clean_timestamp(value: Any) -> str | None:
@@ -1041,6 +1048,8 @@ def _plan_target_update(
 ) -> dict[str, Any] | None:
     """What a change to a target writes, worked out against ``previous``. None when it changes nothing. Writes nothing."""
     values = _normalize(payload, partial=True)
+    if "contact_email" in values or "contact_cc" in values:
+        _refuse_cc_matching_to(values.get("contact_email", previous["contact_email"]), values.get("contact_cc", previous["contact_cc"]))
     if "location" in values:
         if values["location"] == previous["location"]:
             del values["location"]

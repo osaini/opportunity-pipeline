@@ -169,6 +169,17 @@ the deep search reported is marked *not yet checked*, and a draft does not say
 you are nearby until the site or a filing agrees or you confirm the research.
 Your own entry is never overwritten; the company's site outranks a filing.
 
+A draft written before its company's location was checked is not written
+again when the location arrives. The app puts its own "(live in ...)" line
+right after your school's name in the opening and changes nothing else, and
+takes that line out again if the company turns out not to be where you live.
+Typing or confirming a location does this at once; with **Write drafts
+automatically** on, a location found by the company's site, a filing, or a web
+search does it within a minute. An approved draft is left as it is: press
+**Add the location line** under it, then approve it again. A draft whose
+opening does not name your school as your profile has it keeps its warning,
+and you add the line yourself or regenerate it.
+
 - **Company site.** Structured data with a postal address, a sentence like
   "headquartered in Austin, TX", or a street address with a ZIP code. A site
   that lists several places at the same level sets none. Failing those, a site
