@@ -268,7 +268,8 @@ py -3 scripts/serve_for_testing.py
 
 With `PIPELINE_SANDBOX_FAKE_APPLY=1` the sandbox also turns Apply for me on with a fictional
 Greenhouse listing and an agent that opens no browser: Acme Robotics (saved) becomes a Greenhouse role, and
-its page shows what is missing. Nothing reaches Greenhouse.
+its page shows what is missing. A rehearsal or an option lookup there returns a canned result (and a canned picture) after a few
+seconds, with no browser. Nothing reaches Greenhouse.
 
 It seeds a throwaway database from the same fixture the unittest suite uses,
 prints fixed tokens, and serves `http://127.0.0.1:8799`. Sign in by pasting
