@@ -40,7 +40,7 @@ from typing import Any, Callable
 
 import httpx
 
-from ..apply import runs as apply_runs
+from ..apply import runs as apply_runs, watch as apply_watch
 from ..automation import ledger as automation, internal as internal_automation
 from . import thank_you as outreach_thank_you
 from ..automation.background import PollingWorker, record_health_quietly, step_error
@@ -462,8 +462,8 @@ class AutomationWorker(PollingWorker):
                     _step_failed(conn, errors, [user_id], exc)
             try:
                 # Independent of every switch; it records its own health (apply_agent.runner) per student.
-                upkeep = apply_runs.run_worker_step(conn, apply_root=self._apply_root)
-                if upkeep["recovered"] or upkeep["purged"]:
+                upkeep = apply_runs.run_worker_step(conn, apply_root=self._apply_root, watch=apply_watch.watch)
+                if upkeep["recovered"] or upkeep["purged"] or upkeep["watched"]:
                     report["apply"] = upkeep
             except Exception:  # noqa: BLE001 - the other students' passes are done; the next pass tries again
                 LOGGER.exception("Apply for me upkeep failed")
