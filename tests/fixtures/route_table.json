@@ -1226,6 +1226,18 @@
       "status_code": null
     },
     {
+      "endpoint": "add_outreach_location_line",
+      "include_in_schema": true,
+      "kind": "route",
+      "methods": [
+        "POST"
+      ],
+      "operation_id": "add_outreach_location_line_api_v1_outreach__target_id__location_line_post",
+      "path": "/api/v1/outreach/{target_id}/location-line",
+      "response_model": "dict[str, typing.Any]",
+      "status_code": null
+    },
+    {
       "endpoint": "approve_outreach",
       "include_in_schema": true,
       "kind": "route",

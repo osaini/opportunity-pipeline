@@ -152,7 +152,7 @@ FEATURES: dict[str, Feature] = {
     feature.key: feature
     for feature in (
         Feature("auto_drafts", "Write drafts automatically",
-                "Write a draft for every company with a contact and a location", "outreach", "internal"),
+                "Write a draft for every company not yet contacted", "outreach", "internal"),
         Feature("bounce_recovery", "Find a new contact after a bounce",
                 "After a bounce, find another contact and fix the greeting", "outreach", "internal"),
         # No shadow, at the student's choice (2026-09-28): the words are ones they approved,

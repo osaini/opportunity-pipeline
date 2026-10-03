@@ -40,7 +40,7 @@ from helpers_platform import build_and_migrate
 USER = "local-user"
 MIGRATIONS = Path(__file__).resolve().parent.parent / "migrations"
 LEGACY_OUTREACH_SETTINGS = {
-    "auto_drafts": "Write a draft for every company with a contact and a location",
+    "auto_drafts": "Write a draft for every company not yet contacted",
     "bounce_recovery": "After a bounce, find another contact and fix the greeting",
     "bounce_auto_resend": "After a bounce, send the approved email again to the new contact when only the greeting changed",
     "scheduled_sending": "Send approved emails on the recipient's next weekday morning",
