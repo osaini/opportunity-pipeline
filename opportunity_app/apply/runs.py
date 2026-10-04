@@ -48,7 +48,7 @@ from time import monotonic
 from typing import Any, Callable, Iterator
 from uuid import uuid4
 
-from pipeline_core.identity import normalized
+from pipeline_core.identity import employer_key, normalized
 
 from .. import SERVER_INSTANCE
 from ..automation import ledger as automation
@@ -118,6 +118,7 @@ ASK_COMPANY_LIMIT = "company_limit"
 ASK_RELEASED_JOB = "released_job"
 ASK_UNMATCHED_CONFIRMATION = "unmatched_confirmation"
 ASK_APPLYING_OLD = "applying_old"
+ASK_ACTIVE_AT_COMPANY = "active_at_company"
 
 RUNNING_RUNS: set[str] = set()
 RUN_ID = re.compile(r"run-[0-9a-f]{32}")
@@ -405,10 +406,38 @@ def duplicate_block(
         return Block("ask", ASK_UNMATCHED_CONFIRMATION,
                      f"An application confirmation from {name} arrived on {_day_text(zone, unmatched)} that the app couldn't match to a role. "
                      "I haven't applied to this role.")
+    active = _active_elsewhere(conn, user_id, opportunity_id, company)
+    if active is not None and ASK_ACTIVE_AT_COMPANY not in acknowledged:
+        stage, name, title = active
+        what = "an offer from" if stage == "offer" else "an interview in progress at"
+        return Block("ask", ASK_ACTIVE_AT_COMPANY,
+                     f"You have {what} {name} for {title}. Applying to another role there may cross wires with it.")
     created = parse_app_instant(application["created_at"]) if application is not None else None
     if created is not None and moment - created > timedelta(days=1) and ASK_APPLYING_OLD not in acknowledged \
             and not _made_by_the_app(conn, str(application["id"]), str(application["created_at"])):
         return Block("ask", ASK_APPLYING_OLD, "Did you already apply to this by hand? I haven't applied yet.")
+    return None
+
+
+def _active_elsewhere(conn: sqlite3.Connection, user_id: str, opportunity_id: str, company: str) -> tuple[str, str, str] | None:
+    """(stage, company name, role) of the student's interview or offer at this company for another role, or None.
+
+    ``company`` is employer_key(name), so the same company under another spelling is the same company. An interview comes
+    before an offer when the student has both: it is the one still moving. A company with no usable name has an empty
+    key, and two roles with no company are not the same company, so it matches nothing.
+    """
+    if not company:
+        return None
+    for row in conn.execute(
+        """
+        SELECT a.stage, o.company, o.title FROM applications a JOIN opportunities o ON o.id=a.opportunity_id
+        WHERE a.user_id=? AND a.opportunity_id<>? AND a.stage IN ('interview', 'offer')
+        ORDER BY CASE a.stage WHEN 'interview' THEN 0 ELSE 1 END, a.updated_at DESC
+        """,
+        (user_id, opportunity_id),
+    ).fetchall():
+        if employer_key(row["company"] or "") == company:
+            return row["stage"], row["company"] or "this company", row["title"] or "another role"
     return None
 
 
@@ -532,9 +561,11 @@ def claim(
                     "WHERE user_id=? AND (application_id=? OR (ats=? AND job_ref=?)) AND after_click=0 AND state IN ('failed', 'needs_you')",
                     (stamp, user_id, application_id, ats, job_ref),
                 )
+            # Unattended mode cannot tick past an interview already in progress: the tick is the student's own decision.
+            ticked = tuple(code for code in acknowledged if not (mode == "unattended" and code == ASK_ACTIVE_AT_COMPANY))
             block = duplicate_block(
                 conn, user_id, opportunity_id=opportunity_id, ats=ats, job_ref=job_ref, company=company,
-                application_id=application_id, acknowledged=acknowledged, now=moment,
+                application_id=application_id, acknowledged=ticked, now=moment,
             )
             if block is None:
                 block = _limit_check(conn, user_id, company, board_token, mode, moment)

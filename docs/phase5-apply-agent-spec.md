@@ -323,6 +323,12 @@ Finish in browser needs no gate, because the student presses Submit.
   under two spellings is still one company.
 - **The same Greenhouse job can never be submitted twice by the agent.** No tick overrides that
   (9.1).
+- **An interview or an offer already in progress at the company, for another role, asks for a tick.**
+  The code is `active_at_company` and the sentence names the stage and the role: "You have an
+  interview in progress at {company} for {role}. Applying to another role there may cross wires with
+  it." Finish in browser and one-click may carry the tick; unattended mode cannot, because the tick is
+  the student's own decision. The company is matched by name (the same key as the company limit), and
+  the stages that count are `interview` and `offer`.
 
 The per-company limit exists because of Greenhouse's application-limit rules and its permanent
 spam marks **[doc]**.
