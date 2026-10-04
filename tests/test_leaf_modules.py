@@ -1159,7 +1159,8 @@ class WorkstreamBCliRunnerTests(unittest.TestCase):
             result = agent_providers.run_headless(["claude", "-p"], "the prompt", timeout=12.5, cwd="somewhere")
         self.assertIs(result, done)
         run.assert_called_once_with(
-            ["claude", "-p"], input="the prompt", capture_output=True, text=True, encoding="utf-8", errors="replace",
+            ["claude", "-p"], input=agent_providers.with_untrusted_notice("the prompt"), capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
             timeout=12.5, cwd="somewhere", env=None, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
 
