@@ -375,6 +375,25 @@ def test_a_server_error_is_shown_as_itself_and_never_queued(owner_page):
     assert _outbox_entries(owner_page) == {}
 
 
+def test_an_error_raised_while_scrolled_down_floats_into_view(owner_page):
+    owner_page.evaluate("document.body.style.minHeight = '4000px'; window.scrollTo(0, 2000)")
+    owner_page.evaluate("window.OpportunityApp.showError('Scrolled away failure')")
+    banner = owner_page.locator("#error-banner")
+    expect(banner).to_have_class(re.compile(r"\bis-floating\b"))
+    expect(banner).to_be_in_viewport()
+    expect(owner_page.locator("body")).to_have_class(re.compile(r"\berror-flash\b"))
+
+    banner.click()
+    expect(banner).to_be_hidden()
+
+
+def test_an_error_raised_at_the_top_stays_in_place(owner_page):
+    owner_page.evaluate("window.scrollTo(0, 0); window.OpportunityApp.showError('Top failure')")
+    banner = owner_page.locator("#error-banner")
+    expect(banner).to_be_visible()
+    expect(banner).not_to_have_class(re.compile(r"\bis-floating\b"))
+
+
 @pytest.mark.allow_page_errors
 def test_an_offline_action_is_queued_for_this_user_and_synced_on_return(owner_page):
     owner_page.route(ACTIONS_ROUTE, lambda route: route.abort())

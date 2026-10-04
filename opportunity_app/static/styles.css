@@ -331,6 +331,14 @@ h1 { margin: 0; max-width: 900px; font-family: Georgia, "Times New Roman", serif
 .personalize-prompt { margin-bottom: 16px; padding: var(--space-3) var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--accent-soft); color: var(--ink); display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; font-size: 13px; }
 .personalize-prompt p { margin: 0; flex: 1 1 280px; }
 .error-banner {margin-bottom: 16px; padding: var(--space-3) var(--space-4); color: var(--danger); background: var(--danger-soft); border: 1px solid var(--danger-line); border-radius: var(--radius-md); font-size: 13px; }
+/* Raised by showError when the banner is scrolled out of view. */
+.error-banner.is-floating { position: fixed; z-index: 60; top: 16px; left: 50%; width: min(640px, calc(100vw - 32px)); margin: 0; transform: translateX(-50%); border-color: var(--danger); box-shadow: var(--shadow-raised), 0 0 0 3px var(--danger-soft); font-weight: 650; cursor: pointer; animation: error-drop .35s ease-out, error-nudge .5s .35s ease-in-out; }
+.error-banner.is-floating::after { content: "Click to dismiss"; display: block; margin-top: 4px; font-size: 11px; font-weight: 500; opacity: .75; }
+@keyframes error-drop { from { opacity: 0; transform: translate(-50%, -24px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes error-nudge { 25% { transform: translateX(calc(-50% - 6px)); } 75% { transform: translateX(calc(-50% + 6px)); } }
+/* One-time red frame around the viewport, so the eye finds the banner. */
+body.error-flash::after { content: ""; position: fixed; inset: 0; z-index: 59; pointer-events: none; box-shadow: inset 0 0 0 4px var(--danger), inset 0 0 40px var(--danger-line); animation: error-frame 1.6s ease-out forwards; }
+@keyframes error-frame { 0% { opacity: 0; } 12% { opacity: 1; } 100% { opacity: 0; } }
 .opportunity-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .opportunity-card { min-width: 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow-raised); overflow: hidden; transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease; }
 .opportunity-card:hover { transform: translateY(-2px); border-color: var(--line-strong); box-shadow: 0 12px 36px rgba(25, 36, 29, .08); }

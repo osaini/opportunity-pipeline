@@ -121,15 +121,43 @@
     return WEEKDAY_DATE_TIME_FORMAT.format(moment);
   }
 
+  // The banner sits at the top of the page, so an error raised while the student
+  // is scrolled down would go unseen. When the in-place banner is not fully on
+  // screen it floats over the page (and over the detail panel) until it is
+  // cleared or clicked, and the viewport edge flashes red once to draw the eye.
+  const ERROR_FLASH_MS = 1600;
+  let errorFlashTimer = 0;
+
+  function flashViewportEdge() {
+    const body = document.body;
+    body.classList.remove("error-flash");
+    void body.offsetWidth;
+    body.classList.add("error-flash");
+    clearTimeout(errorFlashTimer);
+    errorFlashTimer = setTimeout(() => body.classList.remove("error-flash"), ERROR_FLASH_MS);
+  }
+
   function showError(message) {
-    els.error.textContent = message;
-    els.error.hidden = false;
+    const banner = els.error;
+    banner.classList.remove("is-floating");
+    banner.textContent = message;
+    banner.hidden = false;
+    const rect = banner.getBoundingClientRect();
+    if (rect.top < 0 || rect.bottom > window.innerHeight) {
+      banner.classList.add("is-floating");
+      flashViewportEdge();
+    }
   }
 
   function clearError() {
     els.error.textContent = "";
     els.error.hidden = true;
+    els.error.classList.remove("is-floating");
   }
+
+  els.error.addEventListener("click", () => {
+    if (els.error.classList.contains("is-floating")) clearError();
+  });
 
   // One formatter per shape, built on first use and then kept: they run per
   // card and per timeline row, and the first Intl formatter costs a few
