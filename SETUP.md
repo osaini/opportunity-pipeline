@@ -122,7 +122,7 @@ into `config/profile.json`. The field names are the keys in
 | Titles to push down | `deprioritize_title_keywords` | disciplines they don't want, e.g. `["sales", "software"]` |
 | Authorized to work in the US? US citizen? Need sponsorship? | `work_authorized_us`, `us_citizen`, `requires_sponsorship` | `true` / `false` / `null`. Never infer these. |
 | Home during breaks and summers | `break_location` | "City, ST", or the name of one of their `regions`. Used only for the outreach "(live in …)" note (see below) |
-| Pay expectations | `compensation_preferences` | free text or `null` |
+| Pay expectations | `compensation_preferences` | `null`, or an object: `paid_only` (`true`, `false` or `null`), `minimum_hourly` (dollars an hour as a number, or `null`) and `currency` (text; pay is compared only when it is blank or `USD`). A string here is refused by the Profile page and ignored by the score. |
 | How they open an email | `greeting_word`, `unnamed_greeting` | Their word before a name (`"Hi"`, `"Hello"`, `"Dear"`), and how they greet a shared inbox with no name: `"{company} team"`, `"there"`, or `"{company} hiring team"`. Drafts and contact changes use these; left out, they are `"Hi"` and `"{company} team"`. Editable later on the Profile page. |
 
 **Regions** decide which locations score up. Each is a metro area with a

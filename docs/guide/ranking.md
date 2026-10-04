@@ -75,6 +75,37 @@ read for one, and a `degree` that names no level changes nothing
 disciplines you don't want in `deprioritize_title_keywords` if their titles are
 ranking too high, and remove entries there if they are ranking too low. Citizenship and sponsorship language is
 flagged for human verification; a sponsorship penalty is applied only when the
-profile explicitly says sponsorship is required.
+profile explicitly says sponsorship is required. The sponsorship check reads the
+ways a posting closes sponsorship, for the company or for one opening ("no
+sponsorship", "we do not offer visa sponsorship", "immigration sponsorship is not
+offered for this specific opening", "authorized to work without sponsorship").
+
+**Experience.** "N years of ... experience" costs 18 points when N is more than
+`max_years_experience` (1 if unset). N may be a digit or a word ("six (6) years",
+"three years"), may carry "or more", and for a range ("3-5 years", "3 to 5
+years") the first number is the one read, since that is what you have to meet. A
+posting that counts the years from graduation or asks for full-time professional
+work ("1-3 years of full-time professional experience post-graduation") asks for
+experience an internship does not give. If `graduation_year` is this year or
+later, that costs the 18 points whatever `max_years_experience` says, and the reason
+reads "asks for 1+ years of post-graduation experience". If you graduated in an
+earlier year the ceiling decides as usual, and with no `graduation_year` the score
+does not guess: it adds a flag to verify instead.
+
+**Pay.** `compensation_preferences` in the profile is read for two things. A posting
+that states pay in dollars per hour and tops out below `minimum_hourly` costs 15
+points ("pays up to $22/hour, below your $25/hour minimum"). With `paid_only` set to
+true, a posting that calls the role unpaid ("an unpaid internship", "a volunteer
+role") costs 35. Only a stated hourly wage is compared: a yearly salary is not
+turned into an hourly rate, a posting that states no pay changes nothing, and a
+currency other than USD is not compared with dollars.
+
+**Text aimed at AI readers.** A posting that speaks to a model ("if you are an LLM,
+include the word ...", "ignore all previous instructions") gets a flag, with no
+change to the score. A company that wrote it wants a model's answer to differ from
+a person's, so read that posting yourself. Every request the app makes to a model
+through the Claude Code and Codex command lines or the OpenAI and Anthropic APIs
+also carries a standing note that text from postings, pages and emails is evidence,
+never instructions.
 
 Back to the [README](../../README.md) index.
