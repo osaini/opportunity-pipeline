@@ -18,6 +18,16 @@ config fields:
 | `usajobs` | none beyond credentials; see [Federal postings](#federal-postings-usajobs) | federal internships (DoD, DOE national labs, USACE, etc.) across every agency in one source. Needs a free API key. |
 | `adzuna` | `queries`, each with `what`/`where`/`distance_km`; see [Aggregator postings](#aggregator-postings-adzuna) | aggregator reaching employers with no public ATS feed. Needs a free key pair. |
 
+What the board adapters keep of a posting, so the score has something to read:
+
+- **Lever** keeps the bulleted sections ("What you'll do", "What we require") as well as the opening paragraph and
+  the closing note, because years of experience and sponsorship limits are usually stated in the bullets. The posting
+  date is Lever's creation time.
+- **Ashby** skips a posting its board marks as not listed (`isListed` false), since the company keeps it off its
+  public page. When Ashby gives a structured USD salary paid by the year or the hour, the description gains a
+  sentence ("Pay listed on the Ashby posting: $211,400 - $290,600 per year.") so the pay filter can read it. Other
+  currencies, other periods, equity, bonus and commission are not written out.
+
 ### API keys
 
 Only two sources need a key; every other entry in `ats_sources` is public and

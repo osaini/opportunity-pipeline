@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import re
 import urllib.parse
+from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from .http import _http_json, request_json, request_json_post
@@ -93,12 +94,23 @@ def lever_jobs(source: dict[str, Any], discovery_terms: list[str]) -> Listing:
         if not is_discovery_candidate(item.get("text", ""), discovery_terms):
             continue
         categories = item.get("categories") or {}
+        # `lists` holds the bulleted sections ("What you'll do", "What we require"); the plain description is only
+        # the opening paragraph, so without them a years or sponsorship requirement never reaches the score.
+        sections = item.get("lists")
+        lists = [
+            strip_html(f"{entry.get('text') or ''} {entry.get('content') or ''}")
+            for entry in (sections if isinstance(sections, list) else [])
+            if isinstance(entry, dict)
+        ]
         description = " ".join(
-            [
+            part
+            for part in [
                 strip_html(item.get("descriptionPlain") or item.get("description", "")),
+                *lists,
                 strip_html(item.get("additionalPlain") or item.get("additional", "")),
             ]
-        ).strip()
+            if part
+        )
         jobs.append(
             {
                 "external_id": str(item["id"]),
@@ -107,10 +119,24 @@ def lever_jobs(source: dict[str, Any], discovery_terms: list[str]) -> Listing:
                 "location": categories.get("location", ""),
                 "url": item.get("hostedUrl") or item.get("applyUrl", ""),
                 "description": description,
-                "posted_at": None,
+                "posted_at": _epoch_milliseconds_to_iso(item.get("createdAt")),
             }
         )
     return Listing(jobs, listed=len(listing))
+
+
+def _epoch_milliseconds_to_iso(value: Any) -> str | None:
+    """A UTC ISO time for a positive millisecond epoch (Lever's `createdAt`), None for anything else.
+
+    A posting date the source did not give stays unknown: 0, a negative number, a bool, text, NaN or a value past
+    year 9999 are not dates.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not value > 0:
+        return None
+    try:
+        return datetime.fromtimestamp(value / 1000, timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def ashby_jobs(source: dict[str, Any], discovery_terms: list[str]) -> Listing:
@@ -123,6 +149,11 @@ def ashby_jobs(source: dict[str, Any], discovery_terms: list[str]) -> Listing:
         title = item.get("title", "")
         if not is_discovery_candidate(title, discovery_terms):
             continue
+        # isListed false is a posting the company keeps off its public board (a draft, an internal or a closed req).
+        if item.get("isListed") is False:
+            continue
+        description = strip_html(item.get("descriptionHtml", ""))
+        pay = _ashby_pay_sentence(item.get("compensation"))
         jobs.append(
             {
                 "external_id": str(item["id"]),
@@ -130,11 +161,50 @@ def ashby_jobs(source: dict[str, Any], discovery_terms: list[str]) -> Listing:
                 "title": title,
                 "location": item.get("location", ""),
                 "url": item.get("jobUrl") or item.get("applyUrl", ""),
-                "description": strip_html(item.get("descriptionHtml", "")),
+                "description": f"{description} {pay}".strip() if pay else description,
                 "posted_at": item.get("publishedAt"),
             }
         )
     return Listing(jobs, listed=len(listing.get("jobs", [])))
+
+
+_ASHBY_PAY_PERIODS = {"1 YEAR": "year", "1 HOUR": "hour"}
+
+
+def _ashby_pay_sentence(compensation: Any) -> str:
+    """A sentence in the form the pay reader knows, from Ashby's structured salary, or "" when it states none.
+
+    Ashby gives the amount, the period and the currency as fields, which the description often lacks (the pay
+    reader needs "per year" or "per hour" beside the figure). Only a USD salary paid by the year or the hour is
+    written out: the reader names any pay it finds dollars, and a period it does not know would be a guess.
+    Equity, bonus and commission are not pay.
+    """
+    if not isinstance(compensation, dict):
+        return ""
+    components = compensation.get("summaryComponents")
+    for component in components if isinstance(components, list) else []:
+        if not isinstance(component, dict) or component.get("compensationType") != "Salary":
+            continue
+        interval = component.get("interval")
+        period = _ASHBY_PAY_PERIODS.get(interval) if isinstance(interval, str) else None
+        low, high = component.get("minValue"), component.get("maxValue")
+        if period is None or component.get("currencyCode") != "USD":
+            continue
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not v > 0 for v in (low, high)):
+            continue
+        low, high = sorted((low, high))
+        amount = _pay_amount if period == "hour" else _pay_dollars
+        text = amount(low) if low == high else f"{amount(low)} - {amount(high)}"
+        return f"Pay listed on the Ashby posting: {text} per {period}."
+    return ""
+
+
+def _pay_dollars(value: float) -> str:
+    return f"${round(value):,}"
+
+
+def _pay_amount(value: float) -> str:
+    return "$" + f"{value:.2f}".rstrip("0").rstrip(".")
 
 
 def smartrecruiters_jobs(source: dict[str, Any], discovery_terms: list[str]) -> Listing:
