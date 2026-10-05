@@ -92,6 +92,16 @@ class LauncherSourceTests(unittest.TestCase):
             with self.subTest(fragment=fragment):
                 self.assertIn(fragment, source)
 
+    def test_outreach_task_also_starts_when_the_computer_is_opened_and_names_its_slots(self):
+        # StartWhenAvailable alone did not catch up a Monday run missed with the computer off.
+        source = (SCRIPTS / "install-outreach-task.ps1").read_text(encoding="utf-8")
+        for fragment in (
+            "-AtLogOn", "MSFT_TaskSessionStateChangeTrigger", "StateChange = [uint32]8",
+            "Microsoft-Windows-Power-Troubleshooter", "-Days $dayList", "-At $($At.ToString('HH:mm'))",
+        ):
+            with self.subTest(fragment=fragment):
+                self.assertIn(fragment, source)
+
     def test_outreach_launcher_forwards_its_arguments(self):
         source = (SCRIPTS / "run-outreach-discovery.vbs").read_text(encoding="utf-8")
         self.assertIn("WScript.Arguments", source)
@@ -445,6 +455,84 @@ class ResumableDailyRunTests(unittest.TestCase):
         self.assertEqual(self.steps()[0], "run")
         self.assertNotEqual(self.state()["startedAt"], "2000-01-01T08:00:00Z")
         self.assertIn("abandoning unfinished run", self.log())
+
+
+# Stands in for Python: `py -m opportunity_app.outreach_cli <step> ...`. Records the step and its arguments, and exits
+# with the code the test queued for that step in the STUB_EXITS environment variable (JSON, {step: code}).
+OUTREACH_STUB = r"""
+import json, os, sys
+from pathlib import Path
+root = Path(__file__).resolve().parent
+args = sys.argv[1:]
+step = args[2]
+with open(root / "calls.txt", "a", encoding="utf-8") as calls:
+    calls.write(json.dumps([step, args[3:]]) + "\n")
+code = json.loads(os.environ.get("STUB_EXITS", "{}")).get(step, 0)
+if code != 76:  # outreach_cli prints nothing when no slot is owed
+    print(f"{step} ran", flush=True)
+sys.exit(code)
+"""
+
+
+@unittest.skipUnless(sys.platform == "win32", "run-outreach-discovery.ps1 targets Windows PowerShell")
+class OutreachCatchUpRunTests(unittest.TestCase):
+    """The real launcher and script, with a stub for Python: what reaches the search, and when the backfill is skipped."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        (self.root / "scripts").mkdir()
+        shutil.copy(SCRIPTS / "run-outreach-discovery.ps1", self.root / "scripts")
+        shutil.copy(SCRIPTS / "run-outreach-discovery.vbs", self.root / "scripts")
+        self.stub_dir = self.root / "stub"
+        self.stub_dir.mkdir()
+        (self.stub_dir / "stub.py").write_text(OUTREACH_STUB, encoding="utf-8")
+        # The script falls back to `py` on PATH when the checkout has no .venv; this one comes first.
+        (self.stub_dir / "py.cmd").write_text(f'@"{sys.executable}" "%~dp0stub.py" %*\r\n', encoding="utf-8")
+        self.wscript = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "wscript.exe"
+
+    def launch(self, *arguments: str, exits: dict | None = None) -> int:
+        env = {**os.environ, "PATH": f"{self.stub_dir}{os.pathsep}{os.environ['PATH']}", "STUB_EXITS": json.dumps(exits or {})}
+        command = [str(self.wscript), "//nologo", str(self.root / "scripts" / "run-outreach-discovery.vbs"), *arguments]
+        return subprocess.run(command, env=env, timeout=180).returncode
+
+    def calls(self) -> list[list]:
+        path = self.stub_dir / "calls.txt"
+        if not path.exists():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+    def steps(self) -> list[str]:
+        return [step for step, _ in self.calls()]
+
+    def test_the_slots_reach_the_search_so_it_can_tell_whether_one_is_owed(self):
+        self.assertEqual(self.launch("-Scheduled", "-Days", "Monday,Thursday", "-At", "07:00"), 0)
+        self.assertEqual(self.steps(), ["discover", "enrich"])
+        arguments = self.calls()[0][1]
+        self.assertIn("--due-days Monday Thursday --due-at 07:00", " ".join(arguments))
+        self.assertIn("--trigger scheduled", " ".join(arguments))
+
+    def test_nothing_owed_ends_cleanly_without_the_backfill_or_a_log_line(self):
+        self.assertEqual(self.launch("-Scheduled", "-Days", "Monday,Thursday", "-At", "07:00", exits={"discover": 76}), 0)
+        self.assertEqual(self.steps(), ["discover"], "an unlock or wake with nothing owed must not fetch company sites")
+        self.assertFalse((self.root / "data" / "outreach-discovery.log").exists(), "no-op starts must not grow the log")
+
+    def test_the_arguments_of_the_task_installed_before_still_work(self):
+        self.assertEqual(self.launch("-Scheduled"), 0)
+        self.assertEqual(self.steps(), ["discover", "enrich"])
+        self.assertNotIn("--due-days", " ".join(self.calls()[0][1]))
+
+    def test_a_failed_search_still_reports_its_exit_code_and_runs_the_backfill(self):
+        self.assertEqual(self.launch("-Scheduled", "-Days", "Monday,Thursday", "-At", "07:00", exits={"discover": 1}), 1)
+        self.assertEqual(self.steps(), ["discover", "enrich"])
+
+    def test_another_search_already_running_is_not_a_failure(self):
+        self.assertEqual(self.launch("-Scheduled", "-Days", "Monday,Thursday", "-At", "07:00", exits={"discover": 75}), 0)
+
+    def test_a_manual_run_ignores_the_slots(self):
+        self.assertEqual(self.launch("-Days", "Monday,Thursday", "-At", "07:00"), 0)
+        self.assertNotIn("--due-days", " ".join(self.calls()[0][1]))
 
 
 if __name__ == "__main__":

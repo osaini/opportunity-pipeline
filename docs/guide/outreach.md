@@ -247,8 +247,14 @@ python -m opportunity_app.launch install-outreach   # any system
 On Windows that registers the task below, `.\scripts\install-outreach-task.ps1`.
 
 It runs through `scripts/run-outreach-discovery.vbs`, so no console window
-appears. A run missed while the laptop was off starts when it is next on, and
-a scheduled run within 48 hours of a successful one is skipped. The log is
+appears. On Windows the task also starts when you sign in, unlock, or wake the
+computer, and each of those starts asks whether the newest Monday or Thursday
+7:00 already past has a successful run (yours from the Outreach tab counts). If
+it has, the start ends at once and writes nothing; if not, the missed search
+runs then. A search that failed, or never finished, is tried again no sooner
+than three hours later. A task installed before this names no slots, and
+there a scheduled run within 48 hours of a successful one is skipped; run
+`.\scripts\install-outreach-task.ps1` again to get the catch-up. The log is
 `data/outreach-discovery.log`. To try it without changing anything:
 
 ```powershell
