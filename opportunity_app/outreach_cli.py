@@ -2,6 +2,7 @@
 
     python -m opportunity_app.outreach_cli discover [--scopes local-accelerators us-startups]
                                                    [--max 10] [--dry-run] [--trigger scheduled]
+                                                   [--due-days Monday Thursday --due-at 07:00]
     python -m opportunity_app.outreach_cli locate [--limit 20] [--batch 8] [--provider claude-code]
     python -m opportunity_app.outreach_cli research [--all] [--target ID ...] [--limit 5] [--provider claude-code]
     python -m opportunity_app.outreach_cli recontact [--apply] [--redraft] [--limit 20] [--no-email-search]
@@ -11,6 +12,10 @@
 ``discover`` runs the deep search (see outreach/discovery.py), one search per
 scope with up to --max companies each. With --dry-run it
 only writes a timestamped data/outreach-discovered-<date>-<time>-<run>-dry-run.json report and changes no rows.
+With --trigger scheduled, --due-days and --due-at name the task's weekly slots (the computer's clock). The
+start then searches only when the newest slot already past has no successful run, so the task can also fire
+at sign-in, unlock and wake to catch up a slot missed with the computer off; it exits NOT_DUE_EXIT
+(76) when nothing is owed. Without them a success in the last 48 hours is what skips the start.
 ``enrich`` fills in where each company is based, from its own site and its SEC
 Form D filings (see outreach/company_profile.py), for targets with no sourced location
 or no Form D lookup yet. --all rechecks every target not checked in 30 days,
@@ -49,6 +54,7 @@ import json
 import os
 import sys
 from contextlib import ExitStack, closing
+from datetime import datetime, time, timezone
 from pathlib import Path
 
 from . import DEFAULT_PLATFORM_DB
@@ -59,7 +65,7 @@ from .opportunities.legacy import load_env_file
 from .outreach.targets import queue_follow_up_reminders
 from .outreach.config import RESEARCH_ENV, discovery_provider
 from .outreach.agents import RUNNERS, resolve_discovery_agent
-from .outreach.discovery import DEFAULT_SCOPES, MAX_PER_SCOPE, SCOPES, DiscoveryBusy, run_discovery
+from .outreach.discovery import DEFAULT_SCOPES, MAX_PER_SCOPE, SCOPES, DiscoveryBusy, latest_scheduled_slot, run_discovery
 from .outreach.locate import BATCH_SIZE, locate_targets
 from .outreach.company_profile import SEC_USER_AGENT_ENV, enrich_targets, sec_fetcher
 from .outreach.recontact import recontact_targets
@@ -68,6 +74,35 @@ from .outreach.render import default_renderer
 from .integrations.smtp_probe import default_verifier
 from .core.schema import LOCAL_USER_ID, ensure_product_schema
 from .integrations.web_fetch import default_fetcher
+
+
+# A scheduled start with a slot to catch up found none owed. Not a failure, and not worth the backfill either.
+NOT_DUE_EXIT = 76
+
+
+def _clock_time(text: str) -> time:
+    try:
+        parsed = time.fromisoformat(text)
+    except ValueError:
+        parsed = None
+    if parsed is None or parsed.tzinfo is not None:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a time like 07:00")
+    return parsed
+
+
+def _due_since(parser: argparse.ArgumentParser, args: argparse.Namespace) -> datetime | None:
+    """The instant of the newest slot already past, from --due-days and --due-at, or None when the task names no slots."""
+    if args.command != "discover" or (args.due_days is None and args.due_at is None):
+        return None
+    if args.due_days is None or args.due_at is None:
+        parser.error("--due-days and --due-at go together")
+    if args.trigger != "scheduled":
+        parser.error("--due-days and --due-at belong with --trigger scheduled")
+    try:
+        # The computer's clock, as the Task Scheduler reads it; astimezone() applies that day's daylight saving rule.
+        return latest_scheduled_slot(args.due_days, args.due_at, datetime.now()).astimezone(timezone.utc)
+    except ValueError as exc:
+        parser.error(str(exc))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -82,6 +117,8 @@ def build_parser() -> argparse.ArgumentParser:
     discover.add_argument("--no-locate", action="store_true", help="Skip the web search for new companies nothing else placed")
     discover.add_argument("--no-email-search", action="store_true", help="Skip searching other sites for a person's address")
     discover.add_argument("--trigger", choices=("manual", "scheduled"), default="manual")
+    discover.add_argument("--due-days", nargs="+", metavar="DAY", help="With --trigger scheduled: the weekdays the task is due, such as Monday Thursday")
+    discover.add_argument("--due-at", type=_clock_time, metavar="HH:MM", help="With --due-days: the time of day the task is due")
     discover.add_argument(
         "--provider", choices=sorted(RUNNERS),
         default=discovery_provider(),
@@ -129,7 +166,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     load_env_file()
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    due_since = _due_since(parser, args)
     from . import bootstrap  # imported here: --help should not load every workflow module
 
     bootstrap.register_all()
@@ -164,6 +203,7 @@ def main(argv: list[str] | None = None) -> int:
                     max_targets=args.max_targets,
                     dry_run=args.dry_run,
                     trigger=args.trigger,
+                    due_since=due_since,
                     agent_note=note,
                     provider_factory=build_provider,
                     form_d_fetcher=stack.enter_context(form_d) if form_d is not None else None,
@@ -178,6 +218,8 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:  # noqa: BLE001 - the scheduled task logs this line
             print(f"Deep search failed: {exc}", file=sys.stderr)
             return 1
+    if due_since is not None and result.get("skipped"):
+        return NOT_DUE_EXIT  # silent: the task starts this often (sign-in, unlock, wake), and the log should not grow
     print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0
 

@@ -17,8 +17,21 @@
     With -Scheduled a run is skipped when one already succeeded in the last 48
     hours, so a missed Monday run caught up late does not double up with Thursday.
 
+    With -Scheduled -Days and -At (the installed task passes them) the task also
+    fires at sign-in, unlock and wake, and each start asks the search whether the
+    newest Monday-or-Thursday slot already past has a successful run. If it does,
+    the start ends at once, silently, with no backfill and nothing in the log
+    (outreach_cli exit 76). If not, this is the catch-up for a slot missed with
+    the computer off, and it runs the search.
+
 .PARAMETER Scopes
     Which searches to run. Defaults to all three.
+
+.PARAMETER Days
+    With -Scheduled: the weekdays the task is due, comma separated (Monday,Thursday).
+
+.PARAMETER At
+    With -Scheduled and -Days: the time of day the task is due (07:00).
 
 .PARAMETER DryRun
     Write data/outreach-discovered-<date>-dry-run.json only; change no rows.
@@ -36,6 +49,9 @@ param(
     [ValidateSet('local-accelerators', 'us-startups', 'recently-funded')]
     [string[]]$Scopes = @('local-accelerators', 'us-startups', 'recently-funded'),
     [switch]$Scheduled,
+    # A string, not [DayOfWeek[]]: a PowerShell enum would read "Monday,Thursday" as the flags 1 and 4 added up.
+    [string]$Days = '',
+    [string]$At = '',
     [switch]$DryRun
 )
 
@@ -83,15 +99,29 @@ try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
 
 $arguments = @('-m', 'opportunity_app.outreach_cli', 'discover', '--scopes') + $Scopes
 if ($Scheduled) { $arguments += @('--trigger', 'scheduled') }
+# The task names its slots so the search can tell whether one is owed; a task installed before that names none.
+$catchUp = [bool]($Scheduled -and $Days -and $At)
+if ($catchUp) {
+    $dayNames = @($Days -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $arguments += @('--due-days') + $dayNames + @('--due-at', $At)
+}
 if ($DryRun) { $arguments += '--dry-run' }
 
 $mode = if ($DryRun) { ' (dry run)' } else { '' }
-Write-Log "=== $(Get-Date -Format o) deep search: $($Scopes -join ', ')$mode ==="
+$header = "=== $(Get-Date -Format o) deep search: $($Scopes -join ', ')$mode ==="
 # Native stderr must not become a terminating ErrorRecord; see run-daily.ps1.
 $ErrorActionPreference = 'Continue'
-& $python @arguments 2>&1 | ForEach-Object { Write-Log "$_" }
+# The header waits for the search's first line of output, so a start with nothing owed writes nothing at all.
+$headed = $false
+& $python @arguments 2>&1 | ForEach-Object {
+    if (-not $headed) { Write-Log $header; $headed = $true }
+    Write-Log "$_"
+}
 $exitCode = $LASTEXITCODE
 $ErrorActionPreference = 'Stop'
+# 76: the slot this start was for already has its run. Nothing was searched, so there is nothing to back fill either.
+if ($catchUp -and $exitCode -eq 76) { exit 0 }
+if (-not $headed) { Write-Log $header }
 Write-Log "=== finished with exit code $exitCode ==="
 
 # The backfill is independent of the search: it still runs when the search was
