@@ -160,8 +160,8 @@ its own rule change, after the one-click version has a track record.
 
 ### Non-goals (v1)
 
-- Lever and Ashby. They come later (section 14). Their forms send data as they are filled, so
-  the Greenhouse rehearsal model does not carry over **[live]**, **[1-src]**.
+- Lever and Ashby. They come later (section 14; Lever has a draft spec, `phase5-lever-handoff-spec.md`). Ashby's forms send data as they are filled **[1-src]**,
+  and Lever's page sends the résumé the moment it is attached **[live]**, so the Greenhouse rehearsal model does not carry over.
 - Workday, iCIMS, SmartRecruiters, Workable, company-built forms that post through the
   employer's own API key, and multi-page flows.
 - LinkedIn Easy Apply or any LinkedIn automation (PLAN.md:1342).
@@ -3382,7 +3382,7 @@ M4s is built only if D5 is B to E.
 | M6 | **Gate: one-click submit** (needs D1 A) | The policy rewrite in the same PR, with the D1 A wording (AGENTS.md "Product invariants", README.md "What it never does" and the Apply Mode bullet of docs/guide/web-app.md, THREAT_MODEL row, assisted-apply.md:5-6 and :36-37, the "Extension safety" row of ACCEPTANCE.md, the "7 — Apply Mode" row of PHASE_VERIFICATION.md; the extension README and manifest stay "never submits"); submit mode; hand-over with pause-after-confirm, Cancel and the 15-minute clock; outcome detection; `record` stage write; two-click confirm with nonce; the rehearsal gate; the 8.8 threshold and warning; D9 B and D14 B if chosen. | 12.9 M6 tests green; sandbox acceptance with the fake agent. |
 | M7 | Cover letters in the flow (D11 B) | The Draft one path wired to preparation; the latest-approved-version rule; `content_sha256` freshness; attaching approved letters. | The cover-letter rows of 7.5 pass. |
 | M8 | Unattended (**only with a separate yes**, D2) | Its own AGENTS.md rewrite; `auto_apply` feature, shadow, the worker step, limits, `ledger` stage write, breaker, Undo wording, re-consent. | 48 h shadow with 5 reviewed clean rows before `on` is offered. |
-| Later | Lever, then Ashby | Lever: `/parseResume` fires on attach **[live]**, so upload first, then overwrite and verify; hidden `timezone` field; hCaptcha may escalate. Ashby: fields autosave as they are filled **[1-src]**, so rehearsal means "fill-only on a local fixture" or accepting that filling sends data; a puzzle question is always `needs_you`. Each needs its own rehearsal definition first. | Separate specs. |
+| Later | Lever, then Ashby | Lever: `/parseResume` fires on attach **[live]**, so upload first, then overwrite and verify; hidden `timezone` field; hCaptcha may escalate. Ashby: fields autosave as they are filled **[1-src]**, so rehearsal means "fill-only on a local fixture" or accepting that filling sends data; a puzzle question is always `needs_you`. Each needs its own rehearsal definition first. | Separate specs. Lever, Finish in browser only: `phase5-lever-handoff-spec.md` (draft 1, 2026-10-04). Ashby: not yet written; its open points are in that file's Appendix A. |
 
 **Rollout checklist (after merge, in the student's own app; not a PR condition):**
 
