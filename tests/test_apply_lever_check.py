@@ -96,8 +96,8 @@ class LeverCheckTests(PolicyCase):
 
     def test_only_a_404_is_closed_and_every_other_failure_is_lever_did_not_answer(self):
         self.assertEqual(self.lever_check(page_client=FakeLeverPageClient(closed=True))["message"], "The app couldn't find this posting on Lever. It may be closed")
-        for pages in (FakeLeverPageClient(unavailable=True), None):
-            with self.subTest(pages=pages):
+        for name, pages in (("a client that does not answer", FakeLeverPageClient(unavailable=True)), ("no client at all", None)):
+            with self.subTest(case=name):
                 result = self.lever_check(page_client=pages)
                 self.assertEqual((result["status"], result["message"]), ("failed", "Lever did not answer. Try again later"))
 
