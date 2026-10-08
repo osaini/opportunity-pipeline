@@ -705,6 +705,19 @@ class ResumePostConditionTests(Cases):
         self.assertAborted(decide(FILL, resume_request(), state(resume_file_name="")), "value_guard")
         self.assertAborted(decide(FILL, resume_request(body=resume_body(filename="Samantha_Rivera_Resume (2).pdf"))), "value_guard")
 
+    def test_the_fill_lets_the_attached_name_pass_as_the_page_posts_it_with_each_run_of_odd_characters_made_one_underscore(self):
+        # The page sanitizes the name it posts (the stand-in turns each run of characters outside letters, digits, dot, underscore and hyphen into one underscore).
+        # A name that holds a planned value is still the planned file, and only the attached name and that one rewriting of it are let through.
+        attached = "Resume 555-0100.pdf"
+        st = state(values={**VALUES, "phone": "555-0100"}, resume_file_name=attached)
+        self.assertAllowed(decide(FILL, resume_request(body=resume_body(filename=attached)), st), "resume_upload")
+        self.assertAllowed(decide(FILL, resume_request(body=resume_body(filename="Resume_555-0100.pdf")), st), "resume_upload")
+        self.assertAllowed(decide(FILL, resume_request(body=resume_body(filename="Sam  Rivera (cv).pdf")), state(resume_file_name="Sam  Rivera (cv).pdf")), "resume_upload")
+        for other in ("Resume_555-0100_2.pdf", "Resume-555-0100.pdf", "555-0100.pdf", "Resume 555-0100 .pdf"):
+            with self.subTest(filename=other):
+                self.assertAborted(decide(FILL, resume_request(body=resume_body(filename=other)), st), "value_guard")
+        self.assertAborted(decide(FILL, resume_request(body=resume_body(filename="Resume_555-0100.pdf")), state(values={**VALUES, "phone": "555-0100"}, resume_file_name="")), "value_guard")
+
     def test_a_plain_file_name_and_type_pass_in_the_fill(self):
         self.assertAllowed(decide(FILL, resume_request(body=resume_body(filename="cv.pdf", content_type="application/vnd.example"))), "resume_upload")
 

@@ -678,6 +678,11 @@ def _is_resume_post(mode: str, phase: str, method: str, host: str, path: str, st
     )
 
 
+def _posted_name(attached: str) -> str | None:
+    """The file name as the page posts it: each run of characters outside letters, digits, dot, underscore and hyphen is one underscore. None for no name."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", attached) if attached else None
+
+
 def resume_post_decision(phase: str, request: RouteRequest, state: RouteState, policy: RoutePolicy) -> Allow | Abort:
     """The file read of a page (spec 7, "The resume POST"): it passes only if every condition holds, and each one that does not has its own rule.
 
@@ -725,9 +730,9 @@ def resume_post_decision(phase: str, request: RouteRequest, state: RouteState, p
         return abort("resume_post_account", "A request that sends an account number other than the page's own was refused")
     rest = bytes(body)[:resume.start] + bytes(body)[resume.end:]
     # The part's bytes are the file (pinned by digest in the fill), but its type and its file name are text a script chooses. The type is always
-    # read. The name is read in the fill unless it is the one the app attached the file under; in the student's turn it is the student's own file's.
+    # read. The name is read in the fill unless it is the one the app attached the file under, or that name as the page rewrites it; in the student's turn it is the student's own file's.
     kind = next((value for name, value in resume.headers if name == "content-type"), "")
-    if filling and resume.filename != state.resume_file_name:
+    if filling and resume.filename not in (state.resume_file_name, _posted_name(state.resume_file_name)):
         rest += (resume.filename or "").encode("utf-8", errors="replace")
     leaked = leaked_field(RouteRequest(method="POST", url="", headers={"content-type": kind}, body=rest), state.values)
     if leaked:

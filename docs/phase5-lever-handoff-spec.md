@@ -406,7 +406,7 @@ behavior pinned (section 12, LV1). It does these things and nothing else:
 - The resume POST in the student's turn needs a file the student chose: `RouteState.student_files_chosen` (the driver raises it on a trusted selection in the page's file input,
   as the press listener reports Submit) pays for one read each, counted in `student_file_reads_passed`; a read with none left is refused (`resume_post_unasked`). Without that a page
   script could post any bytes as a "file" before Submit. The part's content type is always read for a planned value, and in the fill so is its file name unless it is exactly
-  `RouteState.resume_file_name`, the name the app attached the file under. The student's own file name is not read.
+  `RouteState.resume_file_name`, the name the app attached the file under, or that name as the page rewrites it (each run of characters outside letters, digits, dot, underscore and hyphen made one underscore). The student's own file name is not read.
 - Where the build is wider than the table: the `after hand-over` row lists writes to a CAPTCHA endpoint only, and `route_decision` also allows a write to Cloudflare's challenge path
   there, as in every other phase (the value guard still reads it). The Hosts paragraph names Cloudflare's beacons, so this follows that text; the owner decides whether the row should refuse it.
 - The value guard sees no cookies: the route handler gives `route_decision` Playwright's `request.headers`, which leaves them out (listed in `docs/known-defects.md`).
