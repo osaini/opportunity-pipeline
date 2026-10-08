@@ -261,6 +261,17 @@ class NotReachableInProductionTests(unittest.TestCase):
 
 # --- The names this run's own request rules reach ------------------------------------------------------------------------------------------
 
+class PlanKeyTests(unittest.TestCase):
+    def test_the_four_eeo_controls_are_read_under_the_plans_names_and_every_other_name_is_its_own(self):
+        adapter = LeverAdapter()
+        self.assertEqual(
+            [adapter.plan_key(name) for name in ("eeo[gender]", "eeo[race]", "eeo[veteran]", "eeo[disability]")], ["gender", "race", "veteran_status", "disability_status"],
+        )
+        for name in ("name", "eeo[disabilitySignature]", "cards[a][field0]", "urls[LinkedIn]"):
+            self.assertEqual(adapter.plan_key(name), name)
+        self.assertEqual(GreenhouseAdapter().plan_key("eeo[gender]"), "eeo[gender]")
+
+
 class ResolvableForARunTests(unittest.TestCase):
     LEVER_ONLY = ("jobs.lever.co", "jobs.eu.lever.co", "js.hcaptcha.com", "api.hcaptcha.com", "api2.hcaptcha.com", "hcaptcha.com", "newassets.hcaptcha.com",
                   "cdn.lever.co", "lever-client-logos.s3.amazonaws.com")

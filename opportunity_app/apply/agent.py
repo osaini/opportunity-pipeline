@@ -1996,7 +1996,7 @@ class ApplyAgent:
         self._step = "check"
         self._progress("check")
         self._check_stopped()
-        seen = frame.evaluate(REQUIRED_CHECK_SCRIPT)
+        seen = self._read_form(frame)
         # What the page keeps for itself (hidden fields the app never writes) is not an answer: it is compared with what it was, apart from this.
         controls = [control for control in seen.get("controls", []) if not self.adapter.owns(str(control.get("key") or ""))]
         problems = check_required(
@@ -2286,9 +2286,17 @@ class ApplyAgent:
     def _scan_keys(fields: list[dict[str, Any]]) -> frozenset[str]:
         return frozenset(str(field.get("id") or field.get("name")) for field in fields if field.get("id") or field.get("name"))
 
+    def _read_form(self, frame: Any) -> dict[str, Any]:
+        """REQUIRED_CHECK_SCRIPT's read of the form, with every item, control and invalid mark under the plan's key for it (``AdapterBase.plan_key``)."""
+        seen = frame.evaluate(REQUIRED_CHECK_SCRIPT)
+        mapped: dict[str, Any] = dict(seen)
+        for name in ("items", "controls", "invalid"):
+            mapped[name] = [{**item, "key": self.adapter.plan_key(str(item.get("key") or ""))} if item.get("key") else item for item in seen.get(name, [])]
+        return mapped
+
     def _snapshot(self, frame: Any) -> dict[str, Any]:
         """Each control's value before anything is typed: {key: value text, or the labels of what is checked}."""
-        seen = frame.evaluate(REQUIRED_CHECK_SCRIPT)
+        seen = self._read_form(frame)
         self._items_at_load = [dict(item) for item in seen.get("items", [])]
         initial: dict[str, Any] = {}
         for control in seen.get("controls", []):
@@ -2782,7 +2790,7 @@ class ApplyAgent:
     def _first_error_question(self, frame: Any) -> str:
         """The QUESTION of the first field the form marks as wrong. Never the page's error text: it may quote what the student typed."""
         try:
-            seen = frame.evaluate(REQUIRED_CHECK_SCRIPT)
+            seen = self._read_form(frame)
             for item in seen.get("invalid", []):
                 key = str(item.get("key") or "")
                 entry = self._entry(key) if key else None

@@ -255,6 +255,10 @@ class AdapterBase:
         """Whether a control of this name is one the page keeps for itself (never filled, never checked as an answer)."""
         return False
 
+    def plan_key(self, name: str) -> str:
+        """The plan's key for the control the page calls ``name``: the independent check reads every control under it, so it is compared with the plan's entry."""
+        return name
+
     def is_typeahead(self, frame: Any, key: str) -> bool:
         """Whether this text field is a list the student's confirmed label is chosen from, typed key by key (``fill_location``)."""
         return False

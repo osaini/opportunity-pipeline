@@ -260,6 +260,11 @@ class LeverAdapter(AdapterBase):
         """Whether a control of this name is one the page keeps for itself (spec 5.4 item 7)."""
         return name in PAGE_MANAGED_FIELDS or bool(_TEMPLATE_NAME.fullmatch(name))
 
+    @staticmethod
+    def plan_key(name: str) -> str:
+        """The plan's name for a control: the four EEO questions are ``gender``, ``race``, ``veteran_status`` and ``disability_status`` there, ``eeo[...]`` on the page."""
+        return EEO_FIELDS.get(name, name)
+
     def page_managed(self, frame: Any) -> dict[str, str]:
         """The page's own hidden fields and their values now, except the ones the page sets itself after it read a file. The app writes none of these."""
         found: dict[str, str] = {}

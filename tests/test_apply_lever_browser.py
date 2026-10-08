@@ -736,6 +736,10 @@ class EeoAndConsentTests(LeverCase):
         for key in ("disability_status", "eeo[disabilitySignature]", "eeo[disabilitySignatureDate]"):
             self.assertNotIn(key, run.agent.keys(), key)
         self.assertEqual(set(run.agent.keys("choose")) | set(run.agent.keys("tick")), {"gender", "race", "veteran_status"})
+        # The independent check reads the answers back against the plan under the plan's names: the app's own decline is not a value the page put there.
+        self.assertEqual([item for item in run.result.check_problems if item["kind"] == "unplanned_value"], [])
+        self.assertEqual([key for key in self.left(run) if key.startswith("eeo[")], [])
+        self.assertEqual({self.entries(run)[key]["disposition"] for key in ("gender", "race", "veteran_status")}, {"fill"})
 
     def test_without_a_stored_decline_the_eeo_block_is_left_alone(self):
         run = self.go(page="demo_eeo_survey.html")
