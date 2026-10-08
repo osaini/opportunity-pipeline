@@ -68,9 +68,7 @@ from .agent_types import (
     problem_dict,
 )
 from .checks import (
-    CAPTCHA_ENDPOINTS,
     CONFIRMED_CAPTCHA_HOSTS,
-    FORM_POST_HOSTS,
     GREENHOUSE_LOOKUP_ENDPOINTS,
     MORE_PAGES_SCRIPT,
     PHASE_AFTER_HAND_OVER,
@@ -82,18 +80,17 @@ from .checks import (
     PHASE_STUDENT,
     REQUIRED_CHECK_SCRIPT,
     SAFE_METHODS,
-    TELEMETRY_HOSTS,
     UNCONFIRMED_NOTE,
     Abort,
     Endpoint,
     Observation,
     Outcome,
     Problem,
+    RoutePolicy,
     RouteRequest,
     RouteState,
     SeenRequest,
     check_required,
-    confirmation_reached,
     decide_outcome,
     is_upload,
     looks_like_a_send,
@@ -472,8 +469,8 @@ def _host_of(url: str) -> str:
 PATH_WITHHELD = "[path withheld]"
 
 
-def _captcha_path(host: str, path: str) -> bool:
-    return any(endpoint.host == host and path.startswith(endpoint.path_prefix) for endpoint in CAPTCHA_ENDPOINTS)
+def _captcha_path(host: str, path: str, policy: RoutePolicy) -> bool:
+    return any(endpoint.host == host and path.startswith(endpoint.path_prefix) for endpoint in policy.captcha_endpoints)
 
 
 def _job_id(page_url: str) -> str:
@@ -540,10 +537,11 @@ class _Observer:
 
     def __init__(
         self, page: Any, active: Callable[[], bool], values: Callable[[], Mapping[str, Any]] = lambda: {},
-        submit_path: Callable[[], str] = lambda: "",
+        submit_path: Callable[[], str] = lambda: "", *, policy: RoutePolicy,
     ) -> None:
         self.page = page
         self._active = active
+        self._policy = policy
         self._values = values
         self._submit_path = submit_path
         self.tracked: list[tuple[Any, str, str, str, bool]] = []
@@ -586,9 +584,9 @@ class _Observer:
         records = []
         for request, method, host, path, passed in self.tracked:
             shown = safe_host(host, values)
-            if host == SUBMIT_HOST and submit_path and path == submit_path:
+            if self._policy.is_submit_request(host, path, submit_path):
                 kept = path
-            elif host in (*BOARD_HOSTS, SUBMIT_HOST) or _captcha_path(host, path):
+            elif host in (*self._policy.navigation_hosts, *self._policy.submit_hosts) or _captcha_path(host, path, self._policy):
                 kept = path if passed and not (values and leaked_field(RouteRequest(method="GET", url=path), values)) else PATH_WITHHELD
             else:
                 kept = PATH_WITHHELD
@@ -603,6 +601,8 @@ class GreenhouseAdapter:
 
     Everything that changes the page goes through the agent (``ops``): this class reads, and asks ``ops`` to act.
     """
+
+    ats = ATS_GREENHOUSE
 
     # --- the page ---------------------------------------------------------------------------------------------
 
@@ -852,6 +852,7 @@ class ApplyAgent:
     ) -> None:
         self.mode = mode
         self.adapter = adapter
+        self._policy: RoutePolicy = spec_for(adapter.ats).route_policy
         self.run_id = run_id
         self.screenshot_dir = Path(screenshot_dir) if screenshot_dir else None
         self.timeouts = timeouts
@@ -1037,9 +1038,9 @@ class ApplyAgent:
                 method=request.method, url=request.url, resource_type=request.resource_type, is_navigation=navigation,
                 public=True, headers=request.headers, body=body,
             )
-            decision = route_decision(self.mode, self._phase, facts, self._state)
+            decision = route_decision(self.mode, self._phase, facts, self._state, self._policy)
             if isinstance(decision, Abort) and decision.rule == "code_post_before_press" and self._press_arrives():
-                decision = route_decision(self.mode, self._phase, facts, self._state)   # the press was reported a moment after the request
+                decision = route_decision(self.mode, self._phase, facts, self._state, self._policy)   # the press was reported a moment after the request
             # Resolved last, and only for a request the policy would let through: the name of a request that is refused anyway
             # (after the first input, anything but Greenhouse's own hosts) is never sent to a resolver, since a hostname can carry a value.
             # A name the browser itself could not look up is not looked up here either: the resolver below runs in this process, outside the
@@ -1093,7 +1094,7 @@ class ApplyAgent:
     def _send_after_a_late_press(self, facts: RouteRequest) -> bool:
         """``looks_like_a_send`` for a request whose press has not been reported yet: wait a moment for it, and ask again."""
         before = self._state.last_press_at
-        return self._press_arrives(after=before) and looks_like_a_send(facts, self._state)
+        return self._press_arrives(after=before) and looks_like_a_send(facts, self._state, self._policy)
 
     def _resolvable(self, host: str) -> bool:
         """Whether this host is one of the names the browser may look up (``RESOLVABLE_HOSTS`` and a test's own lookup endpoints)."""
@@ -1124,7 +1125,7 @@ class ApplyAgent:
             if unsafe and self._phase == PHASE_FILL:
                 if decision.rule == "before_hand_over":
                     self._early = True
-                elif _host_of(request.url) not in TELEMETRY_HOSTS and (is_upload(facts) or _host_of(request.url) in FORM_POST_HOSTS):
+                elif _host_of(request.url) not in self._policy.telemetry_hosts and (is_upload(facts) or _host_of(request.url) in self._policy.form_post_hosts):
                     # During the fill either one is fatal: a page that uploads or posts as it is filled is not one the app can leave alone.
                     # (The page's own usage reporting is neither: it is refused, recorded a few times, and the fill goes on.)
                     self._upload_refused = {"host": safe_host(_host_of(request.url), self._state.values), "rule": decision.rule}
@@ -1135,14 +1136,14 @@ class ApplyAgent:
                 # the app did not agree to. A file going to any other address (a résumé or cover-letter parse on a board's API, a
                 # storage host) is a file leaving, whatever the address: that one is an upload, and gets the upload sentence.
                 host = _host_of(request.url)
-                file_leaving = is_upload(facts) and host not in TELEMETRY_HOSTS
-                if file_leaving and host != SUBMIT_HOST:
+                file_leaving = is_upload(facts) and host not in self._policy.telemetry_hosts
+                if file_leaving and host not in self._policy.submit_hosts:
                     self._closing, self._why_closing = True, "upload"
-                elif student_submit_elsewhere(facts, self._state):
+                elif student_submit_elsewhere(facts, self._state, self._policy):
                     self._closing, self._why_closing = True, "elsewhere"
                 elif file_leaving:
                     self._closing, self._why_closing = True, "upload"
-                elif self._elsewhere_seen is None and (looks_like_a_send(facts, self._state) or self._send_after_a_late_press(facts))                         and self._phase == PHASE_STUDENT and not self._handed_over:
+                elif self._elsewhere_seen is None and (looks_like_a_send(facts, self._state, self._policy) or self._send_after_a_late_press(facts))                         and self._phase == PHASE_STUDENT and not self._handed_over:
                     # Refused as always, and the turn goes on; but the page would only show its own error, so the student is told.
                     # (Not when the student's own submission was handed over while the late press was waited for: that one is on its way.)
                     self._elsewhere_seen = {"host": safe_host(host, self._state.values)}
@@ -2303,7 +2304,7 @@ class ApplyAgent:
         self._step = "turn"
         entries, plan_hash = self._plan_entries()
         shot = next((item for item in reversed(self._screenshots) if item["step"] == "filled"), None)
-        self._observer = _Observer(self._page, lambda: self._handed_over, lambda: self._state.values, lambda: self._state.submit_path)
+        self._observer = _Observer(self._page, lambda: self._handed_over, lambda: self._state.values, lambda: self._state.submit_path, policy=self._policy)
         self._observer.start()
         # One last look before the turn: a press in the gap after the check is caught here, with the observer already listening.
         self._between()
@@ -2357,7 +2358,7 @@ class ApplyAgent:
     # --- after the press: the outcome, and the security code ----------------------------------------------------------
 
     def _decide(self, obs: Observation, *, code_wait_over: bool) -> Outcome:
-        out = decide_outcome(obs, code_wait_over=code_wait_over)
+        out = decide_outcome(obs, self._policy, code_wait_over=code_wait_over)
         if self._submit_continued and out.outcome == "failed" and not out.after_click:
             # The POST was continued, whatever the tracker shows: "nothing was sent" is not a thing this run can say.
             return Outcome("unconfirmed", 1, UNCONFIRMED_NOTE, evidence=out.evidence, settled=False)
@@ -2381,7 +2382,7 @@ class ApplyAgent:
                 # A prompt is counted from evidence: the first 428, then a new 428 (or the boxes again) after the code POST was
                 # answered. The boxes stay on the page while the code POST is on its way, which is not a second prompt: it would
                 # open a second code POST nobody asked for and tell the student to press Submit again.
-                if code_round == 0 or new_code_prompt(obs):
+                if code_round == 0 or new_code_prompt(obs, self._policy):
                     code_round += 1
                     self._security_code(reader=(code_round == 1), until=after_until)
                     window = self._cap(time.monotonic() + t.outcome_s)
@@ -2580,7 +2581,7 @@ class ApplyAgent:
         """The main frame is on Greenhouse's confirmation page (the code, if it was needed, has been accepted)."""
         try:
             parts = urlsplit(self._page.url)
-            return confirmation_reached(Observation(
+            return self._policy.confirmation_reached(Observation(
                 main_path=parts.path, main_query=parts.query, confirmation_path=self._confirmation_path,
                 board_token=board_token(self._page_url), job_id=_job_id(self._page_url),
             ))

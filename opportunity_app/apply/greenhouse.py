@@ -15,6 +15,8 @@ import sqlite3
 from urllib.parse import parse_qs, urlsplit
 
 ATS_GREENHOUSE = "greenhouse"
+# How a sentence names it (the ATS spec's ``display_name`` and the request policy's are this).
+DISPLAY_NAME = "Greenhouse"
 # The adapter's version (docs/phase5-apply-agent-spec.md 4.4). A rehearsal counts toward the gate only for
 # the version the adapter has now, so a change to its selectors or rules means rehearsing again.
 ADAPTER_VERSION = "greenhouse-1"

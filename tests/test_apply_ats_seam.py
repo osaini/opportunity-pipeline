@@ -10,8 +10,11 @@ the factory's ``ats`` argument) is pinned directly. No browser and no network.
 import copy
 import dataclasses
 import inspect
+import itertools
+import random
 import re
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -23,15 +26,16 @@ import realdata_guard
 realdata_guard.install()
 
 import frozen_pre_ats_seam as old
+import frozen_pre_route_policy as old_route
 import helpers_source
 import test_apply_runner as runner_tests
-from opportunity_app.apply import agent as apply_agent, agent_types, ats as apply_ats, greenhouse as apply_greenhouse, preflight as apply_preflight
+from opportunity_app.apply import agent as apply_agent, agent_types, ats as apply_ats, checks as apply_checks, greenhouse as apply_greenhouse, preflight as apply_preflight
 from opportunity_app.apply.agent_types import AgentJob, ApplyTimeouts
 from opportunity_app.apply.policy import SchemaField
 from opportunity_app.apply.schema_client import GreenhouseSchemaClient
 from opportunity_app.core.timestamps import utc_now
 
-from apply_fake_ats import FakeApplyAgentFactory, fixture_json
+from apply_fake_ats import FakeApplyAgentFactory, fixture_json, fixture_text
 from helpers_apply import ApplyCase, setUpModule, tearDownModule  # noqa: F401
 
 GREENHOUSE = apply_ats.GREENHOUSE
@@ -353,6 +357,301 @@ class RunnerPassesTheAtsTests(runner_tests.RunnerCase):
             row = self.finish(self.start(factory))
         self.assertEqual(row["ats"], "greenhouse-renamed")
         self.assertEqual([call["ats"] for call in factory.calls], ["greenhouse-renamed"])
+
+
+# --- The request policy: route_decision, decide_outcome and confirmation_reached, old against new -------------------------
+
+POLICY = GREENHOUSE.route_policy
+TOKEN, JOB = "examplerobotics", "4000000001"
+SUBMIT_PATH = f"/{TOKEN}/jobs/{JOB}"
+CONFIRMATION_PATH = f"{SUBMIT_PATH}/confirmation"
+EMAIL = "sam.rivera@example.test"
+VALUES = {"email": EMAIL, "first_name": "Samantha", "work_auth": "Yes", "city": "Springfield, Example State"}
+TEST_LOOKUP = apply_checks.Endpoint("boards-api.greenhouse.io", "/fake-lookup/", "location")
+BOUND_LOOKUPS = apply_agent.bind_endpoints(apply_checks.GREENHOUSE_LOOKUP_ENDPOINTS, TOKEN)
+INF = float("inf")
+
+# Every host the rules name or could be confused with, taken from the pinned endpoints fixture and the old constants.
+ENDPOINTS = fixture_json("endpoints.json")
+HOSTS = sorted({
+    *old_route.BOARD_HOSTS, old_route.SUBMIT_HOST, *old_route.FORM_POST_HOSTS, *old_route.TELEMETRY_HOSTS,
+    *(entry["host"] for entry in ENDPOINTS["lookup_endpoints"]), *ENDPOINTS["static_asset_hosts"], *(entry["host"] for entry in ENDPOINTS["captcha_endpoints"]),
+    "s1-recruiting.cdn.greenhouse.io", "s123-recruiting.cdn.greenhouse.io", "s1234-recruiting.cdn.greenhouse.io", "xs1-recruiting.cdn.greenhouse.io",
+    "my.greenhouse.io", "greenhouse.io", "www.greenhouse.io", "uploads.s3.amazonaws.com", "amazonaws.com", "careers.example-robotics.test",
+    "jobs.lever.co", "jobs.eu.lever.co", "example-robotics.test", "xn--rene-dpa.collector.example",
+})
+PATHS = [
+    SUBMIT_PATH, SUBMIT_PATH + "/", "/", "/v1/autocomplete", f"/v1/boards/{TOKEN}/education/schools", "/v1/boards/{token}/education/schools",
+    "/recaptcha/enterprise/anchor", "/recaptcha/api2/bframe", "/embed/job_app/confirmation", f"/x?e={EMAIL.replace('@', '%40')}", "/hcaptcha/1/api.js",
+]
+METHODS = ("GET", "HEAD", "OPTIONS", "POST", "PUT", "DELETE")
+BODIES = (None, b"", f"email={EMAIL}".encode(), b'--b\r\nContent-Disposition: form-data; name="resume"; filename="cv.pdf"\r\n\r\n%PDF\r\n--b--',
+          b'--b\r\nContent-Disposition: form-data; name="x"\r\n\r\n\r\n--b--')
+MODES = ("lookup", "rehearse", "submit", "handoff", "unattended", "")
+PHASES = ("before_input", "after_input", "before_hand_over", "student", "after_hand_over", "other")
+VALID_PAIRS = tuple((mode, phase) for mode, phases in apply_checks.PHASES.items() for phase in phases)
+
+# (the state's fields, whether the state has the endpoints written out). The old rules had the endpoint lists as defaults of the state;
+# the new ones leave them to the policy, so each state is built three ways (see ``states``).
+STATE_FIELDS = (
+    {},
+    {"submit_posts_passed": 1},
+    {"submit_path": ""},
+    {"typing_key": "city", "typing_lookup": "location"},
+    {"typing_key": "city", "typing_lookup": "school"},
+    {"typing_key": "school", "typing_lookup": "school", "submit_posts_passed": 1},
+    {"submit_posts_passed": 1, "security_code_prompts": 1, "code_press_required": True},
+    {"submit_posts_passed": 1, "security_code_prompts": 1, "code_press_required": True, "code_pressed": True},
+    {"submit_posts_passed": 1, "security_code_prompts": 2, "code_posts_passed": 1},
+    {"code_typing_until": INF},
+    {"submit_posts_passed": 1, "code_typing_until": INF, "security_code_prompts": 1},
+    {"last_press_at": 1.0},
+)
+
+
+def states(fields, lookups):
+    """(the state the old rules read, the state the new rules read with the policy's lists, the same with the lists written out)."""
+    base = {"submit_path": SUBMIT_PATH, "values": dict(VALUES), **fields}
+    old_lists = {"lookup_endpoints": lookups, "captcha_endpoints": apply_checks.CAPTCHA_ENDPOINTS}
+    return (apply_checks.RouteState(**base, **old_lists), apply_checks.RouteState(**base, **({"lookup_endpoints": lookups} if lookups is not POLICY.lookup_endpoints else {})),
+            apply_checks.RouteState(**base, **old_lists))
+
+
+def request(method, host, path, *, nav=False, kind="fetch", body=None, public=True, socket=False, headers=None):
+    return apply_checks.RouteRequest(
+        method=method, url=f"https://{host}{path}", resource_type=kind, is_navigation=nav, is_websocket=socket, public=public,
+        headers=headers or {}, body=body,
+    )
+
+
+class RoutePolicyValuesTests(unittest.TestCase):
+    def test_the_greenhouse_policy_holds_exactly_the_old_module_constants(self):
+        self.assertIs(POLICY, apply_checks.GREENHOUSE_ROUTE_POLICY)
+        self.assertEqual(POLICY.display_name, GREENHOUSE.display_name)
+        self.assertEqual(POLICY.navigation_hosts, old_route.BOARD_HOSTS)
+        self.assertEqual(POLICY.submit_hosts, frozenset({old_route.SUBMIT_HOST}))
+        self.assertEqual(POLICY.form_post_hosts, old_route.FORM_POST_HOSTS)
+        self.assertEqual(POLICY.telemetry_hosts, old_route.TELEMETRY_HOSTS)
+        self.assertEqual(POLICY.storage_upload_suffixes, (".amazonaws.com",))
+        self.assertEqual(POLICY.lookup_endpoints, apply_checks.GREENHOUSE_LOOKUP_ENDPOINTS)
+        self.assertEqual(POLICY.captcha_endpoints, apply_checks.CAPTCHA_ENDPOINTS)
+
+    def test_the_static_asset_rule_is_the_old_one_on_every_host(self):
+        for host in HOSTS:
+            with self.subTest(host=host):
+                self.assertEqual(POLICY.static_asset_host(host), old_route.is_static_asset_host(host))
+
+    def test_the_submit_matcher_is_the_old_comparison(self):
+        for host, path, submit in itertools.product(HOSTS, PATHS, (SUBMIT_PATH, "", "/other")):
+            self.assertEqual(
+                POLICY.is_submit_request(host, path, submit), host == old_route.SUBMIT_HOST and bool(submit) and path == submit, (host, path, submit))
+
+    def test_the_policy_is_frozen_and_its_spec_carries_it(self):
+        self.assertIs(GREENHOUSE.route_policy, POLICY)
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            POLICY.display_name = "Other"   # type: ignore[misc]
+
+    def test_a_state_with_no_lists_uses_the_policys_and_a_state_with_lists_uses_its_own(self):
+        none = apply_checks.RouteState(submit_path=SUBMIT_PATH, typing_key="city", typing_lookup="location")
+        self.assertIsNone(none.lookup_endpoints)
+        self.assertIsNone(none.captcha_endpoints)
+        geocode = request("GET", "api-geocode-earth-proxy.greenhouse.io", "/v1/autocomplete?text=x")
+        self.assertEqual(apply_checks.route_decision("rehearse", "after_input", geocode, none, POLICY).rule, "lookup")
+        own = apply_checks.RouteState(submit_path=SUBMIT_PATH, typing_key="city", typing_lookup="location", lookup_endpoints=())
+        self.assertEqual(apply_checks.route_decision("rehearse", "after_input", geocode, own, POLICY).rule, "after_first_input")
+
+
+class RouteDecisionParityTests(unittest.TestCase):
+    def same(self, mode, phase, req, fields, lookups, seen):
+        before, after, written = states(fields, lookups)
+        expected = old_route.route_decision(mode, phase, req, before)
+        found = (
+            apply_checks.route_decision(mode, phase, req, after, POLICY),
+            apply_checks.route_decision(mode, phase, req, written, POLICY),
+        )
+        seen.add(type(expected).__name__ + ":" + getattr(expected, "rule", ""))
+        if found != (expected, expected):
+            return f"{mode}/{phase} {req.method} {req.url} {fields}: old {expected}, new {found}"
+        return ""
+
+    def test_every_host_method_and_navigation_in_every_mode_and_phase_gives_the_old_answer(self):
+        seen, wrong = set(), []
+        for mode, phase in VALID_PAIRS + (("unattended", "before_hand_over"), ("submit", "student"), ("rehearse", "other")):
+            for host, method, nav in itertools.product(HOSTS, METHODS, (False, True)):
+                for fields in (STATE_FIELDS[0], STATE_FIELDS[1], STATE_FIELDS[6]):
+                    req = request(method, host, SUBMIT_PATH, nav=nav, kind="document" if nav else "script", body=b"x" if method == "POST" else None)
+                    message = self.same(mode, phase, req, fields, POLICY.lookup_endpoints if method == "GET" else (TEST_LOOKUP,), seen)
+                    if message:
+                        wrong.append(message)
+        self.assertEqual(wrong[:5], [])
+        for rule in ("Allow:", "Allow:static_asset", "Abort:offsite_navigation", "Abort:telemetry", "Abort:s3_upload", "Abort:unknown_phase", "Abort:before_hand_over",
+                     "Allow:hand_over", "Allow:submit", "Abort:other_non_get", "Abort:non_get_before_hand_over", "Allow:captcha", "Abort:after_first_input"):
+            self.assertIn(rule, seen, f"the grid never reached {rule}")
+
+    def test_a_seeded_sample_of_everything_at_once_gives_the_old_answer(self):
+        rng, seen, wrong = random.Random(20261008), set(), []
+        for _ in range(6000):
+            mode, phase = rng.choice(MODES[:4]), rng.choice(PHASES[:5])
+            req = request(
+                rng.choice(METHODS), rng.choice(HOSTS), rng.choice(PATHS), nav=rng.random() < 0.2, kind=rng.choice(("document", "script", "image", "fetch", "xhr", "font")),
+                body=rng.choice(BODIES), public=rng.choice((True, True, True, None, False)), socket=rng.random() < 0.05,
+                headers=rng.choice(({}, {"Content-Type": "multipart/form-data; boundary=b"}, {"X-Echo": EMAIL})),
+            )
+            message = self.same(mode, phase, req, rng.choice(STATE_FIELDS), rng.choice(((TEST_LOOKUP,), BOUND_LOOKUPS, (), POLICY.lookup_endpoints)), seen)
+            if message:
+                wrong.append(message)
+        self.assertEqual(wrong[:5], [])
+        self.assertGreaterEqual(len(seen), 12, "the sample reaches many different rules")
+
+    def test_every_pinned_endpoint_of_the_fixture_gives_the_old_answer_as_a_lookup_and_a_captcha_request(self):
+        seen, wrong = set(), []
+        for entry in ENDPOINTS["lookup_endpoints"]:
+            path = entry["path_prefix"].replace("{token}", TOKEN) + "?text=Springfield"
+            for kind in ("location", "school", "degree", "discipline", ""):
+                for mode, phase in (("lookup", "after_input"), ("rehearse", "after_input"), ("handoff", "before_hand_over"), ("rehearse", "before_input")):
+                    message = self.same(mode, phase, request("GET", entry["host"], path), {"typing_key": "city", "typing_lookup": kind}, BOUND_LOOKUPS, seen)
+                    wrong += [message] if message else []
+        for entry in ENDPOINTS["captcha_endpoints"]:
+            for method in ("GET", "POST"):
+                for mode, phase in itertools.product(("rehearse", "handoff"), ("before_input", "before_hand_over", "student", "after_hand_over")):
+                    message = self.same(mode, phase, request(method, entry["host"], entry["path_prefix"] + "x", body=b"{}"), {"submit_posts_passed": 0}, (), seen)
+                    wrong += [message] if message else []
+        self.assertEqual(wrong[:5], [])
+        self.assertIn("Allow:lookup", seen)
+        self.assertIn("Allow:captcha", seen)
+
+    def test_the_loader_paths_of_every_fixture_page_give_the_old_answer_for_the_submit_post(self):
+        seen, wrong = set(), []
+        for name in ("new_form.html", "legacy_form.html", "new_confirmation.html", "closed.html", "offsite.html"):
+            host, submit, _confirmation = apply_agent.GreenhouseAdapter.loader_paths(fixture_text(name))
+            for url_host in (host or old_route.SUBMIT_HOST, "job-boards.greenhouse.io"):
+                for mode, phase in itertools.product(("submit", "handoff"), ("before_hand_over", "student", "after_hand_over")):
+                    for fields in STATE_FIELDS[:2] + STATE_FIELDS[6:9]:
+                        before, after, _written = states({**fields, "submit_path": submit}, ())
+                        req = request("POST", url_host, submit or "/none", body=b"x")
+                        expected = old_route.route_decision(mode, phase, req, before)
+                        seen.add(type(expected).__name__ + ":" + getattr(expected, "rule", ""))
+                        if apply_checks.route_decision(mode, phase, req, after, POLICY) != expected:
+                            wrong.append((name, mode, phase, fields))
+        self.assertEqual(wrong[:5], [])
+        self.assertTrue({"Allow:hand_over", "Allow:submit", "Allow:security_code", "Abort:second_submit_post", "Abort:code_post_before_press"} <= seen, seen)
+
+    def test_a_policy_with_other_hosts_changes_the_answer_and_nothing_else_does(self):
+        other = dataclasses.replace(POLICY, navigation_hosts=frozenset({"jobs.example-robotics.test"}), submit_hosts=frozenset({"jobs.example-robotics.test"}),
+                                    telemetry_hosts=frozenset({"beacon.example-robotics.test"}))
+        state_ = apply_checks.RouteState(submit_path="/x", lookup_endpoints=())
+        nav = request("GET", "jobs.example-robotics.test", "/x", nav=True, kind="document")
+        self.assertIsInstance(apply_checks.route_decision("handoff", "before_hand_over", nav, state_, other), apply_checks.Allow)
+        self.assertEqual(apply_checks.route_decision("handoff", "before_hand_over", nav, state_, POLICY).rule, "offsite_navigation")
+        beacon = request("GET", "beacon.example-robotics.test", "/p")
+        self.assertEqual(apply_checks.route_decision("handoff", "before_hand_over", beacon, state_, other).rule, "telemetry")
+        post = request("POST", "jobs.example-robotics.test", "/x", body=b"x")
+        self.assertEqual(apply_checks.route_decision("handoff", "student", post, state_, other).rule, "hand_over")
+        self.assertEqual(apply_checks.route_decision("handoff", "student", post, state_, POLICY).rule, "non_get_before_hand_over")
+
+
+class SendAndElsewhereParityTests(unittest.TestCase):
+    def test_looks_like_a_send_and_student_submit_elsewhere_give_the_old_answer(self):
+        now = time.monotonic()
+        wrong, true_for = [], set()
+        for host, path, method, nav in itertools.product(HOSTS, PATHS[:4] + PATHS[6:7], METHODS, (False, True)):
+            for body, headers in ((None, {}), (b"a=b", {"Content-Type": "application/x-www-form-urlencoded"}), (b"{}", {"content-type": "application/json"}),
+                                  (b"x", {"Content-Type": "text/plain"})):
+                for pressed in (0.0, now, now - 60):
+                    req = request(method, host, path, nav=nav, kind="document" if nav else "fetch", body=body, headers=headers)
+                    before, after, _written = states({"last_press_at": pressed}, ())
+                    for name, expected, found in (
+                        ("send", old_route.looks_like_a_send(req, before), apply_checks.looks_like_a_send(req, after, POLICY)),
+                        ("elsewhere", old_route.student_submit_elsewhere(req, before), apply_checks.student_submit_elsewhere(req, after, POLICY)),
+                    ):
+                        if expected != found:
+                            wrong.append((name, host, path, method, nav, pressed))
+                        if expected:
+                            true_for.add(name)
+        self.assertEqual(wrong[:5], [])
+        self.assertEqual(true_for, {"send", "elsewhere"}, "the grid reaches both answers")
+
+
+def seen_request(method, host, path, status, passed=True):
+    return apply_checks.SeenRequest(method, host, path, status, passed)
+
+
+SEEN_POOL = [
+    seen_request("POST", old_route.SUBMIT_HOST, SUBMIT_PATH, status) for status in (None, 200, 302, 303, 400, 422, 428, 500, 502)
+] + [
+    seen_request("POST", old_route.SUBMIT_HOST, SUBMIT_PATH, 428, passed=False),
+    seen_request("POST", "job-boards.greenhouse.io", SUBMIT_PATH, 200),
+    seen_request("post", "BOARDS.GREENHOUSE.IO", SUBMIT_PATH, 200),
+    seen_request("POST", old_route.SUBMIT_HOST, "/other", 200),
+    seen_request("PUT", "example-uploads.s3.amazonaws.com", "/resume", None, passed=False),
+    seen_request("GET", old_route.SUBMIT_HOST, SUBMIT_PATH, 200),
+    seen_request("POST", "hcaptcha.com", "/x", 200),
+]
+
+
+class DecideOutcomeParityTests(unittest.TestCase):
+    def observations(self):
+        turn = itertools.count()
+        for count in range(4):
+            for chosen in itertools.product(SEEN_POOL, repeat=count):
+                for main_path, visible, challenge, present, navigated, error in itertools.product(
+                    ("", SUBMIT_PATH, CONFIRMATION_PATH), (False, True), (False, True), (False, True), (False, True), ("", "Email"),
+                ):
+                    if count == 3 and next(turn) % 7:
+                        continue   # three requests: every seventh of the cross product
+                    yield apply_checks.Observation(
+                        main_path=main_path, form_present=present, requests=chosen, security_code_visible=visible, challenge_frame=challenge,
+                        submit_path=SUBMIT_PATH, confirmation_path=CONFIRMATION_PATH, board_token=TOKEN, job_id=JOB, navigated=navigated, first_field_error=error,
+                    )
+
+    def test_every_observation_gives_the_old_outcome_and_the_old_new_code_prompt(self):
+        count, outcomes, wrong = 0, set(), []
+        for obs in self.observations():
+            count += 1
+            for over in (False, True):
+                expected = old_route.decide_outcome(obs, code_wait_over=over)
+                outcomes.add(expected.outcome)
+                if apply_checks.decide_outcome(obs, POLICY, code_wait_over=over) != expected:
+                    wrong.append((obs, over))
+            if apply_checks.new_code_prompt(obs, POLICY) != old_route.new_code_prompt(obs):
+                wrong.append((obs, "prompt"))
+        self.assertEqual(wrong[:2], [])
+        self.assertGreater(count, 5000)
+        self.assertEqual(outcomes, {"submitted", "unconfirmed", "needs_you", "failed", "waiting"})
+
+    def test_an_observation_with_no_loader_path_gives_the_old_outcome(self):
+        for submit_path in ("", "/other"):
+            for chosen in (SEEN_POOL[:3], SEEN_POOL[2:6], ()):
+                obs = apply_checks.Observation(requests=tuple(chosen), submit_path=submit_path, main_path=CONFIRMATION_PATH, form_present=False)
+                self.assertEqual(apply_checks.decide_outcome(obs, POLICY), old_route.decide_outcome(obs))
+
+    def test_the_outcome_follows_the_policys_submit_host_and_confirmation_rule(self):
+        post = (seen_request("POST", "apply.example-robotics.test", "/go", 302),)
+        obs = apply_checks.Observation(requests=post, submit_path="/go", main_path="/thanks", form_present=False)
+        self.assertEqual(apply_checks.decide_outcome(obs, POLICY).outcome, "failed", "Greenhouse's rules do not know this host, so no submit POST passed")
+        other = dataclasses.replace(POLICY, submit_hosts=frozenset({"apply.example-robotics.test"}), confirmation_reached=lambda seen: seen.main_path == "/thanks")
+        out = apply_checks.decide_outcome(obs, other)
+        self.assertEqual((out.outcome, out.resolved_by), ("submitted", "page"))
+
+
+class ConfirmationParityTests(unittest.TestCase):
+    def test_every_path_and_query_gives_the_old_answer(self):
+        paths = ("", CONFIRMATION_PATH, CONFIRMATION_PATH + "/", SUBMIT_PATH, "/other/jobs/4000000001/confirmation", f"/{TOKEN}/jobs/1/confirmation",
+                 "/embed/job_app/confirmation", "/embed/job_app/confirmation/", "/embed/job_app", f"/{TOKEN.upper()}/jobs/{JOB}/confirmation", "/a.b/jobs/1/confirmation")
+        queries = ("", f"?for={TOKEN}&token={JOB}", f"for={TOKEN}&token={JOB}", f"?token={JOB}&for={TOKEN}", f"?for={TOKEN}", f"?for={TOKEN}&token=1",
+                   f"?for={TOKEN}&for=x&token={JOB}", f"?for={TOKEN}&token={JOB}&x=1", "?for=examplerobotics&token=4000000001%20")
+        loader = ("", CONFIRMATION_PATH, "/other/confirmation", SUBMIT_PATH)
+        ids = ((TOKEN, JOB), ("", ""), (TOKEN, ""), ("", JOB), ("a.b", "1"), ("a.b", "1.5"), (".*", ".*"), ("x)", "1"))
+        found = set()
+        for path, query, confirmation, (token, job) in itertools.product(paths, queries, loader, ids):
+            obs = apply_checks.Observation(main_path=path, main_query=query, confirmation_path=confirmation, board_token=token, job_id=job)
+            expected = old_route.confirmation_reached(obs)
+            found.add(expected)
+            self.assertEqual(POLICY.confirmation_reached(obs), expected, (path, query, confirmation, token, job))
+        self.assertEqual(found, {True, False})
+
+    def test_nothing_is_left_of_the_module_level_function(self):
+        self.assertFalse(hasattr(apply_checks, "confirmation_reached"), "the decision moved onto the policy; no second copy stays behind")
 
 
 if __name__ == "__main__":

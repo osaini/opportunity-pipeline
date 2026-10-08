@@ -53,7 +53,7 @@ from opportunity_app.apply.agent import (
 from opportunity_app.apply import agent_types
 from opportunity_app.apply import runner as apply_runner
 from opportunity_app.apply.agent_types import BUILT_MODES, ApplyTimeouts
-from opportunity_app.apply.checks import REQUIRED_CHECK_SCRIPT, Endpoint
+from opportunity_app.apply.checks import GREENHOUSE_ROUTE_POLICY as POLICY, REQUIRED_CHECK_SCRIPT, Endpoint
 from opportunity_app.apply.greenhouse import BOARD_HOSTS
 
 AGENT_PATH = "apply/agent.py"
@@ -1315,7 +1315,7 @@ class FinishInBrowserKeepsD1B(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             for mode, expected in (("handoff", ["gender", "charged", "tied"]), ("rehearse", ["gender"])):
                 with self.subTest(mode=mode):
-                    agent = ApplyAgent(mode=mode, adapter=mock.Mock(), run_id="run-shot", screenshot_dir=Path(folder))
+                    agent = ApplyAgent(mode=mode, adapter=mock.Mock(ats="greenhouse"), run_id="run-shot", screenshot_dir=Path(folder))
                     page = mock.Mock()
                     page.screenshot.return_value = b"png"
                     agent._page = page
@@ -1374,13 +1374,13 @@ class WhatAnAbortedRequestMeansInAHandoff(unittest.TestCase):
         agent = ApplyAgent(mode="handoff", adapter=GreenhouseAdapter())
         agent._state.submit_path = apply_fake_ats.JOB_PATH
         agent._phase = phase
-        agent._observer = apply_agent._Observer(mock.Mock(), lambda: True)
+        agent._observer = apply_agent._Observer(mock.Mock(), lambda: True, policy=POLICY)
         return agent
 
     def abort(self, agent, method, url, *, headers=None, body=None, resource_type="fetch"):
         request = mock.Mock(method=method, url=url, headers=headers or {}, resource_type=resource_type)
         facts = apply_checks.RouteRequest(method, url, resource_type=resource_type, headers=headers or {}, body=body, public=True)
-        decision = apply_checks.route_decision("handoff", agent._phase, facts, agent._state)
+        decision = apply_checks.route_decision("handoff", agent._phase, facts, agent._state, POLICY)
         self.assertIsInstance(decision, apply_checks.Abort, (method, url))
         route = mock.Mock()
         agent._abort_request(route, request, facts, decision)
@@ -1439,7 +1439,7 @@ class WhatAnAbortedRequestMeansInAHandoff(unittest.TestCase):
                 agent = self.agent(apply_checks.PHASE_STUDENT)
                 request = mock.Mock(method="POST", url=url, headers=kwargs.get("headers", {}), resource_type="fetch")
                 facts = apply_checks.RouteRequest("POST", url, resource_type="fetch", headers=kwargs.get("headers", {}), body=kwargs.get("body"), public=True)
-                decision = apply_checks.route_decision("handoff", agent._phase, facts, agent._state)
+                decision = apply_checks.route_decision("handoff", agent._phase, facts, agent._state, POLICY)
                 if isinstance(decision, apply_checks.Abort):
                     agent._abort_request(mock.Mock(), request, facts, decision)
                 self.assertEqual((agent._closing, agent._early, agent._upload_refused), (False, False, None))
@@ -1475,7 +1475,7 @@ class WhatAnAbortedRequestMeansInAHandoff(unittest.TestCase):
 
 class TheObserverIsAppendOnly(unittest.TestCase):
     def test_what_passed_is_always_kept_and_what_was_refused_is_capped(self):
-        observer = apply_agent._Observer(mock.Mock(), lambda: True)
+        observer = apply_agent._Observer(mock.Mock(), lambda: True, policy=POLICY)
         request = mock.Mock(url="https://boards.greenhouse.io/x", method="post")
         for _ in range(apply_agent.MAX_REQUESTS + 50):
             observer.track(request, passed=False)
@@ -1490,7 +1490,7 @@ class TheObserverIsAppendOnly(unittest.TestCase):
     def test_a_navigation_counts_only_after_the_hand_over(self):
         page = mock.Mock()
         active = {"on": False}
-        observer = apply_agent._Observer(page, lambda: active["on"])
+        observer = apply_agent._Observer(page, lambda: active["on"], policy=POLICY)
         observer._navigated(page.main_frame)
         self.assertFalse(observer.navigated)
         active["on"] = True
@@ -1520,7 +1520,7 @@ class AHandoffRecordCarriesNoValueThroughAHostOrAPath(unittest.TestCase):
         agent._state.values = dict(self.VALUES)
         agent._state.submit_path = "/acme/jobs/1"
         agent._phase = phase
-        agent._observer = apply_agent._Observer(mock.Mock(), lambda: True, lambda: agent._state.values, lambda: agent._state.submit_path)
+        agent._observer = apply_agent._Observer(mock.Mock(), lambda: True, lambda: agent._state.values, lambda: agent._state.submit_path, policy=POLICY)
         return agent
 
     def assert_no_value(self, *documents):

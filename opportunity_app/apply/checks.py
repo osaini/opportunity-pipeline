@@ -1,4 +1,4 @@
-"""The integrity-critical decisions of the Greenhouse apply agent, as pure functions.
+"""The integrity-critical decisions of the apply agent, as pure functions.
 
 Standard library only, with no browser and no database, so the default
 unittest suite (which has no Playwright) covers every decision the agent
@@ -9,6 +9,10 @@ correctly.
 
     route_decision   whether one browser request may go out, in each mode and phase
     decide_outcome   what happened after hand-over, from what the browser saw
+
+The first two are written once and read each ATS's ``RoutePolicy`` (its hosts, its endpoints, what counts as its submit POST
+and its confirmation page); Greenhouse's is ``GREENHOUSE_ROUTE_POLICY``, built from the constants below and registered by
+``apply.ats``.
     join             whether Greenhouse's own field listing and the page agree
     check_required   the independent pre-submit check of the filled form
     clean_rehearsal  whether a rehearsal counts toward the one-click gate
@@ -29,9 +33,9 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Mapping, NamedTuple, Sequence
+from typing import Any, Callable, Iterable, Mapping, NamedTuple, Sequence
 from urllib.parse import parse_qs, quote, quote_plus, unquote, unquote_plus, urlsplit
-from .greenhouse import BOARD_HOSTS, GREENHOUSE_DOMAIN, SUBMIT_HOST
+from .greenhouse import BOARD_HOSTS, DISPLAY_NAME, GREENHOUSE_DOMAIN, SUBMIT_HOST
 
 # ---------------------------------------------------------------------------------------------
 # Hosts and endpoints
@@ -101,6 +105,32 @@ CAPTCHA_ENDPOINTS: tuple[Endpoint, ...] = (
 
 # The two of them a Greenhouse form was seen to load from (the browser can look up no other CAPTCHA host: apply.agent.RESOLVABLE_HOSTS).
 CONFIRMED_CAPTCHA_HOSTS = ("www.recaptcha.net", "www.gstatic.com")
+
+
+@dataclass(frozen=True)
+class RoutePolicy:
+    """What the request rules know about one ATS: the hosts and endpoints its form uses, and what counts as its submit POST and its confirmation page.
+
+    A frozen value each ``apply.ats.AtsSpec`` builds (docs/phase5-lever-handoff-spec.md 5.2 item 3). ``route_decision``,
+    ``looks_like_a_send``, ``student_submit_elsewhere``, ``decide_outcome`` and ``new_code_prompt`` read it as an argument; the
+    agent reads the same value for its own checks of an address. Nothing in it is a planned value.
+    """
+
+    display_name: str                                 # how a sentence names the ATS ("Greenhouse"); the AtsSpec's name
+    navigation_hosts: frozenset[str]                  # where a main-frame navigation may go
+    submit_hosts: frozenset[str]                      # the host the form's submit path belongs to
+    form_post_hosts: frozenset[str]                   # the hosts a form could post an application to: an aborted non-GET to one is "elsewhere"
+    telemetry_hosts: frozenset[str]                   # the page's usage reporting: refused for every method, silently
+    static_asset_host: Callable[[str], bool]          # the hosts its scripts, styles, fonts and pictures load from
+    lookup_endpoints: tuple[Endpoint, ...]            # the typeahead lookups, with ``{token}`` unfilled (the agent binds the posting's own)
+    captcha_endpoints: tuple[Endpoint, ...]           # CAPTCHA services nothing carrying a planned value may reach
+    storage_upload_suffixes: tuple[str, ...]          # a non-GET to a host ending with one is a file going to storage (``S3_UPLOAD_ENABLED``)
+    resolvable_hosts: tuple[str, ...]                 # every name its form needs the browser to look up (fnmatch patterns); the union is the resolver rule
+    confirmation_reached: Callable[["Observation"], bool]   # the main frame is on its own confirmation path
+
+    def is_submit_request(self, host: str, path: str, submit_path: str) -> bool:
+        """Whether a request to this host and path is the one the loader's submit path names (the method is the caller's to check)."""
+        return host in self.submit_hosts and bool(submit_path) and path == submit_path
 
 MODES = ("lookup", "rehearse", "submit", "handoff")
 PHASE_BEFORE_INPUT = "before_input"      # lookup, rehearse: the agent has not typed anything yet
@@ -195,8 +225,9 @@ class RouteState:
     values: Mapping[str, Any] = field(default_factory=dict)   # planned values by field key, in memory only
     typing_key: str = ""                                  # the field being typed into right now
     typing_lookup: str = ""                               # the lookup kind that field's typeahead calls (Endpoint.kind); empty when it has none
-    lookup_endpoints: Sequence[Endpoint] = field(default_factory=lambda: GREENHOUSE_LOOKUP_ENDPOINTS)
-    captcha_endpoints: Sequence[Endpoint] = field(default_factory=lambda: CAPTCHA_ENDPOINTS)
+    # None means the policy's own lists. The agent sets ``lookup_endpoints`` to the policy's with the posting's board token filled in.
+    lookup_endpoints: Sequence[Endpoint] | None = None
+    captcha_endpoints: Sequence[Endpoint] | None = None
     submit_posts_passed: int = 0
     security_code_prompts: int = 0
     code_posts_passed: int = 0
@@ -401,13 +432,13 @@ def safe_host(host: str, values: Mapping[str, Any]) -> str:
     return host
 
 
-def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteState) -> Allow | Abort:
+def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteState, policy: RoutePolicy) -> Allow | Abort:
     """Whether the agent's browser may make this request. The route handler applies the answer and nothing else.
 
     Rules for every mode, in order: a main-frame navigation may go only to the
-    two board hosts; WebSockets are refused; only public addresses; and the
+    ATS's own board hosts (``policy.navigation_hosts``); WebSockets are refused; only public addresses; and the
     value guard, which refuses any request carrying a planned value on any host
-    (Greenhouse included), with three exceptions. Then the table for the mode
+    (the ATS's included), with three exceptions. Then the table for the mode
     and phase (spec 4.3). Anything unrecognised is refused.
     """
     method = request.method.upper()
@@ -421,20 +452,22 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
 
     if mode not in PHASES or phase not in PHASES[mode]:
         return abort("unknown_phase", "The app did not recognise this stage of the run, so it refused the request")
-    if request.is_navigation and host not in BOARD_HOSTS:
+    if request.is_navigation and host not in policy.navigation_hosts:
         return abort("offsite_navigation", f"This posting sends applicants to {host}")
     if request.is_websocket:
         return abort("websocket", "The page tried to open a WebSocket, which the app refuses")
     if request.public is not True:
         return abort("non_public_address", "The address is not a public one")
 
-    is_submit_post = method == "POST" and host == SUBMIT_HOST and bool(state.submit_path) and path == state.submit_path
+    is_submit_post = method == "POST" and policy.is_submit_request(host, path, state.submit_path)
+    lookup_endpoints = policy.lookup_endpoints if state.lookup_endpoints is None else state.lookup_endpoints
+    captcha_endpoints = policy.captcha_endpoints if state.captcha_endpoints is None else state.captcha_endpoints
     after_hand_over = phase == PHASE_AFTER_HAND_OVER
     # A lookup is the one the typed field's own typeahead calls: the plan names its
     # kind, and only an endpoint of that kind counts (never any pinned endpoint).
     is_lookup = (
         method == "GET" and bool(state.typing_key) and bool(state.typing_lookup) and not request.is_navigation
-        and _endpoint_matches(state.lookup_endpoints, host, path, state.typing_lookup)
+        and _endpoint_matches(lookup_endpoints, host, path, state.typing_lookup)
     )
     # The value guard. Exempt: the submit POST itself, a lookup GET for the field
     # being typed (which may carry that field's own text and nothing else), and
@@ -442,14 +475,14 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
     # stay on the page for the rest of the run (a security code, a challenge), and what a script there sends to any other host
     # in a GET is checked as before.
     read_after_press = (
-        after_hand_over and method == "GET" and bool(state.submit_posts_passed) and (mode != "handoff" or host in BOARD_HOSTS)
+        after_hand_over and method == "GET" and bool(state.submit_posts_passed) and (mode != "handoff" or host in policy.navigation_hosts)
     )
     if not is_submit_post and not read_after_press:
         leaked = leaked_field(request, state.values, exclude=state.typing_key if is_lookup else "")
         if leaked:
             return abort("value_guard", "A request carrying a filled-in answer was refused", leaked)
 
-    if method not in SAFE_METHODS and host.endswith(".amazonaws.com") and not S3_UPLOAD_ENABLED:
+    if method not in SAFE_METHODS and host.endswith(policy.storage_upload_suffixes) and not S3_UPLOAD_ENABLED:
         return abort("s3_upload", "The page tried to upload a file before Submit, which the app does not allow yet")
 
     if mode in ("lookup", "rehearse"):
@@ -460,12 +493,12 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
             return abort("non_get", "A rehearsal sends nothing but GET requests")
         if is_lookup:
             return Allow("lookup")
-        if method == "GET" and not request.is_navigation and is_static_asset_host(host) and request.resource_type in STATIC_RESOURCE_TYPES:
+        if method == "GET" and not request.is_navigation and policy.static_asset_host(host) and request.resource_type in STATIC_RESOURCE_TYPES:
             return Allow("static_asset")
         return abort("after_first_input", "After the first input, only the typed field's lookup and static assets may load")
 
     # submit and handoff
-    if host in TELEMETRY_HOSTS:
+    if host in policy.telemetry_hosts:
         # Every method: a GET beacon can carry a value as well as a POST, and none of it is the application. Refused and recorded.
         return abort("telemetry", "The page's own usage reporting was refused")
     if is_submit_post and state.code_typing:
@@ -487,7 +520,7 @@ def route_decision(mode: str, phase: str, request: RouteRequest, state: RouteSta
                 return abort("code_post_before_press", "A request that would send the security code was refused because you had not pressed Submit")
             return Allow("security_code", code_post=True)
         return abort("second_submit_post", "A second submit request was refused")
-    if _endpoint_matches(state.captcha_endpoints, host, path):
+    if _endpoint_matches(captcha_endpoints, host, path):
         return Allow("captcha")
     if phase == PHASE_AFTER_HAND_OVER:
         return abort("other_non_get", "A request to an address the app does not recognise was refused")
@@ -506,7 +539,7 @@ SEND_AFTER_PRESS_S = 15.0
 _FORM_BODY_TYPES = ("multipart/form-data", "application/x-www-form-urlencoded", "application/json")
 
 
-def looks_like_a_send(request: RouteRequest, state: RouteState) -> bool:
+def looks_like_a_send(request: RouteRequest, state: RouteState, policy: RoutePolicy) -> bool:
     """Handoff, the student's turn: a refused request that is probably the form sending the application to an address the app does not know.
 
     True for a non-GET with a body of a form's kind (multipart, URL-encoded or JSON) to a host that is neither one of the form's own hosts
@@ -518,7 +551,8 @@ def looks_like_a_send(request: RouteRequest, state: RouteState) -> bool:
     if time.monotonic() - state.last_press_at > SEND_AFTER_PRESS_S:
         return False
     host, path = _host(request.url), urlsplit(request.url).path
-    if host in FORM_POST_HOSTS or host in TELEMETRY_HOSTS or _endpoint_matches(state.captcha_endpoints, host, path):
+    captcha_endpoints = policy.captcha_endpoints if state.captcha_endpoints is None else state.captcha_endpoints
+    if host in policy.form_post_hosts or host in policy.telemetry_hosts or _endpoint_matches(captcha_endpoints, host, path):
         return False
     if not request.body or not _content_type(request).startswith(_FORM_BODY_TYPES):
         return False
@@ -549,7 +583,7 @@ def is_upload(request: RouteRequest) -> bool:
     return False
 
 
-def student_submit_elsewhere(request: RouteRequest, state: RouteState) -> bool:
+def student_submit_elsewhere(request: RouteRequest, state: RouteState, policy: RoutePolicy) -> bool:
     """Handoff, the student's turn: an aborted non-GET that could be the form's own submission to another address (6.13 step 3).
 
     Telemetry (TELEMETRY_HOSTS, and any other host) is not: it is refused and recorded, silently. True for a non-GET that is not a
@@ -558,9 +592,10 @@ def student_submit_elsewhere(request: RouteRequest, state: RouteState) -> bool:
     if request.method.upper() in SAFE_METHODS:
         return False
     host, path = _host(request.url), urlsplit(request.url).path
-    if host in TELEMETRY_HOSTS or _endpoint_matches(state.captcha_endpoints, host, path):
+    captcha_endpoints = policy.captcha_endpoints if state.captcha_endpoints is None else state.captcha_endpoints
+    if host in policy.telemetry_hosts or _endpoint_matches(captcha_endpoints, host, path):
         return False
-    return host in FORM_POST_HOSTS or request.resource_type == "document"
+    return host in policy.form_post_hosts or request.resource_type == "document"
 
 
 # ---------------------------------------------------------------------------------------------
@@ -618,7 +653,7 @@ class Outcome:
     settled: bool = True
 
 
-def new_code_prompt(obs: Observation) -> bool:
+def new_code_prompt(obs: Observation, policy: RoutePolicy) -> bool:
     """After a security-code POST went out: whether Greenhouse is asking for a code again, so a new prompt may start.
 
     True only on evidence the code was refused: a 428, or any other 4xx with the code boxes still showing. False while that POST
@@ -626,7 +661,7 @@ def new_code_prompt(obs: Observation) -> bool:
     and for a 5xx: an edge proxy may answer 502, 503 or 504 after the origin took the code, so that POST may have been received
     and a second one would send the application twice. One answer is never counted as two prompts.
     """
-    submits = [seen for seen in obs.requests if seen.passed and _is_submit_post(seen, obs)]
+    submits = [seen for seen in obs.requests if seen.passed and _is_submit_post(seen, obs, policy)]
     if len(submits) < 2:
         return False                    # the first POST's own 428 is the prompt that is already being answered
     status = submits[-1].status
@@ -647,11 +682,11 @@ CODE_REFUSED_NOTE = ("Greenhouse did not accept the security code, and Submit ap
 CHALLENGE_NOTE = "Greenhouse showed a check that wasn't finished. Look for Greenhouse's email"
 
 
-def _is_submit_post(seen: SeenRequest, obs: Observation) -> bool:
-    return seen.method.upper() == "POST" and seen.host.lower() == SUBMIT_HOST and bool(obs.submit_path) and seen.path == obs.submit_path
+def _is_submit_post(seen: SeenRequest, obs: Observation, policy: RoutePolicy) -> bool:
+    return seen.method.upper() == "POST" and policy.is_submit_request(seen.host.lower(), seen.path, obs.submit_path)
 
 
-def confirmation_reached(obs: Observation) -> bool:
+def _greenhouse_confirmation_reached(obs: Observation) -> bool:
     """The main frame is on Greenhouse's own confirmation path: the loader's, the board's, or the embed's."""
     path = obs.main_path
     if not path:
@@ -667,26 +702,26 @@ def confirmation_reached(obs: Observation) -> bool:
     return False
 
 
-def decide_outcome(obs: Observation, *, code_wait_over: bool = False) -> Outcome:
-    """The 6.14 table, first matching row wins. Page wording is never used.
+def decide_outcome(obs: Observation, policy: RoutePolicy, *, code_wait_over: bool = False) -> Outcome:
+    """The 6.14 table, first matching row wins. Page wording is never used. ``policy`` says which request is the submit POST and which path is the confirmation page.
 
     ``code_wait_over`` is passed on the second application of the table, after
     the student's ``security_code_s`` wait: a prompt still open then is
     needs_you instead of waiting again.
     """
-    submits = [seen for seen in obs.requests if seen.passed and _is_submit_post(seen, obs)]
+    submits = [seen for seen in obs.requests if seen.passed and _is_submit_post(seen, obs, policy)]
     last_status = submits[-1].status if submits else None
     answered_ok = [seen for seen in submits if seen.status is not None and 200 <= seen.status < 400]
     prompted = any(seen.status == 428 for seen in submits)
     evidence = {
         "submit_post": bool(submits),
         "submit_status": last_status,
-        "confirmation_path": obs.main_path if confirmation_reached(obs) else "",
+        "confirmation_path": obs.main_path if policy.confirmation_reached(obs) else "",
         "form_absent": not obs.form_present,
     }
 
     # 1. Greenhouse answered the submit POST, then showed its own confirmation path, and the form is gone.
-    if answered_ok and confirmation_reached(obs) and not obs.form_present:
+    if answered_ok and policy.confirmation_reached(obs) and not obs.form_present:
         detail = {"security_code": True} if prompted else {}
         return Outcome("submitted", 1, resolved_by="page", detail=detail, evidence=evidence)
 
@@ -731,6 +766,27 @@ def decide_outcome(obs: Observation, *, code_wait_over: bool = False) -> Outcome
 
     # 6. Anything else: the POST answered 5xx or never answered, a navigation without a POST, a "thank you" with the form still there.
     return Outcome("unconfirmed", 1, UNCONFIRMED_NOTE, evidence=evidence, settled=False)
+
+
+# Greenhouse's request policy: the constants above, the way ``route_decision`` and ``decide_outcome`` read them. The names a browser may look up
+# are the board's, the lookups', the static files' (three shard patterns for the numbered shards) and the two CAPTCHA hosts a form was seen to load.
+GREENHOUSE_ROUTE_POLICY = RoutePolicy(
+    display_name=DISPLAY_NAME,
+    navigation_hosts=BOARD_HOSTS,
+    submit_hosts=frozenset({SUBMIT_HOST}),
+    form_post_hosts=FORM_POST_HOSTS,
+    telemetry_hosts=TELEMETRY_HOSTS,
+    static_asset_host=is_static_asset_host,
+    lookup_endpoints=GREENHOUSE_LOOKUP_ENDPOINTS,
+    captcha_endpoints=CAPTCHA_ENDPOINTS,
+    storage_upload_suffixes=(".amazonaws.com",),
+    resolvable_hosts=tuple(sorted({
+        *BOARD_HOSTS, *(endpoint.host for endpoint in GREENHOUSE_LOOKUP_ENDPOINTS), *STATIC_ASSET_HOSTS,
+        "s?-recruiting.cdn.greenhouse.io", "s??-recruiting.cdn.greenhouse.io", "s???-recruiting.cdn.greenhouse.io",
+        *CONFIRMED_CAPTCHA_HOSTS,
+    })),
+    confirmation_reached=_greenhouse_confirmation_reached,
+)
 
 
 # ---------------------------------------------------------------------------------------------

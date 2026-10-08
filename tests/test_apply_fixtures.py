@@ -53,6 +53,7 @@ from apply_fake_ats import (
 from browser_support import requires_chromium
 
 from opportunity_app.apply.checks import (
+    GREENHOUSE_ROUTE_POLICY as POLICY,
     PHASE_AFTER_HAND_OVER,
     PHASE_AFTER_INPUT,
     PHASE_BEFORE_INPUT,
@@ -519,7 +520,7 @@ class PolicyRoute:
 
     def __call__(self, route):
         request = route.request
-        decision = route_decision(self.mode, self.phase, self.facts(request), self.state)
+        decision = route_decision(self.mode, self.phase, self.facts(request), self.state, POLICY)
         if isinstance(decision, Abort):
             self.refused.append(decision.record(request.method) | {"path": urlsplit(request.url).path})
             self.aborted.append(request)
@@ -534,7 +535,7 @@ class PolicyRoute:
         self.fake.route(route)
 
     def websocket(self, ws):
-        decision = route_decision(self.mode, self.phase, RouteRequest("GET", ws.url, is_websocket=True, public=True), self.state)
+        decision = route_decision(self.mode, self.phase, RouteRequest("GET", ws.url, is_websocket=True, public=True), self.state, POLICY)
         self.refused.append(decision.record("GET"))
         # Refused by never calling connect_to_server(): the page holds a socket that goes nowhere.
         # (ws.close() from inside the handler deadlocks Playwright's sync API, seen with 1.5x.)
@@ -851,18 +852,18 @@ class OutcomeBrowserTests(BrowserFixtureTestCase):
 
     def test_a_303_and_the_confirmation_page_is_submitted(self):
         fake, page, observer = self.submit("confirm")
-        outcome = decide_outcome(observer.observation())
+        outcome = decide_outcome(observer.observation(), POLICY)
         self.assertEqual((outcome.outcome, outcome.after_click, outcome.resolved_by), ("submitted", 1, "page"))
         self.assertEqual(len(fake.submit_posts()), 1)
         self.assertEqual(fake.forbidden_clicks(page) if page.locator("form").count() else 0, 0)
 
     def test_a_server_error_is_unconfirmed(self):
         _fake, _page, observer = self.submit("server_500")
-        self.assertEqual(decide_outcome(observer.observation()).outcome, "unconfirmed")
+        self.assertEqual(decide_outcome(observer.observation(), POLICY).outcome, "unconfirmed")
 
     def test_a_refusal_with_the_form_still_there_is_failed_after_the_click_with_the_pages_error(self):
         _fake, _page, observer = self.submit("validation_422")
-        outcome = decide_outcome(observer.observation())
+        outcome = decide_outcome(observer.observation(), POLICY)
         self.assertEqual((outcome.outcome, outcome.after_click), ("failed", 1))
         self.assertIn("HTTP 422", outcome.note)
         self.assertIn("Greenhouse could not accept the application (422).", outcome.note)
@@ -870,35 +871,35 @@ class OutcomeBrowserTests(BrowserFixtureTestCase):
     def test_a_thank_you_at_the_jobs_own_address_with_the_form_still_there_is_unconfirmed(self):
         _fake, page, observer = self.submit("text_only_thanks")
         self.assertIn("Thank you for applying", page.inner_text("body"))
-        self.assertEqual(decide_outcome(observer.observation()).outcome, "unconfirmed")
+        self.assertEqual(decide_outcome(observer.observation(), POLICY).outcome, "unconfirmed")
 
     def test_a_confirmation_page_reached_without_a_post_is_unconfirmed(self):
         fake, _page, observer = self.submit("confirmation_without_post")
         self.assertEqual(fake.submit_posts(), [])
-        self.assertEqual(decide_outcome(observer.observation()).outcome, "unconfirmed")
+        self.assertEqual(decide_outcome(observer.observation(), POLICY).outcome, "unconfirmed")
 
     def test_a_post_that_never_answers_is_unconfirmed(self):
         _fake, page, observer = self.submit("hang", wait_ms=600)
-        outcome = decide_outcome(observer.observation())
+        outcome = decide_outcome(observer.observation(), POLICY)
         self.assertEqual(outcome.outcome, "unconfirmed")
         self.assertIsNone(observer.observation().requests[0].status)
         page.context.unroute_all(behavior="ignoreErrors")     # the pending POST is left behind on purpose
 
     def test_a_form_that_stopped_itself_sent_nothing(self):
         fake, _page, observer = self.submit("confirm", complete=False, wait_ms=300)
-        outcome = decide_outcome(observer.observation())
+        outcome = decide_outcome(observer.observation(), POLICY)
         self.assertEqual((outcome.outcome, outcome.after_click), ("failed", 0))
         self.assertIn("Please complete the required fields.", outcome.note)
         self.assertEqual(fake.non_get_requests(), [])
 
     def test_the_security_code_waits_then_the_students_code_confirms(self):
         fake, page, observer = self.submit("security_code")
-        waiting = decide_outcome(observer.observation())
+        waiting = decide_outcome(observer.observation(), POLICY)
         self.assertEqual((waiting.outcome, waiting.detail), ("waiting", {"waiting": "security_code"}))
         type_security_code(page)
         press_submit(page)
         page.wait_for_timeout(900)
-        outcome = decide_outcome(observer.observation(), code_wait_over=True)
+        outcome = decide_outcome(observer.observation(), POLICY, code_wait_over=True)
         self.assertEqual((outcome.outcome, outcome.detail), ("submitted", {"security_code": True}))
         self.assertEqual(len(fake.submit_posts()), 2)
 
@@ -909,11 +910,11 @@ class OutcomeBrowserTests(BrowserFixtureTestCase):
         complete_form(page, resume=BINARY_RESUME)
         press_submit(page)
         page.wait_for_timeout(900)
-        self.assertEqual(decide_outcome(observer.observation()).outcome, "waiting")
+        self.assertEqual(decide_outcome(observer.observation(), POLICY).outcome, "waiting")
         type_security_code(page)
         press_submit(page)
         page.wait_for_timeout(900)
-        outcome = decide_outcome(observer.observation(), code_wait_over=True)
+        outcome = decide_outcome(observer.observation(), POLICY, code_wait_over=True)
         self.assertEqual((outcome.outcome, outcome.detail), ("submitted", {"security_code": True}))
         self.assertEqual(len(fake.submit_posts()), 2)
         self.assertIn("%PDF-1.7", fake.submit_posts()[0].post_data)
@@ -1075,7 +1076,7 @@ class RoutePolicyBrowserTests(BrowserFixtureTestCase):
         page.wait_for_timeout(900)
         self.assertEqual(len(fake.submit_posts()), 1)
         self.assertEqual(router.rules(), ["second_submit_post"])
-        outcome = decide_outcome(observer.observation())
+        outcome = decide_outcome(observer.observation(), POLICY)
         self.assertEqual(outcome.outcome, "submitted")
 
     def test_after_hand_over_a_post_to_another_path_is_refused_and_says_nothing_was_sent(self):
@@ -1088,7 +1089,7 @@ class RoutePolicyBrowserTests(BrowserFixtureTestCase):
         self.assertEqual(fake.submit_posts(), [])
         self.assertEqual(fake.non_get_requests(), [])
         self.assertEqual(router.rules(), ["other_non_get"])
-        outcome = decide_outcome(observer.observation())
+        outcome = decide_outcome(observer.observation(), POLICY)
         self.assertEqual((outcome.outcome, outcome.after_click), ("failed", 0))
         self.assertIn("address the app doesn't recognize", outcome.note)
 
@@ -1107,7 +1108,7 @@ class RoutePolicyBrowserTests(BrowserFixtureTestCase):
         seen = observer.observation().requests
         self.assertEqual([(entry.method, entry.host, entry.path, entry.status, entry.passed) for entry in seen],
                          [("POST", SUBMIT_HOST, JOB_PATH, None, True)])
-        outcome = decide_outcome(observer.observation())
+        outcome = decide_outcome(observer.observation(), POLICY)
         self.assertEqual((outcome.outcome, outcome.after_click), ("unconfirmed", 1))
         self.assertNotIn("Nothing was sent", outcome.note)
 
