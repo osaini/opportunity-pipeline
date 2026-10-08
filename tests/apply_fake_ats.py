@@ -532,8 +532,8 @@ class CannedAgent:
     """A fictional rehearsal or lookup: no browser, no socket, every sentence value-free."""
 
     def __init__(self, *, mode: str, run_id: str, screenshot_dir: Path | None, timeouts: Any, on_progress: Any, heartbeat: Any,
-                 step_delay: float, outcome: str, hang: bool, handoff: dict[str, Any] | None = None) -> None:
-        self.mode, self.run_id, self.screenshot_dir = mode, run_id, screenshot_dir
+                 step_delay: float, outcome: str, hang: bool, handoff: dict[str, Any] | None = None, ats: str = "greenhouse") -> None:
+        self.mode, self.run_id, self.screenshot_dir, self.ats = mode, run_id, screenshot_dir, ats
         self.on_progress, self.heartbeat = on_progress, heartbeat
         self.step_delay, self.outcome, self.hang = step_delay, outcome, hang
         self.handoff = handoff or {"wait": 1.5, "outcome": "submitted"}

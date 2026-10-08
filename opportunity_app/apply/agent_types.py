@@ -170,6 +170,7 @@ class AgentJob:
     timeouts: ApplyTimeouts = ApplyTimeouts()
     deadline_s: float = 0.0           # the run's deadline in seconds from its start; a child process ends itself ``timeouts.orphan_s`` after it. 0 means none.
     ends_at: float = 0.0              # a time.monotonic() instant (system-wide); every agent wait is capped by it; 0 = no cap
+    ats: str = "greenhouse"           # the claim's or run's ats (apply.ats.REGISTRY); picks the agent's adapter. A literal because this module imports nothing first-party
 
 
 @dataclass
@@ -237,5 +238,5 @@ class ApplyAgentFactory(Protocol):
     def available(self) -> str: ...
     def __call__(
         self, *, mode: str, run_id: str, screenshot_dir: Path | None, timeouts: ApplyTimeouts,
-        on_progress: Callable[[str, str], None], heartbeat: Callable[[], None],
+        on_progress: Callable[[str, str], None], heartbeat: Callable[[], None], ats: str = "greenhouse",
     ) -> ApplyAgentLike: ...

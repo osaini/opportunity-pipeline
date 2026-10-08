@@ -104,7 +104,8 @@ from .checks import (
     safe_host,
     student_submit_elsewhere,
 )
-from .greenhouse import BOARD_HOSTS, SUBMIT_HOST
+from .ats import AtsAdapter, spec_for
+from .greenhouse import ATS_GREENHOUSE, BOARD_HOSTS, SUBMIT_HOST
 from .runs import INSTALL_PLAYWRIGHT, PlaywrightProbe
 
 # --- What the agent says (WP2 and WP3 never parse these) ------------------------------------------------------------
@@ -840,7 +841,7 @@ class ApplyAgent:
     """Chromium through Playwright, in a visible window, behind ``checks.route_decision``. Use as a context manager on one thread."""
 
     def __init__(
-        self, *, mode: str, adapter: GreenhouseAdapter, run_id: str = "", screenshot_dir: Path | None = None,
+        self, *, mode: str, adapter: AtsAdapter, run_id: str = "", screenshot_dir: Path | None = None,
         resolve: Resolver = resolve_host, timeouts: ApplyTimeouts = ApplyTimeouts(),
         route_hook: Callable[[Any], None] | None = None,            # tests only: serves pages from a fixture
         student_hook: Callable[[Any, str], None] | None = None,     # tests only: plays the student (M5b wait loops)
@@ -2756,6 +2757,10 @@ class ApplyAgent:
         )
 
 
+# One adapter class for each ATS in ats.REGISTRY (tests/test_apply_ats_seam.py keeps the two lists the same).
+ADAPTERS: dict[str, Callable[[], AtsAdapter]] = {ATS_GREENHOUSE: GreenhouseAdapter}
+
+
 class DefaultApplyAgentFactory:
     """What the real app builds an agent from. A module-level object with no state, so it pickles into the child process."""
 
@@ -2766,9 +2771,9 @@ class DefaultApplyAgentFactory:
 
     def __call__(
         self, *, mode: str, run_id: str, screenshot_dir: Path | None, timeouts: ApplyTimeouts,
-        on_progress: Callable[[str, str], None], heartbeat: Callable[[], None],
+        on_progress: Callable[[str, str], None], heartbeat: Callable[[], None], ats: str = ATS_GREENHOUSE,
     ) -> ApplyAgent:
         return ApplyAgent(
-            mode=mode, adapter=GreenhouseAdapter(), run_id=run_id, screenshot_dir=screenshot_dir, timeouts=timeouts,
+            mode=mode, adapter=ADAPTERS[spec_for(ats).key](), run_id=run_id, screenshot_dir=screenshot_dir, timeouts=timeouts,
             on_progress=on_progress, heartbeat=heartbeat,
         )

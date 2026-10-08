@@ -227,7 +227,7 @@ class BrowserAgentFactory:
         return ""
 
     def __call__(self, *, mode: str, run_id: str, screenshot_dir: Path | None, timeouts: ApplyTimeouts,
-                 on_progress: Callable[[str, str], None], heartbeat: Callable[[], None]) -> RecordingAgent:
+                 on_progress: Callable[[str, str], None], heartbeat: Callable[[], None], ats: str = "greenhouse") -> RecordingAgent:
         mode = self.mode or mode
         fake = HandoffGreenhouse(self.scenario)
         fake.letter_required = self.letter_required
