@@ -319,8 +319,9 @@ PRESS_CDP_CALLS = ("Page.enable", "Runtime.enable", "Runtime.addBinding", "Page.
 # (measured on Playwright 1.62's Chromium: neither a feature flag nor --disable-quic stops its packets), so it, and every worker that could
 # reach one, is closed by the init script alone, in every realm a page can make (tests/test_apply_agent_browser.py names each one).
 #
-# The resolver rule is the catch-all: the browser can look up only the hosts a registered ATS's form and its lookups, static files and
-# CAPTCHA use (each spec's ``route_policy.resolvable_hosts``, joined here) and the fonts every page loads (``RESOLVABLE_HOSTS``), and any other name, an IP address included, fails inside Chromium with no query leaving the machine
+# The resolver rule is the catch-all: the browser can look up only the hosts its own ATS's form and its lookups, static files and
+# CAPTCHA use (that spec's ``route_policy.resolvable_hosts``) and the fonts every page loads (``ApplyAgent.run_launch_options``; ``RESOLVABLE_HOSTS``
+# is the union over every registered ATS, which a launch without a run in hand and the registry-coverage test use), and any other name, an IP address included, fails inside Chromium with no query leaving the machine
 # (WebRTC to an ICE server given as an IP address is not a name lookup: the init script is the only thing that stops it. Measured on
 # Playwright 1.62's Chromium, the resolver rule left ten packets reaching a loopback listener, and no switch silenced both STUN over UDP
 # and TURN over TCP: ``--force-webrtc-ip-handling-policy=disable_non_proxied_udp`` stops the UDP and not the TCP, and the blink and
@@ -357,9 +358,11 @@ PLAYWRIGHT_DISABLED_FEATURES: tuple[str, ...] = (
     "BlockOriginHeaderModificationOnRedirect", "Translate", "AutoDeElevate", "OptimizationHints", "msForceBrowserSignIn",
     "msEdgeUpdateLaunchServicesPreferredVersion",
 )
-LAUNCH_ARGS = (
-    "--disable-blink-features=FetchLaterAPI,WebSocketStream", "--disable-features=" + ",".join((*PLAYWRIGHT_DISABLED_FEATURES, "FedCm")), resolver_rule(),
+LAUNCH_SWITCHES = (
+    "--disable-blink-features=FetchLaterAPI,WebSocketStream", "--disable-features=" + ",".join((*PLAYWRIGHT_DISABLED_FEATURES, "FedCm")),
 )
+# The switches with the resolver rule of the union over every registered ATS. A run launches with its own ATS's names only (``ApplyAgent.run_launch_options``).
+LAUNCH_ARGS = (*LAUNCH_SWITCHES, resolver_rule())
 
 _SCAN = "(a) => OpportunityApplyEngine.scan(a.profile, a.answers, {tag: true})"
 _CONTAINS = "(c, e) => c.contains(e)"
@@ -1016,6 +1019,15 @@ class ApplyAgent:
         No channel, no flag that changes how the browser presents itself, nothing that disguises it."""
         return {"headless": headless, "args": list(LAUNCH_ARGS)}
 
+    def run_launch_options(self) -> dict[str, Any]:
+        """``launch_options`` for this run: the same switches, with a resolver rule that names only this run's ATS (its policy's hosts and the fonts) and a test's own lookup hosts.
+
+        Every run launches a browser of its own, so what the resolver rule bounds (a request that skips the route handler: a prerender, a request in
+        flight as the window closes) reaches only the names this run's form uses, not those of another ATS.
+        """
+        hosts = (*self._policy.resolvable_hosts, *FONT_HOSTS, *(endpoint.host for endpoint in self._endpoints))
+        return {"headless": self.headless, "args": [*LAUNCH_SWITCHES, resolver_rule(hosts=tuple(dict.fromkeys(hosts)))]}
+
     @staticmethod
     def context_options() -> dict[str, Any]:
         """No service workers, no downloads, no permissions (so "Locate me" is never granted), and the window's natural size."""
@@ -1027,7 +1039,7 @@ class ApplyAgent:
         from playwright.sync_api import sync_playwright
 
         self._playwright = sync_playwright().start()
-        self._browser = _launch_browser(self._playwright, **self.launch_options(self.headless))
+        self._browser = _launch_browser(self._playwright, **self.run_launch_options())
         self._context = _new_context(self._browser, **self.context_options())
         self._context.on("request", lambda request: self._inflight.add(id(request)))
         self._context.on("requestfinished", lambda request: self._inflight.discard(id(request)))
@@ -1162,8 +1174,8 @@ class ApplyAgent:
     def _resolvable(self, host: str) -> bool:
         """Whether this host is one of the names this run's ATS needs the browser to look up (its policy's, and the fonts) or a test's own lookup endpoints.
 
-        The browser's resolver rule is the union over every registered ATS (``RESOLVABLE_HOSTS``), because it is one list; this run's own request rules
-        are narrower, so a Greenhouse run never reaches a name only Lever's form needs.
+        The same names the run's browser was launched with (``run_launch_options``): the route handler checks them too, so a name is refused here before
+        anything resolves it.
         """
         if not host:
             return False

@@ -377,7 +377,7 @@ behavior pinned (section 12, LV1). It does these things and nothing else:
   new parameters.
 - `RoutePolicy` for Lever carries the hosts, the one lookup (`/searchLocations`), the two hCaptcha hosts the list already had and the `/{site}/{job}/thanks`
   rule. The résumé POST, the telemetry and Cloudflare paths and the hCaptcha hosts the page loads are LV3's, pinned from the recording (Q3).
-  `RESOLVABLE_HOSTS` is now the union with Lever's two hosts, so a Greenhouse run's browser can resolve them too; its request rules still refuse them.
+  `RESOLVABLE_HOSTS` is now the union with Lever's two hosts; a run's own browser can look up only its own ATS's names (`ApplyAgent.run_launch_options`, see "As built in LV3, the driver").
 - A required `multiple-select` is left to the student. The shared broad net (Phase 5 7.1 "As built") has never ticked a box from the answer library, and
   6.6's "ticks only the chosen boxes" would loosen it, so the stricter rule is kept here until the student decides otherwise.
 - `inbox._job_link` already kept a Lever or Ashby posting's uuid (it is in the path; only Greenhouse's `gh_jid` lives in the query), so it needed no
@@ -416,8 +416,8 @@ do not hold it, and `AtsSpec.adapter_built` stays false, so the runner still ans
 
 - The hCaptcha hosts are now in the resolver rule. `LEVER_CAPTCHA_ENDPOINTS` holds what the load recording saw (Q3): `js.hcaptcha.com`, `hcaptcha.com`, `api.hcaptcha.com`,
   `api2.hcaptcha.com`, and `newassets.hcaptcha.com` under `/captcha/v1/`; `cdn.lever.co` and the logo bucket are static hosts; `bugs.lever.co` (exactly, never `lever.co` by suffix) and
-  `linkedin.com` are telemetry, so the "Apply with LinkedIn" widget's POST into a frame is refused silently and never ends the student's turn. The browser's resolver rule is still one
-  list for every ATS, but a run's own request rules read only its policy's names (`ApplyAgent._resolvable`), so a Greenhouse run reaches none of the names only Lever needs. The shard
+  `linkedin.com` are telemetry, so the "Apply with LinkedIn" widget's POST into a frame is refused silently and never ends the student's turn. `RESOLVABLE_HOSTS` stays the union over every ATS (the test that every registered host is listed somewhere reads it), but each run launches a Chromium of its own with a resolver
+  rule of its own ATS's names and the fonts (`ApplyAgent.run_launch_options`), and its request rules read the same names (`ApplyAgent._resolvable`), so a Greenhouse run's browser can look up none of the names only Lever needs, nor the reverse. The shard
   hosts under `w.hcaptcha.com` are not in it (Q3).
 - `LeverAdapter` imports no Playwright: every call is on the frame, page and locators the agent hands in, and whatever changes the page goes through the agent's five helpers
   (`ops._type`, `_click`), so the static scan of the helpers covers it. `AdapterBase` (`agent_types`) holds what an ATS that needs nothing special does, and Greenhouse's adapter
@@ -822,7 +822,7 @@ be reachable by GET: on the page read, Submit does nothing without it (3.10).
 
 | Mode and phase | Allowed | Aborted and recorded |
 | --- | --- | --- |
-| `handoff`, before hand-over | GET, HEAD, OPTIONS (subject to rule 4). `GET /searchLocations` for the field being typed. Non-GET to a CAPTCHA endpoint and to Cloudflare's challenge path (rule 4 applies, so their bodies carry no planned value). **The résumé POST** (below): once during the app's fill if L1 is A, and during the student's turn for any file the student attaches. | Every other non-GET, on any host, including every other upload, and a second résumé POST during the app's fill. |
+| `handoff`, before hand-over | GET, HEAD, OPTIONS (subject to rule 4). `GET /searchLocations` for the field being typed. Non-GET to a CAPTCHA endpoint, by the method the recording saw there (`Endpoint.methods`), and to Cloudflare's challenge path (rule 4 applies, so their bodies carry no planned value); during the app's fill never a file (`upload_elsewhere`). **The résumé POST** (below): once during the app's fill if L1 is A, and during the student's turn for any file the student attaches. | Every other non-GET, on any host, including every other upload, and a second résumé POST during the app's fill. |
 | `handoff`: the student's first POST to the apply URL | The handler asks the parent for the hand-over and calls `route.continue_()` only on a committed True. | The POST, on a False reply, an error, or no reply within 10 s. |
 | `handoff`, after hand-over | One POST to the apply URL per attempt. Non-GET to a CAPTCHA endpoint. GETs. | Every other non-GET. |
 
@@ -838,8 +838,8 @@ into it); and the URL and headers carry no planned value. The multipart body is 
 
 **Navigation DNS layer.** `RESOLVABLE_HOSTS` and the Chromium resolver rule (`agent.py:299-311`) fail DNS for every host
 outside the list, independent of `route_decision`. Adding Lever means adding its hosts to that union (5.2 item 3); a test
-fails if a host in any registered `RoutePolicy` is not resolvable, and the reverse. A run's own request rules reach only its own ATS's names and the fonts
-(`ApplyAgent._resolvable` reads the run's policy), so the union does not widen what a Greenhouse run may reach.
+fails if a host in any registered `RoutePolicy` is not resolvable, and the reverse. Each run launches its own browser, so its resolver rule is built from its own ATS's names and the fonts (`ApplyAgent.run_launch_options`); the union is
+only what that test reads, and it does not widen what a Greenhouse run's browser can look up, including the requests that skip the route handler.
 
 ---
 

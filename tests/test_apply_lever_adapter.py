@@ -4,6 +4,7 @@ is in tests/test_apply_lever_browser.py. Every company, person and address is fi
 """
 
 import ast
+import fnmatch
 import inspect
 import re
 import sys
@@ -28,6 +29,7 @@ from opportunity_app.apply import agent_types
 from opportunity_app.apply import ats as apply_ats
 from opportunity_app.apply import lever, lever_adapter
 from opportunity_app.apply.agent import ApplyAgent, GreenhouseAdapter
+from opportunity_app.apply.checks import Endpoint
 from opportunity_app.apply.lever_adapter import DENYLIST, PARSER_FIELDS, PARSER_PREFIX, LeverAdapter
 
 ADAPTER_PATH = "apply/lever_adapter.py"
@@ -282,6 +284,28 @@ class ResolvableForARunTests(unittest.TestCase):
         for host in self.LEVER_ONLY:
             with self.subTest(host=host):
                 self.assertFalse(agent._resolvable(host))
+
+    @staticmethod
+    def looked_up(agent):
+        """The names the browser of this run can look up: the ones its launch switch excludes from failing."""
+        (rule,) = [arg for arg in agent.run_launch_options()["args"] if arg.startswith("--host-resolver-rules=")]
+        return {part.strip().removeprefix("EXCLUDE ") for part in rule.split(" , ")[1:]}
+
+    def test_the_browser_a_greenhouse_run_launches_can_look_up_none_of_the_names_only_lever_needs(self):
+        names = self.looked_up(ApplyAgent(mode="handoff", adapter=GreenhouseAdapter()))
+        self.assertTrue({"boards.greenhouse.io", "www.recaptcha.net", "fonts.gstatic.com"} <= names, names)
+        self.assertEqual(names & set(self.LEVER_ONLY), set())
+
+    def test_the_browser_a_lever_run_launches_can_look_up_none_of_the_names_only_greenhouse_needs(self):
+        names = self.looked_up(ApplyAgent(mode="handoff", adapter=LeverAdapter()))
+        self.assertTrue(set(self.LEVER_ONLY) | {"fonts.gstatic.com"} <= names, names)
+        for host in self.GREENHOUSE_ONLY:
+            with self.subTest(host=host):
+                self.assertFalse(any(fnmatch.fnmatchcase(host, pattern) for pattern in names), host)
+
+    def test_a_test_pages_own_lookup_hosts_are_looked_up_too(self):
+        agent = ApplyAgent(mode="lookup", adapter=GreenhouseAdapter(), lookup_endpoints=(Endpoint("lookup.example-robotics.test", "/places", "location"),))
+        self.assertIn("lookup.example-robotics.test", self.looked_up(agent))
 
     def test_the_browsers_one_resolver_rule_holds_the_names_of_both(self):
         for host in (*self.LEVER_ONLY, *(name for name in self.GREENHOUSE_ONLY if "?" not in name and not name.startswith("s12"))):

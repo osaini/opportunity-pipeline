@@ -676,7 +676,8 @@ class LaunchIsPlain(unittest.TestCase):
         with mock.patch.dict(sys.modules, {"playwright": mock.MagicMock(), "playwright.sync_api": fake_module}), \
                 mock.patch.object(apply_agent, "_launch_browser", launch):
             agent._start()
-        self.assertEqual(calls["launch"], ApplyAgent.launch_options(True))
+        self.assertEqual(calls["launch"], agent.run_launch_options())
+        self.assertEqual(calls["launch"]["args"][:2], self.ARGS[:2])
         self.assertEqual(calls["context"], ApplyAgent.context_options())
         self.assertEqual(calls["init_script"], apply_agent.NO_SIDE_CHANNELS, "the channels that skip the route handler are removed in every frame before a page script runs")
         for name in SIDE_CHANNELS:
