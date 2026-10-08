@@ -229,7 +229,7 @@ def sources(*, facts=None, answers=(), labels=None, allowed=(), store=None, resu
 
 
 def plan(fields, src=None, mode="submit", company=COMPANY, **kwargs):
-    return build_plan(fields, kwargs.pop("scan", None), src or sources(), company, mode, **kwargs)
+    return build_plan(fields, kwargs.pop("scan", None), src or sources(), company, mode, **{"ats_name": "Greenhouse", **kwargs})
 
 
 def kinds(result):

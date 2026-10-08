@@ -60,6 +60,7 @@ from ..core.profile_store import read_stored_profile
 from ..core.settings_store import get_setting, put_setting, setting_updated_at
 from ..core.timestamps import parse_app_instant, utc_now
 from ..core.user_time import UserTimezone, user_timezone
+from .ats import name_of
 from .greenhouse import ADAPTER_VERSION, ATS_GREENHOUSE, is_greenhouse_sender
 from .claims import HELD_HEARTBEAT, RUNNING, claim_held, forget, peek_unconfirmed, take_unconfirmed
 
@@ -111,6 +112,13 @@ LIVE_APPLICATION = "This application is already being submitted, or was submitte
 HANDOFF_OPEN = "Finish in browser is already open for this role. Stop it, or finish in its window, before starting another."
 CLAIMED_RUNNING = "Apply for me is already working on this application."
 STOPPED_EARLIER = "An earlier attempt stopped before anything was sent. Retry it."
+# Sentences that name the ATS: ``{ats}`` is its display name (apply.ats.name_of of the claim's or run's ats), filled where the sentence is said.
+CONFIRMED_BY_EMAIL = "{ats} already confirmed an application from you on {day}"
+RELEASED_JOB_ASK = "You said the attempt on {day} didn't go through. {ats} may still have it. Send it again anyway."
+OTHER_COPY = "This {ats} job already has an attempt from another saved copy of the role ({title}). Finish or release that one first."
+LATE_CONFIRMATION = "{ats} showed its confirmation page for {company}, after this attempt was marked as not sent. Check it."
+RESULT_SUBMITTED = "{ats} showed its confirmation page for your application to {title} at {company}"
+STOPPED_BEFORE = "The app stopped before handing your application to {ats}. Nothing was sent."
 # A claim that stopped for the student before the hand-over: nothing left the app, so it blocks nothing.
 _STOPPED_UNSENT = "(c.state IN ('needs_you', 'failed') AND c.after_click=0)"
 # The acknowledgments a student can tick (the "ask" refusals): each is a code a start request may carry.
@@ -396,7 +404,7 @@ def duplicate_block(
         ).fetchone()
         if confirmation is not None:
             return Block("failed", "confirmed_by_email",
-                         f"Greenhouse already confirmed an application from you on {_day_text(zone, confirmation['received_at'])}")
+                         CONFIRMED_BY_EMAIL.format(ats=name_of(ats), day=_day_text(zone, confirmation["received_at"])))
         session = conn.execute(
             "SELECT updated_at FROM application_form_sessions WHERE user_id=? AND application_id=? AND status='completed' "
             "ORDER BY updated_at LIMIT 1", (user_id, application_id),
@@ -416,14 +424,13 @@ def duplicate_block(
     ).fetchall():
         if application_id and row["application_id"] == application_id:
             return Block("failed", "application", row["note"] or (_live_words(row["state"], row["mode"]) if reading else LIVE_APPLICATION))
-        return Block("failed", "job", _other_copy(conn, row["opportunity_id"]))
+        return Block("failed", "job", _other_copy(conn, row["opportunity_id"], ats))
     released = conn.execute(
         "SELECT handed_over_at FROM application_submit_claims WHERE user_id=? AND ats=? AND job_ref=? AND state='released' "
         "AND handed_over_at IS NOT NULL ORDER BY handed_over_at DESC LIMIT 1", (user_id, ats, job_ref),
     ).fetchone()
     if released is not None and ASK_RELEASED_JOB not in acknowledged:
-        return Block("ask", ASK_RELEASED_JOB, f"You said the attempt on {_day_text(zone, released['handed_over_at'])} didn't go through. "
-                     "Greenhouse may still have it. Send it again anyway.")
+        return Block("ask", ASK_RELEASED_JOB, RELEASED_JOB_ASK.format(ats=name_of(ats), day=_day_text(zone, released["handed_over_at"])))
     unmatched = _unmatched_confirmation(conn, user_id, opportunity_id, company)
     if unmatched is not None and ASK_UNMATCHED_CONFIRMATION not in acknowledged:
         name = _title_of(conn, opportunity_id)[1] or "this company"
@@ -489,9 +496,9 @@ def _made_by_the_app(conn: sqlite3.Connection, application_id: str, created_at: 
     ).fetchone() is not None
 
 
-def _other_copy(conn: sqlite3.Connection, opportunity_id: str) -> str:
+def _other_copy(conn: sqlite3.Connection, opportunity_id: str, ats: str) -> str:
     title = _title_of(conn, opportunity_id)[0] or "this role"
-    return f"This Greenhouse job already has an attempt from another saved copy of the role ({title}). Finish or release that one first."
+    return OTHER_COPY.format(ats=name_of(ats), title=title)
 
 
 def _unmatched_confirmation(conn: sqlite3.Connection, user_id: str, opportunity_id: str, company: str) -> str | None:
@@ -650,7 +657,7 @@ def _conflict(conn: sqlite3.Connection, user_id: str, opportunity_id: str, ats: 
         ).fetchone()
         if stopped is not None:
             return ClaimRefused(STOPPED_EARLIER, code="stopped_earlier")
-    return ClaimRefused(_other_copy(conn, other["opportunity_id"]) if other else LIVE_APPLICATION, code="job" if other else "application")
+    return ClaimRefused(_other_copy(conn, other["opportunity_id"], ats) if other else LIVE_APPLICATION, code="job" if other else "application")
 
 
 def _claim_row(conn: sqlite3.Connection, token: str, user_id: str, *, lock: bool = False) -> Any:
@@ -809,7 +816,7 @@ def _after_missed_settle(conn: sqlite3.Connection, token: str, user_id: str, det
             _submitted_event(conn, row["application_id"], detail, stamp)
             automation.insert_notice(
                 conn, user_id, event_key=f"apply-late-confirmation:{token}", level="warning",
-                title=f"Greenhouse showed its confirmation page for {company}, after this attempt was marked as not sent. Check it.",
+                title=LATE_CONFIRMATION.format(ats=name_of(row["ats"]), company=company),
                 body="", timestamp=stamp,
             )
     except Exception:  # noqa: BLE001 - like send_claims.settle_send_claim: a failed report never hides the result
@@ -899,17 +906,18 @@ def resolve_uncertain(
 # The author of an event the app wrote on its own (a settle after a crash, a recovery): the timeline says "The app, on its own".
 APP_SOURCE = "apply_agent:watch"
 
-# What settled a submission, said in the stage event and the ledger row: (event source, ledger basis, sentence).
+# What settled a submission, said in the stage event and the ledger row: (event source, ledger basis, sentence with {ats}).
 _SETTLED_BY = {
-    "page": ("apply_agent:confirmation_page", "confirmation_page", "Greenhouse showed its confirmation page"),
-    "email": ("apply_agent:confirmation_email", "confirmation_email", "Greenhouse's confirmation email arrived"),
+    "page": ("apply_agent:confirmation_page", "confirmation_page", "{ats} showed its confirmation page"),
+    "email": ("apply_agent:confirmation_email", "confirmation_email", "{ats}'s confirmation email arrived"),
     "student": ("apply_agent:student_confirmed", "student_confirmed", "you said it went through"),
 }
 
 
 def _settled_by(row: Any) -> tuple[str, str, str]:
     """How this claim's submission was established, from resolved_by. A claim settled without one had the page."""
-    return _SETTLED_BY.get(row["resolved_by"], _SETTLED_BY["page"])
+    source, basis, how = _SETTLED_BY.get(row["resolved_by"], _SETTLED_BY["page"])
+    return source, basis, how.format(ats=name_of(row["ats"]))
 
 
 def record_stage(
@@ -1165,7 +1173,7 @@ def record_result(
     if notify:
         title, company = _title_of(conn, row["opportunity_id"])
         if state == "submitted":
-            text = f"Greenhouse showed its confirmation page for your application to {title} at {company}"
+            text = RESULT_SUBMITTED.format(ats=name_of(row["ats"]), title=title, company=company)
         elif state == "unconfirmed":
             text = f"{company}: your application may or may not have gone through"
         else:
@@ -1272,7 +1280,6 @@ def mark_review(
 
 # --- Crash recovery -----------------------------------------------------------------------
 
-_STOPPED_BEFORE = "The app stopped before handing your application to Greenhouse. Nothing was sent."
 _STOPPED_DURING = "The app stopped while submitting. Check whether it arrived."
 
 
@@ -1304,7 +1311,7 @@ def recover_stale(conn: sqlite3.Connection, now: datetime | None = None, *, user
         if row["state"] != "claimed":
             decided = None
         stopped = row["state"] == "claimed" and decided is None
-        note = _STOPPED_BEFORE if stopped else (decided or _STOPPED_DURING)
+        note = STOPPED_BEFORE.format(ats=name_of(row["ats"])) if stopped else (decided or _STOPPED_DURING)
         with conn:
             lock_user(conn, row["user_id"])
             fresh = conn.execute("SELECT detail_json FROM application_submit_claims WHERE token=?", (row["token"],)).fetchone()

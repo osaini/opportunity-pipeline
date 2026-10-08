@@ -140,7 +140,7 @@ def fixture_replan(
                     for item in scan]
         return apply_policy.build_plan(
             fields, scan, sources, COMPANY, mode,
-            canonical_url=JOB_URL, adapter_version=ADAPTER_VERSION, uploads_on_attach=uploads_on_attach,
+            ats_name="Greenhouse", canonical_url=JOB_URL, adapter_version=ADAPTER_VERSION, uploads_on_attach=uploads_on_attach,
         )
 
     return replan
@@ -150,7 +150,7 @@ def draft_plan(sources: apply_policy.Sources, *, schema: list[apply_policy.Schem
     """The plan from the listing alone: what the child is handed before it has read the page."""
     return apply_policy.build_plan(
         schema if schema is not None else fixture_schema(), None, sources, COMPANY, mode,
-        canonical_url=JOB_URL, adapter_version=ADAPTER_VERSION,
+        ats_name="Greenhouse", canonical_url=JOB_URL, adapter_version=ADAPTER_VERSION,
     )
 
 

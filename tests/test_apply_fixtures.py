@@ -767,7 +767,7 @@ class CheckRequiredBrowserTests(BrowserFixtureTestCase):
 
     def problems(self, page, initial, plan=None):
         scan = page.evaluate(REQUIRED_CHECK_SCRIPT)
-        return check_required(scan["items"], plan or filled_plan(), self.schema, initial, controls=scan["controls"], invalid=scan["invalid"])
+        return check_required(scan["items"], plan or filled_plan(), self.schema, initial, controls=scan["controls"], invalid=scan["invalid"], ats_name="Greenhouse")
 
     def ready(self):
         _fake, page, _router = self.load()

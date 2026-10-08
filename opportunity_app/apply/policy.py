@@ -670,8 +670,8 @@ def company_matches(row_company: str, company: str) -> bool:
 _GENERIC_TITLE_WORDS = frozenset({"intern", "interns", "internship", "co", "op", "coop", "summer", "fall", "spring", "winter", "student", "and", "the", "of", "for", "a", "an", "in", "at"})
 
 
-def posting_difference(company: str, title: str, listing: Mapping[str, Any]) -> str:
-    """Why the listing Greenhouse returned does not look like the role the student saved, or "" when it does or cannot be told.
+def posting_difference(company: str, title: str, listing: Mapping[str, Any], *, ats_name: str) -> str:
+    """Why the listing the ATS returned (``ats_name`` is how the sentence names it) does not look like the role the student saved, or "" when it does or cannot be told.
 
     The board and job id come from the role's link, and a wrong link (an aggregator's, a merged duplicate, a parent
     company's board) would put another employer's questions on this role and file the student's answers under the wrong
@@ -680,13 +680,13 @@ def posting_difference(company: str, title: str, listing: Mapping[str, Any]) -> 
     """
     theirs_company, theirs_title = _text(listing.get("company_name")), _text(listing.get("title"))
     if theirs_company and company and not company_matches(theirs_company, company):
-        return f"Greenhouse's form is for {theirs_title or 'a posting'} at {theirs_company}, not {company}"
+        return f"{ats_name}'s form is for {theirs_title or 'a posting'} at {theirs_company}, not {company}"
     mine = set(re.findall(r"[a-z0-9]+", title.lower())) - _GENERIC_TITLE_WORDS
     theirs = set(re.findall(r"[a-z0-9]+", theirs_title.lower())) - _GENERIC_TITLE_WORDS
     mine = {word for word in mine if not word.isdigit()}
     theirs = {word for word in theirs if not word.isdigit()}
     if mine and theirs and not mine & theirs:
-        return f"Greenhouse's form is for {theirs_title}, not {title}"
+        return f"{ats_name}'s form is for {theirs_title}, not {title}"
     return ""
 
 
@@ -958,7 +958,7 @@ def _page_never(scan: Iterable[Any] | None) -> frozenset[str]:
 
 def build_plan(
     schema: Iterable[SchemaField], scan: Iterable[Any] | None, sources: Sources, company: str, mode: str, *,
-    canonical_url: str = "", adapter_version: str = "", uploads_on_attach: bool = False,
+    ats_name: str, canonical_url: str = "", adapter_version: str = "", uploads_on_attach: bool = False,
 ) -> Plan:
     """Apply section 7 to every field of the form.
 
@@ -1076,7 +1076,7 @@ def build_plan(
     if scan is not None:
         fills = [entry.key for entry in entries if entry.disposition in ("fill", "deferred")]
         by_name = {entry.key: entry for entry in entries}
-        for issue in join(fields, scan, fills):
+        for issue in join(fields, scan, fills, ats_name=ats_name):
             problems.append(issue)
             held = by_name.get(issue.key)
             if held is not None and held.disposition in ("fill", "deferred"):

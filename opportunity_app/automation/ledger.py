@@ -68,6 +68,7 @@ from typing import Any, Callable, Protocol
 from uuid import uuid4
 
 from ..apply.claims import claim_held
+from ..apply.greenhouse import DISPLAY_NAME as GREENHOUSE_NAME
 from ..core.database import is_unique_violation
 from ..outreach.config import sender_account
 from ..core.schema import PAUSE_NEVER_CHANGED
@@ -190,7 +191,7 @@ FEATURES: dict[str, Feature] = {
         # Phase 5: fill a Greenhouse application in a window and stop before Submit. No shadow: every application
         # needs the student's own press (docs/phase5-apply-agent-spec.md 5.6), so there is nothing to observe first.
         Feature("apply_agent", "Apply for me",
-                "Fill a Greenhouse application from your confirmed facts and saved answers, show you the result, and send it only "
+                f"Fill a {GREENHOUSE_NAME} application from your confirmed facts and saved answers, show you the result, and send it only "
                 "when you press Submit", "applications", "external"),
         # Phase 2: changes that stay inside the app, each with an Undo (student/resume_variants.py,
         # automation/internal.py, automation/triage.py).

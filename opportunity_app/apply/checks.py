@@ -670,18 +670,19 @@ def new_code_prompt(obs: Observation, policy: RoutePolicy) -> bool:
     return status == 428 or obs.security_code_visible
 
 
-UNCONFIRMED_NOTE = "Your application may have been sent, but Greenhouse did not show its confirmation page. Look for its email"
+# The student-facing notes of the outcome table. ``{ats}`` is the ATS's display name (``RoutePolicy.display_name``).
+UNCONFIRMED_NOTE = "Your application may have been sent, but {ats} did not show its confirmation page. Look for its email"
 UNRECOGNIZED_ADDRESS_NOTE = (
     "The form tried to send to an address the app doesn't recognize, so the app stopped it. "
     "Nothing was sent. Apply from the posting instead"
 )
-SECURITY_CODE_NOTE = ("Greenhouse asked for the emailed security code, and Submit application was not pressed after it. "
-                      "Look for Greenhouse's email")
-CODE_REFUSED_NOTE = ("Greenhouse did not accept the security code, and Submit application was not pressed again after that. "
-                     "Look for Greenhouse's email")
-CHALLENGE_NOTE = "Greenhouse showed a check that wasn't finished. Look for Greenhouse's email"
-
-
+SECURITY_CODE_NOTE = ("{ats} asked for the emailed security code, and Submit application was not pressed after it. "
+                      "Look for {ats}'s email")
+CODE_REFUSED_NOTE = ("{ats} did not accept the security code, and Submit application was not pressed again after that. "
+                     "Look for {ats}'s email")
+CHALLENGE_NOTE = "{ats} showed a check that wasn't finished. Look for {ats}'s email"
+REFUSED_NOTE = "{ats} refused the form (HTTP {status})"
+MARKED_WRONG_NOTE = '. {ats} marked "{question}" as wrong'
 def _is_submit_post(seen: SeenRequest, obs: Observation, policy: RoutePolicy) -> bool:
     return seen.method.upper() == "POST" and policy.is_submit_request(seen.host.lower(), seen.path, obs.submit_path)
 
@@ -709,6 +710,7 @@ def decide_outcome(obs: Observation, policy: RoutePolicy, *, code_wait_over: boo
     the student's ``security_code_s`` wait: a prompt still open then is
     needs_you instead of waiting again.
     """
+    name = policy.display_name
     submits = [seen for seen in obs.requests if seen.passed and _is_submit_post(seen, obs, policy)]
     last_status = submits[-1].status if submits else None
     answered_ok = [seen for seen in submits if seen.status is not None and 200 <= seen.status < 400]
@@ -731,27 +733,27 @@ def decide_outcome(obs: Observation, policy: RoutePolicy, *, code_wait_over: boo
         if code_posted and last_status is not None and last_status >= 500:
             # An edge may answer 502, 503 or 504 after the origin took the code: the application may have been sent, so this is
             # row 6 whether or not the boxes are still on the page, and no second POST is wanted. It does not wait for the clock.
-            return Outcome("unconfirmed", 1, UNCONFIRMED_NOTE, evidence=evidence, settled=False)
+            return Outcome("unconfirmed", 1, UNCONFIRMED_NOTE.format(ats=name), evidence=evidence, settled=False)
         if code_wait_over:
             if code_posted and (last_status is None or 200 <= last_status < 400):
                 # A code POST went out and its answer never came, or was accepted without the confirmation page: the application
                 # may have been sent, so the note that says Submit was not pressed after the code would be untrue.
-                return Outcome("unconfirmed", 1, UNCONFIRMED_NOTE, evidence=evidence, settled=False)
+                return Outcome("unconfirmed", 1, UNCONFIRMED_NOTE.format(ats=name), evidence=evidence, settled=False)
             if code_posted:
                 # The code POST was answered 428 or 4xx: Greenhouse refused the code. Submit was pressed; it was not pressed again.
-                return Outcome("needs_you", 1, CODE_REFUSED_NOTE, detail={"security_code": True}, evidence=evidence)
-            return Outcome("needs_you", 1, SECURITY_CODE_NOTE, detail={"security_code": True}, evidence=evidence)
+                return Outcome("needs_you", 1, CODE_REFUSED_NOTE.format(ats=name), detail={"security_code": True}, evidence=evidence)
+            return Outcome("needs_you", 1, SECURITY_CODE_NOTE.format(ats=name), detail={"security_code": True}, evidence=evidence)
         return Outcome("waiting", 1, detail={"waiting": "security_code"}, evidence=evidence)
 
     # 3. A challenge frame.
     if obs.challenge_frame:
-        return Outcome("needs_you", 1, CHALLENGE_NOTE, evidence=evidence)
+        return Outcome("needs_you", 1, CHALLENGE_NOTE.format(ats=name), evidence=evidence)
 
     # 4. Greenhouse refused the form (a 4xx other than 428) and it is still there.
     if last_status is not None and 400 <= last_status < 500 and obs.form_present:
-        note = f"Greenhouse refused the form (HTTP {last_status})"
+        note = REFUSED_NOTE.format(ats=name, status=last_status)
         if obs.first_field_error:
-            note += f'. Greenhouse marked "{obs.first_field_error}" as wrong'
+            note += MARKED_WRONG_NOTE.format(ats=name, question=obs.first_field_error)
         return Outcome("failed", 1, note, evidence=evidence)
 
     # 5. No submit POST passed the route and nothing navigated: nothing that could carry the application left.
@@ -761,11 +763,11 @@ def decide_outcome(obs: Observation, policy: RoutePolicy, *, code_wait_over: boo
         else:
             note = "The form did not send, so nothing was sent"
             if obs.first_field_error:
-                note += f'. Greenhouse marked "{obs.first_field_error}" as wrong'
+                note += MARKED_WRONG_NOTE.format(ats=name, question=obs.first_field_error)
         return Outcome("failed", 0, note, evidence=evidence, settled=False)
 
     # 6. Anything else: the POST answered 5xx or never answered, a navigation without a POST, a "thank you" with the form still there.
-    return Outcome("unconfirmed", 1, UNCONFIRMED_NOTE, evidence=evidence, settled=False)
+    return Outcome("unconfirmed", 1, UNCONFIRMED_NOTE.format(ats=name), evidence=evidence, settled=False)
 
 
 # Greenhouse's request policy: the constants above, the way ``route_decision`` and ``decide_outcome`` read them. The names a browser may look up
@@ -833,8 +835,8 @@ def _lone_choice_agrees(item: Any, scan: Any) -> bool:
     return f" {words} " in f" {listed} "
 
 
-def join(schema_fields: Iterable[Any], scan_fields: Iterable[Any], fill_keys: Iterable[Any] | None = None) -> list[Problem]:
-    """Every way the page and Greenhouse's own listing disagree.
+def join(schema_fields: Iterable[Any], scan_fields: Iterable[Any], fill_keys: Iterable[Any] | None = None, *, ats_name: str) -> list[Problem]:
+    """Every way the page and the ATS's own listing disagree (``ats_name`` is how the problems' sentences name the ATS).
 
     Each schema field is matched to page controls by ``name`` or ``id``. A
     required field needs exactly one control (a radio or checkbox group counts
@@ -878,7 +880,7 @@ def join(schema_fields: Iterable[Any], scan_fields: Iterable[Any], fill_keys: It
             if required or len(controls) > 1:
                 problems.append(Problem(
                     "listing_mismatch", name,
-                    f"The form does not match what Greenhouse's own listing describes ({label})", label, required,
+                    f"The form does not match what {ats_name}'s own listing describes ({label})", label, required,
                 ))
             elif planned_to_fill:
                 # Not a disagreement between the form and its listing (6.5, 9.2): an optional question the page draws only after a
@@ -898,7 +900,7 @@ def join(schema_fields: Iterable[Any], scan_fields: Iterable[Any], fill_keys: It
             mismatch = heard is not None and question_key(heard) != question_key(label)
         if mismatch:
             problems.append(Problem(
-                "wording_mismatch", name, f"The form's wording differs from Greenhouse's listing ({heard})", str(heard), required,
+                "wording_mismatch", name, f"The form's wording differs from {ats_name}'s listing ({heard})", str(heard), required,
             ))
         # A control the page hides is never filled: it may be a spam trap. A file
         # input inside a visible upload group is the exception (Greenhouse's
@@ -1195,9 +1197,9 @@ def _group_controls(controls: Iterable[Any]) -> list[tuple[str, dict[str, Any]]]
 
 def check_required(
     items: Iterable[Any], plan: Any, schema: Iterable[Any], initial_values: Mapping[str, Any] | None = None,
-    *, controls: Iterable[Any] = (), invalid: Iterable[Any] = (), confirmed_plan_hash: str | None = None,
+    *, controls: Iterable[Any] = (), invalid: Iterable[Any] = (), confirmed_plan_hash: str | None = None, ats_name: str,
 ) -> list[Problem]:
-    """The six checks of 6.10. Any problem is needs_you in a submit run and makes a rehearsal not clean.
+    """The six checks of 6.10. Any problem is needs_you in a submit run and makes a rehearsal not clean. ``ats_name`` is how a problem's sentence names the ATS.
 
     ``items``, ``controls`` and ``invalid`` come from REQUIRED_CHECK_SCRIPT.
     Fields the plan marks deferred, left_for_you or blank are skipped for
@@ -1243,7 +1245,7 @@ def check_required(
         if not _get(item, "required") or _get(item, "type") == "input_hidden" or key in ALTERNATE_TEXT_FIELDS or key in skipped or key in item_keys:
             continue
         label = str(_get(item, "label") or key)
-        add("required_not_seen", key, f"Greenhouse lists \"{label}\" as required but the check did not find it on the form", label)
+        add("required_not_seen", key, f"{ats_name} lists \"{label}\" as required but the check did not find it on the form", label)
 
     # 4. No control holds a value the plan did not put there.
     grouped = _group_controls(controls)

@@ -73,6 +73,20 @@ def spec_for(key: str) -> AtsSpec:
     raise UnknownAts(key)
 
 
+def name_of(key: str) -> str:
+    """How a sentence names the ATS with this key: its spec's display name, or, for a row of an ATS this build no longer registers, the key in title case."""
+    for spec in REGISTRY:
+        if spec.key == key:
+            return spec.display_name
+    return key.title() if isinstance(key, str) else ""
+
+
+def supported_names() -> str:
+    """The display names of the registered ATSs as words: "Greenhouse", "Greenhouse and Lever", "A, B and C"."""
+    names = [spec.display_name for spec in REGISTRY]
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1] if names else ""
+
+
 def identify(conn: sqlite3.Connection, opportunity_id: str) -> tuple[AtsSpec, tuple[str, str]] | None:
     """The ATS a saved role is posted on and its (board token, job id), or None when no registered ATS recognises it."""
     for spec in REGISTRY:

@@ -6,6 +6,7 @@ observations these functions read are gathered correctly.
 """
 
 import base64
+import functools
 import json
 import re
 import sys
@@ -34,11 +35,9 @@ from opportunity_app.apply.checks import (
     RouteRequest,
     RouteState,
     SeenRequest,
-    check_required,
     clean_rehearsal,
     decide_outcome,
     is_upload,
-    join,
     leaked_field,
     question_key,
     route_decision,
@@ -46,6 +45,10 @@ from opportunity_app.apply.checks import (
 )
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from helpers_apply import FakePlan, planned  # noqa: E402  (also installs tests/realdata_guard.py)
+
+# The two functions that name the ATS in a problem's sentence: everything here is about Greenhouse's.
+join = functools.partial(apply_checks.join, ats_name="Greenhouse")
+check_required = functools.partial(apply_checks.check_required, ats_name="Greenhouse")
 
 TOKEN, JOB = "examplerobotics", "4000000001"
 SUBMIT_PATH = f"/{TOKEN}/jobs/{JOB}"
@@ -205,7 +208,7 @@ class DecideOutcomeTests(unittest.TestCase):
         for last in (None, 200, 303):
             with self.subTest(status=last):
                 outcome = decide_outcome(seen(post(428), post(last), security_code_visible=True), POLICY, code_wait_over=True)
-                self.assertEqual((outcome.outcome, outcome.after_click, outcome.note), ("unconfirmed", 1, apply_checks.UNCONFIRMED_NOTE))
+                self.assertEqual((outcome.outcome, outcome.after_click, outcome.note), ("unconfirmed", 1, apply_checks.UNCONFIRMED_NOTE.format(ats="Greenhouse")))
         # A second 428 is a real prompt the student did not answer, and a code never pressed is the note that says so.
         for obs in (seen(post(428), post(428), security_code_visible=True), seen(post(428), security_code_visible=True)):
             self.assertEqual(decide_outcome(obs, POLICY, code_wait_over=True).outcome, "needs_you")
@@ -219,16 +222,16 @@ class DecideOutcomeTests(unittest.TestCase):
                     self.assertFalse(apply_checks.new_code_prompt(obs, POLICY), "a second application POST would be allowed after one that may have been received")
                     for over in (False, True):
                         outcome = decide_outcome(obs, POLICY, code_wait_over=over)
-                        self.assertEqual((outcome.outcome, outcome.after_click, outcome.note), ("unconfirmed", 1, apply_checks.UNCONFIRMED_NOTE))
+                        self.assertEqual((outcome.outcome, outcome.after_click, outcome.note), ("unconfirmed", 1, apply_checks.UNCONFIRMED_NOTE.format(ats="Greenhouse")))
 
     def test_a_refused_code_is_called_refused_not_unpressed(self):
         for last in (428, 422):
             with self.subTest(status=last):
                 outcome = decide_outcome(seen(post(428), post(last), security_code_visible=True), POLICY, code_wait_over=True)
-                self.assertEqual((outcome.outcome, outcome.note), ("needs_you", apply_checks.CODE_REFUSED_NOTE))
+                self.assertEqual((outcome.outcome, outcome.note), ("needs_you", apply_checks.CODE_REFUSED_NOTE.format(ats="Greenhouse")))
                 self.assertNotIn("was not pressed after it", outcome.note)
         # The first prompt, never answered: Submit really was not pressed after it.
-        self.assertEqual(decide_outcome(seen(post(428), security_code_visible=True), POLICY, code_wait_over=True).note, apply_checks.SECURITY_CODE_NOTE)
+        self.assertEqual(decide_outcome(seen(post(428), security_code_visible=True), POLICY, code_wait_over=True).note, apply_checks.SECURITY_CODE_NOTE.format(ats="Greenhouse"))
 
     def test_a_challenge_frame_is_needs_you_with_the_click_made(self):
         outcome = decide_outcome(seen(challenge_frame=True), POLICY)
@@ -244,12 +247,12 @@ class DecideOutcomeTests(unittest.TestCase):
 
     def test_the_two_notes_that_wait_on_the_student_say_what_was_not_done(self):
         self.assertEqual(
-            apply_checks.SECURITY_CODE_NOTE,
+            apply_checks.SECURITY_CODE_NOTE.format(ats="Greenhouse"),
             "Greenhouse asked for the emailed security code, and Submit application was not pressed after it. Look for Greenhouse's email",
         )
-        self.assertEqual(apply_checks.CHALLENGE_NOTE, "Greenhouse showed a check that wasn't finished. Look for Greenhouse's email")
-        self.assertEqual(decide_outcome(seen(post(428), security_code_visible=True), POLICY, code_wait_over=True).note, apply_checks.SECURITY_CODE_NOTE)
-        self.assertEqual(decide_outcome(seen(challenge_frame=True), POLICY).note, apply_checks.CHALLENGE_NOTE)
+        self.assertEqual(apply_checks.CHALLENGE_NOTE.format(ats="Greenhouse"), "Greenhouse showed a check that wasn't finished. Look for Greenhouse's email")
+        self.assertEqual(decide_outcome(seen(post(428), security_code_visible=True), POLICY, code_wait_over=True).note, apply_checks.SECURITY_CODE_NOTE.format(ats="Greenhouse"))
+        self.assertEqual(decide_outcome(seen(challenge_frame=True), POLICY).note, apply_checks.CHALLENGE_NOTE.format(ats="Greenhouse"))
 
     def test_a_4xx_with_the_form_gone_is_not_called_a_refusal(self):
         self.assertEqual(decide_outcome(seen(post(422), form_present=False, navigated=True), POLICY).outcome, "unconfirmed")

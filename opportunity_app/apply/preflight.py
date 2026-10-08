@@ -32,9 +32,17 @@ from ..applications.actions import OpportunityNotFoundError
 from .schema_client import SchemaClient, SchemaUnavailable
 from .checks import question_key
 
-NOT_GREENHOUSE = "Apply for me works with Greenhouse postings only, for now"
-NOT_FOUND = "The app couldn't find this posting on Greenhouse. It may be closed"
-NO_ANSWER = "Greenhouse did not answer. Try again later"
+# {ats} is the ATS's display name (apply.ats.name_of), filled where the sentence is said.
+NOT_FOUND = "The app couldn't find this posting on {ats}. It may be closed"
+NO_ANSWER = "{ats} did not answer. Try again later"
+DUPLICATE_TICK = "I know Apply for me handed an application to {company} to {ats} on {date} (it may not have gone through). Apply anyway."
+LEFT_FOR_YOU = ". {count} more {is_are} left for you to answer on the {ats} form"
+YOURS_TO_ANSWER = "The app has everything it can fill. {count} question{s_are} yours to answer on the {ats} form"
+
+
+def not_supported() -> str:
+    """What the check says about a role no registered ATS recognises."""
+    return f"Apply for me works with {apply_ats.supported_names()} postings only, for now"
 SCHEMA_CACHE_SECONDS = 3600.0
 # What each field's own words can hold, so a saved answer is not a whole document.
 MAX_ANSWER_CHARS = 10_000
@@ -100,9 +108,9 @@ def _listing(
     try:
         listing = client.fetch(token, job_id)
     except SchemaUnavailable:
-        return None, NO_ANSWER, False
+        return None, NO_ANSWER.format(ats=apply_ats.name_of(ats)), False
     if listing is None:
-        return None, NOT_FOUND, False
+        return None, NOT_FOUND.format(ats=apply_ats.name_of(ats)), False
     if cache is not None:
         cache.put((ats, token, job_id), listing)
     return listing, "", False
@@ -254,7 +262,7 @@ def _prepare(
     company = str(opportunity["company"] or "")
     result: dict[str, Any] = {
         "opportunity_id": opportunity_id, "title": str(opportunity["title"] or ""), "company": company, "ats": "", "status": "unavailable",
-        "message": NOT_GREENHOUSE, "problems": [], "asks": [], "fields": [], "optional_sensitive": [], "counts": {}, "eligibility": {}, "application": {"exists": False, "stage": ""},
+        "message": not_supported(), "problems": [], "asks": [], "fields": [], "optional_sensitive": [], "counts": {}, "eligibility": {}, "application": {"exists": False, "stage": ""},
         "checked_at": moment.isoformat(timespec="seconds"), "from_cache": False,
         "posting": {"title": "", "company": "", "url": "", "differs": False, "difference": ""},
     }
@@ -276,7 +284,7 @@ def _prepare(
         return {**result, "status": "failed", "message": sentence}, None, None, None
     result["from_cache"] = cached
     # Which posting was read, so the student can see it, and whether it looks like the role they saved (source integrity).
-    difference = apply_policy.posting_difference(company, str(opportunity["title"] or ""), listing)
+    difference = apply_policy.posting_difference(company, str(opportunity["title"] or ""), listing, ats_name=ats.display_name)
     result["posting"] = {
         "title": str(listing.get("title") or ""), "company": str(listing.get("company_name") or ""), "url": result["canonical_url"],
         "differs": bool(difference), "difference": difference,
@@ -285,7 +293,7 @@ def _prepare(
     schema = ats.parse_schema(listing)
     plan = apply_policy.build_plan(
         schema, None, sources, company, mode,
-        canonical_url=result["canonical_url"], adapter_version=ats.adapter_version,
+        ats_name=ats.display_name, canonical_url=result["canonical_url"], adapter_version=ats.adapter_version,
     )
     return result, plan, sources, schema
 
@@ -323,9 +331,9 @@ def _eligibility(
             ticks = [{"code": item["code"], "label": item["message"]} for item in result["asks"]]
             if block is not None and block.kind == "ask" and block.code == apply_runs.ASK_COMPANY_LIMIT:
                 ticks.append({"code": block.code, "label": (
-                    # Worded from what the record shows: the claim counts from the hand-over, and an attempt Greenhouse refused, one that
+                    # Worded from what the record shows: the claim counts from the hand-over, and an attempt the ATS refused, one that
                     # ended unconfirmed or one the student released still counts, so it is never stated as an application made.
-                    f"I know Apply for me handed an application to {result['company']} to Greenhouse on {block.date} (it may not have gone through). Apply anyway."
+                    DUPLICATE_TICK.format(company=result["company"], ats=apply_ats.name_of(result["ats"]), date=block.date)
                 )})
             rows[name]["ticks"] = [] if blocked else ticks
     met, count, needed = apply_runs.gate(conn, user_id, apply_greenhouse.ATS_GREENHOUSE)
@@ -371,11 +379,11 @@ def check(
         count = len(open_here)
         message = f"{count} question{'s' if count != 1 else ''} need{'' if count != 1 else 's'} an answer first"
         if yours:
-            message += f". {len(yours)} more {'is' if len(yours) == 1 else 'are'} left for you to answer on the Greenhouse form"
+            message += LEFT_FOR_YOU.format(count=len(yours), is_are="is" if len(yours) == 1 else "are", ats=apply_ats.name_of(result["ats"]))
         result.update(status="needs_you", message=message)
     elif yours:
         count = len(yours)
-        result.update(status="needs_you", message=f"The app has everything it can fill. {count} question{'s are' if count != 1 else ' is'} yours to answer on the Greenhouse form")
+        result.update(status="needs_you", message=YOURS_TO_ANSWER.format(count=count, s_are="s are" if count != 1 else " is", ats=apply_ats.name_of(result["ats"])))
     elif result["posting"]["differs"]:
         result.update(status="needs_you", message=f"Check the posting first. {result['posting']['difference']}")
     else:

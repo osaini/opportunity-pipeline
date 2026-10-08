@@ -16,6 +16,7 @@ import random
 import re
 import sys
 import time
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -28,13 +29,14 @@ realdata_guard.install()
 
 import frozen_pre_ats_seam as old
 import frozen_pre_route_policy as old_route
+import frozen_pre_sentences as old_words
 import helpers_source
 import test_apply_runner as runner_tests
 from opportunity_app.apply import (
     agent as apply_agent, agent_types, ats as apply_ats, checks as apply_checks, greenhouse as apply_greenhouse, policy as apply_policy,
-    preflight as apply_preflight, runs as apply_runs,
+    preflight as apply_preflight, runner as apply_runner, runs as apply_runs,
 )
-from opportunity_app.apply.agent_types import AgentJob, ApplyTimeouts
+from opportunity_app.apply.agent_types import AgentJob, ApplyTimeouts, RunResult
 from opportunity_app.apply.policy import SchemaField
 from opportunity_app.apply.runs import ClaimRefused
 from opportunity_app.apply.schema_client import GreenhouseSchemaClient
@@ -788,9 +790,9 @@ class AgentBranchesFollowTheAtsTests(unittest.TestCase):
         self.assertEqual(result, "filled")
         for url in ("https://job-boards.greenhouse.io/acme/jobs/1", "https://careers.example-robotics.test/x"):
             _agent, refused = self.run_agent(url=url)
-            self.assertEqual((refused.outcome, refused.reasons), ("failed", [apply_agent.NOT_BOARD]))
+            self.assertEqual((refused.outcome, refused.reasons), ("failed", [apply_agent.NOT_BOARD.format(ats="Second")]))
         greenhouse = apply_agent.ApplyAgent(mode="rehearse", adapter=apply_agent.GreenhouseAdapter())
-        self.assertEqual(greenhouse.run(FakePlan([]), page_url=SECOND_URL, schema=[], files={}).reasons, [apply_agent.NOT_BOARD])
+        self.assertEqual(greenhouse.run(FakePlan([]), page_url=SECOND_URL, schema=[], files={}).reasons, [apply_agent.NOT_BOARD.format(ats="Greenhouse")])
 
     def test_the_lookup_endpoints_are_the_policys_with_the_adapters_token(self):
         agent, _result = self.run_agent()
@@ -799,7 +801,7 @@ class AgentBranchesFollowTheAtsTests(unittest.TestCase):
 
     def test_the_different_posting_check_uses_the_adapters_ids(self):
         _agent, result = self.run_agent(landed="https://jobs.example-robotics.test/acme/10")
-        self.assertEqual((result.outcome, result.reasons), ("needs_you", [apply_agent.DIFFERENT_POSTING]))
+        self.assertEqual((result.outcome, result.reasons), ("needs_you", [apply_agent.DIFFERENT_POSTING.format(ats="Second")]))
         _agent, result = self.run_agent(landed="https://jobs.example-robotics.test/acme/9/")
         self.assertEqual(result, "filled")
         _agent, result = self.run_agent(landed="https://elsewhere.example-robotics.test/acme/10")
@@ -807,7 +809,7 @@ class AgentBranchesFollowTheAtsTests(unittest.TestCase):
 
     def test_the_page_kind_is_the_adapters(self):
         _agent, result = self.run_agent(SecondAdapter(kind="application_form_new"))
-        self.assertEqual((result.outcome, result.reasons), ("needs_you", [apply_agent.UNKNOWN_PAGE]), "Greenhouse's name for the form is not this ATS's")
+        self.assertEqual((result.outcome, result.reasons), ("needs_you", [apply_agent.UNKNOWN_PAGE.format(ats="Second")]), "Greenhouse's name for the form is not this ATS's")
         _agent, result = self.run_agent(SecondAdapter(kind="second_form"))
         self.assertEqual(result, "filled")
 
@@ -845,6 +847,178 @@ class AgentBranchesFollowTheAtsTests(unittest.TestCase):
         frame = mock.Mock()
         self.assertIs(adapter.reads_on_attach(frame), False)
         self.assertEqual(frame.mock_calls, [], "it asks the page nothing")
+
+
+# --- Per-ATS sentences: the words for Greenhouse are the old ones, byte for byte ---------------------------------------------
+
+WORDS = dict(question="Why us?", n=7, host="apply.example-robotics.test")
+
+
+class SentenceParityTests(unittest.TestCase):
+    """Every sentence that said "Greenhouse" now names the ATS it is told, and for Greenhouse says exactly what it said (frozen_pre_sentences)."""
+
+    def test_the_progress_steps_are_the_old_ones_and_only_five_name_the_ats(self):
+        self.assertEqual(set(agent_types.PROGRESS_STEPS), set(old_words.PROGRESS_STEPS))
+        for step, old_text in old_words.PROGRESS_STEPS.items():
+            with self.subTest(step=step):
+                self.assertEqual(agent_types.progress_text(step, "Greenhouse", **WORDS), old_text.format(**WORDS))
+        naming = {step for step, text in agent_types.PROGRESS_STEPS.items() if "{ats}" in text}
+        self.assertEqual(naming, {"open", "submitting", "security_code", "code_yours", "challenge"})
+        self.assertEqual(agent_types.progress_text("open", "Second"), "Opening the Second form")
+
+    def test_the_window_note_and_the_outcome_notes(self):
+        self.assertEqual(agent_types.WINDOW_UNCONFIRMED.format(ats="Greenhouse"), old_words.WINDOW_UNCONFIRMED)
+        for name in ("UNCONFIRMED_NOTE", "SECURITY_CODE_NOTE", "CODE_REFUSED_NOTE", "CHALLENGE_NOTE"):
+            with self.subTest(note=name):
+                self.assertEqual(getattr(apply_checks, name).format(ats="Greenhouse"), getattr(old_route, name))
+        self.assertEqual(apply_checks.REFUSED_NOTE.format(ats="Greenhouse", status=422), old_words.refused_form(422))
+        self.assertEqual(apply_checks.MARKED_WRONG_NOTE.format(ats="Greenhouse", question="Email"), old_words.marked_wrong("Email"))
+
+    def test_the_agents_sentences(self):
+        for name in ("NOT_BOARD", "LEGACY", "UNKNOWN_PAGE", "NO_ENDPOINT", "OPEN_FAILED", "DIFFERENT_POSTING"):
+            with self.subTest(sentence=name):
+                self.assertEqual(getattr(apply_agent, name).format(ats="Greenhouse"), getattr(old_words, name))
+        self.assertEqual(apply_agent.HTTP_STATUS.format(ats="Greenhouse", status=503), old_words.HTTP_STATUS.format(status=503))
+
+    def test_the_agent_names_the_ats_it_is_for(self):
+        with mock.patch.object(apply_ats, "REGISTRY", (GREENHOUSE, SECOND)):
+            second = apply_agent.ApplyAgent(mode="rehearse", adapter=SecondAdapter())
+        first = apply_agent.ApplyAgent(mode="rehearse", adapter=apply_agent.GreenhouseAdapter())
+        self.assertEqual(first._say(apply_agent.OPEN_FAILED), old_words.OPEN_FAILED)
+        self.assertEqual(second._say(apply_agent.OPEN_FAILED), "The app could not open the Second form")
+        self.assertEqual(second._say(apply_agent.HTTP_STATUS, status=404), "Second answered HTTP 404")
+        sent = []
+        named = apply_agent.ApplyAgent(mode="rehearse", adapter=apply_agent.GreenhouseAdapter(), on_progress=lambda step, text: sent.append((step, text)))
+        named._progress("open")
+        self.assertEqual(sent, [("open", old_words.PROGRESS_STEPS["open"])])
+
+    def test_the_outcome_notes_name_the_policys_ats(self):
+        obs = apply_checks.Observation(requests=(seen_request("POST", "apply.example-robotics.test", "/go", 422),), submit_path="/go", form_present=True,
+                                       first_field_error="Email")
+        for policy, name in ((POLICY, "Greenhouse"), (SECOND_POLICY, "Second")):
+            with self.subTest(ats=name):
+                other = dataclasses.replace(policy, submit_hosts=frozenset({"apply.example-robotics.test"}))
+                self.assertEqual(apply_checks.decide_outcome(obs, other).note, f'{name} refused the form (HTTP 422). {name} marked "Email" as wrong')
+        done = apply_checks.Observation(security_code_visible=True)
+        self.assertEqual(apply_checks.decide_outcome(done, SECOND_POLICY, code_wait_over=True).note,
+                         "Second asked for the emailed security code, and Submit application was not pressed after it. Look for Second's email")
+
+    def test_the_problems_of_a_join_and_a_check_name_the_ats(self):
+        schema = [{"name": "first_name", "label": "First Name", "required": True, "type": "input_text"}]
+        missing = apply_checks.join(schema, [], ats_name="Greenhouse")
+        self.assertEqual([problem.message for problem in missing], [old_words.listing_mismatch("First Name")])
+        scan = [{"name": "q", "id": "q", "question": "Why do you want to join us?", "required_any": False, "visible_css": True, "type": "text", "widget": "native"}]
+        reworded = apply_checks.join([{"name": "q", "label": "Why us?", "required": False, "type": "input_text"}], scan, ats_name="Greenhouse")
+        self.assertEqual([problem.message for problem in reworded], [old_words.wording_mismatch("Why do you want to join us?")])
+        self.assertEqual([problem.message for problem in apply_checks.join(schema, [], ats_name="Second")], ["The form does not match what Second's own listing describes (First Name)"])
+        plan = types.SimpleNamespace(fields=[], plan_hash="")
+        found = apply_checks.check_required([], plan, [{"name": "email", "label": "Email", "required": True, "type": "input_text"}], ats_name="Greenhouse")
+        self.assertEqual([problem.message for problem in found], [old_words.required_not_seen("Email")])
+
+    def test_the_posting_difference_names_the_ats(self):
+        listing = {"company_name": "Orbit Systems", "title": "Controls Intern"}
+        found = apply_policy.posting_difference("Acme Robotics", "Controls Intern", listing, ats_name="Greenhouse")
+        self.assertEqual(found, old_words.posting_other_company("Controls Intern", "Orbit Systems", "Acme Robotics"))
+        found = apply_policy.posting_difference("Orbit Systems", "Sales Lead", listing, ats_name="Greenhouse")
+        self.assertEqual(found, old_words.posting_other_title("Controls Intern", "Sales Lead"))
+        self.assertEqual(apply_policy.posting_difference("Orbit Systems", "Sales Lead", listing, ats_name="Second"), "Second's form is for Controls Intern, not Sales Lead")
+
+    def test_the_checks_sentences(self):
+        self.assertEqual(apply_preflight.not_supported(), old_words.NOT_GREENHOUSE)
+        self.assertEqual(apply_preflight.NOT_FOUND.format(ats="Greenhouse"), old_words.NOT_FOUND)
+        self.assertEqual(apply_preflight.NO_ANSWER.format(ats="Greenhouse"), old_words.NO_ANSWER)
+        self.assertEqual(apply_preflight.DUPLICATE_TICK.format(company="Acme Robotics", ats="Greenhouse", date="April 3"), old_words.duplicate_tick("Acme Robotics", "April 3"))
+        for count in (1, 2, 5):
+            self.assertEqual(
+                apply_preflight.LEFT_FOR_YOU.format(count=count, is_are="is" if count == 1 else "are", ats="Greenhouse"), old_words.left_for_you(count))
+            self.assertEqual(
+                apply_preflight.YOURS_TO_ANSWER.format(count=count, s_are="s are" if count != 1 else " is", ats="Greenhouse"), old_words.yours_to_answer(count))
+        with mock.patch.object(apply_ats, "REGISTRY", (GREENHOUSE, SECOND)):
+            self.assertEqual(apply_preflight.not_supported(), "Apply for me works with Greenhouse and Second postings only, for now")
+        self.assertEqual(apply_ats.supported_names(), "Greenhouse")
+
+    def test_the_names_of_the_registered_ats_as_words(self):
+        third = dataclasses.replace(GREENHOUSE, key="third", display_name="Third")
+        with mock.patch.object(apply_ats, "REGISTRY", (GREENHOUSE, SECOND, third)):
+            self.assertEqual(apply_ats.supported_names(), "Greenhouse, Second and Third")
+            self.assertEqual(apply_ats.name_of("second"), "Second")
+        self.assertEqual(apply_ats.name_of("greenhouse"), "Greenhouse")
+        self.assertEqual(apply_ats.name_of("some-ats"), "Some-Ats", "a row of an ATS this build no longer registers is named by its key")
+        self.assertEqual(apply_ats.name_of(""), "")
+
+    def test_the_ledger_describes_the_feature_with_the_specs_name(self):
+        from opportunity_app.automation import ledger
+
+        self.assertEqual(ledger.FEATURES["apply_agent"].description, old_words.FEATURE_APPLY_AGENT)
+        self.assertEqual(GREENHOUSE.display_name, "Greenhouse")
+
+
+class RunsAndWatchSentenceTests(unittest.TestCase):
+    def test_the_runs_sentences_are_the_old_ones(self):
+        self.assertEqual(apply_runs.CONFIRMED_BY_EMAIL.format(ats="Greenhouse", day="April 3"), old_words.confirmed_by_email("April 3"))
+        self.assertEqual(apply_runs.RELEASED_JOB_ASK.format(ats="Greenhouse", day="April 3"), old_words.released_job_ask("April 3"))
+        self.assertEqual(apply_runs.OTHER_COPY.format(ats="Greenhouse", title="Controls Intern"), old_words.other_copy("Controls Intern"))
+        self.assertEqual(apply_runs.LATE_CONFIRMATION.format(ats="Greenhouse", company="Acme"), old_words.late_confirmation("Acme"))
+        self.assertEqual(apply_runs.RESULT_SUBMITTED.format(ats="Greenhouse", title="Controls Intern", company="Acme"), old_words.result_submitted("Controls Intern", "Acme"))
+        self.assertEqual(apply_runs.STOPPED_BEFORE.format(ats="Greenhouse"), old_words.STOPPED_BEFORE)
+
+    def test_what_settled_a_submission_is_said_with_the_claims_ats(self):
+        for resolved_by, old_row in (("page", "page"), ("email", "email"), ("student", "student"), ("", "page"), ("other", "page")):
+            with self.subTest(resolved_by=resolved_by):
+                found = apply_runs._settled_by({"resolved_by": resolved_by, "ats": "greenhouse"})
+                self.assertEqual(found, old_words.SETTLED_BY.get(resolved_by, old_words.SETTLED_BY["page"]))
+        with mock.patch.object(apply_ats, "REGISTRY", (GREENHOUSE, SECOND)):
+            self.assertEqual(apply_runs._settled_by({"resolved_by": "email", "ats": "second"})[2], "Second's confirmation email arrived")
+        self.assertEqual(apply_runs._settled_by({"resolved_by": "page", "ats": "gone"})[2], "Gone showed its confirmation page")
+
+    def test_the_watch_sentences_are_the_old_ones(self):
+        from opportunity_app.apply import watch as apply_watch
+
+        self.assertEqual(apply_watch.EMAIL_AFTER_RELEASE.format(ats="Greenhouse", company="Acme"), old_words.email_after_release("Acme"))
+        self.assertEqual(apply_watch.EMAIL_CONFIRMED.format(ats="Greenhouse", company="Acme"), old_words.email_confirmed("Acme"))
+        self.assertFalse(hasattr(apply_watch, "ATS_NAMES"), "the names come from the registry, not a second table")
+
+
+class RunnerSentenceTests(unittest.TestCase):
+    def row(self, **more):
+        return {"status": "finished", "kind": "handoff", "outcome": "submitted", "ats": "greenhouse", **more}
+
+    def test_the_summaries_are_the_old_ones(self):
+        summary = apply_runner._summary
+        for ask in (False, True):
+            self.assertEqual(summary(self.row(), [], {}, "", "", [], False, claim={"ask_mark_applied": ask}), old_words.confirmation_shown(ask))
+        looked = self.row(kind="lookup", outcome="looked_up")
+        for count in (1, 3):
+            self.assertEqual(summary(looked, [], {"city": ["x"] * count}, "", "", [], False), old_words.options_listed(f"{count} option{'' if count == 1 else 's'}"))
+
+    def test_the_summaries_name_the_runs_ats(self):
+        with mock.patch.object(apply_ats, "REGISTRY", (GREENHOUSE, SECOND)):
+            self.assertEqual(apply_runner._summary(self.row(ats="second"), [], {}, "", "", [], False, claim={}), "Second showed its confirmation page.")
+            running = {"status": "running", "kind": "handoff", "outcome": "", "ats": "second"}
+            self.assertEqual(apply_runner._summary(running, [], {}, "", "", [], False, phase="submitting"), "Submitting to Second…")
+
+    def test_the_rehearsal_measure_is_the_old_one(self):
+        row = {"outcome": "rehearsed", "ats": "greenhouse"}
+        cases = (
+            ({"refused_total": 1, "lookups": []}, "1 request", "", ""),
+            ({"refused_total": 4, "lookups": [{"question": "City", "typed": True}, {"question": "Degree", "typed": False}]}, "4 requests", "City", "Degree"),
+            ({"refused_total": 2, "lookups": [{"question": "City", "typed": True}, {"key": "school", "typed": True}]}, "2 requests", "City and school", ""),
+        )
+        for evidence, count_words, typed, listed in cases:
+            with self.subTest(evidence=evidence):
+                self.assertEqual(apply_runner._measured(row, evidence, []), old_words.measured(count_words, typed, listed))
+        self.assertIn("to Second or anywhere else", apply_runner._measured({**row, "ats": "second"}, {"refused_total": 1}, []))
+
+    def test_the_settlement_notes_name_the_ats(self):
+        result = RunResult("needs_you", ["x"], handed_over=True, after_click=True)
+        settlement = apply_runner.handoff_settlement(
+            None, stop="", shutting_down=False, claim_state="clicking", cancel_requested=False, handed_over=True, closed_confirmed=True, minutes=5, ats_name="Second",
+        )
+        self.assertEqual(settlement.note, "Your application may have been sent, but Second did not show its confirmation page. Look for its email")
+        unclosed = apply_runner.handoff_settlement(
+            result, stop="", shutting_down=False, claim_state="claimed", cancel_requested=False, handed_over=False, closed_confirmed=False, minutes=5, ats_name="Second",
+        )
+        self.assertTrue(unclosed.note.endswith("Check your email for a confirmation from Second."), unclosed.note)
 
 
 # --- Correction 1: the company limit matches a board within its ATS ---------------------------------------------------

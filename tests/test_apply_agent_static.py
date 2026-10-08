@@ -43,7 +43,6 @@ from opportunity_app.apply.agent import (
     ENGINE_FILES,
     ENGINE_SOURCE,
     NOT_BUILT,
-    NOT_BOARD,
     ApplyAgent,
     DefaultApplyAgentFactory,
     GreenhouseAdapter,
@@ -1101,7 +1100,7 @@ class UnbuiltAndRefusedRunsOpenNoBrowser(unittest.TestCase):
         for url in ("https://careers.example.test/apply", "https://my.greenhouse.io/jobs/1", "http://127.0.0.1:8799/x"):
             with self.subTest(url=url):
                 result = self.run_agent("rehearse", url)
-                self.assertEqual((result.outcome, result.reasons), ("failed", [NOT_BOARD]))
+                self.assertEqual((result.outcome, result.reasons), ("failed", ["The app only opens Greenhouse's own job boards"]))
 
     def test_a_missing_playwright_is_the_install_sentence(self):
         agent = ApplyAgent(mode="rehearse", adapter=GreenhouseAdapter())
@@ -1276,7 +1275,7 @@ class FinishInBrowserKeepsD1B(unittest.TestCase):
         agent._screenshot = picture
         result = agent._stopped("needs_you", apply_agent.HANDOFF_NOT_SUBMITTED, "early")
         self.assertEqual((result.outcome, result.handed_over, result.after_click), ("unconfirmed", True, True))
-        self.assertEqual(result.reasons, [apply_agent.UNCONFIRMED_NOTE])
+        self.assertEqual(result.reasons, [apply_agent.UNCONFIRMED_NOTE.format(ats="Greenhouse")])
 
     def test_a_field_the_agent_never_filled_is_never_described_as_filled(self):
         agent = self.handoff_agent()
@@ -1614,7 +1613,7 @@ class HandoffSentencesAreTheSpecs(unittest.TestCase):
         self.assertEqual(agent_types.HANDOFF_UPLOAD, "The form tried to upload a file, which the app does not allow yet, so the app stopped it and closed the window. Nothing was sent. Apply from the posting instead.")
         self.assertEqual(agent_types.HANDOFF_HIDDEN, 'The form has a hidden field where the app expected "{question}", so the app stopped before filling it. Nothing was sent. Apply from the posting instead.')
         self.assertEqual(agent_types.WINDOW_CLOSED, "You closed the window. No application was sent.")
-        self.assertEqual(agent_types.WINDOW_UNCONFIRMED, "The app couldn't confirm the Chromium window closed, so it can't be sure nothing was sent. Check your email for a confirmation from Greenhouse.")
+        self.assertEqual(agent_types.WINDOW_UNCONFIRMED.format(ats="Greenhouse"), "The app couldn't confirm the Chromium window closed, so it can't be sure nothing was sent. Check your email for a confirmation from Greenhouse.")
         self.assertEqual(agent_types.YOUR_TURN, "The form is filled in the Chromium window. Complete the fields below, then press Submit application there.")
         self.assertEqual(agent_types.YOUR_TURN_NONE_LEFT, "The form is filled in the Chromium window. Check the form, then press Submit application there.")
         self.assertEqual(agent_types.LEFT_FIELD, 'The app could not fill "{question}". Fill it in yourself.')
@@ -1623,14 +1622,14 @@ class HandoffSentencesAreTheSpecs(unittest.TestCase):
         self.assertEqual(agent_types.LEFT_UNPLANNED, 'The page put something in "{question}" that the app didn\'t. Check it before you press Submit application.')
 
     def test_the_progress_steps_of_the_turn_and_the_code(self):
-        steps = agent_types.PROGRESS_STEPS
+        steps = {key: agent_types.progress_text(key, "Greenhouse") for key in ("your_turn", "submitting", "security_code", "code_typed", "code_yours", "challenge")}
         self.assertEqual(steps["your_turn"], "Your turn: complete the form in the window, then press Submit application there")
         self.assertEqual(steps["submitting"], "Submitting to Greenhouse…")
         self.assertEqual(steps["code_typed"], "The app typed the security code from your email. Press Submit application in the window")
         self.assertEqual(steps["code_yours"], "Type the security code Greenhouse emailed you into the window, then press Submit application")
         self.assertEqual(steps["challenge"], "Greenhouse showed a check in the window. Finish it there")
         self.assertIn("looking for it in your Gmail", steps["security_code"])
-        for key in ("your_turn", "submitting", "security_code", "code_typed", "code_yours", "challenge"):
+        for key in steps:
             self.assertNotIn("{", steps[key])
 
     def test_the_pipe_has_the_ops_of_a_handoff(self):

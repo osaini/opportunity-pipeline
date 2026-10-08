@@ -1363,7 +1363,7 @@ class ViewTests(RunnerCase):
         # A tracker that reports the Submit click is refused as the form sending elsewhere, but the form's own submission then goes through.
         plan = self.plan()
         seen = {"host": "events.example-analytics.test"}
-        for outcome, reasons in (("submitted", []), ("unconfirmed", [apply_checks.UNCONFIRMED_NOTE])):
+        for outcome, reasons in (("submitted", []), ("unconfirmed", [apply_checks.UNCONFIRMED_NOTE.format(ats="Greenhouse")])):
             with self.subTest(outcome=outcome):
                 view = self.make("handoff", outcome=outcome, plan=plan, reasons=reasons, evidence={"handoff_end": "posted", "elsewhere_seen": seen})
                 self.assertEqual(view["reasons"], reasons)

@@ -41,10 +41,10 @@ from opportunity_app.apply import (
 )
 from opportunity_app.apply.agent_types import (
     HANDOFF_CRASHED, HANDOFF_NOT_SUBMITTED, HANDOFF_UNRECORDED, OP_FRONT, OP_HAND_OVER_REPLY, OP_SECURITY_CODE_REPLY, PROGRESS_STEPS, WINDOW_CLOSED,
-    WINDOW_UNCONFIRMED, YOUR_TURN, YOUR_TURN_NONE_LEFT, ApplyTimeouts, RunResult,
+    WINDOW_UNCONFIRMED as WINDOW_UNCONFIRMED_TEMPLATE, YOUR_TURN, YOUR_TURN_NONE_LEFT, ApplyTimeouts, RunResult, progress_text,
 )
 from opportunity_app.apply.agent import ApplyAgent
-from opportunity_app.apply.checks import UNCONFIRMED_NOTE
+from opportunity_app.apply.checks import UNCONFIRMED_NOTE as UNCONFIRMED_NOTE_TEMPLATE
 from opportunity_app.apply.runner import ApplyRunner, RunnerBusy, RunRefused, SupervisorHandlers, handoff_settlement
 from opportunity_app.apply.runner_child import ChildChannel
 from opportunity_app.automation import ledger as automation
@@ -57,6 +57,9 @@ from apply_fake_ats import CrashingAgentFactory, FakeApplyAgentFactory, FakeSche
 from helpers_apply import BLUEFIN, ApplyCase, setUpModule, tearDownModule  # noqa: F401 (module fixtures: unittest and pytest find them here)
 from pipeline_core.identity import employer_key
 
+# The two notes name the ATS; every run in this module is Greenhouse's.
+UNCONFIRMED_NOTE = UNCONFIRMED_NOTE_TEMPLATE.format(ats="Greenhouse")
+WINDOW_UNCONFIRMED = WINDOW_UNCONFIRMED_TEMPLATE.format(ats="Greenhouse")
 USER = "local-user"
 AUTH = api_tests.AUTH
 ACME = "job-a"
@@ -633,7 +636,7 @@ class StopAndEndTests(HandoffCase):
         # (the child's result, whether the parent itself handed over, whether the run may be called unsent)
         for result, passed_on, unsent in ((proof, False, True), (proof, True, False), (continued, False, False), (None, False, False)):
             with self.subTest(result=result is not None, passed_on=passed_on, continued=result is continued):
-                work = mock.Mock(user_id=USER, token="tok-unread", run_id="run-" + "c" * 32, deadline_s=600.0, handed_over_seen=passed_on)
+                work = mock.Mock(user_id=USER, token="tok-unread", run_id="run-" + "c" * 32, deadline_s=600.0, handed_over_seen=passed_on, job=mock.Mock(ats="greenhouse"))
                 written = {}
 
                 def finish_only(conn, work, outcome, documents, written=written):
@@ -698,11 +701,11 @@ class PhaseTests(HandoffCase):
 
     def test_every_phase_has_its_own_sentence_and_none_says_nothing_was_sent(self):
         for step in ("submitting", "security_code", "code_typed", "code_yours", "challenge"):
-            row = {"status": "running", "kind": "handoff", "outcome": ""}
+            row = {"status": "running", "kind": "handoff", "outcome": "", "ats": "greenhouse"}
             text = apply_runner._summary(row, [], {}, "Acme", "Intern", [{"step": "your_turn", "text": "stale"}], False, phase=step)
-            self.assertEqual(text, PROGRESS_STEPS[step])
+            self.assertEqual(text, progress_text(step, "Greenhouse"))
             self.assertNotRegex(text.lower(), r"not sent|nothing was sent|no application was sent")
-        row = {"status": "running", "kind": "handoff", "outcome": ""}
+        row = {"status": "running", "kind": "handoff", "outcome": "", "ats": "greenhouse"}
         self.assertEqual(apply_runner._summary(row, [], {}, "", "", [], False, phase="your_turn", nothing_left=False), YOUR_TURN)
         self.assertEqual(apply_runner._summary(row, [], {}, "", "", [], False, phase="your_turn", nothing_left=True), YOUR_TURN_NONE_LEFT)
         self.assertEqual(apply_runner._summary(row, [], {}, "", "", [{"step": "fill", "text": "Filling 3 fields"}], False, phase="filling"), "Filling 3 fields")
@@ -714,7 +717,7 @@ class PhaseTests(HandoffCase):
         self.assertEqual(phase(told, card, "claimed"), "form_elsewhere")
         # The student's next press commits the hand-over: the phase is submitting at once, not the stale notice.
         self.assertEqual(phase(told, None, "clicking"), "submitting")
-        row = {"status": "running", "kind": "handoff", "outcome": ""}
+        row = {"status": "running", "kind": "handoff", "outcome": "", "ats": "greenhouse"}
         text = apply_runner._summary(row, [], {}, "Acme", "Intern", told, False, phase="form_elsewhere")
         self.assertEqual(text, told[-1]["text"], "the sentence names the host the agent saw, so it is the step's own text")
         self.assertIn("doesn't recognize", PROGRESS_STEPS["form_elsewhere"])
@@ -733,7 +736,7 @@ class PhaseTests(HandoffCase):
         self.finished(run_id)
 
     def test_a_handoff_that_stopped_says_not_sent_once_and_one_that_may_have_been_sent_never(self):
-        row = {"status": "finished", "kind": "handoff", "outcome": "needs_you"}
+        row = {"status": "finished", "kind": "handoff", "outcome": "needs_you", "ats": "greenhouse"}
         self.assertEqual(apply_runner._summary(row, [HANDOFF_NOT_SUBMITTED], {}, "", "", [], False), HANDOFF_NOT_SUBMITTED, "not doubled")
         self.assertEqual(apply_runner._summary(row, ["The form tried to upload a file"], {}, "", "", [], False),
                          "The form tried to upload a file. No application was sent.")
@@ -791,7 +794,7 @@ class SettlementTableTests(unittest.TestCase):
                closed_confirmed=True, minutes=48, not_started=False):
         return handoff_settlement(
             result, stop=stop, shutting_down=shutting_down, claim_state=claim_state, cancel_requested=cancel_requested, handed_over=handed_over,
-            closed_confirmed=closed_confirmed, minutes=minutes, not_started=not_started,
+            closed_confirmed=closed_confirmed, minutes=minutes, not_started=not_started, ats_name="Greenhouse",
         )
 
     def result(self, outcome, *, reasons=(), handed_over=False, after_click=False, confirmation_seen=False, requests=(), **evidence):

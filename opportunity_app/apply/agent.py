@@ -57,7 +57,6 @@ from .agent_types import (
     LEFT_UNPLANNED,
     MAX_LOOKUP_OPTIONS,
     OP_HANDOFF_READY,
-    PROGRESS_STEPS,
     STOPPED,
     WINDOW_CLOSED,
     ApplyTimeouts,
@@ -66,6 +65,7 @@ from .agent_types import (
     LookupRequest,
     RunResult,
     problem_dict,
+    progress_text,
 )
 from .checks import (
     MORE_PAGES_SCRIPT,
@@ -106,13 +106,14 @@ from .runs import INSTALL_PLAYWRIGHT, PlaywrightProbe
 
 INSTALL = "Could not start the browser. " + INSTALL_PLAYWRIGHT
 NOT_BUILT = "This kind of run is not built yet"
-NOT_BOARD = "The app only opens Greenhouse's own job boards"
-HTTP_STATUS = "Greenhouse answered HTTP {status}"
+# {ats} in a sentence below is the ATS's display name (``RoutePolicy.display_name``); ``ApplyAgent._say`` fills it.
+NOT_BOARD = "The app only opens {ats}'s own job boards"
+HTTP_STATUS = "{ats} answered HTTP {status}"
 OFFSITE = "This posting sends applicants to {host}"
 POPUP = "The page tried to open another site, so the app stopped"
-LEGACY = "This is Greenhouse's older form, which the app does not fill yet"
+LEGACY = "This is {ats}'s older form, which the app does not fill yet"
 CLOSED = "The posting is no longer accepting applications"
-UNKNOWN_PAGE = "The page did not look like a Greenhouse application form"
+UNKNOWN_PAGE = "The page did not look like a {ats} application form"
 NO_LOADER = "The app couldn't find where this form sends applications, so it could not help you submit it"
 S3_NOTE = "This board uploads your résumé as soon as it is attached, so the app can't attach it without sending it"
 CAPTCHA_NOTE = "The form shows a CAPTCHA checkbox"
@@ -124,16 +125,16 @@ NO_FILE = 'The app could not read the file for "{question}"'
 LETTER_CHANGED = 'Your cover letter for this role changed while the rehearsal ran, so the app did not attach one for "{question}". Approve the one you want and run again'
 NO_CONTROL = 'The form has no field for "{question}"'
 NO_OPTIONS = "No options came back for what you typed"
-NO_ENDPOINT = "The app has not confirmed Greenhouse's lookup service for this list yet, so it did not ask it"
+NO_ENDPOINT = "The app has not confirmed {ats}'s lookup service for this list yet, so it did not ask it"
 PLAN_FAILED = "The app could not plan this form"
 # Not in the shared list: what the agent says when a whole step, not one field, went wrong.
 MORE_PAGES = "This form has more than one page, and the app read only the first"
-OPEN_FAILED = "The app could not open the Greenhouse form"
+OPEN_FAILED = "The app could not open the {ats} form"
 READ_FAILED = "The app could not read the form"
 CHECK_FAILED = "The app could not check the filled form"
 # agent_types.WINDOW_CLOSED is the student closing the window during a handoff; this is the window going away in any other run.
 WINDOW_GONE = "The browser window was closed before the run finished"
-DIFFERENT_POSTING = "Greenhouse opened a different posting from the one the app was asked to open"
+DIFFERENT_POSTING = "{ats} opened a different posting from the one the app was asked to open"
 DEFERRED_MISSING = 'The form does not offer the answer the app would give for "{question}"'
 DEFERRED_UNREADABLE = 'The app could not read the options of "{question}", so it could not check the answer it would give'
 NOT_FILLED = "The run stopped before the app filled and checked this field, so nothing was put in it"
@@ -1416,10 +1417,14 @@ class ApplyAgent:
 
     # --- progress, time and the window --------------------------------------------------------------------------
 
+    def _say(self, template: str, **words: Any) -> str:
+        """A sentence of this module's, naming the ATS the agent is for."""
+        return template.format(ats=self._policy.display_name, **words)
+
     def _progress(self, step: str, **words: Any) -> None:
         if self._on_progress is not None:
             try:
-                self._on_progress(step, PROGRESS_STEPS[step].format(**words))
+                self._on_progress(step, progress_text(step, self._policy.display_name, **words))
             except (OSError, ValueError):   # a closed pipe: the parent is gone, and that is not an error on this path
                 self._parent_gone = True
 
@@ -1575,12 +1580,12 @@ class ApplyAgent:
         """The student's Submit went on. Whatever stopped the run now, nothing can be said about what was sent."""
         self._closing = True
         self._close_browser()
-        return self._finish("unconfirmed", [UNCONFIRMED_NOTE], handed_over=True, after_click=True)
+        return self._finish("unconfirmed", [self._say(UNCONFIRMED_NOTE)], handed_over=True, after_click=True)
 
     def _crashed(self) -> RunResult:
         if self.mode == "handoff":
             if self._handed_over:
-                return self._stopped("unconfirmed", UNCONFIRMED_NOTE)
+                return self._stopped("unconfirmed", self._say(UNCONFIRMED_NOTE))
             if self._page is not None and self._closed():
                 return self._stopped("failed", WINDOW_CLOSED, "closed")
             if self._loaded and self._phase == PHASE_FILL and self._offsite_host():
@@ -1649,13 +1654,13 @@ class ApplyAgent:
         return clean
 
     def _step_sentence(self) -> str:
-        return {"open": OPEN_FAILED, "read": READ_FAILED, "check": CHECK_FAILED}.get(self._step, PLAN_FAILED)
+        return {"open": self._say(OPEN_FAILED), "read": READ_FAILED, "check": CHECK_FAILED}.get(self._step, PLAN_FAILED)
 
     def _run(self, page_url: str, replan: Callable[[list[dict[str, Any]], bool], Any] | None) -> RunResult:
         if self.mode not in BUILT_MODES:
             return self._finish("failed", [NOT_BUILT])
         if (urlsplit(page_url).hostname or "").lower().rstrip(".") not in self._policy.navigation_hosts:
-            return self._finish("failed", [NOT_BOARD])
+            return self._finish("failed", [self._say(NOT_BOARD)])
         if self.mode == "lookup" and self._lookup is None:
             return self._finish("failed", [PLAN_FAILED])
         self._endpoints = (
@@ -1681,7 +1686,7 @@ class ApplyAgent:
         kind = self._offsite_kind() or self.adapter.detect_page(self._page)
         self._evidence_bits["page"] = kind
         if kind == "application_form_legacy" and not LEGACY_ENABLED:
-            raise _Stop("needs_you", LEGACY)
+            raise _Stop("needs_you", self._say(LEGACY))
         if kind == "closed":
             raise _Stop("failed", CLOSED)
         if kind == "offsite":
@@ -1691,9 +1696,9 @@ class ApplyAgent:
         asked, landed = self.adapter.posting_ids(page_url), self.adapter.posting_ids(self._page.url)
         if asked != ("", "") and landed != ("", "") and landed != asked:
             # A board that redirects a posting to another one: what is filled and checked here would be that other posting.
-            raise _Stop("needs_you", DIFFERENT_POSTING)
+            raise _Stop("needs_you", self._say(DIFFERENT_POSTING))
         if kind != self.adapter.form_page_kind:
-            raise _Stop("needs_you", UNKNOWN_PAGE)
+            raise _Stop("needs_you", self._say(UNKNOWN_PAGE))
         submit_host, submit_path, confirmation_path = self.adapter.loader_paths(html)
         self._state.submit_path = submit_path
         self._confirmation_path = confirmation_path
@@ -1734,9 +1739,9 @@ class ApplyAgent:
             host = self._offsite_host()
             if host:
                 raise _Stop("needs_you", OFFSITE.format(host=host))
-            raise _Stop("failed", OPEN_FAILED)
+            raise _Stop("failed", self._say(OPEN_FAILED))
         if response is not None and response.status >= 400:
-            raise _Stop("failed", HTTP_STATUS.format(status=response.status))
+            raise _Stop("failed", self._say(HTTP_STATUS, status=response.status))
         try:
             page.wait_for_load_state("networkidle", timeout=8_000)
         except Exception:  # noqa: BLE001 - a busy page is read as it stands
@@ -1773,7 +1778,7 @@ class ApplyAgent:
         if not options:
             self._reasons.append(NO_OPTIONS)
             if not any(endpoint.kind == lookup.field for endpoint in self._endpoints):
-                self._reasons.append(NO_ENDPOINT)
+                self._reasons.append(self._say(NO_ENDPOINT))
         return self._finish("looked_up")
 
     # --- fill: a rehearsal stops at the picture, a handoff goes on to the student's turn -------------------------
@@ -1850,6 +1855,7 @@ class ApplyAgent:
         seen = frame.evaluate(REQUIRED_CHECK_SCRIPT)
         problems = check_required(
             seen.get("items", []), self._check_view(), self._schema, initial, controls=seen.get("controls", []), invalid=seen.get("invalid", []),
+            ats_name=self._policy.display_name,
         )
         if handoff:
             self._resolve_check(frame, problems)
@@ -2381,7 +2387,7 @@ class ApplyAgent:
         out = decide_outcome(obs, self._policy, code_wait_over=code_wait_over)
         if self._submit_continued and out.outcome == "failed" and not out.after_click:
             # The POST was continued, whatever the tracker shows: "nothing was sent" is not a thing this run can say.
-            return Outcome("unconfirmed", 1, UNCONFIRMED_NOTE, evidence=out.evidence, settled=False)
+            return Outcome("unconfirmed", 1, self._say(UNCONFIRMED_NOTE), evidence=out.evidence, settled=False)
         return out
 
     def _outcome(self) -> RunResult:
