@@ -239,8 +239,8 @@ class SecurityCodeReader:
         record = detail.get(RECORD_KEY) if isinstance(detail.get(RECORD_KEY), dict) else {}
         if not record.get("prompted_at"):
             # The first request is the prompt: counted for 8.8 (R1) whatever becomes of it.
-            _record(conn, user_id, token, {"prompted_at": apply_watch.iso_utc(moment), "reader": "waiting"}, waiting=True, now=now)
-            record = {"prompted_at": apply_watch.iso_utc(moment), "reader": "waiting"}
+            _record(conn, user_id, token, {"prompted_at": apply_runs.iso_utc(moment), "reader": "waiting"}, waiting=True, now=now)
+            record = {"prompted_at": apply_runs.iso_utc(moment), "reader": "waiting"}
         if record.get("reader") == "typed":
             return _fallback("already_used")
         with self._lock:
@@ -276,7 +276,7 @@ class SecurityCodeReader:
                 if token in self._abandoned:
                     return _fallback("abandoned")
             if not _record(
-                conn, user_id, token, {"reader": "handed", "handed_at": apply_watch.iso_utc(moment)}, now=now,
+                conn, user_id, token, {"reader": "handed", "handed_at": apply_runs.iso_utc(moment)}, now=now,
                 not_reader=("fallback", "typed"),
             ):
                 return _fallback("not_current")
@@ -298,7 +298,7 @@ class SecurityCodeReader:
         claim = conn.execute("SELECT * FROM application_submit_claims WHERE token=? AND user_id=?", (token, user_id)).fetchone()
         if claim is None or claim["state"] != "clicking" or claim["instance"] != SERVER_INSTANCE:
             return False
-        if not _record(conn, user_id, token, {"reader": "typed", "typed_at": apply_watch.iso_utc(moment)}, now=now, only_if_reader="handed"):
+        if not _record(conn, user_id, token, {"reader": "typed", "typed_at": apply_runs.iso_utc(moment)}, now=now, only_if_reader="handed"):
             return False
         with self._lock:
             self._handed.discard(token)
@@ -333,7 +333,7 @@ class SecurityCodeReader:
             # the reader found is dropped, and the claim says the agent stopped waiting. It says "abandoned" and nothing more:
             # not "no email arrived", which may not be what happened. No notice: the window was already brought forward for them.
             _record(
-                conn, user_id, token, {"reader": "fallback", "reason": "abandoned", "fell_back_at": apply_watch.iso_utc(moment)}, now=now,
+                conn, user_id, token, {"reader": "fallback", "reason": "abandoned", "fell_back_at": apply_runs.iso_utc(moment)}, now=now,
                 not_reader=("fallback", "typed"),
             )
             return
@@ -364,7 +364,7 @@ class SecurityCodeReader:
         ``typing`` is a fallback after the code was read but could not be put in (the notice says so, not "couldn't read it").
         """
         token = claim["token"]
-        _record(conn, user_id, token, {"reader": "fallback", "reason": reason, "fell_back_at": apply_watch.iso_utc(moment)}, now=now)
+        _record(conn, user_id, token, {"reader": "fallback", "reason": reason, "fell_back_at": apply_runs.iso_utc(moment)}, now=now)
         if typing:
             sentence = TYPING_REASONS.get(reason, TYPING_REASONS["typing_failed"])
             lead = "The app read the code but couldn't type it"
@@ -414,7 +414,7 @@ def _record(
             detail["waiting"] = "security_code"
         return bool(conn.execute(
             "UPDATE application_submit_claims SET detail_json=?, updated_at=? WHERE token=? AND user_id=? AND state='clicking'",
-            (json.dumps(detail, sort_keys=True), apply_watch.stamp_now(now), token, user_id),
+            (json.dumps(detail, sort_keys=True), apply_runs.stamp_now(now), token, user_id),
         ).rowcount)
 
 

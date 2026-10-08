@@ -18,7 +18,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Apply for me | 0 | 4 | 6 | 10 |
+| Apply for me | 0 | 4 | 5 | 9 |
 | Mail, Gmail and inboxes | 0 | 4 | 9 | 13 |
 | Outreach drafting, research, forms and CLI | 0 | 6 | 3 | 9 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
@@ -26,7 +26,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Scoring, scheduling and configuration | 1 | 2 | 6 | 9 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **29** | **32** | **62** |
+| **Total** | **1** | **29** | **31** | **61** |
 
 ## Start here: the high-severity entries
 
@@ -262,13 +262,6 @@ The first was one of three left open by PR #54 (the fail-closed net) and recorde
 - **What happens:** A list or dict reason is unhashable when tested against the frozenset, so the script reports "failed (TypeError)" instead of CANNOT_READ or WAIT.
 - **Suggested fix:** Reuse `is_throttle` from `opportunity_app/integrations/gmail_client.py`.
 - **Regression suite:** tests/ unittest (`test_pipeline_mailbox`)
-
-### apply/watch.py keeps its own copy of runs.py's time helpers
-- **Severity:** low, latent (found in review of the confirmation watch, M5b part 1)
-- **Where:** `opportunity_app/apply/watch.py` `_at()`, `stamp_now()`, `iso_utc()` against `opportunity_app/apply/runs.py` `_at()`, `_stamp()`, `_iso()`; `opportunity_app/apply/security_code.py` calls the watch's copy
-- **What happens:** The bodies match today, so stamps compare correctly as strings. If one copy drifts (for example the "never repeated" `utc_now` rule), claims, events and notices get differently formatted stamps, and the string comparisons in `_WATCHED` and `students_to_watch` misorder them. The copy exists because the browser-driver milestone edits `runs.py` in parallel and a rename there would conflict; AGENTS.md section 8 rules 3 and 6 want one copy with a public name. The Greenhouse sender check is already shared (`greenhouse.is_greenhouse_sender`).
-- **Suggested fix:** After both milestones merge, rename `runs._at`, `_stamp` and `_iso` to public names, import them in `watch.py` and `security_code.py`, and delete the copies.
-- **Regression suite:** tests/ unittest (a test that both modules format the same instant identically, or that `watch.py` defines none of these)
 
 ### The Gmail labelling worker can write label rows for an account that was just deleted
 - **Severity:** medium, privacy; left by design for an owner decision (found in review of the PR #60 erase fix, which closed the missing-tables gap but not this race)

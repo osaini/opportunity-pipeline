@@ -282,7 +282,7 @@ class RefusalTests(HandoffCase):
         with self.conn:
             self.conn.execute("UPDATE application_submit_claims SET state='unconfirmed', resolved_by='' WHERE token=?", (token,))
         apply_watch.resolve_by_student(self.conn, token, user_id=USER, went_through=False)
-        old = (utc_now() and (apply_runs._at(None) - timedelta(days=3)).isoformat(timespec="microseconds"))
+        old = (utc_now() and (apply_runs.at_utc(None) - timedelta(days=3)).isoformat(timespec="microseconds"))
         with self.conn:
             self.conn.execute("UPDATE application_submit_claims SET handed_over_at=? WHERE token=?", (old, token))
         self.assertEqual(self.claim_of(run_id)["state"], "released")
@@ -316,7 +316,7 @@ class RefusalTests(HandoffCase):
     def test_the_company_limit_is_a_tick_after_the_spacing_has_passed(self):
         first = self.handoff()
         self.finished(first)
-        old = (apply_runs._at(None) - timedelta(days=5)).isoformat(timespec="microseconds")
+        old = (apply_runs.at_utc(None) - timedelta(days=5)).isoformat(timespec="microseconds")
         with self.conn:
             self.conn.execute("UPDATE application_submit_claims SET handed_over_at=? WHERE run_id=?", (old, first))
         self.second_role()
@@ -2191,7 +2191,7 @@ class PreviewTests(HandoffCase):
     def test_a_newer_resume_version_is_a_change(self):
         row = self.rehearse()
         data = b"%PDF-1.4 another fictional resume"
-        stamp = (apply_runs._at(None) + timedelta(minutes=5)).isoformat(timespec="microseconds")
+        stamp = (apply_runs.at_utc(None) + timedelta(minutes=5)).isoformat(timespec="microseconds")
         (self.root / "resumes" / "resume-file-2.pdf").write_bytes(data)
         with self.conn:
             self.conn.execute(
@@ -2306,7 +2306,7 @@ class PreviewTests(HandoffCase):
         with self.conn:
             self.conn.execute("UPDATE application_submit_claims SET state='unconfirmed', resolved_by='' WHERE token=?", (token,))
         apply_watch.resolve_by_student(self.conn, token, user_id=USER, went_through=False)
-        old = (apply_runs._at(None) - timedelta(days=3)).isoformat(timespec="microseconds")
+        old = (apply_runs.at_utc(None) - timedelta(days=3)).isoformat(timespec="microseconds")
         with self.conn:
             self.conn.execute("UPDATE application_submit_claims SET handed_over_at=? WHERE token=?", (old, token))
         result = apply_preflight.check(self.conn, USER, ACME, client=self.schema, resume_root=self.root / "resumes")

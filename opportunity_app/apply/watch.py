@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any
 
 from pipeline_core.identity import normalized
@@ -40,7 +40,7 @@ from ..applications import actions, inbox as application_inbox, mail_rules
 from ..automation import ledger as automation
 from ..core.database import is_unique_violation, rollback_quietly
 from ..core.json_values import json_as
-from ..core.timestamps import parse_app_instant, utc_now
+from ..core.timestamps import parse_app_instant
 from ..integrations.gmail_client import connection_state
 from ..mail.gmail_connection import connector_row
 from ..student import preparation
@@ -91,19 +91,6 @@ NO_EMAIL_BODY = "Some employers don't send one. If you want to be sure, check th
 
 
 # --- Small helpers ------------------------------------------------------------------------
-
-
-def _at(now: datetime | None) -> datetime:
-    return (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-
-
-def stamp_now(now: datetime | None) -> str:
-    """The stamp a write records: utc_now's unless the caller gave a time."""
-    return utc_now() if now is None else _at(now).isoformat(timespec="microseconds")
-
-
-def iso_utc(moment: datetime) -> str:
-    return moment.astimezone(timezone.utc).isoformat(timespec="microseconds")
 
 
 def _plural(count: int, one: str, many: str) -> str:
@@ -172,7 +159,7 @@ def reader_health(
     account switched since the submission reads a mailbox where the confirmation never lands, so that is a stall too (the
     watch pauses; it never ends as "no email").
     """
-    moment = _at(now)
+    moment = apply_runs.at_utc(now)
     row = connector_row(conn, user_id)
     sync = conn.execute("SELECT * FROM application_mail_sync WHERE user_id=?", (user_id,)).fetchone()
     last_ok = parse_app_instant(sync["last_ok_at"]) if sync is not None else None
@@ -278,9 +265,9 @@ def watch(conn: sqlite3.Connection, user_id: str, now: datetime | None = None) -
     (the deadline moved by a stall), stopped (a stalled watch given up) and held_back (an email for a tombstone whose
     job has a newer attempt: the student is asked to check).
     """
-    moment = _at(now)
+    moment = apply_runs.at_utc(now)
     counts = dict.fromkeys(WATCH_COUNTS, 0)
-    since = iso_utc(moment - timedelta(days=apply_runs.WATCH_DAYS))
+    since = apply_runs.iso_utc(moment - timedelta(days=apply_runs.WATCH_DAYS))
     counts["stopped"] += _end_window(conn, user_id, since, now)
     rows = [dict(row) for row in conn.execute(_WATCHED, (user_id, since, since)).fetchall()]
     if not rows:
@@ -302,7 +289,7 @@ def watch(conn: sqlite3.Connection, user_id: str, now: datetime | None = None) -
                 used.add(strong["gmail_id"])
             continue
         if weak is not None and claim["state"] != "released" and "possible_email_at" not in _detail(claim):
-            if _merge(conn, user_id, claim, {"possible_email_at": iso_utc(weak["received_at"])}):
+            if _merge(conn, user_id, claim, {"possible_email_at": apply_runs.iso_utc(weak["received_at"])}):
                 counts["possible_email"] += 1
         if claim["state"] == "submitted" and claim["verification"] == "awaiting_email":
             applied = str(_detail(claim).get("mailbox_hash") or "")
@@ -342,7 +329,7 @@ def _end_window(conn: sqlite3.Connection, user_id: str, since: str, now: datetim
         "SELECT token FROM application_submit_claims WHERE user_id=? AND state='submitted' AND verification='awaiting_email' "
         "AND submitted_at < ?", (user_id, since),
     ).fetchall()
-    stamp = stamp_now(now)
+    stamp = apply_runs.stamp_now(now)
     return sum(1 for row in stale if _stop_watch(conn, user_id, row["token"], stamp, "window_ended"))
 
 
@@ -367,7 +354,7 @@ def _merge(
 
 def _email_detail(strong: dict[str, Any]) -> dict[str, Any]:
     return {
-        "email_gmail_id": strong["gmail_id"], "email_received_at": iso_utc(strong["received_at"]), "email_matched_by": strong["matched_by"],
+        "email_gmail_id": strong["gmail_id"], "email_received_at": apply_runs.iso_utc(strong["received_at"]), "email_matched_by": strong["matched_by"],
     }
 
 
@@ -375,7 +362,7 @@ def _confirm_submitted(
     conn: sqlite3.Connection, user_id: str, claim: dict[str, Any], strong: dict[str, Any], now: datetime | None,
 ) -> bool:
     """A strong match on a submitted claim: email_confirmed, a timeline event, and the stage write if it is still owed."""
-    stamp = stamp_now(now)
+    stamp = apply_runs.stamp_now(now)
     with conn:
         apply_runs.lock_user(conn, user_id)
         fresh = conn.execute(
@@ -396,7 +383,7 @@ def _confirm_submitted(
             conn, claim["application_id"], "apply_agent_verification", None, stamp,
             encoded=json.dumps({
                 "run_id": claim["run_id"], "mode": claim["mode"], "verification": "email_confirmed",
-                "received_at": iso_utc(strong["received_at"]), "matched_by": strong["matched_by"], "source": WATCH_SOURCE_EMAIL,
+                "received_at": apply_runs.iso_utc(strong["received_at"]), "matched_by": strong["matched_by"], "source": WATCH_SOURCE_EMAIL,
             }, sort_keys=True),
         )
     if claim["stage_policy"] in ("record", "ledger") and not claim["stage_recorded"]:
@@ -417,7 +404,7 @@ def _held_back(conn: sqlite3.Connection, user_id: str, claim: dict[str, Any], st
     """A tombstone's email, with a newer live attempt in the way: say so once and ask the student to check."""
     if "email_after_release_at" in _detail(claim):
         return False
-    if _merge(conn, user_id, claim, {"email_after_release_at": iso_utc(strong["received_at"])}):
+    if _merge(conn, user_id, claim, {"email_after_release_at": apply_runs.iso_utc(strong["received_at"])}):
         counts["held_back"] += 1
         company = claim["company_name"] or "the company"
         automation.notice(
@@ -438,7 +425,7 @@ def _resolve_by_email(
             return False
         if newer:
             return _held_back(conn, user_id, claim, strong, counts)
-    stamp = stamp_now(now)
+    stamp = apply_runs.stamp_now(now)
     old_state = claim["state"]
     try:
         with conn:
@@ -454,7 +441,7 @@ def _resolve_by_email(
                 "UPDATE application_submit_claims SET state='submitted', verification='email_confirmed', resolved_by='email', "
                 "submitted_at=?, verified_at=?, watch_until=NULL, note='', updated_at=?, detail_json=? "
                 "WHERE token=? AND user_id=? AND state=?",
-                (iso_utc(strong["received_at"]), stamp, stamp, json.dumps(detail, sort_keys=True), claim["token"], user_id, old_state),
+                (apply_runs.iso_utc(strong["received_at"]), stamp, stamp, json.dumps(detail, sort_keys=True), claim["token"], user_id, old_state),
             ).rowcount
             if not changed:
                 return False
@@ -462,7 +449,7 @@ def _resolve_by_email(
                 conn, claim["application_id"], "apply_agent_resolved", None, stamp,
                 encoded=json.dumps({
                     "run_id": claim["run_id"], "mode": claim["mode"], "resolved_by": "email", "verification": "email_confirmed",
-                    "received_at": iso_utc(strong["received_at"]), "matched_by": strong["matched_by"], "from_state": old_state,
+                    "received_at": apply_runs.iso_utc(strong["received_at"]), "matched_by": strong["matched_by"], "from_state": old_state,
                     "source": WATCH_SOURCE_EMAIL,
                 }, sort_keys=True),
             )
@@ -493,7 +480,7 @@ def _clock(
     until = parse_app_instant(claim["watch_until"])
     submitted = parse_app_instant(claim["submitted_at"])
     paused_since = parse_app_instant(detail.get("watch_paused_since"))
-    stamp = stamp_now(now)
+    stamp = apply_runs.stamp_now(now)
     if reason:
         if submitted is not None and moment - submitted >= GIVE_UP_AFTER:
             if _stop_watch(conn, user_id, claim["token"], stamp, "reader_stalled", reason):
@@ -528,7 +515,7 @@ def _clock(
             if not conn.execute(
                 "UPDATE application_submit_claims SET watch_until=?, detail_json=? WHERE token=? AND user_id=? "
                 "AND state='submitted' AND verification='awaiting_email'",
-                (iso_utc(extended), json.dumps(kept, sort_keys=True), claim["token"], user_id),
+                (apply_runs.iso_utc(extended), json.dumps(kept, sort_keys=True), claim["token"], user_id),
             ).rowcount:
                 return
         counts["extended"] += 1
@@ -549,7 +536,7 @@ def _clock(
         actions.log_application_event(
             conn, claim["application_id"], "apply_agent_verification", None, stamp,
             encoded=json.dumps({
-                "run_id": claim["run_id"], "mode": claim["mode"], "verification": "no_email_24h", "watched_until": iso_utc(until),
+                "run_id": claim["run_id"], "mode": claim["mode"], "verification": "no_email_24h", "watched_until": apply_runs.iso_utc(until),
                 "source": WATCH_SOURCE_APP,
             }, sort_keys=True),
         )
@@ -666,7 +653,7 @@ def resolve_by_student(
         try:
             with conn:
                 actions.log_application_event(
-                    conn, claim["application_id"], "apply_agent_resolved", None, stamp_now(now),
+                    conn, claim["application_id"], "apply_agent_resolved", None, apply_runs.stamp_now(now),
                     encoded=json.dumps({
                         "run_id": claim["run_id"], "mode": claim["mode"], "resolved_by": "student", "went_through": False,
                         "from_state": claim["state"], "source": WATCH_SOURCE_STUDENT,

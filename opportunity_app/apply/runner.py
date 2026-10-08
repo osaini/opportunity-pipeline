@@ -1312,11 +1312,11 @@ class ApplyRunner:
                     until = datetime.now(timezone.utc) + timedelta(seconds=seconds)
                     stored = apply_runs.record_handoff_ready(
                         conn, user_id=user_id, run_id=run_id, token=work.token, plan=[item for item in message.get("plan") or [] if isinstance(item, dict)],
-                        plan_hash=str(message.get("plan_hash") or ""), screenshots=shots, handoff_until=apply_watch.iso_utc(until),
+                        plan_hash=str(message.get("plan_hash") or ""), screenshots=shots, handoff_until=apply_runs.iso_utc(until),
                         evidence={
                             "left_for_you": _left_items(message.get("left")), "captcha_widget": bool(message.get("captcha_widget")),
                             "page_defaults": [str(key) for key in message.get("page_defaults") or []],
-                            "handoff_until": apply_watch.iso_utc(until),
+                            "handoff_until": apply_runs.iso_utc(until),
                         },
                     )
                     if not stored:

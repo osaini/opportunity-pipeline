@@ -144,16 +144,18 @@ class ClaimNotFoundError(LookupError):
 # --- Small helpers ------------------------------------------------------------------------
 
 
-def _at(now: datetime | None) -> datetime:
+def at_utc(now: datetime | None) -> datetime:
+    """``now`` (the clock when None) as an aware UTC time. The confirmation watch and the security-code reader use this one."""
     return (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
 
 
-def _stamp(now: datetime | None) -> str:
+def stamp_now(now: datetime | None) -> str:
     """The stamp a write records: utc_now's (never repeated in this process) unless the caller gave a time."""
-    return utc_now() if now is None else _at(now).isoformat(timespec="microseconds")
+    return utc_now() if now is None else at_utc(now).isoformat(timespec="microseconds")
 
 
-def _iso(moment: datetime) -> str:
+def iso_utc(moment: datetime) -> str:
+    """The stamp format every claim, event and notice time is written in (UTC, microseconds): the string comparisons depend on one format."""
     return moment.astimezone(timezone.utc).isoformat(timespec="microseconds")
 
 
@@ -224,7 +226,7 @@ def opportunity_folder(opportunity_id: str) -> str:
 
 def _local_day_start(zone: UserTimezone, now: datetime) -> str:
     """The start of today in the student's timezone, as the UTC stamp claims and runs are compared with."""
-    return _iso(zone.localize(datetime.combine(zone.today(now), time.min)))
+    return iso_utc(zone.localize(datetime.combine(zone.today(now), time.min)))
 
 
 def _when_text(zone: UserTimezone, moment: datetime, now: datetime) -> str:
@@ -299,7 +301,7 @@ def _limit_check(
     if mode == "unattended":
         hour = conn.execute(
             "SELECT COUNT(*) FROM application_submit_claims WHERE user_id=? AND mode='unattended' AND handed_over_at>=?",
-            (user_id, _iso(now - timedelta(hours=1))),
+            (user_id, iso_utc(now - timedelta(hours=1))),
         ).fetchone()[0]
         if hour >= values["unattended_per_hour"]:
             return Block("failed", "unattended_hour", "Unattended mode sends at most one application an hour")
@@ -332,7 +334,7 @@ def limit_check(
     conn: sqlite3.Connection, user_id: str, company: str, board_token: str, mode: str, now: datetime | None = None,
 ) -> Block | None:
     """The first limit that blocks a hand-over now, with its kind ('ask' can be ticked past, 'failed' cannot), or None."""
-    return _limit_check(conn, user_id, company, board_token, mode, _at(now))
+    return _limit_check(conn, user_id, company, board_token, mode, at_utc(now))
 
 
 def limits_block(
@@ -343,13 +345,13 @@ def limits_block(
     ``company`` is employer_key(name). Finish in browser (handoff) counts toward the spacing and the company limit
     but not the daily cap, because the student presses Submit.
     """
-    block = _limit_check(conn, user_id, company, board_token, mode, _at(now))
+    block = _limit_check(conn, user_id, company, board_token, mode, at_utc(now))
     return None if block is None else block.message
 
 
 def rehearsal_block(conn: sqlite3.Connection, user_id: str, now: datetime | None = None) -> str | None:
     """Whether today's rehearsals and option lookups (in the student's timezone) have reached their limit."""
-    moment = _at(now)
+    moment = at_utc(now)
     cap = limits(conn, user_id)["rehearsals_per_day"]
     used = conn.execute(
         "SELECT COUNT(*) FROM apply_runs WHERE user_id=? AND kind IN ('lookup', 'rehearsal') AND started_at>=?",
@@ -376,7 +378,7 @@ def duplicate_block(
     Reads only, and never creates the application (looking changes nothing). A 'failed' block cannot be
     overridden; an 'ask' one is skipped when its code is in ``acknowledged``.
     """
-    moment = _at(now)
+    moment = at_utc(now)
     zone = user_timezone(conn, user_id)
     application = conn.execute(
         "SELECT id, stage, created_at FROM applications WHERE opportunity_id=? AND user_id=?", (opportunity_id, user_id),
@@ -559,8 +561,8 @@ def claim(
     """
     if mode not in MODES:
         raise ValueError(f"Unsupported mode: {mode}")
-    stamp = _stamp(now)
-    moment = _at(now)
+    stamp = stamp_now(now)
+    moment = at_utc(now)
     token = uuid4().hex
     acknowledged = tuple(dict.fromkeys(acknowledged))
     # Held from before the insert, so no recovery pass can call the new claim stale in between.
@@ -687,8 +689,8 @@ def hand_over(
     claim still 'claimed'. The same UPDATE clears detail.waiting, so a clicking row never says the student is still
     working on the form.
     """
-    moment = _at(now)
-    stamp = _stamp(now)
+    moment = at_utc(now)
+    stamp = stamp_now(now)
     with conn:
         lock_user(conn, user_id)
         paused = automation.pause_guard(conn, user_id)
@@ -730,7 +732,7 @@ def hand_over(
 
 def heartbeat(conn: sqlite3.Connection, token: str, *, now: datetime | None = None) -> bool:
     """From every wait loop, at least every 30 seconds: this claim's run is alive (5.2 rule 4)."""
-    stamp = _stamp(now)
+    stamp = stamp_now(now)
     with conn:
         return bool(conn.execute(
             "UPDATE application_submit_claims SET heartbeat_at=? WHERE token=? AND state IN ('claimed', 'clicking')", (stamp, token),
@@ -741,7 +743,7 @@ def _watch_fields(stamp: str, watch: bool) -> tuple[str, str | None]:
     if not watch:
         return "not_watched", None
     until = parse_app_instant(stamp)
-    return "awaiting_email", _iso(until + WATCH_WINDOW) if until else None
+    return "awaiting_email", iso_utc(until + WATCH_WINDOW) if until else None
 
 
 def _settle_tx(
@@ -833,7 +835,7 @@ def settle(
     apply_agent_submitted event and a notice, and this never raises. A submitted claim starts its confirmation
     email watch ('awaiting_email', for 24 hours), or is 'not_watched' when ``watch`` is False (D12).
     """
-    stamp = _stamp(now)
+    stamp = stamp_now(now)
     settled = False
     try:
         with conn:
@@ -859,7 +861,7 @@ def resolve_uncertain(
     tombstone, which still counts toward the limits and asks before the same job is tried again. Refused with
     ClaimHeldError while the claim is held: its run may still be working.
     """
-    stamp = _stamp(now)
+    stamp = stamp_now(now)
     with conn:
         lock_user(conn, user_id)
         row = _claim_row(conn, token, user_id, lock=True)
@@ -917,7 +919,7 @@ def record_stage(
     event's source says what settled the submission (the page, the email, or the student) unless one is passed.
     True when the stage was settled one way or the other (stage_recorded is now 1).
     """
-    stamp = _stamp(now)
+    stamp = stamp_now(now)
     row = _claim_row(conn, token, user_id)
     if row is None or row["state"] != "submitted" or row["stage_recorded"]:
         return False
@@ -999,7 +1001,7 @@ def create_run(
     """
     if kind not in RUN_KINDS:
         raise ValueError(f"Unsupported run kind: {kind}")
-    stamp = _stamp(now)
+    stamp = stamp_now(now)
     if run_id is None:
         run_id = f"run-{uuid4().hex}"
     elif not RUN_ID.fullmatch(run_id):
@@ -1012,7 +1014,7 @@ def create_run(
             VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)
             """,
             (run_id, user_id, opportunity_id, application_id, claim_token, kind, started_by, ats, adapter_version, company, board_token,
-             page_url, stamp, _iso(parse_app_instant(stamp) + timedelta(seconds=deadline_seconds)), stamp),
+             page_url, stamp, iso_utc(parse_app_instant(stamp) + timedelta(seconds=deadline_seconds)), stamp),
         )
     return run_id
 
@@ -1036,7 +1038,7 @@ def link_run(conn: sqlite3.Connection, *, user_id: str, run_id: str, token: str)
 def heartbeat_run(conn: sqlite3.Connection, run_id: str, *, now: datetime | None = None) -> bool:
     with conn:
         return bool(conn.execute(
-            "UPDATE apply_runs SET heartbeat_at=? WHERE id=? AND status='running'", (_stamp(now), run_id),
+            "UPDATE apply_runs SET heartbeat_at=? WHERE id=? AND status='running'", (stamp_now(now), run_id),
         ).rowcount)
 
 
@@ -1068,7 +1070,7 @@ def finish_run(
     """Finish a running run: outcome, whether the rehearsal was clean, and any of reasons, plan, options, screenshots,
     refused, requests, evidence (JSON documents; never a field value). False if it had already finished."""
     with conn:
-        return _finish_run_tx(conn, run_id, outcome=outcome, clean=clean, plan_hash=plan_hash, stamp=_stamp(now), **documents)
+        return _finish_run_tx(conn, run_id, outcome=outcome, clean=clean, plan_hash=plan_hash, stamp=stamp_now(now), **documents)
 
 
 def get_run(conn: sqlite3.Connection, run_id: str, *, user_id: str) -> dict[str, Any] | None:
@@ -1119,7 +1121,7 @@ def record_result(
     set on the row) leaves an apply_agent_unconfirmed event in the same transaction (10.5), decided from the row as it
     is after the settle, so a result that says after_click=None on a row that already has 1 still writes it.
     """
-    stamp = _stamp(now)
+    stamp = stamp_now(now)
     settled = False
     state_now = ""
     # Only a submission whose confirmation page was seen was settled by the page (5.2, 6.14). A stop for the
@@ -1178,7 +1180,7 @@ def record_handoff_ready(
     the student); the claim gets that plan's hash and detail.waiting = 'student' (the card says Your turn) with the
     time the window closes. True only when both rows matched: the run is still running and the claim still 'claimed'.
     """
-    stamp = _stamp(now)
+    stamp = stamp_now(now)
     with conn:
         lock_user(conn, user_id)
         claim = conn.execute(
@@ -1233,7 +1235,7 @@ def mark_review(
     """
     if verdict not in ("right", "wrong"):
         raise ValueError("A run is marked right or wrong")
-    stamp = _stamp(now)
+    stamp = stamp_now(now)
     tripped = False
     with conn:
         lock_user(conn, user_id)
@@ -1280,7 +1282,7 @@ def recover_stale(conn: sqlite3.Connection, now: datetime | None = None, *, user
     'unconfirmed' when its claim was handed over) with a notice. Never touches an attempt that is already uncertain:
     only the confirmation email or the student settles those.
     """
-    moment = _at(now)
+    moment = at_utc(now)
     scope, args = ("AND user_id=?", (user_id,)) if user_id else ("", ())
     counts = {"failed": 0, "unconfirmed": 0, "stage_retried": 0, "runs_failed": 0}
     for row in conn.execute(
@@ -1306,12 +1308,12 @@ def recover_stale(conn: sqlite3.Connection, now: datetime | None = None, *, user
             changed = conn.execute(
                 "UPDATE application_submit_claims SET state=?, note=?, updated_at=?, detail_json=?, after_click=CASE WHEN ? = 1 THEN 1 ELSE after_click END "
                 "WHERE token=? AND state=?",
-                ("failed" if stopped else "unconfirmed", note, _stamp(now), _dumps(detail), 0 if stopped else 1, row["token"], row["state"]),
+                ("failed" if stopped else "unconfirmed", note, stamp_now(now), _dumps(detail), 0 if stopped else 1, row["token"], row["state"]),
             ).rowcount
             if changed and not stopped:
                 # Written with the UPDATE, so a student who sees may-have-been-sent also finds it on the timeline (10.5).
                 actions.log_application_event(
-                    conn, row["application_id"], "apply_agent_unconfirmed", None, _stamp(now),
+                    conn, row["application_id"], "apply_agent_unconfirmed", None, stamp_now(now),
                     encoded=_dumps({"run_id": row["run_id"], "mode": row["mode"], "state": "unconfirmed", "note": note, "by": "recovery", "source": APP_SOURCE}),
                 )
         take_unconfirmed(row["token"])      # committed: the claim says it now (or another writer settled it, and the mark has no use)
@@ -1330,7 +1332,7 @@ def recover_stale(conn: sqlite3.Connection, now: datetime | None = None, *, user
     ).fetchall():
         if record_stage(conn, row["token"], user_id=row["user_id"], now=now):
             counts["stage_retried"] += 1
-    stale = _iso(moment - HELD_HEARTBEAT)
+    stale = iso_utc(moment - HELD_HEARTBEAT)
     for run in conn.execute(
         f"SELECT * FROM apply_runs WHERE status='running' AND heartbeat_at<? {scope} ORDER BY started_at", (stale, *args),
     ).fetchall():
@@ -1345,7 +1347,7 @@ def recover_stale(conn: sqlite3.Connection, now: datetime | None = None, *, user
             continue  # its attempt is still being worked: only the run's own heartbeat went quiet
         outcome, body = _stopped_run(run["kind"], claims)
         with conn:
-            done = _finish_run_tx(conn, run["id"], outcome=outcome, clean=False, plan_hash=None, stamp=_stamp(now),
+            done = _finish_run_tx(conn, run["id"], outcome=outcome, clean=False, plan_hash=None, stamp=stamp_now(now),
                                   reasons=["The app stopped during this run"])
         if done:
             counts["runs_failed"] += 1
@@ -1378,7 +1380,7 @@ def students_to_watch(conn: sqlite3.Connection, now: datetime | None = None) -> 
     submitted claim still being watched, however old (the watch ends one past its 14 days as not watched), or whose
     stage is not recorded yet; or a run still 'running'.
     """
-    since = _iso(_at(now) - timedelta(days=WATCH_DAYS))
+    since = iso_utc(at_utc(now) - timedelta(days=WATCH_DAYS))
     rows = conn.execute(
         """
         SELECT user_id FROM application_submit_claims WHERE state IN ('claimed', 'clicking')
@@ -1436,11 +1438,11 @@ def run_worker_step(
         for row in conn.execute("SELECT id FROM users ORDER BY id").fetchall():
             user_id = str(row[0])
             try:
-                if _purged_today(conn, user_id, _at(now)):
+                if _purged_today(conn, user_id, at_utc(now)):
                     continue
                 purge_evidence(conn, now=now, apply_root=apply_root, user_id=user_id)
                 with conn:
-                    put_setting(conn, user_id, PURGE_LAST_RUN_KEY, _iso(_at(now)), _stamp(now))
+                    put_setting(conn, user_id, PURGE_LAST_RUN_KEY, iso_utc(at_utc(now)), stamp_now(now))
                 report["purged"].append(user_id)
                 _record_runner(conn, user_id, ok=True, component=RETENTION_COMPONENT)
             except Exception as exc:  # noqa: BLE001
@@ -1504,11 +1506,11 @@ def purge_evidence(
     old. Only files inside ``apply_root`` are ever deleted, and never anything directly in it (the hash key lives
     there). ``user_id`` limits it to one student's rows and folder.
     """
-    moment = _at(now)
+    moment = at_utc(now)
     root = apply_root.resolve()
     scope, args = ("AND user_id=?", (user_id,)) if user_id else ("", ())
     counts = {"apply_screenshots_removed": 0, "apply_orphan_files_removed": 0, "apply_progress_trimmed": 0}
-    old = _iso(moment - timedelta(days=evidence_days()))
+    old = iso_utc(moment - timedelta(days=evidence_days()))
     for row in conn.execute(
         f"SELECT id, screenshots_json FROM apply_runs WHERE started_at<? AND screenshots_json<>'[]' {scope}", (old, *args),
     ).fetchall():
@@ -1531,7 +1533,7 @@ def purge_evidence(
                 conn.execute("UPDATE apply_runs SET screenshots_json=? WHERE id=?", (_dumps(shots), row["id"]))
             counts["apply_screenshots_removed"] += removed
     counts["apply_orphan_files_removed"] = _remove_orphans(conn, root, user_id, now)
-    trim = _iso(moment - timedelta(days=PROGRESS_KEEP_DAYS))
+    trim = iso_utc(moment - timedelta(days=PROGRESS_KEEP_DAYS))
     for row in conn.execute(
         f"SELECT id, progress_json FROM apply_runs WHERE status='finished' AND started_at<? AND progress_json<>'[]' {scope}", (trim, *args),
     ).fetchall():
@@ -1562,7 +1564,7 @@ def _remove_orphans(conn: sqlite3.Connection, root: Path, user_id: str | None, n
             stored = str(shot.get("path") or "") if isinstance(shot, dict) else ""
             if stored:
                 referenced.add(_screenshot_file(root, stored).resolve())
-    fresh = (_at(now) - HELD_HEARTBEAT).timestamp()
+    fresh = (at_utc(now) - HELD_HEARTBEAT).timestamp()
     removed = 0
     for folder in folders:
         if not folder.is_dir():
@@ -1717,7 +1719,7 @@ def set_ats_label(
     text = " ".join(str(label or "").split())
     if not text or len(text) > 200:
         raise ValueError("An option label is 1 to 200 characters")
-    stamp = _stamp(now)
+    stamp = stamp_now(now)
     with conn:
         conn.execute(
             "INSERT INTO apply_ats_labels(user_id, ats, field, label, confirmed_at) VALUES(?, ?, ?, ?, ?) "

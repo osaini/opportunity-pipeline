@@ -133,6 +133,28 @@ class WatchCase(ApplyCase):
         return {**dict.fromkeys(apply_watch.WATCH_COUNTS, 0), **changed}
 
 
+class OneCopyOfTheTimeHelpersTests(unittest.TestCase):
+    """The watch and the security-code reader format instants with runs.py's helpers, not copies of their own (AGENTS.md section 8, rules 3 and 6)."""
+
+    def test_neither_module_defines_a_copy_and_every_caller_uses_the_runs_helpers(self):
+        from opportunity_app.apply import runner as apply_runner, security_code as apply_security_code
+
+        for module in (apply_watch, apply_security_code):
+            for name in ("_at", "at_utc", "stamp_now", "iso_utc", "_stamp", "_iso"):
+                self.assertFalse(hasattr(module, name), f"{module.__name__} still has {name}")
+        for module in (apply_watch, apply_security_code, apply_runner):
+            self.assertTrue(hasattr(module, "apply_runs"), module.__name__)
+
+    def test_the_helpers_format_one_instant_one_way_whatever_the_zone_it_arrives_in(self):
+        moment = datetime(2026, 10, 8, 9, 30, 15, 123456, tzinfo=timezone(timedelta(hours=-5)))
+        self.assertEqual(apply_runs.iso_utc(moment), "2026-10-08T14:30:15.123456+00:00")
+        self.assertEqual(apply_runs.stamp_now(moment), apply_runs.iso_utc(moment))
+        self.assertEqual(apply_runs.at_utc(moment), moment)
+        self.assertEqual(apply_runs.at_utc(moment).utcoffset(), timedelta(0))
+        # With no time given, a write gets utc_now's stamp, which is never repeated in this process.
+        self.assertNotEqual(apply_runs.stamp_now(None), apply_runs.stamp_now(None))
+
+
 # --- What confirms ---------------------------------------------------------------------------
 
 

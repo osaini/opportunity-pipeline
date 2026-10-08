@@ -1136,7 +1136,7 @@ class RetentionTests(ApplyCase):
         self.assertTrue(working.is_dir(), "a run is working in it")
         self.assertFalse(idle.exists(), "nothing is working in this one, and it is empty")
         # Once that run has finished, the next purge may take the folder if nothing is in it.
-        self.conn.execute("UPDATE apply_runs SET status='finished', outcome='failed', finished_at=? WHERE opportunity_id='op-working'", (apply_runs._iso(self.at()),))
+        self.conn.execute("UPDATE apply_runs SET status='finished', outcome='failed', finished_at=? WHERE opportunity_id='op-working'", (apply_runs.iso_utc(self.at()),))
         self.conn.commit()
         apply_runs.purge_evidence(self.conn, apply_root=apply_root, now=self.at())
         self.assertFalse(working.exists())
