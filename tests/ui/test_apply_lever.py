@@ -7,10 +7,13 @@ reaches Lever and no browser is opened by the app. There is no window action for
 from __future__ import annotations
 
 import httpx
+from opportunity_app.apply import preflight as apply_preflight
 from axe_core_python.sync_playwright import Axe
 from playwright.sync_api import expect
 
-from apply_fake_ats import LEVER_COMPANY, LEVER_URL
+import apply_fake_ats
+import pytest
+from apply_fake_ats import LEVER_COMPANY, LEVER_ROLE_ID, LEVER_URL
 from conftest import OWNER_TOKEN, wait_for_results
 from ui_helpers import AXE_OPTIONS, db, open_saved_role
 
@@ -64,6 +67,40 @@ def test_a_saved_lever_role_shows_what_is_missing_and_offers_no_window_action(le
     violations = Axe().run(owner_page, context=".apply-for-me", options=AXE_OPTIONS).get("violations", [])
     assert not violations, [(item["id"], item["help"]) for item in violations]
     assert tracker_rows(live_server) == before, "opening the section wrote nothing: no application, no interaction, no run, no claim"
+
+
+@pytest.fixture
+def required_location(lever_ready, live_server, monkeypatch):
+    """The Lever page whose current location is required (the student has no Lever option for it yet), for a role that names it.
+
+    The server keeps a page for an hour per posting, so the cache is switched off here: an earlier test's page would be served again.
+    """
+    monkeypatch.setattr(apply_preflight.SchemaCache, "get", lambda self, key: None)
+    monkeypatch.setattr(apply_preflight.SchemaCache, "put", lambda self, key, listing: None)
+    original = dict(apply_fake_ats.CANNED)
+    apply_fake_ats.CANNED["lever_page"] = "many_cards.html"
+    with db(live_server) as conn, conn:
+        conn.execute("UPDATE opportunities SET company='Orbital Ledger', title='Operations Associate' WHERE id=?", (LEVER_ROLE_ID,))
+    yield
+    apply_fake_ats.CANNED.clear()
+    apply_fake_ats.CANNED.update(original)
+
+
+def test_a_required_lever_location_is_saved_for_lever_and_never_looked_up(required_location, owner_page, live_server):
+    open_saved_role(owner_page, "Orbital Ledger")
+    section = owner_page.locator(".apply-for-me")
+    expect(section).to_be_visible()
+    location = section.locator('[data-apply-key="location"]')
+    expect(location).to_contain_text("Choose your current location")
+    # Lever's list is only read from its own form, which comes later: the type-it-yourself box has no Look up options beside it.
+    expect(location.get_by_role("button", name="Save this option")).to_be_visible()
+    expect(location.get_by_role("button", name="Look up options")).to_have_count(0)
+    expect(section.get_by_role("button", name="Look up options")).to_have_count(0)
+    location.get_by_label("Exact option, as the form lists it").fill("Austin, Texas, United States")
+    location.get_by_role("button", name="Save this option").click()
+    expect(section.locator('[data-apply-key="location"]').get_by_text("Choose your current location")).to_have_count(0)
+    with db(live_server) as conn:
+        assert [tuple(row) for row in conn.execute("SELECT ats, field, label FROM apply_ats_labels")] == [("lever", "location", "Austin, Texas, United States")]
 
 
 def test_the_greenhouse_role_beside_it_still_offers_both_window_actions(lever_ready, owner_page):

@@ -495,10 +495,11 @@ class FakeLeverPageClient:
     Tests, the sandbox and the UI suite pass it as ``apply_page_client_factory``. ``fetch(site, job_id, host)`` is the real client's
     call (apply.schema_client.LeverPageClient): it returns the page's HTML, or None for a 404. By default it answers the one fictional
     posting; ``any_posting`` answers every site and posting with the page, which a sandbox that seeds its own roles uses.
-    ``pages`` maps a posting's ``site/job_id`` to a fixture name so a test can serve different pages.
+    ``pages`` maps a posting's ``site/job_id`` to a fixture name so a test can serve different pages. With no ``page``, the fixture named by
+    ``CANNED["lever_page"]`` is served (the in-process UI suite sets it), else the demo page.
     """
 
-    def __init__(self, *, page: str = "demo_eeo_survey.html", closed: bool = False, unavailable: bool = False, any_posting: bool = False,
+    def __init__(self, *, page: str | None = None, closed: bool = False, unavailable: bool = False, any_posting: bool = False,
                  pages: dict[str, str] | None = None) -> None:
         self.page = page
         self.closed = closed
@@ -519,7 +520,7 @@ class FakeLeverPageClient:
         if key in self.pages:
             return lever_fixture_text(self.pages[key])
         if self.any_posting or (site, job_id) == (LEVER_SITE, LEVER_JOB_ID):
-            return lever_fixture_text(self.page)
+            return lever_fixture_text(self.page or CANNED.get("lever_page") or "demo_eeo_survey.html")
         return None
 
     __call__ = fetch
@@ -550,7 +551,8 @@ def seed_lever_role(conn: Any, user_id: str, *, saved: bool = True, role_id: str
 # app says no to the hand-over), failed_4xx, or hang_after_hand_over. "after_front" (optional) ends the wait that many seconds
 # after the first request to bring the window forward, so a test of that request waits for it rather than racing a fixed wait.
 # "letter_required" makes the listing's cover letter a required question, so a test can see what the page does with and without an approved letter.
-CANNED: dict[str, Any] = {"hang": False, "outcome": "rehearsed", "step_delay": 0.3, "handoff": {"wait": 1.5, "outcome": "submitted"}, "letter_required": False}
+# "lever_page" is the Lever fixture a ``FakeLeverPageClient`` made without a ``page`` serves (empty: the demo page).
+CANNED: dict[str, Any] = {"lever_page": "", "hang": False, "outcome": "rehearsed", "step_delay": 0.3, "handoff": {"wait": 1.5, "outcome": "submitted"}, "letter_required": False}
 HANDOFF_OUTCOMES = ("submitted", "unconfirmed", "security_code", "refused", "failed_4xx", "hang_after_hand_over")
 STOPPED_TEXT = STOPPED
 NO_OPTIONS_TEXT = "No options came back for what you typed"
