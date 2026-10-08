@@ -1986,11 +1986,13 @@ class HandoffTests(HandoffCase):
                 self.assertEqual(run.steps, ["open"], "the form was read or filled")
                 self.assertSent_nothing(run)
                 self.assertEqual(run.link.ready_messages, [])
+                self.assertEqual(run.result.evidence["handoff_end"], "board", "a property of the board, which a second try meets again")
 
     def test_an_upload_on_attach_without_the_marker_stops_the_run(self):
         run = self.handoff("upload_on_attach_unmarked")
         self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [HANDOFF_S3]))
         self.assertEqual(run.result.evidence["upload_refused"], {"host": "example-robotics-uploads.s3.amazonaws.com", "rule": "s3_upload"})
+        self.assertEqual(run.result.evidence["handoff_end"], "board", "a board that uploads on attach is a property of the board, not something the student did")
         self.assertEqual(run.link.ready_messages, [])
         self.assertSent_nothing(run)
 
@@ -2050,6 +2052,7 @@ class HandoffTests(HandoffCase):
         sources = fakes.full_sources(extra_answers=(answer("Leave this empty", "a bot would fill this in"),))
         run = self.handoff(student="do_nothing", schema=apply_policy.parse_schema(listing), sources=sources)
         self.assertEqual((run.result.outcome, run.result.reasons), ("needs_you", [HANDOFF_HIDDEN.format(question="Leave this empty")]))
+        self.assertEqual(run.result.evidence["handoff_end"], "board")
         self.assertNotIn("fill", run.steps, "a field was typed into before the hidden one was found")
         self.assertEqual(run.link.ready_messages, [])
         self.assertSent_nothing(run)

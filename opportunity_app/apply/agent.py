@@ -384,7 +384,10 @@ class ClickRefused(RuntimeError):
 
 
 class _Stop(Exception):
-    """The run ends here, with this outcome and this sentence. Never carries a value. ``end`` is a handoff's ``handoff_end``."""
+    """The run ends here, with this outcome and this sentence. Never carries a value. ``end`` is a handoff's ``handoff_end``.
+
+    "board" is a stop on a property of the board itself (no submit address the app knows, a board that uploads on attach, a hidden
+    field): trying again meets it again, so the page does not offer Finish in browser again for it."""
 
     def __init__(self, outcome: str, reason: str, end: str = "") -> None:
         super().__init__(outcome)
@@ -1462,7 +1465,7 @@ class ApplyAgent:
             if self._early:
                 raise _Stop("needs_you", HANDOFF_EARLY, "early")
             if self._upload_refused:
-                raise _Stop("needs_you", HANDOFF_S3, "upload")
+                raise _Stop("needs_you", HANDOFF_S3, "board")
             if self._closed():
                 raise _Stop("failed", WINDOW_CLOSED, "closed")
         if self._cancel_requested():
@@ -1661,9 +1664,9 @@ class ApplyAgent:
             # Before any input. On a board whose submit address is not the one the request rules know, every Submit would be
             # stopped: safe, and useless.
             if not (submit_path and confirmation_path and submit_host == SUBMIT_HOST):
-                raise _Stop("needs_you", HANDOFF_NO_LOADER)
+                raise _Stop("needs_you", HANDOFF_NO_LOADER, "board")
             if uploads:
-                raise _Stop("needs_you", HANDOFF_S3)
+                raise _Stop("needs_you", HANDOFF_S3, "board")
         else:
             if not (submit_path and confirmation_path):
                 self._reasons.append(NO_LOADER)
@@ -1841,7 +1844,7 @@ class ApplyAgent:
         for problem in self._join_problems:
             entry = raw.get(problem["key"])
             if problem["kind"] == "hidden_control" and entry is not None and _source_kind(entry) != "none":
-                raise _Stop("needs_you", HANDOFF_HIDDEN.format(question=problem["question"] or self._question(problem["key"])))
+                raise _Stop("needs_you", HANDOFF_HIDDEN.format(question=problem["question"] or self._question(problem["key"])), "board")
         for key, entry in raw.items():
             if key in self._overrides:
                 continue

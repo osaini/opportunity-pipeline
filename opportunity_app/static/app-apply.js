@@ -1026,7 +1026,7 @@
 
   // What a finished (or stalled) rehearsal or Finish in browser run found: in words, from the run's row. The table says what was
   // done with each question and where the answer came from; the Answer column, when it arrives, is a separate read (setValues).
-  function applyResultPanel(view, { startAgain, finish, notNow, onMarked, settle, stale }) {
+  function applyResultPanel(view, { startAgain, finish, notNow, onMarked, settle, stale, postingUrl }) {
     const handoff = view.kind === "handoff";
     const node = element("div", "apply-result");
     const title = element("h4", "apply-result-title", view.summary);
@@ -1099,8 +1099,11 @@
     if (handoff) {
       // Nothing more to start for an application that went, or may have; one that was stopped or never sent can be tried again.
       // The claim says it when there is one: a stopped claim (including one the student released with "It didn't go through") can be tried again.
+      // A run that stopped on a property of the board (no submit address the app knows, a board that uploads on attach, a hidden field)
+      // would stop the same way again, so the posting is offered instead (the server says so in finish_again).
       const sent = view.claim ? view.claim.status !== "stopped" : ["submitted", "unconfirmed"].includes(view.outcome);
-      if (!sent) next.appendChild(finish());
+      if (!sent && view.finish_again !== false) next.appendChild(finish());
+      else if (!sent && postingUrl) next.appendChild(externalLink(postingUrl, "Open the posting ↗", { className: "secondary-button" }));
     } else {
       next.append(finish(), notNow(), startAgain());
     }
@@ -1427,6 +1430,7 @@
           onMarked: (fresh) => show(fresh, false),
           settle: (path, body) => settleClaim(view, path, body),
           stale,
+          postingUrl: item.url,
         });
         rehearse.appendChild(result.node);
         if (focus) result.focus();

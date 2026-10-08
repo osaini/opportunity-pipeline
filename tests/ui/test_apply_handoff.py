@@ -379,6 +379,24 @@ def test_stop_during_the_turn_ends_it_and_offers_finish_in_browser_again(apply_r
         assert conn.execute("SELECT stage FROM applications WHERE opportunity_id=?", (opportunity_id(live_server),)).fetchone()[0] == "applying"
 
 
+def test_a_run_that_stopped_on_a_property_of_the_board_offers_the_posting_and_not_finish_in_browser_again(apply_ready, owner_page, live_server, canned_agent):
+    handoff(canned_agent, outcome="no_loader")
+    section = open_section(owner_page)
+    start_finish(section)
+    result = section.locator(".apply-result")
+    expect(result.locator(".apply-result-title")).to_contain_text("Apply from the posting instead", timeout=30_000)
+    expect(result.get_by_role("button", name="Finish in browser")).to_have_count(0)
+    link = result.get_by_role("link", name=re.compile("Open the posting"))
+    expect(link).to_be_visible()
+    assert link.get_attribute("href") == apply_fake_ats_posting_url(live_server)
+    assert link.get_attribute("rel") == "noopener noreferrer"
+
+
+def apply_fake_ats_posting_url(live_server):
+    with db(live_server) as conn:
+        return conn.execute("SELECT url FROM opportunities WHERE company='Acme Robotics'").fetchone()[0]
+
+
 def test_a_run_that_may_have_been_sent_says_so_and_it_went_through_follows_to_the_card(apply_ready, owner_page, live_server, canned_agent):
     handoff(canned_agent, wait=1.5, outcome="unconfirmed")
     section = open_section(owner_page)

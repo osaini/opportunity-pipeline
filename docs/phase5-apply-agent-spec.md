@@ -2017,6 +2017,12 @@ spec left a choice open:
 - **A posting that differs from the saved role** needs the student's tick (`posting_confirmed`) before Finish in browser.
 - **A pause does not stop a Finish in browser window**, and the pause reply and the health card say so.
 - **Failed outcomes name the field, never the page's error text**, so a value the student typed cannot reach a note.
+- **Finish in browser is offered again only where a second try can differ (2026-10-08).** A run that stops before the turn on a
+  property of the board itself (no submit address the app knows, a board that uploads on attach, a hidden field the app would have
+  filled) records `handoff_end` "board". The run view carries `handoff_end` and `finish_again`; the result panel offers Finish in
+  browser again only when `finish_again` is true (the turn ended by Stop, the closed window, the clock, a refused or early press,
+  a send to another address or an upload the student's page made, a crashed window, an attempt the student released, or a run with
+  no report from the browser at all) and otherwise offers "Open the posting". It costs no limit either way.
 - **Open question Q4, answered 2026-10-08** (the plan called it Q1, but Q1 in section 13 was already taken; Q4 is listed there too).
   Does Greenhouse's security-code widget submit by itself when its eighth character is typed? No recording of the live widget exists.
   The owner decided that it does not matter: the app types the code and the code POST waits for the student's press, whenever the

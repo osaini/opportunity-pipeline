@@ -1702,6 +1702,12 @@ _SOURCE_TEXT = {
 }
 # The phases of a Finish in browser run that is still running (the last progress step names it), else "filling".
 _HANDOFF_PHASES = ("your_turn", "submitting", "security_code", "code_typed", "code_yours", "challenge")
+# How a Finish in browser run ended (``evidence.handoff_end``) when trying again can come out differently: the student or the clock ended the
+# turn, or what the student did in the window was stopped; "posted" is there for the attempt the student released with "It didn't go through"
+# (the page asks only when the claim is stopped). "board" (a property of the board itself) and any other stop are met again, so the
+# page offers the posting instead. A run with no report from the browser at all (the app's own process failed) is the board's doing no more
+# than the student's, and is offered again.
+_FINISH_AGAIN_ENDS = frozenset({"stopped", "closed", "timeout", "refused", "early", "elsewhere", "upload", "crashed", "posted"})
 _SAYS_NOT_SENT = re.compile(r"not sent|nothing was sent|no application was sent", re.IGNORECASE)
 
 
@@ -1896,6 +1902,13 @@ def _claim_facts(conn: sqlite3.Connection, row: Mapping[str, Any]) -> tuple[dict
     return card, str(fact["state"]), bool(fact["after_click"]), bool(fact["cancel_requested"])
 
 
+def _finish_again(handoff: bool, evidence: Mapping[str, Any]) -> bool:
+    """Whether the page should offer Finish in browser again after this run, if its application is not one that went or may have (see ``_FINISH_AGAIN_ENDS``)."""
+    if not handoff:
+        return False
+    return "handoff_end" not in evidence or evidence.get("handoff_end") in _FINISH_AGAIN_ENDS
+
+
 def _handoff_phase(progress: list[dict[str, Any]], card: Mapping[str, Any] | None, claim_state: str) -> str:
     """Where a running Finish in browser run is: filling, the student's turn, submitting, or one of the code steps.
 
@@ -1996,7 +2009,10 @@ def run_view(
         "review": row["review"] or "", "review_note": row["review_note"] or "", "reviewed_at": row["reviewed_at"],
         "can_review": reviewable(row),
         "can_cancel": bool(can_cancel),
-        "phase": phase, "handed_over": bool(handoff and (after_click or evidence.get("handoff_end") == "posted")), "left_for_you": left, "handoff_until": str(until) if isinstance(until, str) and until and running else None,
+        "phase": phase, "handed_over": bool(handoff and (after_click or evidence.get("handoff_end") == "posted")),
+        "handoff_end": str(evidence.get("handoff_end") or "") if handoff else "",
+        "finish_again": _finish_again(handoff, evidence),
+        "left_for_you": left, "handoff_until": str(until) if isinstance(until, str) and until and running else None,
         "page_defaults": defaults, "claim": card, "can_front": can_front,
     }
 

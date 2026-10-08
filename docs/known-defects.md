@@ -18,7 +18,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | --- | ---: | ---: | ---: | ---: |
 | Frontend (web UI) | 0 | 5 | 3 | 8 |
 | Browser extension | 0 | 1 | 0 | 1 |
-| Apply for me | 0 | 4 | 6 | 10 |
+| Apply for me | 0 | 4 | 5 | 9 |
 | Mail, Gmail and inboxes | 0 | 4 | 9 | 13 |
 | Outreach drafting, research, forms and CLI | 0 | 6 | 3 | 9 |
 | Agents and notifications | 0 | 1 | 1 | 2 |
@@ -26,7 +26,7 @@ When you fix a defect, delete its entry in the same change and name it in the PR
 | Scoring, scheduling and configuration | 1 | 2 | 6 | 9 |
 | Packaging and docs | 0 | 2 | 1 | 3 |
 | Test tooling | 0 | 0 | 2 | 2 |
-| **Total** | **1** | **29** | **32** | **62** |
+| **Total** | **1** | **29** | **31** | **61** |
 
 ## Start here: the high-severity entries
 
@@ -169,13 +169,6 @@ The first three were left open by PR #54 (the fail-closed net) and recorded here
 - **What happens:** The request guard looks for the values the app planned and typed (plain, URL-encoded, base64 and escaped forms). A field the app left for the student, and any answer the student types or changes in the window, is not in that set, so a page script that sends it in a request to another address is not stopped. After the press, reads from `job-boards.greenhouse.io` and `boards.greenhouse.io` are not checked (the confirmation page loads from there); every other address still is.
 - **Suggested fix:** None that is cheap: guarding what the student types means reading the form's values in the window, which the app does not do. State it in the student-facing documents (done) and keep the boards' own addresses the only exemption.
 - **Regression suite:** tests/test_apply_checks.py (`test_in_a_handoff_a_get_to_another_host_is_guarded_after_the_press_too`)
-
-### A Finish in browser run that stopped on a property of the board still offers Finish in browser again, and it stops the same way
-- **Severity:** low (found 2026-10-03, review of Finish in browser, M5b part 2)
-- **Where:** `opportunity_app/static/app-apply.js` `applyResultPanel` (`sent` is false for every claim card status "stopped"); `opportunity_app/apply/runner.py` `handoff_settlement` rows 11 and 13; `opportunity_app/apply/preflight.py` `_eligibility`
-- **What happens:** A handoff that ends before the hand-over because of the board itself (no loader submit path, `HANDOFF_NO_LOADER`; a board that uploads on attach, `HANDOFF_S3`; a control the app cannot find, `HANDOFF_HIDDEN`) settles `needs_you` with `after_click` 0, which the card calls "stopped". The result panel then offers Finish in browser under a heading that ends "Apply from the posting instead". Nothing in the pre-start check knows these properties, so a second start opens a window, fills nothing and stops with the same sentence, and adds another `apply_agent_started` timeline event. It costs no limit (a stopped attempt that sent nothing is released) and sends nothing. The plan says "stopped: the note and Finish in browser again" with no exceptions, so the code does what the plan says.
-- **Suggested fix:** Offer Finish in browser again only when the run's `handoff_end` says the student or the clock ended the turn (`stopped`, `closed`, `timeout`, `refused`, `early`); otherwise show only the posting link. `HANDOFF_ELSEWHERE` and `HANDOFF_UPLOAD` can follow from what the student did in the window, so a retry for those is reasonable.
-- **Regression suite:** tests/ui/test_apply_handoff.py (a run that ends `HANDOFF_NO_LOADER` shows no Finish in browser button) and tests/test_apply_handoff.py (the view's `handoff_end`)
 
 ### The Greenhouse embed form is never used when a posting redirects to the company's own site
 - **Severity:** low (found 2026-10-04, comparison with another project's ATS notes)

@@ -1206,7 +1206,7 @@ class ViewTests(RunnerCase):
         keys = {"id", "opportunity_id", "kind", "status", "outcome", "clean", "started_at", "finished_at", "heartbeat_at", "deadline_at", "stalled",
                 "summary", "measured", "progress", "reasons", "problems", "fields", "options", "lookup", "screenshots", "refused_count",
                 "review", "review_note", "reviewed_at", "can_review", "can_cancel",
-                "phase", "handed_over", "left_for_you", "handoff_until", "page_defaults", "claim", "can_front"}
+                "phase", "handed_over", "handoff_end", "finish_again", "left_for_you", "handoff_until", "page_defaults", "claim", "can_front"}
         for view in (self.make(), self.make(outcome="rehearsed"), self.make("lookup", outcome="looked_up")):
             self.assertEqual(set(view), keys)
 
@@ -1343,6 +1343,24 @@ class ViewTests(RunnerCase):
             with self.subTest(outcome=outcome, end=evidence["handoff_end"]):
                 self.assertEqual(self.make("handoff", outcome=outcome, plan=plan, evidence=evidence)["handed_over"], expected)
         self.assertFalse(self.make(outcome="rehearsed", plan=plan)["handed_over"])
+
+    def test_finish_in_browser_is_offered_again_only_when_the_student_or_the_clock_ended_the_turn(self):
+        plan = self.plan()
+        offered = ("stopped", "closed", "timeout", "refused", "early", "elsewhere", "upload", "crashed")
+        for end in offered:
+            with self.subTest(end=end):
+                view = self.make("handoff", outcome="needs_you", plan=plan, evidence={"handoff_end": end})
+                self.assertEqual((view["handoff_end"], view["finish_again"]), (end, True))
+        for end in ("board", ""):
+            with self.subTest(end=end):
+                view = self.make("handoff", outcome="needs_you", plan=plan, evidence={"handoff_end": end})
+                self.assertEqual((view["handoff_end"], view["finish_again"]), (end, False), "a stop on a property of the board is met again")
+        # A run the app's own process failed (no report from the browser at all) is not the board's doing: try again.
+        self.assertTrue(self.make("handoff", outcome="failed", plan=plan, evidence={})["finish_again"])
+        # After the press went on the page asks only when the student released the attempt ("It didn't go through"), which it reads from the claim.
+        self.assertTrue(self.make("handoff", outcome="unconfirmed", plan=plan, evidence={"handoff_end": "posted"})["finish_again"])
+        # A rehearsal or lookup has no Finish in browser to offer.
+        self.assertFalse(self.make(outcome="rehearsed", plan=plan)["finish_again"])
 
     def test_a_rehearsal_reads_with_its_sentences_its_problems_and_a_value_free_table(self):
         join = [{"kind": "hidden_control", "key": "spam", "message": "The form hides this field", "question": "Spam", "required": False}]

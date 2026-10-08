@@ -559,6 +559,12 @@ class CannedAgent:
         stopped = RunResult("needs_you", [HANDOFF_NOT_SUBMITTED], plan=entries, plan_hash=plan_hash, handed_over=False, after_click=False,
                             evidence={**evidence, "handoff_end": "stopped"})
         self.on_progress("open", PROGRESS_STEPS["open"])
+        if self.handoff.get("outcome") == "no_loader":
+            # A property of the board: the form sends applications somewhere the app does not know. Stops before any input, as the real agent does.
+            from opportunity_app.apply.agent_types import HANDOFF_NO_LOADER
+
+            return RunResult("needs_you", [HANDOFF_NO_LOADER], plan=entries, plan_hash=plan_hash, handed_over=False, after_click=False,
+                             evidence={**evidence, "handoff_end": "board"})
         filling = sum(1 for entry in entries if entry["disposition"] == "fill")
         for step, text in (("read", PROGRESS_STEPS["read"]), ("fill", PROGRESS_STEPS["fill"].format(n=filling)),
                            ("check", PROGRESS_STEPS["check"]), ("picture", PROGRESS_STEPS["picture"])):
