@@ -1056,8 +1056,8 @@ LEVER_SCENARIOS = (
 )
 # What POST /parseResume does:
 LEVER_PARSE_MODES = (
-    "success",            # the canned profile, after ``parse_delay_s``
-    "failure",            # 422 and a short JSON error, after ``parse_delay_s``
+    "success",            # the canned profile (the page applies it after ``parse_delay_s``, so "working" shows while the agent keeps acting)
+    "failure",            # 422 and a short JSON error (the page shows it after ``parse_delay_s``)
     "timeout",            # never answers
     "held",               # answers only when ``release_held()`` is called (a reply that arrives late)
 )
@@ -1144,7 +1144,6 @@ class FakeLever:
         self.pages: dict[tuple[str, str], str] = {}   # (site, id) -> fixture, for other postings
         self.any_posting = False                      # every site and id gets ``page`` (the sandbox)
         self.closed = False                           # the posting is gone: 404
-        self.parse_delay_s = 0.15                     # how long the handler waits before it answers /parseResume
         self.search_status = 200                      # what /searchLocations answers (a 403 for a lookup that is refused)
         self.refused_status = 422                     # the status of "refused_4xx"
         self.server_status = 500                      # the status of "server_5xx"
@@ -1156,6 +1155,7 @@ class FakeLever:
         self.cookie_banner = True
         self.inject: list[str] = []                   # extra page scripts (JS source) added to every form page: a telemetry beacon, a WebSocket
         # Read by the page at load:
+        self.parse_delay_s = 0.15                     # how long the page shows "working" before it applies a /parseResume reply (the reply itself comes at once)
         self.max_upload_bytes = 100 * 1024 * 1024
         self.search_debounce_ms = 500
         self.challenge_during_fill: tuple[float, float] | None = None   # (start, end) seconds after the widget renders: a challenge with nothing pressed
@@ -1373,6 +1373,7 @@ class FakeLever:
     def _page_additions(self) -> str:
         config = {
             "maxUploadBytes": self.max_upload_bytes,
+            "parseDelayMs": int(round(self.parse_delay_s * 1000)),
             "searchDebounceMs": self.search_debounce_ms,
             "challengeDuringFill": list(self.challenge_during_fill) if self.challenge_during_fill else None,
         }
@@ -1403,8 +1404,6 @@ class FakeLever:
             return None
         if self.parse_mode == "held":
             return _HELD
-        if self.parse_delay_s > 0:
-            time.sleep(self.parse_delay_s)
         if self.parse_mode == "failure":
             return Reply(422, json.dumps({"error": "could not read the file"}), "application/json")
         return Reply(200, json.dumps(lever_parse_reply()), "application/json")

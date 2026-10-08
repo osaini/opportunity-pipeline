@@ -153,6 +153,15 @@ class FakeLeverReplyTests(unittest.TestCase):
         self.assertIsNotNone(held)
         self.assertEqual([seen.status for seen in fake.parse_posts()], [200, 422, 0, 0])
 
+    def test_the_parse_delay_is_the_pages_to_keep_and_the_handler_never_sleeps(self):
+        fake = FakeLever()
+        fake.parse_delay_s = 30.0
+        started = time.monotonic()
+        reply = fake.answer("POST", "https://jobs.lever.co/parseResume")
+        self.assertLess(time.monotonic() - started, 5.0)   # the reply is given at once; the page shows "working" for the delay
+        self.assertEqual(reply.status, 200)
+        self.assertIn('"parseDelayMs": 30000', self.get(fake, LEVER_APPLY_URL).body)
+
     def test_the_canned_profile_is_wrong_on_purpose_and_fictional(self):
         reply = lever_parse_reply()
         self.assertEqual(reply["position"], "Night Shift Supervisor")
@@ -367,6 +376,21 @@ class ResumeReaderBrowserTests(FakeLeverBrowserCase):
         self.assertEqual(self.indicators(page), [True, False, False, False])
         page.wait_for_selector(".resume-upload-success", state="visible")
         self.assertEqual(self.indicators(page), [False, True, False, False])
+
+    def test_the_page_keeps_working_while_the_read_is_pending_and_the_reply_overwrites_a_fill_made_meanwhile(self):
+        fake = FakeLever()
+        fake.parse_delay_s = 3.0
+        fake, page = self.open(fake)
+        started = time.monotonic()
+        self.attach(page, wait=False)
+        page.fill('input[name="name"]', "Sam Rivera")   # no blur: not the user's own yet, so the reply may take it
+        page.wait_for_timeout(100)
+        self.assertLess(time.monotonic() - started, 2.0)   # the browser was not held while the read was pending
+        self.assertEqual(self.indicators(page), [True, False, False, False])
+        self.assertEqual(self.values(page, "name")["name"], "Sam Rivera")
+        self.assertEqual(fake.parse_posts()[0].status, 200)   # the reply was given at once
+        page.wait_for_selector(".resume-upload-success", state="visible")
+        self.assertEqual(self.values(page, "name")["name"], lever_parse_reply()["name"])
 
     def test_a_field_the_user_changed_or_pasted_into_is_left_alone(self):
         fake, page = self.open()

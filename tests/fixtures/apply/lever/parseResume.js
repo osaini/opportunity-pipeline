@@ -11,6 +11,9 @@
      only the parser's own field list is protected at all. selectedLocation is not in that list, so every reply
      rewrites it. A field the user emptied again is the parser's to fill.
    - Working, success, failure and oversize are four indicators, one shown at a time.
+   - The reply is applied only once `parseDelayMs` (window.__fakeLever) has passed since the file was sent, as on a live board
+     whose reader takes a while: "working" stays shown and the browser is free meanwhile. The fake answers at once and the page
+     keeps the wait, so nothing blocks the browser. A reply that arrives later than that (parse_mode "held") is applied when it comes.
 
    What the reply looks like is not known (the spec marks it unseen): tests/fixtures/apply/lever/parse_resume_reply.json
    is invented. The `urls[...]` names the parser fills are its own list: a form that calls the field `urls[Github]`
@@ -28,6 +31,7 @@
   var limit = typeof config.maxUploadBytes === "number" ? config.maxUploadBytes : 100 * 1024 * 1024;
   var touched = {};
   var sequence = 0;
+  var delay = typeof config.parseDelayMs === "number" ? config.parseDelayMs : 0;
 
   function control(name) {
     return form.querySelector('[name="' + name + '"]');
@@ -98,11 +102,19 @@
     data.append("resume", file, safeName(file.name));
     data.append("accountId", account ? account.value : "");
     indicator("working");
-    fetch("/parseResume", { method: "POST", body: data, credentials: "same-origin" })
+    var sent = Date.now();
+    var answered = fetch("/parseResume", { method: "POST", body: data, credentials: "same-origin" })
       .then(function (response) {
         if (!response.ok) throw new Error("parse " + response.status);
         return response.json();
-      })
+      });
+    // The reader takes `delay` ms in all, success or failure; a reply that came later than that is applied now.
+    var wait = function () {
+      return new Promise(function (resolve) { setTimeout(resolve, Math.max(0, delay - (Date.now() - sent))); });
+    };
+    answered
+      .then(function (profile) { return wait().then(function () { return profile; }); },
+            function (error) { return wait().then(function () { throw error; }); })
       .then(function (profile) {
         if (mine !== sequence) return;
         apply(profile || {});
