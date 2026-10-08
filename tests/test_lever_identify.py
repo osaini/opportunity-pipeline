@@ -160,7 +160,7 @@ class ConstantsTests(unittest.TestCase):
     def test_what_identify_returns_can_be_turned_back_into_the_same_posting(self):
         for host in LEVER_HOSTS:
             url = canonical_url("acme", JOB, host)
-            self.assertEqual(lever._from_url(url), LeverRef("acme", JOB, host))
+            self.assertEqual(lever.from_url(url), LeverRef("acme", JOB, host))
 
     def test_lever_senders_are_lever_and_its_subdomains_only(self):
         for domain in ("hire.lever.co", "lever.co", "HIRE.LEVER.CO", "hire.lever.co.", "mail.hire.lever.co", "jobs.lever.co"):

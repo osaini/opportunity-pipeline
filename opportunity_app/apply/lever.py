@@ -70,7 +70,7 @@ def canonical_url(site: str, job_id: str, host: str = DEFAULT_HOST) -> str:
     return f"https://{host}/{site}/{job_id}/apply"
 
 
-def _from_url(url: str) -> LeverRef | None:
+def from_url(url: str) -> LeverRef | None:
     try:
         parts = urlsplit(str(url or "").strip())
         port = parts.port
@@ -97,7 +97,7 @@ def identify(conn: sqlite3.Connection, opportunity_id: str) -> LeverRef | None:
     row = conn.execute("SELECT url FROM opportunities WHERE id=?", (opportunity_id,)).fetchone()
     if row is None:
         return None
-    found = _from_url(row[0])
+    found = from_url(row[0])
     if found:
         return found
     sources = conn.execute(
@@ -105,7 +105,7 @@ def identify(conn: sqlite3.Connection, opportunity_id: str) -> LeverRef | None:
         (opportunity_id,),
     ).fetchall()
     for source in sources:
-        found = _from_url(source[0])
+        found = from_url(source[0])
         if found:
             return found
     # The pattern is a parameter, not part of the SQL: a literal % breaks on PostgreSQL, where ? becomes %s.
