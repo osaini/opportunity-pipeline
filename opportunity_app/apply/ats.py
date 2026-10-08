@@ -7,7 +7,8 @@ lives (``canonical_url``), the client that reads its listing, how that listing b
 (``parse_schema``), whether a mail sender is its own (``is_confirmation_sender``), and its request policy
 (``route_policy``: which hosts a page may reach, what counts as the submit POST and as the confirmation page; the rules in
 ``checks`` read it as an argument). Greenhouse and Lever are registered (docs/phase5-lever-handoff-spec.md, 5.2). Lever is read-only
-so far: its form can be read and planned, and its Finish in browser driver does not exist yet (``adapter_built``).
+so far: its form can be read and planned, and its Finish in browser driver (``lever_adapter.LeverAdapter``) is built but reachable only in
+tests, so no run of it starts in the app (``adapter_built``, which LV4 turns on).
 
 ``AtsAdapter`` is the set of methods ``ApplyAgent`` calls on a site's form, so the agent is typed to a shape and not to
 Greenhouse. The adapters themselves live beside the agent (``agent.py``), which is a higher layer than this file.
@@ -65,7 +66,8 @@ class AtsSpec:
     claim_modes: tuple[str, ...] = ("one_click", "handoff", "unattended")
     # The setting (an automation feature) that must be on before Apply for me reads this ATS's roles, besides apply_agent. "" for none.
     switch: str = ""
-    # Whether the agent has a driver for this ATS's form. False means the form can be read and planned and nothing can be filled.
+    # Whether the app starts a browser run for this ATS's form. False means the form can be read and planned and no window opens, in the app: the driver may
+    # exist (Lever's, in ``lever_adapter``) and be exercised by the tests until the milestone that connects it.
     adapter_built: bool = True
 
 
