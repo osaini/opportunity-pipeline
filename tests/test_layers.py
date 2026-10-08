@@ -137,7 +137,7 @@ LAYER_MEMBERS: dict[int, frozenset[str]] = {
     # L3 domain.
     3: (
         _pkg("applications", "actions extension")
-        | _pkg("apply", "ats checks claims classify greenhouse policy sensitive schema_client sessions")
+        | _pkg("apply", "ats checks claims classify greenhouse lever lever_form policy sensitive schema_client sessions")
         | _pkg("automation", "ledger health notifications")
         | _pkg("accounts", "auth employer dossier")
         | _pkg("opportunities", "boards captures market early_programs ingestion purge")

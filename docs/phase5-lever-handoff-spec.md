@@ -168,6 +168,35 @@ Read on 2026-10-04 from six public boards. Each item is something the design rel
 15. **Lever sends the applicant a confirmation email** from the `hire.lever.co` domain **[1-src]**; the application
     inbox rules already list that domain (`applications/mail_rules.py`).
 
+**Note, 2026-10-08 (read again while building the parser; three boards, `leverdemo`, `rover` and `palantir`, GET requests
+only, nothing typed or submitted).** Sections 3 and 5.4 held. The parser follows them, and these are the places where the
+pages say a little more than section 3 did:
+
+- **A required résumé is shown by the star, not by an attribute.** On `rover` and `palantir` the label reads
+  "Resume/CV ✱", and the hidden file input (`#resume-upload-input`, `tabindex="-1"`) has no `required` attribute on any of
+  the three pages. The page's script does the check. The parser therefore reads a fixed field as required when the control
+  has the attribute **or** its label shows the star. Cards still use the attribute only (5.4 item 5), where the JSON and the
+  attribute agreed on all three pages.
+- **`location` can be required** (`palantir`: the attribute and a star), and `phone` is optional there. `org` was optional
+  on `rover` and `palantir` and required on `leverdemo`.
+- **`comments` and `consent[marketing]` have no `application-label`.** `comments` is a `textarea#additional-information`
+  under a `<label for>` that holds an `<h4>` "Additional information". The marketing consent is a `<label>` that wraps a
+  `<span><div>` with the statement, the hidden `0` and the checkbox. The parser takes the label from the `label[for]` and
+  the wrapping `<label>` in those two cases.
+- **An EEO option's label is not always its value.** The veteran select shows "I identify as one or more of the
+  classifications of protected veteran listed above" for the value "I am a Protected Veteran", and the disability decline
+  has the value "I do not want to answer " (trailing space) under the label "I do not want to answer". The parser lists the
+  label, which is what `select_option(label=...)` takes.
+- **`eeo[disabilitySignature]` and its date are not `required` as loaded.** Only answering the disability question makes
+  them required (3.6), by script.
+- **A dropdown's placeholder differs by card** ("Select ...", "Select...", and a sentence beginning "Click Here (If you
+  encounter an issue...") but always has the value `""`, as 5.4 item 5 assumes. A 33-box required `multiple-select` and a
+  3,301-option dropdown (a 600 KB template) both read with nothing unreadable.
+- **`<title>`** was "{Company} - {Role}" on all three, as before. A posting whose role contains " - " is handled by
+  the no-split check in 5.4 item 8.
+- **`GET {hostedUrl}/thanks`** answered 200 with no application form and no `form#application-form`; a posting that does
+  not exist answered 404 with a short page and no form. Neither parses as a form.
+
 ---
 
 ## 4. Decisions the student must make before build
@@ -334,6 +363,14 @@ reason a Lever role can get the read-only check with no browser.
 2. Walk its controls in document order with `html.parser`, never a regex over the whole page (the page is up to
    1.9 MB, mostly script). Collect for each control: `name`, tag, `type`, `required`, `disabled`, the label text of
    its `application-label` or option label, and for `select`, `radio` and `checkbox` the option labels and values.
+   Membership and `disabled` follow HTML, not just the text between the tags: a control with a `form` attribute is in
+   the form only when it names `application-form` (so one outside the element that names it is submitted, and is
+   recorded as an unknown control, and one inside that names another form is not read); a control inside a
+   `fieldset[disabled]` is disabled, except inside that fieldset's first `legend`; and an `application-form` that sits
+   inside another form is not a form the browser builds, so the page has none. More than 100 disabled fieldsets open
+   inside one another, or more than 50 `<label>` elements open inside one another, is a page the parser will not read
+   (it returns none). The walk takes time in proportion to the page: a stray end tag is turned away at once, not found
+   by searching everything still open.
 3. **Standard fields** are recognised by exact name: `resume`, `name`, `email`, `phone`, `location`,
    `selectedLocation`, `org`, `urls[...]`, `pronouns`, `comments`, `opportunityLocationId`, `consent[marketing]` and
    `residentialLocation[...]`. A control with **no name** is never filled and never listed: it is not submitted.
@@ -350,17 +387,24 @@ reason a Lever role can get the read-only check with no browser.
    the JSON `required` equals the DOM `required` **as scanned at load** (the page relaxes it after a tick, 3.11; a card's
    required checkbox group is one question), and every option label in the DOM appears in the JSON options and the
    reverse, **ignoring options with an empty `value`** (the `Select...` placeholder every dropdown starts with, which
-   the JSON does not list). Any mismatch marks the field unreadable.
+   the JSON does not list). An option's label is its `label` attribute when it has one, else its text. For a card or
+   survey choice, every option with a non-empty `value` must also submit the answer it shows: its value, with
+   whitespace collapsed, equals its label (a radio with no `value` submits "on", so it fails). A page that shows one
+   answer and submits another is a page the parser does not understand. The EEO selects and the office select keep a
+   label that is not their value (see the 2026-10-08 note). Any mismatch marks the field unreadable.
 6. **Unknown controls.** A named control outside the families above is recorded with its name and type. If it is
    required the plan lists it as a problem ("Lever's form has a question the app doesn't read: {label}"); if it is
    optional it is left empty and listed as "left for you".
 7. **Page-managed hidden fields** are listed in a constant and never become schema fields: `accountId`, `linkedInData`,
    `origin`, `referer`, `timezone`, `socialReferralKey`, `socialSource`, `resumeStorageId`, `h-captcha-response`,
-   `source`, and every `[baseTemplate]`, `surveyId` and `candidateSelectedLocation`.
+   `source`, and every `[baseTemplate]`, `surveyId` and `candidateSelectedLocation`. This holds when every control under
+   the name is hidden (hCaptcha's answer textarea is the one other exception). A visible control that shares one of these
+   names is a question the page asks, so it is recorded as an unknown control (item 6).
 8. **Posting facts for the "differs from the saved role" tick** come from `<title>`, which was
    `"{Company} - {Role}"` on all six boards read **[live]**. A role can contain " - ", so the check does not split:
-   it requires the saved company and the saved title each to appear in the page title after normalization, and
-   otherwise asks for the student's tick (`posting_confirmed`), as Greenhouse does.
+   it requires the page title, after normalization, to begin with the saved company (as whole words) and to carry the
+   saved title after it. A company named only in the role half is another employer's posting. Otherwise it asks for the
+   student's tick (`posting_confirmed`), as Greenhouse does.
 9. The output is `LeverForm(fields: tuple[SchemaField, ...], posting: {company_title, ...}, unreadable, unknown)`.
    `SchemaField.section` is set so the existing classifier applies (6.6): `standard` for the fixed fields, `custom`
    for cards and surveys, and `demographic` for the four `eeo[...]` names, whose `name` is one of Phase 5's EEOC
