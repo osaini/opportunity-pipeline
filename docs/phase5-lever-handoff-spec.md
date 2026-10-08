@@ -363,6 +363,12 @@ reason a Lever role can get the read-only check with no browser.
 2. Walk its controls in document order with `html.parser`, never a regex over the whole page (the page is up to
    1.9 MB, mostly script). Collect for each control: `name`, tag, `type`, `required`, `disabled`, the label text of
    its `application-label` or option label, and for `select`, `radio` and `checkbox` the option labels and values.
+   Membership and `disabled` follow HTML, not just the text between the tags: a control with a `form` attribute is in
+   the form only when it names `application-form` (so one outside the element that names it is submitted, and is
+   recorded as an unknown control, and one inside that names another form is not read); a control inside a
+   `fieldset[disabled]` is disabled, except inside that fieldset's first `legend`; and an `application-form` that sits
+   inside another form is not a form the browser builds, so the page has none. More than 100 disabled fieldsets open
+   inside one another is a page the parser will not read (it returns none).
 3. **Standard fields** are recognised by exact name: `resume`, `name`, `email`, `phone`, `location`,
    `selectedLocation`, `org`, `urls[...]`, `pronouns`, `comments`, `opportunityLocationId`, `consent[marketing]` and
    `residentialLocation[...]`. A control with **no name** is never filled and never listed: it is not submitted.
@@ -383,7 +389,7 @@ reason a Lever role can get the read-only check with no browser.
    survey choice, every option with a non-empty `value` must also submit the answer it shows: its value, with
    whitespace collapsed, equals its label (a radio with no `value` submits "on", so it fails). A page that shows one
    answer and submits another is a page the parser does not understand. The EEO selects and the office select keep a
-   label that is not their value (3.6). Any mismatch marks the field unreadable.
+   label that is not their value (see the 2026-10-08 note). Any mismatch marks the field unreadable.
 6. **Unknown controls.** A named control outside the families above is recorded with its name and type. If it is
    required the plan lists it as a problem ("Lever's form has a question the app doesn't read: {label}"); if it is
    optional it is left empty and listed as "left for you".

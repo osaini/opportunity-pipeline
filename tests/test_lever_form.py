@@ -159,6 +159,77 @@ class NoFormTests(unittest.TestCase):
         self.assertEqual([item.name for item in parse_lever_form(text).fields], ["email"])
 
 
+class FormMembershipTests(unittest.TestCase):
+    """5.4 item 2, as a browser would read it: which controls the form submits, and which of them are turned off."""
+
+    def test_a_control_in_a_disabled_fieldset_is_turned_off(self):
+        text = card_page([question("text", "Q?")], ['<fieldset disabled><div>', text_control(0), '</div></fieldset>'])
+        form = parse_lever_form(text)
+        self.assertEqual((form.fields, [item.reason for item in form.unreadable]), ((), ["the page has turned this question off"]))
+        fixed = parse_lever_form(page('<fieldset disabled><input name="name" type="text"></fieldset><input name="email" type="email">'))
+        self.assertEqual([item.name for item in fixed.fields], ["email"])
+        self.assertEqual([(item.name, item.disabled) for item in fixed.unknown], [("name", True)])
+
+    def test_a_disabled_fieldset_closes_and_what_follows_it_is_not_turned_off(self):
+        text = card_page([question("text", "Q?")], ['<fieldset disabled><input name="name" type="text"></fieldset>', text_control(0)])
+        form = parse_lever_form(text)
+        self.assertEqual([item.name for item in form.fields], [name_of(0)])
+
+    def test_the_first_legend_of_a_disabled_fieldset_is_not_turned_off_but_a_second_one_is(self):
+        form = parse_lever_form(page(
+            '<fieldset disabled><legend><input name="name" type="text"></legend><legend><input name="email" type="email"></legend>'
+            '<input name="phone" type="text"></fieldset>'))
+        self.assertEqual([item.name for item in form.fields], ["name"])
+        self.assertEqual(sorted(item.name for item in form.unknown), ["email", "phone"])
+
+    def test_a_nested_fieldset_stays_turned_off_with_its_parent(self):
+        form = parse_lever_form(page('<fieldset disabled><fieldset><input name="name" type="text"></fieldset></fieldset><fieldset><input name="email" type="email"></fieldset>'))
+        self.assertEqual(([item.name for item in form.fields], [item.name for item in form.unknown]), (["email"], ["name"]))
+
+    def test_disabled_fieldsets_nested_past_the_limit_are_a_page_the_parser_will_not_read(self):
+        deep = lever_form.MAX_NESTED_FIELDSETS
+        self.assertIsNotNone(parse_lever_form(page("<fieldset disabled>" * deep + "</fieldset>" * deep)))
+        self.assertIsNone(parse_lever_form(page("<fieldset disabled>" * (deep + 1) + "</fieldset>" * (deep + 1))))
+
+    def test_a_fieldset_that_is_not_disabled_changes_nothing(self):
+        self.assertEqual([item.name for item in parse_lever_form(page('<fieldset><legend>Who</legend><input name="name" type="text"></fieldset>')).fields], ["name"])
+
+    def test_a_control_outside_the_form_that_names_it_with_the_form_attribute_is_submitted_and_so_is_listed(self):
+        for text in (
+            page('<input name="name" type="text">') + '<input name="favourite" form="application-form" required>',
+            '<input name="favourite" form="application-form" required>' + page('<input name="name" type="text">'),
+        ):
+            with self.subTest(text=text[:30]):
+                form = parse_lever_form(text)
+                self.assertEqual([item.name for item in form.fields], ["name"])
+                self.assertEqual([(item.name, item.required) for item in form.unknown], [("favourite", True)])
+
+    def test_an_outside_control_with_a_fixed_name_is_unknown_not_read_as_that_field(self):
+        form = parse_lever_form(page('<input name="email" type="email">') + '<input name="email" form="application-form">' + '<select name="phone" form="application-form"></select>')
+        self.assertEqual(([item.name for item in form.fields], sorted(item.name for item in form.unknown)), ([], ["email", "phone"]))
+
+    def test_a_control_outside_the_form_with_another_form_or_none_is_not_read(self):
+        text = page('<input name="name" type="text">') + '<input name="a" form="other"><input name="b"><input name="c" form>'
+        form = parse_lever_form(text)
+        self.assertEqual(([item.name for item in form.fields], form.unknown), (["name"], ()))
+
+    def test_a_control_inside_the_form_that_belongs_to_another_form_is_not_submitted_and_is_not_read(self):
+        form = parse_lever_form(page('<input name="email" type="email" form="other"><input name="name" type="text" form="application-form"><input name="phone" form="">'))
+        self.assertEqual(([item.name for item in form.fields], form.unknown, form.unreadable), (["name"], (), ()))
+
+    def test_a_select_that_belongs_to_another_form_takes_its_options_with_it(self):
+        form = parse_lever_form(page('<select name="x" form="other"><option value="a">a</option></select><input name="name" type="text">'))
+        self.assertEqual(([item.name for item in form.fields], form.unknown), (["name"], ()))
+
+    def test_an_application_form_inside_another_form_is_not_a_form_the_browser_builds(self):
+        self.assertIsNone(parse_lever_form('<form id="outer"><form id="application-form"><input name="name"></form></form>'))
+        self.assertIsNone(parse_lever_form('<form action="/search"><input name="q"><form id="application-form"><input name="name"></form>'))
+
+    def test_a_form_that_was_closed_before_the_application_form_is_not_its_parent(self):
+        form = parse_lever_form('<form id="search"><input name="q"></form><form id="application-form"><input name="name" type="text"></form>')
+        self.assertEqual([item.name for item in form.fields], ["name"])
+
+
 class StandardFieldTests(unittest.TestCase):
     """5.4 item 3, on the demonstration page (every fixed field the pages carry)."""
 

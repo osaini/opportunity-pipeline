@@ -38,6 +38,7 @@ __all__ = [
 MAX_TEMPLATE_BYTES = 2 * 1024 * 1024  # a university dropdown's template was 622 KB, with 3,302 options
 MAX_TEMPLATE_FIELDS = 200
 MAX_FIELD_OPTIONS = 20_000
+MAX_NESTED_FIELDSETS = 100  # disabled fieldsets open inside one another
 CARD_TYPES = ("text", "textarea", "dropdown", "multiple-choice", "multiple-select", "file-upload")
 
 # Lever's field type -> the type the same control has in Greenhouse's listing, which ``policy.control_of`` reads.
@@ -145,7 +146,7 @@ class LeverForm:
 class _Control:
     """One control as the page wrote it. For a radio or a checkbox it is one option of its group."""
 
-    __slots__ = ("seq", "tag", "kind", "name", "required", "disabled", "value", "label", "starred", "dom_id", "options", "span", "label_el")
+    __slots__ = ("seq", "tag", "kind", "name", "required", "disabled", "value", "label", "starred", "dom_id", "options", "span", "label_el", "outside")
 
     def __init__(self, seq: int, tag: str, kind: str, name: str, required: bool, disabled: bool, value: str | None, label: str,
                  starred: bool, dom_id: str, label_el: list[str] | None) -> None:
@@ -162,6 +163,7 @@ class _Control:
         self.options: list[tuple[str, str]] = []  # a select's (value, label as the page shows it)
         self.span: list[str] | None = None  # the text of the option's own ``application-answer-alternative`` span
         self.label_el = label_el  # the text of the ``<label>`` around a radio or checkbox, when no span names the option
+        self.outside = False  # written outside the form element and joined to it by its ``form`` attribute
 
     def option_label(self) -> str:
         found = _collapse("".join(self.span)) if self.span is not None else ""
@@ -183,6 +185,8 @@ class _Scanner(HTMLParser):
         self._raw = False  # inside a script or a style, whose text is never the page's
         self.form_seen = False
         self.in_form = False
+        self._forms_open = 0  # other forms that are open: a form inside one is not a form the browser builds
+        self._fieldsets: list[list[int | None]] = []  # open ``fieldset[disabled]``: [stack index, index of its first legend, -1 once that closed]
         self.controls: list[_Control] = []
         self.for_labels: dict[str, list[str]] = {}
         self._stack: list[tuple[str, bool]] = []  # (tag, starts a scope that owns the current label)
@@ -211,17 +215,31 @@ class _Scanner(HTMLParser):
             self.svg_depth += 1
         if tag == "title" and self.svg_depth == 0 and not self.title_done:
             self.title_open = True
-        if not self.form_seen and tag == "form" and a.get("id") == "application-form":
-            self.form_seen = self.in_form = True
+        if tag == "form":
+            if not self.form_seen and a.get("id") == "application-form":
+                if not self._forms_open:  # inside another form the browser drops this tag, so the page has no application form
+                    self.form_seen = self.in_form = True
+            elif not self.in_form:
+                self._forms_open += 1
         if not self.in_form:
+            if tag in ("input", "select", "textarea") and a.get("form") == "application-form":
+                self._outside(tag, a)
             if tag not in _VOID:
                 self._stack.append((tag, False))
             return
         scope = "application-question" in classes or "section" in classes
         if scope:
             self._label_text, self._label_starred = "", False
+        if tag == "legend":
+            for fieldset in self._fieldsets:
+                if fieldset[1] is None and len(self._stack) == fieldset[0] + 1:  # the fieldset's first legend, directly inside it
+                    fieldset[1] = len(self._stack)
         if tag not in _VOID:
             self._stack.append((tag, scope))
+        if tag == "fieldset" and "disabled" in a:
+            if len(self._fieldsets) >= MAX_NESTED_FIELDSETS:
+                raise ValueError("too many disabled fieldsets inside one another")
+            self._fieldsets.append([len(self._stack) - 1, None])
         if self._label_div is not None:
             if tag not in _VOID:
                 skip = tag in ("svg", "script", "style") or (tag == "span" and "required" in classes) or (tag == "p" and "description" in classes)
@@ -264,6 +282,8 @@ class _Scanner(HTMLParser):
             self.title_open = False
             self.title_done = True
         if not self.in_form:
+            if tag == "form":
+                self._forms_open = max(0, self._forms_open - 1)
             self._pop(tag)
             return
         if tag == "option":
@@ -304,8 +324,20 @@ class _Scanner(HTMLParser):
             if self._stack[index][0] == tag:
                 scoped = any(scope for _, scope in self._stack[index:])
                 del self._stack[index:]
+                self._close_fieldsets()
                 return scoped
         return False
+
+    def _close_fieldsets(self) -> None:
+        size = len(self._stack)
+        self._fieldsets = [fieldset for fieldset in self._fieldsets if fieldset[0] < size]
+        for fieldset in self._fieldsets:
+            if fieldset[1] is not None and fieldset[1] >= size:
+                fieldset[1] = -1  # its legend has closed
+
+    def _in_disabled_fieldset(self) -> bool:
+        """True inside a ``fieldset[disabled]``, unless the control is within that fieldset's first legend (HTML)."""
+        return any(fieldset[1] is None or fieldset[1] < 0 for fieldset in self._fieldsets)
 
     # --- text
 
@@ -325,10 +357,23 @@ class _Scanner(HTMLParser):
 
     # --- controls
 
-    def _control(self, a: Mapping[str, str | None], tag: str, kind: str) -> _Control:
+    def _outside(self, tag: str, a: Mapping[str, str | None]) -> None:
+        """A control written outside the form that names it in its ``form`` attribute is submitted with it. It is only ever listed as unknown."""
+        kind = (a.get("type") or "text").strip().lower() if tag == "input" else ("select-multiple" if tag == "select" and "multiple" in a else tag)
+        if kind in _NOT_DATA_INPUTS:
+            return
+        self._seq += 1
+        control = _Control(self._seq, tag, kind, a.get("name") or "", "required" in a, "disabled" in a, a.get("value"), "", False, a.get("id") or "", None)
+        control.outside = True
+        self.controls.append(control)
+
+    def _control(self, a: Mapping[str, str | None], tag: str, kind: str) -> _Control | None:
+        """The control, or None when its ``form`` attribute puts it in another form (or in none): it is not submitted with this one."""
+        if "form" in a and a["form"] != "application-form":
+            return None
         self._seq += 1
         control = _Control(
-            self._seq, tag, kind, a.get("name") or "", "required" in a, "disabled" in a, a.get("value"), self._label_text,
+            self._seq, tag, kind, a.get("name") or "", "required" in a, "disabled" in a or self._in_disabled_fieldset(), a.get("value"), self._label_text,
             self._label_starred, a.get("id") or "", self._label_els[-1][0] if self._label_els else None,
         )
         self.controls.append(control)
@@ -340,6 +385,8 @@ class _Scanner(HTMLParser):
         if kind in _NOT_DATA_INPUTS:
             return
         control = self._control(a, "input", kind)
+        if control is None:
+            return
         if kind in ("checkbox", "radio") and control.name:
             self._pending = control
         else:
@@ -580,6 +627,9 @@ def parse_lever_form(html: str) -> LeverForm | None:
         card, survey = _CARD_FIELD.fullmatch(name), _SURVEY_FIELD.fullmatch(name)
         if (name in PAGE_MANAGED_FIELDS or _PAGE_SUFFIX.fullmatch(name)) and (name == _CAPTCHA or all(c.kind == "hidden" for c in controls)):
             continue  # the page's own hidden field; a visible control that shares its name is a question and is listed below
+        if any(control.outside for control in controls):  # written outside the form: the parser cannot say what it is, so it is only listed
+            entries.append((seq, 0, _unknown(name, controls)))
+            continue
         if template:
             question_set(template.group(1), template.group(2), seq)["templates"].extend(control.value or "" for control in controls)
         elif card or survey:
