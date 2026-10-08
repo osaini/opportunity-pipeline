@@ -761,6 +761,8 @@ class LeverRecordingAgent(ApplyAgent):
             self.pressed = FakeLever.clicks(self._page)
         except Exception:  # noqa: BLE001 - the page is gone
             pass
+        # A request the fake never answers (a résumé reader that does not reply) is failed as the window goes, so Playwright does not log a route left open.
+        self.fake.drop_unanswered()
         return super()._close_browser()
 
     def _click(self, locator: Any, purpose: str, key: str = "") -> None:
