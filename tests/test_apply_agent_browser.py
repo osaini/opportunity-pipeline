@@ -49,7 +49,7 @@ from opportunity_app.apply import runs as apply_runs
 from opportunity_app.apply.agent import ApplyAgent, GreenhouseAdapter
 from opportunity_app.apply import agent_types as apply_agent_types
 from opportunity_app.apply.agent_types import (
-    HANDOFF_CRASHED, HANDOFF_EARLY, HANDOFF_ELSEWHERE, HANDOFF_HIDDEN, HANDOFF_NO_LOADER, HANDOFF_NOT_SUBMITTED, HANDOFF_S3, HANDOFF_UNRECORDED, HANDOFF_UPLOAD, LEFT_COVER_LETTER,
+    HANDOFF_CRASHED, HANDOFF_EARLY, HANDOFF_ELSEWHERE, HANDOFF_HIDDEN, HANDOFF_NO_LOADER, HANDOFF_NOT_SUBMITTED, HANDOFF_S3, HANDOFF_UNRECORDED, HANDOFF_UPLOAD, LEFT_COVER_LETTER_CHANGED,
     PROGRESS_STEPS, WINDOW_CLOSED, AgentJob, ApplyTimeouts, LookupRequest,
 )
 
@@ -60,6 +60,7 @@ STATE_JS = """() => {
   const mirror = (name) => { const e = document.querySelector('input[name="' + name + '"][aria-hidden]'); return e ? e.value : null; };
   const shown = (name) => Array.from(one(name).closest('.rs').querySelectorAll('.select__single-value, .select__multi-value__label')).map((n) => n.textContent.trim());
   const file = one('resume').files[0];
+  const letter = one('cover_letter').files[0];
   return {
     first: one('first_name').value, last: one('last_name').value, email: one('email').value, phone: one('phone').value,
     why: one('question_4000000101').value, portfolio: one('question_4000000102').value, trap: one('website_url').value,
@@ -70,6 +71,7 @@ STATE_JS = """() => {
     informed: one('question_4000000113').checked, previous: (document.querySelector('input[name="question_4000000111"]:checked') || {}).value || null,
     term: one('question_4000000108').value,
     resume: file ? {name: file.name, size: file.size} : null,
+    letter: letter ? {name: letter.name, size: letter.size, shown: one('cover_letter-file-name').textContent} : null,
   };
 }"""
 PIXELS_JS = """(args) => new Promise((resolve) => {
@@ -112,18 +114,24 @@ class AgentCase(unittest.TestCase):
         self.dir = Path(self.tempdir.name)
 
     def go(self, scenario="confirm", *, mode="rehearse", sources=None, plan=None, schema=None, files="default", lookup=None, replan=None,
-           cancelled=None, lookup_endpoints=fakes.FIXTURE_LOOKUP, inspect=None, on_progress=None, headless=True, timeouts=None):
+           cancelled=None, lookup_endpoints=fakes.FIXTURE_LOOKUP, inspect=None, on_progress=None, headless=True, timeouts=None, check_file="default", letter_required=False):
         sources = sources or fakes.full_sources()
         schema = fakes.fixture_schema() if schema is None else schema
-        steps, beats, holder = [], [], {}
+        steps, beats, holder, asked = [], [], {}, []
+        files = {"resume": fakes.resume_payload()} if files == "default" else files
+        if check_file == "default":
+            # The runner hands the agent a check only when there is a cover letter to attach; this one says yes and keeps what it was asked.
+            check_file = (lambda key, ref, sha: asked.append((key, ref, sha)) or True) if "cover_letter" in files else None
 
         def progress(step, text):
             steps.append(step)
             if on_progress:
                 on_progress(holder["agent"], step)
 
+        fake = FakeGreenhouse(scenario)
+        fake.letter_required = letter_required
         agent = fakes.RecordingAgent(
-            fake=FakeGreenhouse(scenario), mode=mode, adapter=GreenhouseAdapter(), run_id="run-test", screenshot_dir=self.dir,
+            fake=fake, mode=mode, adapter=GreenhouseAdapter(), run_id="run-test", screenshot_dir=self.dir,
             timeouts=timeouts or fakes.TEST_TIMEOUTS, lookup_endpoints=lookup_endpoints, on_progress=progress, heartbeat=lambda: beats.append(1),
         )
         agent.headless = headless
@@ -131,8 +139,8 @@ class AgentCase(unittest.TestCase):
         with agent:
             result = agent.run(
                 fakes.draft_plan(sources, schema=schema) if plan is None else plan, page_url=JOB_URL, schema=schema,
-                files={"resume": fakes.resume_payload()} if files == "default" else files, lookup=lookup,
-                replan=replan or fakes.fixture_replan(sources, schema=schema), cancelled=cancelled,
+                files=files, lookup=lookup,
+                replan=replan or fakes.fixture_replan(sources, schema=schema), cancelled=cancelled, check_file=check_file,
             )
             seen = inspect(agent._page, result) if inspect else None
             record = agent.record()
@@ -142,7 +150,7 @@ class AgentCase(unittest.TestCase):
         # -1 means the run never opened a page, so there was nothing to click.
         self.assertIn(record["forbidden_clicks"], (0, -1) if not record["requests"] else (0,), "the agent pressed a button it must never press")
         self.assertEqual([entry for entry in record["requests"] if entry["method"] not in ("GET", "HEAD", "OPTIONS")], [])
-        return SimpleNamespace(result=result, record=record, steps=steps, beats=beats, seen=seen, agent=agent)
+        return SimpleNamespace(result=result, record=record, steps=steps, beats=beats, seen=seen, agent=agent, asked=asked)
 
     def state(self, page, _result=None):
         return page.evaluate(STATE_JS)
@@ -551,20 +559,103 @@ class RehearsalTests(AgentCase):
         run = self.go(plan=plan, replan=lambda scan, uploads: plan)
         self.assertEqual((run.result.outcome, run.result.reasons[0]), ("needs_you", apply_agent.NO_CONTROL.format(question="A box the form lacks")))
 
-    def test_a_required_cover_letter_is_said_to_be_left_for_the_student_and_not_called_unreadable(self):
-        entries = [planned("cover_letter", "Cover Letter", None, control="file", source="cover_letter", file_sha256="c" * 64)]
-        plan = FakePlan(entries)
-        letter = apply_agent_types.FilePayload(name="letter.pdf", mime_type="application/pdf", buffer=b"%PDF-1.4 a letter", sha256="c" * 64)
-        run = self.go(plan=plan, replan=lambda scan, uploads: plan, files={"cover_letter": letter}, inspect=lambda page, _result: page.evaluate(
-            "() => document.getElementById('cover_letter').files.length"))
+    def letter_run(self, *, files=None, check_file="default", sources=None, schema=None, scenario="confirm", **more):
+        """A rehearsal of the fictional form with a required cover letter and an approved one to attach."""
+        sources = sources or fakes.with_letter(fakes.full_sources())
+        files = {"resume": fakes.resume_payload(), "cover_letter": fakes.letter_payload()} if files is None else files
+        return self.go(scenario, sources=sources, schema=schema or fakes.schema_with_required_letter(), files=files, check_file=check_file, inspect=self.state,
+                       letter_required=True, **more)
+
+    def letter_problems(self, run):
+        return [(problem["kind"], problem["message"], problem["required"]) for problem in run.result.check_problems
+                if problem["key"] == "cover_letter" and problem["kind"] == "file"]
+
+    def test_an_approved_cover_letter_is_attached_under_its_own_name_and_read_back(self):
+        run = self.letter_run()
+        self.assertEqual((run.result.outcome, run.result.reasons), ("rehearsed", []))
+        self.assertEqual((run.seen["letter"]["name"], run.seen["letter"]["size"]), (fakes.LETTER_NAME, len(fakes.LETTER_BYTES)))
+        self.assertIn(fakes.LETTER_NAME, run.seen["letter"]["shown"], "the group shows the name the student sees")
+        self.assertEqual(run.seen["resume"], {"name": fakes.RESUME_NAME, "size": len(fakes.RESUME_BYTES)}, "the résumé is attached as before")
+        self.assertIn("cover_letter", run.result.evidence["filled_keys"])
+        self.assertEqual([problem for problem in run.result.check_problems if problem["key"] == "cover_letter"], [], "the required field is not empty, and nothing else is wrong with it")
+        entry = next(item for item in run.result.plan if item["key"] == "cover_letter")
+        self.assertEqual((entry["disposition"], entry["source"]["kind"], entry["source"]["ref"]), ("fill", "cover_letter", "doc-1@2"))
+        self.assertEqual(run.asked, [("cover_letter", "doc-1@2", fakes.letter_source()["content_sha256"])], "the runner was asked once, just before the file went in")
+
+    def test_the_cover_letter_is_attached_only_after_the_runner_says_it_is_still_the_approved_one(self):
+        def broken(key, ref, sha):
+            raise RuntimeError("the pipe broke")
+
+        for label, check in (("no", lambda key, ref, sha: False), ("none given", None), ("raises", broken)):
+            with self.subTest(label):
+                run = self.letter_run(check_file=check)
+                self.assertEqual(run.result.outcome, "rehearsed")
+                self.assertIsNone(run.seen["letter"], "nothing was attached")
+                self.assertEqual(self.letter_problems(run), [("file", apply_agent.LETTER_CHANGED.format(question="Cover Letter"), True)])
+                self.assertNotIn("cover_letter", run.result.evidence["filled_keys"])
+                self.assertNotIn("the pipe broke", json.dumps(run.result.check_problems), "an exception's message is never kept")
+                self.assertEqual(run.seen["resume"]["name"], fakes.RESUME_NAME, "the résumé does not wait for the letter")
+
+    def test_a_letter_whose_bytes_or_text_are_not_the_ones_the_plan_names_is_not_attached(self):
+        other_text = fakes.letter_payload(text="Dear Hiring Team,\n\nA different letter.\n")
+        own = fakes.letter_payload()
+        tampered = fakes.FilePayload(name=fakes.LETTER_NAME, mime_type="application/pdf", buffer=b"%PDF-1.4 other bytes", sha256=own.sha256, content_sha256=own.content_sha256)
+        unhashed = fakes.FilePayload(name=fakes.LETTER_NAME, mime_type="application/pdf", buffer=fakes.LETTER_BYTES)
+        for label, payload in (("text", other_text), ("bytes", tampered), ("no hashes", unhashed)):
+            with self.subTest(label):
+                run = self.letter_run(files={"resume": fakes.resume_payload(), "cover_letter": payload})
+                self.assertEqual(run.result.outcome, "rehearsed")
+                self.assertIsNone(run.seen["letter"])
+                self.assertEqual(len(self.letter_problems(run)), 1)
+                self.assertEqual(run.asked, [], "the runner is not asked about a file that is already wrong")
+
+    def test_a_letter_under_another_name_than_the_plan_shows_is_not_attached(self):
+        renamed = fakes.letter_payload(name="Example-Robotics-Other-Role-cover_letter-v2.pdf")
+        run = self.letter_run(files={"resume": fakes.resume_payload(), "cover_letter": renamed})
         self.assertEqual(run.result.outcome, "rehearsed")
-        self.assertEqual(run.seen, 0, "nothing was attached")
-        letters = [problem for problem in run.result.check_problems if problem["key"] == "cover_letter"]
-        self.assertEqual([(problem["kind"], problem["message"]) for problem in letters],
-                         [("file", apply_agent.NO_COVER_LETTER.format(question="Cover Letter"))])
-        self.assertNotIn("could not read", letters[0]["message"])
-        self.assertNotIn("cover_letter", run.result.evidence["filled_keys"])
-        # A missing résumé keeps its own sentence.
+        self.assertIsNone(run.seen["letter"], "the preview would name a file the employer did not get")
+        self.assertEqual(len(self.letter_problems(run)), 1)
+        self.assertEqual(run.asked, [], "the runner is not asked about a file that is already wrong")
+
+    def test_a_missing_letter_file_is_a_gap_in_the_rehearsal(self):
+        run = self.letter_run(files={"resume": fakes.resume_payload()})
+        self.assertEqual(run.result.outcome, "rehearsed")
+        self.assertIsNone(run.seen["letter"])
+        self.assertEqual(self.letter_problems(run), [("file", apply_agent.NO_FILE.format(question="Cover Letter"), True)])
+
+    def test_a_letter_the_form_does_not_accept_is_refused_before_it_is_attached(self):
+        sources = fakes.with_letter(fakes.full_sources())
+        sources = replace(sources, cover_letter={**sources.cover_letter, "file_name": "letter.exe"})
+        run = self.letter_run(sources=sources, files={"resume": fakes.resume_payload(), "cover_letter": fakes.letter_payload(name="letter.exe")})
+        self.assertEqual((run.result.outcome, run.result.reasons[0]), ("needs_you", apply_agent.FILE_TYPE.format(question="Cover Letter")))
+        self.assertIsNone(run.seen["letter"])
+
+    def test_an_optional_cover_letter_is_left_empty_even_when_a_letter_is_approved(self):
+        run = self.go(sources=fakes.with_letter(fakes.full_sources()), files={"resume": fakes.resume_payload()}, inspect=self.state)
+        self.assertEqual(run.result.outcome, "rehearsed")
+        self.assertIsNone(run.seen["letter"])
+        entry = next(item for item in run.result.plan if item["key"] == "cover_letter")
+        self.assertEqual((entry["disposition"], entry["source"]["kind"]), ("blank", "none"))
+
+    def test_a_form_that_uploads_on_attach_defers_the_letter_too(self):
+        run = self.letter_run(scenario="s3_upload")
+        self.assertEqual(run.result.outcome, "rehearsed")
+        self.assertIsNone(run.seen["letter"], "nothing is uploaded before the student presses Submit")
+        entry = next(item for item in run.result.plan if item["key"] == "cover_letter")
+        self.assertEqual(entry["disposition"], "deferred")
+        self.assertEqual(run.asked, [])
+
+    def test_a_custom_cover_letter_question_is_never_answered_with_the_letter(self):
+        listing = fixture_json("schema_new.json")
+        listing["questions"].append({"description": None, "label": "Cover letter", "required": False, "fields": [{"name": "question_4000000150", "type": "input_file", "values": []}]})
+        listing["questions"].append({"description": None, "label": "Writing sample", "required": True, "fields": [{"name": "question_4000000151", "type": "input_file", "values": []}]})
+        plan = fakes.draft_plan(fakes.with_letter(fakes.full_sources()), schema=apply_policy.parse_schema(listing))
+        for key in ("question_4000000150", "question_4000000151"):
+            entry = next(item for item in plan.fields if item.key == key)
+            self.assertEqual((entry.source.kind, entry.file_sha256), ("none", ""), "only the field named cover_letter gets the letter")
+        self.assertEqual(next(item for item in plan.fields if item.key == "cover_letter").disposition, "blank", "the named field is optional here, so it is left empty")
+
+    def test_a_missing_resume_keeps_its_own_sentence(self):
         again = self.go(files={})
         resume = [problem for problem in again.result.check_problems if problem["key"] == "resume" and problem["kind"] == "file"]
         self.assertEqual([problem["message"] for problem in resume], [apply_agent.NO_FILE.format(question="Resume/CV")])
@@ -1284,14 +1375,18 @@ class HandoffCase(unittest.TestCase):
         self.dir = Path(self.tempdir.name)
 
     def handoff(self, scenario="confirm", *, student="complete_and_submit", hook=None, sources=None, schema=None, files="default", link="default",
-                accept=True, cancelled=None, timeouts=None, on_progress=None, beat=None, plan=None, label_checkboxes=True):
+                accept=True, cancelled=None, timeouts=None, on_progress=None, beat=None, plan=None, label_checkboxes=True, check_file="default", letter_required=False):
         sources = sources or sources_without(TEAM)
         schema = fakes.fixture_schema() if schema is None else schema
         fake = fakes.HandoffGreenhouse(scenario)
+        fake.letter_required = letter_required
         link = fakes.FakeLink() if link == "default" else link
-        steps, beats, purposes, texts = [], [], [], []
+        steps, beats, purposes, asked, texts = [], [], [], [], []
         calls = SimpleNamespace(count=0, posts=[], answers=[])
         holder = {}
+        files = {"resume": fakes.resume_payload()} if files == "default" else files
+        if check_file == "default":
+            check_file = (lambda key, ref, sha: asked.append((key, ref, sha)) or True) if "cover_letter" in files else None
 
         def hand_over():
             calls.count += 1
@@ -1328,12 +1423,12 @@ class HandoffCase(unittest.TestCase):
         with agent:
             result = agent.run(
                 fakes.draft_plan(sources, schema=schema, mode="handoff") if plan is None else plan, page_url=JOB_URL, schema=schema,
-                files={"resume": fakes.resume_payload()} if files == "default" else files,
+                files=files,
                 replan=fakes.fixture_replan(sources, schema=schema, mode="handoff", label_checkboxes=label_checkboxes), hand_over=hand_over,
-                cancelled=cancelled, link=link,
+                cancelled=cancelled, link=link, check_file=check_file,
             )
             record = agent.record()
-        run = SimpleNamespace(result=result, record=record, steps=steps, texts=texts, beats=beats, link=link, fake=fake, calls=calls, agent=agent, purposes=purposes)
+        run = SimpleNamespace(result=result, record=record, steps=steps, texts=texts, beats=beats, link=link, fake=fake, calls=calls, agent=agent, purposes=purposes, asked=asked)
         self.assertIn(record["forbidden_clicks"], (0, -1), "the agent pressed a button it must never press")
         self.assertEqual([entry for entry in record["non_get"] if not (entry["host"] == SUBMIT_HOST and entry["path"] == JOB_PATH)], [],
                          "a request other than the submit POST reached the fake")
@@ -2088,17 +2183,56 @@ class HandoffTests(HandoffCase):
         self.assertNotEqual(run.result.outcome, "failed")
         self.assertEqual(run.result.reasons, [apply_checks.UNCONFIRMED_NOTE])
 
-    def test_a_cover_letter_is_left_for_the_student(self):
-        listing = fixture_json("schema_new.json")
-        block = next(block for block in listing["questions"] if block["label"] == "Cover Letter")
-        block["required"] = True
-        sources = replace(sources_without(TEAM), cover_letter=helpers_apply.LETTER_OK)
-        run = self.handoff(student="do_nothing", schema=apply_policy.parse_schema(listing), sources=sources, timeouts=replace(fakes.HANDOFF_TIMEOUTS, handoff_s=1))
+    def letter_handoff(self, *, student="do_nothing", files=None, check_file="default", seen=None, **more):
+        """A Finish in browser run on a form that requires a cover letter, with an approved one to attach. ``seen`` collects the page at the student's turn."""
+        files = {"resume": fakes.resume_payload(), "cover_letter": fakes.letter_payload()} if files is None else files
+
+        def watch(page, step):
+            if step == "handoff" and seen is not None and fakes._once(page, "look"):
+                seen.append(page.evaluate("() => { const f = document.getElementById('cover_letter').files[0]; return f ? {name: f.name, size: f.size} : null; }"))
+            fakes.STUDENTS[student](page, step)
+
+        return self.handoff(
+            student=student, hook=watch, schema=fakes.schema_with_required_letter(), sources=fakes.with_letter(sources_without(TEAM)), files=files,
+            check_file=check_file, letter_required=True, timeouts=replace(fakes.HANDOFF_TIMEOUTS, handoff_s=1) if student == "do_nothing" else None, **more,
+        )
+
+    def test_an_approved_cover_letter_is_attached_in_the_window_and_shown_as_filled(self):
+        seen = []
+        run = self.letter_handoff(seen=seen)
+        self.assertEqual(seen, [{"name": fakes.LETTER_NAME, "size": len(fakes.LETTER_BYTES)}], "the file is in the page when the student's turn begins")
         ready = run.link.ready_messages[0]
         for entries in (ready["plan"], run.result.plan):
             letter = next(entry for entry in entries if entry["key"] == "cover_letter")
-            self.assertEqual((letter["disposition"], letter["problem"]), ("left_for_you", LEFT_COVER_LETTER))
-        self.assertIn(LEFT_COVER_LETTER, [item["reason"] for item in ready["left"] if item["key"] == "cover_letter"])
+            self.assertEqual((letter["disposition"], letter["problem"], letter["source"]["ref"]), ("fill", "", "doc-1@2"))
+        self.assertNotIn("cover_letter", [item["key"] for item in ready["left"]])
+        self.assertEqual(run.asked, [("cover_letter", "doc-1@2", fakes.letter_source()["content_sha256"])])
+        self.assertIn("cover_letter", run.result.evidence["filled_keys"])
+
+    def test_the_student_submits_a_form_with_the_letter_the_app_attached(self):
+        run = self.letter_handoff(student="complete_and_submit")
+        self.assertEqual((run.result.outcome, run.result.handed_over), ("submitted", True), run.result.reasons)
+        self.assertIn(fakes.LETTER_NAME, run.fake.submit_posts()[0].post_data, "the file went out under the name the student saw")
+
+    def test_a_cover_letter_that_is_no_longer_the_approved_one_is_left_for_the_student(self):
+        seen = []
+        run = self.letter_handoff(check_file=lambda key, ref, sha: False, seen=seen)
+        self.assertEqual(seen, [None], "nothing was attached")
+        ready = run.link.ready_messages[0]
+        for entries in (ready["plan"], run.result.plan):
+            letter = next(entry for entry in entries if entry["key"] == "cover_letter")
+            self.assertEqual((letter["disposition"], letter["problem"]), ("left_for_you", LEFT_COVER_LETTER_CHANGED))
+        self.assertIn(LEFT_COVER_LETTER_CHANGED, [item["reason"] for item in ready["left"] if item["key"] == "cover_letter"])
+        self.assertNotIn("cover_letter", run.result.evidence["filled_keys"])
+
+    def test_a_cover_letter_with_nothing_approved_is_left_for_the_student(self):
+        seen = []
+        run = self.handoff(student="do_nothing", schema=fakes.schema_with_required_letter(), sources=sources_without(TEAM), letter_required=True,
+                           timeouts=replace(fakes.HANDOFF_TIMEOUTS, handoff_s=1), hook=lambda page, step: seen.append(page.evaluate("document.getElementById('cover_letter').files.length")) if step == "handoff" else None)
+        letter = next(entry for entry in run.link.ready_messages[0]["plan"] if entry["key"] == "cover_letter")
+        self.assertEqual(letter["disposition"], "left_for_you")
+        self.assertEqual(set(seen), {0})
+        self.assertEqual(run.asked, [])
 
     def test_a_hidden_field_the_app_would_have_filled_stops_before_any_input(self):
         listing = fixture_json("schema_new.json")

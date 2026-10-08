@@ -40,7 +40,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from pipeline_core.identity import employer_key, identity_tokens, normalized_text
 
 from . import sensitive as apply_sensitive
-from ..student import preparation, resume_variants
+from ..student import artifacts as document_artifacts, preparation, resume_variants
 from .checks import ALTERNATE_TEXT_FIELDS, Problem, join, question_key
 from .classify import (
     CATEGORY_TOPIC,
@@ -71,7 +71,7 @@ from ..core.json_values import json_as
 
 __all__ = [
     "ALLOWED_ATS_LABEL_FIELDS", "Plan", "PlanField", "SchemaField", "Source", "Sources", "build_plan", "company_matches", "control_of",
-    "cover_letter_for", "current_source", "mac_key", "match_options", "name_parts", "parse_schema", "plan_entries", "plan_hash", "preview_values", "profile_value_for",
+    "cover_letter_for", "current_source", "letter_is_current", "mac_key", "match_options", "name_parts", "parse_schema", "plan_entries", "plan_hash", "preview_values", "profile_value_for",
     "question_key", "resume_for", "sources_for", "stored_sensitive_answer", "value_mac", "with_page_labels",
 ]
 
@@ -400,18 +400,45 @@ def resume_for(conn: sqlite3.Connection, user_id: str, opportunity_id: str, stor
 
 
 def cover_letter_for(conn: sqlite3.Connection, user_id: str, opportunity_id: str) -> dict[str, Any]:
-    """The cover letter that may be attached (D11): the latest version for this role, and only when it is approved."""
+    """The cover letter that may be attached (D11): the latest version for this role, and only when it is approved.
+
+    Without one, ``problem_kind`` is ``cover_letter_missing`` (no version at all) or ``cover_letter_draft`` (the latest version is
+    not approved), and ``document_id`` names that latest version for the draft, so the page can open it. With one the answer has
+    the document's id and version, the SHA-256 of its text, the name its PDF will carry and the text itself (for the preview;
+    it is never put in the plan).
+    """
     latest = conn.execute(
-        "SELECT id, version, status, content FROM generated_documents WHERE user_id=? AND opportunity_id=? AND document_type='cover_letter' "
-        "ORDER BY version DESC LIMIT 1", (user_id, opportunity_id),
+        "SELECT d.id, d.version, d.status, d.content, d.document_type, o.company, o.title FROM generated_documents d "
+        "LEFT JOIN opportunities o ON o.id=d.opportunity_id "
+        "WHERE d.user_id=? AND d.opportunity_id=? AND d.document_type='cover_letter' ORDER BY d.version DESC LIMIT 1", (user_id, opportunity_id),
     ).fetchone()
     if latest is None:
-        return {"problem_kind": "cover_letter_missing", "problem": "No cover letter is approved for this role."}
+        return {"problem_kind": "cover_letter_missing", "problem": "No cover letter is approved for this role.", "document_id": ""}
     if latest["status"] != "approved":
-        return {"problem_kind": "cover_letter_draft",
-                "problem": "Your cover letter for this role has a newer draft. Approve it or discard it"}
+        approved_before = conn.execute(
+            "SELECT 1 FROM generated_documents WHERE user_id=? AND opportunity_id=? AND document_type='cover_letter' AND status='approved' LIMIT 1",
+            (user_id, opportunity_id),
+        ).fetchone() is not None
+        sentence = "has a newer draft" if approved_before else "is still a draft"
+        return {"problem_kind": "cover_letter_draft", "document_id": str(latest["id"]), "version": int(latest["version"]),
+                "problem": f"Your cover letter for this role {sentence}. Approve it or discard it"}
     return {"document_id": str(latest["id"]), "version": int(latest["version"]),
-            "content_sha256": hashlib.sha256(str(latest["content"]).encode("utf-8")).hexdigest(), "problem_kind": "", "problem": ""}
+            "content_sha256": document_artifacts.content_digest(str(latest["content"])), "content": str(latest["content"]),
+            "file_name": document_artifacts.document_file_name(dict(latest)), "problem_kind": "", "problem": ""}
+
+
+def letter_is_current(conn: sqlite3.Connection, user_id: str, opportunity_id: str, *, document_id: str, version: int, content_sha256: str) -> bool:
+    """The letter a run planned to attach is still the latest version for the role, still approved, with the same text (D11).
+
+    Asked again just before the file goes into the page, since an edit, a new draft or an approval can land at any time after the
+    run started. False for anything else: the field is then left for the student, never filled with a letter that is not the one
+    they approved last.
+    """
+    found = cover_letter_for(conn, user_id, opportunity_id)
+    return (
+        not found.get("problem_kind") and str(found.get("document_id")) == document_id and int(found.get("version") or 0) == int(version)
+        and str(found.get("content_sha256")) == content_sha256
+    )
 
 
 def sources_for(
@@ -708,7 +735,10 @@ def _plan_file(item: SchemaField, entry: PlanField, ctx: _Context) -> PlanField:
             entry.problem_kind, entry.problem = letter["problem_kind"], letter["problem"]
             return entry
         entry.source = Source("cover_letter", f'{letter["document_id"]}@{letter["version"]}', label=f'Approved cover letter, version {letter["version"]}')
-        entry.file_sha256, entry.value = letter["content_sha256"], letter["document_id"]
+        entry.file_sha256, entry.file_name, entry.value = letter["content_sha256"], str(letter.get("file_name") or ""), letter["document_id"]
+        if ctx.uploads_on_attach:
+            entry.defer = True
+            entry.note = "This board uploads a file as soon as it is attached, so the app can't attach it without sending it"
         return entry
     resume = ctx.sources.resume
     if resume.get("problem_kind"):
@@ -1162,7 +1192,7 @@ def current_source(
         letter = sources.cover_letter
         if letter.get("problem_kind"):
             return None
-        return "cover_letter", f'{letter["document_id"]}@{letter["version"]}', str(letter["content_sha256"]), ""
+        return "cover_letter", f'{letter["document_id"]}@{letter["version"]}', str(letter["content_sha256"]), str(letter.get("file_name") or "")
     return None
 
 
@@ -1216,7 +1246,9 @@ def preview_values(
         was = str(entry.get("file_sha256") or "") if found_kind in ("resume", "cover_letter") else str(entry.get("value_mac") or "")
         changed = found_kind != stored.get("kind") or ref != str(stored.get("ref") or "") or (bool(was) and mac != was)
         shown = (not changed) if handoff else True
-        result[str(entry.get("key") or "")] = {
-            "text": _preview_text(value) if shown else "", "changed": bool(changed), "available": True, "shown": bool(shown),
-        }
+        shown_entry = {"text": _preview_text(value) if shown else "", "changed": bool(changed), "available": True, "shown": bool(shown)}
+        if found_kind == "cover_letter" and shown:
+            # The letter itself is what the student is approving, so the preview shows all of it, not a cut line.
+            shown_entry["body"] = str(sources.cover_letter.get("content") or "")
+        result[str(entry.get("key") or "")] = shown_entry
     return result

@@ -23,6 +23,7 @@ import realdata_guard
 realdata_guard.install()
 
 import apply_agent_fakes as fakes
+import apply_fake_ats
 from browser_support import requires_chromium
 from helpers_apply import setUpModule, tearDownModule  # noqa: F401 (module fixtures: unittest and pytest find them here)
 from opportunity_app.apply.agent_types import HANDOFF_NOT_SUBMITTED
@@ -45,8 +46,16 @@ class RealDriverHandoffTests(HandoffCase):
         self.addCleanup(self.runner.shutdown, 30)
         self.settled_with = []
 
-    def factory(self, student, scenario="confirm"):
-        return fakes.BrowserAgentFactory(scenario, record_path=str(self.record), mode="handoff", student=student)
+    def factory(self, student, scenario="confirm", **more):
+        return fakes.BrowserAgentFactory(scenario, record_path=str(self.record), mode="handoff", student=student, **more)
+
+    def letter(self, status="approved", content=fakes.LETTER_TEXT):
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO generated_documents(id, user_id, opportunity_id, document_type, version, content, evidence_json, status, approved_at, "
+                "created_at, updated_at) VALUES('doc-1', ?, ?, 'cover_letter', 1, ?, ?, ?, ?, ?, ?)",
+                (USER, "job-a", content, json.dumps([{"profile_field": "name", "value": "Sam", "source": "confirmed_profile"}]), status,
+                 "2026-10-08T00:00:00+00:00" if status == "approved" else None, "2026-10-08T00:00:00+00:00", "2026-10-08T00:00:00+00:00"))
 
     def seen(self):
         return json.loads(self.record.read_text(encoding="utf-8"))
@@ -100,6 +109,38 @@ class RealDriverHandoffTests(HandoffCase):
         self.assertTrue(self.settled_with[0]["pids"], "no process was seen below the driver")
         evidence = json.loads(row["evidence_json"])
         self.assertEqual((evidence["handoff_end"], evidence["browser_closed"], evidence["runner"]["closed_confirmed"]), ("posted", True, True))
+        self.assert_settled()
+
+    @requires_chromium
+    def test_the_approved_cover_letter_crosses_the_pipe_is_attached_by_the_real_agent_and_leaves_with_the_form(self):
+        self.letter()
+        with mock.patch.dict(apply_fake_ats.CANNED, {"letter_required": True}):
+            run_id = self.handoff(self.factory("complete_and_submit", letter_required=True))
+            row = self.finished(run_id)
+        self.assertEqual((row["outcome"], row["status"]), ("submitted", "finished"), row["reasons_json"])
+        plan = {item["key"]: item for item in json.loads(row["plan_json"])}
+        self.assertEqual((plan["cover_letter"]["disposition"], plan["cover_letter"]["source"]["ref"]), ("fill", "doc-1@1"))
+        self.assertIn("cover_letter", json.loads(row["evidence_json"])["filled_keys"])
+        posted = self.seen()["requests"]
+        post = next(item for item in posted if item["method"] == "POST" and item["path"] == "/examplerobotics/jobs/4000000001")
+        stored = self.conn.execute("SELECT filename FROM generated_document_artifacts WHERE document_id='doc-1'").fetchone()
+        self.assertIn(stored["filename"], post["post_data"], "the file went out under the name the student sees")
+        self.assertEqual(self.claim_of(run_id)["state"], "submitted")
+        self.assert_settled()
+
+    @requires_chromium
+    def test_a_cover_letter_that_is_only_a_draft_is_left_for_the_student_and_nothing_is_attached(self):
+        self.letter(status="draft")
+        with mock.patch.dict(apply_fake_ats.CANNED, {"letter_required": True}):
+            run_id = self.handoff(self.factory("do_nothing", letter_required=True))
+            self.turn(run_id)
+            self.assertTrue(self.runner.cancel(run_id))
+            row = self.finished(run_id)
+        plan = {item["key"]: item for item in json.loads(row["plan_json"])}
+        self.assertEqual(plan["cover_letter"]["disposition"], "left_for_you")
+        self.assertIn("still a draft", plan["cover_letter"]["problem"])
+        self.assertNotIn("cover_letter", json.loads(row["evidence_json"]).get("filled_keys", []))
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM generated_document_artifacts").fetchone()[0], 0, "no PDF was made of a draft")
         self.assert_settled()
 
     @requires_chromium

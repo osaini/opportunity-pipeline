@@ -285,6 +285,9 @@ def form_values(body: str) -> dict[str, list[str]]:
 
 
 class FakeGreenhouse:
+    # The listing can say the cover letter is required; the page then carries the required marker on its upload group, as the live one does.
+    letter_required = False
+
     def __init__(self, scenario: str = "confirm") -> None:
         if scenario not in SCENARIOS:
             raise ValueError(f"unknown scenario {scenario!r}")
@@ -385,6 +388,8 @@ class FakeGreenhouse:
             html = html.replace('"submitPath":"/examplerobotics/jobs/4000000001",', "")
         if self.scenario == "s3_upload":
             html = html.replace('data-allow-s3="false"', 'data-allow-s3="true"')
+        if self.letter_required:
+            html = html.replace('<label for="cover_letter">Cover Letter</label>', '<label for="cover_letter">Cover Letter <span class="required"></span></label>')
         if self.scenario == "no_portfolio":
             field_block = re.search(r'[ \t]*<div class="field">\s*<label for="question_4000000102">.*?</div>\s*?\n', html, flags=re.S)
             assert field_block, "the fixture's Portfolio field moved"
@@ -443,16 +448,24 @@ class FakeSchemaClient:
         if self.closed:
             return None
         if self.any_job:
-            return copy.deepcopy(fixture_json("schema_legacy.json" if self.legacy else "schema_new.json"))
+            return self._new_listing() if not self.legacy else copy.deepcopy(fixture_json("schema_legacy.json"))
         if board_token != BOARD_TOKEN:
             return None
         if job_id == JOB_ID and not self.legacy:
-            return copy.deepcopy(fixture_json("schema_new.json"))
+            return self._new_listing()
         if job_id == LEGACY_JOB_ID or (self.legacy and job_id == JOB_ID):
             return copy.deepcopy(fixture_json("schema_legacy.json"))
         return None
 
     __call__ = fetch
+
+    @staticmethod
+    def _new_listing() -> dict[str, Any]:
+        """The fictional listing; ``CANNED["letter_required"]`` makes its cover letter a required question (read at each fetch)."""
+        listing = copy.deepcopy(fixture_json("schema_new.json"))
+        if CANNED.get("letter_required"):
+            next(block for block in listing["questions"] if block["label"] == "Cover Letter")["required"] = True
+        return listing
 
     def fetch_url(self, url: str) -> dict[str, Any] | None:
         """The same, from a boards-api URL: /v1/boards/{token}/jobs/{id}."""
@@ -465,7 +478,8 @@ class FakeSchemaClient:
 # application (seconds), and "outcome" is what the form then does: submitted, unconfirmed, security_code, refused (the
 # app says no to the hand-over), failed_4xx, or hang_after_hand_over. "after_front" (optional) ends the wait that many seconds
 # after the first request to bring the window forward, so a test of that request waits for it rather than racing a fixed wait.
-CANNED: dict[str, Any] = {"hang": False, "outcome": "rehearsed", "step_delay": 0.3, "handoff": {"wait": 1.5, "outcome": "submitted"}}
+# "letter_required" makes the listing's cover letter a required question, so a test can see what the page does with and without an approved letter.
+CANNED: dict[str, Any] = {"hang": False, "outcome": "rehearsed", "step_delay": 0.3, "handoff": {"wait": 1.5, "outcome": "submitted"}, "letter_required": False}
 HANDOFF_OUTCOMES = ("submitted", "unconfirmed", "security_code", "refused", "failed_4xx", "hang_after_hand_over")
 STOPPED_TEXT = STOPPED
 NO_OPTIONS_TEXT = "No options came back for what you typed"
@@ -550,7 +564,7 @@ class CannedAgent:
         return self._pause(cancelled)
 
     def run(self, plan: Any, *, page_url: str, schema: list[Any], files: dict[str, Any], lookup: Any = None, replan: Any = None,
-            hand_over: Any = None, cancelled: Any = None, link: Any = None) -> Any:
+            hand_over: Any = None, cancelled: Any = None, link: Any = None, check_file: Any = None) -> Any:
         from opportunity_app.apply import policy as apply_policy
         from opportunity_app.apply.agent_types import PROGRESS_STEPS, RunResult
 
@@ -592,7 +606,8 @@ class CannedAgent:
             screenshots=shots, refused=[{"method": "POST", "host": "analytics.example-robotics.test", "rule": "non_get"}],
             evidence={"page": "application_form_new", "loader": {"submit_path": True, "confirmation_path": True}, "uploads_on_attach": False,
                       "captcha_widget": False, "lookups": [], "submit_path_hit": False, "refused_total": 1,
-                      "filled_keys": [entry["key"] for entry in entries if entry["disposition"] == "fill" and entry.get("control") != "file"],
+                      # A file counts as attached when the runner read one for it (the résumé, an approved cover letter); there is no page to read it back from.
+                      "filled_keys": [entry["key"] for entry in entries if entry["disposition"] == "fill" and (entry.get("control") != "file" or entry["key"] in files)],
                       "checked_keys": [entry["key"] for entry in entries if entry["disposition"] == "deferred" and entry.get("control") != "file"]},
         )
 
