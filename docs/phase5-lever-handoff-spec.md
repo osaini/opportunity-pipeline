@@ -1,8 +1,8 @@
 # Phase 5 addendum: "Apply for me" on Lever (Finish in browser only)
 
-- **Status:** draft 1, 2026-10-04. Nothing here is built. It is the "Later: Lever" row of the Phase 5
-  milestone table (`phase5-apply-agent-spec.md` section 14, which said "Separate specs"), written before
-  any code so that the student answers the two decisions in section 4 first.
+- **Status:** draft 1, 2026-10-04; L1 and L2 answered 2026-10-07 (LV0 done, section 4). Nothing here is built. It is
+  the "Later: Lever" row of the Phase 5 milestone table (`phase5-apply-agent-spec.md` section 14, which said "Separate
+  specs"). Building LV1a onward still needs the student's go.
 - **Base:** `origin/main` 946c524 plus PR #81 (the `active_at_company` tick and the notice that every model call
   carries). Line numbers below are as of that tree.
 - **Relation to Phase 5:** this file changes only what Lever forces to change. Every Phase 5 rule not named here
@@ -173,6 +173,13 @@ Read on 2026-10-04 from six public boards. Each item is something the design rel
 ## 4. Decisions the student must make before build
 
 Only L1 and L2 are new. Section 4.1 lists the Phase 5 answers that carry over unchanged, so nothing is asked twice.
+
+### Answers recorded 2026-10-07
+
+| # | Answer | Differs from recommendation? |
+| --- | --- | --- |
+| L1 | **A.** The app may attach the résumé on Lever, in Finish in browser only, behind the `apply_lever_resume_upload` setting, which is off by default. While it is off, Lever behaves as C. When it is on, the start confirmation says the file goes to Lever as soon as it is attached, the run records it, and the request guard lets only the one `POST {origin}/parseResume` the app's attach causes. | No |
+| L2 | **A.** A field Lever's résumé reader filled where the app has no confirmed fact is cleared and listed as "left for you", and the read-back proves it is empty (6.7, 6.8). | No |
 
 ### L1. May the app attach your résumé on Lever, knowing Lever reads it at once?
 
@@ -882,7 +889,7 @@ change to AGENTS.md "Never auto-apply".
 
 | # | PR | Contents | Done when |
 | --- | --- | --- | --- |
-| LV0 | Decisions | The student answers L1 and L2; this file is updated with the answers. No code. | Answers recorded here. |
+| LV0 | Decisions | The student answers L1 and L2; this file is updated with the answers. No code. | Done 2026-10-07: L1 A, L2 A (section 4). |
 | LV1a | The seam, part 1 (refactor only) | `apply/ats.py` (`AtsSpec`, registry), the `AtsAdapter` Protocol, `AgentJob.ats`, the factory argument. Greenhouse is the only registered ATS. | All existing tests green unchanged; `test_apply_ats_seam.py` parity rows green. |
 | LV1b | The seam, part 2 | `RoutePolicy` and the per-ATS `route_decision`, `decide_outcome`, `confirmation_reached`; the `RESOLVABLE_HOSTS` union; the per-ATS branches in `ApplyAgent._run` and the `uploads_on_attach` split (5.2 item 2); per-ATS sentences. **The three corrections of 5.2 item 4 land as separate commits**, each with a test that failed first. | Parity green; the three corrections' tests green; wording for Greenhouse unchanged. |
 | LV2 | Lever, read-only | `apply/lever.py`, `apply/lever_form.py`, `LeverPageClient`, the three fixtures, the `apply_agent_lever` switch, the Lever check route answer, `ats_mode` refusal, per-ATS label fields, the sandbox Lever role, `_job_link` for UUIDs. No browser. | 10.7 LV2 row green; for any saved Lever role the student sees what is missing, and the tracker is unchanged. |
