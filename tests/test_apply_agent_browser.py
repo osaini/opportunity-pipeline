@@ -340,7 +340,7 @@ class RehearsalTests(AgentCase):
 
     def test_a_form_with_more_than_one_page_is_not_rehearsed_as_if_it_were_read_whole(self):
         for scenario in ("next_button", "continue_link", "step_indicator", "continue_to_step", "next_section", "next_review", "page_slash_counter",
-                         "next_button_aria", "counter_outside"):
+                         "next_button_aria", "counter_outside", "next_review_submit", "continue_to_submit", "go_to_step"):
             with self.subTest(scenario=scenario):
                 run = self.go(scenario)
                 result = run.result

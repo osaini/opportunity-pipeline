@@ -111,6 +111,9 @@ SCENARIOS = (
     "page_slash_counter",           # a multi-page form: "Page 1/3" above the questions
     "next_button_aria",             # a multi-page form: a button with only an icon and the label "Go to the next page"
     "counter_outside",              # a multi-page form: "Step 2 of 4" in a header outside the form's own element
+    "next_review_submit",           # a multi-page form: a "Next: Review and submit" button under the questions
+    "continue_to_submit",           # a multi-page form: a "Continue to submit" button under the questions
+    "go_to_step",                   # a multi-page form: a "Go to step 2" button under the questions
 )
 
 _FORM = 'document.getElementById("application-form")'
@@ -190,6 +193,24 @@ _SCRIPTS = {
       var note = document.createElement("div");
       note.textContent = "Step 2 of 4";
       document.body.insertBefore(note, document.body.firstChild);
+    })();""",
+    "next_review_submit": """(function () {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Next: Review and submit";
+      """ + _FORM + """.appendChild(button);
+    })();""",
+    "continue_to_submit": """(function () {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Continue to submit";
+      """ + _FORM + """.appendChild(button);
+    })();""",
+    "go_to_step": """(function () {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Go to step 2";
+      """ + _FORM + """.appendChild(button);
     })();""",
     "continue_link": """(function () {
       var link = document.createElement("a");

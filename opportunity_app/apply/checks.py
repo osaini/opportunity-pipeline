@@ -870,7 +870,7 @@ def join(schema_fields: Iterable[Any], scan_fields: Iterable[Any], fill_keys: It
 # ---------------------------------------------------------------------------------------------
 
 # Whether the form is one page of several. It fails closed: any visible button, link or role=button on the page whose words (text, value,
-# aria-label or title) include next, continue or proceed, other than a control that says submit, and any step counter ("Step 1 of 3",
+# aria-label or title) include next, continue, proceed, "go to step" or "step 2", and any step counter ("Step 1 of 3",
 # "Page 1/3", "2 of 4"), makes it so. The wording of a real multi-page form is not known, so the words are matched, not the whole text.
 # It returns fixed words only, never anything the page said. The app reads one page, so a form that shows either is not a form it read
 # whole (the rehearsal says so and does not call itself clean).
@@ -886,11 +886,10 @@ MORE_PAGES_SCRIPT = r"""() => {
     return box.width >= 2 && box.height >= 2;
   };
   const found = [];
-  const goes_on = /\b(next|continue|proceed)\b/;
-  const asks_to_send = /\bsubmit\b/;
+  const goes_on = /\b(next|continue|proceed)\b|\bgo to step\b|\bstep \d+\b/;
   for (const el of document.querySelectorAll("button, a, [role=button], input[type=button], input[type=submit], input[type=image]")) {
     const words = squash([el.innerText, el.value, el.getAttribute("aria-label"), el.getAttribute("title")].join(" "));
-    if (goes_on.test(words) && !asks_to_send.test(words) && shown(el)) { found.push("next"); break; }
+    if (goes_on.test(words) && shown(el)) { found.push("next"); break; }
   }
   // A counter written with a word ("Step 1 of 3", "Page 1/3") counts anywhere on the page; a bare "2 of 4" only beside the form.
   const named = /\b(?:step|page)\s*(\d+)\s*(?:of|\/)\s*(\d+)\b/.exec(squash(document.body.innerText));
