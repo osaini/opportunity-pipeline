@@ -583,7 +583,8 @@ web app's PATH, set `PIPELINE_MCPORTER` in `.env` to its full path.
 
 ## 7c. Apply for me (optional)
 
-**Apply for me** reads a saved Greenhouse role's public application form and
+**Apply for me** reads a saved Greenhouse role's public application form (and,
+once the student turns it on in step 7, a saved Lever role's) and
 shows the student what it would fill from their confirmed facts and saved
 answers, and which questions it cannot answer yet. The student answers a
 missing question once, on the role, and it is saved for that company only: Apply
@@ -714,6 +715,30 @@ fields too.
    The confirmation-email watch is optional for Finish in browser: without Gmail
    connected the card says the app isn't checking for a confirmation email.
    Pausing automation does not close a window they opened; Stop does.
+
+7. **Lever (optional; ask, never turn on for them).** A saved Lever posting
+   (`jobs.lever.co`, or `jobs.eu.lever.co`) gets the same "what's missing" view as a
+   Greenhouse role, read from the posting's own application page. Filling a Lever
+   form in a window is not available yet, so there is no rehearsal and no Finish in
+   browser for it, and the view says so. Two switches in Profile › Automation, both
+   off until the student turns them on, and the app never turns either on itself:
+
+   - **Apply for me on Lever** lets Apply for me read a saved Lever role. It needs
+     **Apply for me** on first.
+   - **Let the app attach my résumé on Lever** is their answer to one question only
+     they can answer: Lever reads a résumé the moment it is attached, which sends the
+     file to Lever before they press Submit (the same happens when they attach it
+     themselves in the window). Say that plainly and ask. Off, the app attaches
+     nothing and the résumé stays on their "left for you" list. It needs the first
+     switch on.
+
+   Lever's lists have one that matters here: **Location**. The student types the
+   exact name as Lever's list spells it under Profile › Automation › Apply for me
+   settings › **Exact options for lists the Lever form owns**, or on the role. The
+   app never guesses one. Pronouns, the disability question (answering it makes Lever
+   require a typed signature and a date) and a marketing consent are never filled.
+   Nothing about the student is written into the app for this: the switches, the
+   location and the answers all live in their own copy.
 
 ## 8. First run and daily use
 
