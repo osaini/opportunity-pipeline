@@ -16,6 +16,8 @@ class ApplyAnswerRequest(BaseModel):
 
 class ApplyLabelRequest(BaseModel):
     label: str = Field(min_length=1, max_length=200)
+    # Whose form's list this is. Left out, it is Greenhouse's, as it was before Lever.
+    ats: str = Field(default="greenhouse", min_length=1, max_length=40)
 
 
 class ApplySensitiveAnswerRequest(BaseModel):

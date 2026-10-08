@@ -37,7 +37,7 @@ if TYPE_CHECKING:  # only the create_app signature names these
     import httpx
 
     from ..integrations.agent_providers import AgentProvider
-    from ..apply.schema_client import SchemaClient
+    from ..apply.schema_client import PageClient, SchemaClient
     from ..opportunities.boards import BoardTracker
     from ..outreach.call_prep import CallPrepWorker
     from ..outreach.discovery import DiscoveryManager
@@ -124,6 +124,7 @@ def create_app(
     outreach_form_submitter_factory: Callable[..., Any] | None = None,
     apply_agent_factory: Any = None,
     apply_schema_client_factory: Callable[[], SchemaClient] | None = None,
+    apply_page_client_factory: Callable[[], PageClient] | None = None,
     call_prep_worker: CallPrepWorker | None = None,
     start_call_prep_worker: bool | None = None,
     start_inbox_watcher: bool | None = None,
@@ -173,6 +174,7 @@ def create_app(
         outreach_form_submitter_factory=outreach_form_submitter_factory,
         apply_agent_factory=apply_agent_factory,
         apply_schema_client_factory=apply_schema_client_factory,
+        apply_page_client_factory=apply_page_client_factory,
         call_prep_worker=call_prep_worker,
         start_call_prep_worker=start_call_prep_worker,
         start_inbox_watcher=start_inbox_watcher,

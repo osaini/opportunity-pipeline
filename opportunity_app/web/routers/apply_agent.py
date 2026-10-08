@@ -12,6 +12,7 @@ from ..overrides import shared_router
 from ...automation import ledger as automation_core
 from ...applications.actions import OpportunityNotFoundError
 from ...apply import (
+    ats as apply_ats,
     classify as apply_classify,
     policy as apply_policy,
     preflight as apply_preflight,
@@ -20,7 +21,7 @@ from ...apply import (
     sensitive as apply_sensitive,
     watch as apply_watch,
 )
-from ...apply.schema_client import SchemaClient
+from ...apply.schema_client import PageClient, SchemaClient
 from ..context import AppContext
 from ..dependencies import get_ctx, require_auth, require_browser_session, writable_connection
 from ..models.apply_agent import (
@@ -55,6 +56,12 @@ def apply_schema_client(ctx: AppContext) -> SchemaClient:
     if ctx.services.apply_schema_client_factory is None or ctx.services.apply_agent_factory is None:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=apply_runs.NOT_HERE)
     return ctx.services.apply_schema_client_factory()
+
+
+def apply_page_client(ctx: AppContext) -> PageClient | None:
+    """The client that reads a Lever posting's application page, or None in an app that was given none (the check then says Lever did not answer)."""
+    factory = ctx.services.apply_page_client_factory
+    return factory() if factory is not None else None
 
 
 def require_apply_agent(conn: sqlite3.Connection, user_id: str) -> None:
@@ -102,6 +109,7 @@ def apply_agent_check(
     try:
         return apply_preflight.check(
             conn, user_id, opportunity_id, client=client, cache=ctx.runtime.apply_schema_cache, resume_root=ctx.config.resume_storage,
+            page_client=apply_page_client(ctx),
         )
     except OpportunityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Opportunity not found") from exc
@@ -121,7 +129,7 @@ def apply_agent_answer(
     try:
         return apply_preflight.answer_missing(
             conn, user_id, opportunity_id, key=payload.key, answer=payload.answer, reusable=payload.reusable, posting_confirmed=payload.posting_confirmed,
-            client=client, cache=ctx.runtime.apply_schema_cache, resume_root=ctx.config.resume_storage,
+            client=client, cache=ctx.runtime.apply_schema_cache, resume_root=ctx.config.resume_storage, page_client=apply_page_client(ctx),
         )
     except OpportunityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Opportunity not found") from exc
@@ -136,6 +144,14 @@ def apply_agent_settings(
 ) -> dict[str, Any]:
     """The Apply for me settings in force: the switch and what it needs, the limits, and the option labels confirmed."""
     values = apply_runs.limits(conn, user_id)
+    lever_on = automation_core.mode(conn, user_id, "apply_agent_lever") == "on"
+    sets = [{"ats": apply_ats.GREENHOUSE.key, "name": apply_ats.GREENHOUSE.display_name,
+             "fields": list(apply_policy.label_fields_for(apply_ats.GREENHOUSE.key)),
+             "labels": apply_runs.list_ats_labels(conn, user_id, apply_ats.GREENHOUSE.key)}]
+    if lever_on:
+        sets.append({"ats": apply_ats.LEVER.key, "name": apply_ats.LEVER.display_name,
+                     "fields": list(apply_policy.label_fields_for(apply_ats.LEVER.key)),
+                     "labels": apply_runs.list_ats_labels(conn, user_id, apply_ats.LEVER.key)})
     return {
         "mode": automation_core.mode(conn, user_id, "apply_agent"),
         "requirement": apply_runs.setup_requirement(conn, user_id),
@@ -145,6 +161,9 @@ def apply_agent_settings(
         ],
         "ats_labels": apply_runs.list_ats_labels(conn, user_id),
         "label_fields": list(apply_policy.ALLOWED_ATS_LABEL_FIELDS),
+        # The same for every ATS whose form has lists of its own (Lever's only once its switch is on), each with its own saved options.
+        "ats_label_sets": sets,
+        "lever": {"mode": "on" if lever_on else "off", "resume_upload": automation_core.mode(conn, user_id, "apply_lever_resume_upload")},
         "evidence_days": apply_runs.evidence_days(),
         "ats_statistics": [apply_watch.ats_statistics(conn, user_id)],
     }
@@ -158,8 +177,10 @@ def put_apply_ats_label(
     user_id: str = Depends(require_auth),
 ) -> dict[str, str]:
     """Save the exact text of an option the student picked in a typeahead list (school, location, degree)."""
+    if payload.ats not in apply_ats.keys():
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Unknown ATS")
     try:
-        return apply_runs.set_ats_label(conn, user_id, field, payload.label)
+        return apply_runs.set_ats_label(conn, user_id, field, payload.label, ats=payload.ats)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
@@ -167,10 +188,13 @@ def put_apply_ats_label(
 @router.delete("/api/v1/apply-agent/ats-labels/{field}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_apply_ats_label(
     field: str,
+    ats: str = Query(default="greenhouse", min_length=1, max_length=40),
     conn: sqlite3.Connection = Depends(writable_connection),
     user_id: str = Depends(require_auth),
 ) -> Response:
-    if not apply_runs.delete_ats_label(conn, user_id, field):
+    if ats not in apply_ats.keys():
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Unknown ATS")
+    if not apply_runs.delete_ats_label(conn, user_id, field, ats=ats):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No confirmed option for that list")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -243,6 +267,7 @@ def apply_agent_sensitive_answer(
         return apply_preflight.answer_sensitive(
             conn, user_id, opportunity_id, key=payload.key, answer=payload.answer, consent=payload.consent, any_company=payload.any_company,
             posting_confirmed=payload.posting_confirmed, client=client, cache=ctx.runtime.apply_schema_cache, resume_root=ctx.config.resume_storage,
+            page_client=apply_page_client(ctx),
         )
     except OpportunityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Opportunity not found") from exc
@@ -283,7 +308,7 @@ def _start_run(
         run_id = ctx.runtime.apply_runner.start(
             conn, database_target=ctx.config.database_target, user_id=user_id, opportunity_id=opportunity_id, kind=kind,
             agent_factory=factory, schema_client=client, apply_root=ctx.config.apply_storage, resume_root=ctx.config.resume_storage,
-            lookup_key=key, lookup_text=text, acknowledged=acknowledged, posting_confirmed=posting_confirmed,
+            lookup_key=key, lookup_text=text, acknowledged=acknowledged, posting_confirmed=posting_confirmed, page_client=apply_page_client(ctx),
         )
     except OpportunityNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Opportunity not found") from exc

@@ -1097,7 +1097,7 @@ class ApplyRunner:
     def start(
         self, conn: sqlite3.Connection, *, database_target: Any, user_id: str, opportunity_id: str, kind: str, agent_factory: Any,
         schema_client: Any, apply_root: Path, resume_root: Path, lookup_key: str = "", lookup_text: str = "",
-        acknowledged: Sequence[str] = (), posting_confirmed: bool = False, now: datetime | None = None,
+        acknowledged: Sequence[str] = (), posting_confirmed: bool = False, now: datetime | None = None, page_client: Any = None,
     ) -> str:
         """Check the role, write the run's row and start the supervisor. Returns the run id; the run goes on in a thread.
 
@@ -1105,11 +1105,19 @@ class ApplyRunner:
         refused until the student has said it is the right one (``posting_confirmed``): the run is filed under the saved
         role's company.
 
+        An ATS that supports one way of applying only (Lever: Finish in browser) refuses the others with code ``ats_mode`` before anything is
+        read, and one whose driver is not built yet refuses them all with ``ats_not_built``. ``page_client`` reads a Lever posting's page.
+
         Raises RunnerBusy, RunRefused (the sentence and status for the route) and OpportunityNotFoundError. A refusal
         writes nothing: no run, and for Finish in browser no claim, application or event.
         """
         if kind not in ("lookup", "rehearsal", "handoff"):
             raise ValueError(f"Unsupported run kind: {kind}")
+        found = apply_ats.identify(conn, opportunity_id)
+        if found is not None:
+            refusal = apply_ats.mode_refusal(found[0], MODE_FOR_KIND[kind])
+            if refusal:
+                raise RunRefused(409, refusal[1], code=refusal[0])
         active = self._reserve(user_id)
         run_id = ""
         token = ""
@@ -1117,7 +1125,7 @@ class ApplyRunner:
             handoff = kind == "handoff"
             inputs = apply_preflight.run_inputs(
                 conn, user_id, opportunity_id, client=schema_client, mode="handoff" if handoff else "rehearse",
-                resume_root=resume_root, apply_root=apply_root, now=now,
+                resume_root=resume_root, apply_root=apply_root, now=now, page_client=page_client,
             )
             result = inputs.result
             if inputs.plan is None or inputs.schema is None or result["status"] in ("unavailable", "failed"):
@@ -1296,6 +1304,7 @@ class ApplyRunner:
             _guard(lambda: note("start", progress_text("start", apply_ats.name_of(work.job.ats))))
             sources = apply_policy.sources_for(
                 conn, user_id, work.opportunity_id, company=work.company, storage_root=work.resume_root, key=apply_policy.mac_key(work.apply_root),
+                ats=work.job.ats,
             )
 
             spec = apply_ats.spec_for(work.job.ats)
@@ -1304,6 +1313,7 @@ class ApplyRunner:
                 return apply_policy.build_plan(
                     apply_policy.with_page_labels(work.schema, scan), scan, sources, work.company, "handoff" if handoff else "rehearse",
                     ats_name=spec.display_name, canonical_url=work.page_url, adapter_version=spec.adapter_version, uploads_on_attach=uploads_on_attach,
+                    ats=spec.key,
                 )
 
             def check_file(_key: str, ref: str, sha256: str) -> bool:
