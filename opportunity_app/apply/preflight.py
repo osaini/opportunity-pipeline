@@ -47,17 +47,18 @@ class AnswerRefused(ValueError):
 class SchemaCache:
     """The parsed listings the check has fetched, kept in memory for an hour so opening a role does not refetch.
 
-    A run always fetches fresh; only the check reads this. Only a listing that came back is kept: a 404 or an
-    error is asked about again.
+    A listing is kept under (ATS, board token, job id): a token is the name of a board within its ATS, so the same token and job id on
+    another ATS is another posting. A run always fetches fresh; only the check reads this. Only a listing that came back is kept: a 404
+    or an error is asked about again.
     """
 
     def __init__(self, ttl: float = SCHEMA_CACHE_SECONDS, clock: Any = time.monotonic) -> None:
         self._ttl = ttl
         self._clock = clock
-        self._items: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+        self._items: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
         self._lock = threading.Lock()
 
-    def get(self, key: tuple[str, str]) -> dict[str, Any] | None:
+    def get(self, key: tuple[str, str, str]) -> dict[str, Any] | None:
         with self._lock:
             held = self._items.get(key)
             if held is None or self._clock() - held[0] >= self._ttl:
@@ -65,7 +66,7 @@ class SchemaCache:
                 return None
             return copy.deepcopy(held[1])
 
-    def put(self, key: tuple[str, str], listing: dict[str, Any]) -> None:
+    def put(self, key: tuple[str, str, str], listing: dict[str, Any]) -> None:
         with self._lock:
             self._items[key] = (self._clock(), copy.deepcopy(listing))
 
@@ -89,11 +90,11 @@ def require_opportunity(conn: sqlite3.Connection, user_id: str, opportunity_id: 
 
 
 def _listing(
-    client: SchemaClient, cache: SchemaCache | None, token: str, job_id: str,
+    client: SchemaClient, cache: SchemaCache | None, ats: str, token: str, job_id: str,
 ) -> tuple[dict[str, Any] | None, str, bool]:
     """(the listing, a sentence when there is none, whether it came from the cache)."""
     if cache is not None:
-        held = cache.get((token, job_id))
+        held = cache.get((ats, token, job_id))
         if held is not None:
             return held, "", True
     try:
@@ -103,7 +104,7 @@ def _listing(
     if listing is None:
         return None, NOT_FOUND, False
     if cache is not None:
-        cache.put((token, job_id), listing)
+        cache.put((ats, token, job_id), listing)
     return listing, "", False
 
 
@@ -270,7 +271,7 @@ def _prepare(
     result["asks"] = asks
     if block is not None:
         return {**result, "status": "failed", "message": block.message}, None, None, None
-    listing, sentence, cached = _listing(client, cache, token, job)
+    listing, sentence, cached = _listing(client, cache, ats.key, token, job)
     if listing is None:
         return {**result, "status": "failed", "message": sentence}, None, None, None
     result["from_cache"] = cached

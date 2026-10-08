@@ -883,5 +883,44 @@ class CompanyLimitIsPerAtsTests(ApplyCase):
         with self.assertRaises(ClaimRefused) as caught:
             self.start("job-1", "handoff", board="bluefin", now=self.at(0))
         self.assertEqual((caught.exception.code, caught.exception.ask), (apply_runs.ASK_COMPANY_LIMIT, True))
+# --- Correction 2: the schema cache is keyed by the ATS ---------------------------------------------------------------
+
+class SchemaCacheIsPerAtsTests(runner_tests.RunnerCase):
+    def test_the_key_holds_the_ats_and_a_listing_is_served_only_to_it(self):
+        cache = apply_preflight.SchemaCache()
+        cache.put(("greenhouse", "acme", "1"), {"title": "A"})
+        self.assertEqual(cache.get(("greenhouse", "acme", "1")), {"title": "A"})
+        self.assertIsNone(cache.get(("second", "acme", "1")), "another ATS's site of the same name and job id is another posting")
+
+    def test_a_listing_read_for_one_ats_is_not_served_for_another(self):
+        class Client:
+            def __init__(self, listing):
+                self.listing, self.calls = listing, 0
+
+            def fetch(self, token, job_id):
+                self.calls += 1
+                return self.listing
+
+        cache = apply_preflight.SchemaCache()
+        first, second = Client({"title": "On the first"}), Client({"title": "On the second"})
+        self.assertEqual(apply_preflight._listing(first, cache, "greenhouse", "acme", "1"), ({"title": "On the first"}, "", False))
+        self.assertEqual(apply_preflight._listing(second, cache, "second", "acme", "1"), ({"title": "On the second"}, "", False))
+        self.assertEqual(apply_preflight._listing(first, cache, "greenhouse", "acme", "1"), ({"title": "On the first"}, "", True))
+        self.assertEqual((first.calls, second.calls), (1, 1))
+
+    def test_the_check_files_a_listing_under_the_ats_of_the_role(self):
+        cache = apply_preflight.SchemaCache()
+
+        def check():
+            return apply_preflight.check(self.conn, runner_tests.USER, runner_tests.ACME, client=self.schema, cache=cache, resume_root=self.root / "resumes")
+
+        self.assertFalse(check()["from_cache"])
+        self.assertTrue(check()["from_cache"])
+        renamed = dataclasses.replace(GREENHOUSE, key="greenhouse-renamed")
+        with mock.patch.object(apply_ats, "REGISTRY", (renamed,)):
+            self.assertFalse(check()["from_cache"], "the same token and job id on another ATS is a different listing")
+            self.assertTrue(check()["from_cache"])
+
+
 if __name__ == "__main__":
     unittest.main()
