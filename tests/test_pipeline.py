@@ -67,7 +67,11 @@ class PipelineTests(unittest.TestCase):
             text.strip_html("<h2>About</h2><p>We  build\n things.</p><p>Line one<br>line <b>two</b></p>"),
             "About\nWe build things.\nLine one\nline two",
         )
-        self.assertEqual(text.strip_html("Plain text\n with  a break"), "Plain text with a break")
+        # Text with no tags keeps its own line breaks (Lever's descriptionPlain puts each requirement on its own line);
+        # in HTML a newline is only whitespace.
+        self.assertEqual(text.strip_html("Plain text\n with  a break\r\n\nand more"), "Plain text\nwith a break\nand more")
+        self.assertEqual(text.strip_html("<p>Some\ntext</p>"), "Some text")
+        self.assertEqual(text.strip_html("a &lt; b\nc"), "a < b\nc")
         self.assertEqual(text.strip_html("&lt;p&gt;One&lt;/p&gt;&lt;p&gt;Two&lt;/p&gt;"), "One\nTwo")
         self.assertEqual(text.strip_html("<div><p></p></div>  "), "")
 

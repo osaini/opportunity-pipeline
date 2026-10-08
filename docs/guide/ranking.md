@@ -83,16 +83,21 @@ A form question ("Are you authorized to work without sponsorship?") is not a
 statement by the company and is not read. "Without sponsorship" counts only as a
 condition on working, so "F-1 students can intern under CPT without visa
 sponsorship" and "candidates with and without sponsorship needs" are not read as
-closed. A sentence that also says the company does sponsor ("we cannot sponsor
-F-1 interns, but we sponsor H-1B") gets the flag and no penalty, since which part
-applies to this opening is yours to check.
+closed. A sentence that also says the company sponsors a visa ("we cannot sponsor
+every visa type, but we sponsor H-1B") gets the flag and no penalty, since which
+part applies to this opening is yours to check. A refusal that names the kind of
+role ("we cannot sponsor F-1 interns", "visas for this position") still costs the
+penalty, and so does one where the company sponsors something other than a visa
+("we sponsor student hackathons").
 
 **Experience.** "N years of ... experience" costs 18 points when N is more than
 `max_years_experience` (1 if unset). N may be a digit or a word ("six (6) years",
 "three years"), may carry "or more", and for a range ("3-5 years", "3 to 5
 years", "between 2 and 4 years", "2 years and up to 5 years") the first number is
 the one read, since that is what you have to meet. Years that say something else
-("a two year program", "founded five years ago", "18 years or older") are not read.
+("a two year program", "founded five years ago", "18 years or older") are not read,
+while "3+ years of program management experience" is. The years and the word
+"experience" must be on the same line.
 A posting that counts the years from graduation ("1-3 years of full-time
 professional experience post-graduation") asks for experience an internship does
 not give. If `graduation_year` is this year or later, that costs the 18 points
@@ -109,8 +114,10 @@ points ("pays up to $22/hour, below your $25/hour minimum"). With `paid_only` se
 true, a posting that calls the role unpaid ("an unpaid internship", "a volunteer
 role") costs 35; "unpaid leave" in a benefits list, or "unlike an unpaid
 internship", is not that. Only a stated hourly wage is compared: a yearly salary is not
-turned into an hourly rate, a posting that also states a yearly, monthly, weekly or
-daily figure is not compared at all, a shift differential, parking rate or donation
+turned into an hourly rate, a posting that also states a salary by the year, month,
+week or day ("Base salary: $95,000 per year") is not compared at all, a stipend,
+allowance or tuition benefit beside the hourly wage does not stop the comparison,
+a shift differential, parking rate or donation
 per hour is not a wage, a posting that states no pay changes nothing, and a
 currency other than USD (including "CA$30 per hour") is not compared with dollars.
 

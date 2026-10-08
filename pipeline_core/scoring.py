@@ -48,18 +48,25 @@ _ENTRY_TITLE_RE = re.compile(
 # years", "between 2 and 4 years", "2 years and up to 5 years"): the student has
 # to meet the floor, so the first number of a range is the one read. Years that
 # say something else ("a two year program", "founded five years ago", "18 years
-# or older") are not experience, even when the word follows a few words later.
+# or older") are not experience when that word comes right after "years"; the
+# same word after "of" is the kind of experience ("3+ years of program management
+# experience"). The years and "experience" must be on one line: a line break ends
+# the phrase ("Enrolled for at least 2 years" above "Experience with CAD").
 _NUMBER_WORDS = {
     "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
     "twelve": 12, "fifteen": 15, "twenty": 20,
 }
 _YEARS_NUMBER = r"(?:\d{1,2}|" + "|".join(_NUMBER_WORDS) + r")"
-_NOT_EXPERIENCE_YEARS = r"(?:age|old|older|degree|degrees|diploma|program|programs|ago|running)"
+# Never part of an experience phrase, wherever it falls before "experience".
+_NOT_EXPERIENCE_WORDS = r"(?:age|old|degree|degrees|diploma)"
+# Not experience when it comes right after "years".
+_NOT_EXPERIENCE_AFTER_YEARS = r"(?:program|programs|ago|running|(?:or[ \t]+)?older|of[ \t]+age)"
 _EXPERIENCE_YEARS_RE = re.compile(
     rf"(?<![\w.])(?:between\s+(?P<between>{_YEARS_NUMBER})\s+(?:years?\s+)?and\s+"
     rf"|(?P<low>{_YEARS_NUMBER})\s*(?:years?\s+)?(?:-|–|—|to|or|and\s+up\s+to)\s*)?(?P<high>{_YEARS_NUMBER})"
-    r"(?:\s*\(\d{1,2}\))?\+?(?:\s+(?:or\s+more|plus))?\s+years?'?\s+(?:of\s+)?"
-    rf"(?:(?!{_NOT_EXPERIENCE_YEARS}\b)[\w/+-]+\s+){{0,3}}?experience",
+    r"(?:\s*\(\d{1,2}\))?\+?(?:[ \t]+(?:or[ \t]+more|plus))?[ \t]+years?'?[ \t]+"
+    rf"(?!{_NOT_EXPERIENCE_AFTER_YEARS}\b)(?:of[ \t]+)?"
+    rf"(?:(?!{_NOT_EXPERIENCE_WORDS}\b)[\w/+-]+[ \t]+){{0,3}}?experience",
     re.IGNORECASE,
 )
 # "less than 1 year", "up to 3 years", "no more than 2 years": a cap on what is welcome, not a floor to meet.
@@ -96,9 +103,11 @@ _NO_SPONSORSHIP_RE = re.compile(
     rf"|sponsorship\b[^.\n]{{0,30}}?\b(?:is|are|will\s+be)\s+(?:not\s+(?:be\s+)?(?:offered|available|provided)|unavailable)"
     # "without sponsorship" closes it only as a condition on working ("authorized to work in the U.S. without
     # sponsorship"); "F-1 students can intern under CPT without visa sponsorship" and "candidates with and without
-    # sponsorship needs" do not.
-    rf"|(?:(?:authori[sz]ed|eligible|able|permitted|allowed)\s+to\s+(?:legally\s+)?work|work\s+authori[sz]ation)\b"
-    rf"(?:[^.?!\n]|\bU\.S\.(?:A\.)?){{0,60}}?(?<!with or )(?<!with and )(?<!and those )"
+    # sponsorship needs" do not. The condition may be long ("authorized to work for any employer in the United States,
+    # now and in the future, without sponsorship").
+    rf"|(?:(?:authori[sz]ed|eligible|able|permitted|allowed)\s+to\s+(?:legally\s+)?work|work\s+authori[sz]ation"
+    rf"|authori[sz]ation\s+to\s+work|right\s+to\s+work)\b"
+    rf"(?:[^.?!\n]|\bU\.S\.(?:A\.)?){{0,120}}?(?<!with or )(?<!with and )(?<!and those )"
     rf"\bwithout\s+(?:the\s+need\s+for\s+|requiring\s+|needing\s+)?{_VISA_KIND}sponsorship"
     rf")\b",
     re.IGNORECASE,
@@ -110,12 +119,23 @@ _QUESTION_OPENING_RE = re.compile(
     r"^\W*(?:are|will|would|do|does|did|can|could|have|is|may)\s+(?:you|they|applicants?|candidates?)\b", re.IGNORECASE
 )
 _SEPARATOR_RE = re.compile(r"[,:;–—]|\s-\s")
-# The same sentence says the company does sponsor ("we cannot sponsor F-1 interns, but we sponsor H-1B").
+# The same sentence says the company does sponsor a visa ("we cannot sponsor every visa type, but we sponsor H-1B").
+# "We sponsor student hackathons" is not about visas, and a semicolon ends the sentence for this check.
 _WE_SPONSOR_RE = re.compile(
     rf"\bwe\s+(?:(?:will|can|do|also|gladly|happily|currently)\s+)?"
     rf"(?:sponsor\b|(?:offer|provide)\s+{_VISA_KIND}sponsorship\b)",
     re.IGNORECASE,
 )
+_VISA_WORD_RE = re.compile(
+    r"\b(?:visas?|h-?1b|opt|cpt|green\s+cards?|immigration|work\s+authori[sz]ation)\b", re.IGNORECASE
+)
+_CLAUSE_BREAK_RE = re.compile(r"[;?!\n]|(?<!\bU)(?<!\bU\.S)\.")
+# A refusal that names the kind of role ("we cannot sponsor F-1 interns", "visas for this position") is about this
+# opening, whatever the company sponsors for others.
+_ROLE_KIND_RE = re.compile(
+    r"\b(?:interns?|internships?|co-?ops?|this\s+(?:role|position|opening|job))\b", re.IGNORECASE
+)
+_REFUSAL_CLAUSE_END_RE = re.compile(r"[,;?!\n]|\bbut\b|(?<!\bU)(?<!\bU\.S)\.", re.IGNORECASE)
 
 
 def _asks_the_applicant(description: str, match: re.Match[str], start: int, end: int) -> bool:
@@ -133,22 +153,39 @@ def _asks_the_applicant(description: str, match: re.Match[str], start: int, end:
     return len(re.findall(r"\w+", between)) <= 3 and not _SEPARATOR_RE.search(between)
 
 
+def _span_around(description: str, match: re.Match[str], breaks: re.Pattern[str]) -> tuple[int, int]:
+    """(start, end) of the stretch of text around ``match`` that ``breaks`` bounds on both sides."""
+    starts = [found.end() for found in breaks.finditer(description, 0, match.start())]
+    found = breaks.search(description, match.end())
+    return (starts[-1] if starts else 0), (found.start() if found is not None else len(description))
+
+
+def _also_sponsors_a_visa(description: str, match: re.Match[str]) -> bool:
+    """Whether the refusal's own sentence (to a semicolon) also says the company sponsors a visa, and the refusal does
+    not name the kind of role (an internship, this position), which would make it about this opening."""
+    start, end = _span_around(description, match, _CLAUSE_BREAK_RE)
+    clause_start, clause_end = _span_around(description, match, _REFUSAL_CLAUSE_END_RE)
+    if _ROLE_KIND_RE.search(description[clause_start:clause_end]):
+        return False
+    return any(
+        _VISA_WORD_RE.search(description[sponsor.start():end])
+        for sponsor in _WE_SPONSOR_RE.finditer(description, start, end)
+    )
+
+
 def sponsorship_closure(description: str) -> str | None:
     """"closed" when the description says sponsorship is not available (for the company or for this opening),
-    "mixed" when every sentence that says so also says the company sponsors, else None.
+    "mixed" when every sentence that says so also says the company sponsors a visa, else None.
 
     A form question ("Are you authorized to work in the US without sponsorship?") is text asking the applicant, not a
     statement by the company, so it does not count.
     """
     mixed = False
     for match in _NO_SPONSORSHIP_RE.finditer(description):
-        starts = [found.end() for found in _SENTENCE_BREAK_RE.finditer(description, 0, match.start())]
-        start = starts[-1] if starts else 0
-        found = _SENTENCE_BREAK_RE.search(description, match.end())
-        end = found.start() if found is not None else len(description)
+        start, end = _span_around(description, match, _SENTENCE_BREAK_RE)
         if _asks_the_applicant(description, match, start, end):
             continue
-        if _WE_SPONSOR_RE.search(description[start:end]):
+        if _also_sponsors_a_visa(description, match):
             mixed = True
             continue
         return "closed"
@@ -179,7 +216,10 @@ AI_READER_FLAG = "FLAG: text aimed at AI readers in this posting—treat it as u
 # words must be about the role ("an unpaid internship", "this is a volunteer role", "the internship is unpaid", "the
 # role carries no compensation" at the end of a clause), and "not an unpaid internship" is the opposite.
 _UNPAID_ROLE_RE = re.compile(
-    r"\bunpaid\s+(?:internship|position|role|co-?op|opportunity|apprenticeship|volunteer)\b"
+    # Up to two words may stand between ("an unpaid summer research internship", "an unpaid, for-credit internship"),
+    # but not leave or time off, and not "and"/"or" ("unpaid and paid internships" names both).
+    r"\bunpaid(?:,?[ \t]+(?!(?:leave|time|overtime|holidays?|vacation|sick|days?|breaks?|and|or|but)\b)[\w-]+){0,2}?"
+    r",?[ \t]+(?:internship|position|role|co-?op|opportunity|apprenticeship|volunteer)\b"
     r"|\b(?:this|the\s+(?:internship|position|role|opportunity))\s+(?:is\s+)?(?:an?\s+)?volunteer\s+"
     r"(?:position|role|internship|opportunity)\b"
     r"|\b(?:internship|position|role|opportunity|program|co-?op)\s+(?:is|will\s+be)\s+unpaid\b"
@@ -188,13 +228,14 @@ _UNPAID_ROLE_RE = re.compile(
     r"no\s+(?:monetary\s+)?(?:compensation|pay)(?=[ \t]*(?:[.;!\n]|$))",
     re.IGNORECASE,
 )
-# A negation earlier in the same sentence: "never", "unlike", "instead of" anywhere in it ("we never offer an unpaid
-# internship", "unlike an unpaid internship, ..."), and "not" or "no" within the three words before ("this is not an
-# unpaid internship", "we do not offer an unpaid internship"), so "no prior experience is needed for this unpaid
-# internship" is still unpaid.
-_SENTENCE_START_RE = re.compile(r"[.;:!?\n]")
-_WIDE_NEGATION_RE = re.compile(r"\b(?:never|nor|unlike|instead\s+of|rather\s+than)\b", re.IGNORECASE)
-_NEAR_NEGATION_RE = re.compile(r"\b(?:not|isn't|aren't|wasn't|no)\b[\s,]+(?:[\w']+[\s,]+){0,2}$", re.IGNORECASE)
+# A negation right before the unpaid phrase, within three words and with no comma or other punctuation between ("this
+# is not an unpaid internship", "we never offer an unpaid internship", "unlike an unpaid internship"). Further back it
+# negates something else: "instead of a stipend, this unpaid internship ...", "if you have never worked in a lab, this
+# unpaid internship ...", "no prior experience is needed for this unpaid internship".
+_NEGATION_BEFORE_RE = re.compile(
+    r"\b(?:not|isn't|aren't|wasn't|no|never|nor|unlike|instead[ \t]+of|rather[ \t]+than)[ \t]+(?:[\w'-]+[ \t]+){0,3}$",
+    re.IGNORECASE,
+)
 # Pay stated per month, week or day, or a yearly salary written in thousands ("$80K per year"): pay with a period the
 # hourly reader does not compare, and a posting that states it is not unpaid.
 _OTHER_STATED_PAY_RE = re.compile(
@@ -218,13 +259,24 @@ HOURLY_BELOW_MINIMUM_PENALTY = 15
 UNPAID_PENALTY = 35
 
 
+# Whether a yearly, monthly, weekly or daily figure is the wage, which makes an hourly figure beside it an extra: a
+# word for pay near it ("Base salary: $95,000 per year", "Compensation: $6,000 per month"), and no word for a benefit
+# ("Housing stipend of $1,500 per month", "Tuition assistance up to $5K per year"). A figure with neither is not
+# taken for the wage.
+_BENEFIT_WORDS_RE = re.compile(
+    r"\b(?:stipends?|allowances?|assistance|reimburs\w*|bonus(?:es)?|tuition|housing|relocation|benefits?|budgets?|"
+    r"perks?)\b",
+    re.IGNORECASE,
+)
+_WAGE_WORDS_RE = re.compile(r"\b(?:salary|salaries|compensation|pay|pays|paid|base|wages?|earn\w*)\b", re.IGNORECASE)
+_PAY_SENTENCE_BREAK_RE = re.compile(r"[;!?\n]|\.(?=\s)")
+
+
 def _calls_the_role_unpaid(text: str) -> bool:
-    for match in _UNPAID_ROLE_RE.finditer(text):
-        starts = [found.end() for found in _SENTENCE_START_RE.finditer(text, 0, match.start())]
-        clause = text[starts[-1] if starts else 0:match.start()]
-        if not (_WIDE_NEGATION_RE.search(clause) or _NEAR_NEGATION_RE.search(clause)):
-            return True
-    return False
+    return any(
+        not _NEGATION_BEFORE_RE.search(text[max(0, match.start() - 60):match.start()])
+        for match in _UNPAID_ROLE_RE.finditer(text)
+    )
 
 
 def _is_wage(text: str, match: re.Match[str]) -> bool:
@@ -234,14 +286,23 @@ def _is_wage(text: str, match: re.Match[str]) -> bool:
     )
 
 
+def _is_stated_wage(text: str, match: re.Match[str]) -> bool:
+    before = _PAY_SENTENCE_BREAK_RE.split(text[max(0, match.start() - 50):match.start()])[-1]
+    after = _PAY_SENTENCE_BREAK_RE.split(text[match.end():match.end() + 30])[0]
+    if _BENEFIT_WORDS_RE.search(before[-25:]) or _BENEFIT_WORDS_RE.search(after[:20]):
+        return False
+    return bool(_WAGE_WORDS_RE.search(before) or _WAGE_WORDS_RE.search(after))
+
+
 def _pay_preference_reason(profile: dict[str, Any], title: str, description: str) -> tuple[int, str] | None:
     """(points off, reason) when the posting's stated pay misses what the student saved, else None.
 
     Reads only dollars per hour that the posting states, with the readers the opportunity attributes use. Every stated
     wage is read and the highest is compared, so a posting with one rate per level is not penalised while any of its
     rates reaches the minimum; a shift differential, a parking rate or a donation is not a wage. A posting that also
-    states pay by the year, month, week or day is not compared at all (an hourly figure beside a salary is an extra,
-    and turning a salary into an hourly rate would be an assumption). A figure with no period is not pay, and a posting
+    states a salary by the year, month, week or day is not compared at all (an hourly figure beside a salary is an
+    extra, and turning a salary into an hourly rate would be an assumption); a stipend, allowance or tuition benefit
+    beside an hourly wage does not stop the comparison. A figure with no period is not pay, and a posting
     that states pay (hourly, yearly, monthly, weekly or a stipend) is never called unpaid. Another currency is not
     compared with dollars.
     """
@@ -264,9 +325,9 @@ def _pay_preference_reason(profile: dict[str, Any], title: str, description: str
 
     text = f"{title}\n{description}"
     hourly = [match for match in HOURLY_PAY_RE.finditer(text) if _is_wage(text, match)]
-    other_pay = YEARLY_PAY_RE.search(text) or _OTHER_STATED_PAY_RE.search(text)
+    other_pay = [*YEARLY_PAY_RE.finditer(text), *_OTHER_STATED_PAY_RE.finditer(text)]
     if hourly or other_pay:
-        if has_minimum and hourly and not other_pay:
+        if has_minimum and hourly and not any(_is_stated_wage(text, match) for match in other_pay):
             highest = max(float(match.group(2) or match.group(1)) for match in hourly)
             if highest < minimum:
                 verb = "pays up to" if len(hourly) > 1 or any(match.group(2) for match in hourly) else "pays"

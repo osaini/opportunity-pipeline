@@ -46,12 +46,21 @@ class _TextExtractor(HTMLParser):
         self.parts.append(data.replace(_BLOCK_BREAK, " "))
 
 
+_TAG_RE = re.compile(r"<\s*/?\s*[A-Za-z][^>]*>|<!--")
+
+
 def strip_html(value: str | None) -> str:
     """The text of an HTML fragment: whitespace collapsed, with each block element (paragraph, list item, heading,
-    line break) ending its own line. Line breaks in the source itself are only whitespace, as a browser shows them."""
-    parser = _TextExtractor()
-    parser.feed(html.unescape((value or "").replace(_BLOCK_BREAK, " ")))
-    lines = re.sub(r"\s+", " ", " ".join(parser.parts)).split(_BLOCK_BREAK)
+    line break) ending its own line. In HTML a line break in the source is only whitespace, as a browser shows it; text
+    with no tags at all (Lever's ``descriptionPlain``, a pasted description) keeps its own line breaks, since there they
+    are the only thing that separates one requirement from the next."""
+    text = html.unescape((value or "").replace(_BLOCK_BREAK, " "))
+    if _TAG_RE.search(text):
+        parser = _TextExtractor()
+        parser.feed(text)
+        lines = re.sub(r"\s+", " ", " ".join(parser.parts)).split(_BLOCK_BREAK)
+    else:
+        lines = [re.sub(r"\s+", " ", line) for line in re.split(r"\r\n|\r|\n", text)]
     return "\n".join(line for line in (line.strip() for line in lines) if line)
 
 

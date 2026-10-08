@@ -209,6 +209,18 @@ class LeverTests(unittest.TestCase):
                 (job,) = _lever_jobs(_lever(lists=lists))
                 self.assertEqual(job["description"], "Join our team. We are an equal opportunity employer.")
 
+    def test_plain_text_lines_stay_apart(self):
+        # Found in review: descriptionPlain puts each requirement on its own line with a bare newline, which was collapsed,
+        # so one line read as the tail of the one before.
+        from pipeline_core import scoring
+
+        plain = "What you'll need\n1+ years of hands-on experience\nFollowing graduation you may join our rotational program"
+        (job,) = _lever_jobs(_lever(descriptionPlain=plain, lists=[]))
+        self.assertIn("1+ years of hands-on experience\nFollowing graduation", job["description"])
+        profile = {"max_years_experience": 1, "graduation_year": 2027}
+        _, reasons = scoring.score_job({**job, "role_type": "internship"}, profile)
+        self.assertFalse([reason for reason in reasons if "years" in reason])
+
     def test_the_posting_date_is_the_creation_time(self):
         (job,) = _lever_jobs(_lever())
         self.assertEqual(job["posted_at"], "2026-09-01T00:00:00+00:00")

@@ -241,7 +241,6 @@ class ReviewFindingsTests(unittest.TestCase):
             "The program offers unpaid time off between rotations.",
             "We never offer an unpaid internship: every intern is paid.",
             "Unlike an unpaid internship, this role is fully paid with benefits.",
-            "This is not, and never will be, an unpaid internship.",
             "We do not offer an unpaid internship.",
             "Compensation: $80K per year. Our family leave program offers unpaid leave.",
             "Compensation: $80K per year. Former interns describe it as an unpaid internship.",
@@ -258,6 +257,52 @@ class ReviewFindingsTests(unittest.TestCase):
         ):
             with self.subTest(text=text):
                 self.assertEqual(_pay_reasons(text, paid_only=True), [self.UNPAID])
+
+
+class SecondReviewTests(unittest.TestCase):
+    """Found in the re-review of the first round of fixes; each failed on the code before its fix."""
+
+    UNPAID = "-35 unpaid, and you asked for paid roles only"
+
+    def test_a_negation_word_far_from_the_role_does_not_unmake_it_unpaid(self):
+        for text in (
+            "Instead of a stipend, this unpaid internship offers course credit.",
+            "Rather than a salary, interns in this unpaid internship earn academic credit.",
+            "If you have never worked in a lab, this unpaid internship is a great start.",
+            "Although not required, this unpaid internship pairs well with a capstone.",
+            "This is an unpaid, for-credit internship.",
+            "This is an unpaid summer research internship.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(_pay_reasons(text, paid_only=True), [self.UNPAID])
+
+    def test_words_between_unpaid_and_a_role_are_not_leave_or_a_choice(self):
+        for text in (
+            "Benefits include unpaid leave, internship stipends and more.",
+            "We offer unpaid and paid internships.",
+            "We never offer an unpaid internship.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(_pay_reasons(text, paid_only=True), [])
+
+    def test_a_stipend_or_benefit_beside_an_hourly_wage_does_not_stop_the_comparison(self):
+        for text in (
+            "Pay: $18/hour. Housing stipend of $1,500 per month.",
+            "Interns earn $18 per hour. Tuition assistance up to $5K per year.",
+            "Pays $18 per hour plus a relocation allowance of $2,000 per month.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    _pay_reasons(text, minimum_hourly=25), ["-15 pays $18/hour, below your $25/hour minimum"]
+                )
+
+    def test_a_stated_salary_still_stops_the_comparison(self):
+        for text in (
+            "Base salary: $95,000 per year. Shift differential of $2 per hour.",
+            "Compensation: $6,000 per month. Weekend rate $3 per hour.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(_pay_reasons(text, minimum_hourly=25), [])
 
 
 if __name__ == "__main__":

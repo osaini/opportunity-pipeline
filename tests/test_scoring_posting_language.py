@@ -318,7 +318,7 @@ class ReviewFindingsTests(unittest.TestCase):
 
     def test_a_sentence_that_also_says_we_sponsor_is_flagged_but_not_charged(self):
         # Mixed wording is uncertain: the FLAG keeps it visible, and no points come off on a guess.
-        text = "We cannot sponsor F-1 interns, but we sponsor H-1B for return offers."
+        text = "We cannot sponsor every visa type, but we sponsor H-1B for qualified candidates."
         reasons = _reasons(text, requires_sponsorship=True)
         self.assertIn(self.SPONSOR_FLAG, reasons)
         self.assertNotIn(self.SPONSOR_PENALTY, reasons)
@@ -367,6 +367,55 @@ class ReviewFindingsTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(_year_penalties(text, max_years_experience=0), ["-18 asks for 2+ years"])
                 self.assertEqual(_year_penalties(text, max_years_experience=2), [])
+
+
+class SecondReviewTests(unittest.TestCase):
+    """Found in the re-review of the first round of fixes; each failed on the code before its fix."""
+
+    SPONSOR_FLAG = "FLAG: sponsorship language—verify work authorization"
+    SPONSOR_PENALTY = "-35 sponsorship appears unavailable"
+
+    def test_long_or_differently_worded_work_authorization_still_closes_it(self):
+        for text in (
+            "Must be authorized to work for any employer in the United States, now and in the future, "
+            "without sponsorship.",
+            "Candidates must possess unrestricted authorization to work in the United States without sponsorship.",
+            "You must have the legal right to work in the US without visa sponsorship.",
+        ):
+            with self.subTest(text=text):
+                self.assertIn(self.SPONSOR_PENALTY, _reasons(text, requires_sponsorship=True))
+
+    def test_we_sponsor_without_a_visa_word_or_for_another_role_does_not_soften_a_refusal(self):
+        for text in (
+            "We do not offer visa sponsorship, but we sponsor student hackathons every semester.",
+            "We are unable to sponsor visas for interns; we sponsor H-1B for full-time roles only.",
+            "We cannot sponsor F-1 interns, but we sponsor H-1B for return offers.",
+            "We cannot sponsor visas for this position, but we sponsor H-1B for other teams.",
+        ):
+            with self.subTest(text=text):
+                reasons = _reasons(text, requires_sponsorship=True)
+                self.assertIn(self.SPONSOR_FLAG, reasons)
+                self.assertIn(self.SPONSOR_PENALTY, reasons)
+
+    def test_a_word_like_program_after_of_is_still_experience(self):
+        for text, expected in (
+            ("3+ years of program management experience.", ["-18 asks for 3+ years"]),
+            ("2 years of running experience in production systems.", ["-18 asks for 2+ years"]),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(_year_penalties(text), expected)
+
+    def test_a_year_count_does_not_pair_with_experience_on_the_next_line(self):
+        for text in (
+            "Enrolled for at least 2 years\nExperience with CAD",
+            "Completed 3 years of coursework\nexperience with Python is a plus",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(_year_penalties(text, max_years_experience=0), [])
+        self.assertEqual(
+            _year_penalties("At least 2 years of hands-on experience", max_years_experience=0),
+            ["-18 asks for 2+ years"],
+        )
 
 
 class AiReaderTextTests(unittest.TestCase):
