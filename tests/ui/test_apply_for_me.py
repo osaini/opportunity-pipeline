@@ -267,7 +267,7 @@ def test_the_settings_show_the_limits_and_keep_an_exact_option_the_student_saves
 def test_the_profile_keeps_the_name_written_on_an_application(owner_page, live_server):
     owner_page.click("#profile-nav")
     wait_for_results(owner_page)
-    fields = owner_page.locator(".profile-fieldset")
+    fields = owner_page.locator(".profile-fieldset", has_text="Name for applications")
     expect(fields.locator("legend")).to_have_text("Name for applications")
     fields.get_by_label("First name").fill("Ana María")
     fields.get_by_label("Last name").fill("de la Cruz")
