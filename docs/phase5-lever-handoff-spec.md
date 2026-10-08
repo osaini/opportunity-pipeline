@@ -873,6 +873,16 @@ a copy of Lever's script; a stand-in hCaptcha script whose challenge frame can b
 serves the fixtures to the preflight. `PIPELINE_SANDBOX_FAKE_APPLY=1` also seeds one Lever role, so the sandbox shows a
 Lever "what's missing" view and a canned handoff, with no window and nothing sent.
 
+**As built (LV3, `FakeLever` in `tests/apply_fake_ats.py`, self-tested by `tests/test_apply_fake_lever.py`).** The fixtures carry no scripts, so the fake adds the
+stand-ins in `tests/fixtures/apply/lever/` (`parseResume.js`, `application.js`, `hcaptcha_api.js`, `hcaptcha_frame.html`), each written from section 3 and not from
+Lever's code. The hCaptcha pieces are served from `js.hcaptcha.com`, `api.hcaptcha.com` (`/checksiteconfig` says whether the next `execute()` shows a challenge, so the
+switch works while a page is open) and `newassets.hcaptcha.com` (the challenge frame, titled "Main content of the hCaptcha challenge"); those hosts are the fake's
+own choice until Q3 pins the real ones. What the fake invents, because section 3 marks it unseen: the `/parseResume` reply (`parse_resume_reply.json`), the shape of
+`/searchLocations` (`search_locations_reply.json`), how a refused form marks its invalid field (`aria-invalid`) and the challenge frame's markup. Two things it cannot do
+on a route hook, so the scenarios stop short of them: a submit answered with a 302 (Playwright does not route the hop after a fulfilled redirect, so it would reach the
+real `jobs.lever.co`; "to_thanks" answers 200 with a page that moves the browser to `/thanks`), and a submit that never answers (a document POST held open freezes the
+page for Playwright). A `/parseResume` that never answers, or answers late, is fine.
+
 ### 10.4 Browser tests (`browser-python`, Chromium, required in CI)
 
 Against `FakeLever`, through the real runner, child and driver:
