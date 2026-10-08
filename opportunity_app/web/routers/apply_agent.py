@@ -163,7 +163,9 @@ def apply_agent_settings(
         "label_fields": list(apply_policy.ALLOWED_ATS_LABEL_FIELDS),
         # The same for every ATS whose form has lists of its own (Lever's only once its switch is on), each with its own saved options.
         "ats_label_sets": sets,
-        "lever": {"mode": "on" if lever_on else "off", "resume_upload": automation_core.mode(conn, user_id, "apply_lever_resume_upload")},
+        # ``window``: whether Lever has a Finish in browser window yet; the page words what its two switches do for now from it.
+        "lever": {"mode": "on" if lever_on else "off", "resume_upload": automation_core.mode(conn, user_id, "apply_lever_resume_upload"),
+                  "window": apply_ats.LEVER.adapter_built},
         "evidence_days": apply_runs.evidence_days(),
         "ats_statistics": [apply_watch.ats_statistics(conn, user_id)],
     }

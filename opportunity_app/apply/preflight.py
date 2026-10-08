@@ -120,8 +120,19 @@ def _listing(
 
 
 LEVER_RESUME_YOURS = "Your résumé: you attach it yourself {there}, because Lever reads it as soon as it is attached"
-LEVER_RESUME_ATTACHED = ("Your résumé: the app attaches it itself, because you let it in Apply agent settings. "
+LEVER_RESUME_ATTACHED = ("Your résumé: the app attaches it itself, because you let it in Apply for me settings. "
                          "Lever reads it as soon as it is attached, so it is sent to Lever before you press Submit")
+# While Lever has no window (``adapter_built``), the switch changes nothing yet: the student still attaches the résumé on Lever's own page.
+LEVER_RESUME_ATTACHED_LATER = ("Your résumé: you attach it yourself on Lever's application page. You let the app attach it in Apply for me settings, "
+                               "but it cannot do that on Lever yet. Once it can, Lever reads it as soon as it is attached, "
+                               "so it is sent to Lever before you press Submit")
+
+
+def lever_resume_note(ats: apply_ats.AtsSpec, upload: bool) -> str:
+    """The sentence above a Lever role's list about the résumé: who attaches it, following the student's choice and whether Lever has a window."""
+    if not ats.adapter_built:
+        return LEVER_RESUME_ATTACHED_LATER if upload else LEVER_RESUME_YOURS.format(there="on Lever's application page")
+    return LEVER_RESUME_ATTACHED if upload else LEVER_RESUME_YOURS.format(there="in the window")
 
 
 def _offers(ats: apply_ats.AtsSpec) -> dict[str, Any]:
@@ -333,8 +344,7 @@ def _prepare(
         window=ats.adapter_built,
     )
     if ats.key == apply_lever.ATS_LEVER:
-        there = "in the window" if ats.adapter_built else "on Lever's application page"
-        result["notes"] = [LEVER_RESUME_ATTACHED if upload else LEVER_RESUME_YOURS.format(there=there)]
+        result["notes"] = [lever_resume_note(ats, upload)]
     return result, plan, sources, schema
 
 
